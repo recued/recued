@@ -103,10 +103,24 @@ const requireDep = <K extends keyof WatcherDispatcherDeps>(
   return value as NonNullable<WatcherDispatcherDeps[K]>;
 };
 
+/** ⛔ For a watcher, `null` means "not given". Dispatch merges a manifest's declared
+ *  `input` under the step's own args (`mergeManifestStepInput`), and every watcher
+ *  manifest declares its optional inputs as `null`. So a step that omits one hands its
+ *  watcher a `null`, while the handlers are typed with OPTIONAL fields and guard them
+ *  with `!== undefined`. The null got past those guards and broke three watchers:
+ *  - a meeting alert threw every minute ("Cannot read properties of null (reading
+ *    'length')", time-relative's `filter`);
+ *  - both web-watch page watchers refused every tick (http's `previous_etag`);
+ *  - a time gate naming only its hours would have been refused.
+ *  Dropped here, once, for all of them, so the casts below are true. */
+const withoutNulls = (args: Record<string, unknown>): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null));
+
 export const createWatcherDispatcher = (
   deps: WatcherDispatcherDeps,
 ): WatcherDispatcher => {
-  return async ({ slug, args }) => {
+  return async ({ slug, args: given }) => {
+    const args = withoutNulls(given);
     switch (slug satisfies KernelWatcherSlug) {
       case 'time-watcher':
         return evaluateTimeWatcher(args as TimeWatcherArgs);

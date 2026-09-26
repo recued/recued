@@ -30,6 +30,22 @@ describe('evaluateTimeWatcher — weekday gating', () => {
   it('empty weekdays array never matches (empty-set semantics)', () => {
     expect(evaluateTimeWatcher({ weekdays: [] }, at(2026, 3, 20, 10)).should_run).toBe(false);
   });
+  // ⛔ 7 is Sunday too (ISO 8601), since the two numberings agree on 1..6. Ten
+  // shipped recipes tell the owner "1=Mon..7=Sun", and two defaulted to a 7 this
+  // refused, so their auto-run tripped on its first tick.
+  it('7 means Sunday, the same as 0', () => {
+    // 2026-04-19 is a Sunday (getDay() = 0); 2026-04-20 a Monday.
+    expect(evaluateTimeWatcher({ weekdays: [7] }, at(2026, 3, 19, 10)).should_run).toBe(true);
+    expect(evaluateTimeWatcher({ weekdays: [0] }, at(2026, 3, 19, 10)).should_run).toBe(true);
+    expect(evaluateTimeWatcher({ weekdays: [7] }, at(2026, 3, 20, 10)).should_run).toBe(false);
+  });
+  it('the ISO week 1..7 is every day', () => {
+    for (let date = 19; date <= 25; date += 1) {
+      expect(evaluateTimeWatcher({ weekdays: [1, 2, 3, 4, 5, 6, 7] }, at(2026, 3, date, 10)).should_run).toBe(true);
+    }
+    // ...and without the 7, Sunday is left out.
+    expect(evaluateTimeWatcher({ weekdays: [1, 2, 3, 4, 5, 6] }, at(2026, 3, 19, 10)).should_run).toBe(false);
+  });
   it('multiple weekdays honoured', () => {
     // Mon + Wed + Fri.
     expect(evaluateTimeWatcher({ weekdays: [1, 3, 5] }, at(2026, 3, 22, 10)).should_run).toBe(true);
@@ -90,8 +106,9 @@ describe('evaluateTimeWatcher — validation', () => {
     expect(() => evaluateTimeWatcher({ weekdays: 'mon' as unknown as number[] }))
       .toThrow(IngredientError);
   });
-  it('rejects weekday out of [0,6]', () => {
-    expect(() => evaluateTimeWatcher({ weekdays: [7] })).toThrow(/weekday must be/);
+  it('rejects weekday out of [0,7]', () => {
+    expect(() => evaluateTimeWatcher({ weekdays: [8] })).toThrow(/weekday must be/);
+    expect(() => evaluateTimeWatcher({ weekdays: [-1] })).toThrow(/weekday must be/);
   });
   it('rejects non-integer weekday', () => {
     expect(() => evaluateTimeWatcher({ weekdays: [1.5] })).toThrow(IngredientError);

@@ -3,7 +3,7 @@
  *  Eight methods: write / list / search / delete / forRecord on the
  *  annotation surface, write / list / delete / forRecord on the link
  *  surface. The kernel adapter on the extension side dispatches the
- *  user-facing slugs (`data-annotate`, `annotation-list`, … ) to these
+ *  user-facing slugs (`annotation-create`, `annotation-list`, … ) to these
  *  via the `Conn<ServerRpcRegistry>` rpc transport. The server runtime
  *  also wires its own kernel dispatcher to call the same handlers
  *  in-process so server-side recipe execution doesn't loop through ws.
@@ -384,8 +384,8 @@ export const handleLinkDelete = async (
  *  prior value rather than append, so the per-record ref read returns
  *  one current value (not a slowly-growing audit list).
  *
- *  Note that the underlying append-shaped `data-annotate` /
- *  `annotation.write` path is preserved unchanged — graph-builder
+ *  Note that the underlying append-shaped `annotation.write` path is
+ *  preserved unchanged — graph-builder
  *  recipes use this upsert path; ad-hoc one-off annotations can still
  *  use the append path when keep-history semantics are wanted. */
 export const handleAnnotationCreate = async (

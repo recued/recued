@@ -16,7 +16,7 @@ const bootSaved = async (page: Page, view: SavedDataViewDefinition = definition)
   await page.addInitScript(({ key, id, definition }) => sessionStorage.setItem(key, JSON.stringify([
     { id, name: 'Jobs', definition, revision: 1, created_at: 1, updated_at: 1 },
   ])), { key: KEY, id: ID, definition: view });
-  await page.goto(`${URL}#data/view/${ID}`);
+  await page.goto(`${URL}#views/${ID}`);
   await ready(page);
 };
 const addFilter = async (page: Page, index: number, field: string, op: string, value: string) => {
@@ -60,13 +60,15 @@ test('Records applies filters and sorting before paging and saves settings witho
   await expect(toolbar(page).locator('[data-view-notice]')).toContainText('Saved');
   const saved = (await stored(page))[0];
   expect(Object.keys(saved.definition).sort()).toEqual(['entity', 'filters', 'owner', 'sort', 'tab']);
+  // D-291 — the saved-view list is its own route; `#data` only saves and links.
+  await page.evaluate(() => window.__app.setHash('#views'));
   await toolbar(page).locator('summary').click();
   await toolbar(page).locator('details').getByRole('link', { name: 'Open jobs', exact: true }).click();
   await expect(rows(page).first()).toContainText('Open 238');
   expect((await requests(page)).at(-1)).not.toHaveProperty('cursor');
   await page.getByRole('button', { name: 'Next page', exact: true }).click();
   await expect(rows(page)).toHaveCount(14);
-  await expect(page).toHaveURL(new RegExp(`#data/view/${saved.id}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${saved.id}$`));
   await expect(toolbar(page).locator('[data-view-modified]')).toHaveCount(0);
   await page.reload();
   await ready(page);
@@ -101,7 +103,7 @@ test('Records updates old bookmarks, reviews competing filters and saves copies'
   await expect(page.getByLabel('Filter 1 value', { exact: true })).toHaveValue('Open');
   await toolbar(page).getByRole('button', { name: 'Replace saved settings', exact: true }).click();
   await expect(toolbar(page).locator('[data-view-notice]')).toContainText('Updated');
-  await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
   expect((await stored(page))[0]).toMatchObject({ revision: 4, definition: { filters: { title: { value: 'Open' } }, sort: '-amount' } });
   await page.getByLabel('Filter 1 value', { exact: true }).fill('Closed');
   await apply(page);

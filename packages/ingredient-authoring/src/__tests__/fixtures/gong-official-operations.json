@@ -79,7 +79,7 @@
       "permission_profile.create": "body.name",
       "permission_profile.update": "body.name"
     },
-    "composition_bytes": 118567,
+    "composition_bytes": 118593,
     "risk_counts": {
       "admin": 6,
       "destructive": 5,
@@ -88,8 +88,7 @@
     },
     "approval_counts": {
       "always": 22,
-      "ask": 13,
-      "never": 25
+      "never": 38
     },
     "idempotency_counts": {
       "idempotent": 18,
@@ -15583,7 +15582,7 @@
       "method": "GET",
       "path": "/v2/logs",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -15784,7 +15783,7 @@
       "method": "POST",
       "path": "/v2/calls/extensive",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -15824,7 +15823,7 @@
       "method": "POST",
       "path": "/v2/calls/extensive",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -16029,7 +16028,7 @@
       "method": "POST",
       "path": "/v2/calls/users-access",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -16151,7 +16150,7 @@
       "method": "GET",
       "path": "/v2/crm/integrations",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [],
       "body_mode": "none",
@@ -16167,7 +16166,7 @@
       "method": "GET",
       "path": "/v2/crm/entities",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -16202,7 +16201,7 @@
       "method": "GET",
       "path": "/v2/crm/request-status",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -16231,7 +16230,7 @@
       "method": "GET",
       "path": "/v2/crm/entity-schema",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -17495,7 +17494,7 @@
       "method": "GET",
       "path": "/v2/permission-profile",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -17516,7 +17515,7 @@
       "method": "GET",
       "path": "/v2/all-permission-profiles",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -17824,7 +17823,7 @@
       "method": "GET",
       "path": "/v2/permission-profile/users",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -17870,7 +17869,7 @@
       "method": "GET",
       "path": "/v2/data-privacy/data-for-email-address",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {
@@ -17916,7 +17915,7 @@
       "method": "GET",
       "path": "/v2/data-privacy/data-for-phone-number",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "args": [
         {

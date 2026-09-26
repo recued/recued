@@ -76,6 +76,7 @@ import {
   mountPacksPanel,
   type PacksInstallBySlugCaller,
   type PacksInstallPreviewCaller,
+  type PacksUninstallPreviewCaller,
   type PacksInstallCaller,
   type PacksListCaller,
   type PacksPanelMount,
@@ -243,6 +244,9 @@ export interface BootstrapPacksRouteOptions {
    *  disclosure + the grant picker's per-recipe tier. Optional: absent ⇒ the
    *  dialog renders its pre-D-247 surface. */
   packsInstallPreviewCaller?: PacksInstallPreviewCaller;
+  /** D-304 — `packs.uninstall_preview`, feeding the Delete confirmation's "also
+   *  removes …". Optional: absent ⇒ no line. */
+  packsUninstallPreviewCaller?: PacksUninstallPreviewCaller;
   // ── The `cli.reachability.*` trio + its contracts list ──────────────
   // Named for the local-tools CONCEPT (cli binaries), not the retired
   // roster-wide section: each one is read by a surviving pack-detail consumer.
@@ -704,6 +708,9 @@ export const bootstrapPacksRoute = (
             : {}),
           ...(opts.packsInstallPreviewCaller !== undefined
             ? { runInstallPreview: opts.packsInstallPreviewCaller }
+            : {}),
+          ...(opts.packsUninstallPreviewCaller !== undefined
+            ? { runUninstallPreview: opts.packsUninstallPreviewCaller }
             : {}),
           ...(runInstallBySlugWithGrant !== undefined
             ? { runInstallBySlug: runInstallBySlugWithGrant }

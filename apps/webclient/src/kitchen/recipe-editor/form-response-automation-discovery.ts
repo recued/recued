@@ -15,9 +15,13 @@ import {
   FORM_RESPONSE_ON_SHORTHAND,
   validateRecipeEventTriggerEntry,
   type RecipeEventTrigger,
+  type ServerRecipeFullEntry,
   type ServerRecipeListEntry,
 } from '@recued/contracts';
-import { isInstalledFormResponseWorkflowTemplate } from './form-response-automation-seed.js';
+import {
+  isFormResponseWorkflowTemplateCandidate,
+  isInstalledFormResponseWorkflowTemplate,
+} from './form-response-automation-seed.js';
 
 export type FormResponseAutomationScope =
   | 'this_form'
@@ -30,9 +34,15 @@ export interface FormResponseAutomationMatch {
 }
 
 export interface FormResponseWorkflowTemplateMatch {
-  entry: ServerRecipeListEntry;
+  /** The FULL entry, body included: choosing a template clones it. */
+  entry: ServerRecipeFullEntry;
   bundle_key: string;
 }
+
+/** `recipe.get`: one recipe WITH its body, or null. */
+export type FormResponseTemplateGetCaller = (
+  args: { recipe_id: string },
+) => Promise<{ recipe: ServerRecipeFullEntry | null }>;
 
 const triggerScopeForForm = (
   trigger: RecipeEventTrigger,
@@ -95,17 +105,48 @@ export const findFormResponseAutomations = (
 };
 
 /** Installed inert origins offered by Data → Automate this form. Stable server
- * order is preserved; duplicate recipe ids are collapsed defensively. */
-export const findFormResponseWorkflowTemplates = (
-  recipes: ReadonlyArray<ServerRecipeListEntry>,
-): FormResponseWorkflowTemplateMatch[] => {
-  const matches: FormResponseWorkflowTemplateMatch[] = [];
+ * order is preserved; duplicate recipe ids are collapsed defensively.
+ *
+ * ⛔⛔ A LIST ROW CANNOT PROVE A TEMPLATE, AND CANNOT BE CLONED. Whether the
+ * template reads the accepted response lives in `prefetch_steps`, and choosing
+ * one CLONES its steps. A `recipe.list` row has carried neither since
+ * f95faec10. Until this read went through `recipe.get`, every template was
+ * refused and none was ever offered, and a green suite hid it because its
+ * fixtures fed full bodies through the list.
+ *
+ * So the row only narrows to CANDIDATES, and each candidate's body is fetched
+ * with `recipe.get` and proven there. A candidate whose body cannot be fetched
+ * is not offered: an automation cloned from a body nobody checked could read
+ * nothing. A row that still carries its body (an older server's list) is used
+ * as it is, since that server has no `recipe.get` to ask. */
+export const findFormResponseWorkflowTemplates = async (
+  recipes: ReadonlyArray<ServerRecipeListEntry | ServerRecipeFullEntry>,
+  getCaller?: FormResponseTemplateGetCaller,
+): Promise<FormResponseWorkflowTemplateMatch[]> => {
+  const candidates: Array<ServerRecipeListEntry | ServerRecipeFullEntry> = [];
   const seen = new Set<string>();
   for (const entry of recipes) {
-    if (seen.has(entry.recipe_id) || !isInstalledFormResponseWorkflowTemplate(entry)) continue;
+    if (seen.has(entry.recipe_id) || !isFormResponseWorkflowTemplateCandidate(entry)) continue;
+    seen.add(entry.recipe_id);
+    candidates.push(entry);
+  }
+  const proven = await Promise.all(candidates.map(async (row): Promise<ServerRecipeFullEntry | null> => {
+    if (Array.isArray((row.recipe as { steps?: unknown }).steps)) {
+      return row as ServerRecipeFullEntry;
+    }
+    if (getCaller === undefined) return null;
+    try {
+      const { recipe } = await getCaller({ recipe_id: row.recipe_id });
+      return recipe !== null && recipe.recipe_id === row.recipe_id ? recipe : null;
+    } catch {
+      return null;
+    }
+  }));
+  const matches: FormResponseWorkflowTemplateMatch[] = [];
+  for (const entry of proven) {
+    if (entry === null || !isInstalledFormResponseWorkflowTemplate(entry)) continue;
     const bundle = entry.recipe.metadata.recipe_bundle;
     if (bundle === undefined) continue;
-    seen.add(entry.recipe_id);
     matches.push({ entry, bundle_key: bundle });
   }
   return matches;

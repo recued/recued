@@ -7,6 +7,7 @@ import type {
   ServerAutoRunHandle,
 } from '../auto-run-scheduler.js';
 import type { AutoRunRpcDeps } from '../auto-run-handler.js';
+import type { SavedDataViewStore } from '../saved-data-view-store.js';
 import {
   composeContactMergeRpcDeps,
   type ComposeContactMergeRpcDepsInput,
@@ -52,6 +53,7 @@ import type { AppContext } from './compose-app-context.js';
 import type { ExecutionContext } from './compose-execution-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import { forgetUnusedRetirements } from '../retired-settings.js';
 
 export interface ComposeRpcContextOptions {
   storage: Pick<
@@ -95,6 +97,7 @@ export interface ComposeRpcContextOptions {
     | 'contractStoreRef'
     | 'sellerStoreRef'
     | 'webhookConsumerStoreRef'
+    | 'webhookIngressStoreRef'
     | 'chatInboundTokenStoreRef'
   >;
   /** D-163 Slice C — execution-context handle for the
@@ -133,6 +136,22 @@ export interface RpcContext {
    *  per-pair `RecipeStore` (required) + the Standing Instructions
    *  store (optional — engine silently skips manifest SI rules when
    *  absent); undefined → `packs.install` surfaces `not_configured`. */
+  /** D-289 — hand the saved-view store to the pack install/uninstall deps.
+   *  Called ONCE, by the stage that builds it (`compose-listeners`). */
+  publishSavedDataViewStore: (store: SavedDataViewStore) => void;
+  /** D-296 — hand the trigger store + vendor registry to the pack install
+   *  preview. Called ONCE, by the stage that composes triggers. */
+  publishTriggerPreview: (deps: import('../pack-trigger-preview.js').TriggerPreviewDeps) => void;
+  /** D-299 — hand the Reception pair substrate to the pack install (carry) and its
+   *  preview (warning). Called ONCE, by the stage that holds the Reception rpc deps. */
+  publishReceptionPairs: (
+    get: () => import('../reception-pair-carry.js').ReceptionPairCarryDeps | undefined,
+  ) => void;
+  /** D-304 — hand the stores a recipe's own state lives in to the pack uninstall
+   *  preview ("also removes …"). Called ONCE, by the stage that composes triggers. */
+  publishRecipeOwnedState: (
+    get: () => import('../recipe-owned-state.js').RecipeOwnedStateDeps | undefined,
+  ) => void;
   packInstallDeps: PackInstallRpcDeps | undefined;
   /** D-145 PA10 follow-on — `packs.list` rpc deps. Composed off the
    *  per-pair `RecipeStore` (required for the `installed` join);
@@ -267,10 +286,54 @@ export const composeRpcContext = (
   });
 
   // D-145 PA10 follow-on — `packs.install` rpc.
+  // D-289 — the saved-view store is built a STAGE LATER (`compose-listeners`
+  // needs `execution.notificationBlock` for its alert runtime), so the pack
+  // composers below take a getter over this ref rather than the store itself.
+  // Resolved at install/uninstall time, which is always after boot.
+  let savedDataViewStoreRef: SavedDataViewStore | undefined;
+  const getSavedDataViewStore = (): SavedDataViewStore | undefined => savedDataViewStoreRef;
+  // D-296 — same late binding for the trigger substrate (composed with the
+  // listeners), which the install preview reads to warn of switched-off automations.
+  let triggerPreviewRef: import('../pack-trigger-preview.js').TriggerPreviewDeps | undefined;
+  const getTriggerPreview = () => triggerPreviewRef;
+  // D-299 — and for the Reception pair substrate (composed with the ingress stage).
+  let receptionPairsRef: (() => import('../reception-pair-carry.js').ReceptionPairCarryDeps | undefined) | undefined;
+  const getReceptionPairs = () => receptionPairsRef?.();
+  // D-304 — and for the stores a recipe's own state lives in (triggers compose with
+  // the listeners), which the uninstall preview counts.
+  let recipeOwnedStateRef: (() => import('../recipe-owned-state.js').RecipeOwnedStateDeps | undefined) | undefined;
+  const getRecipeOwnedState = () => recipeOwnedStateRef?.();
+
+  // D-303 — where the owner's settings are saved (every dish, and the groups they
+  // share), so the update preview can name the saved ones an update stops using.
+  const getSavedSettings = () => (execution.executeDeps.dishStore
+    ? {
+      dishes: execution.executeDeps.dishStore,
+      ...(execution.executeDeps.dishGroupStore ? { groups: execution.executeDeps.dishGroupStore } : {}),
+    }
+    : undefined);
+  // D-303 — at boot, forget each retired list nothing needs any more: its recipe is
+  // gone and no setting is saved for it. Since D-304 an uninstall removes a recipe's
+  // list with its settings, so this finds only lists left by a pack deleted before
+  // then. Best effort: a list left behind drops nothing a run reads.
+  if (execution.executeDeps.dishStore) {
+    try {
+      forgetUnusedRetirements({ recipeStore: storage.recipeStore, dishes: execution.executeDeps.dishStore });
+    } catch (error) {
+      console.warn('[boot] forgetting unused retired settings failed', error);
+    }
+  }
+
   const packInstallBundle = composePackInstallRpcDeps({
+    getSavedDataViewStore,
+    getTriggerPreview,
+    getReceptionPairs,
+    getSavedSettings,
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,
+    // D-295 — the owner's webhooks, for the install dialog's webhook choices.
+    webhookIngressStore: app.webhookIngressStoreRef,
     // D-139 P6.B — the body-content visibility grant store (created in
     // compose-storage-context over `storage.db`, shared with the foundation
     // pre-install path). A pack declaring `mcp_body_visibility_grants[]`
@@ -330,6 +393,9 @@ export const composeRpcContext = (
   // install transaction; reuses the same recipe store handle so recipe
   // deletes target the same per-pair rows the install transaction wrote.
   const packUninstallBundle = composePackUninstallRpcDeps({
+    getSavedDataViewStore,
+    // D-304 — the uninstall preview counts what goes with the pack's recipes.
+    getRecipeOwnedState,
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,
@@ -395,6 +461,22 @@ export const composeRpcContext = (
     contactMergeDeps: contactMergeBundle.contactMergeDeps,
     engagementHealthDeps: engagementHealthBundle.engagementHealthDeps,
     notificationsDeps: notificationsBundle.notificationsDeps,
+    /** D-289 — called ONCE by `compose-listeners`, which owns the store's
+     *  construction. Publishing rather than returning it keeps the ordering
+     *  explicit: this context cannot build the store, and the later stage
+     *  cannot rebuild these deps. */
+    publishSavedDataViewStore: (store: SavedDataViewStore): void => {
+      savedDataViewStoreRef = store;
+    },
+    publishTriggerPreview: (deps): void => {
+      triggerPreviewRef = deps;
+    },
+    publishReceptionPairs: (get): void => {
+      receptionPairsRef = get;
+    },
+    publishRecipeOwnedState: (get): void => {
+      recipeOwnedStateRef = get;
+    },
     packInstallDeps: packInstallBundle.packInstallDeps,
     packListDeps: packListBundle.packListDeps,
     packUninstallDeps: packUninstallBundle.packUninstallDeps,

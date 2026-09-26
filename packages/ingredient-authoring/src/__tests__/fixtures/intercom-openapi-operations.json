@@ -54,9 +54,9 @@
     },
     "composition_bytes": {
       "intercom": 70611,
-      "intercom-support-operations": 50857,
-      "intercom-content-engagement": 108796,
-      "intercom-admin-data": 33549
+      "intercom-support-operations": 50871,
+      "intercom-content-engagement": 108840,
+      "intercom-admin-data": 33571
     },
     "callable_pagination_count": 12,
     "generated_pagination_authority_ids": [
@@ -103,8 +103,8 @@
         "admin": 11
       },
       "approval": {
-        "never": 42,
-        "ask": 81,
+        "never": 82,
+        "ask": 41,
         "always": 37
       },
       "idempotency": {
@@ -1206,7 +1206,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -1269,7 +1269,7 @@
       "result_path": "activity_logs",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -1610,7 +1610,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -1673,7 +1673,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -2037,7 +2037,7 @@
       "result_path": "events",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -2197,7 +2197,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": null,
       "response_capture": {
@@ -2254,7 +2254,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -2291,7 +2291,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -2477,7 +2477,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": null,
       "response_capture": {
@@ -2640,7 +2640,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -2677,7 +2677,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3035,7 +3035,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3085,7 +3085,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3122,7 +3122,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3159,7 +3159,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3709,7 +3709,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3749,7 +3749,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3789,7 +3789,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3860,7 +3860,7 @@
         "increment": "page"
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -3918,7 +3918,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4023,7 +4023,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4073,7 +4073,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": null,
       "response_capture": null
@@ -4110,7 +4110,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4160,7 +4160,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4821,7 +4821,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4871,7 +4871,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -4921,7 +4921,7 @@
       "result_path": "data.internal_articles",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5263,7 +5263,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5300,7 +5300,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5337,7 +5337,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5387,7 +5387,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5437,7 +5437,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5576,7 +5576,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5843,7 +5843,7 @@
         "increment": "page"
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -5901,7 +5901,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -6101,7 +6101,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -6151,7 +6151,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -6657,7 +6657,7 @@
       "result_path": "handling_events",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -6865,7 +6865,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null
@@ -7858,7 +7858,7 @@
       "result_path": null,
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_unsafe_integers": "string",
       "response_capture": null

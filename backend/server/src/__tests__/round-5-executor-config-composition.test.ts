@@ -41,6 +41,13 @@ import type {
 } from '../notification-handler.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
 import type { AnnotationStore } from '../storage/annotation-store.js';
+import { createAnnotationStore } from '../storage/annotation-store.js';
+import { createBlobStore } from '../storage/blob-store.js';
+import { createScheduleStore } from '../schedule-store.js';
+import { createKernelAdapter } from '@recued/ingredients';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CacheStore } from '@recued/cache';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
@@ -131,12 +138,14 @@ const alwaysKernelKeys = [
   'collectionGet',
   'collectionList',
   'collectionSearch',
-  // D-244 — the CSV readers, wired unconditionally alongside the other file
-  // primitives. Read-tier storage ops over a file the caller already named, so
-  // there is no capability to gate the WIRING on; like the mail four below,
-  // the dispatcher fails closed at call time if the underlying store is absent.
+  // D-244 — the CSV ops, wired unconditionally alongside the other file
+  // primitives. They act on a file the caller already named, so there is no
+  // capability to gate the WIRING on; like the mail four below, the dispatcher
+  // fails closed at call time if the underlying store is absent. (`csvFilter`
+  // saves its matches as a new record, a write; `csvRows` is its reading twin.)
   'csvColumns',
   'csvFilter',
+  'csvRows',
   'csvStats',
   'filePersist',
   'filePutRef',
@@ -182,6 +191,11 @@ const sharedKernelKeys = [
 const annotationKernelKeys = [
   'annotationCreate',
   'linkCreate',
+  'annotationList',
+  'annotationSearch',
+  'linkList',
+  'annotationDelete',
+  'linkDelete',
 ] as const satisfies readonly (keyof KernelDispatchers)[];
 
 const enrichmentKernelKeys = [
@@ -527,6 +541,11 @@ const importComposerWithKernelMocks = async () => {
     handleMailThreadRead: vi.fn(async () => ({ messages: [] })),
     handleLinkCreate: vi.fn(async () => ({ ok: true })),
     handleAnnotationCreate: vi.fn(async () => ({ annotation: { id: 'annotation-1' } })),
+    handleAnnotationList: vi.fn(async () => ({ annotations: [] })),
+    handleAnnotationSearch: vi.fn(async () => ({ matches: [] })),
+    handleLinkList: vi.fn(async () => ({ links: [] })),
+    handleAnnotationDelete: vi.fn(async () => ({ ok: true, deleted: 0 })),
+    handleLinkDelete: vi.fn(async () => ({ ok: true, deleted: 0 })),
     handleTimelineReadFromRecipe: vi.fn(async () => ({ items: [], next_cursor: null })),
     handleEnrichmentUpsert: vi.fn(async () => ({ entry: { id: 'enrichment-1' } })),
     handleEnrichmentList: vi.fn(async () => ({ entries: [], next_cursor: null })),
@@ -585,6 +604,11 @@ const importComposerWithKernelMocks = async () => {
   vi.doMock('../annotation-handler.js', () => ({
     handleLinkCreate: mocks.handleLinkCreate,
     handleAnnotationCreate: mocks.handleAnnotationCreate,
+    handleAnnotationList: mocks.handleAnnotationList,
+    handleAnnotationSearch: mocks.handleAnnotationSearch,
+    handleLinkList: mocks.handleLinkList,
+    handleAnnotationDelete: mocks.handleAnnotationDelete,
+    handleLinkDelete: mocks.handleLinkDelete,
   }));
   vi.doMock('../timeline-recipe-handler.js', () => ({
     handleTimelineReadFromRecipe: mocks.handleTimelineReadFromRecipe,
@@ -1381,6 +1405,11 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
       key: 'summary',
       value: { text: 'hello' },
     } as never);
+    await kernel.annotationList?.({ target_collection: 'data.mail', target_id: 'm1' });
+    await kernel.annotationSearch?.({ query: 'hello', key: 'summary' });
+    await kernel.linkList?.({ from_collection: 'data.mail', from_id: 'm1' });
+    await kernel.annotationDelete?.({ key: 'summary', authored_by_recipe_id: 'r1' });
+    await kernel.linkDelete?.({ role: 'thread_participant' });
     await kernel.timelineRead?.({
       scope: 'contact',
       target_id: 'c1',
@@ -1450,6 +1479,30 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
       // (codex LOW fold; links stay ungated, the facet reads truthfully).
       { ...deps.annotationDeps, origin_surface: 'engine' },
       expect.objectContaining({ from_id: 'm1', to_id: 'c1' }),
+    );
+    // The three reads get the annotation deps AS WIRED — a read stamps nothing,
+    // so no origin facet rides along (contrast the two writes above).
+    expect(mocks.handleAnnotationList).toHaveBeenCalledWith(
+      deps.annotationDeps,
+      { target_collection: 'data.mail', target_id: 'm1' },
+    );
+    expect(mocks.handleAnnotationSearch).toHaveBeenCalledWith(
+      deps.annotationDeps,
+      { query: 'hello', key: 'summary' },
+    );
+    expect(mocks.handleLinkList).toHaveBeenCalledWith(
+      deps.annotationDeps,
+      { from_collection: 'data.mail', from_id: 'm1' },
+    );
+    // The deletes forward what the kernel adapter hands them; their SCOPE is
+    // decided there (an annotation delete arrives pinned to its recipe).
+    expect(mocks.handleAnnotationDelete).toHaveBeenCalledWith(
+      deps.annotationDeps,
+      { key: 'summary', authored_by_recipe_id: 'r1' },
+    );
+    expect(mocks.handleLinkDelete).toHaveBeenCalledWith(
+      deps.annotationDeps,
+      { role: 'thread_participant' },
     );
     expect(mocks.handleTimelineReadFromRecipe).toHaveBeenCalledWith(
       {
@@ -1619,5 +1672,157 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
     const callDeps = handleNotificationSendMock.mock.calls[0]![0];
     expect(callDeps).toEqual({ dispatchers: {} });
     expect(callDeps.dispatchers).toEqual({});
+  });
+});
+
+/** ⛔⛔ THE READS WERE DECLARED, UNIT-TESTED AND UNREACHABLE. `kernel-annotation.test.ts`
+ *  hands the kernel adapter its OWN `annotationList` / `annotationSearch` / `linkList`,
+ *  so it passed while this composition root supplied none, and every real run of
+ *  `annotation-list`, `annotation-search` or `link-list` failed "unavailable". This
+ *  drives the REAL composition root over a REAL store through the REAL kernel adapter,
+ *  with no double anywhere on the path, so dropping the wiring again goes red here. */
+describe('annotation + link reads reach a real store through the composition root', () => {
+  it('annotation-list, annotation-search and link-list return what the store holds', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'round5-annotation-reads-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const store = createAnnotationStore({ db: makeDb(), blobs: createBlobStore(join(dir, 'blobs')) });
+    await store.annotate({
+      target_collection: 'data.mail', target_id: 'm1', key: 'summary',
+      value: 'Invoice from Acme', authored_by_recipe_id: 'r1', source_record_hash: 'h1',
+    });
+    await store.link({
+      from_collection: 'data.mail', from_id: 'm1', to_collection: 'data.contact', to_id: 'c1',
+      role: 'thread_participant', authored_by_recipe_id: 'r1',
+    });
+    const { config } = await composeWith({ annotationDeps: { store } });
+    const adapter = createKernelAdapter(kernelOf(config));
+    const run = async (slug: string, input: Record<string, unknown>) =>
+      await adapter({ slug, input } as never) as Record<string, Array<Record<string, unknown>>>;
+
+    const listed = await run('annotation-list', { target_collection: 'data.mail', target_id: 'm1' });
+    expect(listed.annotations!.map((a) => [a.key, a.value])).toEqual([['summary', 'Invoice from Acme']]);
+
+    const found = await run('annotation-search', { query: 'Acme' });
+    expect(found.matches!.map((m) => m.target_id)).toEqual(['m1']);
+
+    const links = await run('link-list', { from_collection: 'data.mail', from_id: 'm1' });
+    expect(links.links!.map((l) => [l.to_collection, l.to_id, l.role]))
+      .toEqual([['data.contact', 'c1', 'thread_participant']]);
+  });
+
+  /** ⛔ The owner's rule, end to end (2026-09-23). Annotations are regenerated by
+   *  housekeeping, so a recipe deletes only its own — a row housekeeping wrote
+   *  under the same key survives. Typed links are not regenerated by anything,
+   *  so a recipe's link delete reaches every author's matching link. */
+  it('annotation-delete spares what others wrote; link-delete does not scope', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'round5-annotation-deletes-'));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const store = createAnnotationStore({ db: makeDb(), blobs: createBlobStore(join(dir, 'blobs')) });
+    for (const author of ['r1', 'housekeeping:link-discovery']) {
+      await store.annotate({
+        target_collection: 'data.contact', target_id: 'c1', key: 'frequent_touch',
+        value: author, authored_by_recipe_id: author, source_record_hash: 'h1',
+      });
+      await store.link({
+        from_collection: 'data.mail', from_id: 'm1', to_collection: 'data.contact', to_id: 'c1',
+        role: 'thread_participant', authored_by_recipe_id: author,
+      });
+    }
+    const { config } = await composeWith({ annotationDeps: { store } });
+    const adapter = createKernelAdapter(kernelOf(config));
+    const inRun = (slug: string, input: Record<string, unknown>) =>
+      adapter({ slug, input, stepMeta: { recipe_id: 'r1', run_id: 'run-1' } } as never) as Promise<{ deleted: number }>;
+
+    expect((await inRun('annotation-delete', { key: 'frequent_touch' })).deleted).toBe(1);
+    expect((await store.listAnnotations({ key: 'frequent_touch' })).map((a) => a.authored_by_recipe_id))
+      .toEqual(['housekeeping:link-discovery']);
+
+    expect((await inRun('link-delete', { role: 'thread_participant' })).deleted).toBe(2);
+    expect(await store.listLinks({ role: 'thread_participant' })).toEqual([]);
+  });
+});
+
+/** ⛔ D-245's `{slug, path}` address never worked on a real server: the CSV
+ *  handler took an optional `instanceReader` and only its own tests supplied
+ *  one, so every named-file CSV op failed "needs a paired server". This drives
+ *  the REAL composition root: the read reaches the file stack's own `fileRead`
+ *  (what `core.storage.file.read` uses), wrapped inside the CSV op. */
+describe('the CSV ops read a named file through the file stack', () => {
+  it('csv-rows by {slug, path} reads via fileStack.fileRead', async () => {
+    const reads: Array<{ slug: string; path: string }> = [];
+    const fileRead = vi.fn(async (where: { slug: string; path: string }) => {
+      reads.push(where);
+      return { body_b64: Buffer.from('Name,Email\nAcme,ops@acme.test\n', 'utf8').toString('base64') };
+    });
+    const { config } = await composeWith({
+      fileStack: stackWithDispatchers({ fileRead } as never) as FileStack,
+    });
+    const adapter = createKernelAdapter(kernelOf(config));
+    const out = await adapter({
+      slug: 'csv-rows', input: { slug: 'vault', path: 'sheets/people.csv', column: 'Name', match: 'Acme' },
+    } as never) as { rows: unknown[] };
+    expect(out.rows).toEqual([{ Name: 'Acme', Email: 'ops@acme.test' }]);
+    expect(reads).toEqual([{ slug: 'vault', path: 'sheets/people.csv' }]);
+  });
+
+  it('without a file stack a named read still refuses rather than reading nothing', async () => {
+    const { config } = await composeWith({});
+    const adapter = createKernelAdapter(kernelOf(config));
+    await expect(adapter({
+      slug: 'csv-rows', input: { slug: 'vault', path: 'a.csv', column: 'Name', match: '' },
+    } as never)).rejects.toThrow(/named file instance/);
+  });
+});
+
+describe('the core.schedule.recipe step checks the recipe\'s packs, as the webclient route does', () => {
+  /** Found live 2026-09-25: the Schedule recipe armed a cron for the month-end
+   *  reminder on a server without Ledger book. The webclient's `schedules.create`
+   *  refuses that recipe, and the step composed the same handler without the
+   *  check. Real handler, real store; only the recipe and the inventory are fed. */
+  const nudge = { recipe_id: 'month-end-closer-nudge', depends_on: ['recued-core.ledger-book'] };
+  const today = { recipe_id: 'today' };
+  const withStore = () => {
+    const store = createScheduleStore(new BetterSqlite3(':memory:'));
+    return {
+      store,
+      overrides: {
+        recipeStore: {
+          get: (id: string) => (id === nudge.recipe_id ? nudge : id === today.recipe_id ? today : null),
+        } as unknown as ComposeExecutorConfigDeps['recipeStore'],
+        getScheduleDeps: () => ({ store, instanceId: 'i-1' }) as never,
+      },
+    };
+  };
+  const schedule = (kernel: KernelDispatchers, recipe_id: string) =>
+    kernel.scheduleRecipe!({ recipe_id, mode: 'recurring', cron_expression: '0 9 1 * *' } as never);
+
+  it('⛔ refuses a recipe whose pack is not installed, and arms nothing', async () => {
+    const { store, overrides } = withStore();
+    const { config } = await composeWith({
+      ...overrides,
+      contractStore: { scan: () => [] } as unknown as ComposeExecutorConfigDeps['contractStore'],
+    });
+    await expect(schedule(kernelOf(config), nudge.recipe_id)).rejects.toMatchObject({
+      code: 'pack_not_installed',
+      details: { missing_packs: ['recued-core.ledger-book'] },
+    });
+    expect(store.list()).toEqual([]);
+  });
+
+  it('schedules a recipe that declares no pack', async () => {
+    const { store, overrides } = withStore();
+    const { config } = await composeWith({
+      ...overrides,
+      contractStore: { scan: () => [] } as unknown as ComposeExecutorConfigDeps['contractStore'],
+    });
+    await schedule(kernelOf(config), today.recipe_id);
+    expect(store.list().map((row) => row.recipe_id)).toEqual(['today']);
+  });
+
+  it('with no contract store it refuses nothing, as that route does', async () => {
+    const { store, overrides } = withStore();
+    const { config } = await composeWith(overrides);
+    await schedule(kernelOf(config), nudge.recipe_id);
+    expect(store.list()).toHaveLength(1);
   });
 });

@@ -729,6 +729,54 @@ export interface SellerManualTierBulkAdjustResponse {
   readonly overview: SellerOverview;
 }
 
+/** D-309 — who a package is re-applied to: everyone still active, everyone
+ *  whose end date and permissions nobody changed by hand, or the ones picked. */
+export const SELLER_REAPPLY_WHO = ['everyone', 'unchanged', 'picked'] as const;
+export type SellerReapplyWho = (typeof SELLER_REAPPLY_WHO)[number];
+
+/** D-309 — re-apply a manual package to its customers. `preview` computes the
+ *  same result without writing anything, so the owner sees every change first. */
+export interface SellerManualTierReapplyRequest {
+  readonly tier_id: string;
+  /** What to re-apply: the package's permissions, its length, or both. */
+  readonly apply: { readonly permissions: boolean; readonly length: boolean };
+  readonly who: SellerReapplyWho;
+  /** Required, and only allowed, when `who` is `picked`. */
+  readonly customer_ids?: readonly string[];
+  readonly preview?: boolean;
+}
+
+export interface SellerManualTierReapplyCustomer {
+  readonly customer_id: string;
+  /** The email, else the source customer id. */
+  readonly label: string;
+  readonly access_state: SellerAccessState;
+  /** What someone set by hand, as opposed to the package's own rule. */
+  readonly changed_by_hand: { readonly end_date: boolean; readonly permissions: boolean };
+  /** What the length counts from: their last purchase or enrollment for this
+   *  package, else when they joined. */
+  readonly started_at: number;
+  readonly end_before: number | null;
+  /** The end after re-applying; `end_before` when the length is not re-applied
+   *  to them. A pass still running whose length has run out ends now, never in
+   *  the past; one already past its end keeps the package's end, so it gets no
+   *  fresh grace. */
+  readonly end_after: number | null;
+  readonly included: boolean;
+  /** Why an excluded customer is left alone. `lapsed`: their access has already
+   *  ended (end and grace both past), so they are not "still active". Only a
+   *  pick re-applies to them. */
+  readonly skipped: 'closed' | 'lapsed' | 'changed_by_hand' | 'not_picked' | null;
+}
+
+export interface SellerManualTierReapplyResponse {
+  readonly tier: SellerTier;
+  readonly preview: boolean;
+  /** Every customer of the package, included or not, in a stable order. */
+  readonly customers: readonly SellerManualTierReapplyCustomer[];
+  readonly overview: SellerOverview;
+}
+
 /** Owner-clicked Stripe entitlement bootstrap. `connection_name` may be omitted
  * only when exactly one synchronization-ready Stripe API connection exists;
  * the server never guesses between multiple ready provider accounts. */

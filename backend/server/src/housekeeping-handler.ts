@@ -62,7 +62,10 @@ import type { TrustStore } from './housekeeping/trust-store.js';
 import type { LlmResultCacheStore } from './housekeeping/llm-result-cache-store.js';
 // ⚠ Value import, not a type: the topic string must come FROM the producer
 // that writes it. A second literal here reads identical and drifts silently.
-import { CONFIDENCE_DRIFT_TOPIC } from './housekeeping/producers/confidence-drift-signal.js';
+import {
+  CONFIDENCE_DRIFT_TOPIC,
+  DRIFT_DERIVED_ID_PREFIX,
+} from './housekeeping/producers/confidence-drift-signal.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 import { createGrantEntryResolver } from './contract-grant-resolve.js';
@@ -447,6 +450,64 @@ export const handleHousekeepingDriftRead = async (
     if (signal !== null) rows.push(signal);
   }
   return { rows };
+};
+
+/** D-285 follow-up — persist the owner's dismissal of a drift banner.
+ *
+ *  ⛔ Measured live before writing this: fire the producer, press Dismiss, the
+ *  banner hides; RELOAD and it is back, and back again in a fresh tab. D-285's
+ *  read loads the stored row on every mount while the dismissal lived only in
+ *  the tab, so the banner became undismissable.
+ *
+ *  ⚠ Writes back through the SAME derived key the producer uses and KEEPS the
+ *  row's own `authored_by`. The dismissal is an annotation on the producer's
+ *  fact, not a new author's claim about drift — relabelling provenance to
+ *  whoever clicked would make the audit trail read as though the owner
+ *  computed the signal.
+ *
+ *  Idempotent: dismissing an already-dismissed signal keeps the FIRST
+ *  timestamp rather than sliding it forward, so "when did they wave this
+ *  away" stays answerable after a double click or a retry. */
+export const handleHousekeepingDriftDismiss = async (
+  deps: HousekeepingRpcDeps,
+  args: { source_topic?: unknown },
+): Promise<{ ok: true; effective: ConfidenceDriftSignal }> => {
+  if (!deps.enrichmentStore) {
+    throw new RpcError(
+      'unsupported',
+      'housekeeping.drift.dismiss: enrichment store not wired on this server',
+    );
+  }
+  const source_topic = args.source_topic;
+  if (typeof source_topic !== 'string' || source_topic === '') {
+    throw new RpcError('invalid_request', 'housekeeping.drift.dismiss: source_topic is required');
+  }
+  const derived_entity_id = `${DRIFT_DERIVED_ID_PREFIX}${source_topic}`;
+  const record = deps.enrichmentStore.getDerived(CONFIDENCE_DRIFT_TOPIC, derived_entity_id);
+  const signal = record === null ? null : asDriftSignal(record.value);
+  if (record === null || signal === null) {
+    // ⛔ Not a silent ok. A dismissal for a signal that is not there means the
+    // client is holding something the server does not, and answering "fine"
+    // would hide that behind a banner that keeps coming back.
+    throw new RpcError(
+      'not_found',
+      `housekeeping.drift.dismiss: no drift signal stored for '${source_topic}'`,
+    );
+  }
+  if (signal.dismissed_at !== undefined) return { ok: true, effective: signal };
+
+  const effective: ConfidenceDriftSignal = {
+    ...signal,
+    dismissed_at: deps.now?.() ?? Date.now(),
+  };
+  deps.enrichmentStore.upsert({
+    topic: CONFIDENCE_DRIFT_TOPIC,
+    derived_entity_id,
+    value: effective,
+    authored_by: record.authored_by,
+    ...(record.event_at !== null ? { event_at: record.event_at } : {}),
+  });
+  return { ok: true, effective };
 };
 
 export const handleHousekeepingTrustWrite = async (
@@ -896,6 +957,7 @@ type HousekeepingMethods =
   | 'housekeeping.trust.write'
   | 'housekeeping.trust.dismiss_promotion'
   | 'housekeeping.drift.read'
+  | 'housekeeping.drift.dismiss'
   | 'housekeeping.topic.reset'
   | 'housekeeping.registry.describe'
   | 'housekeeping.cache.stats'
@@ -958,6 +1020,7 @@ export const makeHousekeepingHandlers = (
       'housekeeping.trust.write',
       'housekeeping.trust.dismiss_promotion',
       'housekeeping.drift.read',
+      'housekeeping.drift.dismiss',
       'housekeeping.topic.reset',
       'housekeeping.registry.describe',
       'housekeeping.cache.stats',
@@ -988,6 +1051,11 @@ export const makeHousekeepingHandlers = (
           args as Parameters<typeof handleHousekeepingTrustDismissPromotion>[1],
         ),
       'housekeeping.drift.read': async () => handleHousekeepingDriftRead(deps),
+      'housekeeping.drift.dismiss': async (args) =>
+        handleHousekeepingDriftDismiss(
+          deps,
+          args as Parameters<typeof handleHousekeepingDriftDismiss>[1],
+        ),
       'housekeeping.topic.reset': async (args, client) =>
         handleHousekeepingTopicReset(
           deps,

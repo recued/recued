@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import {
   formatValue,
   formatCurrency,
   formatDate,
+  formatDateTime,
   formatRelative,
 } from '../format.js';
 
@@ -126,5 +127,41 @@ describe('formatValue — epoch NUMBERS with a date hint (the 12-recipe bug)', (
 
   it('still formats an ISO string date (unchanged)', () => {
     expect(formatValue('2026-07-01', 'date')).toMatch(/2026|Jun 30/);
+  });
+});
+
+describe('a date with no time is the day it names, west of UTC too', () => {
+  // ⛔ Found live (2026-09-24): 2026-08-01 showed as Jul 31 in a browser in
+  // California, because `new Date('2026-08-01')` is midnight UTC.
+  const zone = process.env.TZ;
+  beforeAll(() => { process.env.TZ = 'America/Los_Angeles'; });
+  afterAll(() => {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  });
+
+  it('the zone is west of UTC here, so the old reading was a day early', () => {
+    expect(new Date('2026-08-01').getDate()).toBe(31);
+  });
+
+  it('⛔ shows 2026-08-01 as Aug 1', () => {
+    expect(formatDate('2026-08-01')).toMatch(/Aug 1, 2026/);
+    expect(formatValue('2026-08-01', 'date')).toMatch(/Aug 1, 2026/);
+  });
+
+  it('a datetime hint on it invents no midnight', () => {
+    expect(formatDateTime('2026-08-01')).toBe(formatDate('2026-08-01'));
+  });
+
+  it('⛔ counts it from the viewer\'s today, not from this instant', () => {
+    // 20:00 on Sep 25 in California is 03:00 on Sep 26 in UTC.
+    const evening = new Date('2026-09-26T03:00:00Z').getTime();
+    expect(formatRelative('2026-09-25', evening)).toBe('today');
+    expect(formatRelative('2026-09-24', evening)).toBe('1 day ago');
+    expect(formatRelative('2026-09-26', evening)).toBe('1 day from now');
+  });
+
+  it('an instant keeps its time and zone', () => {
+    expect(formatDate('2026-08-01T00:00:00Z')).toMatch(/Jul 31, 2026/);
   });
 });

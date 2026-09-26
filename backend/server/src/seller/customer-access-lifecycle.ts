@@ -19,11 +19,14 @@ import {
   type SellerLifecycleSource,
   type SellerTier,
 } from '@recued/contracts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
+import { copyCliReachabilityRows } from '../storage/cli-reachability-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import type { ContractStore } from '../storage/contract-store.js';
+import { carryPrimitiveGrandfatherMark } from '../owner-grant-reconcile.js';
+import { stableStringify } from '../source-mirror/hash.js';
 import type {
   SellerClaimPayload,
   SellerClaimStore,
@@ -32,6 +35,7 @@ import type {
 import { resolveSellerSourceStatusPolicyAction } from './customer-access-admission.js';
 import {
   SellerStoreConflictError,
+  type SellerCustomerPeriodSetBy,
   type SellerStore,
 } from '../storage/seller-store.js';
 
@@ -102,6 +106,11 @@ export interface SellerCustomerAccessExtendInput extends SellerCustomerAccessTar
   readonly current_period_end?: number | null;
   readonly source_status?: string | null;
   readonly email?: string | null;
+  /** D-309 — INTERNAL: how this write's end date was chosen, for "re-apply to
+   *  everyone you haven't changed by hand". Absent, a caller-named end date is a
+   *  hand change. Only the server's own package rules (the D-308 repair, a
+   *  package re-apply) pass `'package'`; the kernel op strips it. */
+  readonly period_origin?: SellerCustomerPeriodSetBy;
 }
 
 export interface SellerCustomerAccessSwapTierInput extends SellerCustomerAccessTargetInput {
@@ -136,6 +145,20 @@ export interface SellerCustomerAccessBulkAdjustTierResult {
   readonly skipped_closed_customers: readonly SellerCustomer[];
 }
 
+/** D-309 — re-apply a manual package to some of its open customers. The caller
+ *  has already decided who and computed each end date (it knows their orders and
+ *  enrollments); this applies it, all or nothing. */
+export interface SellerCustomerAccessReapplyInput {
+  readonly tier_id: string;
+  readonly customer_ids: readonly string[];
+  /** Re-stamp each agreement from the package's template. */
+  readonly permissions: boolean;
+  /** The exact end date to set per customer (null: no end), recorded as set by
+   *  the package. Unlike `extendCustomer` it may SHORTEN: re-applying the package
+   *  is the owner asking for exactly its terms. Absent: end dates are untouched. */
+  readonly period_ends?: ReadonlyMap<string, number | null>;
+}
+
 export interface SellerCustomerAccessLifecycle {
   issueCustomer(input: SellerCustomerAccessIssueInput): SellerCustomerAccessIssueResult;
   extendCustomer(input: SellerCustomerAccessExtendInput): SellerCustomer;
@@ -147,6 +170,14 @@ export interface SellerCustomerAccessLifecycle {
   bulkAdjustTierCustomers(
     input: SellerCustomerAccessBulkAdjustTierInput,
   ): SellerCustomerAccessBulkAdjustTierResult;
+  /** D-309 — see `SellerCustomerAccessReapplyInput`. */
+  reapplyTierToCustomers(
+    input: SellerCustomerAccessReapplyInput,
+  ): { readonly tier: SellerTier; readonly customers: readonly SellerCustomer[] };
+  /** D-309 — whether the customer's permissions differ from what the package last
+   *  stamped onto them: a hand edit, a pack share. A customer from before the
+   *  stamp was recorded is compared with the package's template as it is now. */
+  permissionsChangedByHand(customer_id: string): boolean;
 }
 
 const HOURS_TO_MS = 60 * 60 * 1000;
@@ -366,6 +397,53 @@ export const createSellerCustomerAccessLifecycle = (
     return def;
   };
 
+  /** ⛔ D-297 — THE CUSTOMER'S AGREEMENT UNDER A NEW ID. A bearer rotation (Reissue
+   *  token, and "Message customer", which reissues underneath) changes the key and
+   *  nothing the key opens.
+   *
+   *  It used to re-stamp from the TIER TEMPLATE, which reset everything the owner
+   *  had set for this one customer: hand-edited grants, a pack shared with them, a
+   *  CLI allow-list, a usage cap. A routine "send them a fresh link" silently took
+   *  all of it. Owner, 2026-09-23: *"it shouldn't wipe the hand edits"*. Moving to
+   *  another package still re-stamps (`stampCustomerContract`): the customer is on
+   *  a different plan and starts from that package's wording.
+   *
+   *  Carried verbatim, all in the contract store:
+   *  - the definition, every field but identity and revocation — a usage cap and
+   *    what is left of it included, so a new link is never a quota refill;
+   *  - every grant row with its `source_pack` stamp, so a later update or
+   *    uninstall of that pack still finds its share here (D-294);
+   *  - the CLI allow-list rows, keyed by the contract id;
+   *  - the primitive-grandfather mark, the record of whether the agreement was
+   *    grandfathered (since D-298 the grandfather runs once per server, so a new
+   *    id is never covered at a later boot either way). */
+  const carryCustomerContract = (
+    existing: ContractDefinition,
+    contract_id: string,
+  ): ContractDefinition => {
+    const {
+      contract_id: _retiredId,
+      minted_at: _retiredMintedAt,
+      minted_by: _retiredMintedBy,
+      revoked_at: _revokedAt,
+      revocation_reason: _revocationReason,
+      ...agreement
+    } = existing;
+    const def: ContractDefinition = {
+      ...agreement,
+      contract_id,
+      minted_at: now(),
+      minted_by: deps.mintedBy,
+    };
+    deps.contractStore.put(CONTRACT_DEFINITION_SCOPE, [def.contract_id], def);
+    for (const row of deps.grantEntryStore.listForContract(existing.contract_id)) {
+      deps.grantEntryStore.set(contract_id, row.entry_key, row.granted, row.set_at ?? now(), row.source_pack);
+    }
+    copyCliReachabilityRows(deps.contractStore, existing.contract_id, contract_id);
+    carryPrimitiveGrandfatherMark(deps.contractStore, existing.contract_id, contract_id);
+    return def;
+  };
+
   const grantMapForContract = (contract_id: string): Readonly<Record<string, boolean>> => {
     const out: Record<string, boolean> = {};
     for (const row of deps.grantEntryStore.listForContract(contract_id)) {
@@ -377,6 +455,25 @@ export const createSellerCustomerAccessLifecycle = (
   const grantMapForTemplate = (
     template: ContractDefinition,
   ): Readonly<Record<string, boolean>> => grantMapForContract(template.contract_id);
+
+  /** D-309 — what an agreement grants, without whose it is: exactly the parts
+   *  `stampCustomerContract` copies from the template. A fresh stamp therefore has
+   *  its template's fingerprint, and a later hand edit or pack share changes it.
+   *  (`source_pack` and `set_at` are the edit's history, not its effect; a stamp
+   *  does not copy them.) */
+  const agreementFingerprint = (contract_id: string): string | null => {
+    const def = contractDefinition(contract_id);
+    if (def === null) return null;
+    const grants = deps.grantEntryStore.listForContract(contract_id)
+      .map((row) => [row.entry_key, row.granted] as const)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `sha256:${createHash('sha256').update(stableStringify({
+      scope: def.scope,
+      door_types: def.door_types ?? null,
+      approved_actions_template: def.approved_actions_template ?? null,
+      grants,
+    })).digest('hex')}`;
+  };
 
   const revokeContract = (contract_id: string, reason: string): void => {
     const def = contractDefinition(contract_id);
@@ -420,10 +517,12 @@ export const createSellerCustomerAccessLifecycle = (
     return period_end;
   };
 
+  /** `changed` says whether THIS write set the end date (so its origin is the
+   *  one to record), rather than keeping the one already there. */
   const periodForUpdate = (
     existing: SellerCustomer,
     current_period_end: number | null | undefined,
-  ): { current_period_end: number | null; grace_until: number | null } => {
+  ): { current_period_end: number | null; grace_until: number | null; changed: boolean } => {
     const explicit = ensurePeriod(current_period_end, 'current_period_end');
     if (explicit === undefined) {
       if (existing.lifecycle_source !== 'manual' && existing.current_period_end === null) {
@@ -434,6 +533,7 @@ export const createSellerCustomerAccessLifecycle = (
       return {
         current_period_end: existing.current_period_end,
         grace_until: existing.grace_until,
+        changed: false,
       };
     }
     if (explicit === null) {
@@ -442,15 +542,16 @@ export const createSellerCustomerAccessLifecycle = (
           `current_period_end must be finite for non-manual lifecycle_source '${existing.lifecycle_source}'`,
         );
       }
-      return { current_period_end: null, grace_until: null };
+      return { current_period_end: null, grace_until: null, changed: true };
     }
     if (existing.current_period_end !== null && existing.current_period_end >= explicit) {
       return {
         current_period_end: existing.current_period_end,
         grace_until: existing.grace_until,
+        changed: false,
       };
     }
-    return { current_period_end: explicit, grace_until: graceUntil(explicit) };
+    return { current_period_end: explicit, grace_until: graceUntil(explicit), changed: true };
   };
 
   const assertTargetMatchesCustomer = (
@@ -524,6 +625,11 @@ export const createSellerCustomerAccessLifecycle = (
     const existing = findCustomer(input);
     requireOpenCustomer(existing, 'extend');
     const period = periodForUpdate(existing, input.current_period_end);
+    // D-309 — only a manual customer's end date can be "changed by hand"; a
+    // provider's is its own truth. A caller-named date is a hand change unless
+    // the server's own package rule chose it.
+    const origin = input.period_origin
+      ?? (input.current_period_end !== undefined ? 'hand' : undefined);
     return runAtomic(deps.transaction, () =>
       deps.sellerStore.upsertCustomer({
         customer_id: existing.customer_id,
@@ -537,6 +643,9 @@ export const createSellerCustomerAccessLifecycle = (
         current_period_end: period.current_period_end,
         grace_until: period.grace_until,
         access_state: 'active',
+        ...(period.changed && origin !== undefined && existing.lifecycle_source === 'manual'
+          ? { period_set_by: origin }
+          : {}),
         now: now(),
       }));
   };
@@ -577,6 +686,7 @@ export const createSellerCustomerAccessLifecycle = (
       tier_id: existing.tier_id,
       contract_id: existing.contract_id,
       access_state: existing.access_state,
+      permissions_stamp: agreementFingerprint(existing.contract_id),
       now: now(),
     });
   };
@@ -622,6 +732,7 @@ export const createSellerCustomerAccessLifecycle = (
             current_period_end: period_end,
             source_status: input.source_status,
             email: input.email,
+            period_origin: input.current_period_end !== undefined ? 'hand' : 'package',
           }),
           issued_token: null,
           issued_claim: null,
@@ -686,6 +797,10 @@ export const createSellerCustomerAccessLifecycle = (
           current_period_end: period_end,
           grace_until: graceUntil(period_end),
           access_state: 'active',
+          ...(lifecycle_source === 'manual'
+            ? { period_set_by: input.current_period_end !== undefined ? 'hand' as const : 'package' as const }
+            : {}),
+          permissions_stamp: agreementFingerprint(contract.contract_id),
           now: now(),
         });
         const issued_claim = issueClaim({
@@ -758,6 +873,10 @@ export const createSellerCustomerAccessLifecycle = (
           current_period_end: period.current_period_end,
           grace_until: period.grace_until,
           access_state: 'active',
+          ...(period.changed && existing.lifecycle_source === 'manual'
+            ? { period_set_by: 'hand' as const }
+            : {}),
+          permissions_stamp: agreementFingerprint(existing.contract_id),
           now: now(),
         });
       });
@@ -849,7 +968,7 @@ export const createSellerCustomerAccessLifecycle = (
       }
       const existing = findCustomer(input);
       requireOpenCustomer(existing, 'reissueCustomerToken');
-      requireCustomerContract(existing.contract_id);
+      const agreement = requireCustomerContract(existing.contract_id);
       const tier = deps.sellerStore.getTier(existing.tier_id);
       if (!tier) {
         throw new SellerCustomerAccessError(
@@ -864,11 +983,12 @@ export const createSellerCustomerAccessLifecycle = (
       // bearer — which is what lets the token stop carrying its own revocation.
       //
       // ⚠ The customer's `contract_id` therefore ROTATES. It was previously
-      // stable identity; the owner ruled it may move. Grants are re-seeded from
-      // the TIER TEMPLATE (`stampCustomerContract` copies them), not carried
-      // across from the old contract — so a rotation lands the tier's current
-      // grants rather than a snapshot taken whenever the customer was opened.
-      const template = requireTemplate(tier.template_contract_id);
+      // stable identity; the owner ruled it may move. ⛔ D-297 — WHAT THE ID
+      // OPENS DOES NOT MOVE: the new contract carries the old one's agreement
+      // (`carryCustomerContract`). It used to be re-seeded from the TIER
+      // TEMPLATE, which wiped every hand edit and pack share on a routine
+      // "send them a fresh link". The template no longer matters here, so a
+      // retired template no longer blocks a reissue either.
       const rotated_contract_id = clean(newContractId(), 'generated contract_id');
       if (
         contractDefinition(rotated_contract_id)
@@ -903,10 +1023,10 @@ export const createSellerCustomerAccessLifecycle = (
         for (const token_id of oldTokenIds) {
           deps.inboundTokenStore.revokeToken({ token_id, now: issuedAt });
         }
-        const rotated = stampCustomerContract(template, {
-          contract_id: rotated_contract_id,
-          display_name: `${tier.display_name} customer ${existing.source_customer_id}`,
-        });
+        const rotated = carryCustomerContract(agreement, rotated_contract_id);
+        // …and what they have used: usage is keyed by contract, so it moves too,
+        // or the period's limit would refill and the history fall out of view.
+        deps.sellerStore.moveUsageRollups(existing.contract_id, rotated.contract_id);
         const issued_token = deps.inboundTokenStore.issueToken({
           value: {
             label: previousToken?.label ?? `${tier.display_name} customer token`,
@@ -1006,6 +1126,75 @@ export const createSellerCustomerAccessLifecycle = (
         ),
         skipped_closed_customers,
       }));
+    },
+
+    reapplyTierToCustomers(input) {
+      const tier = requireTierById(input.tier_id, 'manual');
+      const ids = input.customer_ids.map((id) => clean(id, 'customer_id'));
+      if (new Set(ids).size !== ids.length) {
+        throw new SellerCustomerAccessError('customer_ids must not contain duplicates');
+      }
+      if (!input.permissions && input.period_ends === undefined) {
+        throw new SellerCustomerAccessError('re-apply needs its permissions, its length, or both');
+      }
+      const customers = ids.map((customer_id) => {
+        const customer = deps.sellerStore.getCustomer(customer_id);
+        if (!customer) {
+          throw new SellerCustomerAccessError(`customer not found for customer_id '${customer_id}'`);
+        }
+        if (customer.lifecycle_source !== 'manual' || customer.tier_id !== tier.tier_id) {
+          throw new SellerCustomerAccessError(
+            `customer_id '${customer_id}' does not belong to tier '${tier.tier_id}'`,
+          );
+        }
+        requireOpenCustomer(customer, 'reapplyTierToCustomers');
+        if (input.period_ends !== undefined && !input.period_ends.has(customer_id)) {
+          throw new SellerCustomerAccessError(`no end date was given for customer_id '${customer_id}'`);
+        }
+        return customer;
+      });
+      const template = input.permissions ? requireTemplate(tier.template_contract_id) : null;
+      return runAtomic(deps.transaction, () => ({
+        tier,
+        customers: customers.map((customer) => {
+          const stamped = template === null
+            ? customer
+            : restampCustomerFromTierTemplate(customer, tier, template);
+          if (input.period_ends === undefined) return stamped;
+          const end = ensurePeriod(input.period_ends.get(customer.customer_id), 'current_period_end') ?? null;
+          // Set EXACTLY, not through `periodForUpdate`: that never shortens, and
+          // re-applying the package means its terms, whichever way they move.
+          return deps.sellerStore.upsertCustomer({
+            customer_id: stamped.customer_id,
+            lifecycle_source: stamped.lifecycle_source,
+            source_customer_id: stamped.source_customer_id,
+            door_id: stamped.door_id,
+            tier_id: stamped.tier_id,
+            contract_id: stamped.contract_id,
+            current_period_end: end,
+            grace_until: graceUntil(end),
+            access_state: stamped.access_state,
+            period_set_by: 'package',
+            now: now(),
+          });
+        }),
+      }));
+    },
+
+    permissionsChangedByHand(customer_id) {
+      const customer = deps.sellerStore.getCustomer(clean(customer_id, 'customer_id'));
+      if (!customer) {
+        throw new SellerCustomerAccessError(`customer not found for customer_id '${customer_id}'`);
+      }
+      const current = agreementFingerprint(customer.contract_id);
+      const stamp = deps.sellerStore.customerStamps(customer.customer_id)?.permissions_stamp ?? null;
+      if (stamp !== null) return current !== stamp;
+      // From before the stamp was recorded: compared with the template as it is
+      // now, so a package edited since reads as changed too, and waits for the
+      // owner to pick it.
+      const tier = deps.sellerStore.getTier(customer.tier_id);
+      const template = tier === null ? null : agreementFingerprint(tier.template_contract_id);
+      return template === null || current !== template;
     },
   };
 };

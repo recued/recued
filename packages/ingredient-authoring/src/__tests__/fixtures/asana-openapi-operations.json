@@ -47,8 +47,8 @@
     "composition_bytes": {
       "asana": 67471,
       "asana-work-management": 140040,
-      "asana-planning-capacity": 132520,
-      "asana-admin-platform": 71640
+      "asana-planning-capacity": 132544,
+      "asana-admin-platform": 71676
     },
     "official_pagination_operation_count": 64,
     "official_pagination_operation_ids": [
@@ -149,8 +149,8 @@
         "admin": 27
       },
       "approval": {
-        "never": 92,
-        "ask": 92,
+        "never": 122,
+        "ask": 62,
         "always": 67
       },
       "idempotency": {
@@ -1553,7 +1553,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -1840,7 +1840,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 0
     },
@@ -1932,7 +1932,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 0
     },
@@ -2068,7 +2068,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 0
     },
@@ -2528,7 +2528,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -2585,7 +2585,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -2699,7 +2699,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -2791,7 +2791,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -2894,7 +2894,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -3639,7 +3639,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -3707,7 +3707,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -3775,7 +3775,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -3843,7 +3843,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -4171,7 +4171,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -4274,7 +4274,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -4400,7 +4400,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -4492,7 +4492,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -4595,7 +4595,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -5018,7 +5018,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -5132,7 +5132,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -5359,7 +5359,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -5405,7 +5405,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 0
     },
@@ -6861,7 +6861,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 0
     },
@@ -6975,7 +6975,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -9205,7 +9205,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -9308,7 +9308,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -9548,7 +9548,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -9651,7 +9651,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -10984,7 +10984,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },
@@ -11120,7 +11120,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "csv_query_parameter_count": 1
     },

@@ -82,6 +82,37 @@ export interface PrimitiveGrandfatherResult {
  *  mean "the minter did not choose this" instead of "we have not run yet". */
 const PRIMITIVE_GRANDFATHER_SCOPE = 'primitive_grandfather';
 
+/** ⛔⛔ D-298 — THE SERVER-LEVEL MARK: the grandfather runs ONCE PER SERVER.
+ *
+ *  The per-contract watermark stopped a NEW PRIMITIVE landing on a contract already
+ *  covered. It could not stop the other leak: nothing marks a contract at MINT, so
+ *  every contract created since the last boot was covered at the next one, as if it
+ *  predated the gate. A scoped door, or a D-196 template the shell mints ZERO-GRANT
+ *  for the owner to fill, came back from a restart nobody watched holding all the
+ *  Tier-1 tools (`mail.search`, `memory.write`, `recipe.run`, …), and every customer
+ *  issued from that template copied them. Grandfathering is for what existed before
+ *  this server first ran the gate; after that run, nothing is.
+ *
+ *  A row in the same scope, under a key no mint produces, so the next boot's scan of
+ *  the scope sees the run even when it covered nothing. */
+export const PRIMITIVE_GRANDFATHER_SERVER_KEY = '__server__';
+
+/** D-297 — a contract rotated under a new id (Reissue token / Message customer)
+ *  carries the watermark: whether the agreement was grandfathered is part of it.
+ *  Since D-298 the grandfather runs once per server, so the mark is that record and
+ *  no longer the guard against a boot widening the new id. An unmarked source leaves
+ *  the new id unmarked too, exactly as the old one was. Returns whether it copied. */
+export const carryPrimitiveGrandfatherMark = (
+  contractStore: ContractStore,
+  from: string,
+  to: string,
+): boolean => {
+  const mark = contractStore.get(PRIMITIVE_GRANDFATHER_SCOPE, [from]);
+  if (mark === null) return false;
+  contractStore.put(PRIMITIVE_GRANDFATHER_SCOPE, [to], mark.value);
+  return true;
+};
+
 export const grandfatherPrimitiveGrants = (
   contractStore: ContractStore,
   now: () => number = () => Date.now(),
@@ -93,7 +124,9 @@ export const grandfatherPrimitiveGrants = (
   const ts = now();
   let contracts = 0;
   let seeded = 0;
-  contractStore.transaction(() => {
+  // Every contract that exists now, not yet covered: the Tier-1 primitives it holds no
+  // row for, granted, and a mark. Only ever reached on this server's first gate run.
+  const coverExisting = (): void => {
     for (const def of definitionStore.list()) {
       if (def.contract_id === OWNER_CONTRACT_ID) continue;
       // ⛔⛔ THE WATERMARK — the reason this is a ONE-TIME migration in fact and not
@@ -125,6 +158,26 @@ export const grandfatherPrimitiveGrants = (
       });
       if (wrote) contracts += 1;
     }
+  };
+  contractStore.transaction(() => {
+    // ⛔ D-298 — a server that ran a gate build BEFORE this one has nothing left to
+    // grandfather: whatever existed then was covered then. Two signs, either enough:
+    // - any row in this scope: a contract's mark (the watermark build marked each one
+    //   it covered) or the SERVER mark every run now writes, even one that covered
+    //   nothing;
+    // - the OWNER's primitive rows, which the owner reconcile has seeded on every
+    //   boot since the same slice. This is the one that covers a server whose gate
+    //   boots predate the server mark and saw no other contract (a fresh install's
+    //   first door). ⚠ It is only a sign BEFORE this boot's owner reconcile, so the
+    //   boot runs this first.
+    const ranBefore = contractStore.scan(PRIMITIVE_GRANDFATHER_SCOPE).length > 0
+      || TIER1_TOOL_NAMES.some((name) =>
+        grantEntryStore.get(OWNER_CONTRACT_ID, primitiveGrantEntry(name)) !== undefined);
+    if (!ranBefore) coverExisting();
+    contractStore.put(PRIMITIVE_GRANDFATHER_SCOPE, [PRIMITIVE_GRANDFATHER_SERVER_KEY], {
+      grandfathered_at: ts,
+      primitive_count: TIER1_TOOL_NAMES.length,
+    });
   });
   return { contracts, seeded };
 };

@@ -21,6 +21,7 @@ import {
 } from '@recued/contracts';
 
 import {
+  choiceListProblem,
   FILE_REF_VARIABLE_ATTR,
   fileRefVariablePickerId,
   readWidgetValue,
@@ -98,6 +99,21 @@ const RUN_MODAL_STYLES_MARKER = 'data-recued-run-modal-styles';
 
 const errMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
+
+/** What a run that did not come back says. The wait ran out, or the connection
+ *  dropped after the run was sent: either way the run may well have finished
+ *  on the server, so neither reads as a failure, and both say where its result
+ *  is. Anything else is the error it is. */
+const runErrMessage = (err: unknown): string => {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === 'timeout') {
+    return 'Still running on your server. It will finish there, and its result will be in Logs.';
+  }
+  if (code === 'connection_lost') {
+    return 'The connection dropped while this ran, so its result did not arrive here. Logs shows how it ended.';
+  }
+  return errMessage(err);
+};
 
 const injectStyles = (doc: Document): void => {
   if (doc.head.querySelector(`style[${RUN_MODAL_STYLES_MARKER}]`) !== null) {
@@ -352,6 +368,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       paint(runFocus);
       return;
     }
+    // D-314 — a required list with every box unticked does not run: the recipe
+    // would get an empty list (a weekday window with no days).
+    const listProblem = choiceListProblem(opts.recipe.recipe.variables ?? {}, config);
+    if (listProblem !== null) {
+      state = { ...state, run_error: listProblem };
+      paint(runFocus);
+      return;
+    }
     // Belt to the render-time disable: a targeted run with its target still
     // missing never dispatches (the server guard would block it anyway).
     const gate = runTargetGate(
@@ -387,7 +411,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     } catch (err) {
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
-      state = { ...state, executing: false, run_error: errMessage(err) };
+      state = { ...state, executing: false, run_error: runErrMessage(err) };
       paint(completionFocus);
     }
   };

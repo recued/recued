@@ -3538,3 +3538,68 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     handle.dispose();
   });
 });
+
+/** The action bar must never be allowed to price the question out of the row.
+ *
+ *  ⛔ THE ROW USED TO BE `minmax(0, 1fr) auto`, AND THE `auto` TRACK HELD
+ *  BUTTONS WHOSE LABELS COME FROM THE ASK. `renderGatewayAskRow` emits one per
+ *  declared option, so the width of that track is content the server supplies,
+ *  not a constant this stylesheet controls. Measured in real Chromium against
+ *  this exact stylesheet at the shipped 380px popover width: three options
+ *  (Approve / Allow this session / Deny) left the body **67.67px** and a
+ *  407px-tall row; four left it **0px** and 2179px. The reader could not see
+ *  what they were approving.
+ *
+ *  ⚠ WHAT THIS TEST IS AND IS NOT. jsdom does no layout, so this cannot
+ *  measure a width — it pins the MECHANISM that produced the measured result:
+ *  a wrapping row plus a body that declares a minimum, which together move the
+ *  actions onto their own line instead of onto the body's space. It would not
+ *  catch a regression that kept both declarations and broke the outcome some
+ *  other way; the numbers above came from a browser, and a browser is what
+ *  would have to re-derive them.
+ *
+ *  🔑 THE EXISTING SWEEP POINTS THE OTHER WAY. `e2e/harness/surface-sweep.mjs`
+ *  flags horizontal OVERFLOW — content wider than its box. This row never
+ *  overflowed: `overflow-wrap: anywhere` let the squeezed text wrap downward
+ *  forever, which is why a 2179px row passed every check we had. */
+describe('D-174 - attention row: the action bar cannot squeeze the body', () => {
+  const rule = (selector: string): string => {
+    const at = ATTENTION_TOPBAR_STYLES.indexOf(`.${selector} {`);
+    expect(at, `no rule for .${selector}`).toBeGreaterThan(-1);
+    return ATTENTION_TOPBAR_STYLES.slice(
+      at,
+      ATTENTION_TOPBAR_STYLES.indexOf('}', at) + 1,
+    );
+  };
+
+  it('⛔ sizes no action track by its content', () => {
+    // The exact shape that shipped the defect, and any relative of it: a
+    // second track sized by what happens to be in it.
+    expect(rule('attention-row')).not.toMatch(/grid-template-columns/);
+  });
+
+  it('wraps the row instead of dividing it', () => {
+    expect(rule('attention-row')).toMatch(/display:\s*flex/);
+    expect(rule('attention-row')).toMatch(/flex-wrap:\s*wrap/);
+  });
+
+  it('gives the body a minimum width, which is what forces the wrap', () => {
+    // Without a non-auto basis the body would still collapse — the wrap only
+    // happens because the body refuses to go below this.
+    expect(rule('attention-row-body')).toMatch(/flex:\s*1\s+1\s+200px/);
+  });
+
+  it('keeps the bar right-aligned on the line it wraps onto', () => {
+    expect(rule('attention-row-actions')).toMatch(/margin-left:\s*auto/);
+  });
+
+  it('⚠ stacks on the narrow branch WITHOUT switching axis', () => {
+    // flex-direction: column here would re-point the 200px basis at the
+    // HEIGHT and floor every row at 200px — measured 270px against 163px.
+    const narrow = ATTENTION_TOPBAR_STYLES.slice(
+      ATTENTION_TOPBAR_STYLES.indexOf('@media (max-width: 520px)'),
+    );
+    expect(narrow).toMatch(/\.attention-row-body\s*\{[^}]*flex-basis:\s*100%/s);
+    expect(narrow).not.toMatch(/\.attention-row\s*\{[^}]*flex-direction:\s*column/s);
+  });
+});

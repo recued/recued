@@ -30,7 +30,15 @@ import {
 import { buildMessengerRemoteChannels } from '../composition/bin/messenger-transport-leaves.js';
 import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
 import { composeEmailChannel } from '../composition/bin/wire-email-channel.js';
-import type { PreflightResumer } from '@recued/gateway';
+import type { PreflightResumer, TornSagaSweepResult } from '@recued/gateway';
+import { runTornSagaSweep } from '../saga-server-wiring.js';
+import { createSellerCustomerAccessLifecycle } from '../seller/customer-access-lifecycle.js';
+import {
+  runPermanentPassRepairAtBoot,
+  type PermanentPassRepairBootResult,
+} from '../seller/permanent-pass-repair.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import { createDataRepairLedger } from '../storage/data-repair-ledger.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -241,6 +249,13 @@ export interface ExecutionContext {
   executorConfig: ServerExecutorConfig;
   executeDeps: ExecuteHandlerDeps;
   notificationBlock: NotificationBlock | undefined;
+  /** D-287 follow-on — one torn-saga disclosure pass for boot recovery.
+   *  Absent when the stores it reads are not all present. */
+  sagaSweep?: () => Promise<TornSagaSweepResult>;
+  /** D-308 — the one-off repair of the passes D-306's defect left
+   *  open-ended, for boot recovery. Absent when a store it writes, or the
+   *  notifier it must tell the owner through, is not present. */
+  permanentPassRepair?: () => Promise<PermanentPassRepairBootResult>;
   /** Narrow LIVE batch-membership read — see `ExecuteDepsBundle.getBatch`. The
    *  `/ask` landing gates its detail rendering on the CURRENT member count. */
   getBatch:
@@ -849,6 +864,73 @@ export const composeExecutionContext = async (
     notificationBlock: executeDepsBundle.notificationBlock,
     getBatch: executeDepsBundle.getBatch,
     reconcileOpenBatch: executeDepsBundle.reconcileOpenBatch,
+    // D-287 follow-on — the torn-saga boot sweep, PRE-BOUND HERE because this
+    // is the one layer holding all five things it reads: the audit log (failed
+    // anchors), the commit log, the annotation store (answered runs), the
+    // notification block (open asks + the ask itself) and the manifest map.
+    // Undefined when any is absent — a boot with no notifier had nowhere to
+    // disclose, and a boot with no commit log has nothing to disclose about.
+    ...(executeDepsBundle.notificationBlock && storage.auditLog && storage.commitStore
+      && app.annotationStoreRef
+      ? {
+        sagaSweep: (() => {
+          const block = executeDepsBundle.notificationBlock;
+          const auditLog = storage.auditLog;
+          const commitStore = storage.commitStore;
+          const annotationStore = app.annotationStoreRef;
+          return () => runTornSagaSweep({
+            auditLog,
+            commitStore,
+            annotationStore,
+            notifier: block,
+            listOpenAsks: () => block.listOpenAsks(),
+            // `?? undefined` — the map answers `null`, the seam takes `undefined`.
+            getManifest: (slug) => executorConfig.manifests.get(slug) ?? undefined,
+            log: (message) => { console.warn(message); },
+          });
+        })(),
+      }
+      : {}),
+    // D-308 — the one-off repair of the passes D-306's defect left
+    // open-ended. Pre-bound here for the saga sweep's reason: this is the layer
+    // holding the seller stores, the audit log and the notifier. ⛔ Undefined
+    // without the notifier: a repair that changes customers' access must be
+    // able to tell the owner, so it waits for a boot that can.
+    ...(executeDepsBundle.notificationBlock && storage.auditLog && app.sellerStoreRef
+      && app.contractStoreRef && app.chatInboundTokenStoreRef
+      ? {
+        permanentPassRepair: (() => {
+          const notifier = executeDepsBundle.notificationBlock;
+          const auditLog = storage.auditLog;
+          const contractStore = app.contractStoreRef;
+          // No claim payload: `extendCustomer` issues no token. The claim store
+          // is passed as the reconciler passes it (`access-reconcile-deps.ts`).
+          const lifecycle = createSellerCustomerAccessLifecycle({
+            sellerStore: app.sellerStoreRef,
+            contractStore,
+            grantEntryStore: createContractGrantEntryStore(contractStore),
+            inboundTokenStore: app.chatInboundTokenStoreRef,
+            ...(app.sellerClaimStoreRef ? { sellerClaimStore: app.sellerClaimStoreRef } : {}),
+            mintedBy: 'server:seller:d308-repair',
+            transaction: (fn) => contractStore.transaction(fn),
+          });
+          return () => runPermanentPassRepairAtBoot({
+            db: storage.db,
+            ledger: createDataRepairLedger(storage.db),
+            lifecycle,
+            // DeepTutor's free enrollments leave a student record, not an order.
+            records: storage.recordsStore,
+            now: () => Date.now(),
+            auditLog,
+            notifier,
+            publicBaseUrl: resolveSellerClaimPublicBaseUrl(
+              env.RECUED_PUBLIC_BASE_URL,
+              storage.hostnameRegistryStore,
+            ),
+          });
+        })(),
+      }
+      : {}),
     preflightResumer: executeDepsBundle.preflightResumer,
     // D-207 slice 1c — the contract substrate a reception door is minted into. Surfaced
     // from the SAME bundle the Gateway's verdict path was built from, so the mint's grant

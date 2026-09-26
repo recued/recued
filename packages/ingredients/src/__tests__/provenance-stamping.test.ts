@@ -50,11 +50,12 @@ describe('kernel write adapters stamp provenance rather than trusting the caller
   });
 
   it('every write that dispatches an author id uses the stamp helper', () => {
-    // Counts the JOIN, not the definition: five writes take an author id
-    // (annotation-create, data-annotate, data-link, link-create,
-    // enrichment-upsert), and each must route through the helper — directly or
-    // via a narrowed local. A sixth write landing without it fails here.
+    // Counts the JOIN, not the definition: three writes take an author id
+    // (annotation-create, link-create, enrichment-upsert), and each must route
+    // through the helper — directly or via a narrowed local. (Five until
+    // 2026-09-23, when `data-annotate` / `data-link` were retired.) A fourth
+    // write landing without it fails here.
     const stamped = KERNEL.match(/stampedRecipeId\(call,/g) ?? [];
-    expect(stamped.length).toBeGreaterThanOrEqual(5);
+    expect(stamped.length).toBeGreaterThanOrEqual(3);
   });
 });

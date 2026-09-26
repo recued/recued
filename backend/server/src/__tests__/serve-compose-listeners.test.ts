@@ -286,6 +286,28 @@ const makeOptions = (
     },
   },
   rpc: {
+    // D-289 — `composeListeners` publishes the saved-view store into the rpc
+    // context BEFORE the listeners start, so a pack installed by the very
+    // first request has somewhere to put its views. A double without it threw
+    // `publishSavedDataViewStore is not a function` out of composition, which
+    // failed 39 of this file's 43 cases at once — none of them about saved
+    // views. ⚠ It RECORDS rather than no-ops: a setter whose double forgets
+    // the value cannot tell "published the store" from "published nothing".
+    publishedSavedDataViewStore: undefined as unknown,
+    publishSavedDataViewStore: vi.fn(function (
+      this: { publishedSavedDataViewStore: unknown },
+      store: unknown,
+    ): void {
+      // `this` is the rpc object — composition calls it as
+      // `rpc.publishSavedDataViewStore(store)`. The literal cannot name itself
+      // while it is still being built.
+      this.publishedSavedDataViewStore = store;
+    }),
+    // D-296 — same publish-before-listen shape, for the trigger preview.
+    publishTriggerPreview: vi.fn(),
+    publishReceptionPairs: vi.fn(),
+    // D-304 — the stores a recipe's own state lives in, for the uninstall preview.
+    publishRecipeOwnedState: vi.fn(),
     housekeepingRpcDeps: undefined,
     upstreamMergeDeps: undefined,
     contactMergeDeps: undefined,
@@ -2175,6 +2197,38 @@ describe('composeListeners', () => {
   });
 });
 
+describe('composeListeners — D-299 the Reception pair carry reaches the pack install', () => {
+  it('publishes an accessor that reads the Reception substrate at call time', async () => {
+    const endpoints = { tag: 'endpoints' };
+    const pairs = { tag: 'pairs' };
+    const door = { tag: 'door' };
+    let pairStore: unknown = pairs;
+    const options = makeOptions({
+      receptionRpcDeps: {
+        getStore: () => endpoints,
+        getIntakeRecipePairStore: () => pairStore,
+        getDoorBindDeps: () => door,
+      },
+    });
+    await composeListeners(options);
+    const publish = (options as unknown as { rpc: { publishReceptionPairs: ReturnType<typeof vi.fn> } })
+      .rpc.publishReceptionPairs;
+    expect(publish).toHaveBeenCalledTimes(1);
+    const get = publish.mock.calls[0]![0] as () => Record<string, unknown> | undefined;
+    expect(get()).toMatchObject({ endpoints, pairs, door });
+    // No pair store (yet) ⇒ nothing to carry, and the install proceeds as before.
+    pairStore = undefined;
+    expect(get()).toBeUndefined();
+  });
+
+  it('publishes nothing on a server with no Reception substrate', async () => {
+    const options = makeOptions();
+    await composeListeners(options);
+    expect((options as unknown as { rpc: { publishReceptionPairs: ReturnType<typeof vi.fn> } })
+      .rpc.publishReceptionPairs).not.toHaveBeenCalled();
+  });
+});
+
 describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', () => {
   const SIGNING_IDENTITY = { identity: { tag: 'server-identity' } };
 
@@ -2255,6 +2309,14 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
           signingIdentity: SIGNING_IDENTITY,
           app: appWith({ connectionStoreRef: { tag: 'connection-store' } }),
           rpc: {
+            // ⚠ This literal hand-copies `base.rpc` instead of spreading it,
+            // which is why it needed the D-289 method separately from the 38
+            // cases that share the base. A copied double drifts from the
+            // original exactly when the original gains something.
+            publishSavedDataViewStore: vi.fn(),
+            publishTriggerPreview: vi.fn(),
+            publishReceptionPairs: vi.fn(),
+            publishRecipeOwnedState: vi.fn(),
             housekeepingRpcDeps: undefined,
             upstreamMergeDeps: undefined,
             contactMergeDeps: undefined,

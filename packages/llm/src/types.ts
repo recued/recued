@@ -108,6 +108,17 @@ export interface LLMCompletionOptions {
    *  Adapters without a JSON mode (Anthropic) ignore it; the post-hoc tolerant
    *  parser remains the net regardless. */
   json?: boolean;
+  /** The top-level shape the JSON reply must have. Absent means an object.
+   *
+   *  ⛔ A D-162 BATCH REPLY IS AN ARRAY, and OpenAI's `json_object` mode can only
+   *  return an OBJECT. Sent together, the model obeys the mode: measured live
+   *  2026-09-24 on an openai-compatible slot, an `ai-generate` batch of two
+   *  records came back as ONE object — the first record's answer — and failed
+   *  "invalid or incomplete JSON array" three runs out of three, while the same
+   *  prompt without the mode returned the array. So the OpenAI adapter skips
+   *  `json_object` for `'array'`; Gemini's JSON MIME type accepts arrays and
+   *  keeps it. */
+  json_shape?: 'object' | 'array';
   /** Per-call timeout in milliseconds, or `null` to skip the timer entirely.
    *  The default is `null` — LLM calls run unbounded because the user has
    *  already paid for the compute. See ./timeout.ts for the full rationale. */

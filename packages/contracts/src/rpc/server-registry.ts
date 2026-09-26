@@ -12,7 +12,9 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type { ListPageFields, ListPageRequest } from './list-page.js';
 import type { MissedSchedulePolicy } from '../missed-schedule-policy.js';
+import type { SpreadsheetImportDeclaration } from '../spreadsheet-import.js';
 import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
 import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
 import type {
@@ -22,7 +24,7 @@ import type {
 } from '../preapproval.js';
 import type {
   SavedDataView, SavedDataViewCreateRequest, SavedDataViewRenameRequest,
-  SavedDataViewDeleteRequest, SavedDataViewUpdateRequest,
+  SavedDataViewDeleteRequest, SavedDataViewUpdateRequest, SavedDataViewRetiredResolveRequest,
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
 import type { Dish, DishGroup, DishLastRun, DishRunRow } from '../dish.js';
@@ -283,6 +285,7 @@ import type {
   IssuedMcpInboundToken,
   McpInboundConcurrencyTier,
   McpInboundTokenRecord,
+  ToolCatalogEntryView,
   ToolEntry,
 } from '../chat.js';
 import type { CalendarCollectionCaps } from '../calendar.js';
@@ -390,6 +393,8 @@ import type {
   SellerManualCustomerSwapTierRequest,
   SellerManualCustomerSwapTierResponse,
   SellerManualTierBulkAdjustRequest,
+  SellerManualTierReapplyRequest,
+  SellerManualTierReapplyResponse,
   SellerManualTierBulkAdjustResponse,
   SellerManualTierUpsertRequest,
   SellerManualTierUpsertResponse,
@@ -1219,6 +1224,7 @@ export type ServerRecipeFullEntry =
 export type RecipeListRecipeView =
   Omit<RecipeDefinition, 'steps' | 'prefetch_steps'>;
 
+
 export interface ServerRecipeListEntry {
   recipe_id: string;
   publisher_id: string;
@@ -1271,6 +1277,46 @@ export interface ServerRecipeListEntry {
    *  compiler refuses a trimmed row, and this field is how a trimmed row
    *  carries the answer instead. */
   provably_read_only?: boolean;
+  /** D-282 — does one run of this recipe SPEND the owner something
+   *  (`recipeSpendsPerRun`, a `core.*` op like `core.ai.summarize`)? The cost
+   *  half of the gate on a view that runs with nobody asking. Absent from a
+   *  server that does not project it.
+   *
+   *  ⛔⛔ THE CLIENT COMPUTED THIS FROM THE LIST ROW, WHICH HAS NO STEPS. Since
+   *  the body came off the list it could only ever answer "does not spend", so
+   *  the cost gate was off. It stayed masked only because a lowered kernel step
+   *  failed the effect half first; once that half reads lowered steps, an AI
+   *  view would auto-run on every tab switch and every data burst. A client
+   *  holding neither this field nor steps must answer "spends". */
+  spends_per_run?: boolean;
+  /** D-292 — the recipe's `metadata.spreadsheet_import` declaration, projected
+   *  ONLY when it holds against the full body (`spreadsheetImportOf`); absent
+   *  when the recipe declares none, when the declaration does not hold, and from
+   *  a server that does not project it.
+   *
+   *  ⛔⛔ PROJECTED FOR THE SAME REASON AS `provably_read_only`, AND IT FAILED THE
+   *  SAME WAY WITHOUT IT. The check that makes the guided import safe — its
+   *  preview switch reaches the import's `dry_run`, or "Check" would import for
+   *  real — reads the STEP BODIES this row no longer carries. A client running it
+   *  on the trimmed row finds no switch and refuses every importer, so the flow
+   *  was never offered: found by a live drive, invisible to every test that
+   *  hand-built a row WITH steps. It fails closed (the plain run form still
+   *  works), which is why it was silent. */
+  spreadsheet_import?: SpreadsheetImportDeclaration;
+  /** The notification channels the recipe's BODY names
+   *  (`recipeNotificationChannels`) — the card's "→ slack" pills. Absent from a
+   *  server that does not project it; the client then scans the row, which on
+   *  such a server still carries the body.
+   *
+   *  ⛔ Projected for the same reason as the two fields above: channels are
+   *  named in `steps`, and a card that scanned this trimmed row under-reported
+   *  them on 165 of the 403 shipped recipes that name one. */
+  notification_channels?: ReadonlyArray<string>;
+  /** The `data.enrichment.*` refs the recipe's BODY reads, first four
+   *  (`recipeConsumedEnrichments`) — the card's "reads …" pills. Same fallback
+   *  as above. ⛔ Every one of the 46 shipped recipes that reads an enrichment
+   *  does so only in `steps`, so scanned off this row the pill never appeared. */
+  consumed_enrichments?: ReadonlyArray<string>;
   /** Provenance — bundled with the server binary, pushed by the paired
    *  extension, or sent inline through `execute`. */
   source: 'bundled' | 'pair-sync' | 'inline';
@@ -1403,12 +1449,17 @@ export type ServerRpcRegistry = {
   'preapproval.get': RpcMethodSpec<{ proposal_id: string }, PreapprovalInspection>;
   'preapproval.list': RpcMethodSpec<PreapprovalListRequest, { proposals: PreapprovalInspection[]; next_cursor: string | null }>;
   'preapproval.revoke': RpcMethodSpec<PreapprovalRevokeRequest, PreapprovalInspection>;
-  'data_views.list': RpcMethodSpec<void, { views: SavedDataView[] }>;
+  /** `retired` (D-300): pack views an update stopped shipping that the owner had set up,
+   *  waiting for the owner. Absent from a server that predates it. */
+  'data_views.list': RpcMethodSpec<void, { views: SavedDataView[]; retired?: SavedDataView[] }>;
   'data_views.get': RpcMethodSpec<{ id: string }, { view: SavedDataView | null }>;
   'data_views.create': RpcMethodSpec<SavedDataViewCreateRequest, { view: SavedDataView }>;
   'data_views.update': RpcMethodSpec<SavedDataViewUpdateRequest, { view: SavedDataView }>;
   'data_views.rename': RpcMethodSpec<SavedDataViewRenameRequest, { view: SavedDataView }>;
   'data_views.delete': RpcMethodSpec<SavedDataViewDeleteRequest, { deleted: boolean }>;
+  /** D-300 — resolve one retired pack view: set up a replacement the same way, keep it as
+   *  the owner's own view, or dismiss it. `view` is what carries the setup now. */
+  'data_views.retired.resolve': RpcMethodSpec<SavedDataViewRetiredResolveRequest, { view: SavedDataView | null }>;
   // ── Cache ───────────────────────────────────────────────────────
   //
   // D-103 dropped `cache.invalidate`. TTL + LRU handle expiry; the prior
@@ -1990,6 +2041,13 @@ export type ServerRpcRegistry = {
     SellerManualTierBulkAdjustRequest,
     SellerManualTierBulkAdjustResponse
   >;
+  /** D-309 — re-apply a manual package to its customers: its permissions, its
+   *  length, or both, to everyone still active, to everyone nobody changed by
+   *  hand, or to the ones picked. `preview` writes nothing. */
+  'server.seller.reapplyManualTier': RpcMethodSpec<
+    SellerManualTierReapplyRequest,
+    SellerManualTierReapplyResponse
+  >;
   /** D-196 S4 — owner-clicked Stripe feature bootstrap. Reads the complete
    *  provider feature set through the gated Stripe catalog operation, creates
    *  missing zero-grant template/tier shells, and orphan-flags missing tiers. */
@@ -2249,10 +2307,14 @@ export type ServerRpcRegistry = {
    *  server-scope sidebar (`recipe.list`). Bundled + pair-sync recipes
    *  are returned together; the `source` field lets the UI distinguish
    *  if needed. Inline recipes are excluded — they aren't durably
-   *  installed. */
+   *  installed.
+   *
+   *  Paged on request (`./list-page.ts`): one row per installed recipe, so the
+   *  whole-list frame grows with installs. A request without `limit` or
+   *  `cursor` still gets every row in one answer. */
   'recipe.list': RpcMethodSpec<
-    void,
-    { recipes: ServerRecipeListEntry[] }
+    ListPageRequest | void,
+    { recipes: ServerRecipeListEntry[] } & ListPageFields
   >;
 
   /** ONE recipe by id, in the same entry shape `recipe.list` returns — `null`
@@ -2791,7 +2853,7 @@ export type ServerRpcRegistry = {
   // ── Annotation + Link warehouse (D-119 Phase 13) ────────────────
   //
   // Two first-class collections recipes write back to source records
-  // via the `data-annotate` / `data-link` kernel ingredients. Per-
+  // via the `annotation-create` / `link-create` kernel ops. Per-
   // record refs (`{{data.<col>.<id>.annotations.<key>}}` /
   // `links.<role>`) are populated by the engine's prefetch resolver
   // calling `annotation.forRecord` and `link.forRecord` on every
@@ -4114,6 +4176,12 @@ export type ServerRpcRegistry = {
       pack_slug: string;
       connection: { kind: string; name: string };
       rows: McpPackReviewRow[];
+      /** D-294 — for a pack already installed, the Access it holds now and who may use
+       *  it now: where a RE-review starts. Absent for a first review, which starts at the
+       *  install defaults. The review used to start there every time and commit them as
+       *  an explicit choice, withdrawing a share and narrowing the Access. */
+      current_access?: import('../bulk-pack.js').InstallAccessTier;
+      current_audience?: import('../bulk-pack.js').InstallAudienceSelection;
     }
   >;
 
@@ -4647,6 +4715,25 @@ export type ServerRpcRegistry = {
     { rows: ReadonlyArray<import('../psi.js').ConfidenceDriftSignal> }
   >;
 
+  /** D-285 follow-up — persist the owner's dismissal of a drift banner.
+   *
+   *  ⛔ WHY IT HAD TO EXIST. Before D-285 the banner was live-broadcast-only,
+   *  so a dismissal lasted because nothing ever re-delivered the signal. D-285
+   *  made the panel LOAD the stored row on every mount, and the dismissal was
+   *  still `setState` — so the banner came back on every load, measured live:
+   *  dismiss, reload, VISIBLE again. The read traded a verdict nobody saw for
+   *  one nobody could get rid of.
+   *
+   *  The server half already existed: the producer reads the prior row's
+   *  `dismissed_at` and carries it forward while severity is unchanged, so a
+   *  dismissal is scoped to ONE computation by construction — re-arming on the
+   *  next transition, which is the rule the banner documents. All that was
+   *  missing was the owner being able to set it once. */
+  'housekeeping.drift.dismiss': RpcMethodSpec<
+    { source_topic: string },
+    { ok: true; effective: import('../psi.js').ConfidenceDriftSignal }
+  >;
+
   /** D-136 §A.12 P7 — topic-reset rpc. Two-step dry-run-then-confirm
    *  pattern: caller invokes once without `confirmation_token` to
    *  receive an impact summary + freshly-minted token; second call
@@ -5053,9 +5140,16 @@ export type ServerRpcRegistry = {
    *  is assurance-shaped non-assurance; the install then proceeds under the
    *  existing pack-level consent, unchanged.
    *
-   *  ⚠ Not a gate. It changes what the owner SEES, never what the install writes. */
+   *  ⚠ Not a gate. It changes what the owner SEES, never what the install writes.
+   *
+   *  D-311 — `marketplace`: this manifest came from `packs.resolveBySlug` and will
+   *  install through `packs.installBySlug`. The server then resolves its recipes
+   *  and the packs it brings in from the marketplace, as that install will (and
+   *  unmarked: a preview installs nothing). Without it, both come from the server's
+   *  bundled packs only, which on a deployed server hold only the foundation packs.
+   *  A server that predates D-311 ignores it and answers as before. */
   'packs.install_preview': RpcMethodSpec<
-    { manifest: unknown },
+    { manifest: unknown; marketplace?: boolean },
     {
       resolved: boolean;
       will_enable: Array<{
@@ -5070,6 +5164,69 @@ export type ServerRpcRegistry = {
       }>;
       /** Refs that resolved but install CLOSED (`chat_exposed` false). */
       hidden_count: number;
+      /** D-295 — the webhooks the owner must choose for this install (the pack
+       *  and the dependencies it will install). Absent from a server that
+       *  cannot say; empty when none are needed. */
+      webhook_plan?: import('../webhook-profiles.js').PackWebhookPlanEntry[];
+      /** D-305 — permissions the packs this install brings in with it need beyond
+       *  this pack's own `requires`, each with the names of the packs that need it.
+       *  The install refuses when one is not granted, so the dialog offers them beside
+       *  the pack's own. Computed by the install's own dependency walk, which skips a
+       *  dependency that is already installed. Absent from a server that cannot say,
+       *  or when the dependencies cannot be walked (the install then says why); empty
+       *  when none are needed. */
+      dependency_requires?: Array<{ permission: string; needed_by: string[] }>;
+      /** D-310 — the packs this install brings in with it, by the install's own
+       *  dependency walk (a pack already installed at the version needed is not
+       *  here), so the dialog can list them and ask what each may do. A bundled
+       *  pack was installed at its authored read defaults, whatever the owner chose
+       *  for the pack that brought it: an add-on that writes into it was refused
+       *  `operation_not_granted` on its first write.
+       *
+       *  ⛔ ITS PRESENCE IS WHAT ADVERTISES `packs.install` `dependency_install_scopes`.
+       *  A server that predates D-310 sends neither and would ignore the choices, so
+       *  a client asks for them only when this is present. Absent when the
+       *  dependencies cannot be walked (the install then says why); empty when the
+       *  install brings in none. */
+      dependency_packs?: Array<{
+        pack_slug: string;
+        name: string;
+        /** The packs of this install that declare it, by name. */
+        needed_by: string[];
+        /** Installed at an older version than one of them needs, so this install
+         *  updates it. No Access choice is asked for it: D-310 leaves the update of
+         *  an installed dependency as it was (see `dependencyAlreadySatisfied`). */
+        updates?: true;
+        /** The Access tiers its own install dialog offers (`installAccessOptions`),
+         *  `read` first. Empty when it has nothing the choice grants. */
+        access_options: import('../bulk-pack.js').InstallAccessTier[];
+        /** The least tier that covers what the other packs of this install do with
+         *  its operations, when that is more than Read, with the packs that do it.
+         *  At Read only, those steps are refused `operation_not_granted`. */
+        needs?: { access: 'write' | 'all'; by: string[] };
+        /** D-310 REV 2 — the least tier its OWN workflows need from its own Access,
+         *  when that is more than Read (`needs` covers only the other packs). */
+        own_needs?: 'write' | 'all';
+      }>;
+      /** D-310 REV 2 — the least tier THIS pack's own workflows need from its own
+       *  Access, when that is more than Read. At Read only the Access choice refuses
+       *  them `operation_not_granted`, the owner's own runs included, so the dialog
+       *  says so beside the picker. Advisory: absent from an older server, and
+       *  nothing is sent back. */
+      own_needs?: 'write' | 'all';
+      /** D-296 — automations the owner has ON that this update will switch
+       *  off (a changed trigger that cannot be carried over). Absent when none. */
+      triggers_switched_off?: Array<{ recipe_id: string; name: string; reason: 'changed' | 'removed' }>;
+      /** D-299 — Reception forms and links this update stops taking submissions until
+       *  the owner re-enables them: the recipe reads different answers or sells a different
+       *  offer (`params_changed`), or its door would need more authority (`needs_owner`).
+       *  Absent when none. */
+      receptions_switched_off?: Array<{ endpoint_id: string; name: string; reason: 'params_changed' | 'needs_owner' }>;
+      /** D-303 — settings the owner saved that this update stops using: the new
+       *  version no longer declares them. The saved value is kept, and applies again
+       *  if a later version brings the setting back. `recipe` is the recipe's name,
+       *  `setting` the label the owner saved it under. Absent when none. */
+      settings_no_longer_used?: Array<{ recipe_id: string; recipe: string; setting: string }>;
     }
   >;
 
@@ -5104,6 +5261,12 @@ export type ServerRpcRegistry = {
       }>;
       /** D-221 — review anchor returned by packs.list for a Records update. */
       expected_manifest_hash?: string;
+      /** D-310 — the owner's Access choice for each pack this install brings in
+       *  with it (`packs.install_preview` `dependency_packs`), by its authored slug.
+       *  A pack not named installs as before: its authored read defaults. Naming a
+       *  pack the install does not bring in, or the pack being installed (its own
+       *  choice is `install_scope`), is refused. */
+      dependency_install_scopes?: ReadonlyArray<import('../bulk-pack.js').PackDependencyInstallScope>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -5149,6 +5312,8 @@ export type ServerRpcRegistry = {
       /** D-211 audit — hash returned by `packs.resolveBySlug` for the exact
        * marketplace manifest the owner reviewed. Required for an update. */
       expected_manifest_hash?: string;
+      /** D-310 — forwarded to `packs.install`. See its `dependency_install_scopes`. */
+      dependency_install_scopes?: ReadonlyArray<import('../bulk-pack.js').PackDependencyInstallScope>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -5250,6 +5415,15 @@ export type ServerRpcRegistry = {
     {
       result: import('../bulk-pack.js').BulkPackUninstallResultLike;
     }
+  >;
+
+  /** D-304 — what deleting a pack removes with its recipes, for the Delete
+   *  confirmation: each recipe's schedules, the automations the owner set up on it
+   *  (owner-made event triggers and auto-run), and how many recipes have saved
+   *  settings. Read-only. Connections are not counted: they are not the recipes'. */
+  'packs.uninstall_preview': RpcMethodSpec<
+    { pack_slug: string },
+    { schedules: number; automations: number; recipes_with_settings: number }
   >;
 
   // ── D-170 — Ingredient-authoring install / uninstall ─────────────
@@ -6922,9 +7096,14 @@ export type ServerRpcRegistry = {
   // enumerate the owner's full tool surface. `not_configured` (501) when the
   // catalog provider isn't wired (dbless harness) — same posture as the rest
   // of the family's store-unwired path.
+  //
+  // Paged on request (`./list-page.ts`). About 12 tools per installed pack, so
+  // this is the largest install-proportional list: 12.71 MB at 1,051 packs
+  // before `arg_schema` was projected out. A request without `limit` or
+  // `cursor` still gets the whole catalog in one answer.
   'chat.inbound_token.tool_catalog': RpcMethodSpec<
-    void,
-    { catalog: ReadonlyArray<ToolEntry> }
+    ListPageRequest | void,
+    { catalog: ReadonlyArray<ToolCatalogEntryView> } & ListPageFields
   >;
 
   // ── D-148 W3.FU "exposure rpc" — Per-path Exposure state mutators ──
@@ -7546,6 +7725,8 @@ export const SERVER_RPC_METHODS = [
   'data_views.update',
   'data_views.rename',
   'data_views.delete',
+  // D-300 — resolve a pack view an update replaced.
+  'data_views.retired.resolve',
   'cache.get',
   'cache.put',
   'cache.since',
@@ -7614,6 +7795,7 @@ export const SERVER_RPC_METHODS = [
   'server.seller.closeManualCustomer',
   'server.seller.reissueManualCustomerToken',
   'server.seller.bulkAdjustManualTierCustomers',
+  'server.seller.reapplyManualTier',
   'server.seller.synchronizeStripeEntitlements',
   'server.seller.synchronizeProviderTiers',
   'pair.list',
@@ -7904,6 +8086,8 @@ export const SERVER_RPC_METHODS = [
   // the state behind it, so a client that was not connected when the cycle
   // fired can still see the verdict.
   'housekeeping.drift.read',
+  // D-285 follow-up — the owner's dismissal, persisted so it survives a reload.
+  'housekeeping.drift.dismiss',
   // D-136 §A.12 P7 — topic-reset rpc (dry-run then confirm).
   'housekeeping.topic.reset',
   // D-136 §A.13.1 P7.G — Settings UI capstone: WS surface for the
@@ -7995,6 +8179,7 @@ export const SERVER_RPC_METHODS = [
   'packs.list',
   'packs.unrunnable',
   'packs.uninstall',
+  'packs.uninstall_preview',
   // D-170 — ingredient-authoring install / uninstall. Per-pair only;
   // `ingredient.` in MCP_RESERVED_RPC_PREFIXES so MCP-channel agents
   // cannot author / install / uninstall their own capability surface.

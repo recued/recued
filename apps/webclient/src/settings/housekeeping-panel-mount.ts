@@ -70,6 +70,7 @@ import {
   renderHousekeepingTopicResetModal,
   type HousekeepingPanelState,
   type HousekeepingProducerCostFilter,
+  type HousekeepingPromotionSuggestion,
 } from '@recued/ui-shared/server-settings/housekeeping';
 import { button } from '@recued/ui-shared/primitives';
 import { e } from '@recued/ui-shared/template';
@@ -118,6 +119,12 @@ export type HousekeepingRegistryDescribeCaller =
 export type HousekeepingDriftReadCaller = () => Promise<{
   rows: ReadonlyArray<ConfidenceDriftSignal>;
 }>;
+/** D-285 follow-up — persist a dismissal. Without it the banner reappears on
+ *  every mount, because D-285's read supplies the signal again and the
+ *  dismissal lived only in the tab. */
+export type HousekeepingDriftDismissCaller = (args: {
+  source_topic: string;
+}) => Promise<{ ok: true; effective: ConfidenceDriftSignal }>;
 
 /** `housekeeping.topic.reset` response — dry-run mints a token + impact;
  *  confirm (token supplied) applies + returns actuals. Mirrors the rpc
@@ -169,6 +176,10 @@ export interface MountHousekeepingPanelOptions {
    *  the panel degrades to the pre-D-285 behaviour (bus-only, lost on
    *  reload) rather than erroring. */
   runDriftRead?: HousekeepingDriftReadCaller;
+  /** D-285 follow-up — optional for the same reason as `runDriftRead`: an
+   *  older server has no such method. Absent → the dismissal stays local, the
+   *  pre-existing behaviour. */
+  runDriftDismiss?: HousekeepingDriftDismissCaller;
   /** `housekeeping.task.run_now`. Optional — omitted → the Run-now
    *  confirm is unreachable (the open click is a no-op). */
   runRunNow?: HousekeepingRunNowCaller;
@@ -557,6 +568,12 @@ export const mountHousekeepingPanel = (
         config,
         tasks: status.tasks,
         trustRows,
+        // A live suggestion carries the cost estimate, so it wins over the
+        // restored one; a restored entry only fills a gap the reload left.
+        promotionSuggestions: {
+          ...restoredPromotions(trust.rows),
+          ...state.promotionSuggestions,
+        },
       });
     } catch (err) {
       if (disposed || captured !== loadGeneration) return;
@@ -774,15 +791,58 @@ export const mountHousekeepingPanel = (
   // dismissal-persistence rpc; the banner re-arms naturally on the next
   // `enrichment_drift_detected` broadcast (state-transition fire only,
   // server-gated). Review expands the topic's drawer for trust controls.
+  /** ⛔ D-285 follow-up — hide optimistically, then PERSIST.
+   *
+   *  Local-only was the pre-D-285 behaviour and it held while the banner was
+   *  live-broadcast-only: nothing re-delivered the signal, so a dismissal
+   *  lasted by accident. Once the panel started loading the stored row on
+   *  every mount, the same code made the banner undismissable — measured
+   *  live: dismiss, reload, back again.
+   *
+   *  ⚠ A failed write REVERTS the hide and says so. Leaving it hidden would
+   *  be the friendlier lie: the banner returns on the next load anyway, and a
+   *  user who was told "dismissed" would meet it again with no idea why. */
   const doDriftDismiss = (sourceTopic: string): void => {
     const signal = state.driftSignals[sourceTopic];
     if (!signal) return;
+    const dismissed_at = now();
     setState({
       driftSignals: {
         ...state.driftSignals,
-        [sourceTopic]: { ...signal, dismissed_at: now() },
+        [sourceTopic]: { ...signal, dismissed_at },
       },
+      driftWriteError: omitKey(state.driftWriteError, sourceTopic),
+      ...(opts.runDriftDismiss
+        ? { driftWriting: { ...state.driftWriting, [sourceTopic]: true } }
+        : {}),
     });
+    if (!opts.runDriftDismiss) return;
+    void opts.runDriftDismiss({ source_topic: sourceTopic })
+      .then((res) => {
+        if (disposed) return;
+        setState({
+          // The server's timestamp wins: an idempotent re-dismiss keeps the
+          // FIRST one, and the local guess would otherwise slide it forward.
+          driftSignals: { ...state.driftSignals, [sourceTopic]: res.effective },
+          driftWriting: omitKey(state.driftWriting, sourceTopic),
+        });
+      })
+      .catch((err: unknown) => {
+        if (disposed) return;
+        const restored = state.driftSignals[sourceTopic];
+        setState({
+          ...(restored
+            ? {
+                driftSignals: {
+                  ...state.driftSignals,
+                  [sourceTopic]: omitDismissal(restored),
+                },
+              }
+            : {}),
+          driftWriting: omitKey(state.driftWriting, sourceTopic),
+          driftWriteError: { ...state.driftWriteError, [sourceTopic]: messageOf(err) },
+        });
+      });
   };
 
 
@@ -1317,6 +1377,50 @@ const fullDriftSignalsOnly = (
     if (hasDistributions(signal)) out[topic] = signal;
   }
   return out;
+};
+
+/** Rebuild the promotion banner from state the panel ALREADY loads.
+ *
+ *  ⛔ `promotionSuggestions` had exactly two writers — the broadcast handler,
+ *  and the one that removes an entry — and starts `{}`. So the banner rendered
+ *  once, for whoever was looking, and was gone on the next mount, while
+ *  `promotion_suggested_at` sat on the trust row the panel had just fetched.
+ *  Same defect D-285 fixed for the drift banner; cheaper here because nothing
+ *  new has to be read.
+ *
+ *  ⛔⛔ THE THIRD CLAUSE IS THE ONE THAT MATTERS. Nothing clears
+ *  `promotion_suggested_at` when the owner ACCEPTS — `trust-store`'s upsert
+ *  carries it forward — so "suggested and not dismissed" would re-raise the
+ *  banner forever on a topic they already turned on, every single load. The
+ *  question the banner asks is "you have run this by hand, shall I make it
+ *  automatic?", and it stops being a question once the answer is `auto`.
+ *
+ *  ⚠ The cost estimate is NOT restorable: it is computed at fire time from the
+ *  producer's per-record estimate × the source count, and neither is on the
+ *  trust row. `0` is the established sentinel — `formatTokens` renders
+ *  anything `<= 0` as "no estimate available" — so a restored banner says it
+ *  does not know rather than claiming the run is free. */
+const restoredPromotions = (
+  rows: ReadonlyArray<EnrichmentTrustRow>,
+): Record<string, HousekeepingPromotionSuggestion> => {
+  const out: Record<string, HousekeepingPromotionSuggestion> = {};
+  for (const row of rows) {
+    if (row.promotion_suggested_at === null) continue;
+    if (row.promotion_dismissed_at !== null) continue;
+    if (row.trust_state === 'auto') continue;
+    out[row.topic] = {
+      topic: row.topic,
+      manual_run_count: row.manual_run_count,
+      estimated_idle_cycle_cost_tokens: 0,
+    };
+  }
+  return out;
+};
+
+/** Drop a dismissal so the banner comes back — used when the write failed. */
+const omitDismissal = (signal: ConfidenceDriftSignal): ConfidenceDriftSignal => {
+  const { dismissed_at: _dropped, ...rest } = signal;
+  return rest;
 };
 
 const omitKey = <T>(

@@ -240,7 +240,7 @@ export const ensureBistemporalSchema = (db: Database.Database): void => {
   // deliberately NOT stamped in P1: they are not in the spec's A.4
   // four-kind enumeration (they are sidecars, per `SIDECAR_COLLECTIONS`),
   // and stamping them without threading the real write-actor through the
-  // `data-annotate` / `data-link` kernel adapters would mislabel an
+  // `annotation-create` / `link-create` kernel adapters would mislabel an
   // MCP-written annotation as `'system'`. Their origin lands in P2, where
   // the producer provenance-filter generalises D-139's `authorship`
   // classifier and consumes the facet.

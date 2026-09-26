@@ -24,6 +24,7 @@ import {
 import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
 import { createDishStore } from '../dish-store.js';
 import { createDishContextStore } from '../dish-context-store.js';
+import { registerPreapprovalInvalidator } from '../storage/preapproval-lifecycle.js';
 
 const storedRecipe = (
   recipe_id: string,
@@ -372,11 +373,121 @@ describe('reconcileDeclarativeTriggers', () => {
     expect(result).toMatchObject({ created: 1, removed: 1, changed: true });
     const row = store.list()[0]!;
     expect(row.trigger_id).not.toBe(firstRow.trigger_id);
-    // D-179 P5c — fresh rows materialize DISARMED (default-off); the
-    // re-mint therefore also drops the user's prior arm state, which
-    // is the safe direction (an edited subscription re-asks for arming).
+    // D-296 — a recipe's ONE trigger carries its armed state across a changed
+    // declaration; this one was disarmed first, so it stays disarmed.
     expect(row.enabled).toBe(false);
     expect(row.filter).toEqual({ 'record.stage': 'b' });
+  });
+
+  describe('⛔ D-296 — an update that changes a recipe\'s trigger', () => {
+    const withDishes = (rows: StoredRecipeRowLike[], dishStore = createDishStore(db), dishContextStore = createDishContextStore(db)) =>
+      reconcileDeclarativeTriggers({
+        store,
+        listStored: () => rows,
+        dishStore,
+        dishContextStore,
+        now: () => 5_000,
+        mintTriggerId: () => `t-test-${++mintCounter}`,
+      });
+
+    /** One armed trigger with its managed settings dish + continuity, as the
+     *  enable path leaves it. */
+    const armWithSettings = (dishStore: ReturnType<typeof createDishStore>, contexts: ReturnType<typeof createDishContextStore>) => {
+      const row = store.list()[0]!;
+      dishStore.set(dish({
+        dish_id: 'dsh_settings', recipe_id: row.recipe_id, publisher_id: row.publisher_id,
+        config_overlay: { sender_mail_instance: 'work' }, managed_by_trigger_id: row.trigger_id,
+      }));
+      contexts.set('dsh_settings', { last: { seen: 3 } });
+      store.update(row.trigger_id, { enabled: true, dish_id: 'dsh_settings', watch_interval_ms: 60_000 });
+      return row;
+    };
+
+    it('a recipe whose ONE trigger changes keeps it armed, with its settings, interval and continuity', () => {
+      const dishStore = createDishStore(db);
+      const contexts = createDishContextStore(db);
+      withDishes([storedRecipe('notify-visitor', [{ event: 'data.calendar.**.updated' }])], dishStore, contexts);
+      const before = armWithSettings(dishStore, contexts);
+
+      const result = withDishes([storedRecipe('notify-visitor', [{ event: 'data.work.booking.item.updated' }])], dishStore, contexts);
+      expect(result).toMatchObject({ created: 1, removed: 1 });
+      const after = store.list()[0]!;
+      expect(after.trigger_id).not.toBe(before.trigger_id);
+      expect(after).toMatchObject({
+        pattern: 'data.work.booking.item.updated', enabled: true, dish_id: 'dsh_settings', watch_interval_ms: 60_000,
+      });
+      // The dish moved with it — and now answers to the new row…
+      expect(dishStore.get('dsh_settings')).toMatchObject({
+        config_overlay: { sender_mail_instance: 'work' }, managed_by_trigger_id: after.trigger_id,
+      });
+      expect(contexts.get('dsh_settings')).toEqual({ last: { seen: 3 } });
+      // …so an uninstall still dissolves it.
+      withDishes([], dishStore, contexts);
+      expect(dishStore.get('dsh_settings')).toBeNull();
+    });
+
+    it('carries its last outcome too — Automation shows it', () => {
+      withDishes([storedRecipe('tripped', [{ event: 'data.calendar.**.updated' }])]);
+      const before = store.list()[0]!;
+      store.update(before.trigger_id, { last_fired_at: 4_000, last_error: 'mailbox refused' });
+      withDishes([storedRecipe('tripped', [{ event: 'data.work.booking.item.updated' }])]);
+      expect(store.list()[0]).toMatchObject({
+        pattern: 'data.work.booking.item.updated', enabled: false, last_fired_at: 4_000, last_error: 'mailbox refused',
+      });
+    });
+
+    it('⛔ a row a reviewed execution parks is ON for the owner, and is carried armed', () => {
+      // D-261 parks an armed row (`enabled: false`) while a reviewed execution
+      // owns its next fire, and restores it when that retires — which it
+      // cannot do for a row the update removed.
+      registerPreapprovalInvalidator(db, (kind, key) =>
+        db.prepare('UPDATE preapproval_activations SET retired_at = 1 WHERE target_kind = ? AND target_key = ?')
+          .run(kind, key).changes);
+      withDishes([storedRecipe('parked', [{ event: 'data.calendar.**.updated' }])]);
+      const before = store.list()[0]!;
+      store.update(before.trigger_id, { enabled: false });
+      db.prepare(`INSERT INTO preapproval_activations(future_ref, target_kind, target_key, target_incarnation,
+        target_revision, original_enabled, owner_mode, due_at, selector_sequence)
+        VALUES ('fx_1', 'next_trigger', ?, 'inc', 1, 1, 'owner', NULL, 0)`).run(before.trigger_id);
+      expect(store.get(before.trigger_id)!.enabled).toBe(false);
+      expect(store.ownerEnabled(before.trigger_id)).toBe(true);
+
+      withDishes([storedRecipe('parked', [{ event: 'data.work.booking.item.updated' }])]);
+      const after = store.list()[0]!;
+      expect(after).toMatchObject({ pattern: 'data.work.booking.item.updated', enabled: true });
+      // The reviewed execution was for the OLD trigger: it is retired, not moved.
+      expect(db.prepare('SELECT retired_at FROM preapproval_activations WHERE future_ref = ?').get('fx_1'))
+        .toEqual({ retired_at: 1 });
+    });
+
+    it('a count that changes cannot be paired either: two become one, one becomes two — all switched off', () => {
+      withDishes([
+        storedRecipe('merge', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }]),
+        storedRecipe('split', [{ event: 'data.file.**.created' }]),
+      ]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      withDishes([
+        storedRecipe('merge', [{ event: 'data.mail.**.deleted' }]),
+        storedRecipe('split', [{ event: 'data.file.**.updated' }, { event: 'data.file.**.deleted' }]),
+      ]);
+      expect(store.list().map((row) => [row.recipe_id, row.pattern, row.enabled]).sort()).toEqual([
+        ['merge', 'data.mail.**.deleted', false],
+        ['split', 'data.file.**.deleted', false],
+        ['split', 'data.file.**.updated', false],
+      ]);
+    });
+
+    it('a recipe with SEVERAL triggers cannot be paired: the changed one is switched off, the rest untouched', () => {
+      const dishStore = createDishStore(db);
+      const contexts = createDishContextStore(db);
+      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }])], dishStore, contexts);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.deleted' }])], dishStore, contexts);
+      expect(store.list().map((row) => [row.pattern, row.enabled]).sort()).toEqual([
+        ['data.mail.**.created', true],
+        ['data.mail.**.deleted', false],
+      ]);
+    });
   });
 
   it('key-order and fields-order changes do NOT re-mint rows (canonical identity)', () => {

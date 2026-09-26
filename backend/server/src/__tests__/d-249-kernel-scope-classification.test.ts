@@ -96,7 +96,6 @@ describe('D-249 — kernel op scope classification', () => {
     //    fenced door until the fence can say both.
     expect(stuck).toEqual([
       'core.mail.notify-booking-visitor => data.notify',
-      'core.memory.link => data.data',
       'core.memory.link.create => data.link',
       'core.memory.link.delete => data.link',
       'core.memory.link.list => data.link',
@@ -140,6 +139,25 @@ describe('D-249 — kernel op scope classification', () => {
     ]) {
       expect(byOp.get(op), op).toBeNull();
     }
+  });
+
+  /** ⛔ The CSV ops read FILE CONTENT — a named instance by `{slug, path}`, or a
+   *  `data.file.received` record by `record_id` — so they face the `data.file`
+   *  fence, as `file.read` and `data-file-read` do. They used to abstain ("a
+   *  passed record handle, not a collection"), which D-245's named address made
+   *  false: a door fenced away from files could read one through a CSV op. It
+   *  adds no grant: the ops' entity is `file`, so the one Files toggle that
+   *  grants them writes the `data.file` row as well. */
+  it('⛔ the CSV ops are fenced as data.file — a door without files cannot read one through them', () => {
+    const csv = rows().filter((r) => r.op.startsWith('core.storage.csv.'));
+    expect(csv.map((r) => r.op).sort()).toEqual([
+      'core.storage.csv.columns', 'core.storage.csv.filter', 'core.storage.csv.rows', 'core.storage.csv.stats',
+    ]);
+    for (const r of csv) expect(r.scope, r.op).toBe('data.file');
+    const contactsOnly = scopeRestrictionsFromReadableCollections(new Set(['contact']));
+    const withFiles = scopeRestrictionsFromReadableCollections(new Set(['contact', 'file']));
+    expect(evaluateScopeRestrictions(contactsOnly, 'data.file').verdict).toBe('deny');
+    expect(evaluateScopeRestrictions(withFiles, 'data.file').verdict).toBe('admit');
   });
 
   it('⚠ `null` is the scope axis abstaining — it is not an authorization', () => {

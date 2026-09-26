@@ -2,8 +2,8 @@
   "_extract": {
     "note": "paths-only extract of the current pinned official Apollo OpenAPI; crossCheckCatalogOpenApi reads only paths and the moving vendor URL is hash-locked by the pack generator",
     "url": "https://docs.apollo.io/openapi/apollo-rest-api.json",
-    "sha256": "701b51d2078419b89817027be7efee080b9c9f7faa784fc40fcc375d28aba661",
-    "fetched_at": "2026-07-15"
+    "sha256": "6d6e9f8061c392cf25696c6f284745cdc0d0ce93c8ac2e28112e9a5b985b423c",
+    "fetched_at": "2026-09-22"
   },
   "paths": {
     "/tasks/search": {

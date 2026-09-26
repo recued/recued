@@ -531,7 +531,48 @@ export type RecipeErrorCode =
   // `RecipeError.details.create_plan` (`CreatePlanDetail`); `handleExecute` reads
   // it, raises ONE create-plan confirm, and surfaces a terminal
   // `create_plan_required` — this code is the honest label if no notifier is wired.
-  | 'CREATE_PLAN_REQUIRED';
+  | 'CREATE_PLAN_REQUIRED'
+  // ── A step refused what it was given ─────────────────────────────────
+  // ⛔⛔ EACH OF THESE WAS A `NETWORK_ERROR`. An adapter threw its own code, and
+  // the step runner keeps a code only when it is in this list, so every one
+  // arrived as "a network error stopped the request" (205 throw sites, 191 of
+  // them `BAD_INPUT`). That read as "come back later" to an MCP caller
+  // (`UNAVAILABLE_CODES`), as `unreachable` to a connection probe, and as noise
+  // to the lesson filter, for input that fails the same way on every retry.
+  /** A step's input was refused: a missing or malformed argument, or a setting
+   *  that names something that does not exist (a channel called "slak"). The
+   *  message says which. Also what a server handler's `bad_request` becomes. */
+  | 'BAD_INPUT'
+  /** A step was given a URL that is not a full address, so nothing was called. */
+  | 'URL_REF_INVALID'
+  /** A mail send could not learn from the provider whether an earlier attempt
+   *  went out, so it did not send again: a duplicate reaches a customer. */
+  | 'MAIL_SEND_CLAIM_UNRESOLVED'
+  /** A step named an operation only the server itself dispatches. */
+  | 'INGREDIENT_INTERNAL_ONLY'
+  /** A step asked for a webhook event this run does not carry. */
+  | 'WEBHOOK_EVENT_NOT_AUTHORIZED'
+  /** An annotation delete outside a recipe run: only a run may delete, and only
+   *  what it wrote. */
+  | 'ANNOTATION_DELETE_NEEDS_RECIPE'
+  // ── A server handler behind a kernel op refused ──────────────────────
+  // Each arrives as an rpc code (`not_found`, `unauthorized`, …) and was coded
+  // `NETWORK_ERROR` at the step seam, like `bad_request` before `BAD_INPUT`.
+  // The step runner's `RPC_REFUSALS` table maps them.
+  /** A step named something that is not there: a record, a file, a message. */
+  | 'NOT_FOUND'
+  /** The server is not set up for something a step needs. */
+  | 'NOT_CONFIGURED'
+  /** The server refused the step: this run may not do it. */
+  | 'NOT_AUTHORIZED'
+  /** What the step changes was changed by something else first. */
+  | 'CONFLICT'
+  /** The server hit an error of its own while running the step. */
+  | 'SERVER_ERROR'
+  /** The server is locked (its vault sealed), so it cannot read or write what
+   *  the step needs until the owner unlocks it. Rpc `locked` / `server_locked`
+   *  / `not_unlocked`, status 423. */
+  | 'SERVER_LOCKED';
 
 /** Severity map — every code has exactly one severity. */
 export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
@@ -699,6 +740,20 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   CLI_TOOL_FAILED: 'error',
   CONTAINER_PICK_REQUIRED: 'error',
   CREATE_PLAN_REQUIRED: 'error',
+  // A step refused what it was given.
+  BAD_INPUT: 'error',
+  URL_REF_INVALID: 'error',
+  MAIL_SEND_CLAIM_UNRESOLVED: 'error',
+  INGREDIENT_INTERNAL_ONLY: 'error',
+  WEBHOOK_EVENT_NOT_AUTHORIZED: 'error',
+  ANNOTATION_DELETE_NEEDS_RECIPE: 'error',
+  // A server handler behind a kernel op refused.
+  NOT_FOUND: 'error',
+  NOT_CONFIGURED: 'error',
+  NOT_AUTHORIZED: 'error',
+  CONFLICT: 'error',
+  SERVER_ERROR: 'error',
+  SERVER_LOCKED: 'error',
 };
 
 export interface RecipeError {
@@ -882,6 +937,18 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   CLI_TOOL_FAILED: 'A local tool this recipe runs exited with an error. Open the run to see the tool’s output.',
   CONTAINER_PICK_REQUIRED: 'This create needs you to choose which container it belongs to (a team, workspace, or project). Answer the request that was raised, then it will finish on its own.',
   CREATE_PLAN_REQUIRED: 'This create needs to make a new container (a project) first. Confirm the request that was raised and it will create it, then finish on its own.',
+  BAD_INPUT: 'A step was given something it cannot use. Check the settings or arguments it names.',
+  URL_REF_INVALID: 'A step was given a web address it cannot call. Use a full address, starting with https://.',
+  MAIL_SEND_CLAIM_UNRESOLVED: 'Recued could not tell whether this message already went out, so it did not send it again. Check the sent mail before you retry.',
+  INGREDIENT_INTERNAL_ONLY: 'This step names an operation only Recued itself runs. Pick a different step.',
+  WEBHOOK_EVENT_NOT_AUTHORIZED: 'This run was not started by the webhook event the step asked for.',
+  ANNOTATION_DELETE_NEEDS_RECIPE: 'Only a recipe run can delete annotations, and only the ones it wrote.',
+  NOT_FOUND: 'A step named something that is not there, such as a record, a file or a message. It may have been removed.',
+  NOT_CONFIGURED: 'Your server is not set up for something this step needs. The message says what is missing.',
+  NOT_AUTHORIZED: 'Your server refused this step: this run is not allowed to do it.',
+  CONFLICT: 'Something else changed what this step changes, first. Running it again reads the new state.',
+  SERVER_ERROR: 'Your server hit an error running this step. The Logs detail has what it said.',
+  SERVER_LOCKED: 'Your server is locked. Unlock it, then run this again.',
 };
 
 /** Return a default user-facing message for the code, never empty.
@@ -1083,6 +1150,22 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   CLI_TOOL_FAILED: 'environment',
   CONTAINER_PICK_REQUIRED: 'owner',
   CREATE_PLAN_REQUIRED: 'owner',
+  // The arguments, settings or step were wrong for this ask: a real lesson.
+  BAD_INPUT: 'choice',
+  URL_REF_INVALID: 'choice',
+  // The provider's own record was unclear; nothing about the choice.
+  MAIL_SEND_CLAIM_UNRESOLVED: 'environment',
+  INGREDIENT_INTERNAL_ONLY: 'choice',
+  WEBHOOK_EVENT_NOT_AUTHORIZED: 'choice',
+  ANNOTATION_DELETE_NEEDS_RECIPE: 'choice',
+  // What is missing or how the server is set up says nothing about the choice;
+  // a refusal of THIS run is the owner's (or their policy's) call.
+  NOT_FOUND: 'environment',
+  NOT_CONFIGURED: 'environment',
+  NOT_AUTHORIZED: 'owner',
+  CONFLICT: 'environment',
+  SERVER_ERROR: 'environment',
+  SERVER_LOCKED: 'environment',
 };
 
 /** Codes attributable to the owner's own refusal. Derived from the one table

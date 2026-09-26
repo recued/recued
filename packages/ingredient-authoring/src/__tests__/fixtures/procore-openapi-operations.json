@@ -11,7 +11,7 @@
       "count": 615,
       "aggregate_sha256": "51c3f0499330d031d74ec4676d8d0f4d821dbe8fe639c0b1df3d8745e23c0b83",
       "aggregate_algorithm": "sha256(sorted url + NUL + raw-document sha256 + newline)",
-      "retrieved_on": "2026-07-20",
+      "retrieved_on": "2026-08-04",
       "server": "https://api.procore.com"
     },
     "authentication": {
@@ -101,8 +101,7 @@
     },
     "selected_by_approval": {
       "always": 1426,
-      "ask": 699,
-      "never": 711
+      "never": 1410
     },
     "paginated_operations": 555,
     "captured_downloads": 17,
@@ -12830,7 +12829,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -16352,7 +16351,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -16656,7 +16655,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -16955,7 +16954,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -19342,7 +19341,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -19626,7 +19625,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -20594,7 +20593,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -21114,7 +21113,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -23102,7 +23101,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -24616,7 +24615,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -25421,7 +25420,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -26606,7 +26605,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -28171,7 +28170,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -37398,7 +37397,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -38211,7 +38210,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -38646,7 +38645,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -38900,7 +38899,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -39421,7 +39420,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -39767,7 +39766,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -39920,7 +39919,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -46229,7 +46228,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -46491,7 +46490,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -48413,7 +48412,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -48787,7 +48786,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -50333,7 +50332,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -53503,7 +53502,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -53663,7 +53662,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -54041,7 +54040,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -54344,7 +54343,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -54740,7 +54739,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -54989,7 +54988,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -55226,7 +55225,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -55590,7 +55589,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -56032,7 +56031,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -56385,7 +56384,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -56861,7 +56860,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -56992,7 +56991,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -57239,7 +57238,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -57590,7 +57589,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -57774,7 +57773,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -58127,7 +58126,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -65484,7 +65483,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -66310,7 +66309,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -69234,7 +69233,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -69338,7 +69337,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -70724,7 +70723,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -71143,7 +71142,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71559,7 +71558,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71643,7 +71642,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71727,7 +71726,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71811,7 +71810,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71895,7 +71894,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -71979,7 +71978,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -77224,7 +77223,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -77501,7 +77500,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -78401,7 +78400,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -79376,7 +79375,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -79625,7 +79624,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -80264,7 +80263,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -80507,7 +80506,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -81201,7 +81200,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -81478,7 +81477,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -81582,7 +81581,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -81799,7 +81798,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -82100,7 +82099,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -82377,7 +82376,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -82501,7 +82500,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -82605,7 +82604,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -86402,7 +86401,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -86515,7 +86514,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -86716,7 +86715,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -86943,7 +86942,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -87322,7 +87321,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -87455,7 +87454,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -87676,7 +87675,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -87923,7 +87922,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -88282,7 +88281,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -88527,7 +88526,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -88958,7 +88957,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -89203,7 +89202,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -89713,7 +89712,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -89924,7 +89923,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -90263,7 +90262,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -90454,7 +90453,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -93583,7 +93582,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -96519,7 +96518,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -97023,7 +97022,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -97250,7 +97249,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -97441,7 +97440,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -97720,7 +97719,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -98079,7 +98078,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -103208,7 +103207,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -103798,7 +103797,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -104132,7 +104131,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -105342,7 +105341,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -106424,7 +106423,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -106698,7 +106697,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -107017,7 +107016,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -107358,7 +107357,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -108126,7 +108125,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -108995,7 +108994,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -110563,7 +110562,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -110866,7 +110865,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -111264,7 +111263,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -111445,7 +111444,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -111798,7 +111797,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -112215,7 +112214,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -112521,7 +112520,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -112756,7 +112755,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -112940,7 +112939,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -113299,7 +113298,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -113716,7 +113715,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -113963,7 +113962,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -114381,7 +114380,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -115015,7 +115014,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -115499,7 +115498,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -115650,7 +115649,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -115809,7 +115808,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -122302,7 +122301,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -123057,7 +123056,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -123496,7 +123495,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -123740,7 +123739,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -123870,7 +123869,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -124096,7 +124095,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -124333,7 +124332,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -125655,7 +125654,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -125996,7 +125995,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -126118,7 +126117,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -126365,7 +126364,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -126516,7 +126515,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -126649,7 +126648,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -127044,7 +127043,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -127415,7 +127414,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -127567,7 +127566,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -130539,7 +130538,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -131123,7 +131122,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -131799,7 +131798,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -134796,7 +134795,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -135091,7 +135090,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -135672,7 +135671,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -136035,7 +136034,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -136418,7 +136417,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -136641,7 +136640,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -138364,7 +138363,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -138662,7 +138661,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -139113,7 +139112,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -139337,7 +139336,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -139826,7 +139825,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -139949,7 +139948,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -141248,7 +141247,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -141923,7 +141922,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -142427,7 +142426,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -142624,7 +142623,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -142907,7 +142906,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -143292,7 +143291,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -143385,7 +143384,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -143470,7 +143469,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -143592,7 +143591,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -143703,7 +143702,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -143844,7 +143843,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -143974,7 +143973,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -144283,7 +144282,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -144869,7 +144868,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145066,7 +145065,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145150,7 +145149,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145234,7 +145233,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145318,7 +145317,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145402,7 +145401,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145486,7 +145485,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145570,7 +145569,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145654,7 +145653,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145738,7 +145737,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145822,7 +145821,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145906,7 +145905,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -145990,7 +145989,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -146074,7 +146073,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -146158,7 +146157,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -146242,7 +146241,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -146326,7 +146325,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -146696,7 +146695,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -147159,7 +147158,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -147370,7 +147369,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -147697,7 +147696,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -148218,7 +148217,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -148461,7 +148460,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -149072,7 +149071,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -149263,7 +149262,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -149586,7 +149585,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -149756,7 +149755,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -150053,7 +150052,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -150474,7 +150473,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -150977,7 +150976,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -151335,7 +151334,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -151633,7 +151632,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -151821,7 +151820,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -152251,7 +152250,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -152754,7 +152753,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -153112,7 +153111,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -153466,7 +153465,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -153670,7 +153669,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -153777,7 +153776,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -154115,7 +154114,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -154405,7 +154404,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -154704,7 +154703,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -154930,7 +154929,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -155214,7 +155213,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -158394,7 +158393,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -158506,7 +158505,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -158590,7 +158589,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -158835,7 +158834,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -160505,7 +160504,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -160795,7 +160794,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -161451,7 +161450,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -161563,7 +161562,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -161760,7 +161759,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -161976,7 +161975,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -162311,7 +162310,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -162434,7 +162433,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -162595,7 +162594,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -163113,7 +163112,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -163662,7 +163661,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -164409,7 +164408,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -165912,7 +165911,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -166083,7 +166082,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -166569,7 +166568,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -166786,7 +166785,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -167175,7 +167174,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -167432,7 +167431,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -167719,7 +167718,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -167976,7 +167975,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -168888,7 +168887,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -169011,7 +169010,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -169305,7 +169304,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -169882,7 +169881,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -170062,7 +170061,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -170337,7 +170336,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -170631,7 +170630,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -170925,7 +170924,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -171085,7 +171084,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -171426,7 +171425,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -173592,7 +173591,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -174793,7 +174792,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -174925,7 +174924,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -175200,7 +175199,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -175332,7 +175331,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -175626,7 +175625,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -175758,7 +175757,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -175995,7 +175994,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -177272,7 +177271,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -177567,7 +177566,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -178148,7 +178147,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -178511,7 +178510,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -178894,7 +178893,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -179117,7 +179116,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -179499,7 +179498,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -179675,7 +179674,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -180726,7 +180725,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -180950,7 +180949,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181401,7 +181400,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181524,7 +181523,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181729,7 +181728,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181813,7 +181812,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181897,7 +181896,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -181981,7 +181980,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -182142,7 +182141,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -182519,7 +182518,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -183162,7 +183161,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -183641,7 +183640,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -185526,7 +185525,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -186871,7 +186870,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -187188,7 +187187,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -188048,7 +188047,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -188301,7 +188300,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -188573,7 +188572,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -189073,7 +189072,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -189299,7 +189298,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -189516,7 +189515,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -189873,7 +189872,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -190127,7 +190126,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -190465,7 +190464,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -190838,7 +190837,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -191324,7 +191323,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -191643,7 +191642,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -191961,7 +191960,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -192045,7 +192044,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -192129,7 +192128,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -192213,7 +192212,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -192317,7 +192316,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -192401,7 +192400,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194253,7 +194252,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -194384,7 +194383,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194488,7 +194487,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194611,7 +194610,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194734,7 +194733,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194857,7 +194856,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -194980,7 +194979,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -195084,7 +195083,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -195207,7 +195206,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -195310,7 +195309,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -200359,7 +200358,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -200594,7 +200593,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -201064,7 +201063,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -201280,7 +201279,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -202059,7 +202058,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -202389,7 +202388,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -202731,7 +202730,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -203075,7 +203074,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -203617,7 +203616,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -203794,7 +203793,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -204126,7 +204125,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -204438,7 +204437,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -204827,7 +204826,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -206683,7 +206682,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -206826,7 +206825,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -206949,7 +206948,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -207053,7 +207052,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -207402,7 +207401,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -207514,7 +207513,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -207796,7 +207795,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -208356,7 +208355,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -208531,7 +208530,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -209410,7 +209409,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -209634,7 +209633,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210199,7 +210198,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210322,7 +210321,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210527,7 +210526,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210611,7 +210610,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210695,7 +210694,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210779,7 +210778,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210863,7 +210862,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -210947,7 +210946,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -211114,7 +211113,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -211884,7 +211883,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -212368,7 +212367,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -212669,7 +212668,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -213670,7 +213669,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -213912,7 +213911,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -214376,7 +214375,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -214488,7 +214487,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -215168,7 +215167,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -215824,7 +215823,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -216045,7 +216044,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -216250,7 +216249,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -216571,7 +216570,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -217572,7 +217571,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -217733,7 +217732,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -218003,7 +218002,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -219035,7 +219034,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -219119,7 +219118,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -219346,7 +219345,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -221179,7 +221178,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -221283,7 +221282,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -222988,7 +222987,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -224085,7 +224084,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224169,7 +224168,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224253,7 +224252,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224337,7 +224336,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224421,7 +224420,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224505,7 +224504,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224589,7 +224588,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224673,7 +224672,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -224757,7 +224756,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -225164,7 +225163,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -225407,7 +225406,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -226067,7 +226066,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -226190,7 +226189,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -226737,7 +226736,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -226962,7 +226961,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -227565,7 +227564,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -227677,7 +227676,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -227863,7 +227862,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -227947,7 +227946,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -228031,7 +228030,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -228115,7 +228114,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -229110,7 +229109,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -229408,7 +229407,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -229840,7 +229839,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -230138,7 +230137,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -230437,7 +230436,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -230700,7 +230699,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -231162,7 +231161,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -231367,7 +231366,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -231807,7 +231806,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -232227,7 +232226,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -232677,7 +232676,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -232789,7 +232788,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -233146,7 +233145,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -233444,7 +233443,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -233802,7 +233801,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -234100,7 +234099,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -234458,7 +234457,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -234663,7 +234662,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -235002,7 +235001,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -235207,7 +235206,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -235546,7 +235545,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -235751,7 +235750,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -236090,7 +236089,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -236295,7 +236294,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -236417,7 +236416,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -236622,7 +236621,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -236961,7 +236960,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -237166,7 +237165,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -237581,7 +237580,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -237805,7 +237804,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -238256,7 +238255,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -238379,7 +238378,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -238698,7 +238697,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -238790,7 +238789,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -238874,7 +238873,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -238958,7 +238957,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -239042,7 +239041,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -239340,7 +239339,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -240412,7 +240411,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -241785,7 +241784,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -242084,7 +242083,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -242188,7 +242187,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -244156,7 +244155,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -244286,7 +244285,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -245192,7 +245191,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -246555,7 +246554,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -246859,7 +246858,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -246989,7 +246988,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -248665,7 +248664,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -249123,7 +249122,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -251393,7 +251392,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -251691,7 +251690,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -252123,7 +252122,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -252421,7 +252420,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -252778,7 +252777,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -253001,7 +253000,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -253796,7 +253795,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -254471,7 +254470,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -254621,7 +254620,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -254979,7 +254978,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -255395,7 +255394,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -256298,7 +256297,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -256495,7 +256494,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -257265,7 +257264,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -257618,7 +257617,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -257864,7 +257863,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -258162,7 +258161,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -259767,7 +259766,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -260039,7 +260038,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -260463,7 +260462,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -260615,7 +260614,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -260778,7 +260777,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -261227,7 +261226,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -261462,7 +261461,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -261761,7 +261760,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -270993,7 +270992,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -271105,7 +271104,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -271209,7 +271208,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -271426,7 +271425,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -271681,7 +271680,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -271918,7 +271917,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -272466,7 +272465,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -272701,7 +272700,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -273171,7 +273170,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -273387,7 +273386,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -274151,7 +274150,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -274388,7 +274387,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -277093,7 +277092,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -278773,7 +278772,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -279161,7 +279160,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -280309,7 +280308,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -280439,7 +280438,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -280779,7 +280778,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -281147,7 +281146,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -281564,7 +281563,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -281780,7 +281779,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -282091,7 +282090,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -282296,7 +282295,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -282419,7 +282418,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -282946,7 +282945,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -284521,7 +284520,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -284763,7 +284762,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -284867,7 +284866,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -285175,7 +285174,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -285502,7 +285501,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -285823,7 +285822,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -286048,7 +286047,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -286508,7 +286507,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -286829,7 +286828,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -287150,7 +287149,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -287280,7 +287279,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -287485,7 +287484,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -287812,7 +287811,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -287917,7 +287916,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -288021,7 +288020,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -288124,7 +288123,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -288357,7 +288356,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -288770,7 +288769,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -289820,7 +289819,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -290019,7 +290018,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -294726,7 +294725,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -294886,7 +294885,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -295096,7 +295095,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -295571,7 +295570,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -295683,7 +295682,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -295881,7 +295880,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -296086,7 +296085,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -296604,7 +296603,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -297286,7 +297285,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -297389,7 +297388,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -297552,7 +297551,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -297696,7 +297695,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -297840,7 +297839,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -299268,7 +299267,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -299380,7 +299379,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -299541,7 +299540,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -299665,7 +299664,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -300128,7 +300127,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -300426,7 +300425,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -301940,7 +301939,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -302556,7 +302555,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -302668,7 +302667,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -303103,7 +303102,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -303346,7 +303345,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -303835,7 +303834,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -303958,7 +303957,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -304277,7 +304276,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -304575,7 +304574,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -309968,7 +309967,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -313357,7 +313356,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -313864,7 +313863,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -319029,7 +319028,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -319550,7 +319549,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -319681,7 +319680,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -325134,7 +325133,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -325560,7 +325559,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -326091,7 +326090,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -326367,7 +326366,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -326860,7 +326859,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -327442,7 +327441,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -327960,7 +327959,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -328242,7 +328241,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -328729,7 +328728,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -328979,7 +328978,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -329308,7 +329307,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -329441,7 +329440,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -330134,7 +330133,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -330916,7 +330915,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -331226,7 +331225,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -332098,7 +332097,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -332960,7 +332959,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -333330,7 +333329,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -333911,7 +333910,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -334187,7 +334186,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -334664,7 +334663,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -334980,7 +334979,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -335419,7 +335418,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -335906,7 +335905,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -336296,7 +336295,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -336686,7 +336685,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -336988,7 +336987,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -337438,7 +337437,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -342396,7 +342395,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -342718,7 +342717,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -343335,7 +343334,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -343947,7 +343946,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -344146,7 +344145,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -344355,7 +344354,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -344829,7 +344828,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -349085,7 +349084,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -349637,7 +349636,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -349816,7 +349815,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -350005,7 +350004,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -350419,7 +350418,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -351082,7 +351081,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -351445,7 +351444,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -351769,7 +351768,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -351932,7 +351931,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -352063,7 +352062,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -352215,7 +352214,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -352634,7 +352633,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -354401,7 +354400,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -358358,7 +358357,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -358901,7 +358900,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -359045,7 +359044,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": {
@@ -360476,7 +360475,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -360712,7 +360711,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -361186,7 +361185,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -361430,7 +361429,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -361573,7 +361572,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -361988,7 +361987,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -362605,7 +362604,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -363261,7 +363260,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -363578,7 +363577,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -363722,7 +363721,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -364535,7 +364534,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -364801,7 +364800,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -365498,7 +365497,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -365849,7 +365848,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -366010,7 +366009,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -366153,7 +366152,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -366532,7 +366531,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -367149,7 +367148,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -367603,7 +367602,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -368008,7 +368007,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -368265,7 +368264,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -368389,7 +368388,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -368533,7 +368532,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -369091,7 +369090,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -369337,7 +369336,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -369849,7 +369848,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -370094,7 +370093,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -370654,7 +370653,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -370786,7 +370785,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -370950,7 +370949,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -371093,7 +371092,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -371711,7 +371710,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -372328,7 +372327,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -372782,7 +372781,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -373198,7 +373197,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -373455,7 +373454,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -373608,7 +373607,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -374936,7 +374935,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -375097,7 +375096,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -375220,7 +375219,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -375723,7 +375722,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -375957,7 +375956,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -376231,7 +376230,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -376383,7 +376382,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -376817,7 +376816,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -377434,7 +377433,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -378135,7 +378134,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -378420,7 +378419,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -378677,7 +378676,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -378801,7 +378800,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -378945,7 +378944,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -379233,7 +379232,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -379546,7 +379545,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -380011,7 +380010,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -380161,7 +380160,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -380294,7 +380293,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -380436,7 +380435,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -380812,7 +380811,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -381245,7 +381244,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -381862,7 +381861,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -382259,7 +382258,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -382392,7 +382391,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -382536,7 +382535,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -382975,7 +382974,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -383098,7 +383097,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -383518,7 +383517,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -383641,7 +383640,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -383897,7 +383896,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -384349,7 +384348,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -384966,7 +384965,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -385546,7 +385545,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -385822,7 +385821,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -386079,7 +386078,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -386203,7 +386202,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -386642,7 +386641,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -386822,7 +386821,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -387453,7 +387452,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -387707,7 +387706,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -387944,7 +387943,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -388067,7 +388066,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -388191,7 +388190,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -388606,7 +388605,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -389223,7 +389222,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -389620,7 +389619,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -389953,7 +389952,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -390096,7 +390095,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -390240,7 +390239,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -391021,7 +391020,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -391257,7 +391256,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -391665,7 +391664,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -391788,7 +391787,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -391931,7 +391930,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -392364,7 +392363,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -392981,7 +392980,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -393637,7 +393636,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -393941,7 +393940,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -394085,7 +394084,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -394753,7 +394752,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -395007,7 +395006,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -395320,7 +395319,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -395554,7 +395553,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -395698,7 +395697,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -395841,7 +395840,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -396128,7 +396127,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -396745,7 +396744,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -397000,7 +396999,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -397276,7 +397275,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -397552,7 +397551,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -397809,7 +397808,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -398122,7 +398121,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -398376,7 +398375,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -398689,7 +398688,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -398812,7 +398811,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -398956,7 +398955,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -399426,7 +399425,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -399841,7 +399840,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -400458,7 +400457,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": {
         "style": "link_header",
@@ -400855,7 +400854,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -401167,7 +401166,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -404177,7 +404176,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "pagination": null,
       "response_capture": null,
@@ -404208,7 +404207,7 @@
         "header.Procore-Company-Id",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "directory-projects-overview-procore",
@@ -404225,7 +404224,7 @@
         "header.Procore-Company-Id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "projects-documents-overview-procore",
@@ -404323,7 +404322,7 @@
         "header.Procore-Company-Id",
         "query.project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "commitments-billing-overview-procore",
@@ -404340,7 +404339,7 @@
         "header.Procore-Company-Id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "budgets-overview-procore",
@@ -404359,7 +404358,7 @@
         "id",
         "query.project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "work-breakdown-structure-overview-procore",
@@ -404376,7 +404375,7 @@
         "header.Procore-Company-Id",
         "query.project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "prime-contracts-overview-procore",
@@ -404393,7 +404392,7 @@
         "header.Procore-Company-Id",
         "query.project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "change-cost-payments-overview-procore",
@@ -404410,7 +404409,7 @@
         "header.Procore-Company-Id",
         "query.project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "financial-configuration-overview-procore",
@@ -404427,7 +404426,7 @@
         "header.Procore-Company-Id",
         "query.company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "action-plans-overview-procore",
@@ -404529,7 +404528,7 @@
         "header.Procore-Company-Id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "incident-reference-overview-procore",
@@ -404546,7 +404545,7 @@
         "header.Procore-Company-Id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "field-time-overview-procore",
@@ -404563,7 +404562,7 @@
         "header.Procore-Company-Id",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "field-equipment-overview-procore",
@@ -404580,7 +404579,7 @@
         "header.Procore-Company-Id",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "field-production-overview-procore",
@@ -404597,7 +404596,7 @@
         "header.Procore-Company-Id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "daily-logs-overview-procore",
@@ -404769,7 +404768,7 @@
         "id",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "materials-logistics-overview-procore",
@@ -404788,7 +404787,7 @@
         "company_id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "materials-inventory-overview-procore",
@@ -404807,7 +404806,7 @@
         "company_id",
         "project_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "equipment-overview-procore",
@@ -404826,7 +404825,7 @@
         "query.per_page",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "resource-planning-overview-procore",
@@ -404843,7 +404842,7 @@
         "header.Procore-Company-Id",
         "company_id"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "bim-estimating-overview-procore",
@@ -404901,77 +404900,77 @@
     {
       "slug": "procore-directory-companies",
       "operations": 58,
-      "composition_bytes": 139866
+      "composition_bytes": 138900
     },
     {
       "slug": "procore-directory-projects",
       "operations": 60,
-      "composition_bytes": 138309
+      "composition_bytes": 137007
     },
     {
       "slug": "procore-projects-documents",
       "operations": 96,
-      "composition_bytes": 220676
+      "composition_bytes": 219836
     },
     {
       "slug": "procore-assets-tasks",
       "operations": 97,
-      "composition_bytes": 210885
+      "composition_bytes": 210381
     },
     {
       "slug": "procore-workflows",
       "operations": 51,
-      "composition_bytes": 113436
+      "composition_bytes": 113394
     },
     {
       "slug": "procore-company-settings",
       "operations": 80,
-      "composition_bytes": 131595
+      "composition_bytes": 131553
     },
     {
       "slug": "procore-configurable-tools",
       "operations": 67,
-      "composition_bytes": 163076
+      "composition_bytes": 162782
     },
     {
       "slug": "procore-commitments-contracts",
       "operations": 70,
-      "composition_bytes": 214488
+      "composition_bytes": 213312
     },
     {
       "slug": "procore-commitments-billing",
       "operations": 62,
-      "composition_bytes": 178112
+      "composition_bytes": 176936
     },
     {
       "slug": "procore-budgets",
       "operations": 53,
-      "composition_bytes": 114949
+      "composition_bytes": 113731
     },
     {
       "slug": "procore-work-breakdown-structure",
       "operations": 71,
-      "composition_bytes": 136118
+      "composition_bytes": 135026
     },
     {
       "slug": "procore-prime-contracts",
       "operations": 66,
-      "composition_bytes": 182955
+      "composition_bytes": 181695
     },
     {
       "slug": "procore-change-cost-payments",
       "operations": 75,
-      "composition_bytes": 224939
+      "composition_bytes": 223553
     },
     {
       "slug": "procore-financial-configuration",
       "operations": 33,
-      "composition_bytes": 63111
+      "composition_bytes": 62607
     },
     {
       "slug": "procore-action-plans",
       "operations": 74,
-      "composition_bytes": 169072
+      "composition_bytes": 168946
     },
     {
       "slug": "procore-action-plan-templates",
@@ -404981,12 +404980,12 @@
     {
       "slug": "procore-inspections",
       "operations": 87,
-      "composition_bytes": 211852
+      "composition_bytes": 211516
     },
     {
       "slug": "procore-inspection-schedules",
       "operations": 18,
-      "composition_bytes": 34542
+      "composition_bytes": 34500
     },
     {
       "slug": "procore-inspection-templates",
@@ -404996,32 +404995,32 @@
     {
       "slug": "procore-incidents",
       "operations": 61,
-      "composition_bytes": 171656
+      "composition_bytes": 170396
     },
     {
       "slug": "procore-incident-reference",
       "operations": 89,
-      "composition_bytes": 151788
+      "composition_bytes": 149436
     },
     {
       "slug": "procore-field-time",
       "operations": 81,
-      "composition_bytes": 163466
+      "composition_bytes": 161702
     },
     {
       "slug": "procore-field-equipment",
       "operations": 86,
-      "composition_bytes": 213448
+      "composition_bytes": 212062
     },
     {
       "slug": "procore-field-production",
       "operations": 43,
-      "composition_bytes": 96904
+      "composition_bytes": 96274
     },
     {
       "slug": "procore-daily-logs",
       "operations": 41,
-      "composition_bytes": 119660
+      "composition_bytes": 119576
     },
     {
       "slug": "procore-daily-log-specialty",
@@ -405031,77 +405030,77 @@
     {
       "slug": "procore-submittals",
       "operations": 57,
-      "composition_bytes": 115000
+      "composition_bytes": 114748
     },
     {
       "slug": "procore-coordination-issues",
       "operations": 56,
-      "composition_bytes": 141884
+      "composition_bytes": 141758
     },
     {
       "slug": "procore-specifications-schedules",
       "operations": 97,
-      "composition_bytes": 192812
+      "composition_bytes": 192728
     },
     {
       "slug": "procore-quality-rfi-punch",
       "operations": 64,
-      "composition_bytes": 164690
+      "composition_bytes": 164606
     },
     {
       "slug": "procore-rfi",
       "operations": 49,
-      "composition_bytes": 95142
+      "composition_bytes": 94890
     },
     {
       "slug": "procore-drawings-markup-photos",
       "operations": 99,
-      "composition_bytes": 205994
+      "composition_bytes": 205490
     },
     {
       "slug": "procore-meetings-email-forms",
       "operations": 61,
-      "composition_bytes": 135395
+      "composition_bytes": 135059
     },
     {
       "slug": "procore-materials-catalog",
       "operations": 74,
-      "composition_bytes": 167015
+      "composition_bytes": 165335
     },
     {
       "slug": "procore-materials-logistics",
       "operations": 77,
-      "composition_bytes": 191906
+      "composition_bytes": 190352
     },
     {
       "slug": "procore-materials-inventory",
       "operations": 82,
-      "composition_bytes": 188123
+      "composition_bytes": 186359
     },
     {
       "slug": "procore-equipment",
       "operations": 84,
-      "composition_bytes": 164719
+      "composition_bytes": 163543
     },
     {
       "slug": "procore-resource-planning",
       "operations": 77,
-      "composition_bytes": 171353
+      "composition_bytes": 170093
     },
     {
       "slug": "procore-bim-estimating",
       "operations": 97,
-      "composition_bytes": 201414
+      "composition_bytes": 200994
     },
     {
       "slug": "procore-bidding",
       "operations": 70,
-      "composition_bytes": 175894
+      "composition_bytes": 175852
     },
     {
       "slug": "procore-platform-integrations",
       "operations": 48,
-      "composition_bytes": 84578
+      "composition_bytes": 84536
     }
   ]
 }

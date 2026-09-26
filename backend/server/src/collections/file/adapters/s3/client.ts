@@ -111,6 +111,40 @@ const buildUrl = (cfg: S3ClientConfig, key?: string, query?: Record<string, stri
   return url;
 };
 
+/** ⛔⛔ An OBJECT operation needs a key. `buildUrl` turns an empty key into the
+ *  bucket's own URL, because listing needs that. So before this, a file step with
+ *  no path addressed the bucket itself:
+ *  - `file-delete` sent DELETE to the bucket, which is S3's DeleteBucket;
+ *  - `file-read` returned the bucket listing as the file's bytes;
+ *  - `file-stat` reported the bucket as an existing file.
+ *  Found by the 2026-09-24 audit. The fs adapter already refuses an empty path
+ *  ("path escapes root"); this is the same posture here.
+ *
+ *  ⛔⛔ And the key must reach the URL as written. `new URL()` resolves `.` and `..`
+ *  path segments, so `.`, `./`, `..` and `a/..` went to the bucket too (a delete was
+ *  DeleteBucket, a read returned the listing), `..` in path style went to the
+ *  service root, and `./b` or `a/../b` addressed `b` instead of the object named.
+ *  `encodeURIComponent` encodes `%` and `\`, so a literal `.` or `..` segment is
+ *  the only part of a key the URL parser rewrites: refusing those closes it. Dots
+ *  inside a segment (`.hidden`, `a..b`, `...`) are ordinary characters. */
+const objectUrl = (cfg: S3ClientConfig, key: unknown): URL => {
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new S3Error(
+      'InvalidObjectKey',
+      'an object key is required: an empty key would address the bucket itself',
+      400,
+    );
+  }
+  if (key.split('/').some((segment) => segment === '.' || segment === '..')) {
+    throw new S3Error(
+      'InvalidObjectKey',
+      `an object key cannot have a "." or ".." segment: the URL would resolve it, so '${key}' would address another object or the bucket itself`,
+      400,
+    );
+  }
+  return buildUrl(cfg, key);
+};
+
 const sha256Buf = (buf: Uint8Array): string =>
   createHash('sha256').update(buf).digest('hex');
 
@@ -437,7 +471,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
       });
     },
     async putObject(key, body, mime) {
-      const url = buildUrl(config, key);
+      const url = objectUrl(config, key);
       const payloadHash = sha256Buf(body);
       const signed = signWithNow(
         config,
@@ -456,7 +490,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
       });
     },
     async getObject(key, maxBytes) {
-      const url = buildUrl(config, key);
+      const url = objectUrl(config, key);
       const signed = signWithNow(config, url, 'GET', '', now());
       return request(signed.url, {
         method: 'GET',
@@ -469,7 +503,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
       });
     },
     async deleteObject(key) {
-      const url = buildUrl(config, key);
+      const url = objectUrl(config, key);
       const signed = signWithNow(config, url, 'DELETE', '', now());
       await request(signed.url, {
         method: 'DELETE',
@@ -479,7 +513,7 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
       });
     },
     async headObject(key) {
-      const url = buildUrl(config, key);
+      const url = objectUrl(config, key);
       const signed = signWithNow(config, url, 'HEAD', '', now());
       return request(signed.url, {
         method: 'HEAD',

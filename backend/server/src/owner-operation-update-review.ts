@@ -42,7 +42,7 @@ const operationFromManifest = (
     : undefined;
 };
 
-interface IncomingOperationInventory {
+export interface IncomingOperationInventory {
   /** Every ingredient the incoming pack still names, including by-ref entries
    * whose operation body is not carried by the pack itself. */
   membership: Set<string>;
@@ -51,7 +51,7 @@ interface IncomingOperationInventory {
   exact: Map<string, IngredientManifest>;
 }
 
-const incomingOperationInventory = (
+export const incomingOperationInventory = (
   manifest: BulkPackManifest,
 ): IncomingOperationInventory => {
   const membership = new Set<string>();

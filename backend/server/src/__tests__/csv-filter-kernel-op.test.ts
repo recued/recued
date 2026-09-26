@@ -15,12 +15,16 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { getTransform } from '@recued/transforms';
 
 import {
   handleCsvColumns,
   handleCsvFilter,
+  handleCsvRows,
   handleCsvStats,
   CSV_FILTER_MAX_BYTES,
+  CSV_ROWS_DEFAULT_LIMIT,
+  CSV_ROWS_MAX_LIMIT,
   type CsvFilterDeps,
 } from '../collections/file/csv-filter-handler.js';
 
@@ -136,6 +140,66 @@ describe('csv-filter', () => {
   ])('refuses %s', async (_label, args) => {
     const { d } = deps();
     await expect(handleCsvFilter(d, args as never)).rejects.toThrow();
+  });
+});
+
+/** `csv-rows` — csv-filter's READING twin. Same matches, returned as rows, and
+ *  NOTHING saved: that is what lets a view that runs unasked use it, and what
+ *  makes it a read where csv-filter is a write. */
+describe('csv-rows', () => {
+  /** ⛔⛔ THE PROPERTY THE OP EXISTS FOR. Handed the full dep bundle, ingestor
+   *  included, it still ingests nothing — its deps type drops the ingestor, and
+   *  this pins the behaviour a type cannot. */
+  it('returns the matching rows and ingests nothing, even when handed an ingestor', async () => {
+    const { d, ingested } = deps();
+    const r = await handleCsvRows(d, { record_id: 'file:src', column: 'Email', match: 'globex' });
+    expect(r.rows).toEqual([{ Name: 'Globex', Email: 'hi@globex.test', Amount: '88' }]);
+    expect(r).toMatchObject({ matched: 1, scanned: 2, truncated: false, column_found: true });
+    expect(ingested).toHaveLength(0);
+  });
+
+  /** The twin cannot disagree with its sibling: the rows are what parsing the
+   *  file csv-filter saves gives, on the same input. */
+  it("returns exactly what reading back csv-filter's saved file would", async () => {
+    const tricky = 'id,note\n1,"a,b"\n2,"say ""hi"""\n3,"two\nlines"\n4\n';
+    const { d, ingested } = deps(tricky);
+    await handleCsvFilter(d, { record_id: 'file:src', column: 'id', match: '' });
+    // The recipe engine's own `csv_parse`, reached the way a recipe reaches it.
+    const saved = getTransform('csv_parse')!({ input: ingested[0]!.bytes.toString('utf8') } as never, {} as never);
+    const read = await handleCsvRows(deps(tricky).d, { record_id: 'file:src', column: 'id', match: '' });
+    expect(read.rows).toEqual(saved);
+  });
+
+  it('caps the rows at a default, counts every match, and says it cut', async () => {
+    const big = ['n', ...Array.from({ length: CSV_ROWS_DEFAULT_LIMIT + 50 }, (_, i) => `${i}`)].join('\n');
+    const r = await handleCsvRows(deps(big).d, { record_id: 'file:src', column: 'n', match: '' });
+    expect(r.rows).toHaveLength(CSV_ROWS_DEFAULT_LIMIT);
+    expect(r).toMatchObject({ matched: CSV_ROWS_DEFAULT_LIMIT + 50, truncated: true });
+
+    const all = await handleCsvRows(deps(big).d, {
+      record_id: 'file:src', column: 'n', match: '', limit: CSV_ROWS_MAX_LIMIT,
+    });
+    expect(all.rows).toHaveLength(CSV_ROWS_DEFAULT_LIMIT + 50);
+    expect(all.truncated).toBe(false);
+  });
+
+  /** ⛔ Refused, not clamped — a caller that asked for more than the ceiling and
+   *  quietly got less would read `truncated` as a fact about the sheet. */
+  it.each([0, -1, 2.5, CSV_ROWS_MAX_LIMIT + 1])('refuses limit %s', async (limit) => {
+    await expect(handleCsvRows(deps().d, { record_id: 'file:src', column: 'Email', match: '', limit }))
+      .rejects.toThrow(/limit/);
+  });
+
+  it('says a missing column is missing, with no rows', async () => {
+    const r = await handleCsvRows(deps().d, { record_id: 'file:src', column: 'Nope', match: 'x' });
+    expect(r).toMatchObject({ rows: [], column_found: false, matched: 0 });
+    expect(r.columns).toEqual(['Name', 'Email', 'Amount']);
+  });
+
+  it('respects the same byte ceiling as the other csv ops', async () => {
+    const { d } = deps(CSV, { maxBytes: 8 });
+    await expect(handleCsvRows(d, { record_id: 'file:src', column: 'Email', match: '' }))
+      .rejects.toThrow(/ceiling/);
   });
 });
 

@@ -6,7 +6,7 @@
         "url": "https://raw.githubusercontent.com/airbytehq/airbyte-platform/c7d3fda1b07bfdb0178d22d0b1e7f4ce3a1376a2/airbyte-api/server-api/src/main/openapi/api.yaml",
         "bytes": 159827,
         "sha256": "971570d4f6a60967f78e14bde9b342be70aa82a4fbe7fbd661587b7d3da24045",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "92 public method/path operations across 48 paths",
           "exact parameters, JSON request bodies, success responses, and four explicit no-auth overrides",
@@ -31,7 +31,7 @@
         "url": "https://raw.githubusercontent.com/airbytehq/airbyte-platform/c7d3fda1b07bfdb0178d22d0b1e7f4ce3a1376a2/airbyte-api/server-api/src/main/openapi/api_sdk.yaml",
         "bytes": 3306932,
         "sha256": "55ddc054e5b593c89689c97ed97a3ab5df6923e47161aaf453ecc9718a5424cb",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "global bearer, basic, and OAuth2 client-credentials security alternatives",
           "clientCredentials tokenUrl /applications/token"
@@ -78,7 +78,7 @@
         "url": "https://reference.airbyte.com/reference/authentication.md",
         "bytes": 2833,
         "sha256": "afea8a08371f1879f6c61e29c792e21686b4465e166b876fe3e27a99a058c4d8",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "Airbyte Applications provide Client ID and Client Secret",
           "POST /v1/applications/token",
@@ -91,7 +91,7 @@
         "url": "https://reference.airbyte.com/reference/getting-started.md",
         "bytes": 1081,
         "sha256": "748bddd046609adc93ac3869c3f083d02e5c1e7692e1a87d4a7872d404218d4f",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "Airbyte Cloud API origin",
           "Applications setup path"
@@ -103,7 +103,7 @@
         "url": "https://reference.airbyte.com/reference/error-messages.md",
         "bytes": 3638,
         "sha256": "c62d4b3a24ffc96d49886b80c022fc91b99103990a0813f82428346eb725ae36",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "RFC 7807 JSON errors",
           "Bearer 401 behavior",
@@ -116,7 +116,7 @@
         "url": "https://reference.airbyte.com/llms.txt",
         "bytes": 8568,
         "sha256": "3d5538959c34419b7fe203e9c840bc2d9c865d7127cb6e8f5b70acde5b13255d",
-        "retrieved_on": "2026-07-16",
+        "retrieved_on": "2026-09-15",
         "evidence": [
           "endpoint-page discovery and cross-checking",
           "the index is narrower than the aggregate OpenAPI"
@@ -200,12 +200,12 @@
       "airbyte-identity-access": 27
     },
     "composition_bytes": {
-      "airbyte-public-health": 1293,
-      "airbyte-applications-embedded": 12248,
-      "airbyte-pipeline-runtime": 57519,
-      "airbyte-connector-definitions": 29623,
-      "airbyte-deployment": 16044,
-      "airbyte-identity-access": 48024
+      "airbyte-public-health": 1294,
+      "airbyte-applications-embedded": 12387,
+      "airbyte-pipeline-runtime": 57530,
+      "airbyte-connector-definitions": 29630,
+      "airbyte-deployment": 16048,
+      "airbyte-identity-access": 48034
     },
     "body_mode_counts": {
       "none": 54,

@@ -66,6 +66,10 @@ export interface NotificationChannelBootDeps {
   notificationHandler: ConnectionKindHandler;
   channel: NotificationChannel;
   subtype: NotificationSubtype;
+  /** D-312 — the server's own broadcast of a notification to its paired
+   *  clients. The in-app channel falls back to it when no in-app connection is
+   *  enrolled: in-app has no credentials and no destination to enroll. */
+  emitInApp?: (body: { text: string; title?: string; link_url?: string }) => void;
 }
 
 /** Per-channel boot entry — the channel id used by the kernel

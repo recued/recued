@@ -34,6 +34,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   CHAT_RPC_METHODS,
+  collectListPages,
   MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES,
   MCP_RESERVED_RPC_PREFIXES,
   OWNER_CONTRACT_ID,
@@ -267,7 +268,19 @@ describe('D-171 slice 2c — chat.inbound_token.tool_catalog', () => {
     ...over,
   });
 
-  it('returns the provider catalog verbatim', () => {
+  /** ⛔ NOT VERBATIM ANY MORE — `arg_schema` IS PROJECTED AWAY, ON PURPOSE.
+   *  It was 55.9% of this response measured on a real capture (2,385,811 ->
+   *  1,051,643 B over 2,448 tools) and 43.9% of 12.71 MB on a full install,
+   *  and the one consumer — the Permissions -> MCP door grant checklist —
+   *  never reads it. A human ticks boxes against names, not JSON Schema.
+   *
+   *  ⚠ THE PROVIDER'S OWN ENTRIES MUST SURVIVE INTACT, which is the half worth
+   *  testing. `catalogProvider` IS the orchestrator's live
+   *  `InternalToolRegistry.list()`, and those same entries are what the LLM is
+   *  told it can call — there the schema is the whole point. A `delete` in
+   *  this handler instead of a projection would strip the shape out of every
+   *  tool call and no size assertion would notice. */
+  it('projects arg_schema out of the wire, without touching the registry', () => {
     const rig = setup();
     const catalog: ToolEntry[] = [
       toolFixture({ name: 'mail.search', classification: 'read' }),
@@ -275,7 +288,18 @@ describe('D-171 slice 2c — chat.inbound_token.tool_catalog', () => {
     ];
     const deps: ChatRpcDeps = { ...rig.deps, catalogProvider: () => catalog };
     const result = handleInboundTokenToolCatalog(deps);
-    expect(result.catalog).toEqual(catalog);
+
+    // Every other field is carried through unchanged.
+    expect(result.catalog).toEqual(
+      catalog.map(({ arg_schema: _schema, ...rest }) => rest),
+    );
+    // And the field itself is GONE, not merely undefined — `toEqual` ignores
+    // undefined-valued keys, so it alone would pass on a half-done projection.
+    for (const entry of result.catalog) {
+      expect(Object.keys(entry)).not.toContain('arg_schema');
+    }
+    // ⛔ the registry's entries are untouched — the LLM still gets its schemas.
+    expect(catalog.every((t) => t.arg_schema !== undefined)).toBe(true);
   });
 
   it('reads the provider per-call (catalog reshapes live without a restart)', () => {
@@ -300,6 +324,62 @@ describe('D-171 slice 2c — chat.inbound_token.tool_catalog', () => {
     // external MCP agent must never read it. The `chat.inbound_token.` prefix
     // reservation covers it (asserted generically above; pinned here too).
     expect(isReservedLocalRpc('chat.inbound_token.tool_catalog')).toBe(true);
+  });
+
+  /** Paging (internal design notes). About 12 tools per
+   *  installed pack, so the unpaged frame grows with every install. */
+  describe('paged', () => {
+    const catalogOf = (n: number): ToolEntry[] =>
+      Array.from({ length: n }, (_, i) => toolFixture({
+        name: `recued_op_test/pack.op_${String(i).padStart(3, '0')}`,
+        description: `Operation ${i}.`,
+        arg_schema: { type: 'object', properties: { id: { type: 'string' } } },
+      }));
+
+    it('an unpaged request gets the whole catalog and no paging fields — an older webclient sees no change', () => {
+      const rig = setup();
+      const deps: ChatRpcDeps = { ...rig.deps, catalogProvider: () => catalogOf(5) };
+      for (const args of [undefined, {}]) {
+        const result = handleInboundTokenToolCatalog(deps, args);
+        expect(Object.keys(result)).toEqual(['catalog']);
+        expect(result.catalog).toHaveLength(5);
+      }
+    });
+
+    it('pages from the registered handler reassemble to the unpaged catalog, projected, from ONE provider read', async () => {
+      const rig = setup();
+      const catalog = catalogOf(23);
+      let reads = 0;
+      const deps: ChatRpcDeps = {
+        ...rig.deps,
+        catalogProvider: () => {
+          reads += 1;
+          return catalog;
+        },
+      };
+      const unpaged = handleInboundTokenToolCatalog(deps).catalog;
+      reads = 0;
+
+      const handler = makeChatHandlers(deps)!.handlers['chat.inbound_token.tool_catalog']!;
+      const totals: Array<number | undefined> = [];
+      const collected = await collectListPages({
+        limit: 4,
+        fetchPage: async (request) => {
+          const page = await handler(request, {} as never);
+          totals.push(page.total);
+          return { items: page.catalog, next_cursor: page.next_cursor, total: page.total };
+        },
+      });
+
+      expect(collected).toEqual(unpaged);
+      expect(totals).toEqual([23, 23, 23, 23, 23, 23]);
+      for (const tool of collected) expect(Object.keys(tool)).not.toContain('arg_schema');
+      // The slice's pager kept page 1's catalog for the rest of the read — the
+      // provider walks every installed pack, so once per read, not per page.
+      expect(reads).toBe(1);
+      // ⛔ and the registry's own entries still carry their schemas.
+      expect(catalog.every((t) => t.arg_schema !== undefined)).toBe(true);
+    });
   });
 });
 

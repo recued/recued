@@ -3,13 +3,13 @@
     "source": {
       "reference_index": {
         "url": "https://documentation.onesignal.com/llms.txt",
-        "bytes": 81023,
-        "sha256": "9ddb90c1b71fbab291ac36ce3cc92ace48413b858bc07e848abef33b6a04e51b"
+        "bytes": 40783,
+        "sha256": "63ada6d5038f00dd61cd9e811324815277b6a94a624a89c60258abc31327ff2b"
       },
       "reference_pages": {
-        "count": 59,
-        "bytes": 1541193,
-        "bundle_sha256": "316914c762d889f3ba55ac6dcc378050418d554fbd6fbe5a87e19019d634875a",
+        "count": 69,
+        "bytes": 1980609,
+        "bundle_sha256": "bd0612e030212997927f20d52fd4dc1ffbffce137688ba0c100721d736f0f572",
         "entries": [
           {
             "slug": "add-a-device",
@@ -22,56 +22,72 @@
           {
             "slug": "cancel-message",
             "url": "https://documentation.onesignal.com/reference/cancel-message.md",
-            "bytes": 18582,
-            "sha256": "9ea54b33d6f300b0ff2c3f115f1ef82c97dedf3e4487c78c75608b6bf1989600",
+            "bytes": 18633,
+            "sha256": "6a72814780b576aa4079c0e7f443184d32df15d927872ed637ff57c50b50b04e",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "copy-template-to-another-app",
             "url": "https://documentation.onesignal.com/reference/copy-template-to-another-app.md",
-            "bytes": 22495,
-            "sha256": "061ab1e0f920806dbbbb456afaf7f96e536ee93e126bc896f3c13f6b36ae6c47",
+            "bytes": 22546,
+            "sha256": "c3af8354e74d44d97d33931745a77ea81824be85f61f9259882580ed0ad56aad",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "count-unsaved",
+            "url": "https://documentation.onesignal.com/reference/count-unsaved.md",
+            "bytes": 22804,
+            "sha256": "faee25b9710b8feb9de6b6068e656300b0bd89027ee982abd3697fc450493ef6",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-alias-by-subscription",
             "url": "https://documentation.onesignal.com/reference/create-alias-by-subscription.md",
-            "bytes": 21635,
-            "sha256": "6b011ed9186b07321a11d751a153075fc4c64a7de17eac032eedb1ee89bad868",
+            "bytes": 21689,
+            "sha256": "dfa55d95a27bfd2eab1f5ffef7a13dbf474de099501c1b6e05c1ef8ee1d25569",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-alias",
             "url": "https://documentation.onesignal.com/reference/create-alias.md",
-            "bytes": 24292,
-            "sha256": "ac580a60712875e284d800707fd3300936e8010db7ce115219d420bad6b12d7b",
+            "bytes": 31949,
+            "sha256": "d1a0b9fa35e914ed9f731ba8d4b11920015c483ec04ff82b2e75c9321d6dc4d3",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-an-app",
             "url": "https://documentation.onesignal.com/reference/create-an-app.md",
-            "bytes": 29369,
-            "sha256": "02a9ba5288393996378f33a5a07af6516702aa71eba17b1e6ea0420630cb1103",
+            "bytes": 29552,
+            "sha256": "c59807a9db3ed3a79743e80f18c2333131a62076d384bdc9818fe1fd79d83c79",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-api-key",
             "url": "https://documentation.onesignal.com/reference/create-api-key.md",
-            "bytes": 23097,
-            "sha256": "0a88223bb98284d2e81be28f4979b15c28a49b0bc59f9627e06036fd906cff31",
+            "bytes": 23150,
+            "sha256": "b45c1401a76a06d4c6b087ae866e3ad0aa01a21ce3500b5511f61ddba2e840fe",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-custom-events",
             "url": "https://documentation.onesignal.com/reference/create-custom-events.md",
-            "bytes": 25434,
-            "sha256": "668c112d00b288f4fc5e5a4cde8a260b0d7696b72db6445eb7cb820dde9a1ab1",
+            "bytes": 28057,
+            "sha256": "a90bce70b11cce5853f20d38ce518c81f9f7c1e2ee2dfd8c30942a32722090ad",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "create-journey",
+            "url": "https://documentation.onesignal.com/reference/create-journey.md",
+            "bytes": 72127,
+            "sha256": "032554319e20ff9dcef5b26e1a608fae8abec792f58b10487996b025baac39e4",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -86,80 +102,88 @@
           {
             "slug": "create-segments",
             "url": "https://documentation.onesignal.com/reference/create-segments.md",
-            "bytes": 33133,
-            "sha256": "f4de926c0284ea0813b4a634e124bda5529357f3b9d7fd46494c7bbdf4f1fecc",
+            "bytes": 33184,
+            "sha256": "3b2ad5da0bd7b37db6bcbb7bcaa3baa9f7c1f8ba7c8daefd4d0d3db457d67fc4",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-subscription",
             "url": "https://documentation.onesignal.com/reference/create-subscription.md",
-            "bytes": 34883,
-            "sha256": "4a407779966302aff36fde7611e531b7a8e93b2ad1d4ff105cdc15f5314434d4",
+            "bytes": 34821,
+            "sha256": "53f6565eea983e458e0d05c26e71adf977d55128f25cf168284db1219962a44d",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-template",
             "url": "https://documentation.onesignal.com/reference/create-template.md",
-            "bytes": 40466,
-            "sha256": "3c8a6bbd188609406f11d59900c6ef4b5b2381863ea50b614d0c236dfdc18284",
+            "bytes": 40526,
+            "sha256": "15811ee31d0ba9983128ff6c95695ddd0563b7b81cce19c25f86bb1527d3cf5e",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "create-user",
             "url": "https://documentation.onesignal.com/reference/create-user.md",
-            "bytes": 38815,
-            "sha256": "21f3972d629b80d2536c4af0ce00fe4e189c1ebdfee35b8893da4660187b58b5",
+            "bytes": 38876,
+            "sha256": "8dc8661bab10766fe5958d4255e73569f27be44cb6486ebe573daef3d05bc30d",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "csv-export",
             "url": "https://documentation.onesignal.com/reference/csv-export.md",
-            "bytes": 29242,
-            "sha256": "bce045ef243245e2cf4f6824a66bdce273a4d3b94777d960201be71bcfa46c09",
+            "bytes": 29293,
+            "sha256": "5bdbc91a62cca310c68372dcbcf9dc40521f835ac1cc31fd88fb5a9aabcd1285",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-alias",
             "url": "https://documentation.onesignal.com/reference/delete-alias.md",
-            "bytes": 21446,
-            "sha256": "b7959997b24822ea48d385f8e481c905560f90009754e7f0419157f3b6886553",
+            "bytes": 21500,
+            "sha256": "bfe23065b4e2aa748ddc907d88a07fad7c71d685521d5842b82363639caf30ec",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-api-key",
             "url": "https://documentation.onesignal.com/reference/delete-api-key.md",
-            "bytes": 19027,
-            "sha256": "412044e094ff2feceba3eb478043a70a56becdc62d87390c9f441f4f7b3e3578",
+            "bytes": 19084,
+            "sha256": "895e400dc8f7da9e7179a7de585ce40aacab20508c5b07cc629348268ecf834a",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "delete-journey",
+            "url": "https://documentation.onesignal.com/reference/delete-journey.md",
+            "bytes": 19077,
+            "sha256": "5636c20cad018a0cd9d5089a4b5141451bf81d56bcd109e5e08d8eb42139783b",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-segments",
             "url": "https://documentation.onesignal.com/reference/delete-segments.md",
-            "bytes": 20836,
-            "sha256": "756c95b0c85b9c9c03942e854f26b329985c71c7cf438ac71e54123cb5f19bd8",
+            "bytes": 20874,
+            "sha256": "96ff9235a1df99b0287f9d4c8f1186df049489d6948b68d01c3a51c4160e0834",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-subscription",
             "url": "https://documentation.onesignal.com/reference/delete-subscription.md",
-            "bytes": 19616,
-            "sha256": "c4465e35b06d5452c3c88bba2769a3ad37d144b1de30852e7c13e4677fb93a39",
+            "bytes": 19667,
+            "sha256": "a7737c044e2d320c1f2e1a1cba1d9048fb993d81f00e6017be1f93d7650a86c7",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "delete-template",
             "url": "https://documentation.onesignal.com/reference/delete-template.md",
-            "bytes": 20196,
-            "sha256": "9f41184cf68d39a6fd8e0426d2496d893c9053d75bbc6c3340b998ca82983d13",
+            "bytes": 20244,
+            "sha256": "a694ba2d9803f5ba390a43580cf382ca15a7a4c71ce64300948bdc6c2c0ee379",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -174,8 +198,24 @@
           {
             "slug": "delete-user",
             "url": "https://documentation.onesignal.com/reference/delete-user.md",
-            "bytes": 20514,
-            "sha256": "c1155675abe8f3cb3ed817971fda8491739df044a1da7a3a039e5f137448240d",
+            "bytes": 20565,
+            "sha256": "9ace107615e7a1e2baa0d5b05fd874b955f4546c94444d6b89323da2444364bf",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "delivery-metrics",
+            "url": "https://documentation.onesignal.com/reference/delivery-metrics.md",
+            "bytes": 6647,
+            "sha256": "235410f1df912152ba383b2f1265ee93b1e3d50fc17e1473e0591af6ae03c4ba",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "duplicate-journey",
+            "url": "https://documentation.onesignal.com/reference/duplicate-journey.md",
+            "bytes": 42475,
+            "sha256": "d0c344efe289d632efd0de53b32ab2621c2968b7b1e5a9212adfb013a2dc4bea",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -198,208 +238,224 @@
           {
             "slug": "email",
             "url": "https://documentation.onesignal.com/reference/email.md",
-            "bytes": 57144,
-            "sha256": "ddded28ada6271b0d665744dfe4dec6a7021da3117992649378cddde1b0f637b",
+            "bytes": 60747,
+            "sha256": "b42655c25cd0fa8e88ce3b0eb135329dc928de341c2e4d08de394bafc2cc565b",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "export-csv-of-events",
             "url": "https://documentation.onesignal.com/reference/export-csv-of-events.md",
-            "bytes": 21010,
-            "sha256": "e1220986f0d1b0d4a97f85d7b8980fcb9dac77741c4136ce2f27ff1a98258f46",
+            "bytes": 21061,
+            "sha256": "e00be97ae9bb072532567456f60ebec039818800dedda7d83a16469525cdb25e",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "fetch-aliases",
             "url": "https://documentation.onesignal.com/reference/fetch-aliases.md",
-            "bytes": 20890,
-            "sha256": "d2e813826c998d661b4a483147b17ef4abb792a684f2b54bb87f80e0665480df",
+            "bytes": 20998,
+            "sha256": "53f1bbb97daee0370b0c28f63b831752a750f6dd6a1fc9a987816ed5094352cf",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "fetch-identity-by-subscription",
             "url": "https://documentation.onesignal.com/reference/fetch-identity-by-subscription.md",
-            "bytes": 20343,
-            "sha256": "c6d7e5f63f92c9c3e84908f3c995b07ecadc49e3bdcec0af84cfb63a701951b8",
+            "bytes": 20454,
+            "sha256": "6e2883304ec341f658cd5e196fe6b8137f56e2d462e6b05b6081b031f81c4985",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "idempotent-notification-requests",
             "url": "https://documentation.onesignal.com/reference/idempotent-notification-requests.md",
-            "bytes": 4337,
-            "sha256": "07b0078854da9dbaf3d409b5115044c1727d62f74bb29e1de77f696ab19b4d7f",
+            "bytes": 4538,
+            "sha256": "97f159c9b4dce59b41835cafd3e8f2bb5265b92d337338d0beb097349fba6b6e",
             "has_openapi": false,
             "kind": "guide"
           },
           {
             "slug": "list-audit-logs",
             "url": "https://documentation.onesignal.com/reference/list-audit-logs.md",
-            "bytes": 46069,
-            "sha256": "cebc5520f7921bf0a9150d835c2e3ac373cf20ea173f7687d044529395008452",
+            "bytes": 46120,
+            "sha256": "f016708e101c9ece30e739a25d20388c2e43a32f6160912821221b5439548f71",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "message-history",
             "url": "https://documentation.onesignal.com/reference/message-history.md",
-            "bytes": 22489,
-            "sha256": "c4abe7e3413a026d505a28f2e135cfda13f2f1e1aa3ec7dbfba2fc8e26a11ed0",
+            "bytes": 22512,
+            "sha256": "931c32b7c5a213563c1ac702f544c87ca20c54668f0c259e7e63a37229fe555d",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "push-notification",
             "url": "https://documentation.onesignal.com/reference/push-notification.md",
-            "bytes": 82242,
-            "sha256": "65b48c37a48a1b56527cdb1bd827eda4470736afca5aff28922eba7b980bed6f",
+            "bytes": 82728,
+            "sha256": "17cf29bd5a35198af81c86b92c1928d995d593f16a12000e8a5c25e607dde85c",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "rate-limits",
             "url": "https://documentation.onesignal.com/reference/rate-limits.md",
-            "bytes": 13964,
-            "sha256": "a5baf56f9c5f0e75d675485785b7a0a6acd7c352abbf64fe1e78e682b795f75a",
+            "bytes": 15829,
+            "sha256": "e2e9d1a1ada3540b40ac2904513017557b51cf51ee774b47a2a186a4dac70e51",
             "has_openapi": false,
             "kind": "guide"
           },
           {
             "slug": "rest-api-overview",
             "url": "https://documentation.onesignal.com/reference/rest-api-overview.md",
-            "bytes": 13279,
-            "sha256": "0ece73c8a852d693bc4d5bd5d66083dee033f8525077b7b28013cc3b407dbeb5",
+            "bytes": 15223,
+            "sha256": "ab252261c237db00940c4e24a2784571a59b6e73706da4756c9c1184e4684ed3",
             "has_openapi": false,
             "kind": "guide"
           },
           {
             "slug": "rotate-api-key",
             "url": "https://documentation.onesignal.com/reference/rotate-api-key.md",
-            "bytes": 21554,
-            "sha256": "590ba055ef66ddffd3d64ffc5fd5a1045801f70d03814eeeff9807b5538d2db4",
+            "bytes": 21590,
+            "sha256": "d89c64f930ad8d690415de1111135b8308439d9feedc9c5676223c247d1f889f",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "sms",
             "url": "https://documentation.onesignal.com/reference/sms.md",
-            "bytes": 55677,
-            "sha256": "a8f889c17eb257c5815b9d9e010e3fa60d483e5a495bc73d316a6126b2ea2cd9",
+            "bytes": 55813,
+            "sha256": "0c92b87724ba9e1a9ca89f1b21fb38fb79ee05755164d1c258bae945811bbec9",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "start-live-activity",
             "url": "https://documentation.onesignal.com/reference/start-live-activity.md",
-            "bytes": 44917,
-            "sha256": "f1ac1330bc0e7e226c56753df9cda53dc03bf867aa066b633a97024a9df3c251",
+            "bytes": 50954,
+            "sha256": "621cb1049b59db643550d5c4b8d17e310e7a0b8df630b077d972f19acc18fafa",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "transfer-subscription",
             "url": "https://documentation.onesignal.com/reference/transfer-subscription.md",
-            "bytes": 22989,
-            "sha256": "433506c7491d30dffde97037b6197c47b55cb3e6761c37c607b2ef0962949d51",
+            "bytes": 23040,
+            "sha256": "7c089f662f6db54dbdab8768b36926ef4afd3f1ffcfcc4458450def1b6135be7",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "unsubscribe-with-token",
             "url": "https://documentation.onesignal.com/reference/unsubscribe-with-token.md",
-            "bytes": 24923,
-            "sha256": "4ff5ddb212056e011ae7334cd6cbfc05f4529cc060be26d884d9effe5e95780c",
+            "bytes": 24977,
+            "sha256": "830a56731e7c79bd56ffdadb4906a0d1cdee31706b359e450cc91b2d8a93f662",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-an-app",
             "url": "https://documentation.onesignal.com/reference/update-an-app.md",
-            "bytes": 33491,
-            "sha256": "eafd9d4eacff99b51c79557de035f13df1045c3234589c9116d2eaf77235ef67",
+            "bytes": 33686,
+            "sha256": "6a57394d5cc56970e4d34d71a1e6e02213d63bbb4ee453ebbc69ab05d962a640",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-api-key",
             "url": "https://documentation.onesignal.com/reference/update-api-key.md",
-            "bytes": 21771,
-            "sha256": "8d1fc29225ad1e5f7a1d3f35c486d67976a22b759e5d1d9cf1deed52eefbe0dc",
+            "bytes": 21828,
+            "sha256": "a1195bece7295d7b4abeef79508ccb27d72645723513e4d814ad03de1e417554",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "update-journey-node",
+            "url": "https://documentation.onesignal.com/reference/update-journey-node.md",
+            "bytes": 62686,
+            "sha256": "5b3e7351f9fb0dff5409f553ac387fa69cb9cac1b95595a14e047fc6e141f5e5",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "update-journey",
+            "url": "https://documentation.onesignal.com/reference/update-journey.md",
+            "bytes": 71582,
+            "sha256": "2bc193f809616312230dd74d0b3422a2ea0080e0acefddfe2b8c2f8a14bdaa35",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-live-activity-api",
             "url": "https://documentation.onesignal.com/reference/update-live-activity-api.md",
-            "bytes": 35077,
-            "sha256": "14ad40e65f29155b09842db4a49734789b5c39b4eb34a927cebdd7abf232e81b",
+            "bytes": 39198,
+            "sha256": "7b4d2975d7a2ccf949b1fd6b26a6b6655469d60acd5d32cc1230666c968fd1a2",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-segment",
             "url": "https://documentation.onesignal.com/reference/update-segment.md",
-            "bytes": 30339,
-            "sha256": "9889487ff27bd1d7adf23f66bb45c6b5bfcf3ed975cc45771d9fc3a0e379c629",
+            "bytes": 30387,
+            "sha256": "5d680b2f0ca723ecedcc70ea5ceeed080b855ed1f182de4c58d8c1e968e9b0f4",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-subscription-by-token",
             "url": "https://documentation.onesignal.com/reference/update-subscription-by-token.md",
-            "bytes": 30175,
-            "sha256": "16b0d62f6825bd59bee03a44ceac340ec058af5b1cb9e0d366bf6595726b4b35",
+            "bytes": 30230,
+            "sha256": "58a349ae66ec3f864f76d280003f39c8fe273f37bc675f0e3fc2bed23e483dc8",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-subscription",
             "url": "https://documentation.onesignal.com/reference/update-subscription.md",
-            "bytes": 27295,
-            "sha256": "312171f38519cb7f7734de5586c1d15865773ea0cbd182da5170defe75652f39",
+            "bytes": 27310,
+            "sha256": "e9727fb1931aef7e39217d5a5e8a8df4f1d1ed69b28b58009f686178db20562e",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-template",
             "url": "https://documentation.onesignal.com/reference/update-template.md",
-            "bytes": 40454,
-            "sha256": "bbd6116aebbefe0e0d8351567ccb710858a223254cb733e7ca67f75b2097afa2",
+            "bytes": 40514,
+            "sha256": "651c8b8cb2fec84d4b9d5e2998cc274f7fac90b472fe1b2edb8ef91c8905d52c",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "update-user",
             "url": "https://documentation.onesignal.com/reference/update-user.md",
-            "bytes": 31901,
-            "sha256": "0f4411572023c095c220cda95df68fe1b0aadf06046bd4b536c08df80403d1de",
+            "bytes": 31952,
+            "sha256": "6b317344b71e84bca42c1a3d5d807c6582e6cfd278b68e791b19fac1bf213d74",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-an-app",
             "url": "https://documentation.onesignal.com/reference/view-an-app.md",
-            "bytes": 25741,
-            "sha256": "775440df25b43426611b38d0c26300cc96f25b4abc83721b0ce07769fe34a99b",
+            "bytes": 25871,
+            "sha256": "d71d20f100fbcb21ea3f07e19ee8da94d5bfa47f69c09bbfb6f8f3d47d06d776",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-api-keys",
             "url": "https://documentation.onesignal.com/reference/view-api-keys.md",
-            "bytes": 20015,
-            "sha256": "b07c70479f6a875048f019ad6abff82c3f7a66c8a7145c4f32b04dd893d7bf14",
+            "bytes": 20032,
+            "sha256": "fe570d85924c73200590fc29ce18ac786bdbf6db3703433b1411288706fbcf59",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-apps",
             "url": "https://documentation.onesignal.com/reference/view-apps.md",
-            "bytes": 24082,
-            "sha256": "fb4039b188ab8c786d2e952dc09edcd3341628cb7863c3138bb2f5852d846c60",
+            "bytes": 24221,
+            "sha256": "23a4605c2b92e807bfabff50c7e042d6dc809108b8ed9ec9ec4a3199ada74c89",
             "has_openapi": true,
             "kind": "operation"
           },
@@ -420,66 +476,90 @@
             "kind": "operation"
           },
           {
+            "slug": "view-journey-stats",
+            "url": "https://documentation.onesignal.com/reference/view-journey-stats.md",
+            "bytes": 33802,
+            "sha256": "144b156000bfa5915b7dab5e3e54dd1bafe63badce0097bbc01dbede3f0c3ebe",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "view-journey",
+            "url": "https://documentation.onesignal.com/reference/view-journey.md",
+            "bytes": 48042,
+            "sha256": "dca6c973872515c0b44ce2b080a500c814a03ae77e9412e1e41a1563ab91f781",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
+            "slug": "view-journeys",
+            "url": "https://documentation.onesignal.com/reference/view-journeys.md",
+            "bytes": 26466,
+            "sha256": "2c95bc8cd10b84f7a3a5cd50414985bbd83e84bb4e05fa4773937f43db7f2792",
+            "has_openapi": true,
+            "kind": "operation"
+          },
+          {
             "slug": "view-message",
             "url": "https://documentation.onesignal.com/reference/view-message.md",
-            "bytes": 27292,
-            "sha256": "9301d8b995606a95958dfa92026cd0a053d9130c98d8f8c5ba26c1971f78e219",
+            "bytes": 29899,
+            "sha256": "9935cbcc66387e5b80876636d0101787afb9e329133ee75c7390165ed2b875e8",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-messages",
             "url": "https://documentation.onesignal.com/reference/view-messages.md",
-            "bytes": 39297,
-            "sha256": "c3a22b6a6ea8fd776f972ff9c4e9071925ef0b7b4dd4cc3363135661e1edf535",
+            "bytes": 39351,
+            "sha256": "bf402be0fb98e713716d8a1d2ab89eb1cdd9baa7907608499fa3a50080d29dd5",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-outcomes",
             "url": "https://documentation.onesignal.com/reference/view-outcomes.md",
-            "bytes": 35209,
-            "sha256": "014aca080322aa9e46905ee1ecaf5df5ce1a6ef837dc6062467e710a82b7abab",
+            "bytes": 35258,
+            "sha256": "e0e34fdd49d5cae1d38124d7797c114d2704778431b280c10d1ca76c04598edf",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-segment",
             "url": "https://documentation.onesignal.com/reference/view-segment.md",
-            "bytes": 33242,
-            "sha256": "6edae0cbb9390c12d0b1516f4a32587da052de4e5184c928b687828fedb3a051",
+            "bytes": 33293,
+            "sha256": "86b0bd0e9f4073ed6a492cb9150c3f6c0514e653c0fb29311f6b32bd0a60dd95",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-segments",
             "url": "https://documentation.onesignal.com/reference/view-segments.md",
-            "bytes": 24425,
-            "sha256": "7d264be13a0e0f420778c324ffa5a2301eec1c81e7c4a9d5e365b40baf33d224",
+            "bytes": 24473,
+            "sha256": "8fc6ec4ced8ac8436f7d4b73f4dbe4e4da8df8af24d2f6f1856532e639c3f797",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-template",
             "url": "https://documentation.onesignal.com/reference/view-template.md",
-            "bytes": 30561,
-            "sha256": "7ef3aa107104c9f32b89076a05c18f2d9f65440b015174907d9b3ea6961edcc9",
+            "bytes": 30630,
+            "sha256": "e33ad3ad0eb6cfe686d4521321c56e601562f62c2e9629bfbf02366d3cfe0517",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-templates",
             "url": "https://documentation.onesignal.com/reference/view-templates.md",
-            "bytes": 26039,
-            "sha256": "893b6bcd97297df03fbf5eec5de910b69ee046446efda5766ccccd9ea6851fa1",
+            "bytes": 26087,
+            "sha256": "4e800b218466aa7a453b50a4724e61bf7950fdf7060e2ea316185df08d310769",
             "has_openapi": true,
             "kind": "operation"
           },
           {
             "slug": "view-user",
             "url": "https://documentation.onesignal.com/reference/view-user.md",
-            "bytes": 28051,
-            "sha256": "6ff5c5dd25c75a000f7abd41e66dca53109505f0f22d11063cb321f1e2789e27",
+            "bytes": 28056,
+            "sha256": "1b33beaf82b99b45a807331eeb19081bc8d008d340248242a94da8bc6f03191a",
             "has_openapi": true,
             "kind": "operation"
           }
@@ -496,33 +576,33 @@
         "operation_count": 37
       }
     },
-    "current_reference_operation_page_count": 56,
-    "current_reference_openapi_operation_count": 49,
+    "current_reference_operation_page_count": 66,
+    "current_reference_openapi_operation_count": 59,
     "current_reference_legacy_page_count": 7,
     "current_reference_guide_page_count": 3,
     "legacy_only_contract_count": 3,
-    "declared_contract_count": 59,
-    "unique_route_count": 56,
-    "admitted_contract_count": 49,
-    "admitted_route_count": 46,
+    "declared_contract_count": 69,
+    "unique_route_count": 66,
+    "admitted_contract_count": 59,
+    "admitted_route_count": 56,
     "excluded_contract_count": 10,
-    "pack_operation_count": 51,
+    "pack_operation_count": 61,
     "pack_operation_counts": {
-      "onesignal": 44,
+      "onesignal": 54,
       "onesignal-organization-admin": 7
     },
     "admitted_method_counts": {
-      "GET": 16,
-      "POST": 14,
+      "GET": 20,
+      "POST": 17,
       "PUT": 2,
-      "PATCH": 8,
-      "DELETE": 9
+      "PATCH": 10,
+      "DELETE": 10
     },
     "risk_counts": {
-      "read": 18,
+      "read": 22,
       "write": 6,
-      "admin": 16,
-      "destructive": 11
+      "admin": 21,
+      "destructive": 12
     },
     "compatibility_operation_ids": [
       "notification.search",
@@ -1217,6 +1297,68 @@
       },
       "result_path": null
     },
+    "reference:count-unsaved": {
+      "key": "reference:count-unsaved",
+      "page": "count-unsaved",
+      "page_url": "https://documentation.onesignal.com/reference/count-unsaved.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "count-unsaved",
+      "method": "POST",
+      "documented_path": "/notifications/count-unsaved",
+      "wire_path": "/notifications/count-unsaved",
+      "route_key": "POST /notifications/count-unsaved",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": {
+        "media": "application/json",
+        "documented_properties": [
+          "app_id",
+          "excluded_segments",
+          "filters",
+          "include_aliases",
+          "included_segments",
+          "target_channel"
+        ]
+      },
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "uncapped_count": {
+              "type": "integer"
+            },
+            "cap_applied": {
+              "type": "boolean"
+            },
+            "mobile_suppressed": {
+              "type": "boolean"
+            },
+            "mobile_excluded_count": {
+              "type": "integer"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:create-alias": {
       "key": "reference:create-alias",
       "page": "create-alias",
@@ -1547,6 +1689,65 @@
       },
       "result_path": null
     },
+    "reference:create-journey": {
+      "key": "reference:create-journey",
+      "page": "create-journey",
+      "page_url": "https://documentation.onesignal.com/reference/create-journey.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "create-journey",
+      "method": "POST",
+      "documented_path": "/apps/{app_id}/journeys",
+      "wire_path": "/apps/{app_id}/journeys",
+      "route_key": "POST /apps/{}/journeys",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        },
+        {
+          "name": "Content-Type",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": {
+        "media": "application/json",
+        "documented_properties": [
+          "audience",
+          "description",
+          "early_exit",
+          "name",
+          "nodes",
+          "reentry_rules",
+          "schedule"
+        ]
+      },
+      "response": {
+        "status": "200",
+        "media": null,
+        "documented_media": [],
+        "schema": {
+          "type": "string",
+          "properties": {},
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:create-message": {
       "key": "reference:create-message",
       "page": "create-message",
@@ -1606,6 +1807,7 @@
           "email_sender_domain",
           "email_subject",
           "email_to",
+          "email_warm_up",
           "enable_frequency_cap",
           "excluded_segments",
           "existing_android_channel_id",
@@ -1662,6 +1864,7 @@
           "isIos",
           "isSafari",
           "isWP_WNS",
+          "kind",
           "large_icon",
           "mutable_content",
           "name",
@@ -2138,6 +2341,60 @@
       },
       "result_path": null
     },
+    "reference:delete-journey": {
+      "key": "reference:delete-journey",
+      "page": "delete-journey",
+      "page_url": "https://documentation.onesignal.com/reference/delete-journey.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "delete-journey",
+      "method": "DELETE",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "DELETE /apps/{}/journeys/{}",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "success": {
+              "type": "boolean"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:delete-segments": {
       "key": "reference:delete-segments",
       "page": "delete-segments",
@@ -2389,6 +2646,119 @@
       },
       "result_path": null
     },
+    "reference:delivery-metrics": {
+      "key": "reference:delivery-metrics",
+      "page": "delivery-metrics",
+      "page_url": "https://documentation.onesignal.com/reference/delivery-metrics.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "get-email-delivery-metrics",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/email_analytics/delivery_metrics",
+      "wire_path": "/apps/{app_id}/email_analytics/delivery_metrics",
+      "route_key": "GET /apps/{}/email_analytics/delivery_metrics",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "last_24_hours": {
+              "type": "object"
+            },
+            "last_7_days": {
+              "type": "object"
+            },
+            "last_30_days": {
+              "type": "object"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
+    "reference:duplicate-journey": {
+      "key": "reference:duplicate-journey",
+      "page": "duplicate-journey",
+      "page_url": "https://documentation.onesignal.com/reference/duplicate-journey.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "duplicate-journey",
+      "method": "POST",
+      "documented_path": "/apps/{app_id}/journeys/{id}/duplicate",
+      "wire_path": "/apps/{app_id}/journeys/{id}/duplicate",
+      "route_key": "POST /apps/{}/journeys/{}/duplicate",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        },
+        {
+          "name": "Content-Type",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": {
+        "media": "application/json",
+        "documented_properties": [
+          "overrides"
+        ]
+      },
+      "response": {
+        "status": "200",
+        "media": null,
+        "documented_media": [],
+        "schema": {
+          "type": "string",
+          "properties": {},
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:edit-device": {
       "key": "reference:edit-device",
       "page": "edit-device",
@@ -2550,6 +2920,7 @@
           "email_sender_domain",
           "email_subject",
           "email_to",
+          "email_warm_up",
           "excluded_segments",
           "filters",
           "idempotency_key",
@@ -2557,6 +2928,7 @@
           "include_subscription_ids",
           "include_unsubscribed",
           "included_segments",
+          "kind",
           "name",
           "send_after",
           "target_channel",
@@ -3580,6 +3952,243 @@
       },
       "result_path": null
     },
+    "reference:update-journey": {
+      "key": "reference:update-journey",
+      "page": "update-journey",
+      "page_url": "https://documentation.onesignal.com/reference/update-journey.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "update-journey",
+      "method": "PATCH",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "PATCH /apps/{}/journeys/{}",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        },
+        {
+          "name": "Content-Type",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": {
+        "media": "application/json",
+        "documented_properties": [
+          "audience",
+          "concurrency_key",
+          "description",
+          "early_exit",
+          "name",
+          "nodes",
+          "reentry_rules",
+          "schedule",
+          "state"
+        ]
+      },
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "app_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string"
+            },
+            "archived_at": {
+              "type": "string"
+            },
+            "created_source": {
+              "type": "string"
+            },
+            "audience": {
+              "type": "object"
+            },
+            "early_exit": {
+              "type": "object"
+            },
+            "reentry_rules": {
+              "type": "object"
+            },
+            "schedule": {
+              "type": "object"
+            },
+            "nodes": {
+              "type": "array"
+            },
+            "concurrency_key": {
+              "type": "string"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
+    "reference:update-journey-node": {
+      "key": "reference:update-journey-node",
+      "page": "update-journey-node",
+      "page_url": "https://documentation.onesignal.com/reference/update-journey-node.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "update-journey-node",
+      "method": "PATCH",
+      "documented_path": "/apps/{app_id}/journeys/{id}/nodes/{node_id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}/nodes/{node_id}",
+      "route_key": "PATCH /apps/{}/journeys/{}/nodes/{}",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "node_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        },
+        {
+          "name": "Content-Type",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": {
+        "media": "application/json",
+        "documented_properties": [
+          "concurrency_key"
+        ]
+      },
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "app_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string"
+            },
+            "archived_at": {
+              "type": "string"
+            },
+            "created_source": {
+              "type": "string"
+            },
+            "audience": {
+              "type": "object"
+            },
+            "early_exit": {
+              "type": "object"
+            },
+            "reentry_rules": {
+              "type": "object"
+            },
+            "schedule": {
+              "type": "object"
+            },
+            "nodes": {
+              "type": "array"
+            },
+            "concurrency_key": {
+              "type": "string"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:update-live-activity-api": {
       "key": "reference:update-live-activity-api",
       "page": "update-live-activity-api",
@@ -4526,6 +5135,241 @@
       },
       "result_path": "players"
     },
+    "reference:view-journey": {
+      "key": "reference:view-journey",
+      "page": "view-journey",
+      "page_url": "https://documentation.onesignal.com/reference/view-journey.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "view-journey",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "GET /apps/{}/journeys/{}",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "app_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string"
+            },
+            "archived_at": {
+              "type": "string"
+            },
+            "created_source": {
+              "type": "string"
+            },
+            "audience": {
+              "type": "object"
+            },
+            "early_exit": {
+              "type": "object"
+            },
+            "reentry_rules": {
+              "type": "object"
+            },
+            "schedule": {
+              "type": "object"
+            },
+            "nodes": {
+              "type": "array"
+            },
+            "concurrency_key": {
+              "type": "string"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
+    "reference:view-journey-stats": {
+      "key": "reference:view-journey-stats",
+      "page": "view-journey-stats",
+      "page_url": "https://documentation.onesignal.com/reference/view-journey-stats.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "view-journey-stats",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys/{id}/stats",
+      "wire_path": "/apps/{app_id}/journeys/{id}/stats",
+      "route_key": "GET /apps/{}/journeys/{}/stats",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        }
+      ],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "started": {
+              "type": "integer"
+            },
+            "completed": {
+              "type": "integer"
+            },
+            "exited_early": {
+              "type": "integer"
+            },
+            "nodes": {
+              "type": "object"
+            },
+            "branches": {
+              "type": "object"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
+    "reference:view-journeys": {
+      "key": "reference:view-journeys",
+      "page": "view-journeys",
+      "page_url": "https://documentation.onesignal.com/reference/view-journeys.md",
+      "authority": "current_reference_openapi",
+      "operation_id": "view-journeys",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys",
+      "wire_path": "/apps/{app_id}/journeys",
+      "route_key": "GET /apps/{}/journeys",
+      "static_query": null,
+      "auth_scope": "app_key",
+      "parameters": [
+        {
+          "name": "app_id",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "Authorization",
+          "in": "header",
+          "required": true,
+          "type": "string",
+          "exposed": false
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "type": "integer",
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/json",
+        "documented_media": [
+          "application/json"
+        ],
+        "schema": {
+          "type": "object",
+          "properties": {
+            "journeys": {
+              "type": "array"
+            },
+            "has_more": {
+              "type": "boolean"
+            },
+            "next_cursor": {
+              "type": "string"
+            }
+          },
+          "item_properties": {}
+        }
+      },
+      "result_path": null
+    },
     "reference:view-message": {
       "key": "reference:view-message",
       "page": "view-message",
@@ -4702,6 +5546,12 @@
               "type": "string"
             },
             "outcomes": {
+              "type": "object"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "email_warm_up": {
               "type": "object"
             }
           },
@@ -5498,6 +6348,12 @@
           },
           "outcomes": {
             "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "email_warm_up": {
+            "type": "object"
           }
         },
         "item_properties": {}
@@ -6244,6 +7100,18 @@
           "required": false
         },
         {
+          "wire_name": "kind",
+          "in": "body",
+          "key": "body.kind",
+          "required": false
+        },
+        {
+          "wire_name": "email_warm_up",
+          "in": "body",
+          "key": "body.email_warm_up",
+          "required": false
+        },
+        {
           "wire_name": "operator",
           "in": "body",
           "key": "body.operator",
@@ -6300,6 +7168,7 @@
         "email_sender_domain",
         "email_subject",
         "email_to",
+        "email_warm_up",
         "enable_frequency_cap",
         "excluded_segments",
         "existing_android_channel_id",
@@ -6356,6 +7225,7 @@
         "isIos",
         "isSafari",
         "isWP_WNS",
+        "kind",
         "large_icon",
         "mutable_content",
         "name",
@@ -7863,6 +8733,18 @@
           "required": false
         },
         {
+          "wire_name": "kind",
+          "in": "body",
+          "key": "body.kind",
+          "required": false
+        },
+        {
+          "wire_name": "email_warm_up",
+          "in": "body",
+          "key": "body.email_warm_up",
+          "required": false
+        },
+        {
           "wire_name": "send_after",
           "in": "body",
           "key": "body.send_after",
@@ -7902,6 +8784,7 @@
         "email_sender_domain",
         "email_subject",
         "email_to",
+        "email_warm_up",
         "excluded_segments",
         "filters",
         "idempotency_key",
@@ -7909,6 +8792,7 @@
         "include_subscription_ids",
         "include_unsubscribed",
         "included_segments",
+        "kind",
         "name",
         "send_after",
         "target_channel",
@@ -10060,6 +10944,829 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent",
+      "request_schema_closed": true
+    },
+    "onesignal.journey.create": {
+      "pack": "onesignal",
+      "op": "journey.create",
+      "source": "reference:create-journey",
+      "operation_id": "create-journey",
+      "method": "POST",
+      "documented_path": "/apps/{app_id}/journeys",
+      "wire_path": "/apps/{app_id}/journeys",
+      "route_key": "POST /apps/{}/journeys",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "name",
+          "in": "body",
+          "key": "body.name",
+          "required": true
+        },
+        {
+          "wire_name": "description",
+          "in": "body",
+          "key": "body.description",
+          "required": false
+        },
+        {
+          "wire_name": "audience",
+          "in": "body",
+          "key": "body.audience",
+          "required": false
+        },
+        {
+          "wire_name": "early_exit",
+          "in": "body",
+          "key": "body.early_exit",
+          "required": false
+        },
+        {
+          "wire_name": "reentry_rules",
+          "in": "body",
+          "key": "body.reentry_rules",
+          "required": false
+        },
+        {
+          "wire_name": "schedule",
+          "in": "body",
+          "key": "body.schedule",
+          "required": false
+        },
+        {
+          "wire_name": "nodes",
+          "in": "body",
+          "key": "body.nodes",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [
+        "audience",
+        "description",
+        "early_exit",
+        "name",
+        "nodes",
+        "reentry_rules",
+        "schedule"
+      ],
+      "omitted_body_properties": [],
+      "request_media": "application/json",
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": "string",
+        "properties": {},
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_closed": false
+    },
+    "onesignal.journey.search": {
+      "pack": "onesignal",
+      "op": "journey.search",
+      "source": "reference:view-journeys",
+      "operation_id": "view-journeys",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys",
+      "wire_path": "/apps/{app_id}/journeys",
+      "route_key": "GET /apps/{}/journeys",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "cursor",
+          "in": "query",
+          "key": "query.cursor",
+          "required": false
+        },
+        {
+          "wire_name": "limit",
+          "in": "query",
+          "key": "query.limit",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [],
+      "omitted_body_properties": [],
+      "request_media": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "journeys": {
+            "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "request_schema_closed": true
+    },
+    "onesignal.journey.read": {
+      "pack": "onesignal",
+      "op": "journey.read",
+      "source": "reference:view-journey",
+      "operation_id": "view-journey",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "GET /apps/{}/journeys/{}",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        }
+      ],
+      "admitted_body_properties": [],
+      "omitted_body_properties": [],
+      "request_media": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "archived_at": {
+            "type": "string"
+          },
+          "created_source": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "object"
+          },
+          "early_exit": {
+            "type": "object"
+          },
+          "reentry_rules": {
+            "type": "object"
+          },
+          "schedule": {
+            "type": "object"
+          },
+          "nodes": {
+            "type": "array"
+          },
+          "concurrency_key": {
+            "type": "string"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "request_schema_closed": true
+    },
+    "onesignal.journey.update": {
+      "pack": "onesignal",
+      "op": "journey.update",
+      "source": "reference:update-journey",
+      "operation_id": "update-journey",
+      "method": "PATCH",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "PATCH /apps/{}/journeys/{}",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        },
+        {
+          "wire_name": "name",
+          "in": "body",
+          "key": "body.name",
+          "required": false
+        },
+        {
+          "wire_name": "description",
+          "in": "body",
+          "key": "body.description",
+          "required": false
+        },
+        {
+          "wire_name": "audience",
+          "in": "body",
+          "key": "body.audience",
+          "required": false
+        },
+        {
+          "wire_name": "early_exit",
+          "in": "body",
+          "key": "body.early_exit",
+          "required": false
+        },
+        {
+          "wire_name": "reentry_rules",
+          "in": "body",
+          "key": "body.reentry_rules",
+          "required": false
+        },
+        {
+          "wire_name": "schedule",
+          "in": "body",
+          "key": "body.schedule",
+          "required": false
+        },
+        {
+          "wire_name": "nodes",
+          "in": "body",
+          "key": "body.nodes",
+          "required": false
+        },
+        {
+          "wire_name": "state",
+          "in": "body",
+          "key": "body.state",
+          "required": false
+        },
+        {
+          "wire_name": "concurrency_key",
+          "in": "body",
+          "key": "body.concurrency_key",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [
+        "audience",
+        "concurrency_key",
+        "description",
+        "early_exit",
+        "name",
+        "nodes",
+        "reentry_rules",
+        "schedule",
+        "state"
+      ],
+      "omitted_body_properties": [],
+      "request_media": "application/json",
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "archived_at": {
+            "type": "string"
+          },
+          "created_source": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "object"
+          },
+          "early_exit": {
+            "type": "object"
+          },
+          "reentry_rules": {
+            "type": "object"
+          },
+          "schedule": {
+            "type": "object"
+          },
+          "nodes": {
+            "type": "array"
+          },
+          "concurrency_key": {
+            "type": "string"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "request_schema_closed": false
+    },
+    "onesignal.journey.delete": {
+      "pack": "onesignal",
+      "op": "journey.delete",
+      "source": "reference:delete-journey",
+      "operation_id": "delete-journey",
+      "method": "DELETE",
+      "documented_path": "/apps/{app_id}/journeys/{id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}",
+      "route_key": "DELETE /apps/{}/journeys/{}",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        }
+      ],
+      "admitted_body_properties": [],
+      "omitted_body_properties": [],
+      "request_media": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "request_schema_closed": true
+    },
+    "onesignal.journey.duplicate": {
+      "pack": "onesignal",
+      "op": "journey.duplicate",
+      "source": "reference:duplicate-journey",
+      "operation_id": "duplicate-journey",
+      "method": "POST",
+      "documented_path": "/apps/{app_id}/journeys/{id}/duplicate",
+      "wire_path": "/apps/{app_id}/journeys/{id}/duplicate",
+      "route_key": "POST /apps/{}/journeys/{}/duplicate",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        },
+        {
+          "wire_name": "overrides",
+          "in": "body",
+          "key": "body.overrides",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [
+        "overrides"
+      ],
+      "omitted_body_properties": [],
+      "request_media": "application/json",
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": "string",
+        "properties": {},
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_closed": false
+    },
+    "onesignal.journey.node.update": {
+      "pack": "onesignal",
+      "op": "journey.node.update",
+      "source": "reference:update-journey-node",
+      "operation_id": "update-journey-node",
+      "method": "PATCH",
+      "documented_path": "/apps/{app_id}/journeys/{id}/nodes/{node_id}",
+      "wire_path": "/apps/{app_id}/journeys/{id}/nodes/{node_id}",
+      "route_key": "PATCH /apps/{}/journeys/{}/nodes/{}",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        },
+        {
+          "wire_name": "node_id",
+          "in": "path",
+          "key": "node_id",
+          "required": true
+        },
+        {
+          "wire_name": "concurrency_key",
+          "in": "body",
+          "key": "body.concurrency_key",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [
+        "concurrency_key"
+      ],
+      "omitted_body_properties": [],
+      "request_media": "application/json",
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "archived_at": {
+            "type": "string"
+          },
+          "created_source": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "object"
+          },
+          "early_exit": {
+            "type": "object"
+          },
+          "reentry_rules": {
+            "type": "object"
+          },
+          "schedule": {
+            "type": "object"
+          },
+          "nodes": {
+            "type": "array"
+          },
+          "concurrency_key": {
+            "type": "string"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "request_schema_closed": true
+    },
+    "onesignal.journey.stats.read": {
+      "pack": "onesignal",
+      "op": "journey.stats.read",
+      "source": "reference:view-journey-stats",
+      "operation_id": "view-journey-stats",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/journeys/{id}/stats",
+      "wire_path": "/apps/{app_id}/journeys/{id}/stats",
+      "route_key": "GET /apps/{}/journeys/{}/stats",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        },
+        {
+          "wire_name": "id",
+          "in": "path",
+          "key": "id",
+          "required": true
+        }
+      ],
+      "admitted_body_properties": [],
+      "omitted_body_properties": [],
+      "request_media": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "started": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "exited_early": {
+            "type": "integer"
+          },
+          "nodes": {
+            "type": "object"
+          },
+          "branches": {
+            "type": "object"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "request_schema_closed": true
+    },
+    "onesignal.notification.estimate_recipients": {
+      "pack": "onesignal",
+      "op": "notification.estimate_recipients",
+      "source": "reference:count-unsaved",
+      "operation_id": "count-unsaved",
+      "method": "POST",
+      "documented_path": "/notifications/count-unsaved",
+      "wire_path": "/notifications/count-unsaved",
+      "route_key": "POST /notifications/count-unsaved",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "body",
+          "key": "body.app_id",
+          "required": true
+        },
+        {
+          "wire_name": "included_segments",
+          "in": "body",
+          "key": "body.included_segments",
+          "required": true
+        },
+        {
+          "wire_name": "excluded_segments",
+          "in": "body",
+          "key": "body.excluded_segments",
+          "required": false
+        },
+        {
+          "wire_name": "filters",
+          "in": "body",
+          "key": "body.filters",
+          "required": false
+        },
+        {
+          "wire_name": "include_aliases",
+          "in": "body",
+          "key": "body.include_aliases",
+          "required": false
+        },
+        {
+          "wire_name": "target_channel",
+          "in": "body",
+          "key": "body.target_channel",
+          "required": false
+        }
+      ],
+      "admitted_body_properties": [
+        "app_id",
+        "excluded_segments",
+        "filters",
+        "include_aliases",
+        "included_segments",
+        "target_channel"
+      ],
+      "omitted_body_properties": [],
+      "request_media": "application/json",
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "uncapped_count": {
+            "type": "integer"
+          },
+          "cap_applied": {
+            "type": "boolean"
+          },
+          "mobile_suppressed": {
+            "type": "boolean"
+          },
+          "mobile_excluded_count": {
+            "type": "integer"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_closed": false
+    },
+    "onesignal.email_analytics.delivery_metrics.read": {
+      "pack": "onesignal",
+      "op": "email_analytics.delivery_metrics.read",
+      "source": "reference:delivery-metrics",
+      "operation_id": "get-email-delivery-metrics",
+      "method": "GET",
+      "documented_path": "/apps/{app_id}/email_analytics/delivery_metrics",
+      "wire_path": "/apps/{app_id}/email_analytics/delivery_metrics",
+      "route_key": "GET /apps/{}/email_analytics/delivery_metrics",
+      "auth_scope": "app_key",
+      "compatibility": false,
+      "supplemental": false,
+      "parameters": [
+        {
+          "wire_name": "app_id",
+          "in": "path",
+          "key": "app_id",
+          "required": true
+        }
+      ],
+      "admitted_body_properties": [],
+      "omitted_body_properties": [],
+      "request_media": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "last_24_hours": {
+            "type": "object"
+          },
+          "last_7_days": {
+            "type": "object"
+          },
+          "last_30_days": {
+            "type": "object"
+          }
+        },
+        "item_properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "static_query": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
       "request_schema_closed": true
     },
     "onesignal.live_activity.end_legacy": {

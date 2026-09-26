@@ -675,6 +675,20 @@ const REDOS_SHAPE_SIZES: ReadonlyArray<number> = [6, 10, 14, 18, 22];
  *  multiple and the stop lands inside one. */
 const REDOS_LONG_SIZES: ReadonlyArray<number> = [64, 256, 1_024, 4_096, 16_384, 65_536];
 
+/** ⛔ THE LAST RUNG IS THE BOUND ITSELF. The geometric rungs used to stop at the
+ *  last one that fit, so a property bounded between two of them was never
+ *  measured at its own length: at `maxLength: 16_383` the top rung was 4,096, and
+ *  a quadratic pattern costs up to 16x more at the bound than there.
+ *  `^\s*(?:a|b)*a(?:a|b)*\s*c$` was admitted that way, costing 25 ms at 4,097
+ *  characters and 367 ms at 16,383 (over a second in the 2026-09-24 audit's
+ *  run), on every call that carried a long value. The bound is at most 4x the
+ *  rung before it, so measuring there costs what any geometric step costs.
+ *  Mirrored as `phaseTwoRungs` in `scripts/lib/pattern-cost.mjs`. */
+const redosLongRungs = (bound: number): number[] => [
+  ...REDOS_LONG_SIZES.filter((size) => size < bound),
+  bound,
+];
+
 /** The length probed when a property declares no `maxLength`: unbounded in the
  *  schema means unbounded at the gateway. */
 export const REDOS_UNBOUNDED_PROBE = 65_536;
@@ -743,19 +757,60 @@ const redosDerivedPrefix = (source: string): string | undefined => {
   return literal.length >= 2 ? literal : undefined;
 };
 
+/** The default `per_probe_ms`: a single measurement above it is a finding. Why
+ *  250 and not 50 is on `per_probe_ms` below. Exported so the generator-side
+ *  mirror (`scripts/lib/pattern-cost.mjs`) is held to the same bar by
+ *  `pattern-cost-parity.test.ts`: when this moved from 50, the mirror stayed
+ *  behind (found by the 2026-09-24 audit). */
+export const REDOS_PER_PROBE_MS = 250;
+
 export interface RedosProbeOptions {
   /** A single measurement above this is superlinear.
    *
-   *  ⚠ THE MARGIN IS ENORMOUS, WHICH IS WHY THE NUMBER IS SMALL. A benign
-   *  pattern's ENTIRE sweep — ~345 measurements — costs 0.3–1.1 ms, so one
-   *  measurement is around 3 MICROSECONDS. 50 ms is four orders of magnitude
-   *  above that; a hundredfold slowdown under load still would not reach it.
-   *  Tripping one escalation rung earlier matters because the rungs are
-   *  exponential: the same pattern measured 1,471 ms at 26 characters and under
-   *  the threshold at 22, so a lower bar makes DETECTION ~16x cheaper without
-   *  moving it anywhere near a legitimate pattern. Default 50. */
+   *  ⛔⛔ THE MARGIN WAS NOT ENORMOUS, AND THIS COMMENT USED TO SAY IT WAS. It
+   *  read: "a benign pattern's ENTIRE sweep — ~345 measurements — costs 0.3–1.1
+   *  ms, so one measurement is around 3 MICROSECONDS … a hundredfold slowdown
+   *  under load still would not reach it", and set the bar at 50. That is true
+   *  of the MEDIAN and false of the TAIL, which is the only part that decides
+   *  whether a legitimate pack is refused.
+   *
+   *  🔑 MEASURED 2026-09-23 over every distinct (pattern, maxLength) pair in
+   *  `community/packs` — 370 of them, keyed the way the verdict cache is, because
+   *  the BOUND decides how deep the ladder goes and therefore what a measurement
+   *  costs. Median whole sweep: 2 ms. Worst SINGLE measurement: 27 ms, against a
+   *  50 ms bar — 1.9x headroom. Six more configurations sit within 6x, spread
+   *  across mongodb-atlas, docker, tailscale-cli, helm and df. A 1.9x stall is
+   *  not a pathology; it is an ordinary afternoon on a loaded laptop, and it
+   *  refuses the pack.
+   *
+   *  ⚠ THE RETRY DOES NOT COVER IT. `suspect()` re-measures on the premise that
+   *  "a scheduling hiccup does not repeat on demand". SUSTAINED load is not a
+   *  hiccup — the second measurement is drawn from the same slow regime — so the
+   *  confirmation confirms the noise. Reproduced: 1 finding in 10 runs under 20
+   *  busy processes on 10 cores, 0 in 3 unloaded.
+   *
+   *  ⛔ RAISING THE BAR COSTS NO DETECTION, BECAUSE THE THING IT LOOKS FOR IS
+   *  EXPONENTIAL, NOT 2x. `^(a+)+$` blocks for 43 SECONDS. All seven known
+   *  catastrophic patterns still trip at 250 (`^(a+)+$`, `^(a|a)*$`,
+   *  `^(x+x+)+y$`, `^(\s*\w+)+$`, `^([a-zA-Z]+)*$`, `(a|a?)+$`,
+   *  `^(([a-z])+.)+[A-Z]([a-z])+$`); only the input length at which they trip
+   *  moves, 23 characters to 27. Whole-corpus probe cost 4,273 ms -> 4,572 ms
+   *  (+7%), 0 findings either way. Headroom on the worst shipped pattern:
+   *  1.9x -> 9.3x. Default 250.
+   *
+   *  ⚠ A PATTERN THAT IS GENUINELY CATASTROPHIC NOW COSTS 1.1–5.9 s TO CONVICT,
+   *  because the ladder walks four more characters of an exponential curve. Three
+   *  of the seven exceed `budget_ms` and come back as `fuel: 'budget exhausted'`
+   *  instead of a precise rung. That is still a FINDING and still refuses the
+   *  pack — the reason is coarser, the verdict is not. */
   readonly per_probe_ms?: number;
-  /** Whole-schema deadline. Default 3000. */
+  /** Whole-schema deadline. Default 3000.
+   *
+   *  ⚠ EXHAUSTING IT RETURNS A FINDING, i.e. a REFUSAL, and unlike `suspect()`
+   *  there is no retry on that path. It is reachable only by a pattern expensive
+   *  enough to burn 3 s on one schema — no shipped pattern comes close (worst
+   *  whole sweep: 648 ms) — but a pack refused for "budget exhausted" was not
+   *  proven catastrophic, only slow. */
   readonly budget_ms?: number;
   /** The property's declared `maxLength` — how far a value can actually go.
    *  Absent means unbounded, probed to {@link REDOS_UNBOUNDED_PROBE}.
@@ -794,10 +849,21 @@ const nowMs = (): number => Date.now();
  *  1,181ms — a cost paid on the OWNER'S machine, at install, for an answer
  *  already computed.
  *
- *  ⛔ Only a CONFIRMED verdict is stored. `suspect()` re-measures before it
- *  reports, so what lands here has survived the flake check; caching before
- *  that would freeze a scheduling hiccup into a permanent false refusal. The
- *  key carries the bound because the same pattern is free at 20 and ruinous
+ *  ⚠ IT DOES NOT FILTER ON PROVENANCE, AND THIS COMMENT USED TO CLAIM IT DID.
+ *  It read "Only a CONFIRMED verdict is stored … caching before that would
+ *  freeze a scheduling hiccup into a permanent false refusal." `cacheable` is
+ *  decided from the OPTIONS — no injected clock, no overridden thresholds — and
+ *  never from what came back, so a `budget exhausted` finding (which never saw
+ *  `suspect()`) and a finding confirmed twice under load are both stored like
+ *  any other. Within one process a single false positive is therefore frozen for
+ *  every later occurrence of that pattern.
+ *
+ *  🔑 THE FIX WAS THE THRESHOLD, NOT THE CACHE. Raising `per_probe_ms` to 250
+ *  took the worst shipped pattern from 1.9x headroom to 9.3x; a filter here would
+ *  have narrowed the blast radius of a false positive while leaving its rate
+ *  alone. Worth revisiting only if one is ever observed at 250.
+ *
+ *  The key carries the bound because the same pattern is free at 20 and ruinous
  *  unbounded. Bounded so a hostile manifest cannot grow it without limit. */
 const REDOS_VERDICT_CACHE_MAX = 4_096;
 const redosVerdicts = new Map<string, RedosFinding | null>();
@@ -827,7 +893,7 @@ const probePatternForBacktrackingUncached = (
   source: string,
   options: RedosProbeOptions,
 ): RedosFinding | null => {
-  const perProbe = options.per_probe_ms ?? 50;
+  const perProbe = options.per_probe_ms ?? REDOS_PER_PROBE_MS;
   const budget = options.budget_ms ?? 3_000;
   const clock = options.now ?? nowMs;
   let re: RegExp;
@@ -886,8 +952,7 @@ const probePatternForBacktrackingUncached = (
     REDOS_UNBOUNDED_PROBE,
   );
   const prefix = redosDerivedPrefix(source);
-  for (const size of REDOS_LONG_SIZES) {
-    if (size > bound) break;
+  for (const size of redosLongRungs(bound)) {
     // ⛔ THE CHAR FUEL BELONGS HERE TOO, AND LEAVING IT OUT COST A KNOWN
     //   POSITIVE. `[\s\S]*\S[\s\S]*` only blows up on input with NO
     //   non-space in it — every structured shape carries one, so the match

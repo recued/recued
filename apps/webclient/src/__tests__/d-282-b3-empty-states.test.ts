@@ -74,6 +74,22 @@ describe('the owner panel tells empty apart from broken', () => {
     expect(html).not.toContain('no columns to draw');
   });
 
+  /** D-292 — the third case that sat inside the first: the producing step was SKIPPED
+   *  (`skip_when`), so the section arrives with `data: null`. The author asked for the
+   *  block to be absent; it used to be drawn as a broken one on every clean import. */
+  it('draws nothing for a table whose step was skipped — not a broken-block note', () => {
+    const skipped = render({ type: 'table', source: 'step.refused', data: null });
+    expect(skipped).not.toContain('no columns to draw');
+    expect(skipped).not.toContain('recipes-result-card');
+    // …while a skipped step feeding an ENTITY-derived table is still the empty
+    // state that table owns (its columns come from the schema, not from the step).
+    const entityTable = render({
+      type: 'table', source: 'step.t', data: null,
+      record_columns: { entity: 'building', columns: [{ field: 'id', label: 'Id', kind: 'string' }] },
+    });
+    expect(entityTable).toContain('No building records yet.');
+  });
+
   /** ⚠ The negative control. Without it the two assertions above would both pass on a
    *  panel that rendered nothing at all. */
   it('still draws a table that has both columns and rows', () => {

@@ -94,8 +94,7 @@
     },
     "selected_by_approval": {
       "always": 149,
-      "ask": 174,
-      "never": 7
+      "never": 181
     },
     "selected_by_connection": {
       "coder": 325,
@@ -446,7 +445,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -556,7 +555,7 @@
       "op": "chats.get_chat_retention_days",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -745,7 +744,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -834,7 +833,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -884,7 +883,7 @@
       "op": "chats.list_chat_models",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -999,7 +998,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -1142,7 +1141,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -1285,7 +1284,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -1471,7 +1470,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -1729,7 +1728,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2003,7 +2002,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2167,7 +2166,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2486,7 +2485,7 @@
       "op": "ai_providers.list_ai_providers",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2615,7 +2614,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2808,7 +2807,7 @@
       "op": "ai_bridge.list_ai_bridge_clients",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2924,7 +2923,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -2974,7 +2973,7 @@
       "op": "ai_bridge.list_ai_bridge_models",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3090,7 +3089,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3207,7 +3206,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3257,7 +3256,7 @@
       "op": "enterprise.get_appearance",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3411,7 +3410,7 @@
       "op": "applications.get_applications_host",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3571,7 +3570,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3734,7 +3733,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3883,7 +3882,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -3989,7 +3988,7 @@
       "op": "debug.debug_info_wireguard_coordinator",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4037,7 +4036,7 @@
       "op": "debug.debug_derp_traffic",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4087,7 +4086,7 @@
       "op": "debug.debug_expvar",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4155,7 +4154,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4205,7 +4204,7 @@
       "op": "debug.get_health_settings",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4313,7 +4312,7 @@
       "op": "debug.debug_metrics",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4359,7 +4358,7 @@
       "op": "debug.debug_pprof_index",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4405,7 +4404,7 @@
       "op": "debug.debug_pprof_cmdline",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4451,7 +4450,7 @@
       "op": "debug.debug_pprof_profile",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4504,7 +4503,7 @@
       "op": "debug.debug_pprof_symbol",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4550,7 +4549,7 @@
       "op": "debug.debug_pprof_trace",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4649,7 +4648,7 @@
       "op": "debug.debug_info_tailnet",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4760,7 +4759,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4808,7 +4807,7 @@
       "op": "general.get_deployment_config",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4858,7 +4857,7 @@
       "op": "general.ssh_config",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -4908,7 +4907,7 @@
       "op": "general.get_deployment_stats",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5002,7 +5001,7 @@
       "op": "enterprise.get_entitlements",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5052,7 +5051,7 @@
       "op": "general.get_enabled_experiments",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5102,7 +5101,7 @@
       "op": "general.get_safe_experiments",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5152,7 +5151,7 @@
       "op": "git.get_user_external_auths",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5221,7 +5220,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5359,7 +5358,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5539,7 +5538,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5644,7 +5643,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5729,7 +5728,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -5945,7 +5944,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6221,7 +6220,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6305,7 +6304,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6371,7 +6370,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6487,7 +6486,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6587,7 +6586,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6687,7 +6686,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6771,7 +6770,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -6821,7 +6820,7 @@
       "op": "enterprise.get_licenses",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7110,7 +7109,7 @@
       "op": "notifications.get_notification_dispatch_methods",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7226,7 +7225,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7437,7 +7436,7 @@
       "op": "notifications.get_notifications_settings",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7547,7 +7546,7 @@
       "op": "notifications.get_custom_notification_templates",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7597,7 +7596,7 @@
       "op": "notifications.get_system_notification_templates",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7780,7 +7779,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -7909,7 +7908,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8121,7 +8120,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8322,7 +8321,7 @@
       "op": "organizations.get_organizations",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8451,7 +8450,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8667,7 +8666,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8831,7 +8830,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -8981,7 +8980,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -9050,7 +9049,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -9119,7 +9118,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -9447,7 +9446,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -9796,7 +9795,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10025,7 +10024,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10158,7 +10157,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10291,7 +10290,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10484,7 +10483,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10570,7 +10569,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10639,7 +10638,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10777,7 +10776,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -10928,7 +10927,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11013,7 +11012,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11082,7 +11081,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11385,7 +11384,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11688,7 +11687,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11835,7 +11834,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -11982,7 +11981,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12068,7 +12067,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12171,7 +12170,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12274,7 +12273,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12402,7 +12401,7 @@
       "op": "prebuilds.get_prebuilds_settings",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12558,7 +12557,7 @@
       "op": "workspace_proxies.get_site_wide_regions_for_workspace_connections",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12608,7 +12607,7 @@
       "op": "enterprise.get_active_replicas",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12677,7 +12676,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12762,7 +12761,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -12812,7 +12811,7 @@
       "op": "enterprise.get_organization_idp_sync_settings",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13104,7 +13103,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13268,7 +13267,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13527,7 +13526,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13840,7 +13839,7 @@
       "op": "templates.get_all_templates",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13890,7 +13889,7 @@
       "op": "templates.get_template_examples",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -13959,7 +13958,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14175,7 +14174,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14322,7 +14321,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14391,7 +14390,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14593,7 +14592,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14835,7 +14834,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -14904,7 +14903,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15284,7 +15283,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15510,7 +15509,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "follow": "false",
@@ -15599,7 +15598,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15685,7 +15684,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15806,7 +15805,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15876,7 +15875,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -15999,7 +15998,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "follow": "false",
@@ -16115,7 +16114,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16184,7 +16183,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16253,7 +16252,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16435,7 +16434,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16599,7 +16598,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16709,7 +16708,7 @@
       "op": "users.get_authentication_methods",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -16759,7 +16758,7 @@
       "op": "users.check_initial_user_created",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17021,7 +17020,7 @@
       "op": "users.get_github_device_auth",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17071,7 +17070,7 @@
       "op": "users.get_oidc_claims_for_the_authenticated_user",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17273,7 +17272,7 @@
       "op": "members.get_site_member_roles",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17332,7 +17331,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17402,7 +17401,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17536,7 +17535,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17699,7 +17698,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -17846,7 +17845,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18069,7 +18068,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18216,7 +18215,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18302,7 +18301,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18388,7 +18387,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18621,7 +18620,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18690,7 +18689,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18837,7 +18836,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -18923,7 +18922,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -19066,7 +19065,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -19291,7 +19290,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -19438,7 +19437,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -19585,7 +19584,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -19749,7 +19748,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -20379,7 +20378,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -20482,7 +20481,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -20629,7 +20628,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -20799,7 +20798,7 @@
       "op": "agents.get_connection_info_for_workspace_agent_generic",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -21014,7 +21013,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "listen": "false"
@@ -21112,7 +21111,7 @@
       "op": "agents.get_workspace_agent_git_ssh_key",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -21294,7 +21293,7 @@
       "op": "agents.get_workspace_agent_reinitialization",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "wait": "false"
@@ -21500,7 +21499,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -21569,7 +21568,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -21654,7 +21653,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -21981,7 +21980,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -22115,7 +22114,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "follow": "false",
@@ -22367,7 +22366,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -22576,7 +22575,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": {
         "follow": "false",
@@ -22648,7 +22647,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -22763,7 +22762,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -22906,7 +22905,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -22956,7 +22955,7 @@
       "op": "enterprise.get_workspace_proxies",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -23184,7 +23183,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -23429,7 +23428,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -23676,7 +23675,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -23761,7 +23760,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -23904,7 +23903,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -24372,7 +24371,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -24692,7 +24691,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -24891,7 +24890,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -25112,7 +25111,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -25181,7 +25180,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -25950,7 +25949,7 @@
       "op": "enterprise.scim_get_users",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_query": null,
       "static_headers": {
@@ -26224,7 +26223,7 @@
       "op": "workspaces.list_workspaces",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "template-inventory-coder",
@@ -26236,7 +26235,7 @@
       "op": "templates.get_all_templates",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "agent-status-coder",
@@ -26252,7 +26251,7 @@
       "supplied_args": [
         "workspaceagent"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "user-directory-coder",
@@ -26264,7 +26263,7 @@
       "op": "users.get_users",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "notification-inbox-coder",
@@ -26276,7 +26275,7 @@
       "op": "notifications.list_inbox_notifications",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "task-inventory-coder",
@@ -26288,7 +26287,7 @@
       "op": "tasks.list_ai_tasks",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "entitlements-coder",
@@ -26300,7 +26299,7 @@
       "op": "enterprise.get_entitlements",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "scim-capabilities-coder",
@@ -26319,42 +26318,42 @@
     {
       "slug": "coder-workspaces-builds",
       "operations": 35,
-      "composition_bytes": 62868
+      "composition_bytes": 62196
     },
     {
       "slug": "coder-templates",
       "operations": 35,
-      "composition_bytes": 63959
+      "composition_bytes": 62993
     },
     {
       "slug": "coder-agents-runtime",
       "operations": 28,
-      "composition_bytes": 32857
+      "composition_bytes": 32101
     },
     {
       "slug": "coder-users-organizations",
       "operations": 68,
-      "composition_bytes": 86912
+      "composition_bytes": 85568
     },
     {
       "slug": "coder-notifications-observability",
       "operations": 45,
-      "composition_bytes": 42634
+      "composition_bytes": 41374
     },
     {
       "slug": "coder-ai-chats-tasks",
       "operations": 38,
-      "composition_bytes": 59997
+      "composition_bytes": 59157
     },
     {
       "slug": "coder-enterprise",
       "operations": 76,
-      "composition_bytes": 90017
+      "composition_bytes": 88589
     },
     {
       "slug": "coder-scim",
       "operations": 5,
-      "composition_bytes": 5517
+      "composition_bytes": 5475
     }
   ]
 }

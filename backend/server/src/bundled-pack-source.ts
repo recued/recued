@@ -196,9 +196,34 @@ interface RosterCacheEntry {
 }
 const rosterCache = new Map<string, RosterCacheEntry>();
 
-/** Drop the roster cache. Tests that write a pack tree and re-read it inside
- *  one millisecond call this rather than depend on mtime resolution. */
-export const clearBundledPackRosterCache = (): void => { rosterCache.clear(); };
+/** D-310 — every manifest in a pack tree by slug, first in walk order, for
+ *  {@link resolveBundledPackManifest}. Unfiltered, unlike the roster: that
+ *  lookup has to find a core feature too. */
+const slugIndexCache = new Map<string, {
+  fingerprint: string;
+  bySlug: ReadonlyMap<string, BulkPackManifest>;
+}>();
+
+const bundledManifestIndex = (dir: string): ReadonlyMap<string, BulkPackManifest> => {
+  const fingerprint = packTreeFingerprint(dir);
+  const hit = slugIndexCache.get(dir);
+  if (hit !== undefined && hit.fingerprint === fingerprint) return hit.bySlug;
+  const bySlug = new Map<string, BulkPackManifest>();
+  for (const file of walkJsonFiles(dir)) {
+    const manifest = readManifestFile(file);
+    if (manifest !== null && !bySlug.has(manifest.slug)) bySlug.set(manifest.slug, manifest);
+  }
+  slugIndexCache.set(dir, { fingerprint, bySlug });
+  return bySlug;
+};
+
+/** Drop the roster cache (and the slug index). Tests that write a pack tree and
+ *  re-read it inside one millisecond call this rather than depend on mtime
+ *  resolution. */
+export const clearBundledPackRosterCache = (): void => {
+  rosterCache.clear();
+  slugIndexCache.clear();
+};
 
 export const loadBundledPackManifests = (
   packDir?: string,
@@ -238,13 +263,19 @@ export const loadBundledPackManifests = (
 
 /** Resolve one pack by manifest `slug`, disk first, embed second.
  *
- *  Walks and returns on the first match rather than loading the whole roster:
- *  `packs.resolveBySlug` fires on every pack detail render, and a checkout's
- *  tree is 1,000+ manifests. The file name on disk does not have to match the
- *  manifest's `slug` — row identity is the parsed slug everywhere — so this
- *  cannot become a direct `<dir>/<slug>.json` read (that is
- *  `resolveRootBundledPackManifest`, whose closed reconciliation ledger wants
- *  exactly the opposite trade). */
+ *  The file name on disk does not have to match the manifest's `slug` — row
+ *  identity is the parsed slug everywhere — so this cannot become a direct
+ *  `<dir>/<slug>.json` read (that is `resolveRootBundledPackManifest`, whose
+ *  closed reconciliation ledger wants exactly the opposite trade).
+ *
+ *  ⛔ D-310 — THE TREE IS PARSED ONCE, NOT ONCE PER LOOKUP. This walked and
+ *  parsed until it found the slug, ~0.45 s a lookup on a checkout's 1,000+
+ *  manifests, and an install's dependency walk makes one lookup per dependency,
+ *  per walk. `packs.install_preview` walks several times, so Procore's (41
+ *  dependencies) took 33 s, past the webclient's 30 s wait. It then read as "no
+ *  preview", and the dialog listed none of the packs the install brings in. The
+ *  slug index is re-validated by the roster's own size + mtime fingerprint (a
+ *  stat of the tree, ~5 ms), and each lookup gets a copy, as a fresh parse gave. */
 export const resolveBundledPackManifest = (
   packDir: string | undefined,
   packSlug: string,
@@ -255,10 +286,8 @@ export const resolveBundledPackManifest = (
   // name. Filtering here would turn a refusal into "no such pack", which is a
   // different and less honest answer to the owner.
   const dir = packDir ?? findCommunityPackDir(moduleDir);
-  for (const file of walkJsonFiles(dir)) {
-    const manifest = readManifestFile(file);
-    if (manifest !== null && manifest.slug === packSlug) return manifest;
-  }
+  const onDisk = bundledManifestIndex(dir).get(packSlug);
+  if (onDisk !== undefined) return structuredClone(onDisk);
   if (packDir !== undefined) return null;
   for (const manifest of embeddedFoundationManifests()) {
     if (manifest.slug === packSlug) return manifest;

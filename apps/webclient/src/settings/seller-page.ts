@@ -23,8 +23,10 @@ import {
   type SellerManualCustomerReissueTokenResponse,
   type SellerManualCustomerSwapTierRequest,
   type SellerManualCustomerSwapTierResponse,
-  type SellerManualTierBulkAdjustRequest,
-  type SellerManualTierBulkAdjustResponse,
+  type SellerManualTierReapplyCustomer,
+  type SellerManualTierReapplyRequest,
+  type SellerManualTierReapplyResponse,
+  type SellerReapplyWho,
   type SellerManualTierUpsertRequest,
   type SellerTierUsagePolicyRequest,
   type SellerTierUsagePolicyResponse,
@@ -68,6 +70,7 @@ import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
 import {
   LIST_PREVIEW_STYLES,
+  type ListPreviewFact,
   focusListTarget,
   mountListPreview,
   readListContinuity,
@@ -160,9 +163,10 @@ export type SellerManualCustomerCloseCaller = (
 export type SellerManualCustomerReissueTokenCaller = (
   request: SellerManualCustomerReissueTokenRequest,
 ) => Promise<SellerManualCustomerReissueTokenResponse>;
-export type SellerManualTierBulkAdjustCaller = (
-  request: SellerManualTierBulkAdjustRequest,
-) => Promise<SellerManualTierBulkAdjustResponse>;
+/** D-309 — re-apply a manual package to its customers (see `server.seller.reapplyManualTier`). */
+export type SellerManualTierReapplyCaller = (
+  request: SellerManualTierReapplyRequest,
+) => Promise<SellerManualTierReapplyResponse>;
 export type SellerStripeSynchronizeCaller = (
   request: SellerStripeSynchronizeRequest,
 ) => Promise<SellerStripeSynchronizeResponse>;
@@ -264,9 +268,11 @@ const SELLER_TIER_TAB_META: Readonly<Record<
     label: 'Edit',
     description: 'Change this package\'s name, agreement, limits and status.',
   },
+  // Not "Customers": the Seller sections above it have a "Customers" too, and the
+  // two sat on screen together (2026-09-24). The address keeps `customers`.
   customers: {
-    label: 'Customers',
-    description: 'Change everyone on this package at the same time.',
+    label: 'Re-apply',
+    description: 'Re-apply this package to the people on it: its permissions, its length, or both.',
   },
 };
 
@@ -309,7 +315,8 @@ type SellerManualCustomerLifecycleResponse =
   | SellerManualCustomerExtendResponse
   | SellerManualCustomerSwapTierResponse
   | SellerManualCustomerCloseResponse
-  | SellerManualCustomerReissueTokenResponse;
+  | SellerManualCustomerReissueTokenResponse
+  | SellerManualTierReapplyResponse;
 
 export interface MountSellerPageOptions {
   host: HTMLElement;
@@ -350,7 +357,7 @@ export interface MountSellerPageOptions {
   runSwapManualCustomerTier?: SellerManualCustomerSwapTierCaller;
   runCloseManualCustomer?: SellerManualCustomerCloseCaller;
   runReissueManualCustomerToken?: SellerManualCustomerReissueTokenCaller;
-  runBulkAdjustManualTierCustomers?: SellerManualTierBulkAdjustCaller;
+  runReapplyManualTier?: SellerManualTierReapplyCaller;
   /** The shipped Stripe-only seed rpc — kept as the fallback the unified form
    *  uses against a paired server that predates `runSynchronizeProviderTiers`. */
   runSynchronizeStripeEntitlements?: SellerStripeSynchronizeCaller;
@@ -494,14 +501,17 @@ export const SELLER_MESSAGE_MODAL_CONFIRM_ATTR =
   'data-recued-seller-message-modal-confirm';
 export const SELLER_MESSAGE_MODAL_CANCEL_ATTR =
   'data-recued-seller-message-modal-cancel';
-export const SELLER_TIER_BULK_ADJUST_FORM_ATTR =
-  'data-recued-seller-tier-bulk-adjust-form';
-export const SELLER_TIER_BULK_ADJUST_FIELD_ATTR =
-  'data-recued-seller-tier-bulk-adjust-field';
-export const SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR =
-  'data-recued-seller-tier-bulk-adjust-submit';
-export const SELLER_TIER_BULK_ADJUST_STATUS_ATTR =
-  'data-recued-seller-tier-bulk-adjust-status';
+export const SELLER_TIER_REAPPLY_FORM_ATTR = 'data-recued-seller-tier-reapply-form';
+export const SELLER_TIER_REAPPLY_FIELD_ATTR = 'data-recued-seller-tier-reapply-field';
+export const SELLER_TIER_REAPPLY_PREVIEW_ATTR = 'data-recued-seller-tier-reapply-preview';
+export const SELLER_TIER_REAPPLY_SUBMIT_ATTR = 'data-recued-seller-tier-reapply-submit';
+export const SELLER_TIER_REAPPLY_STATUS_ATTR = 'data-recued-seller-tier-reapply-status';
+/** On each preview row; the value is the customer id. */
+export const SELLER_TIER_REAPPLY_ROW_ATTR = 'data-recued-seller-tier-reapply-row';
+/** On each "pick" box when re-applying to the ones picked; the value is the customer id. */
+export const SELLER_TIER_REAPPLY_PICK_ATTR = 'data-recued-seller-tier-reapply-pick';
+/** The one-customer re-apply's preview line. */
+export const SELLER_CUSTOMER_REAPPLY_PREVIEW_ATTR = 'data-recued-seller-customer-reapply-preview';
 export const SELLER_PROVIDER_TIER_SYNC_FORM_ATTR = 'data-recued-seller-provider-tier-sync-form';
 export const SELLER_PROVIDER_TIER_SYNC_FIELD_ATTR = 'data-recued-seller-provider-tier-sync-field';
 export const SELLER_PROVIDER_TIER_SYNC_SUBMIT_ATTR = 'data-recued-seller-provider-tier-sync-submit';
@@ -1006,39 +1016,6 @@ const appendLifecycleField = (
   return input;
 };
 
-const appendBulkAdjustField = (
-  doc: Document,
-  parent: HTMLElement,
-  label: string,
-  field: string,
-): HTMLTextAreaElement => {
-  const wrap = append(doc, parent, 'label', 'seller-form-field seller-form-field-wide');
-  appendText(doc, wrap, 'span', label);
-  const textarea = doc.createElement('textarea');
-  textarea.value = '';
-  textarea.rows = 4;
-  textarea.setAttribute(SELLER_TIER_BULK_ADJUST_FIELD_ATTR, field);
-  wrap.appendChild(textarea);
-  return textarea;
-};
-
-const appendBulkAdjustCheckbox = (
-  doc: Document,
-  parent: HTMLElement,
-  label: string,
-  field: string,
-  checked: boolean,
-): HTMLInputElement => {
-  const wrap = append(doc, parent, 'label', 'seller-form-check');
-  const input = doc.createElement('input');
-  input.type = 'checkbox';
-  input.checked = checked;
-  input.setAttribute(SELLER_TIER_BULK_ADJUST_FIELD_ATTR, field);
-  wrap.appendChild(input);
-  appendText(doc, wrap, 'span', label);
-  return input;
-};
-
 const appendOption = (
   doc: Document,
   parent: HTMLSelectElement,
@@ -1062,25 +1039,6 @@ const appendLifecycleSelect = (
   appendText(doc, wrap, 'span', label);
   const select = doc.createElement('select');
   select.setAttribute(SELLER_CUSTOMER_LIFECYCLE_FIELD_ATTR, field);
-  for (const [value, optionLabel] of options) {
-    appendOption(doc, select, value, optionLabel);
-  }
-  select.value = options[0]?.[0] ?? '';
-  wrap.appendChild(select);
-  return select;
-};
-
-const appendBulkAdjustSelect = (
-  doc: Document,
-  parent: HTMLElement,
-  label: string,
-  field: string,
-  options: ReadonlyArray<readonly [string, string]>,
-): HTMLSelectElement => {
-  const wrap = append(doc, parent, 'label', 'seller-form-field');
-  appendText(doc, wrap, 'span', label);
-  const select = doc.createElement('select');
-  select.setAttribute(SELLER_TIER_BULK_ADJUST_FIELD_ATTR, field);
   for (const [value, optionLabel] of options) {
     appendOption(doc, select, value, optionLabel);
   }
@@ -2406,7 +2364,6 @@ const renderTiers = (
   });
 };
 
-
 /** D-250 § D — set usage limits on ONE tier, whatever minted it.
  *
  *  ⛔ WHY IT IS NOT THE MANUAL-TIER FORM. That form posts `upsertManualTier`,
@@ -2567,22 +2524,122 @@ const renderTierUsagePolicyForm = (
   );
 };
 
-const renderManualTierBulkAdjustForm = (
+/** D-309 — the field helpers the re-apply form uses. */
+const appendReapplySelect = (
   doc: Document,
   parent: HTMLElement,
-  overview: SellerOverview,
-  runBulkAdjustManualTierCustomers: SellerManualTierBulkAdjustCaller,
+  label: string,
+  field: string,
+  options: ReadonlyArray<readonly [string, string]>,
+): HTMLSelectElement => {
+  const wrap = append(doc, parent, 'label', 'seller-form-field');
+  appendText(doc, wrap, 'span', label);
+  const select = doc.createElement('select');
+  select.setAttribute(SELLER_TIER_REAPPLY_FIELD_ATTR, field);
+  for (const [value, optionLabel] of options) {
+    appendOption(doc, select, value, optionLabel);
+  }
+  select.value = options[0]?.[0] ?? '';
+  wrap.appendChild(select);
+  return select;
+};
+
+const appendReapplyCheckbox = (
+  doc: Document,
+  parent: HTMLElement,
+  label: string,
+  field: string,
+  attr: string,
+): HTMLInputElement => {
+  const wrap = append(doc, parent, 'label', 'seller-form-check');
+  const input = doc.createElement('input');
+  input.type = 'checkbox';
+  input.checked = true;
+  input.setAttribute(attr, field);
+  wrap.appendChild(input);
+  appendText(doc, wrap, 'span', label);
+  return input;
+};
+
+/** An end date as the owner reads it: a missing one means no end. */
+const formatEndDate = (value: number | null): string =>
+  value === null ? 'No end date' : formatTimestamp(value);
+
+const formatChangedByHand = (row: SellerManualTierReapplyCustomer): string => {
+  const parts = [
+    ...(row.changed_by_hand.end_date ? ['End date'] : []),
+    ...(row.changed_by_hand.permissions ? ['Permissions'] : []),
+  ];
+  return parts.length === 0 ? 'No' : parts.join(', ');
+};
+
+/** D-309 — the end date a re-apply leaves, as the owner reads it: "Unchanged" when
+ *  it stays as it is.
+ *  ⚠ A pass whose length has already run out ends at the re-apply itself (the
+ *  server's rule), and printed as a date that is a timestamp of this very minute,
+ *  which does not read as "their access ends now". So it says "Now", with the
+ *  grace that follows (live, 2026-09-24). The row carries its start, so "already
+ *  run out" is the server's own arithmetic, not a guess from the clock. */
+const formatEndAfter = (
+  row: SellerManualTierReapplyCustomer,
+  answer: Pick<SellerManualTierReapplyResponse, 'tier' | 'overview'>,
+): string => {
+  if (!row.included || row.end_after === row.end_before) return 'Unchanged';
+  const length = answer.tier.pass_duration_seconds;
+  if (row.end_after !== null && length !== null && row.end_after > row.started_at + length * 1000) {
+    const grace = answer.overview.settings.default_grace_hours;
+    return grace > 0 ? `Now, then ${grace}h grace` : 'Now';
+  }
+  return formatEndDate(row.end_after);
+};
+
+/** D-309 — what a failed re-apply says. ⚠ A server from before re-applying
+ *  (26.9.21 and earlier) does not know the method, and the webclient ships
+ *  separately, so an owner meets this for as long as they have not updated. Its
+ *  raw error named an rpc method, and the old bulk form it replaced is gone from
+ *  this webclient, so the owner is told what to do instead. */
+const reapplyErrorCopy = (err: unknown): string =>
+  classifyRpcError(err).code === 'unknown_method'
+    ? 'This server can’t re-apply a package yet. Update the server, then try again.'
+    : humanizeRpcError(err);
+
+const REAPPLY_WHO_OPTIONS: ReadonlyArray<readonly [SellerReapplyWho, string]> = [
+  ['everyone', 'Everyone still active'],
+  ['unchanged', 'Everyone you haven’t changed by hand'],
+  ['picked', 'Only the ones I pick'],
+];
+
+const lengthHint = (tier: SellerOverview['tiers'][number] | undefined): string =>
+  tier?.pass_duration_seconds === null || tier?.pass_duration_seconds === undefined
+    ? 'This package has no end date, so re-applying its length means their access does not end.'
+    : 'Each pass ends the package’s length after they got access: their last purchase or '
+      + 'enrollment, or when they joined. A pass that should already have ended ends now, and '
+      + 'your grace period applies.';
+
+/** D-309 — re-apply a package to the people on it. The owner chooses what (its
+ *  permissions, its length) and who (everyone still active, everyone nobody changed
+ *  by hand, or the ones they pick), and PREVIEWS it: nothing is written until
+ *  Re-apply, and changing a choice after a preview asks for a new one.
+ *
+ *  ⛔ The preview renders in place rather than through the page's re-render, which
+ *  would rebuild the form and lose both the choices and the picks.
+ *
+ *  ⛔ The package is the page's own, never a choice. A package picker here let the
+ *  owner re-apply ANOTHER package from under "Week pass › Customers"; it read
+ *  fine with one package and was a trap with two (live, 2026-09-24). */
+const renderManualTierReapplyForm = (
+  doc: Document,
+  parent: HTMLElement,
+  tier: SellerOverview['tiers'][number],
+  /** Every customer of the package who is not closed: picking previews them all. */
+  pickableCustomerIds: readonly string[],
+  runReapplyManualTier: SellerManualTierReapplyCaller,
   formMessage: SellerFormMessage | null,
   applyResult: (
-    response: SellerManualTierBulkAdjustResponse,
+    response: SellerManualTierReapplyResponse,
     message: SellerFormMessage,
   ) => void,
-  initialTierId?: string,
 ): void => {
-  const manualTiers = overview.tiers.filter((tier) =>
-    tier.lifecycle_source === 'manual');
-  if (manualTiers.length === 0) return;
-
   const section = append(
     doc,
     parent,
@@ -2592,102 +2649,229 @@ const renderManualTierBulkAdjustForm = (
   // This form is the whole screen behind its own address (2026-09-03), so it
   // opens expanded; a collapsed disclosure on a screen named for the form hid it.
   section.open = true;
-  section.setAttribute(SELLER_TIER_BULK_ADJUST_FORM_ATTR, '');
-  appendText(doc, section, 'summary', 'Give everyone the new package');
+  section.setAttribute(SELLER_TIER_REAPPLY_FORM_ATTR, '');
+  appendText(doc, section, 'summary', 'Re-apply this package');
   appendText(
     doc,
     section,
     'p',
-    'Re-issue these customers from the package’s agreement. This wipes any '
-      + 'changes you made for one person. Closed customers are always left alone.',
+    'Give the people on this package what it gives now. Choose what to re-apply and who '
+      + 'gets it, then preview it: nothing changes until you press Re-apply. Closed customers '
+      + 'are always left alone.',
     'seller-form-intro',
   );
   const fields = append(doc, section, 'div', 'seller-tier-bulk-adjust-grid');
-  const tierId = appendBulkAdjustSelect(
-    doc,
-    fields,
-    'Tier',
-    'tier_id',
-    manualTiers.map((tier) => [
-      tier.tier_id,
-      `${tier.display_name} (${tier.tier_id})`,
-    ] as const),
+  const who = appendReapplySelect(doc, fields, 'Who', 'who', REAPPLY_WHO_OPTIONS);
+  // Each choice with its consequence right under it, not one flowing row.
+  const options = append(doc, section, 'div', 'seller-reapply-options');
+  const permissionsOption = append(doc, options, 'div', 'seller-reapply-option');
+  const permissions = appendReapplyCheckbox(
+    doc, permissionsOption, 'Its permissions', 'permissions', SELLER_TIER_REAPPLY_FIELD_ATTR,
   );
-  if (
-    initialTierId !== undefined
-    && manualTiers.some((tier) => tier.tier_id === initialTierId)
-  ) {
-    tierId.value = initialTierId;
-  }
-  const customerIds = appendBulkAdjustField(
+  appendText(
     doc,
-    fields,
-    'Customer IDs',
-    'customer_ids',
+    permissionsOption,
+    'p',
+    'Anything you changed for one person goes back to the package’s own.',
+    'seller-table-detail',
   );
-  const checks = append(doc, section, 'div', 'seller-form-checks');
-  const allOpenCustomers = appendBulkAdjustCheckbox(
-    doc,
-    checks,
-    'Everyone still active',
-    'all_open_customers',
-    true,
+  const lengthOption = append(doc, options, 'div', 'seller-reapply-option');
+  const length = appendReapplyCheckbox(
+    doc, lengthOption, 'Its length', 'length', SELLER_TIER_REAPPLY_FIELD_ATTR,
   );
-  customerIds.disabled = allOpenCustomers.checked;
-  allOpenCustomers.addEventListener('change', () => {
-    customerIds.disabled = allOpenCustomers.checked;
-  });
+  appendText(doc, lengthOption, 'p', lengthHint(tier), 'seller-table-detail');
 
   const footer = append(doc, section, 'div', 'seller-form-footer');
   const status = append(doc, footer, 'div', 'seller-form-status');
-  status.setAttribute(SELLER_TIER_BULK_ADJUST_STATUS_ATTR, '');
+  status.setAttribute(SELLER_TIER_REAPPLY_STATUS_ATTR, '');
   if (formMessage !== null) {
     status.textContent = formMessage.text;
     status.setAttribute('data-kind', formMessage.kind);
     if (formMessage.kind === 'error') status.setAttribute('role', 'alert');
   }
+  const previewHost = append(doc, section, 'div', 'seller-reapply-preview');
 
+  const say = (text: string, kind?: 'success' | 'error'): void => {
+    status.removeAttribute('role');
+    status.removeAttribute('data-kind');
+    status.textContent = text;
+    if (kind !== undefined) status.setAttribute('data-kind', kind);
+    if (kind === 'error') status.setAttribute('role', 'alert');
+  };
+  const choices = () => ({
+    tier_id: tier.tier_id,
+    apply: { permissions: permissions.checked, length: length.checked },
+    who: who.value as SellerReapplyWho,
+  });
+  const choicesKey = (): string => JSON.stringify(choices());
+  let previewedKey: string | null = null;
+  let picks: HTMLInputElement[] = [];
+  let included = 0;
   let pending = false;
-  const submit = appendButton(
-    doc,
-    footer,
-    'Re-issue them',
-    () => {
-      if (pending) return;
-      pending = true;
-      submit.disabled = true;
-      status.removeAttribute('role');
-      status.removeAttribute('data-kind');
-      status.textContent = 'Re-issuing…';
-      const request = (): SellerManualTierBulkAdjustRequest => ({
-        tier_id: requiredFieldValue(tierId, 'Tier'),
-        ...(!allOpenCustomers.checked
-          ? { customer_ids: parseCustomerIds(customerIds) }
-          : {}),
+
+  const preview = appendButton(doc, footer, 'Preview', () => {
+    if (pending) return;
+    const current = choices();
+    if (!current.apply.permissions && !current.apply.length) {
+      say('Choose its permissions, its length, or both.', 'error');
+      return;
+    }
+    pending = true;
+    say('Previewing…');
+    // ⛔ The key of the choices SENT, not of whatever the form holds when the
+    // answer lands (integrity audit, 2026-09-24). Taken then, a choice changed
+    // while the preview loaded made Re-apply send choices nobody had previewed.
+    const requestKey = choicesKey();
+    void Promise.resolve()
+      .then(() => runReapplyManualTier({
+        tier_id: current.tier_id,
+        apply: current.apply,
+        who: current.who,
+        // Picking previews every open customer AS picked, so each row shows
+        // what happens if it is ticked, including one whose access has ended
+        // (the other two choices leave those alone). Re-apply sends the ticked.
+        ...(current.who === 'picked' ? { customer_ids: [...pickableCustomerIds] } : {}),
+        preview: true,
+      }))
+      .then((response) => {
+        // Free the form the moment the preview is on screen, not a tick later:
+        // a Re-apply pressed as soon as the rows appear must not be swallowed.
+        pending = false;
+        if (requestKey !== choicesKey()) {
+          say('You changed a choice. Preview again before re-applying.');
+          return;
+        }
+        previewedKey = requestKey;
+        renderPreview(response, current.who === 'picked');
+      })
+      .catch((err) => {
+        pending = false;
+        say(reapplyErrorCopy(err), 'error');
       });
-      void Promise.resolve()
-        .then(request)
-        .then((payload) => runBulkAdjustManualTierCustomers(payload))
-        .then((response) => {
-          applyResult(response, {
-            kind: 'success',
-            text: `Done. ${
-              response.adjusted_customers.length
-            } adjusted, ${response.skipped_closed_customers.length} skipped.`,
-          });
-        })
-        .catch((err) => {
-          status.setAttribute('role', 'alert');
-          status.setAttribute('data-kind', 'error');
-          status.textContent = humanizeRpcError(err);
-        })
-        .finally(() => {
-          pending = false;
-          submit.disabled = false;
+  }, [[SELLER_TIER_REAPPLY_PREVIEW_ATTR, '']]);
+
+  const submit = appendButton(doc, footer, 'Re-apply', () => {
+    if (pending) return;
+    if (previewedKey === null || previewedKey !== choicesKey()) {
+      say('Preview it first, so you can see what changes.', 'error');
+      return;
+    }
+    const current = choices();
+    const picked = picks.filter((box) => box.checked).map((box) => box.value);
+    if (current.who === 'picked' && picked.length === 0) {
+      say('Tick at least one customer.', 'error');
+      return;
+    }
+    pending = true;
+    submit.disabled = true;
+    say('Re-applying…');
+    void Promise.resolve()
+      .then(() => runReapplyManualTier({
+        tier_id: current.tier_id,
+        apply: current.apply,
+        who: current.who,
+        ...(current.who === 'picked' ? { customer_ids: picked } : {}),
+        preview: false,
+      }))
+      .then((response) => {
+        pending = false;
+        const done = response.customers.filter((row) => row.included).length;
+        const left = response.customers.length - done;
+        applyResult(response, {
+          kind: 'success',
+          text: `Done. ${done} re-applied, ${left} left alone.`,
         });
-    },
-    [[SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR, '']],
-  );
+      })
+      .catch((err) => {
+        pending = false;
+        say(reapplyErrorCopy(err), 'error');
+        submit.disabled = false;
+      });
+  }, [[SELLER_TIER_REAPPLY_SUBMIT_ATTR, '']]);
+  submit.disabled = true;
+
+  const setSubmitLabel = (count: number): void => {
+    submit.textContent = `Re-apply to ${count} ${count === 1 ? 'customer' : 'customers'}`;
+    submit.disabled = count === 0;
+  };
+
+  const renderPreview = (
+    answer: SellerManualTierReapplyResponse,
+    picking: boolean,
+  ): void => {
+    const rows = answer.customers;
+    clearChildren(previewHost);
+    picks = [];
+    included = rows.filter((row) => row.included).length;
+    appendTable(doc, previewHost, {
+      className: 'seller-table seller-reapply-table',
+      empty: 'Nobody is on this package yet.',
+      rows,
+      markRow: (row, tr) => tr.setAttribute(SELLER_TIER_REAPPLY_ROW_ATTR, row.customer_id),
+      columns: [
+        ...(picking
+          ? [{
+            // No header text: the column is one box wide, and each box is named.
+            label: '',
+            render: (row: SellerManualTierReapplyCustomer, td: HTMLElement) => {
+              if (!row.included) return;
+              const box = doc.createElement('input');
+              box.type = 'checkbox';
+              box.checked = false;
+              box.value = row.customer_id;
+              box.setAttribute(SELLER_TIER_REAPPLY_PICK_ATTR, row.customer_id);
+              withAccessibleName(box, `Re-apply to ${row.label}`);
+              box.addEventListener('change', () =>
+                setSubmitLabel(picks.filter((b) => b.checked).length));
+              picks.push(box);
+              td.appendChild(box);
+            },
+          }]
+          : []),
+        { label: 'Customer', value: (row: SellerManualTierReapplyCustomer) => row.label },
+        // Not "Ends now": beside rows whose access ends now, it read as that.
+        { label: 'Current end', value: (row: SellerManualTierReapplyCustomer) => formatEndDate(row.end_before) },
+        {
+          label: 'After re-applying',
+          value: (row: SellerManualTierReapplyCustomer) => formatEndAfter(row, answer),
+        },
+        { label: 'Changed by hand', value: formatChangedByHand },
+        {
+          label: 'What happens',
+          value: (row: SellerManualTierReapplyCustomer) =>
+            row.skipped === 'closed'
+              ? 'Closed, left alone'
+              : row.skipped === 'lapsed'
+                ? 'Access already ended, left alone'
+                : row.skipped === 'changed_by_hand'
+                  ? 'Changed by hand, left alone'
+                  : picking
+                    ? 'Re-applied if ticked'
+                    : 'Re-applied',
+        },
+      ],
+    });
+    if (picking) {
+      setSubmitLabel(0);
+      say('Tick the ones to re-apply.');
+    } else {
+      setSubmitLabel(included);
+      say(`${included} would be re-applied, ${rows.length - included} left alone.`);
+    }
+  };
+
+  const invalidate = (): void => {
+    if (previewedKey === null) return;
+    previewedKey = null;
+    picks = [];
+    clearChildren(previewHost);
+    submit.textContent = 'Re-apply';
+    submit.disabled = true;
+    say('You changed a choice. Preview again before re-applying.');
+  };
+  for (const control of [who, permissions, length]) {
+    control.addEventListener('change', invalidate);
+  }
 };
 
 const renderCreatePassTierForm = (
@@ -3320,6 +3504,7 @@ const renderManualCustomerLifecycleControls = (
     readonly runSwapManualCustomerTier?: SellerManualCustomerSwapTierCaller;
     readonly runCloseManualCustomer?: SellerManualCustomerCloseCaller;
     readonly runReissueManualCustomerToken?: SellerManualCustomerReissueTokenCaller;
+    readonly runReapplyManualTier?: SellerManualTierReapplyCaller;
   },
   formMessage: SellerFormMessage | null,
   applyResult: (
@@ -3337,6 +3522,7 @@ const renderManualCustomerLifecycleControls = (
     && callers.runSwapManualCustomerTier === undefined
     && callers.runCloseManualCustomer === undefined
     && callers.runReissueManualCustomerToken === undefined
+    && callers.runReapplyManualTier === undefined
   ) {
     return;
   }
@@ -3382,7 +3568,9 @@ const renderManualCustomerLifecycleControls = (
   const claimEmailReady = overview.readiness.some(
     (item) => item.key === 'mail_sender' && item.state === 'ready',
   );
-  if (!canExtend && !canSwap && !canClose && !canReissue) return;
+  const canReapply = callers.runReapplyManualTier !== undefined
+    && openCustomerOptions.length > 0;
+  if (!canExtend && !canSwap && !canClose && !canReissue && !canReapply) return;
 
   const section = append(doc, parent, 'section', 'seller-section');
   section.setAttribute(SELLER_CUSTOMER_LIFECYCLE_FORM_ATTR, '');
@@ -3502,11 +3690,13 @@ const renderManualCustomerLifecycleControls = (
     const action = append(doc, section, 'details', 'seller-lifecycle-action');
     appendText(doc, action, 'summary', 'Move to another package');
     // D-196 micro-call — a swap RE-STAMPS the customer's contract from the new
-    // tier's template (`restampCustomerFromTierTemplate`, whose sole caller is
-    // `swapCustomerTier`), which resets any per-customer grant edits made in
-    // #contracts. That is correct on a tier move — the customer is on a different
-    // plan now — but it is silent, and the edits are not recoverable from this
-    // screen. Extend does NOT re-stamp; only swap does. Say so before the click.
+    // tier's template (`swapCustomerTier` → `stampCustomerContract`), which resets
+    // any per-customer grant edits made in #contracts. That is correct on a tier
+    // move — the customer is on a different plan now (owner, D-297: "hand edits
+    // wiping make sense") — but it is silent, and the edits are not recoverable
+    // from this screen. Of this panel's actions only swap re-stamps: Extend does
+    // not, and Reissue token / Message customer carry the agreement to the new
+    // key (D-297). Say so before the click.
     appendText(
       doc,
       action,
@@ -3743,6 +3933,128 @@ const renderManualCustomerLifecycleControls = (
       button.disabled = true;
     }
   }
+
+  if (canReapply) {
+    // D-309 — the one-customer re-apply. Previewed first, in place: the page's
+    // re-render would rebuild the form, and a Re-apply after it could reach a
+    // different customer than the one just previewed. A choice changed after the
+    // preview asks for a new one.
+    const action = append(doc, section, 'details', 'seller-lifecycle-action');
+    appendText(doc, action, 'summary', 'Re-apply their package');
+    appendText(
+      doc,
+      action,
+      'p',
+      'Give them what their package gives now. Preview it first: nothing changes until '
+        + 'you press Re-apply.',
+      'seller-form-intro',
+    );
+    const fields = append(doc, action, 'div', 'seller-customer-lifecycle-grid');
+    const customerId = withAccessibleName(appendLifecycleSelect(
+      doc,
+      fields,
+      'Customer',
+      'reapply.customer_id',
+      openCustomerOptions,
+    ), 'Who to re-apply their package to');
+    const checks = append(doc, action, 'div', 'seller-form-checks');
+    const permissions = appendReapplyCheckbox(
+      doc, checks, 'Its permissions', 'reapply.permissions', SELLER_CUSTOMER_LIFECYCLE_FIELD_ATTR,
+    );
+    const length = appendReapplyCheckbox(
+      doc, checks, 'Its length', 'reapply.length', SELLER_CUSTOMER_LIFECYCLE_FIELD_ATTR,
+    );
+    const previewLine = appendText(doc, action, 'p', '', 'seller-table-detail');
+    previewLine.setAttribute(SELLER_CUSTOMER_REAPPLY_PREVIEW_ATTR, '');
+    const footer = append(doc, action, 'div', 'seller-form-footer');
+    let previewedKey: string | null = null;
+    const choices = () => {
+      const id = requiredFieldValue(customerId, 'Customer');
+      const customer = openManualCustomers.find((row) => row.customer_id === id);
+      if (customer === undefined) throw new Error('Pick a customer who is still active.');
+      return {
+        tier_id: customer.tier_id,
+        apply: { permissions: permissions.checked, length: length.checked },
+        who: 'picked' as const,
+        customer_ids: [customer.customer_id],
+      };
+    };
+    const say = (text: string, kind?: 'success' | 'error'): void => {
+      status.removeAttribute('role');
+      status.removeAttribute('data-kind');
+      status.textContent = text;
+      if (kind !== undefined) status.setAttribute('data-kind', kind);
+      if (kind === 'error') status.setAttribute('role', 'alert');
+    };
+    appendButton(doc, footer, 'Preview', () => {
+      if (pending) return;
+      void Promise.resolve()
+        .then(() => {
+          const current = choices();
+          if (!current.apply.permissions && !current.apply.length) {
+            throw new Error('Choose its permissions, its length, or both.');
+          }
+          say('Previewing…');
+          return callers.runReapplyManualTier!({ ...current, preview: true })
+            .then((response) => ({ current, response }));
+        })
+        .then(({ current, response }) => {
+          const row = response.customers.find((c) => c.customer_id === current.customer_ids[0]);
+          if (row === undefined) throw new Error('That customer is no longer on the package.');
+          previewedKey = JSON.stringify(current);
+          previewLine.textContent = [
+            ...(current.apply.length
+              ? [`Current end: ${formatEndDate(row.end_before)}. After re-applying: ${formatEndAfter(row, response)}.`]
+              : []),
+            ...(current.apply.length && row.changed_by_hand.end_date
+              ? ['Someone set their end date by hand; this replaces it.']
+              : []),
+            ...(current.apply.permissions
+              ? [row.changed_by_hand.permissions
+                ? 'Their permissions were changed by hand; they go back to the package’s own.'
+                : 'Their permissions are already the package’s.']
+              : []),
+          ].join(' ');
+          reapply.disabled = false;
+          say('Preview ready. Press Re-apply to make the change.');
+        })
+        .catch((err) => say(reapplyErrorCopy(err), 'error'));
+    }, [[SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply.preview']]);
+    const reapply = appendButton(
+      doc,
+      footer,
+      'Re-apply',
+      () => {
+        let current: ReturnType<typeof choices>;
+        try {
+          current = choices();
+        } catch (err) {
+          say(humanizeRpcError(err), 'error');
+          return;
+        }
+        if (previewedKey === null || previewedKey !== JSON.stringify(current)) {
+          say('Preview it first, so you can see what changes.', 'error');
+          return;
+        }
+        runAction(
+          'Re-applying their package…',
+          'Their package is re-applied.',
+          () => callers.runReapplyManualTier!({ ...current, preview: false }),
+        );
+      },
+      [[SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply']],
+    );
+    reapply.disabled = true;
+    const invalidate = (): void => {
+      if (previewedKey === null) return;
+      previewedKey = null;
+      previewLine.textContent = '';
+      reapply.disabled = true;
+    };
+    for (const control of [customerId, permissions, length]) {
+      control.addEventListener('change', invalidate);
+    }
+  }
 };
 
 const renderCustomers = (
@@ -3919,6 +4231,127 @@ const renderUsage = (
       { label: 'Units', value: (rollup) => `${rollup.units}` },
     ],
   });
+};
+
+/** What one item of each list is called, as the owner reads it. */
+const SELLER_ITEM_NOUN: Readonly<Record<SellerCollectionSubpage, string>> = {
+  offers: 'offer',
+  orders: 'order',
+  tiers: 'package',
+  customers: 'customer',
+  usage: 'usage record',
+};
+
+/** Who is on a package, by whether they still have access. */
+const formatPackageCustomers = (overview: SellerOverview, tierId: string): string => {
+  const states = overview.customers
+    .filter((customer) => customer.tier_id === tierId)
+    .map((customer) => customer.access_state);
+  if (states.length === 0) return 'None yet';
+  return ([['active', 'active'], ['grace', 'in grace'], ['closed', 'closed']] as const)
+    .map(([state, word]) => [states.filter((s) => s === state).length, word] as const)
+    .filter(([count]) => count > 0)
+    .map(([count, word]) => `${count} ${word}`)
+    .join(', ');
+};
+
+/** A list row's preview: the item itself, as a list, then one button that opens
+ *  it. The owner (2026-09-24): "for a review to make sense it should be [list of
+ *  tier item] [confirm]". The preview had said "Review this tiers item before you
+ *  open everything about it" over three facts about the LIST (its name, the
+ *  record's id, the page number). There was nothing to review, so the drawer was
+ *  one more click on the way to the record.
+ *
+ *  Each fact is the item's own, in the words and formats of its list row. The
+ *  drawer shows whole values where a cell shortens them (a handle, an origin). */
+const sellerItemFacts = (
+  subpage: SellerCollectionSubpage,
+  itemId: string,
+  overview: SellerOverview,
+  orders: readonly SellerOrder[] | null,
+): readonly ListPreviewFact[] => {
+  const idFact = { label: 'ID', value: itemId };
+  switch (subpage) {
+    case 'tiers': {
+      const tier = overview.tiers.find((row) => row.tier_id === itemId);
+      if (tier === undefined) return [idFact];
+      return [
+        { label: 'Customers', value: formatPackageCustomers(overview, tier.tier_id) },
+        { label: 'Pass', value: formatDuration(tier.pass_duration_seconds) },
+        { label: 'How much they may use', value: formatUsagePolicy(tier.usage_policy_json) },
+        { label: 'Source', value: titleCase(tier.lifecycle_source) },
+        { label: 'Active', value: formatBool(tier.active) },
+        { label: 'Status updates', value: formatBool(tier.customer_status_enabled_default) },
+        { label: CATEGORY_LABEL, value: tier.door_id },
+        { label: 'Entitlement', value: tier.entitlement_key },
+        { label: 'Template', value: tier.template_contract_id },
+        idFact,
+      ];
+    }
+    case 'customers': {
+      const customer = overview.customers.find((row) => row.customer_id === itemId);
+      if (customer === undefined) return [idFact];
+      const tier = overview.tiers.find((row) => row.tier_id === customer.tier_id);
+      return [
+        { label: 'Package', value: tier?.display_name ?? customer.tier_id },
+        { label: 'Access', value: titleCase(customer.access_state) },
+        { label: 'Period end', value: formatEndDate(customer.current_period_end) },
+        { label: 'Grace until', value: formatTimestamp(customer.grace_until) },
+        { label: 'Email', value: formatOptional(customer.email) },
+        { label: 'Status', value: formatOptional(customer.source_status) },
+        { label: 'Source', value: titleCase(customer.lifecycle_source) },
+        { label: 'Contract', value: customer.contract_id },
+        {
+          label: 'Credentials',
+          value: customer.inbound_token_id || customer.mcp_token_id ? 'Issued' : 'Not issued',
+        },
+        idFact,
+      ];
+    }
+    case 'offers': {
+      const offer = (overview.offers ?? []).find((row) => row.offer_id === itemId);
+      if (offer === undefined) return [idFact];
+      return [
+        { label: 'Price', value: formatSellerOfferPrice(offer) },
+        { label: 'State', value: offer.state },
+        ...(offer.description.length > 0 ? [{ label: 'About', value: offer.description }] : []),
+        {
+          label: 'Definition',
+          value: offer.created_by_recipe_id ?? 'Recued did not note who made it',
+        },
+        { label: 'Fulfillment', value: offer.fulfillment_recipe_id ?? 'Not linked' },
+        idFact,
+      ];
+    }
+    case 'orders': {
+      const order = orders?.find((row) => row.order_key === itemId);
+      if (order === undefined) return [idFact];
+      return [
+        { label: 'Phase', value: order.phase },
+        { label: 'Amount', value: formatOrderAmount(order.amount_minor, order.currency) },
+        { label: 'Customer', value: formatOptional(order.customer_id) },
+        { label: 'Provider', value: formatOptional(order.provider) },
+        { label: 'Artifact', value: formatOrderArtifact(order.artifact_hash) },
+        { label: 'Error', value: formatOptional(order.error_code) },
+        { label: 'Updated', value: formatTimestamp(order.updated_at) },
+        { label: 'Handle', value: order.order_handle },
+        { label: 'Origin', value: `${titleCase(order.origin_kind)} · ${order.origin_ref}` },
+      ];
+    }
+    case 'usage': {
+      const rollup = overview.usage_rollups.find((row) => usageRollupId(row) === itemId);
+      if (rollup === undefined) return [idFact];
+      return [
+        { label: 'Kind', value: titleCase(rollup.usage_kind) },
+        {
+          label: 'Period',
+          value: `${titleCase(rollup.period_granularity)} ${formatTimestamp(rollup.period_start)}`,
+        },
+        { label: 'Units', value: `${rollup.units}` },
+        { label: 'Contract', value: rollup.contract_id },
+      ];
+    }
+  }
 };
 
 /** One anchor per "new" screen a list offers. Only the screens the paired
@@ -4229,7 +4662,7 @@ export const mountSellerPage = (
   // to its own screen, so "what did I just create" needs no trip to the list.
   let createdTierId: string | null = null;
   let issuedCustomerId: string | null = null;
-  let tierBulkAdjustFormMessage: SellerFormMessage | null = null;
+  let tierReapplyFormMessage: SellerFormMessage | null = null;
   let customerFormMessage: SellerFormMessage | null = null;
   let customerLifecycleFormMessage: SellerFormMessage | null = null;
   let llmGatewayAckFormMessage: SellerFormMessage | null = null;
@@ -4654,12 +5087,12 @@ export const mountSellerPage = (
           error = null;
           render();
         };
-        const applyBulkResult = (
-          response: SellerManualTierBulkAdjustResponse,
+        const applyReapplyResult = (
+          response: SellerManualTierReapplyResponse,
           message: SellerFormMessage,
         ): void => {
           if (disposed) return;
-          tierBulkAdjustFormMessage = message;
+          tierReapplyFormMessage = message;
           overview = response.overview;
           phase = 'ready';
           error = null;
@@ -4727,7 +5160,7 @@ export const mountSellerPage = (
           }
           const detail = appendCollectionHost('tiers', selectedItemId);
           // Three screens behind three addresses: the record with its usage
-          // limits, the metadata edit, and the bulk customer adjustment. The
+          // limits, the metadata edit, and re-applying it to its customers. The
           // manual-only screens are offered only for a manual tier with the
           // rpc wired; a Stripe / Paddle / Lemon Squeezy tier has one screen.
           const manualEditable = tier.lifecycle_source === 'manual';
@@ -4746,7 +5179,7 @@ export const mountSellerPage = (
                   current: detailTab === 'edit',
                 }]
               : []),
-            ...(manualEditable && opts.runBulkAdjustManualTierCustomers !== undefined
+            ...(manualEditable && opts.runReapplyManualTier !== undefined
               ? [{
                   key: 'customers',
                   label: SELLER_TIER_TAB_META.customers.label,
@@ -4777,23 +5210,25 @@ export const mountSellerPage = (
             break;
           }
           if (detailTab === 'customers') {
-            if (!manualEditable || opts.runBulkAdjustManualTierCustomers === undefined) {
+            if (!manualEditable || opts.runReapplyManualTier === undefined) {
               renderUnavailable(
-                'You cannot change them all at once now',
+                'You cannot re-apply this package now',
                 manualEditable
-                  ? 'This paired server does not expose the bulk adjustment.'
+                  ? 'This paired server does not expose re-applying a package.'
                   : 'A provider-synchronized tier moves its customers through the provider\'s own events.',
               );
               break;
             }
-            renderManualTierBulkAdjustForm(
+            renderManualTierReapplyForm(
               doc,
               detail,
-              overview,
-              opts.runBulkAdjustManualTierCustomers,
-              tierBulkAdjustFormMessage,
-              applyBulkResult,
-              tier.tier_id,
+              tier,
+              overview.customers
+                .filter((customer) => customer.tier_id === tier.tier_id && customer.access_state !== 'closed')
+                .map((customer) => customer.customer_id),
+              opts.runReapplyManualTier,
+              tierReapplyFormMessage,
+              applyReapplyResult,
             );
             break;
           }
@@ -4915,6 +5350,9 @@ export const mountSellerPage = (
                 : {}),
               ...(opts.runReissueManualCustomerToken !== undefined
                 ? { runReissueManualCustomerToken: opts.runReissueManualCustomerToken }
+                : {}),
+              ...(opts.runReapplyManualTier !== undefined
+                ? { runReapplyManualTier: opts.runReapplyManualTier }
                 : {}),
             },
             customerLifecycleFormMessage,
@@ -5094,19 +5532,14 @@ export const mountSellerPage = (
     const itemId = link.getAttribute(SELLER_COLLECTION_ITEM_LINK_ATTR);
     if (itemId === null) return;
     rememberCollection(itemId);
-    const label = SELLER_SUBPAGE_META[subpage].label;
+    const noun = SELLER_ITEM_NOUN[subpage];
     const title = link.textContent?.trim() || itemId;
     preview.open({
       id: itemId,
-      eyebrow: `${label} preview`,
+      eyebrow: `${noun.charAt(0).toLocaleUpperCase()}${noun.slice(1)}`,
       title,
-      summary: `Review this ${label.toLocaleLowerCase()} item before you open everything about it, and where it came from.`,
-      facts: [
-        { label: 'Collection', value: label },
-        { label: 'Record', value: itemId },
-        { label: 'List page', value: String(page) },
-      ],
-      primaryLabel: 'Open full record',
+      facts: overview === null ? [{ label: 'ID', value: itemId }] : sellerItemFacts(subpage, itemId, overview, orders),
+      primaryLabel: `Open ${noun}`,
     }, link);
   };
 
@@ -5164,7 +5597,7 @@ export const mountSellerPage = (
     passTierCreatedTemplateId = null;
     createdTierId = null;
     issuedCustomerId = null;
-    tierBulkAdjustFormMessage = null;
+    tierReapplyFormMessage = null;
     customerFormMessage = null;
     customerLifecycleFormMessage = null;
     llmGatewayAckFormMessage = null;
@@ -5796,6 +6229,21 @@ ${LIST_PREVIEW_STYLES}
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+[${SELLER_PAGE_ATTR}] .seller-reapply-options {
+  display: grid;
+  gap: 4px;
+}
+[${SELLER_PAGE_ATTR}] .seller-reapply-option > .seller-table-detail {
+  margin: 0 0 0 25px;
+}
+/* The preview table scrolls in its own box, and the form stays the page's width.
+   ⚠ A <details> lays out its content as ONE grid item (the content slot), so a
+   min-width on anything inside cannot help. With the default auto track, that
+   item is as wide as the table, and every line of the form went past a phone's
+   edge with it (live, 2026-09-24). A track with no minimum stops that. */
+[${SELLER_PAGE_ATTR}] [${SELLER_TIER_REAPPLY_FORM_ATTR}] {
+  grid-template-columns: minmax(0, 1fr);
 }
 [${SELLER_PAGE_ATTR}] .seller-form-check input {
   width: 16px;

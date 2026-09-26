@@ -23,7 +23,7 @@
         "bytes": 4201,
         "sha256": "5f05ff9fb685c3f5019d80c95dd9580e9305ee1a01bf707903ad4f41da6fda51"
       },
-      "retrieved_on": "2026-07-15",
+      "retrieved_on": "2026-08-04",
       "mutability": "The official documentation URLs are mutable. Generation fails closed unless the index, overview, root reference, and aggregate hash of all 320 endpoint pages match this reviewed corpus."
     },
     "official_operation_count": 321,

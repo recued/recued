@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.aiven.io/doc/openapi.json",
-      "bytes": 1878200,
-      "sha256": "6bffd07ad025435e181251d7cc2b0152b58f53a1e0d1c5ef1a050e6f27d547b7",
+      "bytes": 1977891,
+      "sha256": "d22adbe5077d98d2318653d18d62becde4d5e353c21f041131813ef8ac833bbb",
       "openapi": "3.0.1",
       "title": "Aiven API Documentation",
       "api_version": "v1",
-      "official_path_count": 327,
-      "retrieved_on": "2026-07-20",
+      "official_path_count": 341,
+      "retrieved_on": "2026-09-24",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -32,39 +32,40 @@
         ]
       }
     ],
-    "official_operation_count": 468,
-    "admitted_operation_count": 406,
+    "official_operation_count": 488,
+    "admitted_operation_count": 426,
     "deprecated_operation_count": 62,
     "official_method_counts": {
-      "DELETE": 69,
-      "GET": 204,
+      "DELETE": 71,
+      "GET": 217,
       "PATCH": 16,
-      "POST": 133,
-      "PUT": 46
+      "POST": 135,
+      "PUT": 49
     },
     "admitted_method_counts": {
-      "DELETE": 59,
-      "GET": 176,
+      "DELETE": 61,
+      "GET": 189,
       "PATCH": 16,
-      "POST": 116,
-      "PUT": 39
+      "POST": 118,
+      "PUT": 42
     },
     "official_tag_counts": {
       "Account": 36,
       "Application_Users": 8,
       "Authentication_Methods": 3,
       "Billing": 6,
-      "BillingGroup": 16,
+      "BillingGroup": 18,
       "Cloud_platforms": 4,
       "Custom_Cloud": 7,
       "Domains": 5,
       "Groups": 7,
+      "Kafka_Connect_Custom_Plugins": 17,
       "OAuth2": 1,
       "Organization_Vpc": 12,
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
       "OrganizationPaymentMethod": 9,
-      "Organizations": 31,
+      "Organizations": 32,
       "Payment": 4,
       "Permissions": 3,
       "Project": 35,
@@ -91,17 +92,18 @@
       "Application_Users": 8,
       "Authentication_Methods": 3,
       "Billing": 5,
-      "BillingGroup": 3,
+      "BillingGroup": 5,
       "Cloud_platforms": 4,
       "Custom_Cloud": 7,
       "Domains": 5,
       "Groups": 7,
+      "Kafka_Connect_Custom_Plugins": 17,
       "OAuth2": 1,
       "Organization_Vpc": 11,
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
       "OrganizationPaymentMethod": 9,
-      "Organizations": 31,
+      "Organizations": 32,
       "Permissions": 3,
       "Project": 24,
       "Project_Key_Management": 1,
@@ -122,52 +124,52 @@
       "Users": 33
     },
     "pack_operation_counts": {
-      "aiven-organization-access": 57,
+      "aiven-organization-access": 58,
       "aiven-account-users": 47,
-      "aiven-billing-payments": 28,
+      "aiven-billing-payments": 30,
       "aiven-projects-networking": 68,
       "aiven-services-integrations": 69,
-      "aiven-kafka": 53,
+      "aiven-kafka": 70,
       "aiven-flink": 32,
       "aiven-data-services": 52
     },
     "composition_bytes": {
-      "aiven-organization-access": 98682,
+      "aiven-organization-access": 101099,
       "aiven-account-users": 74866,
-      "aiven-billing-payments": 49809,
-      "aiven-projects-networking": 143711,
-      "aiven-services-integrations": 131934,
-      "aiven-kafka": 101637,
+      "aiven-billing-payments": 54137,
+      "aiven-projects-networking": 143724,
+      "aiven-services-integrations": 132002,
+      "aiven-kafka": 131928,
       "aiven-flink": 78786,
       "aiven-data-services": 98400
     },
     "body_mode_counts": {
-      "none": 267,
-      "raw_json": 139
+      "none": 282,
+      "raw_json": 144
     },
     "success_status_counts": {
-      "200": 383,
-      "204": 23
+      "200": 401,
+      "204": 25
     },
     "selected_response_media_counts": {
-      "application/json": 380,
+      "application/json": 397,
       "application/pdf": 1,
-      "none": 23,
-      "text/csv": 2
+      "none": 25,
+      "text/csv": 3
     },
     "risk_counts": {
-      "admin": 115,
-      "destructive": 95,
-      "read": 196
+      "admin": 120,
+      "destructive": 97,
+      "read": 209
     },
     "approval_counts": {
-      "always": 210,
-      "never": 196
+      "always": 217,
+      "never": 209
     },
     "idempotency_counts": {
-      "idempotent": 114,
-      "non_idempotent": 96,
-      "safe": 196
+      "idempotent": 119,
+      "non_idempotent": 98,
+      "safe": 209
     },
     "pagination": {
       "automatic_operation_count": 2,
@@ -198,7 +200,7 @@
     "auth": {
       "selected": "Complete Authorization value in the documented aivenv1 TOKEN format, supplied only by the enrolled aiven connection",
       "official_documentation_model": "Authorization: aivenv1 TOKEN over https://api.aiven.io/v1",
-      "token_or_oauth_operation_count": 384,
+      "token_or_oauth_operation_count": 404,
       "no_auth_requirement_operation_count": 22,
       "no_auth_requirement_operation_keys": [
         "GET /clouds",
@@ -228,7 +230,7 @@
     },
     "authority_notes": {
       "openapi_operation_refs": 0,
-      "openapi_inline_operations": 468,
+      "openapi_inline_operations": 488,
       "exact_path_parameter_contract": true,
       "wire_prefix_path_alias": "/v1",
       "numeric_string_bounds_as_lengths": [
@@ -282,8 +284,8 @@
         "PUT /project/{project}/service/{service_name}/user/{service_username}",
         "PUT /project/{project}/tags"
       ],
-      "optional_request_body_count": 139,
-      "unsafe_integer_response_union_operation_count": 50,
+      "optional_request_body_count": 144,
+      "unsafe_integer_response_union_operation_count": 53,
       "nullable_response_union_operation_count": 0
     },
     "source_decision": {
@@ -533,7 +535,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "dc3a9843b455b08f5a1a4b627811d60da0addc32cc4213e97c95faadcd2756b3"
+    "operation_ids_sha256": "9ded49313fd0cbcf8a478473e8ec9142c4a03ccb6546c85e3c035ab7f2ec820c"
   },
   "official_operations": [
     {
@@ -2062,6 +2064,62 @@
       "op": "billing_group.billing_group_event_list"
     },
     {
+      "key": "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown",
+      "method": "GET",
+      "path": "/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown",
+      "operation_id": "BillingGroupFeeBreakdownAggregate",
+      "tag": "BillingGroup",
+      "summary": "Show fee breakdown for a billing group, aggregated by type of usage and/or service",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read",
+            "billing:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-billing-payments",
+      "op": "billing_group.billing_group_fee_breakdown_aggregate"
+    },
+    {
+      "key": "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download",
+      "method": "GET",
+      "path": "/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download",
+      "operation_id": "BillingGroupFeeBreakdownDownload",
+      "tag": "BillingGroup",
+      "summary": "Download fee breakdown for a billing group in CSV format",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read",
+            "billing:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "text/csv"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-billing-payments",
+      "op": "billing_group.billing_group_fee_breakdown_download"
+    },
+    {
       "key": "GET /billing-group/{billing_group_id}/invoice/{invoice_number}/csv",
       "method": "GET",
       "path": "/billing-group/{billing_group_id}/invoice/{invoice_number}/csv",
@@ -3045,6 +3103,469 @@
       "exclusion_reason": null,
       "pack": "aiven-organization-access",
       "op": "groups.user_group_members_update"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-connectors",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-connectors",
+      "operation_id": "KafkaConnectCustomConnectorsList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List custom connectors available in the organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_connectors_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "operation_id": "KafkaConnectCustomPluginClassGet",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Get a single plugin class by fully-qualified class name",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_get"
+    },
+    {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "operation_id": "KafkaConnectCustomPluginClassUpdate",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Update user-editable metadata of a plugin class",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_update"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes",
+      "operation_id": "KafkaConnectCustomPluginClassList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List all plugin classes for the organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes",
+      "operation_id": "KafkaConnectCustomPluginClassListByName",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List connector classes for a plugin, deduplicated by retaining the class from the latest non-deleted file version (by semver)",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_list_by_name"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginGet",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Get a single custom plugin by plugin name",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_get"
+    },
+    {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginUpdate",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Update user-editable metadata of a custom plugin",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_update"
+    },
+    {
+      "key": "DELETE /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "method": "DELETE",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginDelete",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Soft-delete a custom plugin and all its non-deleted file versions",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "204",
+      "response_media": [],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_delete"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes",
+      "operation_id": "KafkaConnectCustomPluginFileClassList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List all plugin classes discovered for a custom plugin file",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_class_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "operation_id": "KafkaConnectCustomPluginFileList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List all non-deleted custom plugin files for the organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_list"
+    },
+    {
+      "key": "POST /organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "method": "POST",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "operation_id": "KafkaConnectCustomPluginFileCreate",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Initiate a custom plugin file upload",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_create"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileGet",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Get a single custom plugin file with its discovered plugin classes",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_get"
+    },
+    {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileUpdate",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Update user-editable metadata of a custom plugin file",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_update"
+    },
+    {
+      "key": "DELETE /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "method": "DELETE",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileDelete",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "Soft-delete a custom plugin file and its solely-associated plugin classes",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "204",
+      "response_media": [],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_delete"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files",
+      "operation_id": "KafkaConnectCustomPluginFileListByName",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List all non-deleted file versions for a given plugin name",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_list_by_name"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins",
+      "operation_id": "KafkaConnectCustomPluginList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List all non-deleted custom plugins for the organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_list"
+    },
+    {
+      "key": "GET /organization/{organization_id}/kafka-connect/plugin-deployments",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/plugin-deployments",
+      "operation_id": "KafkaConnectPluginDeploymentsList",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "summary": "List custom plugin versions configured across all active Kafka Connect services in the organization",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_plugin_deployments_list"
     },
     {
       "key": "GET /userinfo",
@@ -4614,6 +5135,35 @@
       "op": "organizations.organization_user_invite"
     },
     {
+      "key": "POST /organization/{organization_id}/project/{project_id}/event-logs",
+      "method": "POST",
+      "path": "/organization/{organization_id}/project/{project_id}/event-logs",
+      "operation_id": "ProjectEventLogsGet",
+      "tag": "Organizations",
+      "summary": "Get platform event log entries for a project",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "projects:read"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-organization-access",
+      "op": "organizations.project_event_logs_get"
+    },
+    {
       "key": "GET /organizations",
       "method": "GET",
       "path": "/organizations",
@@ -5282,9 +5832,7 @@
           ]
         }
       ],
-      "request_media": [
-        "application/json"
-      ],
+      "request_media": [],
       "success_status": "200",
       "response_media": [
         "application/json"
@@ -5632,9 +6180,7 @@
           ]
         }
       ],
-      "request_media": [
-        "application/json"
-      ],
+      "request_media": [],
       "success_status": "200",
       "response_media": [
         "application/json"
@@ -14158,6 +14704,128 @@
         }
       ]
     },
+    "DELETE /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}": {
+      "key": "DELETE /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileDelete",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_delete",
+      "method": "DELETE",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_file_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_file_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [],
+      "selected_response_media": null,
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
+    "DELETE /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}": {
+      "key": "DELETE /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginDelete",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_delete",
+      "method": "DELETE",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "204",
+      "response_media": [],
+      "selected_response_media": null,
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
     "DELETE /organization/{organization_id}/payment-method/credit-card/{payment_method_id}": {
       "key": "DELETE /organization/{organization_id}/payment-method/credit-card/{payment_method_id}",
       "operation_id": "CreditCardDelete",
@@ -18612,6 +19280,20 @@
           "authority": "official_openapi_parameter",
           "numeric_string_bounds_as_lengths": false,
           "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
         }
       ],
       "request_media": [],
@@ -18952,6 +19634,162 @@
         {
           "tokenAuth": [],
           "oauth2": [
+            "billing:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown": {
+      "key": "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown",
+      "operation_id": "BillingGroupFeeBreakdownAggregate",
+      "pack": "aiven-billing-payments",
+      "op": "billing_group.billing_group_fee_breakdown_aggregate",
+      "method": "GET",
+      "path": "/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown",
+      "wire_path": "/v1/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown",
+      "tag": "BillingGroup",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "billing_group_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "billing_group_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "since",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.since",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read",
+            "billing:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download": {
+      "key": "GET /organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download",
+      "operation_id": "BillingGroupFeeBreakdownDownload",
+      "pack": "aiven-billing-payments",
+      "op": "billing_group.billing_group_fee_breakdown_download",
+      "method": "GET",
+      "path": "/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download",
+      "wire_path": "/v1/organization/{organization_id}/billing-group/{billing_group_id}/fee-breakdown/download",
+      "tag": "BillingGroup",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "billing_group_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "billing_group_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "since",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.since",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "text/csv"
+      ],
+      "selected_response_media": "text/csv",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read",
             "billing:read"
           ]
         }
@@ -20118,6 +20956,643 @@
         }
       ]
     },
+    "GET /organization/{organization_id}/kafka-connect/custom-connectors": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-connectors",
+      "operation_id": "KafkaConnectCustomConnectorsList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_connectors_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-connectors",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-connectors",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "plugin_name",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.plugin_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "custom_connectors",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes",
+      "operation_id": "KafkaConnectCustomPluginClassList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-classes",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_classes",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "operation_id": "KafkaConnectCustomPluginClassGet",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_get",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_class_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_class_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugin-files": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "operation_id": "KafkaConnectCustomPluginFileList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_files",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileGet",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_get",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_file_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_file_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes",
+      "operation_id": "KafkaConnectCustomPluginFileClassList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_class_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}/classes",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_file_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_file_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_classes",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugins": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins",
+      "operation_id": "KafkaConnectCustomPluginList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugins",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginGet",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_get",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes",
+      "operation_id": "KafkaConnectCustomPluginClassListByName",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_list_by_name",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/classes",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_classes",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files": {
+      "key": "GET /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files",
+      "operation_id": "KafkaConnectCustomPluginFileListByName",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_list_by_name",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}/files",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_files",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
+    "GET /organization/{organization_id}/kafka-connect/plugin-deployments": {
+      "key": "GET /organization/{organization_id}/kafka-connect/plugin-deployments",
+      "operation_id": "KafkaConnectPluginDeploymentsList",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_plugin_deployments_list",
+      "method": "GET",
+      "path": "/organization/{organization_id}/kafka-connect/plugin-deployments",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/plugin-deployments",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "plugin_deployments",
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
+    },
     "GET /organization/{organization_id}/payment-method/bank-transfer/{payment_method_id}": {
       "key": "GET /organization/{organization_id}/payment-method/bank-transfer/{payment_method_id}",
       "operation_id": "BankTransferGet",
@@ -20666,6 +22141,20 @@
             "string"
           ],
           "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "query",
+          "wire_name": "billing_group_id",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.billing_group_id",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -30886,6 +32375,57 @@
         }
       ]
     },
+    "POST /organization/{organization_id}/kafka-connect/custom-plugin-files": {
+      "key": "POST /organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "operation_id": "KafkaConnectCustomPluginFileCreate",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_create",
+      "method": "POST",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
     "POST /organization/{organization_id}/payment-method/credit-cards": {
       "key": "POST /organization/{organization_id}/payment-method/credit-cards",
       "operation_id": "CreditCardCreate",
@@ -30933,6 +32473,71 @@
           "tokenAuth": [],
           "oauth2": [
             "billing:write"
+          ]
+        }
+      ]
+    },
+    "POST /organization/{organization_id}/project/{project_id}/event-logs": {
+      "key": "POST /organization/{organization_id}/project/{project_id}/event-logs",
+      "operation_id": "ProjectEventLogsGet",
+      "pack": "aiven-organization-access",
+      "op": "organizations.project_event_logs_get",
+      "method": "POST",
+      "path": "/organization/{organization_id}/project/{project_id}/event-logs",
+      "wire_path": "/v1/organization/{organization_id}/project/{project_id}/event-logs",
+      "tag": "Organizations",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "project_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "project_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "projects:read"
           ]
         }
       ]
@@ -37403,6 +39008,201 @@
             "string"
           ],
           "admitted_key": "custom_cloud_environment_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
+    "PUT /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}": {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "operation_id": "KafkaConnectCustomPluginClassUpdate",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_class_update",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-classes/{plugin_class_name}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_class_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_class_name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
+    "PUT /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}": {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "operation_id": "KafkaConnectCustomPluginFileUpdate",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_file_update",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugin-files/{plugin_file_id}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_file_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_file_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:write"
+          ]
+        }
+      ]
+    },
+    "PUT /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}": {
+      "key": "PUT /organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "operation_id": "KafkaConnectCustomPluginUpdate",
+      "pack": "aiven-kafka",
+      "op": "kafka_connect_custom_plugins.kafka_connect_custom_plugin_update",
+      "method": "PUT",
+      "path": "/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "wire_path": "/v1/organization/{organization_id}/kafka-connect/custom-plugins/{plugin_name}",
+      "tag": "Kafka_Connect_Custom_Plugins",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization_id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization_id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "numeric_string_bounds_as_lengths": false,
+          "untyped_array_items_as_strings": false
+        },
+        {
+          "in": "path",
+          "wire_name": "plugin_name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "plugin_name",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",

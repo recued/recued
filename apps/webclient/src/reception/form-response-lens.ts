@@ -41,6 +41,8 @@ import {
   findFormResponseAutomationsForResponse,
   type FormResponseAutomationRunMatch,
 } from '../data/form-response-automation-run.js';
+import { WEBCLIENT_RUN_RPC_TIMEOUT_MS } from '../realtime/rpc-conn.js';
+import { listAllRecipes } from '../shell/paged-lists.js';
 import { serializeShellRoute } from '../shell/route.js';
 
 /** ⛔ `execute` is taken from the CONN, not plumbed as a caller from
@@ -686,7 +688,7 @@ export const mountReceptionFormResponseLens = (
     const pendingFocus: ResponseFocusTarget = { kind: 'discover' };
     render(pendingFocus);
     try {
-      const result = await opts.conn('recipe.list');
+      const result = await listAllRecipes((request) => opts.conn('recipe.list', request));
       if (disposed || detail !== anchor) return;
       const entries: ReadonlyArray<ServerRecipeListEntry> = result.recipes;
       // ⚠ Arg order is (recipes, response) — I had it backwards first, and BOTH params are
@@ -726,7 +728,7 @@ export const mountReceptionFormResponseLens = (
         initialTab: 'run',
         // Sourced from the conn — see the header: no bootstrap caller is plumbed for this lens.
         execute: (args) =>
-          opts.conn('execute', { ...args, trigger_source: 'manual' }) as never,
+          opts.conn('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }) as never,
         onClose: () => {
           if (runModal === handle) runModal = null;
         },

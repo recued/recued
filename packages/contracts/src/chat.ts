@@ -337,6 +337,30 @@ export interface ToolEntry {
   also_reads?: ReadonlyArray<DependencyReadAdmission>;
 }
 
+/** A tool as a CHECKLIST row: everything except the JSON Schema.
+ *
+ *  ⛔ `arg_schema` IS THE PAYLOAD AND HAS NO READER HERE. It is 54.3% of this
+ *  response (1,295,000 of 2,385,811 B on an 11-pack realm; 43.9% of 12.71 MB
+ *  on a full install), and the one consumer —
+ *  `apps/webclient/src/contracts/chat-inbound-tokens.ts`, the Permissions →
+ *  MCP door grant checklist — never mentions it. The checklist reads `name`,
+ *  `tier`, `description`, `classification` and `requires_kinds`; a schema is
+ *  not something a human ticks a box against.
+ *
+ *  ⚠ PROJECTED AT THE RPC BOUNDARY, NOT REMOVED FROM THE REGISTRY. The same
+ *  `InternalToolRegistry.list()` feeds the LLM's actual tool advertisement,
+ *  where `arg_schema` is the whole point — it is what the model fills in. Strip
+ *  it there and every tool call loses its shape. {@link ToolEntry} stays whole;
+ *  only this view drops the field, the way `packs.list` dropped `manifest` and
+ *  `recipe.list` dropped `steps`.
+ *
+ *  🔑 THE MARGIN IS WHY THIS IS NOT COSMETIC. On a full install the catalog is
+ *  12.71 MB and `recipe.list` sits under it at 3.81 MB — 16.52 MB against the
+ *  16.78 MB `WS_JSON_MAX_BUFFERED_BYTES` ceiling, 0.26 MB of headroom, on a
+ *  socket where an over-cap frame is terminated and (before `21482e1ef`) was
+ *  reported as delivered. See internal design notes. */
+export type ToolCatalogEntryView = Omit<ToolEntry, 'arg_schema'>;
+
 /** § A.1.1 — closed channel discriminator for dispatch context. The
  *  same primitive layer serves both consumers; channel-specific
  *  semantics (per-token gating for MCP wire vs in-process audit +
@@ -3849,7 +3873,7 @@ export const CANONICAL_OP_TOOL_PREFIX = 'recued_canonical_';
  *
  *  Pure: same `catalog` → same grants map. */
 export const buildDefaultMcpInboundTokenGrants = (
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
 ): Readonly<Record<string, boolean>> => {
   const out: Record<string, boolean> = Object.create(null);
   for (const entry of catalog) {
@@ -3943,7 +3967,7 @@ export interface McpInboundTokenCapabilitySummary {
  *  Pure: same `(grants, catalog)` → same summary. */
 export const summarizeMcpInboundTokenCapability = (
   grants: Readonly<Record<string, boolean>>,
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
 ): McpInboundTokenCapabilitySummary => {
   const allowed_read: string[] = [];
   const allowed_write: string[] = [];

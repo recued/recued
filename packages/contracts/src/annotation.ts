@@ -9,8 +9,8 @@
  *  `{{data.<col>.<id>.annotations.<key>}}` /
  *  `{{data.<col>.<id>.links.<role>}}`.
  *
- *  Recipes write through the kernel ingredients `data-annotate` /
- *  `data-link`; the per-record refs are populated by the engine's
+ *  Recipes write through the kernel ops `annotation-create` /
+ *  `link-create`; the per-record refs are populated by the engine's
  *  prefetch resolver. Staleness is engine-internal: the engine renders
  *  a `⚠ stale` badge when `(source_record_hash, model_used)` no longer
  *  matches, and NEVER auto-deletes.
@@ -98,7 +98,7 @@ export interface Annotation extends CanonicalRecord {
   origin_contract_id?: string;
   /** D-177 N.11 rule 1 — the write SURFACE (`'client_rpc'` for the
    *  direct paired-client `annotation.write`; `'engine'` for recipe-run
-   *  `data-annotate` writes; `'system'` default). Together with
+   *  `annotation-create` writes; `'system'` default). Together with
    *  `origin_actor` this decides the stored-cleanliness gate
    *  (`isUserCleanStoredRow` — see `origin-provenance.ts`).
    *  Server-derived, never client-supplied. */
@@ -223,6 +223,51 @@ export interface LinkFilter {
   until?: number;
   limit?: number;
 }
+
+/** The fields an annotation filter narrows by. `limit` caps a list and narrows
+ *  nothing, so it is not one of them. */
+export const ANNOTATION_FILTER_FIELDS = [
+  'target_collection', 'target_id', 'key', 'authored_by_recipe_id', 'since', 'until',
+] as const;
+
+/** The fields a link filter narrows by (see `ANNOTATION_FILTER_FIELDS`). */
+export const LINK_FILTER_FIELDS = [
+  'from_collection', 'from_id', 'to_collection', 'to_id', 'role',
+  'authored_by_recipe_id', 'since', 'until',
+] as const;
+
+/** Why a DELETE filter is refused, or `null` when it may run.
+ *
+ *  ⛔ A delete narrows only by the fields its filter compiler knows, and the
+ *  compiler skips a field with no value. So a key it does not know, or a known
+ *  one with no value (a recipe ref that resolved to nothing), drops out of the
+ *  WHERE clause and the delete WIDENS, up to every row. Before D-306 the
+ *  manifest's placeholder nulls turned each omitted field into a clause that
+ *  matched nothing, which hid this. Once D-306 dropped them,
+ *  `link-delete {from_id: '{{step.pick.id}}'}` with nothing picked deleted
+ *  every link (integrity audit, 2026-09-24).
+ *
+ *  So a delete refuses three things: a key it does not know, a known key with no
+ *  value, and a filter that narrows by nothing. `limit` is allowed and narrows
+ *  nothing. `notNarrowing` names fields that do not count as narrowing:
+ *  annotation-delete pins the author itself. A `null` is a value: it matches no
+ *  row, so it cannot widen. */
+export const deleteFilterProblem = (
+  filter: object,
+  fields: readonly string[],
+  notNarrowing: readonly string[] = [],
+): string | null => {
+  let narrows = false;
+  for (const [field, value] of Object.entries(filter) as Array<[string, unknown]>) {
+    if (field === 'limit') continue;
+    if (!fields.includes(field)) return `'${field}' is not a filter field`;
+    if (value === undefined) {
+      return `'${field}' has no value, and a delete never reads a missing value as "any"`;
+    }
+    if (!notNarrowing.includes(field)) narrows = true;
+  }
+  return narrows ? null : 'at least one filter field is required';
+};
 
 /** Hard ceiling on a single annotation `value`'s serialized size, in
  *  bytes. Larger values are rejected with `value_too_large` — same as

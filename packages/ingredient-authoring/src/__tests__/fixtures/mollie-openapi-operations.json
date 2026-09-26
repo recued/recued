@@ -3,7 +3,7 @@
     "generated_by": "scripts/generate-mollie-packs.mjs",
     "source": {
       "kind": "official_public_readme_embedded_multi_document_openapi",
-      "retrieved_on": "2026-08-04",
+      "retrieved_on": "2026-09-21",
       "document_count": 7,
       "aggregate_sha256": "9bd3eab525f6526b4350b6cc340e80faf64bcd8ddd3adf36d3831dcc75448969",
       "path_count": 97,

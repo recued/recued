@@ -84,8 +84,11 @@ import {
   retireWebhookDoors,
   snapshotDoorContractIds,
 } from './webhook-door-enroll.js';
-import { looksLikeGeneratedMcpPackSlug } from '@recued/ingredient-authoring';
+import { looksLikeGeneratedMcpPackSlug, recordsCatalogSlug } from '@recued/ingredient-authoring';
+import { recipeOwnedStateOf } from './recipe-owned-state.js';
 import type { ContractStore } from './storage/contract-store.js';
+import type { SavedDataViewStore } from './saved-data-view-store.js';
+import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { createContractGrantStore } from './storage/contract-grant-store.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
@@ -171,6 +174,24 @@ export interface PackUninstallRpcDeps {
    *  failure never fails the uninstall). Optional so dbless / pre-contract-
    *  store boot harnesses keep working. */
   contractStore?: ContractStore;
+  /** D-289 — late-bound saved-view store.
+   *
+   *  ⛔ A GETTER, NOT THE STORE. The store is built in `compose-listeners`
+   *  (it needs `execution.notificationBlock` for its alert runtime) while these
+   *  deps compose a stage earlier in `compose-rpc-context`, so there is nothing
+   *  to hand over at construction. Reads resolve at CALL time — an install
+   *  always happens after boot — which is the same shape
+   *  `publishExecutionCaseOfferNotifier` uses for the same ordering problem.
+   *
+   *  Absent, or resolving undefined (db-less harness) ⇒ a manifest's
+   *  `saved_view` contents install nothing and the pack still succeeds: a view
+   *  is a convenience surface, never a capability. */
+  getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  /** D-304 — the stores a recipe's own state lives in, so `packs.uninstall_preview`
+   *  can say what goes with the pack's recipes. The REMOVAL is not here: it runs from
+   *  the recipe store's deletion hook (`recipe-owned-state.ts`), which every
+   *  uninstall path reaches. Late-bound, like the saved-view store. */
+  getRecipeOwnedState?: () => import('./recipe-owned-state.js').RecipeOwnedStateDeps | undefined;
   /** D-225 Slice 2 — remove the MCP connection a GENERATED pack was minted
    *  from, and report its name so the surface can say what it did. Returns null
    *  when no enrolled connection derives this slug — which is every pack that
@@ -707,6 +728,10 @@ export const handlePacksUninstall = async (
           removePackInventory(deps.contractStore!, pack_slug);
           // D-220 Slice B — the pack's shipped intake templates go with it.
           removePackReceptionTemplates(deps.contractStore!, pack_slug);
+          // D-289 — and the views it shipped, on the SAME paths: a view left
+          // behind is a dead row in the owner's list pointing at a pack that
+          // no longer exists.
+          deps.getSavedDataViewStore?.()?.removePackViews(pack_slug);
           for (const id of localDroppable) localStore.delete(id);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
@@ -730,6 +755,10 @@ export const handlePacksUninstall = async (
           removePackInventory(deps.contractStore!, pack_slug);
           // D-220 Slice B — the pack's shipped intake templates go with it.
           removePackReceptionTemplates(deps.contractStore!, pack_slug);
+          // D-289 — and the views it shipped, on the SAME paths: a view left
+          // behind is a dead row in the owner's list pointing at a pack that
+          // no longer exists.
+          deps.getSavedDataViewStore?.()?.removePackViews(pack_slug);
           grantStore.removePackGroups(pack_slug);
           applyInstallAudienceGrantIds(
             {
@@ -843,20 +872,52 @@ export const handlePacksUninstall = async (
   };
 };
 
-type PacksUninstallMethods = 'packs.uninstall';
+/** D-304 — what deleting a pack removes with its recipes: their schedules, the
+ *  automations the owner set up on them, and how many have saved settings. The
+ *  recipes are the ones the uninstall would delete: the pack's own rows, and a
+ *  Records pack's rows under its catalog id (the uninstall's own resolution). Nothing
+ *  to count on a server that cannot say (no store reader): all zero, so the
+ *  confirmation adds no line rather than a wrong one. */
+export const previewPackUninstall = async (
+  deps: PackUninstallRpcDeps,
+  args: { pack_slug?: unknown },
+): Promise<{ schedules: number; automations: number; recipes_with_settings: number }> => {
+  const pack_slug = typeof args?.pack_slug === 'string' ? args.pack_slug.trim() : '';
+  if (pack_slug === '') throw new RpcError('bad_request', 'packs.uninstall_preview: pack_slug must be a non-empty string');
+  const owned = deps.getRecipeOwnedState?.();
+  if (owned === undefined) return { schedules: 0, automations: 0, recipes_with_settings: 0 };
+  const recipeIds = new Set(deps.recipeStore.listForPack(pack_slug));
+  for (const namespace of deps.recordsStore?.listNamespaces() ?? []) {
+    if (namespace.owner.pack_slug !== pack_slug) continue;
+    for (const id of deps.recipeStore.listForPack(await recordsCatalogSlug(namespace.owner))) recipeIds.add(id);
+  }
+  let schedules = 0;
+  let automations = 0;
+  let recipesWithSettings = 0;
+  for (const recipe_id of recipeIds) {
+    const state = recipeOwnedStateOf(recipe_id, owned);
+    schedules += state.schedules;
+    automations += state.automations;
+    if (state.settings > 0) recipesWithSettings += 1;
+  }
+  return { schedules, automations, recipes_with_settings: recipesWithSettings };
+};
+
+type PacksUninstallMethods = 'packs.uninstall' | 'packs.uninstall_preview';
 
 export const makePackUninstallHandlers = (
   deps: PackUninstallRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, PacksUninstallMethods, WsClient> | undefined => {
   if (!deps) return undefined;
   return {
-    methods: ['packs.uninstall'],
+    methods: ['packs.uninstall', 'packs.uninstall_preview'],
     handlers: {
       'packs.uninstall': async (args) =>
         handlePacksUninstall(
           deps,
           args as Parameters<typeof handlePacksUninstall>[1],
         ),
+      'packs.uninstall_preview': async (args) => previewPackUninstall(deps, args),
     },
   };
 };

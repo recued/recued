@@ -1077,6 +1077,10 @@ export const composeAppContext = (
     // preserving any explicit owner revoke. Idempotent + atomic; runs right after the
     // policy-matrix seed. Makes the owner's "fully-granted contract" DB state mirror the
     // 3c UI 1:1; the owner-permissive author-default covers ids not enumerated here.
+    // ⛔ D-298 — the primitive grandfather FIRST: whether the owner already holds
+    // primitive rows is how it knows an earlier gate build booted here, and this
+    // reconcile writes them. See `PRIMITIVE_GRANDFATHER_SERVER_KEY`.
+    grandfatherPrimitiveGrants(contractStoreRef);
     reconcileOwnerGrants(contractStoreRef);
     // ── D-247 D8 + D14 — the recipe grant seam ──────────────────────────────
     //
@@ -1100,11 +1104,10 @@ export const composeAppContext = (
       grants: createContractGrantEntryStore(contractStoreRef),
       now: () => Date.now(),
     });
-    // D-228 slice 5 — grandfather EXISTING non-owner contracts onto the Tier-1
-    // primitives before the gate can deny them. Must run beside the owner
-    // reconcile on BOTH surfaces: a scoped door / D-196 customer is fail-closed
-    // by author default and could hold no `primitive.*` row before this slice.
-    grandfatherPrimitiveGrants(contractStoreRef);
+    // D-228 slice 5 — the grandfather of EXISTING non-owner contracts onto the
+    // Tier-1 primitives runs above, before the owner reconcile (D-298), on BOTH
+    // surfaces: a scoped door / D-196 customer is fail-closed by author default
+    // and could hold no `primitive.*` row before that slice.
     // D-165 P3.grant migration — operation-group grants live as `contract.grant`
     // rows (the centralized permission profile). The user-grant store wraps the
     // contract store; the boot profile seed merges these grants + the grant rpcs

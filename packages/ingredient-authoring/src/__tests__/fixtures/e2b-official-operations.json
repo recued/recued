@@ -164,8 +164,7 @@
     },
     "selected_by_approval": {
       "always": 38,
-      "ask": 32,
-      "never": 2
+      "never": 34
     },
     "raw_json_request_bodies": 32,
     "exact_decimal_parameters": 20,
@@ -734,7 +733,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1101,7 +1100,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1187,7 +1186,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1331,7 +1330,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1462,7 +1461,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1533,7 +1532,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1832,7 +1831,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2369,7 +2368,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2420,7 +2419,7 @@
       "op": "auth.get_teams",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2543,7 +2542,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2683,7 +2682,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2754,7 +2753,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2874,7 +2873,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3097,7 +3096,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3482,7 +3481,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3623,7 +3622,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3713,7 +3712,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3784,7 +3783,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3905,7 +3904,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4061,7 +4060,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4397,7 +4396,7 @@
       "op": "volumes.get_volumes",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4529,7 +4528,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4699,7 +4698,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4944,7 +4943,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/octet-stream"
@@ -5082,7 +5081,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -5311,7 +5310,7 @@
       "op": "envd.get_envs",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -5432,7 +5431,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/octet-stream",
@@ -5626,7 +5625,7 @@
       "op": "envd.get_metrics",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -5685,7 +5684,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -5868,7 +5867,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -6098,7 +6097,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -6220,7 +6219,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -6635,7 +6634,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "template-inventory-e2b",
@@ -6649,7 +6648,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "volume-inventory-e2b",
@@ -6663,7 +6662,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "volume-directory-e2b",
@@ -6686,7 +6685,7 @@
         "volumeID",
         "query.path"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "team-inventory-e2b",
@@ -6700,7 +6699,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "node-inventory-e2b",
@@ -6714,7 +6713,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "envd-metrics-e2b",
@@ -6728,7 +6727,7 @@
       "configured_args": [],
       "static_args": {},
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "process-inventory-e2b",
@@ -6748,49 +6747,49 @@
       "supplied_args": [
         "body_raw"
       ],
-      "approval": "ask"
+      "approval": "never"
     }
   ],
   "generated": [
     {
       "slug": "e2b-sandboxes-snapshots",
       "operations": 16,
-      "composition_bytes": 22085
+      "composition_bytes": 21721
     },
     {
       "slug": "e2b-templates-tags",
       "operations": 13,
-      "composition_bytes": 17493
+      "composition_bytes": 17129
     },
     {
       "slug": "e2b-volumes",
       "operations": 4,
-      "composition_bytes": 4093
+      "composition_bytes": 3989
     },
     {
       "slug": "e2b-volume-content",
       "operations": 6,
-      "composition_bytes": 9623
+      "composition_bytes": 9467
     },
     {
       "slug": "e2b-account",
       "operations": 9,
-      "composition_bytes": 11906
+      "composition_bytes": 11698
     },
     {
       "slug": "e2b-admin",
       "operations": 7,
-      "composition_bytes": 9778
+      "composition_bytes": 9674
     },
     {
       "slug": "e2b-envd",
       "operations": 4,
-      "composition_bytes": 3817
+      "composition_bytes": 3661
     },
     {
       "slug": "e2b-envd-rpc",
       "operations": 13,
-      "composition_bytes": 18393
+      "composition_bytes": 18185
     }
   ]
 }

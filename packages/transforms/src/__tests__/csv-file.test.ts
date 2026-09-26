@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { csvFilter, csvColumns, csvStats, CSV_STATS_UNIQUE_CAP } from '../csv-file.js';
+import { csvFilter, csvRows, csvColumns, csvStats, CSV_STATS_UNIQUE_CAP } from '../csv-file.js';
 import { csv_parse } from '../object.js';
 
 const parse = (text: string): unknown =>
@@ -133,6 +133,79 @@ describe('csvFilter', () => {
     expect(r.column_found).toBe(true);
     expect(r.scanned).toBe(0);
     expect(r.csv).toBe('a,b');
+  });
+});
+
+/** The READING twin of `csvFilter`: the same matches, returned as rows instead of
+ *  saved as a file. Its one promise is that it cannot disagree with reading back
+ *  the file `csvFilter` would have saved, so most of these tests are that
+ *  comparison over awkward input. */
+describe('csvRows', () => {
+  const CSV = 'Name,Email,Amount\nAcme Ltd,ops@acme.test,1240.50\nGlobex,hi@globex.test,88\n';
+  const all = { limit: 1000 } as const;
+
+  it('returns the matching rows keyed by header', () => {
+    const r = csvRows({ text: CSV, column: 'Email', match: 'globex', ...all });
+    expect(r.rows).toEqual([{ Name: 'Globex', Email: 'hi@globex.test', Amount: '88' }]);
+    expect(r).toMatchObject({ scanned: 2, matched: 1, truncated: false, column_found: true });
+    expect(r.columns).toEqual(['Name', 'Email', 'Amount']);
+  });
+
+  /** ⛔ The property the twin exists on: whatever the input, its rows are what
+   *  parsing the saved file gives, match for match. */
+  it.each([
+    ['quoted delimiter, quotes and a newline', 'id,note\n1,"a,b"\n2,"say ""hi"""\n3,"two\nlines"\n', 'id', ''],
+    ['a short row, padded as csv_parse pads it', 'a,b,c\n1,2\n3,4,5\n', 'a', ''],
+    ['duplicate header names', 'id,note,note\n1,alpha,beta\n2,gamma,delta\n', 'id', '2'],
+    ['CRLF and a BOM', '﻿Name,Email\r\nAcme,ops@acme.test\r\n', 'Name', 'Acme'],
+  ])('agrees with reading back the file csvFilter saves: %s', (_label, text, column, match) => {
+    const saved = csvFilter({ text, column, match });
+    const read = csvRows({ text, column, match, ...all });
+    expect(read.rows).toEqual(parse(saved.csv));
+    expect(read.matched).toBe(saved.matched);
+    expect(read.scanned).toBe(saved.scanned);
+    expect(read.columns).toEqual(saved.columns);
+  });
+
+  it('agrees with csvFilter on a non-comma delimiter', () => {
+    const tsv = 'id\tnote\n1\ta,b\n2\tc\n';
+    const read = csvRows({ text: tsv, column: 'note', match: 'a,b', delimiter: '\t', ...all });
+    expect(read.rows).toEqual([{ id: '1', note: 'a,b' }]);
+  });
+
+  it('matches exactly as csvFilter does', () => {
+    for (const opts of [
+      { column: 'Name', match: 'Acme', mode: 'equal' as const },
+      { column: 'Name', match: 'Acme Ltd', mode: 'equal' as const },
+      { column: 'Name', match: 'acme' },
+      { column: 'Name', match: 'acme', ignore_case: true },
+    ]) {
+      expect(csvRows({ text: CSV, ...opts, ...all }).matched)
+        .toBe(csvFilter({ text: CSV, ...opts }).matched);
+    }
+  });
+
+  /** The result is bounded: `limit` caps the rows, `matched` still counts every
+   *  match, and `truncated` says rows were left out. */
+  it('stops at limit and says so', () => {
+    const many = ['n', ...Array.from({ length: 7 }, (_, i) => `${i}`)].join('\n');
+    const r = csvRows({ text: many, column: 'n', match: '', limit: 3 });
+    expect(r.rows.map((row) => row.n)).toEqual(['0', '1', '2']);
+    expect(r).toMatchObject({ matched: 7, truncated: true });
+    expect(csvRows({ text: many, column: 'n', match: '', limit: 7 }).truncated).toBe(false);
+  });
+
+  it('reports a missing column as such, with the columns that do exist', () => {
+    const r = csvRows({ text: CSV, column: 'Nope', match: 'x', ...all });
+    expect(r).toMatchObject({ rows: [], matched: 0, truncated: false, column_found: false });
+    expect(r.columns).toEqual(['Name', 'Email', 'Amount']);
+  });
+
+  it('handles an empty file and a header-only file', () => {
+    expect(csvRows({ text: '', column: 'x', match: 'y', ...all }))
+      .toMatchObject({ rows: [], column_found: false, columns: [] });
+    expect(csvRows({ text: 'a,b\n', column: 'a', match: '1', ...all }))
+      .toMatchObject({ rows: [], column_found: true, scanned: 0, matched: 0 });
   });
 });
 

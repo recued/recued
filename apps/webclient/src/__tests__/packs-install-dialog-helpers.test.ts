@@ -70,13 +70,12 @@ describe('installFailureCopy — the engine reason survives', () => {
     // recovering it took a server-side probe a self-hoster cannot run.
     const copy = installFailureCopy(
       'validator_rejected',
-      "packs.install: recipe 'delete-billable-item': Tier-P op "
-      + "'recued-core.billable-hours.entry.get' (step 'entry') names pack "
-      + "'recued-core.billable-hours', which has no resolved catalog binding",
+      "packs.install: recipe 'delete-billable-item': step 'entry' uses the "
+      + 'recued-core.billable-hours pack, which is not installed. Install that pack, then try again.',
     );
     expect(copy).toContain('the Pack did not pass its checks');
     expect(copy).toContain("recipe 'delete-billable-item'");
-    expect(copy).toContain('no resolved catalog binding');
+    expect(copy).toContain('which is not installed. Install that pack, then try again.');
     expect(copy).not.toContain('packs.install:');
   });
 

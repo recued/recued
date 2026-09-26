@@ -3,12 +3,12 @@
     "source": {
       "kind": "openapi",
       "url": "https://api.outreach.io/api/v2/schema/openapi.json",
-      "sha256": "d1f697f6558fda68cd6d8059044e323c20849aeebf303e15c43e0eb9875e2ef6",
-      "bytes": 1384297,
+      "sha256": "00b502157f705773cd71553e01c493ec49a381866a252066741196e945b3c15b",
+      "bytes": 1331520,
       "openapi": "3.0.3",
       "info_version": "",
       "server": "https://api.outreach.io/api/v2",
-      "retrieved_on": "2026-07-15",
+      "retrieved_on": "2026-09-23",
       "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash. Outreach states that custom objects are not included."
     },
     "common_request_authority": {
@@ -21,15 +21,15 @@
       "page_size": 100,
       "vendor_max_page_size": 1000
     },
-    "official_path_count": 147,
-    "official_operation_count": 253,
-    "admitted_operation_count": 253,
+    "official_path_count": 148,
+    "official_operation_count": 254,
+    "admitted_operation_count": 254,
     "excluded_operation_count": 0,
-    "unique_admitted_route_count": 253,
-    "unique_declared_operation_count": 253,
+    "unique_admitted_route_count": 254,
+    "unique_declared_operation_count": 254,
     "official_method_counts": {
       "GET": 93,
-      "POST": 92,
+      "POST": 93,
       "DELETE": 35,
       "PATCH": 33
     },
@@ -46,7 +46,6 @@
       "Content Category": 5,
       "Content Category Membership": 4,
       "Content Category Ownership": 3,
-      "Custom Duty": 1,
       "Duty": 1,
       "Email Address": 5,
       "Event": 2,
@@ -71,7 +70,7 @@
       "Recipient": 5,
       "Role": 5,
       "Ruleset": 5,
-      "Sequence": 7,
+      "Sequence": 9,
       "Sequence State": 7,
       "Sequence Step": 4,
       "Sequence Template": 7,
@@ -89,33 +88,32 @@
     "pack_operation_counts": {
       "outreach": 21,
       "outreach-crm-data": 64,
-      "outreach-engagement-automation": 85,
-      "outreach-platform-admin": 83
+      "outreach-engagement-automation": 87,
+      "outreach-platform-admin": 82
     },
     "composition_bytes": {
       "outreach": 70214,
-      "outreach-crm-data": 87992,
-      "outreach-engagement-automation": 108338,
-      "outreach-platform-admin": 129682
+      "outreach-crm-data": 87847,
+      "outreach-engagement-automation": 110052,
+      "outreach-platform-admin": 128523
     },
     "risk_counts": {
       "write": 55,
       "read": 93,
-      "destructive": 81,
-      "admin": 24
+      "destructive": 83,
+      "admin": 23
     },
     "approval_counts": {
-      "always": 160,
-      "never": 74,
-      "ask": 19
+      "always": 161,
+      "never": 93
     },
     "idempotency_counts": {
-      "non_idempotent": 92,
+      "non_idempotent": 93,
       "safe": 93,
       "idempotent": 68
     },
     "pagination_counts": {
-      "none": 206,
+      "none": 207,
       "query_token_link": 47
     },
     "unsortable_collection_operations": [
@@ -123,14 +121,14 @@
       "outreach-engagement-automation.sequence_template.search",
       "outreach-platform-admin.duty.search"
     ],
-    "request_body_operation_count": 101,
-    "structured_data_body_operation_count": 101,
+    "request_body_operation_count": 100,
+    "structured_data_body_operation_count": 100,
     "request_integer_policy": {
       "representation": "JSON:API resource and relationship IDs inside body.data are exact decimal strings",
       "transport": "Structured object forwarding preserves those strings without JavaScript number coercion",
       "request_json_binding_operations": 0
     },
-    "lossless_integer_operation_count": 253,
+    "lossless_integer_operation_count": 254,
     "bulk_filter_guard_operation_count": 23,
     "compatibility_operation_ids": [
       "account.create",
@@ -163,8 +161,8 @@
     },
     "recipe_versions": {
       "revenue-operations-digest-outreach": 2,
-      "prospect-engagement-brief-outreach": 2,
-      "sequence-readiness-brief-outreach": 2,
+      "prospect-engagement-brief-outreach": 3,
+      "sequence-readiness-brief-outreach": 3,
       "create-account-intake-outreach": 2,
       "create-prospect-intake-outreach": 2,
       "add-prospect-to-sequence-outreach": 2,
@@ -193,7 +191,7 @@
         "task.search",
         "task.read"
       ],
-      "declaration_sha256": "ed72b5b03fa73713a8e93b505bb94b9b7a54c6e14e82441e2be4d3fefc590511"
+      "declaration_sha256": "6d73d4dcf9deadf26fc0428dbb367b3d3a0c076a1272c33e8177ac30d8afc886"
     },
     "auth": {
       "selected": "Bearer token supplied only by the enrolled Outreach connection",
@@ -201,8 +199,8 @@
         "bearerAuth",
         "s2sAuthToken"
       ],
-      "bearer_authenticated_operations": 253,
-      "s2s_token_declared_operations": 63,
+      "bearer_authenticated_operations": 254,
+      "s2s_token_declared_operations": 65,
       "credential_arguments": 0
     }
   },
@@ -714,14 +712,6 @@
         "summary": "Delete an Existing Content Category Ownership by ID",
         "tags": [
           "Content Category Ownership"
-        ]
-      }
-    },
-    "/customDuties": {
-      "post": {
-        "summary": "Create a New Custom Duty",
-        "tags": [
-          "Custom Duty"
         ]
       }
     },
@@ -1626,6 +1616,22 @@
     "/sequences/{id}/actions/deactivate": {
       "post": {
         "summary": "Deactivate",
+        "tags": [
+          "Sequence"
+        ]
+      }
+    },
+    "/sequences/{id}/actions/lock": {
+      "post": {
+        "summary": "Lock",
+        "tags": [
+          "Sequence"
+        ]
+      }
+    },
+    "/sequences/{id}/actions/unlock": {
+      "post": {
+        "summary": "Unlock",
         "tags": [
           "Sequence"
         ]
@@ -3679,7 +3685,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3778,7 +3784,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3823,7 +3829,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3922,7 +3928,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -3967,7 +3973,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -4600,7 +4606,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -4645,7 +4651,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5669,7 +5675,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5816,7 +5822,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -5861,7 +5867,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -6547,11 +6553,6 @@
           "affects_target": true
         },
         {
-          "key": "query.filter[territory][id]",
-          "type": "string",
-          "affects_target": true
-        },
-        {
           "key": "query.filter[touchedAt]",
           "type": "string",
           "affects_target": true
@@ -6611,7 +6612,6 @@
         "query.filter[recordType]",
         "query.filter[sharingTeamId]",
         "query.filter[stage][id]",
-        "query.filter[territory][id]",
         "query.filter[touchedAt]",
         "query.filter[updatedAt]"
       ],
@@ -7040,7 +7040,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -7637,7 +7637,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -7682,7 +7682,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -8544,7 +8544,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -8589,7 +8589,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -10849,7 +10849,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -10894,7 +10894,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -11407,7 +11407,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -11452,7 +11452,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -15066,50 +15066,6 @@
       "bulk_filter_required": false
     },
     {
-      "pack": "outreach-platform-admin",
-      "op": "custom_duty.create",
-      "route": "POST /customDuties",
-      "method": "POST",
-      "path": "/customDuties",
-      "wire_path": "/api/v2/customDuties",
-      "tag": "Custom Duty",
-      "summary": "Create a New Custom Duty",
-      "arguments": [
-        {
-          "key": "body.data",
-          "type": "object",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "filter_arguments": [],
-      "request": {
-        "media": "application/vnd.api+json",
-        "official_required": true,
-        "admitted_top_level_properties": [
-          {
-            "name": "data",
-            "type": "object"
-          }
-        ]
-      },
-      "response": {
-        "status": "201",
-        "media": "application/vnd.api+json",
-        "data_type": "object"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "compatibility": false,
-      "bulk_filter_required": false
-    },
-    {
       "pack": "outreach-crm-data",
       "op": "email_address.create",
       "route": "POST /emailAddresses",
@@ -16410,6 +16366,76 @@
       "wire_path": "/api/v2/sequences/{{id}}/actions/deactivate",
       "tag": "Sequence",
       "summary": "Deactivate",
+      "arguments": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "filter_arguments": [],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/vnd.api+json",
+        "data_type": "object"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "compatibility": false,
+      "bulk_filter_required": false
+    },
+    {
+      "pack": "outreach-engagement-automation",
+      "op": "sequence.lock",
+      "route": "POST /sequences/{id}/actions/lock",
+      "method": "POST",
+      "path": "/sequences/{id}/actions/lock",
+      "wire_path": "/api/v2/sequences/{{id}}/actions/lock",
+      "tag": "Sequence",
+      "summary": "Lock",
+      "arguments": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "filter_arguments": [],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/vnd.api+json",
+        "data_type": "object"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "compatibility": false,
+      "bulk_filter_required": false
+    },
+    {
+      "pack": "outreach-engagement-automation",
+      "op": "sequence.unlock",
+      "route": "POST /sequences/{id}/actions/unlock",
+      "method": "POST",
+      "path": "/sequences/{id}/actions/unlock",
+      "wire_path": "/api/v2/sequences/{{id}}/actions/unlock",
+      "tag": "Sequence",
+      "summary": "Unlock",
       "arguments": [
         {
           "key": "id",
@@ -18961,11 +18987,6 @@
           "affects_target": true
         },
         {
-          "key": "query.filter[territory][id]",
-          "type": "string",
-          "affects_target": true
-        },
-        {
           "key": "query.filter[touchedAt]",
           "type": "string",
           "affects_target": true
@@ -19025,7 +19046,6 @@
         "query.filter[recordType]",
         "query.filter[sharingTeamId]",
         "query.filter[stage][id]",
-        "query.filter[territory][id]",
         "query.filter[touchedAt]",
         "query.filter[updatedAt]"
       ],
@@ -22180,7 +22200,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -22327,7 +22347,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -24106,6 +24126,76 @@
       "compatibility": false,
       "bulk_filter_required": false
     },
+    "outreach-engagement-automation.sequence.lock": {
+      "pack": "outreach-engagement-automation",
+      "op": "sequence.lock",
+      "route": "POST /sequences/{id}/actions/lock",
+      "method": "POST",
+      "path": "/sequences/{id}/actions/lock",
+      "wire_path": "/api/v2/sequences/{{id}}/actions/lock",
+      "tag": "Sequence",
+      "summary": "Lock",
+      "arguments": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "filter_arguments": [],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/vnd.api+json",
+        "data_type": "object"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "compatibility": false,
+      "bulk_filter_required": false
+    },
+    "outreach-engagement-automation.sequence.unlock": {
+      "pack": "outreach-engagement-automation",
+      "op": "sequence.unlock",
+      "route": "POST /sequences/{id}/actions/unlock",
+      "method": "POST",
+      "path": "/sequences/{id}/actions/unlock",
+      "wire_path": "/api/v2/sequences/{{id}}/actions/unlock",
+      "tag": "Sequence",
+      "summary": "Unlock",
+      "arguments": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "filter_arguments": [],
+      "request": null,
+      "response": {
+        "status": "200",
+        "media": "application/vnd.api+json",
+        "data_type": "object"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "compatibility": false,
+      "bulk_filter_required": false
+    },
     "outreach-engagement-automation.sequence.update": {
       "pack": "outreach-engagement-automation",
       "op": "sequence.update",
@@ -25749,7 +25839,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -25794,7 +25884,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -25893,7 +25983,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27497,7 +27587,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27596,7 +27686,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27685,7 +27775,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -27778,7 +27868,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -28460,50 +28550,6 @@
       "compatibility": false,
       "bulk_filter_required": false
     },
-    "outreach-platform-admin.custom_duty.create": {
-      "pack": "outreach-platform-admin",
-      "op": "custom_duty.create",
-      "route": "POST /customDuties",
-      "method": "POST",
-      "path": "/customDuties",
-      "wire_path": "/api/v2/customDuties",
-      "tag": "Custom Duty",
-      "summary": "Create a New Custom Duty",
-      "arguments": [
-        {
-          "key": "body.data",
-          "type": "object",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "filter_arguments": [],
-      "request": {
-        "media": "application/vnd.api+json",
-        "official_required": true,
-        "admitted_top_level_properties": [
-          {
-            "name": "data",
-            "type": "object"
-          }
-        ]
-      },
-      "response": {
-        "status": "201",
-        "media": "application/vnd.api+json",
-        "data_type": "object"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "compatibility": false,
-      "bulk_filter_required": false
-    },
     "outreach-platform-admin.duty.search": {
       "pack": "outreach-platform-admin",
       "op": "duty.search",
@@ -29092,7 +29138,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29178,7 +29224,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29352,7 +29398,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29457,7 +29503,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29631,7 +29677,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29742,7 +29788,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -29916,7 +29962,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30021,7 +30067,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30334,7 +30380,7 @@
       "result_path": "data",
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"
@@ -30445,7 +30491,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "response_json": {
         "unsafe_integers": "string"

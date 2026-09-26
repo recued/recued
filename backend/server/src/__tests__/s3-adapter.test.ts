@@ -262,6 +262,67 @@ describe('S3 client response lifecycle', () => {
     bucket: 'mybucket',
   };
 
+  it('⛔ an object operation refuses an empty key: it would address the bucket itself', async () => {
+    // Before, `file-delete` with no path sent DELETE to the bucket (DeleteBucket),
+    // `file-read` returned the listing and `file-stat` called the bucket a file.
+    const sent: string[] = [];
+    const fetcher: S3Fetch = async (url, init) => {
+      sent.push(`${init.method} ${url}`);
+      return {
+        ok: true, status: 204, headers: new Headers(), body: null,
+        arrayBuffer: async () => new ArrayBuffer(0), text: async () => '',
+      } as never;
+    };
+    const client = createS3Client({ config, fetcher, now: sharedFixedNow });
+    for (const key of ['', undefined as unknown as string]) {
+      await expect(client.deleteObject(key)).rejects.toMatchObject({ code: 'InvalidObjectKey', status: 400 });
+      await expect(client.getObject(key, 10)).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+      await expect(client.headObject(key)).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+      await expect(client.putObject(key, new Uint8Array(1))).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+    }
+    expect(sent).toEqual([]);
+    // A real key still goes out, to the object's own URL.
+    await client.deleteObject('reports/q3.pdf');
+    expect(sent).toEqual(['DELETE https://mybucket.s3.us-east-1.amazonaws.com/reports/q3.pdf']);
+  });
+
+  it('⛔ an object operation refuses a "." or ".." segment: the URL would resolve it away', async () => {
+    // `new URL()` resolves dot segments. Before, `.`, `./`, `..` and `a/..` sent DELETE
+    // to the bucket (DeleteBucket), `..` in path style reached the service root, and
+    // `./b` or `a/../b` addressed `b` rather than the object named.
+    const sent: string[] = [];
+    const fetcher: S3Fetch = async (url, init) => {
+      sent.push(`${init.method} ${url}`);
+      return {
+        ok: true, status: 204, headers: new Headers(), body: null,
+        arrayBuffer: async () => new ArrayBuffer(0), text: async () => '',
+      } as never;
+    };
+    const virtualHosted = createS3Client({ config, fetcher, now: sharedFixedNow });
+    const pathStyle = createS3Client({
+      config: { ...config, endpoint: 'https://minio.local:9000' }, fetcher, now: sharedFixedNow,
+    });
+    for (const client of [virtualHosted, pathStyle]) {
+      for (const key of ['.', './', '..', '../', 'a/..', 'a/.', './b', 'a/../b', 'a/./b']) {
+        await expect(client.deleteObject(key), key).rejects.toMatchObject({ code: 'InvalidObjectKey', status: 400 });
+        await expect(client.getObject(key, 10), key).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+        await expect(client.headObject(key), key).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+        await expect(client.putObject(key, new Uint8Array(1)), key).rejects.toMatchObject({ code: 'InvalidObjectKey' });
+      }
+    }
+    expect(sent).toEqual([]);
+    // Dots inside a segment are ordinary characters, and those keys go out as written.
+    for (const key of ['.hidden', 'a..b', '...', 'v1.2/notes..txt']) await virtualHosted.deleteObject(key);
+    await pathStyle.deleteObject('.hidden');
+    expect(sent).toEqual([
+      'DELETE https://mybucket.s3.us-east-1.amazonaws.com/.hidden',
+      'DELETE https://mybucket.s3.us-east-1.amazonaws.com/a..b',
+      'DELETE https://mybucket.s3.us-east-1.amazonaws.com/...',
+      'DELETE https://mybucket.s3.us-east-1.amazonaws.com/v1.2/notes..txt',
+      'DELETE https://minio.local:9000/mybucket/.hidden',
+    ]);
+  });
+
   it('enforces getObject maxBytes on a length-less response stream', async () => {
     let cancelled = false;
     const fetcher: S3Fetch = async () => {

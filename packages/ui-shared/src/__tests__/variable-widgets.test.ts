@@ -345,3 +345,50 @@ describe('long_text renders a text area', () => {
     expect(renderVariableWidget(future)).toContain('<input');
   });
 });
+
+describe('a list setting (`type: \'array\'`) is a list, not the text in its box', () => {
+  // ⛔ D-312 — the box has no list control, so it saved "1, 3" and handed a
+  // recipe the text; every consumer of the 628 list settings takes a list.
+  const weekdays = toWidgetShape('weekdays', {
+    label: 'Weekdays', type: 'array', default: [1, 2, 3, 4, 5],
+  } as unknown as Parameters<typeof toWidgetShape>[1]);
+  const channels = toWidgetShape('channels', {
+    label: 'Notification channels', type: 'array', optional: true,
+  } as unknown as Parameters<typeof toWidgetShape>[1]);
+
+  it('stays a one-line box, marked with what its items read as', () => {
+    expect(weekdays).toMatchObject({ type: 'text', list: 'numbers' });
+    expect(channels).toMatchObject({ type: 'text', list: 'text' });
+  });
+
+  it('shows a list as "a, b"', () => {
+    const html = renderVariableWidget(weekdays);
+    expect(html).toContain('value="1, 2, 3, 4, 5"');
+    expect(html).toContain('data-var-list="numbers"');
+  });
+
+  it('shows text saved before this as the text it is', () => {
+    expect(renderVariableWidget({ ...channels, value: 'slack, email' })).toContain('value="slack, email"');
+  });
+
+  it('⛔ reads back the list it spells, of numbers where the default is', () => {
+    const box = (value: string, varList: string) =>
+      fakeEl({ dataset: { varKey: 'k', varType: 'text', varList }, value });
+    expect(readWidgetValue(box('1, 3', 'numbers'))).toEqual([1, 3]);
+    expect(readWidgetValue(box('Slack, in-app', 'text'))).toEqual(['Slack', 'in-app']);
+  });
+
+  it('⛔ a box emptied again is no value, so the key drops out and the default applies', () => {
+    const box = fakeEl({ dataset: { varKey: 'k', varType: 'text', varList: 'text' }, value: '  ' });
+    expect(readWidgetValue(box)).toBeUndefined();
+  });
+
+  it('a required one wants at least one item, and a good list is not "Required"', () => {
+    const required = { ...channels, optional: false };
+    expect(validateWidgetValue(required, ['slack'])).toBeNull();
+    expect(validateWidgetValue(required, 'slack')).toBeNull();
+    expect(validateWidgetValue(required, [])).toBe('Required');
+    expect(validateWidgetValue(required, undefined)).toBe('Required');
+    expect(validateWidgetValue(required, ' ')).toBe('Required');
+  });
+});

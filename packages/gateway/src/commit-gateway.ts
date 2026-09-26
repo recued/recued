@@ -1684,7 +1684,8 @@ export const wrapWithCommitGateway = (
         slug,
         input,
         stepOutput,
-        reviewed ? { cache: 'fresh' } : stepOptions,
+        // A reviewed commit never reads a cache; a step's `pages` still applies.
+        reviewed ? { ...stepOptions, cache: 'fresh' } : stepOptions,
         forwardedStepMeta,
         probe,
       );

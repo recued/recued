@@ -15,7 +15,7 @@ const boot = async (page: Page, tab: 'task' | 'contact' = 'task', hold = false):
       ? { tab, query: '', source_id: null, booking_lifecycle: 'all', task_filters: { completion: 'open', due: 'overdue', sort: 'due_asc' } }
       : { tab, query: '' },
   } });
-  await page.goto(`${BASE}?data=${tab === 'task' ? 'work-entities-paged&task_filters=1' : 'contacts'}${hold ? '&hold_rpc=data_views.update' : ''}#data/view/${ID}`);
+  await page.goto(`${BASE}?data=${tab === 'task' ? 'work-entities-paged&task_filters=1' : 'contacts'}${hold ? '&hold_rpc=data_views.update' : ''}#views/${ID}`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(opened(page)).toBeVisible();
 };
@@ -77,12 +77,12 @@ test('Contact views do not offer alerts, and alert toasts link back to their sav
   await expect(tools(page).locator('[data-view-action="alert"]')).toHaveCount(0);
   await page.evaluate(id => window.__app.fireMessage({ type: 'server_event', event: {
     kind: 'notification.notify', title: 'New tasks in Overdue invoices', text: 'A task now matches.',
-    link_url: `#data/view/${id}`, cursor: 100,
+    link_url: `#views/${id}`, cursor: 100,
   } }), ID);
   const link = page.locator('[data-recued-notify-toast]').getByRole('link', { name: 'Open', exact: true });
-  await expect(link).toHaveAttribute('href', `#data/view/${ID}`);
+  await expect(link).toHaveAttribute('href', `#views/${ID}`);
   await link.click();
-  await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
 });
 
 test('Records alerts preserve saved filters across enable, reload, pause and resume', async ({ page }) => {
@@ -92,7 +92,7 @@ test('Records alerts preserve saved filters across enable, reload, pause and res
   await page.addInitScript(({ key, view }) => {
     if (!sessionStorage.getItem(key)) sessionStorage.setItem(key, JSON.stringify([view]));
   }, { key: KEY, view: { id: ID, name: 'Open jobs', definition, revision: 1, created_at: 1, updated_at: 1 } });
-  await page.goto(`${BASE}?data=records-navigation&records_browse=1#data/view/${ID}`);
+  await page.goto(`${BASE}?data=records-navigation&records_browse=1#views/${ID}`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(page.locator('.records-table tbody tr').first()).toContainText('Open 238');
   await opened(page).getByRole('button', { name: 'Notify me for Open jobs', exact: true }).click();

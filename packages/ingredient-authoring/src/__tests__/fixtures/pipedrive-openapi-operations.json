@@ -4,8 +4,8 @@
       "v1": {
         "kind": "openapi",
         "url": "https://developers.pipedrive.com/docs/api/v1/openapi.yaml",
-        "sha256": "bf863a979545e5e56ddf10eb831df8664c093eaf4942909e44d1afe94f71f0a1",
-        "bytes": 1781741,
+        "sha256": "49ebb01fee1c4a011795ed76b0fef202c48fd96e2ffb5571c4020db6c146bc81",
+        "bytes": 1797288,
         "openapi": "3.0.1",
         "info_version": "1.0.0",
         "server": "https://api.pipedrive.com/v1",
@@ -17,8 +17,8 @@
       "v2": {
         "kind": "openapi",
         "url": "https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml",
-        "sha256": "e8e7a1aee8395545de80ecf8a2518a948ad7bef51a9014fe2412db9fd1836a12",
-        "bytes": 1005935,
+        "sha256": "fc2ce0fe3c3422633a2e9616aa90fca77eac3d389b110f8c159d87df7088201f",
+        "bytes": 1042388,
         "openapi": "3.0.1",
         "info_version": "2.0.0",
         "server": "https://api.pipedrive.com/api/v2",
@@ -3563,7 +3563,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": true,
@@ -3674,7 +3674,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": true,
@@ -3731,7 +3731,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": true,
@@ -3788,7 +3788,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": true,
@@ -4005,7 +4005,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_company_addons": {
@@ -4051,7 +4051,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_currencies": {
@@ -4434,7 +4434,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_permission_set_assignments": {
@@ -4511,7 +4511,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_permission_sets": {
@@ -4568,7 +4568,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_project_activities": {
@@ -4915,7 +4915,7 @@
         "recents:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role": {
@@ -4975,7 +4975,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_assignments": {
@@ -5072,7 +5072,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_pipelines": {
@@ -5139,7 +5139,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_role_settings": {
@@ -5196,7 +5196,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_roles": {
@@ -5283,7 +5283,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_team": {
@@ -5520,7 +5520,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_permissions": {
@@ -5577,7 +5577,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_role_assignments": {
@@ -5674,7 +5674,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_role_settings": {
@@ -5731,7 +5731,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_settings": {
@@ -5777,7 +5777,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.get_user_teams": {
@@ -5903,7 +5903,7 @@
         "admin"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-admin-platform-v1.put_project_plan_activity": {
@@ -6926,7 +6926,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-core-v1.note.search": {
@@ -7183,7 +7183,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-core-v1.note.update": {
@@ -7320,7 +7320,7 @@
         "base"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-core-v1.user.read": {
@@ -7377,7 +7377,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-core-v1.user.search": {
@@ -7423,7 +7423,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-crm-products-v2.add_deal_follower": {
@@ -8679,7 +8679,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -9473,7 +9473,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -9533,7 +9533,7 @@
           "name": "status",
           "wire_name": "status",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.status",
           "required": false,
@@ -9583,7 +9583,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -9593,7 +9593,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -10052,7 +10052,7 @@
           "wire_name": "deal_ids",
           "in": "query",
           "official_type": "array",
-          "admitted_type": "array",
+          "admitted_type": "string",
           "admitted_name": "query.deal_ids",
           "required": true,
           "exposed": true
@@ -11155,9 +11155,19 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "custom_fields",
+          "wire_name": "custom_fields",
+          "in": "query",
+          "official_type": "array",
+          "admitted_type": "string",
+          "admitted_name": "query.custom_fields",
           "required": false,
           "exposed": true
         },
@@ -11218,16 +11228,6 @@
           "official_type": "string",
           "admitted_type": "string",
           "admitted_name": "query.updated_since",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "custom_fields",
-          "wire_name": "custom_fields",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.custom_fields",
           "required": false,
           "exposed": true
         }
@@ -11447,7 +11447,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -11487,7 +11487,7 @@
           "name": "status",
           "wire_name": "status",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.status",
           "required": false,
@@ -11497,7 +11497,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -11599,7 +11599,7 @@
           "name": "item_types",
           "wire_name": "item_types",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.item_types",
           "required": false,
@@ -11609,7 +11609,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -11639,7 +11639,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -11863,7 +11863,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -11903,7 +11903,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -12005,7 +12005,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -12117,7 +12117,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -12147,7 +12147,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -12249,7 +12249,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -12269,7 +12269,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14450,7 +14450,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14507,7 +14507,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14721,7 +14721,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14778,7 +14778,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14880,7 +14880,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -14937,7 +14937,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -15039,7 +15039,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -15096,7 +15096,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -15198,7 +15198,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -15255,7 +15255,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -16470,7 +16470,7 @@
         "users:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-projects-fields-v2.search_projects": {
@@ -16502,7 +16502,7 @@
           "name": "fields",
           "wire_name": "fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.fields",
           "required": false,
@@ -18667,7 +18667,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": true,
@@ -19157,7 +19157,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.duplicate_deal": {
@@ -19688,7 +19688,7 @@
         "phone-integration"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_comment": {
@@ -19755,7 +19755,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_deal_changelog": {
@@ -20062,7 +20062,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_deal_participants": {
@@ -20303,7 +20303,7 @@
           "name": "items",
           "wire_name": "items",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.items",
           "required": false,
@@ -20707,7 +20707,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_files": {
@@ -20805,7 +20805,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_filter": {
@@ -21280,7 +21280,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_thread": {
@@ -21337,7 +21337,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_thread_messages": {
@@ -21394,7 +21394,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_mail_threads": {
@@ -21471,7 +21471,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_note_comments": {
@@ -21568,7 +21568,7 @@
         "deals:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_note_fields": {
@@ -21924,7 +21924,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_organization_relationship": {
@@ -22118,7 +22118,7 @@
           "name": "items",
           "wire_name": "items",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.items",
           "required": false,
@@ -22541,7 +22541,7 @@
         "mail:read"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.get_person_products": {
@@ -22699,7 +22699,7 @@
           "name": "items",
           "wire_name": "items",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.items",
           "required": false,
@@ -23635,7 +23635,7 @@
         "phone-integration"
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pipedrive-sales-engagement-v1.merge_deals": {
@@ -24388,7 +24388,6 @@
           "owner_id",
           "deal_id",
           "lead_id",
-          "person_id",
           "org_id",
           "project_id",
           "due_date",
@@ -24401,6 +24400,7 @@
           "attendees",
           "public_description",
           "priority",
+          "outcome",
           "note"
         ],
         "omitted_nested_int64_properties": [],
@@ -24432,7 +24432,6 @@
         "decimal_integer_fields": [
           "owner_id",
           "deal_id",
-          "person_id",
           "org_id",
           "project_id"
         ]
@@ -24473,7 +24472,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -24540,7 +24539,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -24650,7 +24649,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -24761,7 +24760,6 @@
           "owner_id",
           "deal_id",
           "lead_id",
-          "person_id",
           "org_id",
           "project_id",
           "due_date",
@@ -24774,6 +24772,7 @@
           "attendees",
           "public_description",
           "priority",
+          "outcome",
           "note"
         ],
         "omitted_nested_int64_properties": [],
@@ -24805,7 +24804,6 @@
         "decimal_integer_fields": [
           "owner_id",
           "deal_id",
-          "person_id",
           "org_id",
           "project_id"
         ]
@@ -24932,7 +24930,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -24942,7 +24940,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -25029,7 +25027,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -25089,7 +25087,7 @@
           "name": "status",
           "wire_name": "status",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.status",
           "required": false,
@@ -25139,7 +25137,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -25149,7 +25147,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -25364,10 +25362,14 @@
           "name",
           "owner_id",
           "add_time",
-          "update_time",
           "visible_to",
           "label_ids",
           "address",
+          "website",
+          "linkedin",
+          "industry",
+          "annual_revenue",
+          "employee_count",
           "custom_fields"
         ],
         "omitted_nested_int64_properties": [],
@@ -25437,7 +25439,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -25447,7 +25449,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -25534,7 +25536,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -25594,7 +25596,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -25604,7 +25606,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -25732,11 +25734,14 @@
         "writable_properties": [
           "name",
           "owner_id",
-          "add_time",
-          "update_time",
           "visible_to",
           "label_ids",
           "address",
+          "website",
+          "linkedin",
+          "industry",
+          "annual_revenue",
+          "employee_count",
           "custom_fields"
         ],
         "omitted_nested_int64_properties": [],
@@ -25803,11 +25808,15 @@
           "owner_id",
           "org_id",
           "add_time",
-          "update_time",
           "emails",
           "phones",
           "visible_to",
           "label_ids",
+          "postal_address",
+          "notes",
+          "im",
+          "birthday",
+          "job_title",
           "marketing_status",
           "custom_fields"
         ],
@@ -25879,7 +25888,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -25889,7 +25898,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -25976,7 +25985,7 @@
           "name": "ids",
           "wire_name": "ids",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.ids",
           "required": false,
@@ -26056,7 +26065,7 @@
           "name": "include_fields",
           "wire_name": "include_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.include_fields",
           "required": false,
@@ -26066,7 +26075,7 @@
           "name": "custom_fields",
           "wire_name": "custom_fields",
           "in": "query",
-          "official_type": "string",
+          "official_type": "array",
           "admitted_type": "string",
           "admitted_name": "query.custom_fields",
           "required": false,
@@ -26195,12 +26204,15 @@
           "name",
           "owner_id",
           "org_id",
-          "add_time",
-          "update_time",
           "emails",
           "phones",
           "visible_to",
           "label_ids",
+          "postal_address",
+          "notes",
+          "im",
+          "birthday",
+          "job_title",
           "marketing_status",
           "custom_fields"
         ],

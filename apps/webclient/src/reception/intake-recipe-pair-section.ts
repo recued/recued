@@ -37,6 +37,7 @@ import { actionBar, badge, button, emptyHint, panel } from '@recued/ui-shared/pr
 import { e } from '@recued/ui-shared/template';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { listAllRecipes } from '../shell/paged-lists.js';
 import { classifyRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { RECEPTION_ERROR_COPY } from './spine.js';
@@ -831,7 +832,7 @@ export const mountReceptionIntakeRecipePairSection = (
     try {
       const [pair, listed] = await Promise.all([
         conn('reception.intake_recipe_pair.get', { endpoint_id: endpointId }),
-        conn('recipe.list'),
+        listAllRecipes((request) => conn('recipe.list', request)),
       ]);
       if (disposed || token !== loadToken) return;
       state = {

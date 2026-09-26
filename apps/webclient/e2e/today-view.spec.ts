@@ -11,7 +11,10 @@ const boot = async (page: Page, extra = ''): Promise<void> => {
 
 test('Today merges all kinds, exposes source freshness, and renders within a mobile viewport', async ({ page }) => {
   await boot(page);
-  await expect(page.getByRole('tab', { name: 'Today', exact: true })).toHaveAttribute('aria-selected', 'true');
+  // ⛔ D-290 — Today is its own route, so there is no tab to be selected. What
+  // replaced the claim is the surface itself being the one on screen.
+  await expect(page.locator('[data-today-view]')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Today', exact: true })).toHaveCount(0);
   await expect(page.locator('[data-today-group="overdue"]')).toContainText('Send the proposal');
   const today = page.locator('[data-today-group="today"]');
   await expect(today).toContainText('Review the brief');
@@ -56,9 +59,11 @@ test('reschedules only the task due date, keeping its draft and focus through ba
   await expect(page.locator('[data-today-view]')).toHaveAttribute('aria-busy', 'false');
   await expect(due).toHaveValue('2026-09-10T09:30');
   await expect(due).toBeFocused();
-  await page.getByRole('tab', { name: 'Today', exact: true }).click();
-  await page.getByRole('button', { name: 'Data', exact: true }).click();
-  await expect(due).toHaveValue('2026-09-10T09:30');
+  // ⚠ COVERAGE DROPPED HERE, DELIBERATELY. These two lines used to re-select
+  // the Today tab and the Data lens — both no-ops — to pin that navigating to
+  // where you already are does not discard the draft. D-290 made Today a route,
+  // so neither control exists and the property has nothing to act on. The
+  // draft-through-refresh claim above is unaffected.
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Save due date', exact: true }).click();
   await expect(page.locator('[data-today-task-notice]')).toHaveText('Rescheduled “Send the proposal”.');
@@ -200,10 +205,17 @@ test('guards duplicate writes and confirms completion while an unrelated calenda
   await expect(page.locator('[data-today-task-editor]')).toHaveAttribute('aria-busy', 'true');
   await expect(complete).toHaveAttribute('aria-disabled', 'true');
   await complete.evaluate(button => (button as HTMLButtonElement).click());
-  const tasksTab = page.getByRole('tab', { name: 'Tasks', exact: true });
-  await expect(tasksTab).toBeDisabled();
-  await tasksTab.evaluate(button => (button as HTMLButtonElement).click());
-  await expect(page.getByRole('tab', { name: 'Today', exact: true })).toHaveAttribute('aria-selected', 'true');
+  // ⚠ COVERAGE DROPPED HERE, DELIBERATELY — and it is NOT the same property
+  // moved elsewhere. Pre-D-290 the Data route DISABLED ITS OWN TAB STRIP while
+  // a Today write was in flight (`renderTabs(..., todayTaskEdit?.busy)`), and
+  // this asserted that. Today is a route now: it has no tab strip, and the
+  // shell does NOT disable drawer seats — it reads `hasInFlightWork()` into a
+  // `workState` and offers a return affordance instead. Driving a seat here
+  // would assert something the shell never promises. The shell's own machinery
+  // is covered by `server-switcher.test.ts` and
+  // `shell/__tests__/address-change-convergence.test.ts`; what is genuinely
+  // uncovered now is the END-TO-END claim that an owner cannot walk away from
+  // an in-flight Today write and lose it.
   expect(await mutations(page)).toHaveLength(1);
   expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('work_entity.task.mark_done'))).toBe(1);
   await expect(page.locator('[data-today-task-notice]')).toHaveText('Completed “Send the proposal”.');
@@ -272,20 +284,17 @@ test('refresh keeps keyboard focus in Today when the focused record disappears',
   await expect(page.locator('.today-refresh')).toBeFocused();
 });
 
-test('Today can be saved and reopens the relative view after reload', async ({ page }) => {
-  await boot(page);
-  const tools = page.locator('[data-saved-data-views]');
-  await tools.getByRole('button', { name: 'Save current view', exact: true }).click();
-  await tools.getByLabel('View name', { exact: true }).fill('My day');
-  await tools.getByRole('button', { name: 'Save view', exact: true }).click();
-  await expect(tools.locator('[data-view-notice]')).toContainText('Saved');
-  await tools.locator('summary').click();
-  await tools.getByRole('link', { name: 'My day', exact: true }).click();
-  await expect(page).toHaveURL(/#data\/view\//);
-  await page.reload();
-  await expect(page.locator('[data-today-view]')).toContainText('Deliver the draft to Maya');
-});
-
+/** ⛔ "Today can be saved and reopens the relative view after reload" WAS HERE.
+ *
+ *  Deleted, not skipped, and not a coverage loss: the saved view it exercised
+ *  stored `{ tab: 'today' }` and NOTHING else — no date, no filter. It was a
+ *  bookmark, and D-290 gave Today its own URL plus a drawer seat, so the thing
+ *  it saved is now one click away by two routes. Owner's call, 2026-09-22.
+ *
+ *  ⚠ The pre-D-290 ROWS still exist and are handled rather than retired — see
+ *  `src/data/__tests__/d-290-legacy-today-view.test.ts`. Dropping the
+ *  vocabulary member would throw on `list` and take an owner's whole saved-view
+ *  set down over one row. */
 test('a SLOW calendar still shows tasks and commitments, and claims nothing while it waits', async ({ page }) => {
   // ⛔ THE DISTINCTION IS THE POINT. `today_failure=1` (above) covers a source
   // that ERRORS, which `loadToday` already handled. This covers a source that

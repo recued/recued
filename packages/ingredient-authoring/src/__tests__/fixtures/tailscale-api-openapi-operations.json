@@ -8,9 +8,9 @@
         "interactive_url": "https://tailscale.com/api",
         "reference_url": "https://tailscale.com/docs/reference/tailscale-api",
         "oauth_url": "https://tailscale.com/docs/features/oauth-clients",
-        "bytes": 243976,
-        "sha256": "7503498a49850da4c5abf5942bbd2df506842a52fa2ad20e41d777d67ff52486",
-        "retrieved_on": "2026-07-16",
+        "bytes": 246351,
+        "sha256": "b416d98eaf58a5e2b974a8c9424f1f33849866eb45344ecba59e95d6140a742d",
+        "retrieved_on": "2026-09-23",
         "mutability": "Tailscale states that documented endpoints are stable but the generated OpenAPI is unstable. Generation verifies byte length, SHA-256, identity, server, inherited global auth, operations, parameters, media, and no-pagination text before writing artifacts.",
         "evidence": [
           "93 operations across 60 paths with no deprecated operation",
@@ -87,9 +87,9 @@
       "tailscale-api-organization-automation": 35
     },
     "composition_bytes": {
-      "tailscale-api-devices-access": 60394,
-      "tailscale-api-network-policy": 59864,
-      "tailscale-api-organization-automation": 67992
+      "tailscale-api-devices-access": 60642,
+      "tailscale-api-network-policy": 59928,
+      "tailscale-api-organization-automation": 68596
     },
     "official_body_operation_count": 37,
     "official_required_body_count": 6,
@@ -206,7 +206,9 @@
         "tailscale-api-organization-automation.logging.list_configuration_audit_logs:query.target",
         "tailscale-api-organization-automation.logging.list_configuration_audit_logs:query.event"
       ],
-      "exact_integer_parameters": [],
+      "exact_integer_parameters": [
+        "tailscale-api-organization-automation.organizations.list_organization_tailnets:query.limit"
+      ],
       "secret_response_capabilities": [
         "tailscale-api-devices-access.device_invites.create_device_invites",
         "tailscale-api-devices-access.device_invites.get_device_invite",
@@ -217,6 +219,7 @@
         "tailscale-api-devices-access.user_invites.list_user_invites",
         "tailscale-api-organization-automation.oauth_apps.create_oauth_app",
         "tailscale-api-organization-automation.webhooks.create_webhook",
+        "tailscale-api-organization-automation.webhooks.get_webhook",
         "tailscale-api-organization-automation.webhooks.rotate_webhook_secret"
       ],
       "secret_response_fields": {
@@ -245,6 +248,9 @@
           "clientSecret"
         ],
         "tailscale-api-organization-automation.webhooks.create_webhook": [
+          "secret"
+        ],
+        "tailscale-api-organization-automation.webhooks.get_webhook": [
           "secret"
         ],
         "tailscale-api-organization-automation.webhooks.rotate_webhook_secret": [
@@ -6763,7 +6769,7 @@
       "static_headers": {
         "Accept": "application/json"
       },
-      "response_schema_sha256": "e3b943fb0fed469c1a52d6134ffc2bb8e3560fc782d735951d939d26f3e51960"
+      "response_schema_sha256": "6e949fe4e533a1a6407e86f8a46670a58b014388060dc0b4f8860d9cdd2aa627"
     },
     "tailscale-api-network-policy.services.get_service_device_approval": {
       "capability_id": "tailscale-api-network-policy.services.get_service_device_approval",
@@ -7084,7 +7090,7 @@
         "Accept": "application/json",
         "Content-Type": "application/json"
       },
-      "response_schema_sha256": "e3b943fb0fed469c1a52d6134ffc2bb8e3560fc782d735951d939d26f3e51960"
+      "response_schema_sha256": "6e949fe4e533a1a6407e86f8a46670a58b014388060dc0b4f8860d9cdd2aa627"
     },
     "tailscale-api-network-policy.services.update_service_device_approval": {
       "capability_id": "tailscale-api-network-policy.services.update_service_device_approval",
@@ -7631,7 +7637,7 @@
       "static_headers": {
         "Accept": "application/json"
       },
-      "response_schema_sha256": "f9938360d90057c24e240a4c2bfff864c5646a0702b3b1271c5e34cd90bcf641"
+      "response_schema_sha256": "e9f556ffbeece43e4ac026f966139bce02148e1e3f7a6506e15342a2b8496fe8"
     },
     "tailscale-api-organization-automation.logging.get_log_streaming_status": {
       "capability_id": "tailscale-api-organization-automation.logging.get_log_streaming_status",
@@ -8650,6 +8656,36 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "admitted_pattern": "^[^/?#]+$"
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": null,
+          "admitted_key": "query.limit",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "official_request_media": [],
@@ -8677,7 +8713,7 @@
       "static_headers": {
         "Accept": "application/json"
       },
-      "response_schema_sha256": "d83bb95eb89713212fee6a3d5142f4b901b7ce0bdcf1837dfe25ff79024f4592"
+      "response_schema_sha256": "ca6f7e6d99b55a58128e2241a49eeedfc58496d925c4e133c6923a03c0a968ce"
     },
     "tailscale-api-organization-automation.tailnet_settings.get_tailnet_settings": {
       "capability_id": "tailscale-api-organization-automation.tailnet_settings.get_tailnet_settings",
@@ -9473,8 +9509,10 @@
       "sensitive_request": false,
       "secret_request": false,
       "sensitive_response": true,
-      "secret_response": false,
-      "secret_response_fields": [],
+      "secret_response": true,
+      "secret_response_fields": [
+        "secret"
+      ],
       "security_source": "inherited_global_bearer_auth",
       "static_query": null,
       "static_headers": {

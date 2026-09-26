@@ -14,6 +14,7 @@ import type {
 } from '../../pack-uninstall-handler.js';
 import type { RecipeStore } from '../../recipe-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
+import type { SavedDataViewStore } from '../../saved-data-view-store.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
@@ -36,6 +37,11 @@ export interface ComposePackUninstallRpcDepsInput {
    *  present the uninstall handler drops this pack's `installed_pack` +
    *  owned `installed_ingredient` inventory; absent → no inventory removed. */
   contractStore?: ContractStore;
+  /** D-289 — late-bound saved-view store; see `PackInstallRpcDeps`. Absent ⇒
+   *  a manifest's `saved_view` contents install nothing. */
+  getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  /** D-304 — the stores a recipe's own state lives in, for the uninstall preview. */
+  getRecipeOwnedState?: () => import('../../recipe-owned-state.js').RecipeOwnedStateDeps | undefined;
   /** D-196 customer grant-snapshot cleanup on uninstall. */
   sellerStore?: SellerInstallAudienceStore;
   inboundTokenStore?: Pick<ChatInboundTokenStore, 'getTokenById' | 'updateTokenGrants'>;
@@ -81,6 +87,8 @@ export const composePackUninstallRpcDeps = (
     webhookConsumerStore,
     mcpBodyVisibilityStore,
     contractStore,
+    getSavedDataViewStore,
+    getRecipeOwnedState,
     sellerStore,
     inboundTokenStore,
     eventBus,
@@ -98,6 +106,8 @@ export const composePackUninstallRpcDeps = (
     ...(webhookConsumerStore ? { webhookConsumerStore } : {}),
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),
+    ...(getSavedDataViewStore ? { getSavedDataViewStore } : {}),
+    ...(getRecipeOwnedState ? { getRecipeOwnedState } : {}),
     ...(sellerStore ? { sellerStore } : {}),
     ...(inboundTokenStore ? { inboundTokenStore } : {}),
     ...(eventBus ? { broadcast: packUninstallEmitterFromBus(eventBus) } : {}),

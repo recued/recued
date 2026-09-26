@@ -54,7 +54,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   'work-entity': 21,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
-  memory: 12,
+  // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
+  // (never wired on the server, unused, duplicates of annotation/link.create).
+  memory: 10,
   audit: 1,
   // D-234 § 234.4 — `peer` is a NEW closed-kind domain: what one server may put
   // in front of another server's owner. Its own domain rather than folded under
@@ -76,7 +78,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
   // "what happened to my letter" read.
   // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
-  storage: 25,
+  // 25 → 26 on 2026-09-23: csv.rows, the reading twin of csv.filter.
+  storage: 26,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -247,7 +250,6 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.mail.send|mail|mail-send|write',
       'core.mail.sent.reconcile|mail|mail-sent-reconcile|write',
       'core.mail.thread-read|mail|mail-thread-reader|read',
-      'core.memory.annotate|memory|data-annotate|write',
       'core.memory.annotation.create|memory|annotation-create|write',
       'core.memory.annotation.delete|memory|annotation-delete|write',
       'core.memory.annotation.list|memory|annotation-list|read',
@@ -255,7 +257,6 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.memory.link.create|memory|link-create|write',
       'core.memory.link.delete|memory|link-delete|write',
       'core.memory.link.list|memory|link-list|read',
-      'core.memory.link|memory|data-link|write',
       // D-198 Slice 4 — NATIVE collective-memory write/read verb-ops.
       'core.memory.read|memory|(native)|read',
       'core.memory.timeline.read|memory|timeline-read|read',
@@ -316,7 +317,10 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // Python install an owner may not have, and a spreadsheet used as a customer
       // list is too common to have its search silently absent on a fresh box.
       'core.storage.csv.columns|storage|csv-columns|read',
-      'core.storage.csv.filter|storage|csv-filter|read',
+      // ⛔ csv.filter SAVES a new file record per run, so it is a write; csv.rows
+      // returns the same matches as a value and saves nothing.
+      'core.storage.csv.filter|storage|csv-filter|write',
+      'core.storage.csv.rows|storage|csv-rows|read',
       'core.storage.csv.stats|storage|csv-stats|read',
       'core.storage.data-file-read|storage|data-file-read|read',
       'core.storage.exchange.status|storage|exchange-status|read',

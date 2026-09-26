@@ -154,6 +154,15 @@ export const startPostAppCollectionExecutionRuntime = async (
         ...(execution.reconcileOpenBatch !== undefined
           ? { reconcileOpenBatch: execution.reconcileOpenBatch }
           : {}),
+        // D-287 follow-on — torn-saga disclosure, pre-bound by the execution
+        // composer (see `sagaSweep` there).
+        ...(execution.sagaSweep !== undefined
+          ? { sagaSweep: execution.sagaSweep }
+          : {}),
+        // D-308 — pre-bound by the execution composer (see `permanentPassRepair`).
+        ...(execution.permanentPassRepair !== undefined
+          ? { permanentPassRepair: execution.permanentPassRepair }
+          : {}),
         collection,
       },
       preListener: {

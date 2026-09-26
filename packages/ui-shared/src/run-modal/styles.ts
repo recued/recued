@@ -115,6 +115,10 @@ export const RUN_MODAL_STYLES = `
   font-size: 12px;
   color: var(--muted);
 }
+.run-modal-reason {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
 .run-modal-button {
   box-sizing: border-box;
   appearance: none;
@@ -317,6 +321,11 @@ export const RUN_MODAL_STYLES = `
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 6px;
+}
+/* D-314 — short choices (weekdays) take narrow columns, so a week is one or
+ * two rows, not four rows of two. */
+.run-modal-panel .var-multi-grid--compact {
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
 }
 .run-modal-panel .var-multi-opt {
   display: flex;

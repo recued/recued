@@ -1,14 +1,14 @@
 {
   "vendor": "ashby",
-  "retrieved_on": "2026-07-20",
+  "retrieved_on": "2026-09-22",
   "official_index": {
     "url": "https://developers.ashbyhq.com/llms.txt",
-    "bytes": 102061,
-    "sha256": "4d8609ce7c1ec41cb098642d89f07f6bbaf5c7cfa757cdf3e848f0fbd7aeef70"
+    "bytes": 107824,
+    "sha256": "b60fa9b09bd76cec1ae384166fb0846e8bea3dc04a14f71ab2799aa99567b24a"
   },
   "official_focus_document_set": {
-    "documents": 197,
-    "aggregate_sha256": "ad9f7e9e6f7dd73efe8692bcf6eddbc82bf0476ec344e8e039ef2e4d7c144958",
+    "documents": 203,
+    "aggregate_sha256": "65f156dfff44f6e7f57d5f5e7d446d69d3aaaeff2b2eff9851795cfd00138112",
     "aggregate_algorithm": "sha256(sorted newline records: url byte_length raw_markdown_sha256)",
     "note": "Ashby publishes Markdown-wrapped OpenAPI on each focus reference page. The pack omits a misleading openapi_source and retains every raw page and extracted contract hash here."
   },
@@ -29,8 +29,8 @@
   "official_supplemental_guides": [
     {
       "url": "https://developers.ashbyhq.com/reference/authentication.md",
-      "bytes": 93285,
-      "sha256": "a690a2d7454a422bc40907d740418b1cd10a79c377fb990660f3bd4a81868c6d",
+      "bytes": 99251,
+      "sha256": "03bd88157d4000f6e535d0a4fdf923d5cb7c8b30ed9b63cf96a77b78d01a1034",
       "purpose": "Basic API-key placement and version/media headers"
     },
     {
@@ -88,16 +88,16 @@
     "response_envelope": "{ success, results } or { success:false, errorInfo }"
   },
   "coverage": {
-    "reference_documents": 234,
-    "focus_documents": 197,
-    "outbound_documents": 193,
-    "selected": 191,
+    "reference_documents": 240,
+    "focus_documents": 203,
+    "outbound_documents": 199,
+    "selected": 197,
     "excluded": 6,
     "partner_callbacks": 4,
     "deprecated_aliases": 2,
     "inbound_webhooks": 28,
     "methods": {
-      "POST": 197
+      "POST": 203
     },
     "tags": {
       "ApiKey": 1,
@@ -143,7 +143,7 @@
       "Offer": 10,
       "Offer Process": 1,
       "Openings": 11,
-      "Project": 3,
+      "Project": 9,
       "Referral": 3,
       "Referral Form": 1,
       "Report": 2,
@@ -161,22 +161,21 @@
     "packs": {
       "ashby-admin-metadata": 26,
       "ashby-applications": 35,
-      "ashby-candidates": 28,
+      "ashby-candidates": 34,
       "ashby-interviews": 23,
       "ashby-jobs-openings": 30,
       "ashby-offers-surveys": 19,
       "ashby-organization": 30
     },
     "risks": {
-      "admin": 30,
-      "destructive": 25,
+      "admin": 31,
+      "destructive": 26,
       "read": 84,
-      "write": 52
+      "write": 56
     },
     "approvals": {
-      "always": 107,
-      "ask": 73,
-      "never": 11
+      "always": 113,
+      "never": 84
     },
     "pagination": 38,
     "unwalkable_pagination": 4,
@@ -333,7 +332,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -998,10 +997,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/applicationfeedbacklist.md",
-      "source_markdown_bytes": 147639,
-      "source_markdown_sha256": "3323239526b110ffcb201b11ea98f7b6a00c4c5d555f98a9ddebd87b067573e7",
-      "source_openapi_bytes": 146344,
-      "source_openapi_sha256": "114b9e3246dceb0c0f252e8a7d3672528558edd290d7d8ac5944b9aa81adcc70",
+      "source_markdown_bytes": 157390,
+      "source_markdown_sha256": "84ad3d07eba9a8d67fc950d2f906401ae32a26cd92467af2803cb8b42f2a5d65",
+      "source_openapi_bytes": 156095,
+      "source_openapi_sha256": "33c2a7ecbb71a53aabbc5a07867aabbf3522f65342bb7a47b22de9f0846b123d",
       "page": "applicationfeedbacklist",
       "tag": "Application Feedback",
       "method": "POST",
@@ -1112,7 +1111,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -1222,10 +1221,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/applicationfeedbacksubmit-1.md",
-      "source_markdown_bytes": 137542,
-      "source_markdown_sha256": "360bd8c42c2854e84c56fc368b7d54072db16593e39ec43f2e3d9ba84a1ea013",
-      "source_openapi_bytes": 135182,
-      "source_openapi_sha256": "5cf73ed40c758310a69e508e65d741f3f7d286c442a5d9bf1564453943c4c6b4",
+      "source_markdown_bytes": 147293,
+      "source_markdown_sha256": "f121a509aa918c4665b50b74c7323cd96b0b94c767f56b9397d0dec07337c4f6",
+      "source_openapi_bytes": 144933,
+      "source_openapi_sha256": "3f2dfb44ba806b648cfc32ae33069d7514adacb19c7d0c7ec0df638f42ee41aa",
       "page": "applicationfeedbacksubmit-1",
       "tag": "Application Feedback",
       "method": "POST",
@@ -1338,10 +1337,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/applicationformsubmit.md",
-      "source_markdown_bytes": 134636,
-      "source_markdown_sha256": "f4664daac5caec3f6cf1cadd11fe86e3a799e2f66d4d41cfcf76ba116af057b3",
-      "source_openapi_bytes": 134052,
-      "source_openapi_sha256": "cccfc9b4d61752730ccbc05497cff03861ce210f8e3f050e559b3b0e33e4e2a7",
+      "source_markdown_bytes": 144387,
+      "source_markdown_sha256": "93f62e11dbbfa6338e520f3ef2e68bf03845277cd4e4e655ba17cb55e97c6ada",
+      "source_openapi_bytes": 143803,
+      "source_openapi_sha256": "66450374f23716bb4938a3a31b3c0c22992dc170b12cf2083741436bdeceb571",
       "page": "applicationformsubmit",
       "tag": "Application Form",
       "method": "POST",
@@ -1507,7 +1506,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -1521,10 +1520,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/applicationinfo.md",
-      "source_markdown_bytes": 197315,
-      "source_markdown_sha256": "5a9074715a357e8fcd1b9c5eb0d768569872c4d5031b3b7c0c77c8c30afd2e29",
-      "source_openapi_bytes": 196655,
-      "source_openapi_sha256": "13f3e7d188b6ee68fa627212b790dce8c5666dc8d54bcdc27f69b7044c88d0f6",
+      "source_markdown_bytes": 207066,
+      "source_markdown_sha256": "0af7ed6d05ce7ca20cdc0295de7c39c8a0c0d81ba72f78d84291efc5927d077b",
+      "source_openapi_bytes": 206406,
+      "source_openapi_sha256": "8c74ed6376bd8920bc9c6be7b43676f60ca592dc65d334b6db4bd7350cbbadc8",
       "page": "applicationinfo",
       "tag": "Application",
       "method": "POST",
@@ -1587,7 +1586,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -1745,7 +1744,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -1855,7 +1854,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -1965,7 +1964,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -2306,10 +2305,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/applicationupdatehistory.md",
-      "source_markdown_bytes": 199150,
-      "source_markdown_sha256": "0f72c758c88307edf45d5b04b4f5faad7b9fb06e85e1bf05907bb1507c2f23d1",
-      "source_openapi_bytes": 198487,
-      "source_openapi_sha256": "13e540214e79474f3c7b788c56e4782e2bba3ffc4d620e0ddc035faabdd37b37",
+      "source_markdown_bytes": 208901,
+      "source_markdown_sha256": "a78790c058980fb59e7fc0def58e94c238b79a78f849907b1e5fea107844acb3",
+      "source_openapi_bytes": 208238,
+      "source_openapi_sha256": "05472c9e23c9cbad886c38bd229d58d0ae427938109f323671a3d9418c0e73a8",
       "page": "applicationupdatehistory",
       "tag": "Application",
       "method": "POST",
@@ -2599,7 +2598,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -3328,7 +3327,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4300,7 +4299,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4376,7 +4375,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4504,7 +4503,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4624,7 +4623,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4734,7 +4733,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4854,7 +4853,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -4868,10 +4867,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/candidatelistprojects.md",
-      "source_markdown_bytes": 130411,
-      "source_markdown_sha256": "e334ac7ef4e19e0e36e786654fb85336af2da78882c0d76e76777ec12ba01674",
-      "source_openapi_bytes": 129929,
-      "source_openapi_sha256": "061d1c320157e90e1512194e4dac6d62e87e666acc302d99c178c2a9734e40f9",
+      "source_markdown_bytes": 131813,
+      "source_markdown_sha256": "9792cb8de17e4d519dc99b16d881fb49db3b0b612009f2781e4ea05e67fd8500",
+      "source_openapi_bytes": 131331,
+      "source_openapi_sha256": "d5e1af0bb414a29790fef42c7a00ea37dfdd4ad02dc90b30c29810df1712e7b4",
       "page": "candidatelistprojects",
       "tag": "Candidate",
       "method": "POST",
@@ -4964,7 +4963,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -5314,7 +5313,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -5394,7 +5393,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -6273,7 +6272,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -6287,10 +6286,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/customfieldcreate.md",
-      "source_markdown_bytes": 127359,
-      "source_markdown_sha256": "b12d0d63eb92105c1f187876371688c8cd21455fa1c48bc60cf043713ea751f2",
-      "source_openapi_bytes": 126743,
-      "source_openapi_sha256": "5f18ae583a5b905a29a42f4a7607c3fa02a010eb30f2522e2f2eacefc916b719",
+      "source_markdown_bytes": 128195,
+      "source_markdown_sha256": "fc517d84f4a8a01544f9b6865bb428ae8f28ec31899c26f54962808a6efb3038",
+      "source_openapi_bytes": 127496,
+      "source_openapi_sha256": "24d0cf02c9e5b3f045a081799a579a2c8e9dcbd091259f27c2a489cab187be35",
       "page": "customfieldcreate",
       "tag": "Custom Field",
       "method": "POST",
@@ -6443,10 +6442,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/customfieldinfo.md",
-      "source_markdown_bytes": 123591,
-      "source_markdown_sha256": "622ef88e79de1ebe39f90a4912ae5fdd06d73175a6901e18e4c570bdfcfc5494",
-      "source_openapi_bytes": 123122,
-      "source_openapi_sha256": "046b5ded9fbb038cc28a509176ac074425d410085f6398ad16a5469946a1b1d6",
+      "source_markdown_bytes": 124259,
+      "source_markdown_sha256": "7772130d3e90919c397473102c6703e3425df957eee9d60ff439e1e3a7775898",
+      "source_openapi_bytes": 123790,
+      "source_openapi_sha256": "a9451eac22fe410dce1abbf9b2dcbfba393f1cc6616b9e4f53540f796827edf8",
       "page": "customfieldinfo",
       "tag": "Custom Field",
       "method": "POST",
@@ -6503,7 +6502,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -6517,10 +6516,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/customfieldlist.md",
-      "source_markdown_bytes": 125643,
-      "source_markdown_sha256": "13ef97a3e4b8fd7d4939655f6ca96eb7bd9de01065b819a4d8e34561ffd95008",
-      "source_openapi_bytes": 125059,
-      "source_openapi_sha256": "7249178c9e453b1dff6e8e15e2973fdf3b2ba98e8df05793785ee31d357ed3a1",
+      "source_markdown_bytes": 126311,
+      "source_markdown_sha256": "ac9326a3b0efe19b303611521f407203a4c962fde3ffebd7051ab454d2a27d1b",
+      "source_openapi_bytes": 125727,
+      "source_openapi_sha256": "9655b8830db74b0aef07d9d265c5ae51f80eef7f5f6acc1a48766a23d8068a79",
       "page": "customfieldlist",
       "tag": "Custom Field",
       "method": "POST",
@@ -6621,7 +6620,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -6838,10 +6837,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/customfieldupdateselectablevalues.md",
-      "source_markdown_bytes": 126244,
-      "source_markdown_sha256": "a56a4ab0bcc6e3f39dac65e9d95de8a4c4595d3db511477e9448b0b289a21ab2",
-      "source_openapi_bytes": 125178,
-      "source_openapi_sha256": "488ef21d08bd8eb3abb41aa403b7e63bf8797110a5f351bb50822aad163543dc",
+      "source_markdown_bytes": 126912,
+      "source_markdown_sha256": "a0fa6a28fc283f63436d20bb29386ecb4172518a09a9922e5b9d2267359ecce3",
+      "source_openapi_bytes": 125846,
+      "source_openapi_sha256": "1f59b19d2d605208e05b5676ff78103893fead65c8f4d904ce97011e01b9e380",
       "page": "customfieldupdateselectablevalues",
       "tag": "Custom Field",
       "method": "POST",
@@ -7550,10 +7549,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/emailsenderlist.md",
-      "source_markdown_bytes": 123268,
-      "source_markdown_sha256": "61fd3b8a8e851d6efa6a2f1807a197c1e9ed6c68ebacf3d7b738c2c6a4d856e1",
-      "source_openapi_bytes": 122065,
-      "source_openapi_sha256": "2b8a5eedfa28b7775b061418cb9bd27b41d279814e7b51a38cbadb02b8481203",
+      "source_markdown_bytes": 123094,
+      "source_markdown_sha256": "f4b1b5de238d648f42d9d7f1ff1e4b5e6f8ec6bae7b0f81d21e77c0c7daf2f4c",
+      "source_openapi_bytes": 121976,
+      "source_openapi_sha256": "e950f91b9b8f15f5479f28af3b1e1bf8f4e8e7329f3020a121e99c139a4af026",
       "page": "emailsenderlist",
       "tag": "Email Sender",
       "method": "POST",
@@ -7620,7 +7619,7 @@
         "reason": "The success response documents continuation metadata, but the request schema declares no cursor field. The pack does not invent an automatic replay parameter."
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -7865,7 +7864,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -7879,10 +7878,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/feedbackformdefinitioninfo.md",
-      "source_markdown_bytes": 130455,
-      "source_markdown_sha256": "e64a8e9642443d9e29b5f0fb2838faa7f0b0ece8996f2ab836e17c27f5d3105c",
-      "source_openapi_bytes": 129965,
-      "source_openapi_sha256": "f61698b60a6afafa56ef9e22db1d1c39db5138692c727250a3abb903064d4a25",
+      "source_markdown_bytes": 140206,
+      "source_markdown_sha256": "f7611345f4e950df15229935bb06981ffb5ef0872667168b93243648dbc62921",
+      "source_openapi_bytes": 139716,
+      "source_openapi_sha256": "91c40fa3dc77b04bb4b84d89d40eed329e75b8424c8aa7c1b0cc6c02953f36ff",
       "page": "feedbackformdefinitioninfo",
       "tag": "Feedback Form Definition",
       "method": "POST",
@@ -7939,7 +7938,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -7953,10 +7952,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/feedbackformdefinitionlist.md",
-      "source_markdown_bytes": 132622,
-      "source_markdown_sha256": "a1f6cfeac19e0e66ec748bb4502ba06bcc3c3bcaf9fc4c18eefd7e2fe640e5a1",
-      "source_openapi_bytes": 132004,
-      "source_openapi_sha256": "d623fcdb1009caa3a644e0ca776f920c11b9765e08c52bfde1875f6a4a2ff425",
+      "source_markdown_bytes": 142373,
+      "source_markdown_sha256": "bd036c1d0c3d174ae6b96bd34b930dce80b5f59f5aa8d494effa0a17e811a942",
+      "source_openapi_bytes": 141755,
+      "source_openapi_sha256": "5060ec0e82d88137ebe521ecc9e83355619d826a4c13df444316b3c76fa0a68f",
       "page": "feedbackformdefinitionlist",
       "tag": "FeedbackFormDefinition",
       "method": "POST",
@@ -8057,7 +8056,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -8238,7 +8237,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -8508,10 +8507,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/interviewbriefinginfo.md",
-      "source_markdown_bytes": 237080,
-      "source_markdown_sha256": "532c3e034197d8e8166d0d79ce5b8116d44a996d67d73f38b77c15c80b74c9ee",
-      "source_openapi_bytes": 236079,
-      "source_openapi_sha256": "1b5261119c4311474bbc10cc3491efcfa79ceeafc6087b54a3d1eee2dc0ca33c",
+      "source_markdown_bytes": 246831,
+      "source_markdown_sha256": "ca02e616a7335d30bfa343a3fe751230adbc854092af5a07069466e42f52bc4c",
+      "source_openapi_bytes": 245830,
+      "source_openapi_sha256": "ff4b80dd9d3d60c125e2fdad12651b0cd894eb28bd62486f8410eddf6615c4c3",
       "page": "interviewbriefinginfo",
       "tag": "Interview Briefing",
       "method": "POST",
@@ -8578,7 +8577,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -8905,7 +8904,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -9033,7 +9032,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -9426,7 +9425,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -9500,7 +9499,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -9638,7 +9637,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -9756,7 +9755,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10063,7 +10062,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10234,7 +10233,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10308,7 +10307,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10387,7 +10386,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10471,7 +10470,7 @@
         "reason": "The success response documents continuation metadata, but the request schema declares no cursor field. The pack does not invent an automatic replay parameter."
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10701,7 +10700,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10775,7 +10774,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10963,7 +10962,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -10977,10 +10976,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostingcreate.md",
-      "source_markdown_bytes": 169173,
-      "source_markdown_sha256": "6138d8626e9224ae96058128d6371146d2f4991417219d73e42f6c212fd6ef0b",
-      "source_openapi_bytes": 167961,
-      "source_openapi_sha256": "b96b2b98b6a622eea1880c897904c44ad3956edb57258118dd2c5cd310c51c8b",
+      "source_markdown_bytes": 178924,
+      "source_markdown_sha256": "1a60e6dd81ab5f51acde213f89ac4772a60f81a3496bb3d9994a6a67c2d117da",
+      "source_openapi_bytes": 177712,
+      "source_openapi_sha256": "70a86d7c904b4422f0d4d2808d1fca3740e528aecddcb7d103eaf485a11119a4",
       "page": "jobpostingcreate",
       "tag": "Job Posting",
       "method": "POST",
@@ -11131,10 +11130,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostinginfo.md",
-      "source_markdown_bytes": 166835,
-      "source_markdown_sha256": "33833e1827997527ff2ad98cbdbfbcf1b59175d235f4c11e2aed68dac8bad2e6",
-      "source_openapi_bytes": 165860,
-      "source_openapi_sha256": "aa4cc4afd0dd71446d1043a4482f72bf3981d5afc6d5d8fb50b8a33bb182fe4f",
+      "source_markdown_bytes": 176586,
+      "source_markdown_sha256": "4986958c95217941895275ec7bf6d7d83ba59a665ea81d8f2ef4c0aefa50a25c",
+      "source_openapi_bytes": 175611,
+      "source_openapi_sha256": "21059d6535c0982dfa5a972fb824119beab3a9443e379b67c32fadb84145a339",
       "page": "jobpostinginfo",
       "tag": "Job Posting",
       "method": "POST",
@@ -11221,7 +11220,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -11309,7 +11308,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -11323,10 +11322,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostingsetstatus.md",
-      "source_markdown_bytes": 165319,
-      "source_markdown_sha256": "d5c66fdd0b13971a40b0332a49bb85c19f43aa060048fd48b58804325fd3d59c",
-      "source_openapi_bytes": 164506,
-      "source_openapi_sha256": "c900efa90d6f3e203005c5ee0ec4fd4705a48572e407ed9ef32b22c070be6631",
+      "source_markdown_bytes": 175070,
+      "source_markdown_sha256": "12f43d9e4a7208cf34fd4e710edeafc29e25348ef39bbbda1a244680c7ee6f38",
+      "source_openapi_bytes": 174257,
+      "source_openapi_sha256": "fd8915c81c59476584acac0d813d81a2084ba29e4a58723716222bc5320ef258",
       "page": "jobpostingsetstatus",
       "tag": "Job Posting",
       "method": "POST",
@@ -11408,10 +11407,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostingupdate.md",
-      "source_markdown_bytes": 173363,
-      "source_markdown_sha256": "e4ced9cc9cf0e5370409e90055ec2a6b80d6834f75237ac62c073bd5da9a25f7",
-      "source_openapi_bytes": 171446,
-      "source_openapi_sha256": "e6fbb6d6f7cc2141abb74fb7ddb6f2244ceb941a1034803efeb33ccca131b692",
+      "source_markdown_bytes": 183114,
+      "source_markdown_sha256": "f41c0f54dababa1c531da916daadfb9403f37a85d852ca006390b0e7c6b344da",
+      "source_openapi_bytes": 181197,
+      "source_openapi_sha256": "db163f701f9a22609403ef00f07bcb876af54a047d35e487c34a605f40bad692",
       "page": "jobpostingupdate",
       "tag": "Job Posting",
       "method": "POST",
@@ -11592,10 +11591,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostingupdatecompensation.md",
-      "source_markdown_bytes": 171279,
-      "source_markdown_sha256": "4add38d8853523141a9e31e6ace320ae5cccc053f496a42ae9336ed9989d8ed6",
-      "source_openapi_bytes": 170389,
-      "source_openapi_sha256": "2fac29e9510eb8355961c649adfd3e1bd7245a26924b6ccf31f59ffd0c50341f",
+      "source_markdown_bytes": 181030,
+      "source_markdown_sha256": "07db9f380f563c44cea202c55944c88b180d8fc73c24d2fc75190e73a5f307b8",
+      "source_openapi_bytes": 180140,
+      "source_openapi_sha256": "480d6756fe93f195dcc3b0b3be1a23e9e2f4c18534ec07f0c9fc8daf9f4a1fc2",
       "page": "jobpostingupdatecompensation",
       "tag": "Job Posting",
       "method": "POST",
@@ -11675,10 +11674,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/jobpostingupdatecompensationsettings.md",
-      "source_markdown_bytes": 169103,
-      "source_markdown_sha256": "a7c6ae10ab586bab4318a320d1c0ef7f4ae87a00d247d0b10edbb74bb9c0c305",
-      "source_openapi_bytes": 167908,
-      "source_openapi_sha256": "2a0fc52247d82e593e9e4485e51a9aa6255faf5569216b283e4acc32dd47af92",
+      "source_markdown_bytes": 178854,
+      "source_markdown_sha256": "53034130cda20b50727122f1702ac7b70369cbcd0bb6a15057689cda1b1d157d",
+      "source_openapi_bytes": 177659,
+      "source_openapi_sha256": "6e3e8be84c9f4205c3fed9842a92c86b29a3655705900741470b0b93b0b1df87",
       "page": "jobpostingupdatecompensationsettings",
       "tag": "Job Posting",
       "method": "POST",
@@ -11870,7 +11869,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -12167,7 +12166,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -13444,7 +13443,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -13458,10 +13457,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerapprove.md",
-      "source_markdown_bytes": 153102,
-      "source_markdown_sha256": "c6c406f702bb407e730a95048891b5290148b2bf88e231c7989eff5fb2de88ac",
-      "source_openapi_bytes": 151891,
-      "source_openapi_sha256": "a01ab16dec1dad9b5845ae0eccd9c8074e4bfdaa7075fdf50dcee800948160c1",
+      "source_markdown_bytes": 162853,
+      "source_markdown_sha256": "c8d7e12128403b2883b41bbc402d8047860dc840ca879b17c8ce5e6ab76271df",
+      "source_openapi_bytes": 161642,
+      "source_openapi_sha256": "35ea6ef8d65c178481f3d8bbc8371aba3d39cd0f844ada89df8ddb6f2f970964",
       "page": "offerapprove",
       "tag": "Offer",
       "method": "POST",
@@ -13572,10 +13571,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offercreate.md",
-      "source_markdown_bytes": 153382,
-      "source_markdown_sha256": "00bce7c382e67f97cd0cc75c058966c14aef5551a7826a618a324817de299263",
-      "source_openapi_bytes": 152107,
-      "source_openapi_sha256": "af731cefb482d30c81a2986bf6367a1ad5248fdc58a3a42d6b7f73ddfc1e7d37",
+      "source_markdown_bytes": 163133,
+      "source_markdown_sha256": "5e23b784adbf28f1210b762c312645b78c314fbead95fd1f4009de0e9d81b02c",
+      "source_openapi_bytes": 161858,
+      "source_openapi_sha256": "e3e43dfe28d50dffd8d70b7f385906f9d9ddc7780082e26573a56104aaef6e28",
       "page": "offercreate",
       "tag": "Offer",
       "method": "POST",
@@ -13678,10 +13677,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerinfo.md",
-      "source_markdown_bytes": 149599,
-      "source_markdown_sha256": "e106100f92540d4c9007e09bfc4a56f219eb6502eacf0d25a0771a2b98ee04e7",
-      "source_openapi_bytes": 149152,
-      "source_openapi_sha256": "0922bcf16ab4b9aae170e799e31a7f42fae2f4c7fa236618d407d0326673ddda",
+      "source_markdown_bytes": 159350,
+      "source_markdown_sha256": "b4e2ade3927985529a294234281e7ff2acb4c7c297f05f6316ec99dada8d51cb",
+      "source_openapi_bytes": 158903,
+      "source_openapi_sha256": "7a4a2915df846e827cbeeeb76d1700b36a384d59a9478b5740ebaf15ed17448e",
       "page": "offerinfo",
       "tag": "Offer",
       "method": "POST",
@@ -13748,7 +13747,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -13762,10 +13761,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerlist.md",
-      "source_markdown_bytes": 153528,
-      "source_markdown_sha256": "57370cb520ad340c6eb04f8a6bc5ca7040af878ecfb56cf7be9e997789e5bdf2",
-      "source_openapi_bytes": 152944,
-      "source_openapi_sha256": "deeb7d9dee4449f18d3d40915eab6e46ebc5c72ec4ce6ad9a9e3add60d3bdc06",
+      "source_markdown_bytes": 163279,
+      "source_markdown_sha256": "b5071fddae4fbb3e1230c46a1bd9d6e04191e08b33eddf0a5bf683d1371336ba",
+      "source_openapi_bytes": 162695,
+      "source_openapi_sha256": "6022e717b81b2c343c5cddc59edcb9803cbc3aa48e6e09760ee6ab5d8aa19e80",
       "page": "offerlist",
       "tag": "Offer",
       "method": "POST",
@@ -13906,7 +13905,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -13994,10 +13993,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerreject.md",
-      "source_markdown_bytes": 151750,
-      "source_markdown_sha256": "fd900788bc4236252b6be3aa604d3884db1ec70b89ef510f255a4fdf4be54054",
-      "source_openapi_bytes": 150982,
-      "source_openapi_sha256": "8b09bba3c4935b63b3efccc28eb3c3e859419c16d65ac21e779e4263e9c30fed",
+      "source_markdown_bytes": 161501,
+      "source_markdown_sha256": "f0a143e76dfb5e69999d317e530e070ead9c8a542c839461dd95c36dc28865b0",
+      "source_openapi_bytes": 160733,
+      "source_openapi_sha256": "96ad9d1ce6436167f3c139cf712bb5076476592c4894c4fef8ce3080dd76bd14",
       "page": "offerreject",
       "tag": "Offer",
       "method": "POST",
@@ -14110,10 +14109,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offersetdecidedat.md",
-      "source_markdown_bytes": 150204,
-      "source_markdown_sha256": "02a00f45be9212b987ba5877f154f04631f48bb716f2c8e5c61dcd7ce4c4032f",
-      "source_openapi_bytes": 149743,
-      "source_openapi_sha256": "f1c693610426f79ae40646ff94e5ccc732724098b06d606a1d3b0638a618fc5e",
+      "source_markdown_bytes": 159955,
+      "source_markdown_sha256": "16be52eb7591949064f84c8cb2030e0676bb22d568b86fdabfd7cab8f4a96a27",
+      "source_openapi_bytes": 159494,
+      "source_openapi_sha256": "da36e47fee14e9521c5e5c3a46d5b2595a9d2b3f407d6bbf5249323a400bf1ec",
       "page": "offersetdecidedat",
       "tag": "Offer",
       "method": "POST",
@@ -14205,10 +14204,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offersetstatus.md",
-      "source_markdown_bytes": 150295,
-      "source_markdown_sha256": "a06ff58db5000e48e3b46139d0cf6f5fb74570fa4e4d64c00d72500062b27625",
-      "source_openapi_bytes": 149731,
-      "source_openapi_sha256": "dbf0d7d68de7a719e289b873561f4d3142f61f0f0d45582a02d044de5e0e11c5",
+      "source_markdown_bytes": 160046,
+      "source_markdown_sha256": "ea50b99614577058648ea336512463303fa7b46159f7a961a68d3ff47f86afad",
+      "source_openapi_bytes": 159482,
+      "source_openapi_sha256": "2d2f0d89587352c6e59f2c90763f807380073c87d82b67fb393d74e4dd3c9eb8",
       "page": "offersetstatus",
       "tag": "Offer",
       "method": "POST",
@@ -14300,10 +14299,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerstart.md",
-      "source_markdown_bytes": 127939,
-      "source_markdown_sha256": "752d37f976afdcb1cd4b06bf53cfdf5dda7865017bcb241d3a1d39b5db81c4e2",
-      "source_openapi_bytes": 127166,
-      "source_openapi_sha256": "5c2104a88827b68fee80b7f497d8c0bdd14941dec3d7a93c4e4d9015a29e1d4b",
+      "source_markdown_bytes": 137690,
+      "source_markdown_sha256": "185e070f9c4f507bf437fec9c53353bc39c76e3ccbe46d45ecaae2f51f85e92f",
+      "source_openapi_bytes": 136917,
+      "source_openapi_sha256": "5be1161c1315e5e731db2eb0116e9b6599ec6a4f4932d2e1283855c80fd85bf8",
       "page": "offerstart",
       "tag": "Offer",
       "method": "POST",
@@ -14374,10 +14373,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerstartapprovalprocess.md",
-      "source_markdown_bytes": 150543,
-      "source_markdown_sha256": "7aeeccd3f67f0dcf515f9fe2a9b1434f96a4af3361dc6227f9f290a5c10b2514",
-      "source_openapi_bytes": 149844,
-      "source_openapi_sha256": "653436081171f26dfaf157aac496e30f5da45dec05c0450ff1a874cf9b9c0a27",
+      "source_markdown_bytes": 160294,
+      "source_markdown_sha256": "9a5367940742a7ce1521701eef6ad4fd0140990e31c95962096cbca0a0b6f381",
+      "source_openapi_bytes": 159595,
+      "source_openapi_sha256": "60b773930cde73901cc0eba3dd058a412f0dd3709d5bb18fb3687f02f4cb339a",
       "page": "offerstartapprovalprocess",
       "tag": "Offer",
       "method": "POST",
@@ -14468,10 +14467,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/offerupdate.md",
-      "source_markdown_bytes": 152543,
-      "source_markdown_sha256": "4636ed6e7804460baeb8f636b5d18122f88c00045a3f46aa5a827fdec79e96bd",
-      "source_openapi_bytes": 151384,
-      "source_openapi_sha256": "19ef0277e8bff255944b0083e3a1a5ece0bc53add49479b7fa35d1f2fc5ba5ed",
+      "source_markdown_bytes": 162294,
+      "source_markdown_sha256": "31a353a623ecf6cb2cbfdd8d9c1a3c86230bffff2c5c49ef563acb47d0e71834",
+      "source_openapi_bytes": 161135,
+      "source_openapi_sha256": "6df30f5f92fc274ac8b02f8b3f3d5ca43c5031e2266a36c79ba2903a1e4f30d6",
       "page": "offerupdate",
       "tag": "Offer",
       "method": "POST",
@@ -14901,7 +14900,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -15019,7 +15018,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -15263,7 +15262,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -15600,11 +15599,189 @@
       }
     },
     {
+      "source_url": "https://developers.ashbyhq.com/reference/projectarchive.md",
+      "source_markdown_bytes": 130878,
+      "source_markdown_sha256": "49cefe0a80d2654bac014e83d4ba9a986e41c326876986b5e7157cbc0e9e1de5",
+      "source_openapi_bytes": 130007,
+      "source_openapi_sha256": "6b655517c208e390607e05f9ee7af0c281a034dd92c214c7804d5952385c79c9",
+      "page": "projectarchive",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.archive",
+      "operation_id": "projectArchive",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_archive",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "projectId"
+      ],
+      "request_properties": {
+        "projectId": {
+          "type": "string",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "object",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "object",
+      "emitted_args": [
+        {
+          "key": "body.projectId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
+      "source_url": "https://developers.ashbyhq.com/reference/projectcreate.md",
+      "source_markdown_bytes": 134922,
+      "source_markdown_sha256": "6f2ea7aa478e1fedd753d68a068c86bed6270d2c06aca3794cc0da180a3f3323",
+      "source_openapi_bytes": 133686,
+      "source_openapi_sha256": "161c08d58c7f2ebb9fecf8596df72fcf4c9c56ba8caecf3cc3c9630a9fb899b9",
+      "page": "projectcreate",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.create",
+      "operation_id": "projectCreate",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_create",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "title"
+      ],
+      "request_properties": {
+        "title": {
+          "type": "string",
+          "read_only": false
+        },
+        "description": {
+          "type": "object",
+          "read_only": false
+        },
+        "customFields": {
+          "type": "array",
+          "read_only": false
+        },
+        "confidential": {
+          "type": "boolean",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "object",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "object",
+      "emitted_args": [
+        {
+          "key": "body.title",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.description",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.customFields",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.confidential",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
       "source_url": "https://developers.ashbyhq.com/reference/projectinfo-1.md",
-      "source_markdown_bytes": 128715,
-      "source_markdown_sha256": "b3fdc9ff3fe150852826414b46a82db6c30f65d9be108d4aeb9173ba010b71df",
-      "source_openapi_bytes": 128270,
-      "source_openapi_sha256": "9bc68752d58ea54881a52446b2309d322c0d1ce6435a160faa1c83b55fd800e0",
+      "source_markdown_bytes": 130241,
+      "source_markdown_sha256": "4fa3f4e0236c3e23d4c4419c6f54e8cbef449829e6320381bd86e83ca8c3590a",
+      "source_openapi_bytes": 129728,
+      "source_openapi_sha256": "18e51bf8c118fe342e6a3948adc3860492825385b5c36283a0a0bc862cd54b57",
       "page": "projectinfo-1",
       "tag": "Project",
       "method": "POST",
@@ -15661,7 +15838,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -15675,10 +15852,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/projectlist-1.md",
-      "source_markdown_bytes": 130883,
-      "source_markdown_sha256": "732a7b9644a52c2da1615630f164f26eedf3f6fd639d27cc082503cd1aae6036",
-      "source_openapi_bytes": 130327,
-      "source_openapi_sha256": "d08a60b172862b88f262d0882e38d3f17ac35077a5fd57599faf079a0b5ff217",
+      "source_markdown_bytes": 132413,
+      "source_markdown_sha256": "1fe34f05c23cfdb9fcd47430fb84ca5f0466dff74c35a76ba667476892ae54af",
+      "source_openapi_bytes": 131789,
+      "source_openapi_sha256": "08af18f6cc59ccd22e27d189e013682aed902105628d90ccfe7a17c755b20fd5",
       "page": "projectlist-1",
       "tag": "Project",
       "method": "POST",
@@ -15779,7 +15956,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -15792,11 +15969,85 @@
       }
     },
     {
+      "source_url": "https://developers.ashbyhq.com/reference/projectrestore.md",
+      "source_markdown_bytes": 130876,
+      "source_markdown_sha256": "e73aecb6e801abd428ffecd99e63ffff0b4661c2522094031eed51fb90b2f1da",
+      "source_openapi_bytes": 130007,
+      "source_openapi_sha256": "f4dfbf775c34f3b91177f290ece4e5f2b3fcee9a02bf9db0c846afe0508fa0b5",
+      "page": "projectrestore",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.restore",
+      "operation_id": "projectRestore",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_restore",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "projectId"
+      ],
+      "request_properties": {
+        "projectId": {
+          "type": "string",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "object",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "object",
+      "emitted_args": [
+        {
+          "key": "body.projectId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
       "source_url": "https://developers.ashbyhq.com/reference/projectsearch.md",
-      "source_markdown_bytes": 129205,
-      "source_markdown_sha256": "213496495e87780017116e450ca93045e8fd07bc8eef01b42e88a59f69f03cdc",
-      "source_openapi_bytes": 128479,
-      "source_openapi_sha256": "f93062cd0dfeee97d6d526cfeb51aad63e9a53e3a40fa049924c8d8ca02c3e10",
+      "source_markdown_bytes": 130739,
+      "source_markdown_sha256": "409b8a996ac16e6d67b77e1b0a75986a1aca4ce3c367057f308ac7466e039f06",
+      "source_openapi_bytes": 129943,
+      "source_openapi_sha256": "0259c26a6e3e4ee81cd4475168774f2a4edb04dc75817aa3ad5b8c2796599312",
       "page": "projectsearch",
       "tag": "Project",
       "method": "POST",
@@ -15853,8 +16104,283 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
+      "source_url": "https://developers.ashbyhq.com/reference/projectsetcustomfieldvalue.md",
+      "source_markdown_bytes": 130338,
+      "source_markdown_sha256": "4992c440bab5ef8bc0eaffeae5fd137f5c4108eb0b0f7ad3ab7ae4c159d3580f",
+      "source_openapi_bytes": 128544,
+      "source_openapi_sha256": "75e9667a46db07b0009bbc61a54936ca2994981667dbb26cb94669095d09459d",
+      "page": "projectsetcustomfieldvalue",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.setCustomFieldValue",
+      "operation_id": "projectSetCustomFieldValue",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_set_custom_field_value",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "fieldId",
+        "fieldValue",
+        "projectId"
+      ],
+      "request_properties": {
+        "fieldId": {
+          "type": "string",
+          "read_only": false
+        },
+        "fieldValue": {
+          "type": "array",
+          "read_only": false
+        },
+        "projectId": {
+          "type": "string",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "object",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "object",
+      "emitted_args": [
+        {
+          "key": "body.fieldId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.fieldValue",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.projectId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
+      "source_url": "https://developers.ashbyhq.com/reference/projectsetcustomfieldvalues.md",
+      "source_markdown_bytes": 131453,
+      "source_markdown_sha256": "380881766d35fd132ab380e3ddae9b119996cd9ede76c8e23c803421e5912c1f",
+      "source_openapi_bytes": 129524,
+      "source_openapi_sha256": "387b6db9e79aa6845e7e2d2ef3371240bfe49e2d88912cd13f9e346b15cae32e",
+      "page": "projectsetcustomfieldvalues",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.setCustomFieldValues",
+      "operation_id": "projectSetCustomFieldValues",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_set_custom_field_values",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "projectId",
+        "values"
+      ],
+      "request_properties": {
+        "projectId": {
+          "type": "string",
+          "read_only": false
+        },
+        "values": {
+          "type": "array",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "array",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "array",
+      "emitted_args": [
+        {
+          "key": "body.projectId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.values",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "business_status": {
+        "success_path": "success",
+        "error_paths": [
+          "errors",
+          "errorInfo"
+        ],
+        "warning_path": "warnings",
+        "http_error_behavior": "Ashby may return HTTP 200 with success:false; REST bindings cannot currently promote that body predicate to a failed dispatch."
+      }
+    },
+    {
+      "source_url": "https://developers.ashbyhq.com/reference/projectupdate.md",
+      "source_markdown_bytes": 132448,
+      "source_markdown_sha256": "6589fa86ddd526139e4698c6405c21574f3410fae5273e0558f1e2f599e3101b",
+      "source_openapi_bytes": 131483,
+      "source_openapi_sha256": "8a82844004e29926b31515e8c31ea2e81d5a10d98b85472ca02d3087ecb168bf",
+      "page": "projectupdate",
+      "tag": "Project",
+      "method": "POST",
+      "path": "/project.update",
+      "operation_id": "projectUpdate",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "ashby-candidates",
+      "op": "project_update",
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_required_paths": [
+        "projectId"
+      ],
+      "request_properties": {
+        "projectId": {
+          "type": "string",
+          "read_only": false
+        },
+        "title": {
+          "type": "string",
+          "read_only": false
+        },
+        "description": {
+          "type": "object",
+          "read_only": false
+        }
+      },
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_required_paths": [
+        "success",
+        "results"
+      ],
+      "response_properties": {
+        "success": {
+          "type": "boolean",
+          "write_only": false
+        },
+        "results": {
+          "type": "object",
+          "write_only": false
+        }
+      },
+      "response_write_only_paths": [],
+      "response_int64_paths": [],
+      "request_presence": "required_argument",
+      "result_type": "object",
+      "emitted_args": [
+        {
+          "key": "body.projectId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.title",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.description",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "result_path": "results",
+      "pagination": null,
+      "unwalkable_pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
       "business_status": {
         "success_path": "success",
         "error_paths": [
@@ -16057,10 +16583,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/referralforminfo.md",
-      "source_markdown_bytes": 129282,
-      "source_markdown_sha256": "d446322f42f574450a32eb6befb56ba9dc905af48c96b2a0b730d1112cbb932c",
-      "source_openapi_bytes": 128764,
-      "source_openapi_sha256": "4a95fd7f5db77a8fa3da7c275b51b38616b5362e169b6ecc6e07d5dc9b9c0232",
+      "source_markdown_bytes": 139033,
+      "source_markdown_sha256": "a9ad4d7305af36e4e0631a51198d670a5104e211f3321667d987aacf6927c0ad",
+      "source_openapi_bytes": 138515,
+      "source_openapi_sha256": "6a4372bb65892f477e775256cea3279d91edd1d529bfd6147b46729e15dc806b",
       "page": "referralforminfo",
       "tag": "Referral Form",
       "method": "POST",
@@ -16110,7 +16636,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -16124,10 +16650,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/referrallist.md",
-      "source_markdown_bytes": 144942,
-      "source_markdown_sha256": "704e04db0c33c113ab57dad84db9d9fd6e03076a912e6b6615451629e8e8174e",
-      "source_openapi_bytes": 144333,
-      "source_openapi_sha256": "20041bc351a9a9d4386d17c5462bb04ca2d027c3080da23070f9c8f7a30890e8",
+      "source_markdown_bytes": 154693,
+      "source_markdown_sha256": "20321295d34b551d991d23814d4c686a8bb2c61b310a66b6722968a7676161d9",
+      "source_openapi_bytes": 154084,
+      "source_openapi_sha256": "c0d9e3014f2635dd18b92b76d6a0a2ff82b90879153c3914b75ce87d953cc8be",
       "page": "referrallist",
       "tag": "Referral",
       "method": "POST",
@@ -16238,7 +16764,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -16436,7 +16962,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -16450,10 +16976,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequenceadd.md",
-      "source_markdown_bytes": 137377,
-      "source_markdown_sha256": "9ea2afec0509b18c8fd734f63bdc8f08039c19f3c98b7e39f5fa7a4ca7a85522",
-      "source_openapi_bytes": 135845,
-      "source_openapi_sha256": "fdcfc929996a11f851b1d6ff3aebce5b475e242497275430002f739bc6c2bb27",
+      "source_markdown_bytes": 137203,
+      "source_markdown_sha256": "003197045ad8d612b97c116afd2be8b40d74897de5522dd06d9811d2e4346344",
+      "source_openapi_bytes": 135756,
+      "source_openapi_sha256": "ce7a8d0a7a955bc3b6f37db35d871504db4a9a4282324067f58742430e253738",
       "page": "sequenceadd",
       "tag": "Sequence",
       "method": "POST",
@@ -16566,10 +17092,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequencecancel.md",
-      "source_markdown_bytes": 121011,
-      "source_markdown_sha256": "ea601b10615963b6650afb9d5430539fddf243a15176d4d0e8714ba1c4239513",
-      "source_openapi_bytes": 120530,
-      "source_openapi_sha256": "81c7ccf7a33f927c6fe8a93da86932c6338f3e5ad25b7657b38119a39ccee266",
+      "source_markdown_bytes": 121159,
+      "source_markdown_sha256": "8dfb127531d68ae0ead066c6cc7ec9952d3fd471a0d7f93d8a2949dfe91801f2",
+      "source_openapi_bytes": 120604,
+      "source_openapi_sha256": "16ba6a05af578ba50fe629d1e5c953c9df4947dc44bc7111462acd8f3b6a0bd0",
       "page": "sequencecancel",
       "tag": "Sequence",
       "method": "POST",
@@ -16650,10 +17176,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequencediscard.md",
-      "source_markdown_bytes": 122029,
-      "source_markdown_sha256": "0c97af5b0769c6dbc650cee71d9313720fe141995318e27b7e2ecf81eb7faa71",
-      "source_openapi_bytes": 120888,
-      "source_openapi_sha256": "63bde1b0e3ed45a7354162e23404e5c2bea1220fa098d9555f20635101b32ddc",
+      "source_markdown_bytes": 121855,
+      "source_markdown_sha256": "375feb640385ec45176922b8055b3fff02a3898e4d738c73110b939cc40292fa",
+      "source_openapi_bytes": 120799,
+      "source_openapi_sha256": "17480c616cbb850d729cfb53ab246e16f94e616c8cbf114ea40384cd9e520421",
       "page": "sequencediscard",
       "tag": "Sequence",
       "method": "POST",
@@ -16724,10 +17250,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequenceinfo.md",
-      "source_markdown_bytes": 131516,
-      "source_markdown_sha256": "a8eed9c56c91ba1fffb6f645af47048ea883e8f141f5c4a90c34e1f936f9a727",
-      "source_openapi_bytes": 130563,
-      "source_openapi_sha256": "04164ef2ba54617399c584f7daa550e11ddd669284dc04cf7ce931dbf8857677",
+      "source_markdown_bytes": 131342,
+      "source_markdown_sha256": "0c42ce89a59427349c2e3458a45051be51b00262efe4541516316e7256022f2f",
+      "source_openapi_bytes": 130474,
+      "source_openapi_sha256": "62ad1345851667526e32a2e3070888f48bc9aafc64891bde7d96f82730012489",
       "page": "sequenceinfo",
       "tag": "Sequence",
       "method": "POST",
@@ -16784,7 +17310,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -16798,10 +17324,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequencelist.md",
-      "source_markdown_bytes": 133029,
-      "source_markdown_sha256": "708ab4cc676ae3332de756baea4fbf049725e3a2d2cbdd2f9b7bac8b0b1e42a3",
-      "source_openapi_bytes": 131942,
-      "source_openapi_sha256": "b3a803b99df38efa76ffcbd7e7fb8c55b29780d8bb02171a944f48b6aab13ab9",
+      "source_markdown_bytes": 132855,
+      "source_markdown_sha256": "a25db58687ee4c17506ca8ebc3ab89a0ca8a71c2103d10747123933563c10d4a",
+      "source_openapi_bytes": 131853,
+      "source_openapi_sha256": "2924d457057a9f9f35ccf5fb0dcab6fb8b02ed9899c014571370b57e6de8db38",
       "page": "sequencelist",
       "tag": "Sequence",
       "method": "POST",
@@ -16903,7 +17429,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -16917,10 +17443,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequencestart.md",
-      "source_markdown_bytes": 134780,
-      "source_markdown_sha256": "5bef4e6e5191a62d03ee5b58b6ad7e5ef08b17531c75048fcda3521bb99aa839",
-      "source_openapi_bytes": 133739,
-      "source_openapi_sha256": "0c160da3f44fe2b0f539864314cc861fbfe93b2ce28cc388c6dd235bae4980d0",
+      "source_markdown_bytes": 134606,
+      "source_markdown_sha256": "579b9a5cd0c336049f694e3b896f4833635b9b40bd694a27f692cdcefc120f7f",
+      "source_openapi_bytes": 133650,
+      "source_openapi_sha256": "d1669944809c292efc0ae11c8c4633632e57d98093d90ab2879f74d029bc734b",
       "page": "sequencestart",
       "tag": "Sequence",
       "method": "POST",
@@ -17051,7 +17577,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -17170,7 +17696,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -17184,10 +17710,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/sequenceupdatestage.md",
-      "source_markdown_bytes": 129431,
-      "source_markdown_sha256": "5176c2040e48f986aa59ab475e6c6f1644a551775167f9df1746b3fff971d7e2",
-      "source_openapi_bytes": 128184,
-      "source_openapi_sha256": "fad3fbe4e2c246258995dd5da8f2fe6d3f33875352fe7d2e43d02efbcaf284a1",
+      "source_markdown_bytes": 129257,
+      "source_markdown_sha256": "18ff7a77dd1913c47c8ee2374910014a410b6e9f66f63f229a08139ab8fe07f4",
+      "source_openapi_bytes": 128095,
+      "source_openapi_sha256": "efc58f328bf11ad452ce5c77e97ff77a01b76996998a3455fa7907b5a42141a8",
       "page": "sequenceupdatestage",
       "tag": "Sequence",
       "method": "POST",
@@ -17506,10 +18032,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/surveyformdefinitioninfo.md",
-      "source_markdown_bytes": 128715,
-      "source_markdown_sha256": "650de090afd2c1c50efab3e477bb1291563b3baf895447724aad45def3b9008e",
-      "source_openapi_bytes": 128205,
-      "source_openapi_sha256": "9a1ea281ba5f8dc1a54c826480117cc77ddd4c1dbb22d28de43c390757bf819e",
+      "source_markdown_bytes": 138466,
+      "source_markdown_sha256": "8d6d0d79dd422314af6ce9b3d9a4e012d61d342e3113bf6776eb433f59c46f16",
+      "source_openapi_bytes": 137956,
+      "source_openapi_sha256": "7c6d4b370dda8a4d11b2e5cc51b3578f8af5cd0d8b29af6ba9fe220404a10600",
       "page": "surveyformdefinitioninfo",
       "tag": "Survey Form Definition",
       "method": "POST",
@@ -17566,7 +18092,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -17580,10 +18106,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/surveyformdefinitionlist.md",
-      "source_markdown_bytes": 130469,
-      "source_markdown_sha256": "6d6c254fad915aaaba1a9b3aabf49b9b3da43ab184a48661ad6cc9f5f3301486",
-      "source_openapi_bytes": 129857,
-      "source_openapi_sha256": "6b9b1380ff65770596234c580890dbe54caf76ea060786c6a3e1981ac7aa94c6",
+      "source_markdown_bytes": 140220,
+      "source_markdown_sha256": "593797d8bbdb58ced91685e30f03ed12235bafe423faeb5bc0b641e5d3427068",
+      "source_openapi_bytes": 139608,
+      "source_openapi_sha256": "6dff389afae10aa10188cab669ba752a6c8b76e38e175ca531dfdb1c8e3e8606",
       "page": "surveyformdefinitionlist",
       "tag": "Survey Form Definition",
       "method": "POST",
@@ -17674,7 +18200,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -17920,7 +18446,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -17934,10 +18460,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/surveysubmissioncreate.md",
-      "source_markdown_bytes": 133093,
-      "source_markdown_sha256": "ec9fe78b88b91f5ec7628c11e422bd50abe2530c765a698f00f20e7c9e784312",
-      "source_openapi_bytes": 132597,
-      "source_openapi_sha256": "e8c2fdf22081909b3e775faf075f296ca1c68a224dbd769fde584fb48eb6509a",
+      "source_markdown_bytes": 142844,
+      "source_markdown_sha256": "853c5fd0bf992e2f77d6232f1f99ca58f3b76d15b05b387cfbba0afddaf795ab",
+      "source_openapi_bytes": 142348,
+      "source_openapi_sha256": "058d78fab35d801368e76a22fc3527897cf1cab3c77f1e38257d1a1a4a0a9949",
       "page": "surveysubmissioncreate",
       "tag": "Survey Submission",
       "method": "POST",
@@ -18041,10 +18567,10 @@
     },
     {
       "source_url": "https://developers.ashbyhq.com/reference/surveysubmissionlist.md",
-      "source_markdown_bytes": 134553,
-      "source_markdown_sha256": "3fb53c0bab4642f1fdab94bb1ec56ec6d7efdaf6025a2b966d21382aa2865069",
-      "source_openapi_bytes": 133941,
-      "source_openapi_sha256": "41d8fceeac374e98feb0484f32883c3e4211e98e0587c1d2b355f239d484e1c8",
+      "source_markdown_bytes": 144304,
+      "source_markdown_sha256": "fee885417c622bc9fa122be00279912487535c4511b692b4f94e5ff9517e8be4",
+      "source_openapi_bytes": 143692,
+      "source_openapi_sha256": "a25f08d2d6d12c5b935bca160484fdda6445b5c8dc0d51d64108fd62f14ba531",
       "page": "surveysubmissionlist",
       "tag": "Survey Submission",
       "method": "POST",
@@ -18157,7 +18683,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18241,7 +18767,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18379,7 +18905,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18631,7 +19157,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18705,7 +19231,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18824,7 +19350,7 @@
       },
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18898,7 +19424,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -18972,7 +19498,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -19491,7 +20017,7 @@
       "pagination": null,
       "unwalkable_pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "business_status": {
         "success_path": "success",
@@ -19684,7 +20210,7 @@
         },
         "authorId": {
           "type": "string",
-          "format": "uuid"
+          "format": null
         },
         "confidential": {
           "type": "boolean",

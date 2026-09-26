@@ -641,6 +641,27 @@ export const wireFileSourceSync = (input: WireFileSourceSyncInput): void => {
       }
     }
     for (const [taskId, d] of desiredByTaskId) {
+      // 🔑 SKIP-IF-EXISTS IS CORRECT HERE — AND IT IS NOT IN THE WORK-ENTITY
+      // SIBLING. The three source-sync reconcilers read identically, so the
+      // shape is not the discriminator; WHERE THE DECLARATION COMES FROM is.
+      //
+      // `work-entity-source-sync` derives its declaration from the CATALOG
+      // MANIFEST, which a pack reinstall rewrites under a stable `source_id`.
+      // Skipping an already-registered task there left the previous
+      // declaration captured in a live closure, so that site compares a
+      // contract hash and re-registers on change (D-192 follow-on #2,
+      // `d-192-sync-reconcile-stale-closure.test.ts`).
+      //
+      // A file Source's declaration is `FILE_VENDOR_DECLARATIONS` — compiled in, keyed by
+      // vendor, and the vendor is part of the `source_id`. It cannot change
+      // under a stable id: a different vendor is a different Source, which the
+      // deregister pass above and the register below already handle. A hash
+      // here would compare a constant against itself.
+      //
+      // ⚠ Reviewed 2026-09-22 and left deliberately. This loop LOOKS like the
+      // pre-fix work-entity code, which is exactly why it keeps attracting a
+      // "missing hash" fix; adding one buys nothing and costs a hash per
+      // reconcile.
       if (getHousekeepingTask(taskId) === undefined) {
         // Seed the health row at registration (seed-if-absent preserves health
         // across boot re-scans; a fresh Source starts never-synced), so the

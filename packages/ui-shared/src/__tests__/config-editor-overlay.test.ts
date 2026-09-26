@@ -149,3 +149,48 @@ describe('config editor overlay', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('a list setting with choices (D-314)', () => {
+  const WEEKDAYS = { label: 'Weekdays', type: 'array', options: ['@weekdays'], default: [1, 2, 3, 4, 5] };
+  /** The weekday grid as the change listener reads it, with `ticked` checked. */
+  const weekdayGrid = (ticked: string[]) => ({
+    dataset: { varKey: 'weekdays', varType: 'multi', varList: 'numbers' },
+    matches: (selector: string) => selector === '.var-multi-grid',
+    closest: () => null,
+    querySelectorAll: () => ['1', '2', '3', '4', '5', '6', '7'].map((option) => ({
+      dataset: { varKey: 'weekdays', varType: 'multi', option },
+      checked: ticked.includes(option),
+    })),
+  });
+
+  it('⛔ Save does not save a required list with every box unticked', async () => {
+    // Saved as an empty list, the recipe gets no days; dropped, the default
+    // comes back ticked. Neither is what the owner did.
+    const document = makeDocument();
+    const onConfirm = vi.fn();
+    const handle = wireConfigEditorOverlay({
+      document: document as unknown as Document,
+      title: 'Config',
+      confirmLabel: 'Save',
+      variables: { weekdays: WEEKDAYS } as never,
+      currentOverlay: {},
+      onConfirm,
+    });
+    const overlay = handle.element as unknown as FakeElement;
+    const fire = (type: string, event: unknown) => {
+      for (const listener of overlay.listeners.get(type) ?? []) listener(event as Event);
+    };
+    const save = () => fire('click', {
+      target: { closest: () => ({ getAttribute: () => 'confirm' }) },
+    });
+
+    fire('change', { target: weekdayGrid([]) });
+    save();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(overlay.removed).toBe(false);
+
+    fire('change', { target: weekdayGrid(['6', '7']) });
+    save();
+    expect(onConfirm).toHaveBeenCalledWith({ weekdays: [6, 7] });
+  });
+});

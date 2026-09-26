@@ -353,6 +353,7 @@ const extractRefs = (step: RecipeStep | PrefetchStep): string[] => {
       key === 'timeout_ms' ||
       key === 'on_timeout' ||
       key === 'prompt' ||
+      key === 'pages' ||
       PROTOTYPE_SENSITIVE_KEYS.has(key)
     ) {
       continue;

@@ -297,6 +297,12 @@ export interface MountFormResponseRecipeSeedRouteOptions {
   /** Finds saved canonical accepted-response recipes before a new draft is
    *  minted, so repeat visits do not hide existing automations. */
   listCaller: RecipeListCaller;
+  /** `recipe.get`. A workflow template is PROVEN and CLONED from its body, and
+   *  a list row has none (see `findFormResponseWorkflowTemplates`). Without it,
+   *  only an older server's body-carrying list can offer templates. */
+  getCaller?: (args: { recipe_id: string }) => Promise<{
+    recipe: ServerRecipeFullEntry | null;
+  }>;
   validateCaller: (args: { recipe: RecipeDefinition }) => Promise<RecipeValidateResult>;
   simulateCaller?: RecipeSimulationCaller;
   saveCaller: (args: {
@@ -567,7 +573,7 @@ export const mountFormResponseRecipeSeedRoute = (
     host.appendChild(back);
   };
 
-  const mountFreshDraft = (template?: ServerRecipeListEntry): void => {
+  const mountFreshDraft = (template?: ServerRecipeFullEntry): void => {
     if (disposed || editor !== undefined) return;
     try {
       const draftKey = options.draftKey ?? createFormResponseAutomationDraftKey();
@@ -728,13 +734,17 @@ export const mountFormResponseRecipeSeedRoute = (
   void Promise.resolve()
     .then(options.listCaller)
     .then(
-      (result) => {
+      async (result) => {
         if (disposed) return;
         const matches = findFormResponseAutomations(
           result.recipes,
           options.formDefinitionId,
         );
-        const templates = findFormResponseWorkflowTemplates(result.recipes);
+        const templates = await findFormResponseWorkflowTemplates(
+          result.recipes,
+          options.getCaller,
+        );
+        if (disposed) return;
         if (matches.length === 0 && templates.length === 0) {
           mountFreshDraft();
           return;

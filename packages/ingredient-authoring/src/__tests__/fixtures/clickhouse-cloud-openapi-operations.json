@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.clickhouse.cloud/v1",
-      "bytes": 1313898,
-      "sha256": "2fb5d39a45f289e759fff2323d9f43d14d00d62862c9c0a002bb6ced0880cf27",
+      "bytes": 1352418,
+      "sha256": "ba5dc70feac29be4ac610f97243a57369f785e94a97814bb1332fd1e687457ea",
       "openapi": "3.1.1",
       "title": "OpenAPI spec for ClickHouse Cloud",
       "api_version": "1.0",
-      "official_path_count": 90,
-      "retrieved_on": "2026-07-15",
+      "official_path_count": 91,
+      "retrieved_on": "2026-09-24",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -28,20 +28,20 @@
         "x-permission-scopes": "The scope list of a `security` requirement holds ClickHouse Cloud API key permission ids (for example `control-plane:organization:view`), not OAuth scopes. OpenAPI has no field for API key permissions, so this is the closest available place. A key must hold every permission listed on an operation to call it; an operation with no scopes needs none beyond a valid key. Every operation declares at most one requirement object, always for this scheme, so the list is only ever conjunctive — alternative sets of permissions are never expressed."
       }
     },
-    "official_operation_count": 154,
-    "admitted_operation_count": 150,
+    "official_operation_count": 156,
+    "admitted_operation_count": 152,
     "deprecated_operation_count": 4,
     "official_method_counts": {
       "DELETE": 24,
-      "GET": 72,
-      "PATCH": 22,
+      "GET": 73,
+      "PATCH": 23,
       "POST": 26,
       "PUT": 10
     },
     "admitted_method_counts": {
       "DELETE": 24,
-      "GET": 69,
-      "PATCH": 21,
+      "GET": 70,
+      "PATCH": 22,
       "POST": 26,
       "PUT": 10
     },
@@ -57,7 +57,7 @@
       "Query API endpoints": 5,
       "Role Management": 5,
       "Service": 26,
-      "Snapshot": 2,
+      "Snapshot": 4,
       "UDF": 12,
       "User management": 8
     },
@@ -73,58 +73,58 @@
       "Query API endpoints": 5,
       "Role Management": 5,
       "Service": 25,
-      "Snapshot": 2,
+      "Snapshot": 4,
       "UDF": 12,
       "User management": 8
     },
     "pack_operation_counts": {
       "clickhouse-cloud-organizations-access": 29,
       "clickhouse-cloud-services-lifecycle": 30,
-      "clickhouse-cloud-backups-observability": 14,
+      "clickhouse-cloud-backups-observability": 16,
       "clickhouse-cloud-clickpipes": 18,
       "clickhouse-cloud-postgres": 17,
       "clickhouse-cloud-clickstack": 30,
       "clickhouse-cloud-udf": 12
     },
     "composition_bytes": {
-      "clickhouse-cloud-organizations-access": 55775,
-      "clickhouse-cloud-services-lifecycle": 68253,
-      "clickhouse-cloud-backups-observability": 27813,
-      "clickhouse-cloud-clickpipes": 44916,
+      "clickhouse-cloud-organizations-access": 56228,
+      "clickhouse-cloud-services-lifecycle": 67974,
+      "clickhouse-cloud-backups-observability": 32333,
+      "clickhouse-cloud-clickpipes": 44856,
       "clickhouse-cloud-postgres": 41968,
       "clickhouse-cloud-clickstack": 70691,
       "clickhouse-cloud-udf": 28664
     },
     "body_mode_counts": {
-      "none": 94,
-      "raw_json": 56
+      "none": 95,
+      "raw_json": 57
     },
     "body_shape_counts": {
-      "object": 56
+      "object": 57
     },
     "success_status_counts": {
-      "200": 146,
+      "200": 148,
       "201": 4
     },
     "selected_response_media_counts": {
-      "application/json": 146,
+      "application/json": 148,
       "application/x-pem-file": 1,
       "text/plain": 1,
       "text/plain; charset=UTF-8": 2
     },
     "risk_counts": {
-      "admin": 26,
+      "admin": 27,
       "destructive": 54,
-      "read": 70
+      "read": 71
     },
     "approval_counts": {
-      "always": 80,
-      "never": 70
+      "always": 81,
+      "never": 71
     },
     "idempotency_counts": {
-      "idempotent": 58,
+      "idempotent": 59,
       "non_idempotent": 22,
-      "safe": 70
+      "safe": 71
     },
     "pagination": {
       "automatic_operation_count": 1,
@@ -137,17 +137,17 @@
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled clickhouse_cloud connection: organization API key ID as username and key secret as password",
       "official_documentation_model": "The official OpenAPI declares HTTP Basic and identifies the organization API key ID and secret as its credentials.",
-      "basic_auth_operation_count": 150,
+      "basic_auth_operation_count": 152,
       "credential_fields_in_pack": 0
     },
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 0,
-      "effective_request_body_required_count": 56,
-      "exact_content_type_operation_count": 56,
-      "exact_accept_operation_count": 150,
-      "beta_operation_count": 85,
+      "effective_request_body_required_count": 57,
+      "exact_content_type_operation_count": 57,
+      "exact_accept_operation_count": 152,
+      "beta_operation_count": 87,
       "beta_operation_keys": [
         "DELETE /v1/organizations/{organizationId}/postgres/{postgresId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
@@ -195,6 +195,7 @@
         "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
         "GET /v1/organizations/{organizationId}/udfs",
@@ -208,6 +209,7 @@
         "PATCH /v1/organizations/{organizationId}/postgres/{postgresId}/state",
         "PATCH /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
         "PATCH /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings",
+        "PATCH /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
         "POST /v1/organizations/{organizationId}/postgres",
         "POST /v1/organizations/{organizationId}/postgres/{postgresId}/config",
         "POST /v1/organizations/{organizationId}/postgres/{postgresId}/readReplica",
@@ -294,7 +296,7 @@
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow"
       ],
       "result_array_operation_count": 22,
-      "unsafe_integer_response_union_operation_count": 145
+      "unsafe_integer_response_union_operation_count": 147
     },
     "source_decision": {
       "admitted": false,
@@ -823,7 +825,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "851bb14f3283b925778d54330065356e0bde6dbd254dc1b34b948430edd1b113"
+    "operation_ids_sha256": "c5ab9f069b0b84361e3f542d06d7b509d170c310a3d8e0f17729ccebc10c0daa"
   },
   "official_operations": [
     {
@@ -866,7 +868,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -895,7 +899,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -986,7 +992,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -1015,7 +1023,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1048,7 +1058,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -1077,7 +1089,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1110,7 +1124,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -1139,7 +1155,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1168,7 +1186,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1197,7 +1217,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1255,7 +1277,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:create-service"
+          ]
         }
       ],
       "request_media": [
@@ -1288,7 +1312,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1317,7 +1343,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1350,7 +1378,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:delete"
+          ]
         }
       ],
       "request_media": [],
@@ -1379,7 +1409,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-private-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -1408,7 +1440,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -1437,7 +1471,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [
@@ -1470,7 +1506,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -1532,7 +1570,9 @@
       "deprecated": true,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ],
       "request_media": [
@@ -1565,7 +1605,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ],
       "request_media": [
@@ -1598,7 +1640,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1631,7 +1675,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-private-endpoints"
+          ]
         }
       ],
       "request_media": [
@@ -1664,7 +1710,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1693,7 +1741,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1722,7 +1772,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ],
       "request_media": [
@@ -1755,7 +1807,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ],
       "request_media": [],
@@ -1784,7 +1838,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1813,7 +1869,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1846,7 +1904,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -1875,7 +1935,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1904,7 +1966,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -1937,7 +2001,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1966,7 +2032,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -1995,7 +2063,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -2024,7 +2094,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2053,7 +2125,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2082,7 +2156,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2111,7 +2187,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2140,7 +2218,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2169,7 +2249,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ],
       "request_media": [
@@ -2192,6 +2274,72 @@
       "op": "backup.backup_configuration_update"
     },
     {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "operation_id": "snapshotConfigurationGet",
+      "tag": "Snapshot",
+      "summary": "Get service snapshot configuration",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_configuration_get"
+    },
+    {
+      "key": "PATCH /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "method": "PATCH",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "operation_id": "snapshotConfigurationUpdate",
+      "tag": "Snapshot",
+      "summary": "Update service snapshot configuration",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_configuration_update"
+    },
+    {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
@@ -2202,7 +2350,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2231,7 +2381,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ],
       "request_media": [
@@ -2264,7 +2416,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ],
       "request_media": [
@@ -2297,7 +2451,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ],
       "request_media": [],
@@ -2321,12 +2477,14 @@
       "path": "/v1/organizations/{organizationId}/keys",
       "operation_id": "openapiKeyGetList",
       "tag": "API keys",
-      "summary": "Get list of all keys",
+      "summary": "Get list of keys",
       "beta": false,
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ],
       "request_media": [],
@@ -2355,7 +2513,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ],
       "request_media": [],
@@ -2384,7 +2544,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ],
       "request_media": [
@@ -2417,7 +2579,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ],
       "request_media": [],
@@ -2446,7 +2610,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -2475,7 +2641,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -2504,7 +2672,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -2537,7 +2707,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -2566,7 +2738,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -2595,7 +2769,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -2628,7 +2804,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -2657,7 +2835,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -2686,7 +2866,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-activities"
+          ]
         }
       ],
       "request_media": [],
@@ -2715,7 +2897,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-activities"
+          ]
         }
       ],
       "request_media": [],
@@ -2744,7 +2928,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -2773,7 +2959,9 @@
       "deprecated": true,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-billing"
+          ]
         }
       ],
       "request_media": [],
@@ -2802,7 +2990,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-billing"
+          ]
         }
       ],
       "request_media": [],
@@ -2831,7 +3021,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -2860,7 +3052,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -2893,7 +3087,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -2922,7 +3118,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -2951,7 +3149,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -2984,7 +3184,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -3013,7 +3215,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -3042,7 +3246,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -3075,7 +3281,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -3108,7 +3316,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -3141,7 +3351,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -3174,7 +3386,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -3203,7 +3417,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -3236,7 +3452,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3265,7 +3483,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3298,7 +3518,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3327,7 +3549,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3360,7 +3584,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3389,7 +3615,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3422,7 +3650,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3451,7 +3681,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3484,7 +3716,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3513,7 +3747,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3546,7 +3782,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3575,7 +3813,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3608,7 +3848,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3637,7 +3879,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3666,7 +3910,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3699,7 +3945,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3728,7 +3976,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3757,7 +4007,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3790,7 +4042,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3823,7 +4077,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3852,7 +4108,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3881,7 +4139,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3914,7 +4174,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -3943,7 +4205,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -3976,7 +4240,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -4005,7 +4271,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -4034,7 +4302,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -4067,7 +4337,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -4096,7 +4368,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [
@@ -4129,7 +4403,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ],
       "request_media": [],
@@ -4158,7 +4434,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4187,7 +4465,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:create-service"
+          ]
         }
       ],
       "request_media": [
@@ -4220,7 +4500,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4249,7 +4531,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4278,7 +4562,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4311,7 +4597,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -4340,7 +4628,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4369,7 +4659,10 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage",
+            "control-plane:organization:create-service"
+          ]
         }
       ],
       "request_media": [
@@ -4402,7 +4695,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4435,7 +4730,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4468,7 +4765,10 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage",
+            "control-plane:organization:create-service"
+          ]
         }
       ],
       "request_media": [
@@ -4501,7 +4801,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4530,7 +4832,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4563,7 +4867,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4596,7 +4902,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4625,7 +4933,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4654,7 +4964,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4683,7 +4995,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4712,7 +5026,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4741,7 +5057,9 @@
       "deprecated": true,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -4770,7 +5088,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4803,7 +5123,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -4836,7 +5158,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -4865,7 +5189,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -4894,7 +5220,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -4927,7 +5255,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -4956,7 +5286,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [
@@ -4989,7 +5321,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ],
       "request_media": [],
@@ -5018,7 +5352,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -5047,7 +5383,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [
@@ -5080,7 +5418,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -5109,7 +5449,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [
@@ -5142,7 +5484,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ],
       "request_media": [],
@@ -5171,7 +5515,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -5200,7 +5546,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -5233,7 +5581,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -5262,7 +5612,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -5291,7 +5643,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -5320,7 +5674,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -5353,7 +5709,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -5382,7 +5740,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -5411,7 +5771,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -5440,7 +5802,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ],
       "request_media": [],
@@ -5469,7 +5833,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [
@@ -5502,7 +5868,9 @@
       "deprecated": false,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ],
       "request_media": [],
@@ -5583,7 +5951,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -5648,7 +6018,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -5713,7 +6085,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ]
     },
@@ -5778,7 +6152,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -5843,7 +6219,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -5908,7 +6286,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -5973,7 +6353,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:delete"
+          ]
         }
       ]
     },
@@ -6038,7 +6420,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ]
     },
@@ -6119,7 +6503,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -6200,7 +6586,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -6281,7 +6669,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -6362,7 +6752,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6443,7 +6835,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6524,7 +6918,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6605,7 +7001,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6686,7 +7084,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6767,7 +7167,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -6848,7 +7250,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -6913,7 +7317,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ]
     },
@@ -6978,7 +7384,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -7043,7 +7451,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -7108,7 +7518,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -7189,7 +7601,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -7270,7 +7684,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -7351,7 +7767,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -7432,7 +7850,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-activities"
+          ]
         }
       ]
     },
@@ -7497,7 +7917,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-activities"
+          ]
         }
       ]
     },
@@ -7546,7 +7968,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-billing"
+          ]
         }
       ]
     },
@@ -7595,7 +8019,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -7660,7 +8086,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -7692,6 +8120,38 @@
           "integer_as_decimal_string": false,
           "repeated_query_array": false,
           "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
         }
       ],
       "request_media": [],
@@ -7709,7 +8169,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ]
     },
@@ -7774,7 +8236,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ]
     },
@@ -7823,7 +8287,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -7888,7 +8354,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -7937,7 +8405,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8002,7 +8472,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8074,7 +8546,9 @@
       },
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8139,7 +8613,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8316,7 +8792,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8429,7 +8907,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8494,7 +8974,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8733,7 +9215,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8894,7 +9378,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:view"
+          ]
         }
       ]
     },
@@ -8943,7 +9429,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -9057,7 +9545,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -9122,7 +9612,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -9171,7 +9663,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -9236,7 +9730,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -9272,7 +9768,7 @@
         {
           "in": "query",
           "wire_name": "region_id",
-          "required": true,
+          "required": false,
           "official_types": [
             "string"
           ],
@@ -9317,7 +9813,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -9447,7 +9945,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -9512,7 +10012,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -9577,7 +10079,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -9642,7 +10146,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -9723,7 +10229,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -9788,7 +10296,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -9869,7 +10379,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -9934,7 +10446,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -9999,7 +10513,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10080,7 +10596,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10161,7 +10679,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10226,7 +10746,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10291,7 +10813,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10356,7 +10880,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10437,7 +10963,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -10534,7 +11062,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -10615,7 +11145,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -10680,7 +11212,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -10761,7 +11295,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -10826,7 +11362,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -10907,7 +11445,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11004,7 +11544,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11085,7 +11627,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11150,7 +11694,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11231,7 +11777,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11328,7 +11876,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -11393,7 +11943,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-private-endpoints"
+          ]
         }
       ]
     },
@@ -11474,7 +12026,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -11571,7 +12125,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -11652,7 +12208,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -11717,7 +12275,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -11782,7 +12342,76 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-query-api-endpoints"
+          ]
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "operation_id": "snapshotConfigurationGet",
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_configuration_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "tag": "Snapshot",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -11847,7 +12476,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -11928,7 +12559,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view-backups"
+          ]
         }
       ]
     },
@@ -11993,7 +12626,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:view"
+          ]
         }
       ]
     },
@@ -12074,7 +12709,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12139,7 +12776,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12236,7 +12875,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12317,7 +12958,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12414,7 +13057,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12511,7 +13156,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
         }
       ]
     },
@@ -12564,7 +13211,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -12633,7 +13282,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -12702,7 +13353,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
         }
       ]
     },
@@ -12771,7 +13424,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -12840,7 +13495,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -12909,7 +13566,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -12978,7 +13637,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -13047,7 +13708,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -13116,7 +13779,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -13185,7 +13850,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -13254,7 +13921,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ]
     },
@@ -13323,7 +13992,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ]
     },
@@ -13392,7 +14063,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -13477,7 +14150,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -13562,7 +14237,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -13647,7 +14324,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -13716,7 +14395,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -13801,7 +14482,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -13870,7 +14553,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -13939,7 +14624,80 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
+        }
+      ]
+    },
+    "PATCH /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration": {
+      "key": "PATCH /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "operation_id": "snapshotConfigurationUpdate",
+      "pack": "clickhouse-cloud-backups-observability",
+      "op": "snapshot.snapshot_configuration_update",
+      "method": "PATCH",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
+      "tag": "Snapshot",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ]
     },
@@ -14061,7 +14819,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -14114,7 +14874,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -14167,7 +14929,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:create-service"
+          ]
         }
       ]
     },
@@ -14236,7 +15000,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage"
+          ]
         }
       ]
     },
@@ -14305,7 +15071,10 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage",
+            "control-plane:organization:create-service"
+          ]
         }
       ]
     },
@@ -14374,7 +15143,10 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:postgres-service:manage",
+            "control-plane:organization:create-service"
+          ]
         }
       ]
     },
@@ -14427,7 +15199,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -14480,7 +15254,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:create-service"
+          ]
         }
       ]
     },
@@ -14549,7 +15325,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-backups"
+          ]
         }
       ]
     },
@@ -14618,7 +15396,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -14687,7 +15467,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -14756,7 +15538,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -14825,7 +15609,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -14894,7 +15680,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -14963,7 +15751,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15032,7 +15822,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15101,7 +15893,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15170,7 +15964,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15239,7 +16035,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15308,7 +16106,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-private-endpoints"
+          ]
         }
       ]
     },
@@ -15377,7 +16177,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -15446,7 +16248,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-scaling-config"
+          ]
         }
       ]
     },
@@ -15515,7 +16319,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -15568,7 +16374,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -15637,7 +16445,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -15686,7 +16496,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     },
@@ -15771,7 +16583,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickpipes"
+          ]
         }
       ]
     },
@@ -15856,7 +16670,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -15941,7 +16757,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -16026,7 +16844,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -16111,7 +16931,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -16196,7 +17018,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -16281,7 +17105,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-clickstack-api"
+          ]
         }
       ]
     },
@@ -16366,7 +17192,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage-query-api-endpoints"
+          ]
         }
       ]
     },
@@ -16435,7 +17263,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:service:manage"
+          ]
         }
       ]
     },
@@ -16520,7 +17350,9 @@
       "response_capture": null,
       "security": [
         {
-          "basicAuth": []
+          "basicAuth": [
+            "control-plane:organization:manage"
+          ]
         }
       ]
     }

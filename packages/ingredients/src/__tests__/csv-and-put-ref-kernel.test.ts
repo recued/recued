@@ -137,3 +137,48 @@ describe('kernel adapter — csv ops take either address', () => {
     await expect(adapter(mkCall(slug, {}))).rejects.toBeInstanceOf(IngredientError);
   });
 });
+
+/** `csv-rows` — csv-filter's READING twin. Same addresses, same match inputs, a
+ *  `limit`, and none of csv-filter's run scope: nothing is ingested, so there is
+ *  no provenance to key. The handler owns `limit`'s default and ceiling; the gate
+ *  only refuses a `limit` that is not a number. */
+describe('kernel adapter — csv-rows', () => {
+  const ROWS_RESULT = {
+    rows: [], matched: 0, scanned: 0, truncated: false, column_found: true, columns: [],
+  };
+
+  it('routes either address, the match inputs and limit — and no run scope', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const adapter = createKernelAdapter({
+      csvRows: async (input) => { captured = input as never; return ROWS_RESULT; },
+    });
+    await adapter(mkCall('csv-rows', {
+      slug: 'vault', path: 'a.csv', column: 'Email', match: 'globex',
+      mode: 'equal', ignore_case: true, delimiter: ';', limit: 5,
+    }));
+    expect(captured).toEqual({
+      slug: 'vault', path: 'a.csv', column: 'Email', match: 'globex',
+      mode: 'equal', ignore_case: true, delimiter: ';', limit: 5,
+    });
+
+    await adapter(mkCall('csv-rows', { record_id: CAS_REF, column: 'a', match: 'b' }));
+    expect(captured).toEqual({ record_id: CAS_REF, column: 'a', match: 'b' });
+  });
+
+  it('refuses a missing address, a missing column, and a limit that is not a number', async () => {
+    const adapter = createKernelAdapter({ csvRows: async () => ROWS_RESULT });
+    for (const input of [
+      { column: 'a', match: 'b' },
+      { record_id: CAS_REF, match: 'b' },
+      { record_id: CAS_REF, column: 'a', match: 'b', limit: '5' },
+    ]) {
+      await expect(adapter(mkCall('csv-rows', input))).rejects.toBeInstanceOf(IngredientError);
+    }
+  });
+
+  it('says it is unavailable when no server wired it', async () => {
+    const adapter = createKernelAdapter({});
+    await expect(adapter(mkCall('csv-rows', { record_id: CAS_REF, column: 'a', match: 'b' })))
+      .rejects.toMatchObject({ code: 'SERVER_NOT_REACHABLE' });
+  });
+});

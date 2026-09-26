@@ -3,46 +3,48 @@
     "source": {
       "kind": "openapi",
       "url": "https://api-docs.render.com/openapi/render-public-api-1.json",
-      "sha256": "c6851bc830fa0f01fa58face22c8cf46d4762054c6fe879d724fae5ade72a520",
-      "bytes": 345074,
+      "sha256": "65abf7bf47f5bc76c752392be1b0f81a7ef3e07dea6fc7f2d9b4048c6efb4944",
+      "bytes": 373869,
       "openapi": "3.0.2",
       "info_version": "1.0.0",
       "server": "https://api.render.com/v1",
       "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
     },
-    "official_path_count": 131,
-    "official_operation_count": 208,
-    "admitted_operation_count": 178,
-    "excluded_operation_count": 30,
-    "unique_admitted_operation_id_count": 178,
-    "unique_admitted_method_path_count": 178,
+    "official_path_count": 139,
+    "official_operation_count": 227,
+    "admitted_operation_count": 188,
+    "excluded_operation_count": 39,
+    "unique_admitted_operation_id_count": 188,
+    "unique_admitted_method_path_count": 188,
     "official_method_counts": {
-      "GET": 102,
-      "POST": 46,
-      "PATCH": 18,
-      "DELETE": 30,
-      "PUT": 12
+      "GET": 109,
+      "POST": 49,
+      "PATCH": 19,
+      "DELETE": 34,
+      "PUT": 16
     },
     "admitted_method_counts": {
-      "GET": 87,
-      "PATCH": 15,
-      "DELETE": 30,
-      "POST": 40,
+      "GET": 90,
+      "PATCH": 16,
+      "DELETE": 34,
+      "POST": 42,
       "PUT": 6
     },
     "pack_operation_counts": {
       "render": 26,
-      "render-services-delivery": 42,
+      "render-services-delivery": 52,
       "render-data-observability": 66,
       "render-platform-automation": 44
     },
     "pagination_counts": {
-      "none": 178
+      "none": 188
     },
-    "unpaged_collection_count": 57,
+    "unpaged_collection_count": 59,
     "manual_cursor_operation_ids": [
       "list-blueprint-syncs",
       "list-blueprints",
+      "list-build-sources",
+      "list-builds-in-build-source",
       "list-custom-domains",
       "list-deploys",
       "list-disks",
@@ -72,6 +74,7 @@
     "root_array_cursor_operation_ids": [
       "list-blueprint-syncs",
       "list-blueprints",
+      "list-build-sources",
       "list-custom-domains",
       "list-deploys",
       "list-disks",
@@ -96,13 +99,12 @@
       "listWorkflows"
     ],
     "cursor_response_missing_operation_ids": [
+      "list-builds-in-build-source",
       "list-env-groups",
       "list-registry-credentials",
       "list-resource-log-streams"
     ],
-    "cursor_schema_gap_operation_ids": [
-      "list-events"
-    ],
+    "cursor_schema_gap_operation_ids": [],
     "request_media": [
       "application/json",
       "multipart/form-data"
@@ -434,7 +436,7 @@
         ]
       }
     ],
-    "compatibility_argument_rows_sha256": "191619b637244d33e08a7cb6ba61d970a830145d58c96b8bc5802a724b845bfd",
+    "compatibility_argument_rows_sha256": "be2a4f4252e18ab5e4d88ea73c5e78c795453ea0f407f38e13221b7585e8e7d8",
     "compatibility_missing_baseline_arguments": [],
     "safe_request_field_omissions": [
       {
@@ -500,7 +502,7 @@
       "official_alternatives": [
         "BearerAuth"
       ],
-      "authenticated_operations": 208,
+      "authenticated_operations": 227,
       "no_security_declared_operations": 0
     },
     "source_decision": {
@@ -529,6 +531,19 @@
     },
     "exclusions": [
       {
+        "operation_id": "add-or-update-build-source-secret-file",
+        "method": "PUT",
+        "path": "/build-sources/{buildSourceId}/secret-files/{envVarKey}",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
         "operation_id": "add-or-update-secret-file",
         "method": "PUT",
         "path": "/services/{serviceId}/secret-files/{envVarKey}",
@@ -540,6 +555,19 @@
         ],
         "category": "credential_bearing_response_schema",
         "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
+        "operation_id": "create-build-source",
+        "method": "POST",
+        "path": "/build-sources",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "unrepresentable_nested_body",
+        "reason": "The body requires exactly one of `git` or `image`, and both are nested objects the closed request schema cannot express — `git` carries ten properties including `buildFilter`, which is itself an object (the same field `create-service` omits as opaque). Omitting them instead of excluding the route would ship an operation whose REQUIRED input no caller can supply, which is worse than its absence. The other 18 `/build-sources` operations are admitted; only creation is withheld."
       },
       {
         "operation_id": "create-env-group",
@@ -594,6 +622,17 @@
         "reason": "The request can carry environment-variable values, but safely omitting that field requires a closed schema and the same request has a required opaque buildConfig object that closed operation schemas cannot admit. The route stays excluded until a vault-only secret argument and bounded object schema can be enforced together."
       },
       {
+        "operation_id": "get-env-vars-for-build-source",
+        "method": "GET",
+        "path": "/build-sources/{buildSourceId}/env-vars",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
         "operation_id": "get-env-vars-for-service",
         "method": "GET",
         "path": "/services/{serviceId}/env-vars",
@@ -627,6 +666,17 @@
         "reason": "The response returns a live Postgres export download URL as an ordinary JSON value. That bearer-like database capability stays excluded until the runtime can isolate it as a private file_ref instead of allowing it to flow into recipes, model context, or audit metadata."
       },
       {
+        "operation_id": "list-secret-files-for-build-source",
+        "method": "GET",
+        "path": "/build-sources/{buildSourceId}/secret-files",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
         "operation_id": "list-secret-files-for-service",
         "method": "GET",
         "path": "/services/{serviceId}/secret-files",
@@ -641,6 +691,28 @@
         "operation_id": "list-webhooks",
         "method": "GET",
         "path": "/webhooks",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
+        "operation_id": "retrieve-build-source-env-var",
+        "method": "GET",
+        "path": "/build-sources/{buildSourceId}/env-vars/{envVarKey}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
+        "operation_id": "retrieve-build-source-secret-file",
+        "method": "GET",
+        "path": "/build-sources/{buildSourceId}/secret-files/{envVarKey}",
         "documented_request_media": [],
         "documented_response_media": [
           "application/json"
@@ -771,6 +843,19 @@
         "reason": "The route succeeds only by upgrading to a WebSocket (HTTP 101) and streams logs indefinitely. A bounded request/response REST adapter cannot execute that protocol."
       },
       {
+        "operation_id": "update-build-source-env-var",
+        "method": "PUT",
+        "path": "/build-sources/{buildSourceId}/env-vars/{envVarKey}",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
         "operation_id": "update-env-group",
         "method": "PATCH",
         "path": "/env-groups/{envGroupId}",
@@ -823,6 +908,19 @@
         "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
       },
       {
+        "operation_id": "update-env-vars-for-build-source",
+        "method": "PUT",
+        "path": "/build-sources/{buildSourceId}/env-vars",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
+      },
+      {
         "operation_id": "update-env-vars-for-service",
         "method": "PUT",
         "path": "/services/{serviceId}/env-vars",
@@ -847,6 +945,19 @@
         ],
         "category": "credential_bearing_request",
         "reason": "The official request requires a downstream registry auth token. Credentials remain connection-owned and cannot be accepted as ordinary operation or recipe arguments without a vault-only secret argument contract."
+      },
+      {
+        "operation_id": "update-secret-files-for-build-source",
+        "method": "PUT",
+        "path": "/build-sources/{buildSourceId}/secret-files",
+        "documented_request_media": [
+          "application/json"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "credential_bearing_response_schema",
+        "reason": "The official response schema can return reusable credentials, secret values, secret-file contents, or webhook signing secrets. Ordinary operation values can flow into recipes, model context, and audit metadata, so this route stays excluded until there is a secret result type or a proven response-redaction boundary."
       },
       {
         "operation_id": "update-secret-files-for-service",
@@ -1687,6 +1798,79 @@
     "/maintenance/{maintenanceRunID}/trigger": {
       "post": {
         "operationId": "trigger-maintenance"
+      }
+    },
+    "/build-sources": {
+      "post": {
+        "operationId": "create-build-source"
+      },
+      "get": {
+        "operationId": "list-build-sources"
+      }
+    },
+    "/build-sources/{buildSourceId}": {
+      "get": {
+        "operationId": "get-build-source"
+      },
+      "patch": {
+        "operationId": "update-build-source"
+      },
+      "delete": {
+        "operationId": "delete-build-source"
+      }
+    },
+    "/build-sources/{buildSourceId}/builds": {
+      "get": {
+        "operationId": "list-builds-in-build-source"
+      },
+      "post": {
+        "operationId": "trigger-build-source-build"
+      }
+    },
+    "/build-sources/{buildSourceId}/env-vars": {
+      "get": {
+        "operationId": "get-env-vars-for-build-source"
+      },
+      "put": {
+        "operationId": "update-env-vars-for-build-source"
+      }
+    },
+    "/build-sources/{buildSourceId}/env-vars/{envVarKey}": {
+      "get": {
+        "operationId": "retrieve-build-source-env-var"
+      },
+      "put": {
+        "operationId": "update-build-source-env-var"
+      },
+      "delete": {
+        "operationId": "delete-build-source-env-var"
+      }
+    },
+    "/build-sources/{buildSourceId}/secret-files": {
+      "get": {
+        "operationId": "list-secret-files-for-build-source"
+      },
+      "put": {
+        "operationId": "update-secret-files-for-build-source"
+      }
+    },
+    "/build-sources/{buildSourceId}/secret-files/{envVarKey}": {
+      "get": {
+        "operationId": "retrieve-build-source-secret-file"
+      },
+      "put": {
+        "operationId": "add-or-update-build-source-secret-file"
+      },
+      "delete": {
+        "operationId": "delete-build-source-secret-file"
+      }
+    },
+    "/build-sources/{buildSourceId}/env-groups/{envGroupId}": {
+      "post": {
+        "operationId": "link-env-group-to-build-source"
+      },
+      "delete": {
+        "operationId": "unlink-env-group-from-build-source"
       }
     },
     "/webhooks": {
@@ -2595,7 +2779,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_bandwidth": {
@@ -2665,7 +2849,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_bandwidth_sources": {
@@ -2739,7 +2923,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu": {
@@ -2839,7 +3023,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu_limit": {
@@ -2929,7 +3113,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_cpu_target": {
@@ -3019,7 +3203,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_disk_capacity": {
@@ -3099,7 +3283,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_disk_usage": {
@@ -3179,7 +3363,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_http_latency": {
@@ -3289,7 +3473,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_http_requests": {
@@ -3399,7 +3583,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_instance_count": {
@@ -3479,7 +3663,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory": {
@@ -3569,7 +3753,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory_limit": {
@@ -3659,7 +3843,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_memory_target": {
@@ -3749,7 +3933,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_owner_log_stream": {
@@ -3799,7 +3983,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_owner_metrics_stream": {
@@ -3849,7 +4033,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_replication_lag": {
@@ -3919,7 +4103,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_resource_log_stream": {
@@ -3969,7 +4153,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_task_runs_completed": {
@@ -4059,7 +4243,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.get_task_runs_queued": {
@@ -4129,7 +4313,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_application_filter_values": {
@@ -4209,7 +4393,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_http_filter_values": {
@@ -4309,7 +4493,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_maintenance": {
@@ -4477,7 +4661,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_processes": {
@@ -4521,7 +4705,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_sizes": {
@@ -4565,7 +4749,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_table_scans": {
@@ -4609,7 +4793,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_top_queries": {
@@ -4653,7 +4837,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_postgres_users": {
@@ -4693,7 +4877,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_redis": {
@@ -4951,7 +5135,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.list_resource_log_streams": {
@@ -5041,7 +5225,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.recover_postgres": {
@@ -5432,7 +5616,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.retrieve_redis": {
@@ -5566,7 +5750,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-data-observability.suspend_key_value": {
@@ -6573,7 +6757,8 @@
         "schema_type": "object",
         "writable_properties": [
           "task",
-          "input"
+          "input",
+          "idempotencyKey"
         ],
         "omitted_credential_properties": [],
         "omitted_opaque_properties": [],
@@ -7046,7 +7231,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.get_task_run": {
@@ -7126,7 +7311,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.get_user": {
@@ -7165,7 +7350,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.get_workflow": {
@@ -7239,7 +7424,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.get_workflow_version": {
@@ -7295,7 +7480,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_blueprint_syncs": {
@@ -7355,7 +7540,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_blueprints": {
@@ -7415,7 +7600,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_env_groups": {
@@ -7603,7 +7788,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_organization_audit_logs": {
@@ -7693,7 +7878,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_task_runs": {
@@ -7793,7 +7978,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_tasks": {
@@ -7883,7 +8068,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_webhook_events": {
@@ -7963,7 +8148,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_workflow_versions": {
@@ -8043,7 +8228,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.list_workflows": {
@@ -8133,7 +8318,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.patch_owner_notification_settings": {
@@ -8428,7 +8613,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner": {
@@ -8487,7 +8672,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner_members": {
@@ -8527,7 +8712,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_owner_notification_settings": {
@@ -8583,7 +8768,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.retrieve_service_notification_overrides": {
@@ -8633,7 +8818,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-platform-automation.unlink_service_from_env_group": {
@@ -9686,6 +9871,140 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "render-services-delivery.delete_build_source": {
+      "pack": "render-services-delivery",
+      "op": "delete_build_source",
+      "operation_id": "delete-build-source",
+      "method": "DELETE",
+      "path": "/build-sources/{buildSourceId}",
+      "wire_path": "/build-sources/{{build_source_id}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "render-services-delivery.delete_build_source_env_var": {
+      "pack": "render-services-delivery",
+      "op": "delete_build_source_env_var",
+      "operation_id": "delete-build-source-env-var",
+      "method": "DELETE",
+      "path": "/build-sources/{buildSourceId}/env-vars/{envVarKey}",
+      "wire_path": "/build-sources/{{build_source_id}}/env-vars/{{env_var_key}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "envVarKey",
+          "wire_name": "envVarKey",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "env_var_key",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "render-services-delivery.delete_build_source_secret_file": {
+      "pack": "render-services-delivery",
+      "op": "delete_build_source_secret_file",
+      "operation_id": "delete-build-source-secret-file",
+      "method": "DELETE",
+      "path": "/build-sources/{buildSourceId}/secret-files/{envVarKey}",
+      "wire_path": "/build-sources/{{build_source_id}}/secret-files/{{env_var_key}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "envVarKey",
+          "wire_name": "envVarKey",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "env_var_key",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "render-services-delivery.delete_custom_domain": {
       "pack": "render-services-delivery",
       "op": "delete_custom_domain",
@@ -10040,6 +10359,334 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "render-services-delivery.get_build_source": {
+      "pack": "render-services-delivery",
+      "op": "get_build_source",
+      "operation_id": "get-build-source",
+      "method": "GET",
+      "path": "/build-sources/{buildSourceId}",
+      "wire_path": "/build-sources/{{build_source_id}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "git": {
+            "type": "object"
+          },
+          "image": {
+            "type": "object"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "serviceLinks": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "render-services-delivery.link_env_group_to_build_source": {
+      "pack": "render-services-delivery",
+      "op": "link_env_group_to_build_source",
+      "operation_id": "link-env-group-to-build-source",
+      "method": "POST",
+      "path": "/build-sources/{buildSourceId}/env-groups/{envGroupId}",
+      "wire_path": "/build-sources/{{build_source_id}}/env-groups/{{env_group_id}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "envGroupId",
+          "wire_name": "envGroupId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "env_group_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "serviceLinks": {
+            "type": "array"
+          },
+          "environmentId": {
+            "type": "string"
+          },
+          "envVars": {
+            "type": "array"
+          },
+          "secretFiles": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "render-services-delivery.list_build_sources": {
+      "pack": "render-services-delivery",
+      "op": "list_build_sources",
+      "operation_id": "list-build-sources",
+      "method": "GET",
+      "path": "/build-sources",
+      "wire_path": "/build-sources",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "name",
+          "wire_name": "name",
+          "in": "query",
+          "official_type": "array",
+          "admitted_type": "array",
+          "admitted_name": "query.name",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "ownerId",
+          "wire_name": "ownerId",
+          "in": "query",
+          "official_type": "array",
+          "admitted_type": "array",
+          "admitted_name": "query.ownerId",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "includePreviews",
+          "wire_name": "includePreviews",
+          "in": "query",
+          "official_type": "boolean",
+          "admitted_type": "boolean",
+          "admitted_name": "query.includePreviews",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "createdBefore",
+          "wire_name": "createdBefore",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.createdBefore",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "createdAfter",
+          "wire_name": "createdAfter",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.createdAfter",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updatedBefore",
+          "wire_name": "updatedBefore",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updatedBefore",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updatedAfter",
+          "wire_name": "updatedAfter",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updatedAfter",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.cursor",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.limit",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "array",
+        "properties": {}
+      },
+      "result_path": "",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "render-services-delivery.list_builds_in_build_source": {
+      "pack": "render-services-delivery",
+      "op": "list_builds_in_build_source",
+      "operation_id": "list-builds-in-build-source",
+      "method": "GET",
+      "path": "/build-sources/{buildSourceId}/builds",
+      "wire_path": "/build-sources/{{build_source_id}}/builds",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.cursor",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.limit",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "array",
+        "properties": {}
+      },
+      "result_path": "",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "render-services-delivery.list_dedicated_ips": {
       "pack": "render-services-delivery",
       "op": "list_dedicated_ips",
@@ -10087,7 +10734,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.list_disks": {
@@ -10305,7 +10952,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.list_instances": {
@@ -10433,7 +11080,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.list_snapshots": {
@@ -10953,7 +11600,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.retrieve_disk": {
@@ -11069,7 +11716,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render-services-delivery.retrieve_service_outbound_ips": {
@@ -11265,6 +11912,195 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "non_idempotent"
+    },
+    "render-services-delivery.trigger_build_source_build": {
+      "pack": "render-services-delivery",
+      "op": "trigger_build_source_build",
+      "operation_id": "trigger-build-source-build",
+      "method": "POST",
+      "path": "/build-sources/{buildSourceId}/builds",
+      "wire_path": "/build-sources/{{build_source_id}}/builds",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "buildSourceId": {
+            "type": "string"
+          },
+          "buildRun": {
+            "type": "object"
+          },
+          "image": {
+            "type": "object"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "assetsDeletedAt": {
+            "type": "string"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "render-services-delivery.unlink_env_group_from_build_source": {
+      "pack": "render-services-delivery",
+      "op": "unlink_env_group_from_build_source",
+      "operation_id": "unlink-env-group-from-build-source",
+      "method": "DELETE",
+      "path": "/build-sources/{buildSourceId}/env-groups/{envGroupId}",
+      "wire_path": "/build-sources/{{build_source_id}}/env-groups/{{env_group_id}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "envGroupId",
+          "wire_name": "envGroupId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "env_group_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "render-services-delivery.update_build_source": {
+      "pack": "render-services-delivery",
+      "op": "update_build_source",
+      "operation_id": "update-build-source",
+      "method": "PATCH",
+      "path": "/build-sources/{buildSourceId}",
+      "wire_path": "/build-sources/{{build_source_id}}",
+      "tags": null,
+      "parameters": [
+        {
+          "name": "buildSourceId",
+          "wire_name": "buildSourceId",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "build_source_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "name",
+          "git",
+          "image"
+        ],
+        "omitted_credential_properties": [],
+        "omitted_opaque_properties": [],
+        "omitted_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "git": {
+            "type": "object"
+          },
+          "image": {
+            "type": "object"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "serviceLinks": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
     },
     "render-services-delivery.update_dedicated_ip": {
       "pack": "render-services-delivery",
@@ -11501,6 +12337,8 @@
         "selected_media": "application/json",
         "schema_type": "object",
         "writable_properties": [
+          "buildSourceId",
+          "buildId",
           "autoDeploy",
           "repo",
           "branch",
@@ -11523,6 +12361,9 @@
         "type": "object",
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "buildSourceId": {
             "type": "string"
           },
           "autoDeploy": {
@@ -11877,6 +12718,7 @@
         "selected_media": "application/json",
         "schema_type": "object",
         "writable_properties": [
+          "buildId",
           "clearCache",
           "commitId",
           "imageUrl",
@@ -12484,7 +13326,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.job.search": {
@@ -12614,7 +13456,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.key_value.read": {
@@ -13033,7 +13875,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.log.value.search": {
@@ -13243,7 +14085,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.postgres.read": {
@@ -13803,7 +14645,7 @@
         "unsafe_integers": "string"
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.service.read": {
@@ -13835,6 +14677,9 @@
         "type": "object",
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "buildSourceId": {
             "type": "string"
           },
           "autoDeploy": {
@@ -14198,7 +15043,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "render.workspace.search": {
@@ -14268,7 +15113,7 @@
       "content_type": null,
       "response_json": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     }
   }

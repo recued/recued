@@ -32,12 +32,14 @@ import type {
   RunnabilityStatus,
   Dish,
   DishLastRun,
+  RecipeDefinition,
   ServerExecuteResponse,
+  ServerRecipeFullEntry,
   ServerRecipeListEntry,
   ServerSchedule,
-  ToolEntry,
+  ToolCatalogEntryView,
 } from '@recued/contracts';
-import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
+import { recipeConsumedEnrichments, recipeNotificationChannels } from '@recued/contracts';
 import { DEFAULT_INSTANCE_PREFS, getPref } from '@recued/contracts';
 import type { InstancePrefs } from '@recued/contracts';
 import type {
@@ -194,6 +196,14 @@ import {
   type ResultFileArtifact,
 } from './recipe-result-panel.js';
 import {
+  ensureSheetImportResultStyles,
+  renderSheetImportResult,
+  sheetImportFor,
+  wireSheetImport,
+  type SheetImportHandle,
+  type SheetImportUploader,
+} from './spreadsheet-import/index.js';
+import {
   captureResultFilterActionFocus,
   captureResultTableEditSubmitFocus,
   readResultTableEditCellInput,
@@ -217,6 +227,7 @@ export {
   RECIPES_ROUTE_RESULT_RETURN_ATTR,
   RECIPES_ROUTE_RESULT_PROVENANCE_ATTR,
   RECIPES_ROUTE_RESULT_FACTS_ATTR,
+  RECIPES_ROUTE_RESULT_REASON_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR,
   RECIPES_ROUTE_RESULT_FILTER_ERROR_ATTR,
@@ -371,6 +382,19 @@ export type RecipesListCaller = () => Promise<{
   recipes: ReadonlyArray<ServerRecipeListEntry>;
 }>;
 
+/** `recipe.get` — one recipe's FULL body. The list rows carry none of the steps. */
+export type RecipesGetCaller = (args: { recipe_id: string }) => Promise<{
+  recipe: ServerRecipeFullEntry | null;
+}>;
+
+/** What the detail view's Definition shows: the full body once `recipe.get` answers. */
+type RecipeDefinitionView =
+  | { kind: 'loaded'; recipe: RecipeDefinition }
+  | { kind: 'loading' }
+  | { kind: 'failed'; message: string }
+  /** No `recipe.get` wired: the list row is all this host can show. */
+  | { kind: 'row' };
+
 export type RecipeExecuteCaller = (args: {
   recipe_id: string;
   config?: Record<string, unknown>;
@@ -397,7 +421,7 @@ export type RecipeFileReadCaller = (args: {
 }>;
 
 export type RecipesToolCatalogCaller = () => Promise<{
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
 }>;
 
 /** UX-review flow-10 — unfiltered enrolled-connection list, so the
@@ -569,6 +593,9 @@ export interface BootstrapRecipesRouteOptions {
   displayPrefsGetCaller?: RecipesDisplayPrefsGetCaller;
   displayPrefsSetCaller?: RecipesDisplayPrefsSetCaller;
   recipesListCaller?: RecipesListCaller;
+  /** The detail view's Definition reads the full body through this. Absent ⇒ it shows the
+   *  list row, which carries no steps. */
+  recipeGetCaller?: RecipesGetCaller;
   recipeExecuteCaller?: RecipeExecuteCaller;
   /** D-200 — paired-client authenticated preview/download for exact file
    * artifact result cards. Absent keeps metadata visible and controls disabled. */
@@ -596,6 +623,9 @@ export interface BootstrapRecipesRouteOptions {
   autoRunUpdateCaller?: RecipesAutoRunUpdateCaller;
   recipeConfigGetCaller?: RecipeConfigGetCaller;
   recipeConfigSetCaller?: RecipeConfigSetCaller;
+  /** D-292 — uploads a file for the guided spreadsheet import. Absent ⇒ that
+   *  flow offers only files already in Recued. */
+  sheetImportUploadCaller?: SheetImportUploader;
   /** D-200 — Data Files inventory projected into `file_ref` variable pickers
    * for Run, Schedule, and install-config editors. */
   fileRefSearchCaller?: RefPicker.RefPickerSearchCaller;
@@ -665,11 +695,14 @@ const withoutRenderedRecipe = (
 
 export interface RecipesRoute {
   getRecipes(): ReadonlyArray<ServerRecipeListEntry>;
-  getTools(): ReadonlyArray<ToolEntry>;
+  getTools(): ReadonlyArray<ToolCatalogEntryView>;
   getLoadErrors(): RecipesLoadErrors;
   /** The currently open detail recipe id, or null when on the list. */
   selectedRecipe(): string | null;
   runModal(): RecipesRunModalSnapshot | null;
+  /** D-292 — the guided spreadsheet import, when one is open instead of the
+   *  run modal (test-facing). */
+  sheetImport(): SheetImportHandle | null;
   resultPanel(): RecipesResultPanelSnapshot | null;
   /** D-222 test/host seam over currently rendered output filters. */
   resultFilterKeys(): ReadonlyArray<string>;
@@ -1355,8 +1388,8 @@ const recipeToolName = (entry: ServerRecipeListEntry): string =>
 
 const findToolForRecipe = (
   entry: ServerRecipeListEntry,
-  catalog: ReadonlyArray<ToolEntry>,
-): ToolEntry | null => {
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
+): ToolCatalogEntryView | null => {
   const full = recipeToolName(entry);
   return catalog.find((tool) =>
     tool.tier === 2
@@ -1390,26 +1423,24 @@ const deriveTriggerKind = (
   return 'manual';
 };
 
+/** ⛔ THE SERVER'S ANSWER FIRST. Channels and enrichment reads live in
+ *  `steps`, which a list row has not carried since f95faec10, so scanning the
+ *  row left every enrichment pill empty. The server projects both from the body
+ *  it holds. The scan is only the fallback for an older server, whose rows
+ *  still carry the body. */
 const deriveNotificationChannels = (
   entry: ServerRecipeListEntry,
-): readonly string[] => {
-  const body = JSON.stringify(entry.recipe).toLowerCase();
-  // D-192 seam 10 — the channel vocabulary comes from contracts, so a newly
-  // declared chat transport is detected here with no edit.
-  return NOTIFICATION_CHANNEL_NAMES.filter((channel) => body.includes(channel));
-};
+): readonly string[] =>
+  entry.notification_channels ?? recipeNotificationChannels(entry.recipe);
 
 const deriveConsumedEnrichments = (
   entry: ServerRecipeListEntry,
-): readonly string[] => {
-  const body = JSON.stringify(entry.recipe);
-  const matches = body.match(/data\.enrichment\.[a-zA-Z0-9_.-]+/g) ?? [];
-  return [...new Set(matches)].slice(0, 4);
-};
+): readonly string[] =>
+  entry.consumed_enrichments ?? recipeConsumedEnrichments(entry.recipe);
 
 export const projectRecipeCardState = (
   entry: ServerRecipeListEntry,
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
 ): RecipeCardState => ({
   recipe_id: entry.recipe_id,
   publisher_id: entry.publisher_id,
@@ -1524,7 +1555,7 @@ const renderRecordsUsage = (
 
 const recipeGrantSummary = (
   entry: ServerRecipeListEntry,
-  tool: ToolEntry | null,
+  tool: ToolCatalogEntryView | null,
   enrolledConnections: ReadonlyArray<ConnectionView> | null,
   packs: ReadonlyArray<RecordsUsagePack> | null,
 ): string => {
@@ -1817,7 +1848,7 @@ const renderRecipeFilters = (
  *  Enter or the explicit Open action enters durable detail. */
 const renderRecipeListCard = (
   entry: ServerRecipeListEntry,
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
 ): string => {
@@ -1877,7 +1908,7 @@ const renderRecipeListCard = (
 
 const renderRecipeSection = (
   recipes: ReadonlyArray<ServerRecipeListEntry>,
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   pii: ReadonlyMap<string, RecipePiiPostureSummary> | null,
   filter: RecipeListFilter,
@@ -2295,11 +2326,16 @@ const renderRelatedRecipesSection = (
 
 /** The detail view (R24 delta 1) — header + pills +
  *  description + read-only definition + depends-on provenance + Runs /
- *  Automation links. Rendered from the in-memory recipe entry (no extra
- *  fetch — `recipe.list` already carries the full definition). */
+ *  Automation links. Rendered from the in-memory recipe entry, except the
+ *  Definition, which is the full body `recipe.get` returns.
+ *
+ *  ⛔ IT SAID "no extra fetch — `recipe.list` already carries the full definition",
+ *  and that stopped being true when the step bodies came off the list rows
+ *  (f95faec10): the Definition showed a recipe with no steps, so an owner checking
+ *  what a recipe does saw nothing it does (2026-09-24 audit). */
 const renderRecipeDetail = (
   entry: ServerRecipeListEntry,
-  catalog: ReadonlyArray<ToolEntry>,
+  catalog: ReadonlyArray<ToolCatalogEntryView>,
   installed: ReadonlyArray<ServerRecipeListEntry>,
   recipeCatalog: ReadonlyArray<CatalogRecipeRow>,
   packCatalog: ReadonlyArray<CatalogPackRow>,
@@ -2345,6 +2381,9 @@ const renderRecipeDetail = (
    *  error rather than a silent swap. The refactor is still owed; doing it
    *  inside a feature slice would bury the feature in it. */
   selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
+  /** What the Definition shows (`RecipeDefinitionView`). ⚠ The NINETEENTH, last, and a
+   *  tagged union, so a shifted position is a type error, as the note above requires. */
+  definition: RecipeDefinitionView = { kind: 'row' },
 ): string => {
   const name = recipeDisplayName(entry);
   const triggerKind = deriveTriggerKind(entry);
@@ -2488,7 +2527,13 @@ const renderRecipeDetail = (
       <section class="recipes-detail-section">
         <details ${RECIPES_ROUTE_DEFINITION_ATTR}>
           <summary>Definition (read-only)</summary>
-          <pre>${e(JSON.stringify(entry.recipe, null, 2))}</pre>
+          ${definition.kind === 'loaded'
+            ? `<pre>${e(JSON.stringify(definition.recipe, null, 2))}</pre>`
+            : definition.kind === 'loading'
+              ? '<p class="recipes-detail-muted">Loading the definition…</p>'
+              : definition.kind === 'failed'
+                ? `<p role="alert">Could not load the definition: ${e(definition.message)}</p>`
+                : `<pre>${e(JSON.stringify(entry.recipe, null, 2))}</pre>`}
         </details>
       </section>
     </div>
@@ -2525,9 +2570,38 @@ export const bootstrapRecipesRoute = (
   );
 
   let disposed = false;
+  /** The full body behind each opened detail's Definition, with the list hash it was read
+   *  for: a recipe changed since is read again. */
+  const definitionBodies = new Map<string, { hash: string; view: RecipeDefinitionView }>();
+  const definitionFor = (entry: ServerRecipeListEntry): RecipeDefinitionView => {
+    const getCaller = opts.recipeGetCaller;
+    if (getCaller === undefined) return { kind: 'row' };
+    const known = definitionBodies.get(entry.recipe_id);
+    if (known !== undefined && known.hash === entry.recipe_hash) return known.view;
+    const asked = { hash: entry.recipe_hash, view: { kind: 'loading' } as RecipeDefinitionView };
+    definitionBodies.set(entry.recipe_id, asked);
+    const settle = (view: RecipeDefinitionView): void => {
+      // Each answer lands on the read that asked for it, so an answer for an older hash
+      // lands on a slot the newer read already replaced and is never shown. This check
+      // only spares that stale answer a render of a page it would not change.
+      if (disposed || definitionBodies.get(entry.recipe_id) !== asked) return;
+      asked.view = view;
+      render();
+    };
+    void getCaller({ recipe_id: entry.recipe_id }).then(
+      ({ recipe }) => settle(recipe === null
+        ? { kind: 'failed', message: 'this recipe is no longer installed' }
+        : { kind: 'loaded', recipe: recipe.recipe }),
+      (error: unknown) => settle({
+        kind: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return asked.view;
+  };
   let loading = true;
   let recipes: ServerRecipeListEntry[] = [];
-  let catalog: ToolEntry[] = [];
+  let catalog: ToolCatalogEntryView[] = [];
   // Soft public projections used only for the direct recipe_bundle -> pack
   // handoff. They are kept as one aligned snapshot and cleared together on a
   // failed refresh so a stale recipe set can never match a newer pack set.
@@ -2614,6 +2688,9 @@ export const bootstrapRecipesRoute = (
   // it mounts to body (or `opts.root` in the fake-doc tests) and survives
   // the route's repaints. The route tracks the handle + the recipe behind it.
   let childRunModal: RunModal.RunModalHandle | null = null;
+  /** D-292 — opened INSTEAD of `childRunModal` for a declared spreadsheet
+   *  import; the two share the one-dialog-at-a-time rule. */
+  let childSheetImport: SheetImportHandle | null = null;
   let runModalRecipeId: string | null = null;
   // D-179 — the recipe install-config editor (the shared config overlay).
   let recipeConfigHandle: ConfigEditorOverlayHandle | null = null;
@@ -2939,6 +3016,7 @@ export const bootstrapRecipesRoute = (
         // at all, rather than a dead one.
         opts.displayPrefsSetCaller === undefined ? undefined : displayMode,
         resultSelectStates,
+        definitionFor(selected),
       );
       mountFilePreviews();
       resultActions = resultActionRegistry.actions;
@@ -3818,8 +3896,9 @@ export const bootstrapRecipesRoute = (
   ): void => {
     const entry = recipes.find((row) => row.recipe_id === recipe_id);
     if (entry === undefined) return;
-    // One modal at a time — a re-open while a run modal is up is a no-op.
-    if (childRunModal !== null) return;
+    // One modal at a time — a re-open while a run modal (or the guided
+    // spreadsheet import that stands in for one) is up is a no-op.
+    if (childRunModal !== null || childSheetImport !== null) return;
     const routeRecipeIdAtOpen = selectedRecipeId;
     const activeBeforeOpen = doc.activeElement as HTMLElement | null | undefined;
     listPreview?.close();
@@ -3842,6 +3921,89 @@ export const bootstrapRecipesRoute = (
         ? recipe_id
         : null;
     const runRecordRefSearch = recordRefSearchFor(entry.recipe);
+    /** Hand focus back to the detail's Run button the dialog was opened from. */
+    const returnFocusToRunButton = (): void => {
+      if (
+        detailRunReturnRecipeId !== null
+        && selectedRecipeId === detailRunReturnRecipeId
+      ) {
+        const replacement = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+        if (
+          replacement?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR)
+            === detailRunReturnRecipeId
+        ) {
+          replacement.focus?.({ preventScroll: true });
+        }
+      }
+    };
+    /** Show a finished run as the route's current result. */
+    const showRunResult = (result: ServerExecuteResponse): void => {
+      if (
+        routeRecipeIdAtOpen !== null
+        && selectedRecipeId === routeRecipeIdAtOpen
+      ) {
+        const previous = withoutRenderedRecipe(
+          sourcePanelAtOpen ?? undefined,
+          result.recipe_id,
+        );
+        resultPanel = {
+          route_recipe_id: routeRecipeIdAtOpen,
+          source_recipe_id: sourceRecipeIdAtOpen,
+          render_recipe_id: result.recipe_id,
+          origin: resolvedOrigin,
+          result,
+          ...(previous !== undefined ? { previous } : {}),
+        };
+        resetResultFilterStates(result);
+        resultGridStates = new Map();
+        resultSelectStates = new Map();
+        resultFileBusy = new Set();
+        resultFileErrors = new Map();
+        resultFileVerified = new Set();
+        resultFileGeneration += 1;
+        render();
+      }
+    };
+    // D-292 — a declared spreadsheet import gets the guided flow on Run:
+    // upload → match the file's own columns → a real server check → import. The
+    // declaration is re-checked here (`sheetImportFor`), not trusted from
+    // install; one that does not hold keeps the modal below.
+    const sheet = tab === 'run' && opts.recipeExecuteCaller !== undefined
+      ? sheetImportFor(entry)
+      : null;
+    if (sheet !== null && opts.recipeExecuteCaller !== undefined) {
+      ensureSheetImportResultStyles(doc);
+      const configGet = opts.recipeConfigGetCaller;
+      const configSet = opts.recipeConfigSetCaller;
+      childSheetImport = wireSheetImport({
+        recipe: entry,
+        declaration: sheet,
+        // Portal to body, like the run modal, so a route repaint cannot wipe it.
+        mount: (doc as { body?: HTMLElement }).body ?? opts.root,
+        document: doc,
+        execute: opts.recipeExecuteCaller,
+        ...(opts.sheetImportUploadCaller !== undefined
+          ? { uploadFile: opts.sheetImportUploadCaller }
+          : {}),
+        ...(opts.fileReadCaller !== undefined ? { readFile: opts.fileReadCaller } : {}),
+        ...(opts.fileRefSearchCaller !== undefined
+          ? { fileRefSearch: opts.fileRefSearchCaller }
+          : {}),
+        ...(configGet !== undefined && configSet !== undefined
+          ? { configGet, configSet }
+          : {}),
+        renderResult: renderSheetImportResult,
+        ...(prefill?.config !== undefined ? { prefill: prefill.config } : {}),
+        onClose: () => {
+          childSheetImport = null;
+          returnFocusToRunButton();
+        },
+        onRan: showRunResult,
+      });
+      return;
+    }
     runModalRecipeId = recipe_id;
     childRunModal = RunModal.wireRunModal({
       ...(opts.serverTimeZone ? { serverTimeZone: opts.serverTimeZone } : {}),
@@ -3880,48 +4042,9 @@ export const bootstrapRecipesRoute = (
       onClose: () => {
         childRunModal = null;
         runModalRecipeId = null;
-        if (
-          detailRunReturnRecipeId !== null
-          && selectedRecipeId === detailRunReturnRecipeId
-        ) {
-          const replacement = routeRoot.querySelector?.(
-            `[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`,
-          ) as HTMLElement | null | undefined;
-          if (
-            replacement?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR)
-              === detailRunReturnRecipeId
-          ) {
-            replacement.focus?.({ preventScroll: true });
-          }
-        }
+        returnFocusToRunButton();
       },
-      onRan: (result) => {
-        if (
-          routeRecipeIdAtOpen !== null
-          && selectedRecipeId === routeRecipeIdAtOpen
-        ) {
-          const previous = withoutRenderedRecipe(
-            sourcePanelAtOpen ?? undefined,
-            result.recipe_id,
-          );
-          resultPanel = {
-            route_recipe_id: routeRecipeIdAtOpen,
-            source_recipe_id: sourceRecipeIdAtOpen,
-            render_recipe_id: result.recipe_id,
-            origin: resolvedOrigin,
-            result,
-            ...(previous !== undefined ? { previous } : {}),
-          };
-          resetResultFilterStates(result);
-    resultGridStates = new Map();
-    resultSelectStates = new Map();
-          resultFileBusy = new Set();
-          resultFileErrors = new Map();
-          resultFileVerified = new Set();
-          resultFileGeneration += 1;
-          render();
-        }
-      },
+      onRan: showRunResult,
     });
     if (prefill?.config !== undefined) {
       let configText = '{}';
@@ -4073,6 +4196,12 @@ export const bootstrapRecipesRoute = (
   };
 
   const closeRunModal = (): void => {
+    // D-292 — the guided import stands in for the run modal; tear it down too.
+    if (childSheetImport !== null) {
+      const sheetDialog = childSheetImport;
+      childSheetImport = null;
+      sheetDialog.destroy();
+    }
     if (childRunModal === null) return;
     const open = childRunModal;
     childRunModal = null;
@@ -4901,6 +5030,7 @@ export const bootstrapRecipesRoute = (
     getLoadErrors: () => errors,
     selectedRecipe: () => selectedRecipeId,
     // A compat snapshot over the shared RunModal handle's state.
+    sheetImport: () => childSheetImport,
     runModal: () =>
       childRunModal === null || runModalRecipeId === null
         ? null

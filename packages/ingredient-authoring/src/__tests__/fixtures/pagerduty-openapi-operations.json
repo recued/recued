@@ -11548,7 +11548,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-oncall-people.create_schedule": {
@@ -14938,7 +14938,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-oncall-people.delete_user_sessions": {
@@ -15092,7 +15092,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-oncall-people.delete_user_session": {
@@ -33878,7 +33878,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-enrichment-automation.update_service_now_credentials": {
@@ -41488,7 +41488,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-status-integrations.create_oauth_client": {
@@ -41644,7 +41644,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-status-integrations.update_oauth_client": {
@@ -45914,7 +45914,7 @@
       "accept": "application/vnd.pagerduty+json;version=2",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe"
     },
     "pagerduty-account-governance.update_session_configurations": {

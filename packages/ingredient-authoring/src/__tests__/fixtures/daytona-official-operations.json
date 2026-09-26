@@ -5,7 +5,7 @@
     "docs_page": "https://www.daytona.io/docs/tools/api/",
     "api_key_docs": "https://www.daytona.io/docs/api-keys/",
     "docs_release": "v0.199",
-    "retrieved_on": "2026-07-20",
+    "retrieved_on": "2026-09-23",
     "clients_repository": "https://github.com/daytona/clients",
     "sdk_tag": "v0.197.0",
     "clients_commit": "e59bc62a76b207a9f6fbb6f5a7f56833da75593c",
@@ -23,14 +23,14 @@
       "key": "platform",
       "filename": "daytona-platform-openapi.json",
       "url": "https://www.daytona.io/docs/openapi.json",
-      "sha256": "72ff65c9167d26003a3e32dac51341b5c6d25e6459572ca9d8ded680efe69b75",
-      "bytes": 672664,
+      "sha256": "17c6a97729a96aa40b3664c3bc3a1f660bb9a0fc6aa91bf9738fe9340cd3d170",
+      "bytes": 694841,
       "dialect": "openapi_3_1",
       "version": "3.0.0",
       "title": "Daytona",
       "api_version": "1.0",
-      "paths": 137,
-      "operations": 169
+      "paths": 136,
+      "operations": 168
     },
     {
       "key": "toolbox",
@@ -83,15 +83,15 @@
     }
   ],
   "inventory": {
-    "operations": 280,
+    "operations": 279,
     "selected_operations": 267,
-    "excluded_operations": 13,
+    "excluded_operations": 12,
     "leaf_packs": 5,
     "workflows": 5,
     "connections": 4,
     "by_source": {
       "analytics": 8,
-      "platform": 169,
+      "platform": 168,
       "toolbox": 103
     },
     "by_pack": {
@@ -109,17 +109,16 @@
     },
     "selected_by_risk": {
       "admin": 58,
-      "destructive": 42,
-      "read": 131,
+      "destructive": 41,
+      "read": 132,
       "write": 36
     },
     "selected_by_approval": {
-      "always": 136,
-      "ask": 128,
-      "never": 3
+      "always": 135,
+      "never": 132
     },
     "raw_json_request_bodies": 78,
-    "exact_decimal_parameters": 21,
+    "exact_decimal_parameters": 36,
     "csv_query_parameters": 0,
     "omitted_repeated_query_parameters": 6,
     "connection_owned_organization_headers": 17,
@@ -132,7 +131,6 @@
   },
   "exclusion_categories": {
     "deprecated_operation": [
-      "platform GET /sandbox/paginated",
       "platform GET /sandbox/{sandboxIdOrName}/build-logs",
       "platform GET /secret",
       "platform GET /snapshots/{id}/build-logs",
@@ -159,7 +157,6 @@
   },
   "exclusions": {
     "platform POST /users/linked-accounts": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
-    "platform GET /sandbox/paginated": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform POST /sandbox/{sandboxIdOrName}/backup": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform GET /sandbox/{sandboxIdOrName}/build-logs": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform GET /snapshots/{id}/build-logs": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
@@ -295,7 +292,7 @@
       "op": "api_keys.list_api_keys",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -425,7 +422,7 @@
       "op": "api_keys.get_current_api_key",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -505,7 +502,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -722,7 +719,7 @@
       "op": "organizations.list_organization_invitations_for_authenticated_user",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -768,7 +765,7 @@
       "op": "organizations.get_organization_invitations_count_for_authenticated_user",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -944,7 +941,7 @@
       "op": "organizations.list_organizations",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1139,7 +1136,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1269,7 +1266,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1336,7 +1333,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1466,7 +1463,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1533,7 +1530,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1600,7 +1597,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -1874,7 +1871,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2194,7 +2191,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2438,7 +2435,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2751,7 +2748,7 @@
       "op": "organizations.list_available_regions",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -2901,7 +2898,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3391,6 +3388,73 @@
       "pagination": null
     },
     {
+      "key": "platform GET /organizations/{organizationId}/identity-providers/workos-sso-connections",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "GET",
+      "contract_path": "/organizations/{organizationId}/identity-providers/workos-sso-connections",
+      "wire_path": "/organizations/{organizationId}/identity-providers/workos-sso-connections",
+      "operation_id": "listWorkosSsoConnections",
+      "tag": "organizations",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": "simple",
+          "explode": false,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "organizationId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-organizations-access",
+      "connection": "daytona_account",
+      "op": "organizations.list_workos_sso_connections",
+      "emitted_args": [
+        {
+          "key": "organizationId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
       "key": "platform GET /organizations/{organizationId}/identity-providers",
       "source": "platform",
       "protocol": "openapi_3_1",
@@ -3445,7 +3509,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3607,7 +3671,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3906,7 +3970,7 @@
       "op": "users.get_authenticated_user",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -3914,6 +3978,48 @@
       "response_json": {
         "unsafe_integers": "string"
       },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform POST /users/me/logins",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "POST",
+      "contract_path": "/users/me/logins",
+      "wire_path": "/users/me/logins",
+      "operation_id": "recordLogin",
+      "tag": "users",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-organizations-access",
+      "connection": "daytona_account",
+      "op": "users.record_login",
+      "emitted_args": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
       "response_capture": null,
       "result_path": null,
       "pagination": null
@@ -3967,7 +4073,7 @@
       "method": "GET",
       "contract_path": "/users/account-providers",
       "wire_path": "/users/account-providers",
-      "operation_id": "getAvailableAccountProviders",
+      "operation_id": "getAccountProviders",
       "tag": "users",
       "deprecated": false,
       "security": [
@@ -3991,10 +4097,10 @@
       "exclusion_category": null,
       "pack": "daytona-organizations-access",
       "connection": "daytona_account",
-      "op": "users.get_available_account_providers",
+      "op": "users.get_account_providers",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4044,134 +4150,6 @@
       "idempotency": null,
       "static_headers": null,
       "response_json": null,
-      "response_capture": null,
-      "result_path": null,
-      "pagination": null
-    },
-    {
-      "key": "platform DELETE /users/linked-accounts/{provider}/{providerUserId}",
-      "source": "platform",
-      "protocol": "openapi_3_1",
-      "method": "DELETE",
-      "contract_path": "/users/linked-accounts/{provider}/{providerUserId}",
-      "wire_path": "/users/linked-accounts/{provider}/{providerUserId}",
-      "operation_id": "unlinkAccount",
-      "tag": "users",
-      "deprecated": false,
-      "security": [
-        "bearer",
-        "oauth2:openid,profile,email"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_required": false,
-      "request_body_schema_type": null,
-      "request_body_mode": null,
-      "parameters": [
-        {
-          "name": "provider",
-          "in": "path",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "simple",
-          "explode": false,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "scalar",
-          "emitted_key": "provider"
-        },
-        {
-          "name": "providerUserId",
-          "in": "path",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "simple",
-          "explode": false,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "scalar",
-          "emitted_key": "providerUserId"
-        }
-      ],
-      "response_media": [],
-      "selected_response_media": null,
-      "success_status": "204",
-      "selected": true,
-      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
-      "exclusion_reason": null,
-      "exclusion_category": null,
-      "pack": "daytona-organizations-access",
-      "connection": "daytona_account",
-      "op": "users.unlink_account",
-      "emitted_args": [
-        {
-          "key": "provider",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "providerUserId",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "risk": "destructive",
-      "approval": "always",
-      "idempotency": "idempotent",
-      "static_headers": {
-        "Accept": "application/json"
-      },
-      "response_json": null,
-      "response_capture": null,
-      "result_path": null,
-      "pagination": null
-    },
-    {
-      "key": "platform POST /users/mfa/sms/enroll",
-      "source": "platform",
-      "protocol": "openapi_3_1",
-      "method": "POST",
-      "contract_path": "/users/mfa/sms/enroll",
-      "wire_path": "/users/mfa/sms/enroll",
-      "operation_id": "enrollInSmsMfa",
-      "tag": "users",
-      "deprecated": false,
-      "security": [
-        "bearer",
-        "oauth2:openid,profile,email"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_required": false,
-      "request_body_schema_type": null,
-      "request_body_mode": null,
-      "parameters": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "success_status": "200",
-      "selected": true,
-      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
-      "exclusion_reason": null,
-      "exclusion_category": null,
-      "pack": "daytona-organizations-access",
-      "connection": "daytona_account",
-      "op": "users.enroll_in_sms_mfa",
-      "emitted_args": [],
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "static_headers": {
-        "Accept": "application/json"
-      },
-      "response_json": {
-        "unsafe_integers": "string"
-      },
       "response_capture": null,
       "result_path": null,
       "pagination": null
@@ -4269,13 +4247,13 @@
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -4650,7 +4628,7 @@
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -4770,7 +4748,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -4866,309 +4844,6 @@
       "pagination": null
     },
     {
-      "key": "platform GET /sandbox/paginated",
-      "source": "platform",
-      "protocol": "openapi_3_1",
-      "method": "GET",
-      "contract_path": "/sandbox/paginated",
-      "wire_path": null,
-      "operation_id": "listSandboxesPaginated_deprecated",
-      "tag": "sandbox",
-      "deprecated": true,
-      "security": [
-        "bearer",
-        "oauth2:openid,profile,email"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_required": false,
-      "request_body_schema_type": null,
-      "request_body_mode": null,
-      "parameters": [
-        {
-          "name": "X-Daytona-Organization-ID",
-          "in": "header",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "simple",
-          "explode": false,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "page",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "limit",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "id",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "name",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "labels",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "includeErroredDeleted",
-          "in": "query",
-          "required": false,
-          "schema_type": "boolean",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "states",
-          "in": "query",
-          "required": false,
-          "schema_type": "array",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "snapshots",
-          "in": "query",
-          "required": false,
-          "schema_type": "array",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "regions",
-          "in": "query",
-          "required": false,
-          "schema_type": "array",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "minCpu",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "maxCpu",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "minMemoryGiB",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "maxMemoryGiB",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "minDiskGiB",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "maxDiskGiB",
-          "in": "query",
-          "required": false,
-          "schema_type": "number",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "lastEventAfter",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": "date-time",
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "lastEventBefore",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": "date-time",
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "sort",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        },
-        {
-          "name": "order",
-          "in": "query",
-          "required": false,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": "form",
-          "explode": true,
-          "collection_format": null,
-          "synthetic": false,
-          "serialization": "excluded",
-          "emitted_key": null
-        }
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "success_status": "200",
-      "selected": false,
-      "admission_reason": null,
-      "exclusion_reason": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
-      "exclusion_category": "deprecated_operation",
-      "pack": null,
-      "connection": null,
-      "op": null,
-      "emitted_args": [],
-      "risk": null,
-      "approval": null,
-      "idempotency": null,
-      "static_headers": null,
-      "response_json": null,
-      "response_capture": null,
-      "result_path": null,
-      "pagination": null
-    },
-    {
       "key": "platform GET /sandbox/for-runner",
       "source": "platform",
       "protocol": "openapi_3_1",
@@ -5253,7 +4928,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -5351,7 +5026,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -6397,7 +6072,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -6477,7 +6152,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -6557,7 +6232,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -6736,7 +6411,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -7753,7 +7428,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -7870,7 +7545,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8144,7 +7819,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8421,7 +8096,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8501,7 +8176,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8581,7 +8256,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8661,7 +8336,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8741,7 +8416,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8820,7 +8495,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8936,7 +8611,7 @@
       "op": "runners.get_info_for_authenticated_runner",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -8982,7 +8657,7 @@
       "op": "runners.get_snapshot_refs_for_authenticated_runner",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9049,7 +8724,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9115,7 +8790,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9195,7 +8870,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9357,7 +9032,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9618,26 +9293,26 @@
           "name": "page",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.page"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -9708,12 +9383,12 @@
       "emitted_args": [
         {
           "key": "query.page",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -9738,7 +9413,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -9902,7 +9577,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10138,7 +9813,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10361,7 +10036,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10446,7 +10121,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10532,7 +10207,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10599,7 +10274,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10666,7 +10341,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10752,7 +10427,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10831,7 +10506,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -10981,7 +10656,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11137,7 +10812,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11173,26 +10848,26 @@
           "name": "page",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.page"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -11212,13 +10887,13 @@
           "name": "offset",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.offset"
         }
       ],
@@ -11237,12 +10912,12 @@
       "emitted_args": [
         {
           "key": "query.page",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -11252,12 +10927,12 @@
         },
         {
           "key": "query.offset",
-          "type": "number",
+          "type": "string",
           "required": false
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11307,26 +10982,26 @@
           "name": "timeout",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.timeout"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         }
       ],
@@ -11345,17 +11020,17 @@
       "emitted_args": [
         {
           "key": "query.timeout",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11422,7 +11097,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11558,7 +11233,7 @@
       "op": "warm_pools.list_warm_pools",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11860,7 +11535,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -11920,7 +11595,7 @@
       "op": "docker_registry.list_registries",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -12069,7 +11744,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -12149,7 +11824,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -12502,13 +12177,13 @@
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -12571,7 +12246,7 @@
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -12591,7 +12266,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -12671,7 +12346,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -12882,7 +12557,7 @@
       "op": "users.list_pending_sso_links",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13168,7 +12843,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13373,26 +13048,26 @@
           "name": "page",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.page"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -13586,12 +13261,12 @@
         },
         {
           "key": "query.page",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -13611,7 +13286,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13667,7 +13342,7 @@
       "op": "audit.get_audit_scenarios",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13727,7 +13402,7 @@
       "op": "object_storage.get_push_access",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13811,7 +13486,7 @@
       "op": "health.health_controller_check",
       "emitted_args": [],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -13899,26 +13574,26 @@
           "name": "page",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.page"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         },
         {
@@ -13979,12 +13654,12 @@
         },
         {
           "key": "query.page",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
@@ -13994,7 +13669,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14095,26 +13770,26 @@
           "name": "page",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.page"
         },
         {
           "name": "limit",
           "in": "query",
           "required": false,
-          "schema_type": "number",
+          "schema_type": "integer",
           "schema_format": null,
           "style": "form",
           "explode": true,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
+          "serialization": "decimal_string",
           "emitted_key": "query.limit"
         }
       ],
@@ -14149,17 +13824,17 @@
         },
         {
           "key": "query.page",
-          "type": "number",
+          "type": "string",
           "required": false
         },
         {
           "key": "query.limit",
-          "type": "number",
+          "type": "string",
           "required": false
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14271,7 +13946,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14400,7 +14075,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14472,7 +14147,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -14810,7 +14485,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14874,7 +14549,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -14938,7 +14613,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15440,7 +15115,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15577,7 +15252,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15660,7 +15335,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15743,7 +15418,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15909,7 +15584,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -15973,7 +15648,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -16202,7 +15877,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -16364,7 +16039,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/octet-stream"
@@ -16451,7 +16126,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -16587,7 +16262,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -16741,7 +16416,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -16949,7 +16624,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -17077,7 +16752,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -17280,7 +16955,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -17540,7 +17215,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/octet-stream"
@@ -17645,7 +17320,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -17828,7 +17503,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -18235,7 +17910,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -18458,7 +18133,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -18941,7 +18616,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -19242,7 +18917,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -19543,7 +19218,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -19844,7 +19519,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -19955,7 +19630,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json",
@@ -20220,7 +19895,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -20484,7 +20159,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -20548,7 +20223,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -20631,7 +20306,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -20841,7 +20516,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21102,7 +20777,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21258,7 +20933,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21548,7 +21223,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21685,7 +21360,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21768,7 +21443,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -21851,7 +21526,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22032,7 +21707,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22260,7 +21935,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22416,7 +22091,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22480,7 +22155,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22544,7 +22219,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22608,7 +22283,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22801,7 +22476,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -22953,7 +22628,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23110,7 +22785,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23227,7 +22902,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23348,7 +23023,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23450,7 +23125,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23570,7 +23245,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23672,7 +23347,7 @@
         }
       ],
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "static_headers": {
         "Accept": "application/json"
@@ -23696,7 +23371,7 @@
       "op": "sandbox.list_sandboxes",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "region-inventory-daytona",
@@ -23720,7 +23395,7 @@
       "op": "organizations.list_organizations",
       "required_args": [],
       "supplied_args": [],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "toolbox-version-daytona",
@@ -23736,7 +23411,7 @@
       "supplied_args": [
         "sandboxId"
       ],
-      "approval": "ask"
+      "approval": "never"
     },
     {
       "recipe_id": "sandbox-usage-daytona",
@@ -23758,34 +23433,34 @@
         "query.from",
         "query.to"
       ],
-      "approval": "ask"
+      "approval": "never"
     }
   ],
   "generated": [
     {
       "slug": "daytona-sandboxes-storage",
       "operations": 62,
-      "composition_bytes": 88854
+      "composition_bytes": 87786
     },
     {
       "slug": "daytona-runtime-services",
       "operations": 39,
-      "composition_bytes": 48642
+      "composition_bytes": 48057
     },
     {
       "slug": "daytona-organizations-access",
       "operations": 62,
-      "composition_bytes": 75268
+      "composition_bytes": 75059
     },
     {
       "slug": "daytona-toolbox",
       "operations": 96,
-      "composition_bytes": 115850
+      "composition_bytes": 113960
     },
     {
       "slug": "daytona-analytics",
       "operations": 8,
-      "composition_bytes": 14422
+      "composition_bytes": 14086
     }
   ]
 }

@@ -124,12 +124,30 @@ const RUN_PALETTE_CHROME_STYLES = `
   padding: 56px 16px 16px;
   background: rgba(24, 33, 36, .28);
 }
+/* ⛔ THE PANEL MUST NOT CLIP, BECAUSE THE RECIPE PICKER'S DROPDOWN LIVES
+   INSIDE IT. .ref-picker-results is position:absolute, so it adds NOTHING to
+   this panel's height and EVERYTHING to its overflow. With overflow:auto the
+   panel therefore stayed at its natural 150px and turned the escaping list
+   into a second scrollbar — and worse, clipped a 270px dropdown down to about
+   one visible option. Arrow-keying made it plainer: ref-picker/wire.ts calls
+   scrollIntoView on the active option, which walks EVERY scrollable ancestor,
+   so pressing Down dragged the panel 221px while the list moved 296px and the
+   input scrolled out from under the caret.
+
+   ⚠ THE overflow:auto WAS STILL EARNING SOMETHING and is not simply dropped:
+   it kept a long panel reachable once max-height binds. That job moves DOWN to
+   the actions row, which is the only part that grows (state, result, buttons).
+   The rows are pinned so the third one is the one that gives: header and the
+   search field stay put, the actions area scrolls, and the dropdown is free to
+   overhang the panel the way a combobox is supposed to. Verified at a 600px
+   viewport with a long result: the last action stays reachable. */
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-panel {
   box-sizing: border-box;
   min-width: 0;
   width: min(560px, 100%);
   max-height: calc(100vh - 80px);
-  overflow: auto;
+  overflow: visible;
+  grid-template-rows: auto auto minmax(0, 1fr);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -171,6 +189,9 @@ const RUN_PALETTE_CHROME_STYLES = `
   gap: 8px;
   min-width: 0;
   min-height: 24px;
+  /* The panel's former scroller, moved here — see the panel rule. Inert while
+     the content fits, which is nearly always. */
+  overflow: auto;
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-selected {
   min-width: 0;

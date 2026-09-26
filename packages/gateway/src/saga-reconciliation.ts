@@ -629,6 +629,118 @@ export const registerSagaHandler = (
 
 /** Raise the saga ask for one torn run. Thin — the host computes the
  *  saga + plans and owns the best-effort posture around the raise. */
+/** How many terminally-failed run anchors one boot sweep inspects. */
+export const SAGA_SWEEP_DEFAULT_LIMIT = 200;
+
+/** The seams a boot sweep needs. All storage-shaped, so all injected: the leaf
+ *  cannot reach a store (public-boundary rule), and `derivePlans` additionally
+ *  cannot live here because `deriveCompensation` is `@recued/recipes` and this
+ *  package declares no dependencies. */
+export interface TornSagaSweepDeps {
+  /** Run anchors whose status is terminally FAILED, newest first, at most
+   *  `limit`.
+   *
+   *  ⛔⛔ THE FILTER IS LOAD-BEARING AND IT CANNOT MOVE INTO THIS FUNCTION.
+   *  `detectTornSaga` returns a saga whenever ONE catalog write landed — it
+   *  does not know, and cannot know, whether the run went on to succeed. In
+   *  the live path that judgement is the caller's (`execute-handler` reaches
+   *  the hook only on a terminal failure). A sweep handed "every run with a
+   *  landed write" would therefore tell the owner that every SUCCESSFUL
+   *  multi-write recipe had failed after acting — on every boot.
+   *
+   *  ⚠ And a HELD run is not a failed one. Use `isHeldRunAnchorStatus` rather
+   *  than comparing against `'awaiting_approval'`: a run waiting on a peer is
+   *  waiting, not torn, and the literal misses it. */
+  listFailedRuns(
+    limit: number,
+  ): Promise<ReadonlyArray<{ run_id: string; recipe_id: string }>>;
+  /** Every commit of one run. */
+  listRunCommits(run_id: string): Promise<readonly Commit[]>;
+  /** Has this run already reached the owner?
+   *
+   *  ⛔ WITHOUT THIS THE SWEEP IS A NOTIFICATION STORM. One-ask-per-torn-run
+   *  holds in the live path "by reachability, not by a durable suppression
+   *  row" — a logical run re-enters `handleExecute` only through guarded
+   *  channels. A boot sweep is exactly the "future host path re-dispatches
+   *  terminal run ids" that argument excludes, so it must ask the question the
+   *  live path never had to. */
+  alreadySurfaced(run_id: string): Promise<boolean>;
+  getManifest(slug: string): IngredientManifest | undefined;
+  derivePlans(saga: TornSaga): ReadonlyMap<string, SagaCompensationPlanRef>;
+  notifier: SagaNotifier;
+  log?(message: string): void;
+}
+
+export interface TornSagaSweepResult {
+  /** Failed anchors inspected. */
+  scanned: number;
+  /** Asks raised. */
+  raised: number;
+  /** Torn runs skipped because the owner has already seen them. */
+  suppressed: number;
+  /** Runs whose inspection threw. The sweep continues past them. */
+  errored: number;
+}
+
+/** R2 step 6 — surface torn runs whose ask was never raised.
+ *
+ *  The live hook raises its ask BEST-EFFORT after the audit anchor write, so a
+ *  detection or raise failure leaves the torn state visible in the commit log
+ *  and invisible to the owner. That is the hole this closes, and it is the
+ *  follow-on `execute-handler` records at its own hook.
+ *
+ *  ⚠ SCOPE, STATED SO IT IS NOT MISTAKEN FOR MORE. Only anchors that reached a
+ *  terminal FAILED status are candidates. A run that CRASHED mid-flight never
+ *  reached one, so its torn state is still unsurfaced after this sweep — a
+ *  known, deliberate gap (owner's call, 2026-09-21), not an oversight. Closing
+ *  it means sweeping non-terminal anchors too, which must be ordered after
+ *  `sweepPendingToInDoubt` or in-flight commits still read as landed writes.
+ *
+ *  ⚠ BOUNDED, SO OLD ENOUGH IS FORGOTTEN. `limit` caps the anchors inspected,
+ *  newest first. A torn run that falls out of that window is never surfaced.
+ *  The alternative is an unbounded table walk on every boot; the bound is the
+ *  honest trade, not an accident.
+ *
+ *  Per-run failures never abort the batch — the same posture as the in-doubt
+ *  sweep. One unreadable run must not cost the owner every other disclosure. */
+export const sweepTornSagas = async (
+  deps: TornSagaSweepDeps,
+  limit: number = SAGA_SWEEP_DEFAULT_LIMIT,
+): Promise<TornSagaSweepResult> => {
+  const result: TornSagaSweepResult = {
+    scanned: 0, raised: 0, suppressed: 0, errored: 0,
+  };
+  const candidates = await deps.listFailedRuns(limit);
+  for (const candidate of candidates) {
+    result.scanned += 1;
+    try {
+      const commits = await deps.listRunCommits(candidate.run_id);
+      const saga = detectTornSaga({
+        run_id: candidate.run_id,
+        recipe_id: candidate.recipe_id,
+        commits,
+        getManifest: deps.getManifest,
+      });
+      // Not torn: the run failed without any write landing, which is the
+      // ordinary failure and has nothing to disclose.
+      if (saga === null) continue;
+      if (await deps.alreadySurfaced(candidate.run_id)) {
+        result.suppressed += 1;
+        continue;
+      }
+      await raiseSagaAsk(deps.notifier, saga, deps.derivePlans(saga));
+      result.raised += 1;
+    } catch (error) {
+      result.errored += 1;
+      deps.log?.(
+        `[saga-sweep] run ${candidate.run_id}: `
+          + (error instanceof Error ? error.message : String(error)),
+      );
+    }
+  }
+  return result;
+};
+
 export const raiseSagaAsk = async (
   notifier: SagaNotifier,
   saga: TornSaga,

@@ -21,6 +21,8 @@ import {
   INSTALL_GRANT_ACCESS_OPTION_ATTR,
   INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
   INSTALL_GRANT_PICKER_ATTR,
+  INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR,
+  INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR,
   INSTALL_GRANT_PICKER_STYLES,
   INSTALL_GRANT_SCOPE_ATTR,
   INSTALL_GRANT_SCOPE_OPTION_ATTR,
@@ -30,6 +32,7 @@ import {
   renderInstallGrantPicker,
 } from '../settings/install-grant-picker.js';
 import type { InstallAudienceSelection, InstallScopeWho } from '@recued/contracts';
+import { INSTALL_CONNECT_SUMMARY_ATTR } from '../settings/install-connect-picker.js';
 import {
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_PANEL_STYLES,
@@ -635,11 +638,15 @@ interface InstallCall {
   install_scope?: { access: InstallAccessTier; scope?: string };
 }
 
-const setup = (manifest: BulkPackManifest) => {
+const setup = (
+  manifest: BulkPackManifest,
+  entry: Partial<PackListEntry> = {},
+  mountExtra: Partial<Parameters<typeof mountPacksPanel>[0]> = {},
+) => {
   const host = makeFakeElement('div');
   const doc = makeFakeDocument();
   const installCalls: InstallCall[] = [];
-  const runList: PacksListCaller = async () => ({ packs: [baseEntry(manifest)] });
+  const runList: PacksListCaller = async () => ({ packs: [{ ...baseEntry(manifest), ...entry }] });
   const runInstall: PacksInstallCaller = async (args) => {
     installCalls.push(args as InstallCall);
     return { result: { ok: true, installed: [], rolled_back: [] } satisfies BulkPackInstallResultLike };
@@ -652,6 +659,7 @@ const setup = (manifest: BulkPackManifest) => {
     // detail's install affordance (was the list row).
     initialSlug: manifest.slug,
     runInstall,
+    ...mountExtra,
   });
   return { host, mount, installCalls };
 };
@@ -806,6 +814,227 @@ describe('D-182 §7.1 (5b.2) — packs-panel install dialog grant picker', () =>
     // openDialog + success-path resets must still drop the stale `write` pick.
     mount.clickInstall('test-pack');
     expect(mount.getDialogAccessTier()).toBe('read');
+  });
+});
+
+describe('an update starts at the Access the pack holds now', () => {
+  /** An update REPLACES the pack's grants. The dialog started at "Read only"
+   *  whatever the owner had chosen, so pressing Update on a "Read + write" pack
+   *  took its writes away (driven live: the importer then failed
+   *  `operation_not_granted`). The server reads the tier back from the grants
+   *  (`current_access`); the dialog starts there and says so. */
+  const originalDoc = (globalThis as { document?: unknown }).document;
+  afterEach(() => {
+    (globalThis as { document?: unknown }).document = originalDoc;
+  });
+
+  const update = (current?: InstallAccessTier): Partial<PackListEntry> => ({
+    installed: false,
+    installed_any_version: true,
+    ...(current !== undefined ? { current_access: current } : {}),
+  });
+  const readWrite = (): BulkPackManifest =>
+    compositionPack('http', [op('invoice.search', 'read'), op('invoice.create', 'write')]);
+  const everyTier = (): BulkPackManifest => compositionPack('http', [
+    op('invoice.search', 'read'), op('invoice.create', 'write'), op('invoice.delete', 'destructive'),
+  ]);
+
+  it('⛔ a "Read + write" pack updates at Read + write, and the dialog says why', async () => {
+    const { host, mount, installCalls } = setup(readWrite(), update('write'));
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('write');
+    // What the owner SEES checked is what the install sends.
+    expect(findAllByAttr(host, INSTALL_GRANT_ACCESS_OPTION_ATTR).find((r) => r.checked)
+      ?.getAttribute('data-access')).toBe('write');
+    const note = findByAttr(host, INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR);
+    expect(note?.getAttribute(INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR)).toBe('write');
+    expect(collectText(note!)).toBe(
+      'This Pack has “Read + write” now, so the update starts there. Pick another level to change it.',
+    );
+    await mount.clickConfirmInstall();
+    expect(installCalls[0].install_scope?.access).toBe('write');
+  });
+
+  it('the owner\'s own pick still wins', async () => {
+    const { mount, installCalls } = setup(readWrite(), update('write'));
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    mount.clickAccessOption('read');
+    expect(mount.getDialogAccessTier()).toBe('read');
+    await mount.clickConfirmInstall();
+    expect(installCalls[0].install_scope?.access).toBe('read');
+  });
+
+  it('never starts ABOVE what the pack holds', async () => {
+    const { host, mount } = setup(everyTier(), update('read'));
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('read');
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR)?.getAttribute(
+      INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR,
+    )).toBe('read');
+  });
+
+  it('a tier the update no longer offers starts at the highest one below it — and claims nothing', async () => {
+    const { host, mount } = setup(readWrite(), update('all'));
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('write');
+    // "This Pack has Full access now" beside a picker with no Full access
+    // would describe a choice the owner cannot make.
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR)).toBeNull();
+  });
+
+  it('an update without current_access (an older server) starts at Read only, with no note', async () => {
+    const { host, mount } = setup(everyTier(), update());
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('read');
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR)).toBeNull();
+  });
+
+  it('a fresh install never carries anything over', async () => {
+    const { host, mount } = setup(everyTier(), { installed: false, current_access: 'all' });
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('read');
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR)).toBeNull();
+  });
+
+  it('reopening the dialog starts at the pack\'s tier again, not the last pick', async () => {
+    const { mount } = setup(everyTier(), update('write'));
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    mount.clickAccessOption('all');
+    mount.clickCancelDialog();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAccessTier()).toBe('write');
+  });
+});
+
+describe('an update starts at who may use the pack now (D-294)', () => {
+  /** An update REPLACES the pack's share. The dialog started at "only you", so
+   *  pressing Update withdrew the pack from every customer and agreement. The
+   *  server reads the share back (`current_audience`); the dialog starts there,
+   *  shows it, and says so. */
+  const originalDoc = (globalThis as { document?: unknown }).document;
+  afterEach(() => {
+    (globalThis as { document?: unknown }).document = originalDoc;
+  });
+
+  const pack = (): BulkPackManifest =>
+    compositionPack('http', [op('invoice.search', 'read'), op('invoice.create', 'write')]);
+  const carried = {
+    owner: true,
+    all_customers: false,
+    all_other_contracts: false,
+    customer_tier_ids: ['gold'],
+    contract_ids: ['door-a', 'cust-9'],
+  };
+  const lists = {
+    runSellerOverview: async () => ({
+      tiers: [{ tier_id: 'gold', active: true, display_name: 'Gold', entitlement_key: 'gold' }],
+      customers: [{ contract_id: 'cust-9', email: 'nine@shop.example', source_customer_id: 'c9' }],
+    }) as never,
+    runListContracts: async () => ({
+      contracts: [{ contract_id: 'door-a', display_name: 'Bookkeeper', lifecycle_state: 'active' }],
+    }) as never,
+  };
+  const update = (audience?: typeof carried): Partial<PackListEntry> => ({
+    installed: false,
+    installed_any_version: true,
+    ...(audience !== undefined ? { current_audience: audience } : {}),
+  });
+  const detail = (host: FakeElement, kind: string, id: string): FakeElement | undefined =>
+    findAllByAttr(host, INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR)
+      .find((box) => box.getAttribute('data-audience-kind') === kind && box.getAttribute('data-audience-id') === id);
+
+  it('⛔ a pack shared with a customer package, an agreement and one customer updates shared with them all — shown, and said', async () => {
+    const { host, mount, installCalls } = setup(pack(), update(carried), lists);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAudience()).toEqual(carried);
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR)).not.toBeNull();
+    // Every carried choice is ticked where the owner can see it…
+    expect(detail(host, 'tier', 'gold')?.checked).toBe(true);
+    expect(detail(host, 'contract', 'door-a')?.checked).toBe(true);
+    // …including a customer shared one by one, by name — a customer is
+    // otherwise chosen only through its package.
+    expect(detail(host, 'contract', 'cust-9')?.checked).toBe(true);
+    // …in sections that are OPEN — a carried choice never hides behind a summary.
+    expect(findAllByAttr(host, 'open')).toHaveLength(2);
+    await mount.clickConfirmInstall();
+    expect(installCalls[0].install_scope).toEqual({ access: 'read', audience: carried });
+  });
+
+  it('unticking one carried-over customer stops sharing with that customer only', async () => {
+    const { host, mount } = setup(pack(), update(carried), lists);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    const nine = detail(host, 'contract', 'cust-9')!;
+    nine.checked = false;
+    nine.dispatch('change');
+    expect(mount.getDialogAudience()).toEqual({ ...carried, contract_ids: ['door-a'] });
+  });
+
+  it('a fresh install starts at only you, with no note', async () => {
+    const { host, mount } = setup(pack(), { installed: false, current_audience: carried }, lists);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAudience()).toEqual({ owner: true, all_customers: false, all_other_contracts: false });
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR)).toBeNull();
+  });
+
+  it('an update from a server that sends no current_audience starts at only you, with no note', async () => {
+    const { host, mount } = setup(pack(), update(), lists);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(mount.getDialogAudience()).toEqual({ owner: true, all_customers: false, all_other_contracts: false });
+    expect(findByAttr(host, INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR)).toBeNull();
+  });
+});
+
+describe('an update keeps the account the pack uses (D-294)', () => {
+  const originalDoc = (globalThis as { document?: unknown }).document;
+  afterEach(() => {
+    (globalThis as { document?: unknown }).document = originalDoc;
+  });
+
+  const requirement = {
+    authority: 'login.microsoftonline.com',
+    api_base: 'https://graph.microsoft.com/v1.0',
+    vendor: 'onedrive',
+    auth: {
+      type: 'oauth2_refresh',
+      authorize_url: 'https://login.microsoftonline.com/authorize',
+      token_endpoint: 'https://login.microsoftonline.com/token',
+    },
+  };
+  const account = (name: string, display: string) => ({
+    kind: 'api', name, display_name: display, base_url: 'https://graph.microsoft.com/v1.0', auth_type: 'oauth2_refresh',
+  });
+
+  it('⛔ two accounts of one vendor: the update starts at, shows and SENDS the one the pack uses — not the first by name', async () => {
+    const { host, mount, installCalls } = setup(
+      compositionPack('http', [op('invoice.search', 'read'), op('invoice.create', 'write')]),
+      {
+        installed: false,
+        installed_any_version: true,
+        current_connection: 'work-od',
+        connection_requirements: [requirement],
+      } as Partial<PackListEntry>,
+      {
+        runConnectionList: async () => ({
+          connections: [account('home-od', 'home@live'), account('work-od', 'work@contoso')],
+        }) as never,
+      },
+    );
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(collectText(findByAttr(host, INSTALL_CONNECT_SUMMARY_ATTR)!)).toBe('Keeps using: work@contoso');
+    await mount.clickConfirmInstall();
+    expect((installCalls[0] as { chosen_connection?: string }).chosen_connection).toBe('work-od');
   });
 });
 

@@ -887,3 +887,25 @@ export const missingPackDependencies = (
   }
   return missing;
 };
+
+/** The schedule refusal's pack check: the packs `recipe_id` declares that are
+ *  not installed, or none for a recipe the store does not have.
+ *
+ *  ⛔ ONE FACTORY FOR EVERY WAY IN. The check was built inline where the
+ *  webclient's `schedules.create` is registered, and the recipe step
+ *  `core.schedule.recipe` composed the same handler without it. So a Schedule
+ *  recipe run (or an AI calling it) armed a cron for a recipe that could never
+ *  run, which the Recipes page refused to run by hand (found live 2026-09-25).
+ *
+ *  ⚠ Reads the store for its own lookup and never becomes the handler's
+ *  `recipeStore`: that would switch on the schedule handler's dormant
+ *  existence check on the webclient's route as a side effect. */
+export const createMissingPackDepsForRecipe = (
+  recipeStore: { get(recipe_id: string): { depends_on?: unknown } | null },
+  scanInstalledPacks: InstalledPackScan,
+  getManifest: (slug: string) => IngredientManifest | null,
+): ((recipe_id: string) => string[]) => (recipe_id) => {
+  const recipe = recipeStore.get(recipe_id);
+  if (recipe === null) return [];
+  return missingPackDependencies(recipe, buildPackOpResolution(scanInstalledPacks, getManifest));
+};

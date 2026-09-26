@@ -4,19 +4,20 @@
       "openapi": {
         "kind": "official_openapi",
         "url": "https://fivetran.com/assets-docs/openapi/file_v1.json",
-        "bytes": 3127039,
-        "sha256": "b7e3be2dd5b2ecfb14ed51ddb848e817d21dcbfb655526f404a539b70e1d810f",
-        "retrieved_on": "2026-07-20",
+        "bytes": 3234089,
+        "sha256": "df081b72343c89ad50b67c293f99a1494ff8543731d3adbb889084535755aeb1",
+        "retrieved_on": "2026-09-25",
         "evidence": [
-          "170 method/path operations",
+          "179 method/path operations",
           "HTTP Basic root security with one public security override",
           "exact parameters, request media, responses, and Accept defaults"
         ],
-        "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
+        "mutability": "The vendor-hosted URL is mutable, and every Fivetran docs build rewrites its `updated` tag. Generation fails closed unless the bytes match this reviewed contract with only that build stamp set aside.",
+        "content_sha256": "acb2040a3bc33257ccb5297518ce9ff2dcd6d84faa816f6f9630b426da6d98be",
         "openapi": "3.0.1",
         "title": "OpenAPI Definition",
         "api_version": "v1",
-        "official_path_count": 102,
+        "official_path_count": 105,
         "declared_server": [
           {
             "url": "https://api.fivetran.com"
@@ -33,11 +34,11 @@
         }
       },
       "getting_started": {
-        "kind": "official_markdown_documentation",
-        "url": "https://fivetran.com/docs/rest-api/getting-started.md",
-        "bytes": 15554,
-        "sha256": "35e79245ff0f96cb964ecde2a3ab2bc4e017107fef27cfa5dfc634c379c5212a",
-        "retrieved_on": "2026-07-20",
+        "kind": "official_documentation_article",
+        "url": "https://fivetran.com/docs/rest-api/getting-started",
+        "bytes": 49127,
+        "sha256": "e6fb58028e5d66833277b305723fc88cfbb3ca5e89476cad2ab7e37dc60534a7",
+        "retrieved_on": "2026-09-25",
         "evidence": [
           "base URL https://api.fivetran.com/v1/",
           "Authorization Basic base64(api_key:api_secret)"
@@ -45,11 +46,11 @@
         "mutability": "Mutable vendor documentation; the hash lock prevents silent authentication or origin drift."
       },
       "pagination": {
-        "kind": "official_markdown_documentation",
-        "url": "https://fivetran.com/docs/rest-api/getting-started/pagination.md",
-        "bytes": 1975,
-        "sha256": "120bca2319550098fb83df879bcc5a8e700e11772c424bac8bfe125d230f7eed",
-        "retrieved_on": "2026-07-20",
+        "kind": "official_documentation_article",
+        "url": "https://fivetran.com/docs/rest-api/getting-started/pagination",
+        "bytes": 9721,
+        "sha256": "61c01d3b87e79e16ba7ac94f8cdb7f260065a794dd57d2047a4ce04cdfdd9c6b",
+        "retrieved_on": "2026-09-25",
         "evidence": [
           "cursor request parameter",
           "data.next_cursor response continuation",
@@ -58,11 +59,11 @@
         "mutability": "Mutable vendor documentation; the hash lock prevents silent continuation or maximum-page drift."
       },
       "rate_limits": {
-        "kind": "official_markdown_documentation",
-        "url": "https://fivetran.com/docs/rest-api/getting-started/rate-limiting.md",
-        "bytes": 2991,
-        "sha256": "a510e113223ecb2741d37ad052e94795b86562162edbb6eac401fa9d3884019d",
-        "retrieved_on": "2026-07-20",
+        "kind": "official_documentation_article",
+        "url": "https://fivetran.com/docs/rest-api/getting-started/rate-limiting",
+        "bytes": 9045,
+        "sha256": "231ce869e44d5ca8b6c18af974e41f5410352400807a5068c2aca30ccceb994b",
+        "retrieved_on": "2026-09-25",
         "evidence": [
           "500 requests per hour for trial accounts",
           "20,000 requests per hour for paid accounts",
@@ -71,26 +72,26 @@
         "mutability": "Mutable vendor documentation; the hash lock prevents silent rate-limit evidence drift."
       }
     },
-    "official_operation_count": 176,
-    "admitted_operation_count": 173,
+    "official_operation_count": 179,
+    "admitted_operation_count": 176,
     "deprecated_operation_count": 1,
     "transport_exclusion_count": 2,
     "official_method_counts": {
-      "DELETE": 30,
-      "GET": 70,
+      "DELETE": 31,
+      "GET": 72,
       "PATCH": 25,
       "POST": 51
     },
     "admitted_method_counts": {
-      "DELETE": 30,
-      "GET": 70,
+      "DELETE": 31,
+      "GET": 72,
       "PATCH": 24,
       "POST": 49
     },
     "official_tag_counts": {
       "Account Management": 1,
       "Certificate Management": 17,
-      "Connection Management": 13,
+      "Connection Management": 16,
       "Connection Schema Management": 11,
       "Connector Metadata": 2,
       "Connector SDK Package Resource": 6,
@@ -114,7 +115,7 @@
     "admitted_tag_counts": {
       "Account Management": 1,
       "Certificate Management": 16,
-      "Connection Management": 13,
+      "Connection Management": 16,
       "Connection Schema Management": 11,
       "Connector Metadata": 2,
       "Connector SDK Package Resource": 4,
@@ -137,53 +138,53 @@
     },
     "pack_operation_counts": {
       "fivetran-public-metadata": 1,
-      "fivetran-connections-data-pipeline": 43,
+      "fivetran-connections-data-pipeline": 46,
       "fivetran-identity-access": 50,
       "fivetran-networking-deployment": 45,
       "fivetran-transformations-observability": 34
     },
     "composition_bytes": {
       "fivetran-public-metadata": 2176,
-      "fivetran-connections-data-pipeline": 92753,
-      "fivetran-identity-access": 92233,
+      "fivetran-connections-data-pipeline": 99214,
+      "fivetran-identity-access": 92357,
       "fivetran-networking-deployment": 85033,
       "fivetran-transformations-observability": 63495
     },
     "body_mode_counts": {
-      "none": 107,
+      "none": 110,
       "raw_json": 66
     },
     "success_status_counts": {
-      "200": 151,
+      "200": 154,
       "201": 22
     },
     "empty_success_operation_count": 2,
     "accept_counts": {
       "application/json": 154,
-      "application/json;version=2": 19
+      "application/json;version=2": 22
     },
     "effective_accept_counts": {
       "application/json": 153,
-      "application/json;version=2": 19,
+      "application/json;version=2": 22,
       "application/octet-stream": 1
     },
     "risk_counts": {
       "admin": 37,
-      "destructive": 66,
-      "read": 70
+      "destructive": 67,
+      "read": 72
     },
     "approval_counts": {
-      "always": 103,
-      "never": 70
+      "always": 104,
+      "never": 72
     },
     "idempotency_counts": {
-      "idempotent": 30,
+      "idempotent": 31,
       "non_idempotent": 73,
-      "safe": 70
+      "safe": 72
     },
     "pagination": {
       "automatic_operation_count": 32,
-      "manual_gap_count": 2,
+      "manual_gap_count": 3,
       "automatic_operation_keys": [
         "GET /v1/connections",
         "GET /v1/connections/{connectionId}/certificates",
@@ -219,16 +220,17 @@
         "GET /v1/webhooks"
       ],
       "manual_operation_keys": [
+        "GET /v1/connections/{connectionId}/warnings",
         "GET /v1/external-secrets-managers-entities",
         "GET /v1/external-secrets-managers/{esmId}/entities"
       ],
       "result_path_counts": {
-        "data.items": 34
+        "data.items": 35
       }
     },
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled fivetran connection: API key as username and API secret as password",
-      "basic_auth_operation_count": 172,
+      "basic_auth_operation_count": 175,
       "public_no_auth_operation_count": 1,
       "credential_fields_in_pack": 0
     },
@@ -238,8 +240,8 @@
       "official_request_body_required_count": 0,
       "effective_request_body_required_count": 66,
       "exact_content_type_operation_count": 66,
-      "declared_accept_operation_count": 173,
-      "exact_accept_operation_count": 172,
+      "declared_accept_operation_count": 176,
+      "exact_accept_operation_count": 175,
       "accept_override_operation_keys": [
         "GET /v1/connector-sdk/packages/{package_id}/download"
       ],
@@ -247,7 +249,7 @@
         "POST /v1/connections/{connectionId}/fingerprints",
         "POST /v1/destinations/{destinationId}/fingerprints"
       ],
-      "version_2_accept_operation_count": 19,
+      "version_2_accept_operation_count": 22,
       "pagination_owned_parameters": [
         "GET /v1/connections/{connectionId}/certificates:cursor",
         "GET /v1/connections/{connectionId}/certificates:limit",
@@ -569,6 +571,24 @@
         "manual_pagination": null
       },
       {
+        "recipe_id": "connection-moved-job-status-fivetran",
+        "operation_id": "connection_moved_job_status",
+        "key": "GET /v1/connections/{connectionId}/move/{jobId}",
+        "pack": "fivetran-connections-data-pipeline",
+        "op": "connection.connection_moved_job_status",
+        "public": false,
+        "required_args": [
+          "connectionId",
+          "jobId"
+        ],
+        "supplied_args": [
+          "connectionId",
+          "jobId"
+        ],
+        "pagination": null,
+        "manual_pagination": null
+      },
+      {
         "recipe_id": "connection-schema-config-fivetran",
         "operation_id": "connection_schema_config",
         "key": "GET /v1/connections/{connectionId}/schemas",
@@ -648,6 +668,30 @@
           }
         },
         "manual_pagination": null
+      },
+      {
+        "recipe_id": "connection-warnings-fivetran",
+        "operation_id": "connection_warnings",
+        "key": "GET /v1/connections/{connectionId}/warnings",
+        "pack": "fivetran-connections-data-pipeline",
+        "op": "connection.connection_warnings",
+        "public": false,
+        "required_args": [
+          "connectionId"
+        ],
+        "supplied_args": [
+          "connectionId"
+        ],
+        "pagination": null,
+        "manual_pagination": {
+          "reason": "response_cursor_without_request_parameter",
+          "result_path": "data.items",
+          "response_cursor": "data.next_cursor",
+          "absent_request_parameters": [
+            "cursor",
+            "limit"
+          ]
+        }
       },
       {
         "recipe_id": "list-connector-sdk-packages-fivetran",
@@ -1680,7 +1724,7 @@
         "manual_pagination": null
       }
     ],
-    "operation_ids_sha256": "b38e89aa7e290d91684d883c27f8adb0d830ea09cc3e81199de998ccbd2aecb4"
+    "operation_ids_sha256": "815bc00f065e58087d94a5d24c55fa59f02da27c6b9e6500163f5432a08155a1"
   },
   "official_operations": [
     {
@@ -2290,7 +2334,7 @@
       "path": "/v1/connections/{connectionId}/move",
       "operation_id": "connection_moved",
       "tag": "Connection Management",
-      "summary": "Move a Connection (Beta)",
+      "summary": "Move a Connection",
       "deprecated": false,
       "security": [
         {
@@ -2321,6 +2365,40 @@
       "exclusion_reason": null,
       "pack": "fivetran-connections-data-pipeline",
       "op": "connection.connection_moved"
+    },
+    {
+      "key": "GET /v1/connections/{connectionId}/move/{jobId}",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/move/{jobId}",
+      "operation_id": "connection_moved_job_status",
+      "tag": "Connection Management",
+      "summary": "Retrieve Move Connection Job Status",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_moved_job_status"
     },
     {
       "key": "POST /v1/connections/{connectionId}/resync",
@@ -2947,6 +3025,74 @@
       "exclusion_reason": null,
       "pack": "fivetran-connections-data-pipeline",
       "op": "connection.run_setup_tests"
+    },
+    {
+      "key": "GET /v1/connections/{connectionId}/warnings",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/warnings",
+      "operation_id": "connection_warnings",
+      "tag": "Connection Management",
+      "summary": "Retrieve Connection Warnings",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_warnings"
+    },
+    {
+      "key": "DELETE /v1/connections/{connectionId}/warnings/{warningType}",
+      "method": "DELETE",
+      "path": "/v1/connections/{connectionId}/warnings/{warningType}",
+      "operation_id": "dismiss_connection_warning",
+      "tag": "Connection Management",
+      "summary": "Dismiss Connection Warnings by Type",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.dismiss_connection_warning"
     },
     {
       "key": "GET /v1/connector-sdk/packages",
@@ -8240,6 +8386,74 @@
         }
       ]
     },
+    "DELETE /v1/connections/{connectionId}/warnings/{warningType}": {
+      "key": "DELETE /v1/connections/{connectionId}/warnings/{warningType}",
+      "operation_id": "dismiss_connection_warning",
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.dismiss_connection_warning",
+      "method": "DELETE",
+      "path": "/v1/connections/{connectionId}/warnings/{warningType}",
+      "tag": "Connection Management",
+      "public": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "connectionId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "connectionId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "warningType",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "warningType",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "DELETE /v1/connector-sdk/packages/{package_id}": {
       "key": "DELETE /v1/connector-sdk/packages/{package_id}",
       "operation_id": "delete_connector_sdk_package",
@@ -10304,6 +10518,74 @@
         }
       ]
     },
+    "GET /v1/connections/{connectionId}/move/{jobId}": {
+      "key": "GET /v1/connections/{connectionId}/move/{jobId}",
+      "operation_id": "connection_moved_job_status",
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_moved_job_status",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/move/{jobId}",
+      "tag": "Connection Management",
+      "public": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "connectionId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "connectionId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "jobId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "jobId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/connections/{connectionId}/schemas": {
       "key": "GET /v1/connections/{connectionId}/schemas",
       "operation_id": "connection_schema_config",
@@ -10623,6 +10905,68 @@
         }
       },
       "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/connections/{connectionId}/warnings": {
+      "key": "GET /v1/connections/{connectionId}/warnings",
+      "operation_id": "connection_warnings",
+      "pack": "fivetran-connections-data-pipeline",
+      "op": "connection.connection_warnings",
+      "method": "GET",
+      "path": "/v1/connections/{connectionId}/warnings",
+      "tag": "Connection Management",
+      "public": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "connectionId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "connectionId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json;version=2",
+      "accept": "application/json;version=2",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": "data.items",
+      "pagination": null,
+      "manual_pagination": {
+        "reason": "response_cursor_without_request_parameter",
+        "result_path": "data.items",
+        "response_cursor": "data.next_cursor",
+        "absent_request_parameters": [
+          "cursor",
+          "limit"
+        ]
+      },
       "response_capture": null,
       "sensitive_response": false,
       "security": [

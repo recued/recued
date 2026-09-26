@@ -250,7 +250,9 @@ const firstValidationError = (
   return first ? `${first.path ? `${first.path}: ` : ''}${first.message}` : 'validation failed';
 };
 
-const hasPrivilegedRecordsStep = (recipe: RecipeDefinition): boolean =>
+/** A recipe carrying a coordinator-only Records op — the runtime canary or a
+ *  migration step. Never stored as a recipe row: only business recipes are. */
+export const hasPrivilegedRecordsStep = (recipe: RecipeDefinition): boolean =>
   [...(recipe.prefetch_steps ?? []), ...recipe.steps].some((step) => {
     if (!isPlainObject(step)) return false;
     return typeof step.op === 'string' && PRIVILEGED_RECORDS_OPS.has(step.op);

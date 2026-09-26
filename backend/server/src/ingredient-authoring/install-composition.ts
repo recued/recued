@@ -1345,7 +1345,7 @@ const writePackGrants = (
   }
 };
 
-const customerTierByContractForInstallAudience = (
+export const customerTierByContractForInstallAudience = (
   customers: ReturnType<SellerInstallAudienceStore['listCustomers']>,
 ): ReadonlyMap<string, string> => {
   const out = new Map<string, string>();
@@ -1503,9 +1503,15 @@ export const applyInstallAudienceGrantIds = (
   // Connection-level pack grants are shared substrate and therefore make the
   // owner author-default reachable. A checklist with "You" unchecked must pin
   // an explicit pack-owned owner revoke, otherwise customer-only is a lie.
+  //
+  // ⛔ D-294 — every write below goes through `setForSourcePack`, which leaves a
+  // row the owner or a door set THEMSELVES (unstamped) alone. A pack-level share
+  // must never overwrite a decision made one operation at a time: `set` turned an
+  // owner's revoke into a grant, and stamped a door's own grant as this pack's,
+  // so the next update or uninstall deleted it.
   if (!audience.owner) {
     for (const grantId of ids) {
-      grantEntryStore.set(
+      grantEntryStore.setForSourcePack(
         OWNER_CONTRACT_ID,
         opGrantEntry(grantId),
         false,
@@ -1527,7 +1533,7 @@ export const applyInstallAudienceGrantIds = (
       affectedCustomerContracts.add(def.contract_id);
     }
     for (const grantId of ids) {
-      grantEntryStore.set(
+      grantEntryStore.setForSourcePack(
         def.contract_id,
         opGrantEntry(grantId),
         true,

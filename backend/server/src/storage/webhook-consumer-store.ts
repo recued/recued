@@ -21,6 +21,7 @@ import {
   type WebhookConsumerBindingRecord,
   type WebhookEnvironmentPolicy,
   type WebhookIngressBindingSelection,
+  type WebhookIngressRecord,
   type WebhookRegistrationMode,
   type WebhookSourceTruthPolicy,
 } from '@recued/contracts';
@@ -192,6 +193,86 @@ export interface WebhookAwaitingApprovalDispatch {
   run_id: string;
   recipe_id: string;
 }
+
+/** Why `ingress` cannot serve `requirement`, or `null` when it can — given the
+ *  webhook triggers of the recipes that would bind it (their events for this
+ *  binding must be selected on the ingress too).
+ *
+ *  ⛔ ONE RULE FOR THE INSTALL AND THE INSTALL DIALOG (D-295). The install refuses
+ *  with it (`replaceConsumer`); the dialog's webhook plan offers only the
+ *  ingresses it accepts. Two copies would let the dialog offer a webhook the
+ *  install then refuses. The checks run in the install's historical order, so
+ *  the first failure — and its message — is the one it always reported. */
+export const webhookIngressUnfit = (
+  ingress: Pick<
+    WebhookIngressRecord,
+    'intake_state' | 'profile_id' | 'registration_mode' | 'environment'
+    | 'selected_event_types' | 'paired_connection_id'
+  >,
+  requirement: PackWebhookRequirement,
+  recipeTriggers: readonly RecipeWebhookTrigger[],
+): {
+  code: 'not_ready' | 'conflict';
+  reason:
+    | 'not_enabled' | 'profile' | 'registration_mode' | 'environment'
+    | 'required_events' | 'trigger_events' | 'paired_connection';
+  message: string;
+} | null => {
+  const binding = requirement.binding;
+  if (ingress.intake_state !== 'enabled') {
+    return { code: 'not_ready', reason: 'not_enabled', message: `webhook ingress for '${binding}' is not enabled` };
+  }
+  if (!requirement.profile_ids.includes(ingress.profile_id)) {
+    return {
+      code: 'conflict',
+      reason: 'profile',
+      message: `ingress profile '${ingress.profile_id}' is incompatible with '${binding}'`,
+    };
+  }
+  if (requirement.registration_modes !== undefined
+    && !requirement.registration_modes.includes(ingress.registration_mode)) {
+    return {
+      code: 'conflict',
+      reason: 'registration_mode',
+      message: `ingress registration mode is incompatible with '${binding}'`,
+    };
+  }
+  const environmentPolicy = requirement.environment_policy ?? 'any';
+  if ((environmentPolicy === 'test_only' && ingress.environment !== 'test')
+    || (environmentPolicy === 'live_only' && ingress.environment !== 'live')) {
+    return {
+      code: 'conflict',
+      reason: 'environment',
+      message: `ingress environment is incompatible with '${binding}'`,
+    };
+  }
+  const requiredEvents = requirement.required_event_types ?? [];
+  if (requiredEvents.some((eventType) => !ingress.selected_event_types.includes(eventType))) {
+    return {
+      code: 'not_ready',
+      reason: 'required_events',
+      message: `ingress is missing a required event selection for '${binding}'`,
+    };
+  }
+  const triggerEvents = recipeTriggers
+    .filter((trigger) => trigger.binding === binding)
+    .flatMap((trigger) => trigger.event_types);
+  if (triggerEvents.some((eventType) => !ingress.selected_event_types.includes(eventType))) {
+    return {
+      code: 'not_ready',
+      reason: 'trigger_events',
+      message: `ingress is missing a recipe trigger event selection for '${binding}'`,
+    };
+  }
+  if (requirement.paired_connection_slot !== undefined && ingress.paired_connection_id === null) {
+    return {
+      code: 'not_ready',
+      reason: 'paired_connection',
+      message: `ingress has no paired connection for '${binding}'`,
+    };
+  }
+  return null;
+};
 
 export interface WebhookConsumerStoreOptions {
   ingressStore: Pick<WebhookIngressStore, 'get'>;
@@ -732,57 +813,17 @@ export const createWebhookConsumerStore = (
           `selected webhook ingress '${selection.ingress_id}' was not found`,
         );
       }
-      if (ingress.intake_state !== 'enabled') {
+      const unfit = webhookIngressUnfit(
+        ingress,
+        requirement,
+        input.recipes.flatMap((recipe) => recipe.webhook_triggers),
+      );
+      if (unfit !== null) {
         throw new WebhookConsumerStoreError(
-          'not_ready',
-          `selected webhook ingress '${selection.ingress_id}' is not enabled`,
-        );
-      }
-      if (!requirement.profile_ids.includes(ingress.profile_id)) {
-        throw new WebhookConsumerStoreError(
-          'conflict',
-          `ingress profile '${ingress.profile_id}' is incompatible with '${logicalBinding}'`,
-        );
-      }
-      if (requirement.registration_modes !== undefined
-        && !requirement.registration_modes.includes(ingress.registration_mode)) {
-        throw new WebhookConsumerStoreError(
-          'conflict',
-          `ingress registration mode is incompatible with '${logicalBinding}'`,
-        );
-      }
-      const environmentPolicy = requirement.environment_policy ?? 'any';
-      if ((environmentPolicy === 'test_only' && ingress.environment !== 'test')
-        || (environmentPolicy === 'live_only' && ingress.environment !== 'live')) {
-        throw new WebhookConsumerStoreError(
-          'conflict',
-          `ingress environment is incompatible with '${logicalBinding}'`,
-        );
-      }
-      const requiredEvents = requirement.required_event_types ?? [];
-      if (requiredEvents.some((eventType) =>
-        !ingress.selected_event_types.includes(eventType))) {
-        throw new WebhookConsumerStoreError(
-          'not_ready',
-          `ingress is missing a required event selection for '${logicalBinding}'`,
-        );
-      }
-      const triggerEvents = input.recipes.flatMap((recipe) =>
-        recipe.webhook_triggers
-          .filter((trigger) => trigger.binding === logicalBinding)
-          .flatMap((trigger) => trigger.event_types));
-      if (triggerEvents.some((eventType) =>
-        !ingress.selected_event_types.includes(eventType))) {
-        throw new WebhookConsumerStoreError(
-          'not_ready',
-          `ingress is missing a recipe trigger event selection for '${logicalBinding}'`,
-        );
-      }
-      if (requirement.paired_connection_slot !== undefined
-        && ingress.paired_connection_id === null) {
-        throw new WebhookConsumerStoreError(
-          'not_ready',
-          `ingress has no paired connection for '${logicalBinding}'`,
+          unfit.code,
+          unfit.code === 'not_ready' && unfit.reason === 'not_enabled'
+            ? `selected webhook ingress '${selection.ingress_id}' is not enabled`
+            : unfit.message,
         );
       }
       resolved.push({ binding: requirement, selection });

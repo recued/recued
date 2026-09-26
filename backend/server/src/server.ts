@@ -86,6 +86,7 @@ import type { ContractStore } from './storage/contract-store.js';
 import type { SellerOrderStore } from './storage/seller-order-store.js';
 import type { SellerStore } from './storage/seller-store.js';
 import type { SellerClaimStore } from './storage/seller-claim-store.js';
+import type { RecordsStore } from './records/store.js';
 
 export interface RunningServer {
   server: Server;
@@ -164,6 +165,8 @@ export interface ServerConfig {
   sellerInboundTokenStore?: ChatInboundTokenStore;
   /** D-196 S3c — sealed one-time claim substrate for bearer delivery. */
   sellerClaimStore?: SellerClaimStore;
+  /** D-309 — the DeepTutor enrollment records a re-applied package's length starts from. */
+  sellerRecordsStore?: Pick<RecordsStore, 'exportNamespace'>;
   /** Runtime config store (D-103 Phase A). Backs the non-LLM half of
    *  `server.getConfigSchema` / `server.setConfigField` — vault quotas,
    *  log levels, scheduler minimums, etc. Omitting it narrows the
@@ -1529,6 +1532,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     sellerContractStore: config.sellerContractStore,
     sellerInboundTokenStore: config.sellerInboundTokenStore,
     sellerClaimStore: config.sellerClaimStore,
+    ...(config.sellerRecordsStore ? { sellerRecordsStore: config.sellerRecordsStore } : {}),
     runtimeConfig: config.runtimeConfig,
     bootstrapDeps: config.bootstrapDeps,
     serverId: config.serverId,

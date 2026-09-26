@@ -99,7 +99,11 @@ export type WebhookDoorOutcome =
   | { readonly kind: 'refused'; readonly refusal: RecipeCapabilityRefusal }
   /** A store fault after the save already committed. Fail-closed exactly like
    *  a crash in the same window: rows stay NULL, status says re-save. */
-  | { readonly kind: 'failed'; readonly message: string };
+  | { readonly kind: 'failed'; readonly message: string }
+  /** D-295 — a PACK re-install found the door its owner revoked: it stays
+   *  revoked, still stamped, so every delivery keeps being refused. Nothing
+   *  was minted. */
+  | { readonly kind: 'kept_revoked'; readonly contract_id: string };
 
 /** Owner-facing prose for a door refusal — the webhook sibling of the
  *  reception handler's `describeDoorRefusal`, minus the responding-door case
@@ -176,6 +180,14 @@ export const reconcileWebhookDoors = (
     /** Stamped as the prior doors' revocation reason (`'resaved'`,
      *  `'pack_reinstalled'`, …). */
     readonly retireReason: string;
+    /** ⛔ D-295 — a PACK install: a door its owner revoked stays revoked.
+     *  Re-minting it (the default — a revoked prior "must never be re-used as
+     *  the live door") re-opened, on every pack update, a door the owner had
+     *  shut. A pack's door that is revoked while still STAMPED on its rows was
+     *  revoked by the owner: every machine retirement replaces the stamp with a
+     *  new door, or leaves none. A Kitchen re-save is the owner acting on that
+     *  recipe, and still re-mints. */
+    readonly keepOwnerRevoked?: boolean;
   },
   deps: WebhookDoorEnrollDeps,
 ): Map<string, WebhookDoorOutcome> => {
@@ -230,6 +242,25 @@ export const reconcileWebhookDoors = (
       const stored = priorIds.length === 1
         ? deps.definitionStore.get(priorIds[0]!)
         : null;
+      if (
+        input.keepOwnerRevoked === true
+        && stored !== null
+        && stored.revoked_at !== undefined
+        && stored.revoked_at !== null
+      ) {
+        const stampedRows = deps.consumerStore.stampTriggerContracts({
+          consumer_kind: input.consumer_kind,
+          consumer_id: input.consumer_id,
+          recipe_id: entry.recipe_id,
+          publisher_id: entry.publisher_id,
+          contract_id: priorIds[0]!,
+        });
+        reused.add(priorIds[0]!);
+        outcomes.set(entry.recipe_id, stampedRows === 0
+          ? { kind: 'failed', message: 'no trigger rows to stamp — re-save the recipe' }
+          : { kind: 'kept_revoked', contract_id: priorIds[0]! });
+        continue;
+      }
       const diff = doorCapabilityChanged(stored, derived.capability);
       // A revoked prior can still anchor the DIFF (it is what the owner last
       // consented to) but must never be re-used as the live door.

@@ -1,11 +1,11 @@
 {
   "recipe_id": "triage-inbox",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Triage inbox",
-    "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send an in-app notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
+    "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send a notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
     "author": "recued-core",
     "supported_platforms": [],
     "tags": ["email", "mail", "inbox", "triage", "alert", "ai_surface", "reactive", "pack:personal-organizer"],
@@ -15,7 +15,11 @@
     "channels": {
       "label": "Notification channels",
       "type": "array",
-      "default": ["in_app"]
+      "options": [
+        "@notification_channels"
+      ],
+      "optional": true,
+      "help": "Sends to every channel you have set up, unless you choose some, such as Slack, email or in-app."
     },
     "min_confidence": {
       "label": "Min confidence to notify (0..1)",

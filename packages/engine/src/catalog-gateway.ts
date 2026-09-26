@@ -53,6 +53,8 @@ import {
   D165_CONTRACT_SCHEMA,
   PAGINATION_MAX_PAGES,
   PAGINATION_MAX_RECORDS,
+  RECORDS_MAX_PAGE_SIZE,
+  RECORDS_MAX_SEARCH_ROWS,
   PreflightRequiredSignal,
   SESSION_GRANT_RISK_TIERS,
   canonicalArgHash,
@@ -1645,6 +1647,85 @@ const followPagination = async (
   };
 };
 
+/** ⛔⛔ `pages: "all"` — A RECORDS SEARCH READ PAGE BY PAGE.
+ *
+ *  The store answers one page (`limit`, at most `RECORDS_MAX_PAGE_SIZE`) and
+ *  returns `next_cursor` when rows were left out, and a recipe has no loop to
+ *  follow it. So a search that needed more than a page stopped at the first
+ *  without a word: the month-end closer lost every statement line past the
+ *  200th from its counts and the accountant's CSV (2026-09-24 audit). A step
+ *  that says `pages: "all"` (`StepPages`) gets every page instead, `limit` rows
+ *  at a time (the most a page holds when it gives none), up to
+ *  `RECORDS_MAX_SEARCH_ROWS` in all. Only a step that asks: other recipes rely
+ *  on the one-page ceiling.
+ *
+ *  The answer keeps the store's shape: `records`, and `next_cursor` only while
+ *  rows are still left, so "did I get everything" is asked the same way as of
+ *  one page. The last page is sized to the cap, so that cursor sits right after
+ *  the last row returned. It lives here for the reason `followPagination` does:
+ *  the gate resolved the grant once, and every page is the same read on the
+ *  same namespace.
+ *
+ *  ⚠ Pages are weakly consistent, so a row seen on two pages is kept once, by
+ *  `id` (the store's rule for merging live pages). A page that adds no new row
+ *  while saying more remain is not progress, and it fails the step rather than
+ *  loop. */
+const readRecordsSearch = async (
+  args: Record<string, unknown>,
+  execute: (args: Record<string, unknown>) => unknown,
+  checkKilled: () => void,
+): Promise<{ result: unknown; pages_fetched: number }> => {
+  const size = args.limit === undefined ? RECORDS_MAX_PAGE_SIZE : args.limit;
+  if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > RECORDS_MAX_PAGE_SIZE) {
+    // A page size the store would refuse reaches it as authored, and is refused
+    // there in its own words.
+    return { result: await execute(args), pages_fetched: 1 };
+  }
+  const records: unknown[] = [];
+  const seen = new Set<string>();
+  let prevCursor: unknown;
+  let cursor: unknown = args.cursor;
+  for (let pages = 1; ; pages += 1) {
+    const page = (await execute({
+      ...args,
+      ...(cursor === undefined ? {} : { cursor }),
+      limit: Math.min(size, RECORDS_MAX_SEARCH_ROWS - records.length),
+    }) ?? {}) as { records?: unknown; next_cursor?: unknown; prev_cursor?: unknown };
+    checkKilled();
+    if (pages === 1) prevCursor = page.prev_cursor;
+    const before = records.length;
+    for (const record of Array.isArray(page.records) ? page.records : []) {
+      const id = (record as { id?: unknown } | null)?.id;
+      if (typeof id === 'string') {
+        if (seen.has(id)) continue;
+        seen.add(id);
+      }
+      records.push(record);
+    }
+    const next = typeof page.next_cursor === 'string' && page.next_cursor !== ''
+      ? page.next_cursor
+      : undefined;
+    if (next === undefined || records.length >= RECORDS_MAX_SEARCH_ROWS) {
+      return {
+        result: {
+          records,
+          ...(next === undefined ? {} : { next_cursor: next }),
+          ...(typeof prevCursor === 'string' ? { prev_cursor: prevCursor } : {}),
+        },
+        pages_fetched: pages,
+      };
+    }
+    // Every page adds a row or fails here, and the walk ends at the cap, so it
+    // cannot run on: no page count is needed on top.
+    if (records.length === before) {
+      throw new Error(
+        `records search stopped after ${pages} pages with ${records.length} rows: a page added no new row`,
+      );
+    }
+    cursor = next;
+  }
+};
+
 // ── GraphQL response envelope (D-192 Gate E′) ───────────────────────────────
 //
 //  GraphQL rides the shared HTTP transport (a `graphql` binding dispatches as a
@@ -2218,7 +2299,10 @@ export const runCatalogOperation = async (
     hooks.delegate({ slug: delegateSlug, input: delegateInput, stepMeta: meta },
       () => ctx.ingredientExecutor(delegateSlug, delegateInput, delegateOutput, options, meta)) };
   return hooks.invoke({ slug, input, output, catalog: true, connection_name: connectionName, stepMeta },
-    () => runCatalogOperationInner(delegated, manifest, slug, input, connectionName, output, { cache: 'fresh' }, stepMeta));
+    // Reviewed execution never reads a cache; a step's `pages` still applies.
+    () => runCatalogOperationInner(
+      delegated, manifest, slug, input, connectionName, output, { ...stepOptions, cache: 'fresh' }, stepMeta,
+    ));
 };
 
 const runCatalogOperationInner = async (
@@ -2279,6 +2363,14 @@ const runCatalogOperationInner = async (
   const isCliOp = authorityTarget.cli;
   const recordsBinding = authorityTarget.records_binding;
   const isRecordsOp = authorityTarget.records;
+  // ⛔ `pages: "all"` reads a Records search page by page (`StepPages`). On any
+  // other operation nothing would read it, and a step that believes it read
+  // everything would hold one page, so it is refused before anything runs.
+  if (stepOptions?.pages === 'all' && rawRecordsBinding?.action !== 'search') {
+    throw new Error(
+      `pages: "all" reads a Records search page by page, and '${call.operation_id}' is not one`,
+    );
+  }
 
   // The cli kind never binds a connection — its profile / base-url resolution
   // is skipped (the per-contract reachability allowlist is its authorization
@@ -3267,20 +3359,28 @@ const runCatalogOperationInner = async (
       if (recordsPrincipal === null) {
         throw new Error(`D-221 Records operation '${resolution.operation_id}' has no derived execution principal.`);
       }
-      const result = await ctx.recordsOperationExecutor!({
+      const principal = recordsPrincipal;
+      const executeRecords = (args: Record<string, unknown>): unknown => ctx.recordsOperationExecutor!({
         binding: recordsBinding,
-        args: effectiveArgs,
-        principal: recordsPrincipal,
+        args,
+        principal,
         ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
         ...(ctx.recordsMutationContext ?? {}),
       });
+      // A step that says `pages: "all"` reads its search page by page (the
+      // check above refused it on anything but a search); every other call
+      // reaches the store once, exactly as before.
+      const read: { result: unknown; pages_fetched?: number } = stepOptions?.pages === 'all'
+        ? await readRecordsSearch(effectiveArgs, executeRecords, () => throwIfRunKilled(ctx))
+        : { result: await executeRecords(effectiveArgs) };
       throwIfRunKilled(ctx);
       emitGatewayAudit(ctx, {
         ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
         outcome: 'success',
         duration_ms: Date.now() - started,
+        ...(read.pages_fetched !== undefined ? { pages_fetched: read.pages_fetched } : {}),
       });
-      return result;
+      return read.result;
     }
     const operationBound = op?.operation_bound_webhook;
     if (operationBound !== undefined) {

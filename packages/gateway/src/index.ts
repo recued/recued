@@ -125,6 +125,8 @@ export {
   createSagaAnswerHandler,
   registerSagaHandler,
   raiseSagaAsk,
+  sweepTornSagas,
+  SAGA_SWEEP_DEFAULT_LIMIT,
 } from './saga-reconciliation.js';
 export type {
   TornSaga,
@@ -135,6 +137,8 @@ export type {
   SagaCompensationDispatcher,
   SagaNotifier,
   SagaAsk,
+  TornSagaSweepDeps,
+  TornSagaSweepResult,
 } from './saga-reconciliation.js';
 
 // Doc §4 close-out — >1-provider pick resolution. A run whose

@@ -50,7 +50,7 @@ export {
 
 // Types — steps
 export type { RecipeSimulationInput, RecipeSimulationRequest, RecipeSimulationResult, SimulatedStep } from './recipe-simulation.js';
-export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepMeta, StepFailureKind } from './steps.js';
+export type { StepType, BaseStep, TransformStep, IngredientStep, GuardStep, CanonicalOpStep, RecipeStep, PrefetchStep, PrefetchOpStep, CacheFreshness, StepOptions, StepPages, StepMeta, StepFailureKind } from './steps.js';
 export { isPrefetchOpStep } from './steps.js';
 
 // Connection-agnostic op dispatch — resolver I/O types + the op-step guard +
@@ -81,7 +81,7 @@ export type {
 
 // Types — recipe
 export type {
-  RecipeMetadata, VariableDefault, DataOutputSection, FilterOutputSection,
+  RecipeMetadata, RetiredCarry, VariableDefault, DataOutputSection, FilterOutputSection,
   RecordFieldsOutputSection, ResolvedRecordField, ResolvedRecordFieldsDescriptor,
   TableOutputSection, ResolvedRecordColumn, ResolvedRecordColumnsDescriptor,
   TableEditSpec, ResolvedTableEditDescriptor, OutputTableEditInvocation,
@@ -106,6 +106,11 @@ export {
 export {
   UNDECLARED_CONFIG_ARGUMENT,
   undeclaredConfigArguments,
+  retiredVariablesOf,
+  withoutRetiredConfig,
+  retiredCarriesOf,
+  carriedFromRetired,
+  droppedVariables,
   undeclaredConfigArgumentMessage,
 } from './recipe.js';
 export {
@@ -239,6 +244,24 @@ export type {
   FormResponseTriggerFormScope,
 } from './recipe-form-fields.js';
 
+// D-292 — a recipe declaring that it imports a spreadsheet the owner uploads,
+// so a surface can guide upload → match columns → check → import. One pure
+// cross-check serves `validateRecipe` AND the client that offers the flow.
+export {
+  SPREADSHEET_IMPORT_KEYS,
+  SPREADSHEET_IMPORT_METADATA_KEY,
+  isOptionalVariable,
+  readSpreadsheetImport,
+  spreadsheetImportOf,
+  spreadsheetImportProblems,
+} from './spreadsheet-import.js';
+export type {
+  SpreadsheetImportDeclaration,
+  SpreadsheetImportProblem,
+  SpreadsheetImportProblemCode,
+  SpreadsheetImportRecipeView,
+} from './spreadsheet-import.js';
+
 // D-200 Slices 6g.3/6g.10/6g.11 — paired-client authoring/readiness wire shapes.
 // Bind names only current local sources and an observed row token; core derives
 // the revision and source-proves the recipe-pinned claim configuration.
@@ -330,6 +353,7 @@ export type {
   WebhookEventTypeCatalog,
   WebhookProfileDescriptor,
   PackWebhookRequirement,
+  PackWebhookPlanEntry,
   RecipeWebhookRequirement,
   RecipeWebhookTrigger,
   WebhookContractIssue,
@@ -731,6 +755,8 @@ export {
   // D-182 §7.1 — install grant dialog selection.
   INSTALL_ACCESS_TIERS, INSTALL_SCOPE_WHO,
   isInstallGrantSelection, isInstallAudienceSelection,
+  // D-310 — the Access tiers a pack's install offers, for it and the packs it brings in.
+  installGrantableOps, installAccessOptions,
   // Install-vs-browse marker on the apex install-manifest fetch (shared by the
   // server-side sender and the D-180 SSR worker that reads it).
   INSTALL_MANIFEST_MARKER_HEADER,
@@ -775,8 +801,11 @@ export type {
   PackCompositionContentRef,
   // D-220 Slice B — a pack-shipped `intake_form` template, by value.
   PackReceptionTemplateContentRef,
+  PackSavedViewContentRef,
   // D-182 §7.1 — install grant dialog selection.
   InstallGrantSelection, InstallAudienceSelection, InstallAccessTier, InstallScopeWho,
+  // D-310 — per-pack Access for the packs an install brings in.
+  PackDependencyInstallScope, InstallGrantableOp,
   CompositionIngredient, CompositionSurface, CompositionAuthModel,
   OperationRow, EntityFieldRow,
   PackDependency, PackIngredientDependency, PackPackDependency,
@@ -905,6 +934,23 @@ export {
 } from './ingredient.js';
 export type { ValueHintType, ValueHint } from './value-hint.js';
 export { VALUE_HINT_KEYS } from './value-hint.js';
+export {
+  isListOfNumbers,
+  isListSetting,
+  LIST_VOCABULARIES,
+  listFromTypedText,
+  listSettingChoices,
+  listVocabularyRef,
+  notificationChannelName,
+  readTypedListSettings,
+} from './list-setting.js';
+export type { ListChoice, ListChoices } from './list-setting.js';
+export {
+  recipeCodeForRpcRefusal,
+  recipeCodeForRpcStatus,
+  RPC_CODES_LEFT_UNNAMED,
+  RPC_REFUSAL_RECIPE_CODES,
+} from './rpc-refusal.js';
 // D-223 § 7.2 — the seam where "may this publisher declare X" is answered.
 export {
   FIRST_PARTY_PUBLISHER,
@@ -1245,6 +1291,10 @@ export type {
   SellerManualCustomerReissueTokenResponse,
   SellerManualTierBulkAdjustRequest,
   SellerManualTierBulkAdjustResponse,
+  SellerManualTierReapplyRequest,
+  SellerManualTierReapplyCustomer,
+  SellerManualTierReapplyResponse,
+  SellerReapplyWho,
   SellerStripeSynchronizeRequest,
   SellerStripeSynchronizeResponse,
   SellerProviderSource,
@@ -1272,6 +1322,7 @@ export {
   SELLER_RETIRED_LIFECYCLE_SOURCES,
   SELLER_ACCESS_STATES,
   SELLER_CUSTOMER_CLOSE_REASONS,
+  SELLER_REAPPLY_WHO,
   SELLER_USAGE_KINDS,
   SELLER_USAGE_PERIOD_GRANULARITIES,
   isSellerLifecycleSource,
@@ -1584,6 +1635,8 @@ export type {
   OwnerOperationPolicyInput, OwnerOperationView,
   OwnerOperationSpecView, OwnerOperationIngredientView,
   OwnerOperationUpdateReviewItem,
+  PackOperationUpdateDiff,
+  PackOperationUpdateDiffItem,
 } from './owner-operation-override.js';
 export {
   OWNER_OPERATION_SCOPE, ownerOperationRowValue,
@@ -2194,6 +2247,9 @@ export {
 export {
   MAX_ANNOTATION_VALUE_BYTES,
   ANNOTATION_INLINE_CUTOFF_BYTES,
+  ANNOTATION_FILTER_FIELDS,
+  LINK_FILTER_FIELDS,
+  deleteFilterProblem,
   isStalenessStamped,
   isAnnotationStale,
   annotationDedupeKey,
@@ -4591,6 +4647,7 @@ export {
 export type {
   ToolTier,
   Tier1ToolName,
+  ToolCatalogEntryView,
   ToolEntry,
   Tier1ToolDescriptor,
   ChatDispatchChannel,
@@ -5037,6 +5094,9 @@ export {
   clampAuditExportPageSize,
   MEMORY_LIST_MAX_PAGE_SIZE,
   MEMORY_LIST_DEFAULT_PAGE_SIZE,
+  collectListPages,
+  LIST_PAGE_DEFAULT_LIMIT,
+  LIST_PAGE_MAX_LIMIT,
 } from './rpc/index.js';
 export type {
   RpcMethodSpec,
@@ -5115,6 +5175,10 @@ export type {
   MemoryImportEntry,
   MemoryImportRequest,
   MemoryImportResult,
+  CollectListPagesOptions,
+  ListPage,
+  ListPageFields,
+  ListPageRequest,
 } from './rpc/index.js';
 
 // D-145 PA1 — canonical work entities (task / note / commitment / project)
@@ -6695,6 +6759,7 @@ export {
   recipeDeclaredOps,
   recipeOpIds,
   recipeRecordsUsage,
+  recipeSpendsPerRun,
   stepsAreAnalysable,
 } from './records-usage.js';
 export type {
@@ -6714,4 +6779,5 @@ export type {
  *  ships) and the webclient renders it, and the client may not import the
  *  engine. */
 export { recipeRequiredConnections } from './required-connections.js';
+export { recipeConsumedEnrichments, recipeNotificationChannels } from './recipe-card-facts.js';
 export type { RequiredConnection } from './required-connections.js';

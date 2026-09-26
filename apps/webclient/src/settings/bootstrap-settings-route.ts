@@ -232,7 +232,7 @@ import {
   type SellerManualCustomerIssueCaller,
   type SellerManualCustomerReissueTokenCaller,
   type SellerManualCustomerSwapTierCaller,
-  type SellerManualTierBulkAdjustCaller,
+  type SellerManualTierReapplyCaller,
   type SellerManualTierUpsertCaller,
   type SellerTierUsagePolicyCaller,
   type SellerCreatePassTierCaller,
@@ -262,6 +262,7 @@ import {
   type HousekeepingConfigWriteCaller,
   type HousekeepingDismissPromotionCaller,
   type HousekeepingPanelMount,
+  type HousekeepingDriftDismissCaller,
   type HousekeepingDriftReadCaller,
   type HousekeepingRegistryDescribeCaller,
   type HousekeepingRunNowCaller,
@@ -733,7 +734,8 @@ export interface BootstrapSettingsRouteOptions {
   sellerManualCustomerSwapTierCaller?: SellerManualCustomerSwapTierCaller;
   sellerManualCustomerCloseCaller?: SellerManualCustomerCloseCaller;
   sellerManualCustomerReissueTokenCaller?: SellerManualCustomerReissueTokenCaller;
-  sellerManualTierBulkAdjustCaller?: SellerManualTierBulkAdjustCaller;
+  /** D-309 — re-apply a manual package to its customers. */
+  sellerManualTierReapplyCaller?: SellerManualTierReapplyCaller;
   /** D-196 S4 — owner-clicked Stripe entitlement Initialize/Synchronize. */
   sellerStripeSynchronizeCaller?: SellerStripeSynchronizeCaller;
   sellerProviderTierSynchronizeCaller?: SellerProviderTierSynchronizeCaller;
@@ -834,6 +836,10 @@ export interface BootstrapSettingsRouteOptions {
   /** D-285 — `housekeeping.drift.read`. Omitted on a server that predates it;
    *  the panel then falls back to bus-only drift (lost on reload). */
   housekeepingPanelDriftReadCaller?: HousekeepingDriftReadCaller;
+  /** D-285 follow-up — `housekeeping.drift.dismiss`. Omitted on a server that
+   *  predates it; the dismissal then stays local and the banner returns on the
+   *  next mount, which is the behaviour this method exists to end. */
+  housekeepingPanelDriftDismissCaller?: HousekeepingDriftDismissCaller;
   housekeepingPanelRunNowCaller?: HousekeepingRunNowCaller;
   /** `server.getStatus` — the per-surface storage read-out rendered on
    *  Server ▸ Maintenance. Optional; omitted → no Storage section. */
@@ -1943,8 +1949,8 @@ export const bootstrapSettingsRoute = (
       ...(opts.sellerManualCustomerReissueTokenCaller !== undefined
         ? { runReissueManualCustomerToken: opts.sellerManualCustomerReissueTokenCaller }
         : {}),
-      ...(opts.sellerManualTierBulkAdjustCaller !== undefined
-        ? { runBulkAdjustManualTierCustomers: opts.sellerManualTierBulkAdjustCaller }
+      ...(opts.sellerManualTierReapplyCaller !== undefined
+        ? { runReapplyManualTier: opts.sellerManualTierReapplyCaller }
         : {}),
       ...(opts.sellerStripeSynchronizeCaller !== undefined
         ? { runSynchronizeStripeEntitlements: opts.sellerStripeSynchronizeCaller }
@@ -2089,6 +2095,9 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.housekeepingPanelDriftReadCaller !== undefined
         ? { runDriftRead: opts.housekeepingPanelDriftReadCaller }
+        : {}),
+      ...(opts.housekeepingPanelDriftDismissCaller !== undefined
+        ? { runDriftDismiss: opts.housekeepingPanelDriftDismissCaller }
         : {}),
       ...(opts.housekeepingPanelTopicResetCaller !== undefined
         ? { runTopicReset: opts.housekeepingPanelTopicResetCaller }

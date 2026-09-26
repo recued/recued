@@ -23,7 +23,7 @@ import type { RecordsRootProjection } from './records-root-projection.js';
  *  keeps its spec name.) Within contracts, import the D-182 row from this
  *  module directly.
  */
-import type { BaseStep } from './steps.js';
+import type { BaseStep, StepPages } from './steps.js';
 import type { Actor } from './commits.js';
 import { type IngredientKind, INGREDIENT_KINDS, type RiskTier } from './ingredient.js';
 import type {
@@ -238,6 +238,9 @@ export interface OpStep extends BaseStep {
   timeout_ms?: number;
   on_timeout?: 'fail' | 'approve' | 'reject';
   prompt?: string;
+  /** Read a Records search page by page, up to `RECORDS_MAX_SEARCH_ROWS` rows.
+   *  See `StepPages` in `steps.ts`. */
+  pages?: StepPages;
 }
 
 /** Round-12 audit fix (T2 Q1) — the ONE list of step-level knobs an op-step
@@ -268,6 +271,7 @@ export const OP_STEP_PASSTHROUGH_KNOBS = [
   'timeout_ms',
   'on_timeout',
   'prompt',
+  'pages',
 ] as const satisfies readonly (keyof OpStep)[];
 
 /** The non-knob keys of `OpStep` — consumed structurally by each lowering
@@ -1253,8 +1257,31 @@ export interface PackOperationRow {
   /** D-211 Slice 4 — machine-readable author guidance explaining why an
    *  operation deliberately holds. Recommended for held reads and required by
    *  the uniform-held-read noise-fence exemption. Lowercase snake_case keeps
-   *  the vocabulary extensible without turning prose into policy. */
+   *  the vocabulary extensible without turning prose into policy.
+   *
+   *  On a read tagged `sensitive-read` it now records WHAT the read returns
+   *  (`secret_response`, `privacy_surface`, `security_configuration` …): since
+   *  2026-09-25 such a read no longer holds (a D-211 amendment). */
   approval_reason?: string;
+  /** D-282 — does calling this operation cost the owner money or metered credit on
+   *  EVERY call? True for a paid inference, generation, transcription, search,
+   *  crawl or computation API (an OpenAI response, a Tavily search, a Wolfram
+   *  Alpha query); absent for a call the vendor does not bill (model lists,
+   *  account and usage reads, job status).
+   *
+   *  ⛔ THE QUESTION NO RISK TIER CAN ANSWER. Such a call is `risk: 'read'`, and
+   *  correctly so: it changes nothing. But a pack view runs on every tab switch
+   *  and every data change (D-282 B4), and the cost half of that gate knew only
+   *  the kernel's `core.ai.*`. Eight shipped views called metered vendor APIs
+   *  that way (2026-09-24 audit), spending the owner's money with nobody asking.
+   *  A recipe that calls an operation marked here is a button, never a view
+   *  (`recipeSpendsPerRun`). Owner decision, 2026-09-25.
+   *
+   *  Set by the pack author, in practice the vendor's generator or the
+   *  `metered-operations-spend-per-call` migration, and held to a closed list by
+   *  `scripts/pack-spends-per-call.test.ts`. ⚠ Absent is the author's claim, not a
+   *  proof: an unmarked metered operation is a gap this field cannot see. */
+  spends_per_call?: boolean;
   /** the op's input args — a bare string (a required string) or an object for a
    *  non-string type / D-177 authority arg (§4). Optional (an arg-less op omits
    *  it); primarily drives the Compose autocomplete. */
@@ -1320,14 +1347,36 @@ export interface PackOperationRow {
    *  contract admits it; leaving it undeclared is how an authoring gate ends up unable to tell
    *  a real key from an invented one.
    *
-   *  The vocabulary is open — 83 distinct values, mostly vendor and domain labels — with one
-   *  load-bearing member: `sensitive-read`, on 3,362 operations, recording the D-209 judgment
-   *  that a read touches a privacy surface.
+   *  The vocabulary is open — mostly vendor and domain labels — with one load-bearing
+   *  member: `sensitive-read`, on 3,390 operations, recording the D-209 judgment that a read
+   *  touches a privacy surface.
    *
    *  ⛔ IT IS A LABEL, NOT A GATE, and the distinction matters if you are tempted to enforce
-   *  from it. Every `sensitive-read` operation in the corpus also carries `approval: 'ask'` —
-   *  3,362 of 3,362 — and `approval` is what the dispatch path reads. The tag records WHY the
-   *  approval is there; it does not create it. */
+   *  from it: `approval` is what the dispatch path reads.
+   *
+   *  🔑 SINCE 2026-09-25 A TAGGED READ IS AN ORDINARY READ (owner decision, a D-211
+   *  amendment). The contract grant is the permission; every tagged read is
+   *  `approval: 'never'`, and the tag with `approval_reason` records what the read returns.
+   *  The `ask` it used to carry was lifted by `applyTrustCeiling` under every default
+   *  trust ceiling, so nobody was shown it. `scripts/pack-approval-floor.test.ts` enforces
+   *  the new pairing corpus-wide, as it enforced the old one.
+   *
+   *  The history below is the old pairing, kept for its lesson about counts.
+   *
+   *  ⛔⛔ THE PAIRING IS UNIVERSAL AGAIN, AND IT WAS NOT WHEN THIS PARAGRAPH CLAIMED IT.
+   *  It read "3,362 of 3,362" while the measured truth on 2026-09-24 was 3,384 of 3,390:
+   *  six operations carried the tag with `approval: 'never'` — `binance-account`
+   *  (account.read, trade.search), `databricks` (query_history.list), `teamwork`
+   *  (people.search, time.search) and `virustotal` (file.read) — and since the tag creates
+   *  no gate, all six executed outright once granted. They were moved to `ask` with
+   *  `approval_reason: 'privacy_surface'`, so the count is now 3,390 of 3,390.
+   *
+   *  🔑 A COUNT WRITTEN INTO A DOCSTRING IS A CLAIM NOTHING RE-CHECKS, and this one was
+   *  false in the direction that matters: it asserted a safety pairing held everywhere
+   *  while six operations had left it, one of which returned every email address in a
+   *  Teamwork account to a model-callable read with no prompt.
+   *  ⇒ `scripts/pack-approval-floor.test.ts` now ENFORCES it corpus-wide rather than
+   *  restating it here, which is the only version of this sentence that cannot go stale. */
   tags?: string[];
 }
 

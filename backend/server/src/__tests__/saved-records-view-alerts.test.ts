@@ -68,7 +68,7 @@ describe('Records saved-view alerts through real paged queries and notification 
     expect(h.notify).toHaveBeenCalledTimes(1);
     expect(h.notify).toHaveBeenCalledWith(expect.objectContaining({
       title: 'New records in “Open jobs”', text: expect.stringContaining('2 records now match'),
-    }), undefined, expect.objectContaining({ ui_link_url: `#data/view/${view.id}` }));
+    }), undefined, expect.objectContaining({ ui_link_url: `#views/${view.id}` }));
     expect(JSON.stringify(h.notify.mock.calls)).not.toContain('Private customer content');
     expect(await h.activities.list()).toHaveLength(1);
     h.setStatus('new', 'closed'); await h.runtime.tick();

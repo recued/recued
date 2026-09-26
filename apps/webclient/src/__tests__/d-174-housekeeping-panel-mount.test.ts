@@ -244,6 +244,17 @@ const makeDeps = () => {
   const runDriftRead = vi.fn(() =>
     Promise.resolve({ rows: [] as ConfidenceDriftSignal[] }),
   );
+  // D-285 follow-up — the dismissal write. ⛔ The default has to return a REAL
+  // dismissed signal, because the mount adopts `effective` as the new state:
+  // a stub carrying only `source_topic` silently DROPPED the dismissal and
+  // made the banner reappear inside the same mount. A double that cannot
+  // represent what it returns tests the double.
+  const runDriftDismiss = vi.fn((args: { source_topic: string }) =>
+    Promise.resolve({
+      ok: true as const,
+      effective: storedSignal({ source_topic: args.source_topic, dismissed_at: NOW }),
+    }),
+  );
   const subscribe = vi.fn((kind: string, handler: (event?: unknown) => void) => {
     handlers[kind] = handler;
     return () => {
@@ -261,6 +272,7 @@ const makeDeps = () => {
     runRegistryDescribe,
     runTopicReset,
     runDriftRead,
+    runDriftDismiss,
     subscribe,
     fireCycle: () => handlers.housekeeping_cycle?.({}),
     fire: (kind: string, payload: unknown) => handlers[kind]?.(payload),
@@ -768,11 +780,106 @@ describe('D-285 — drift survives a reload', () => {
     mount.dispose();
   });
 
+  /** A server that remembers, which is the whole point. `runDriftDismiss`
+   *  writes `dismissed_at` onto the row `runDriftRead` will hand back next
+   *  time — so a REMOUNT reads what the dismissal wrote. A double that
+   *  acknowledged the call without changing the row is exactly the bug:
+   *  every assertion below would still pass while the banner came back. */
+  const fakeDriftServer = (deps: ReturnType<typeof makeDeps>, at = NOW) => {
+    let row: ConfidenceDriftSignal = storedSignal();
+    deps.runDriftRead.mockImplementation(() => Promise.resolve({ rows: [row] }));
+    deps.runDriftDismiss.mockImplementation(() => {
+      // Idempotent, like the handler: the FIRST timestamp stands.
+      row = { ...row, dismissed_at: row.dismissed_at ?? at };
+      return Promise.resolve({ ok: true as const, effective: row });
+    });
+    return { current: () => row };
+  };
+
+  it('a dismissal SURVIVES A REMOUNT, which a refresh could never show', async () => {
+    // ⛔⛔ THE REGRESSION D-285 SHIPPED, AND WHY ITS TEST MISSED IT. The case
+    // below this one calls `mount.refresh()` — the SAME mount, whose in-memory
+    // `driftSignals` still holds the dismissal — so it passed while the real
+    // path was broken. Measured live: dismiss, reload, the banner is back;
+    // fresh tab, back again. A remount starts from `{}` and reads the server,
+    // which is the only shape that can tell.
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    const server = fakeDriftServer(deps);
+    const first = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await first.whenLoaded();
+    await flush();
+    await flush();
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    await flush();
+    await flush();
+    expect(deps.runDriftDismiss).toHaveBeenCalledWith({ source_topic: 'summary' });
+    expect(server.current().dismissed_at).toBe(NOW);
+    first.dispose();
+
+    // A new mount: empty state, reads the server. This is a reload.
+    const secondHost = makeFakeHost();
+    const second = mountHousekeepingPanel({ host: secondHost.host, now: () => NOW, ...deps });
+    await second.whenLoaded();
+    await flush();
+    await flush();
+
+    expect(secondHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    second.dispose();
+  });
+
+  it('degrades to a local dismissal when the server has no dismiss method', async () => {
+    // Documents what an older server does: the banner returns on the next
+    // mount. Not silently — it is the pre-D-285 shape, and the honest thing
+    // is for the test to name it rather than leave it to be discovered.
+    const fakeHost = makeFakeHost();
+    const { runDriftDismiss: _absent, ...deps } = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    const first = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await first.whenLoaded();
+    await flush();
+    await flush();
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-drift-banner');
+    first.dispose();
+
+    const secondHost = makeFakeHost();
+    const second = mountHousekeepingPanel({ host: secondHost.host, now: () => NOW, ...deps });
+    await second.whenLoaded();
+    await flush();
+    await flush();
+    expect(secondHost.getHtml()).toContain('housekeeping-drift-banner');
+    second.dispose();
+  });
+
+  it('a FAILED dismissal brings the banner back and says why', async () => {
+    // ⛔ Leaving it hidden would be the friendlier lie: it returns on the next
+    // load anyway, and the owner would meet it again with no idea why.
+    const fakeHost = makeFakeHost();
+    const deps = makeDeps();
+    deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
+    deps.runDriftDismiss.mockRejectedValue(new Error('server said no'));
+    const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+    await mount.whenLoaded();
+    await flush();
+    await flush();
+
+    fakeHost.clickActionAttrs('housekeeping-drift-dismiss', { 'data-source-topic': 'summary' });
+    await flush();
+    await flush();
+
+    expect(mount.getState().driftSignals.summary?.dismissed_at).toBeUndefined();
+    expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    expect(mount.getState().driftWriteError.summary).toContain('server said no');
+    mount.dispose();
+  });
+
   it('does not re-raise a banner the owner just dismissed', async () => {
-    // ⛔ The regression this rpc would otherwise INTRODUCE. Dismissal is
-    // client-side state; without carrying it across the merge, the next read
-    // hands back the same verdict undismissed and the banner pops straight
-    // back up — the read would have made the surface naggier than the bug.
+    // ⚠ SAME-MOUNT refresh. Kept because it pins the merge rule (the read must
+    // not clobber a dismissal it is holding), but it is NOT the reload case —
+    // see the remount test above, which is the one that catches the defect.
     const fakeHost = makeFakeHost();
     const deps = makeDeps();
     deps.runDriftRead.mockResolvedValue({ rows: [storedSignal()] });
@@ -831,6 +938,89 @@ describe('D-285 — drift survives a reload', () => {
     });
     await flush();
     expect(fakeHost.getHtml()).toContain('housekeeping-drift-banner');
+    mount.dispose();
+  });
+});
+
+// ── The promotion banner: same defect as the drift banner had ────────
+//
+// ⛔ `promotionSuggestions` had exactly two writers — the broadcast handler and
+// the one that REMOVES an entry — and starts `{}`. So the banner rendered once,
+// for whoever happened to be looking, and was gone on the next mount, while
+// `promotion_suggested_at` sat on the trust row the panel had just fetched.
+// A refresh-based test could never show it; these remount.
+
+const suggestedRow = (over: Partial<EnrichmentTrustRow> = {}): EnrichmentTrustRow => ({
+  ...trustRow('manual'),
+  manual_run_count: 3,
+  promotion_suggested_at: NOW,
+  ...over,
+});
+
+const mountWith = async (rows: EnrichmentTrustRow[]) => {
+  const fakeHost = makeFakeHost();
+  const deps = makeDeps();
+  deps.runTrustRead.mockResolvedValue({ rows });
+  const mount = mountHousekeepingPanel({ host: fakeHost.host, now: () => NOW, ...deps });
+  await mount.whenLoaded();
+  await flush();
+  await flush();
+  return { fakeHost, deps, mount };
+};
+
+describe('promotion banner survives a reload', () => {
+  it('restores from the trust rows the panel already loads — no broadcast', async () => {
+    const { fakeHost, mount } = await mountWith([suggestedRow()]);
+
+    expect(fakeHost.getHtml()).toContain('housekeeping-promotion-banner');
+    expect(mount.getState().promotionSuggestions.summary?.manual_run_count).toBe(3);
+    mount.dispose();
+  });
+
+  it('⛔ does NOT re-raise it on a topic the owner already turned on', async () => {
+    // Nothing clears `promotion_suggested_at` when they accept — `trust-store`
+    // carries it forward — so "suggested and not dismissed" would nag forever
+    // on a topic that is already automatic. This is the clause that decides it.
+    const { fakeHost, mount } = await mountWith([suggestedRow({ trust_state: 'auto' })]);
+
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-promotion-banner');
+    mount.dispose();
+  });
+
+  it('does not re-raise one they dismissed', async () => {
+    const { fakeHost, mount } = await mountWith([
+      suggestedRow({ promotion_dismissed_at: NOW }),
+    ]);
+
+    expect(fakeHost.getHtml()).not.toContain('housekeeping-promotion-banner');
+    mount.dispose();
+  });
+
+  it('says it does not know the cost, rather than claiming the run is free', async () => {
+    // ⚠ The estimate is computed at fire time from per-record tokens × source
+    // count; neither is on the trust row. `formatTokens` renders `<= 0` as
+    // "no estimate available", so 0 is the honest value here — NOT a claim.
+    const { fakeHost, mount } = await mountWith([suggestedRow()]);
+
+    expect(fakeHost.getHtml()).toContain('no estimate available');
+    expect(fakeHost.getHtml()).not.toContain('~0 tokens');
+    mount.dispose();
+  });
+
+  it('a LIVE suggestion wins over the restored one, because it has the cost', async () => {
+    const { fakeHost, deps, mount } = await mountWith([suggestedRow()]);
+    deps.fire('enrichment_promotion_suggested', {
+      kind: 'enrichment_promotion_suggested',
+      topic: 'summary',
+      manual_run_count: 3,
+      estimated_idle_cycle_cost_tokens: 30_000,
+      cursor: 9,
+    });
+    await flush();
+
+    expect(mount.getState().promotionSuggestions.summary?.estimated_idle_cycle_cost_tokens)
+      .toBe(30_000);
+    expect(fakeHost.getHtml()).toContain('30,000 tokens');
     mount.dispose();
   });
 });

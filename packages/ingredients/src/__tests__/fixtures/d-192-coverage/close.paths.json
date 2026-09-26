@@ -2,7 +2,7 @@
   "_extract": {
     "note": "paths-only extract of the pinned official Close OpenAPI document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.1.0, URL is unversioned and generator-locked against drift; task fields are proved separately by the pinned response examples",
     "url": "https://api.close.com/api/openapi.json",
-    "sha256": "d4692c30ab5c8e4b7e73237a2c5b9cc1eafc7ed9e40eb2ef4c441fa19f51459d",
+    "sha256": "0b8e90ff904caecd0cce4eb4340c31ede1959c25f317e6b3ae1f293a9ac6b8cd",
     "fetched_at": "2026-08-03"
   },
   "paths": {

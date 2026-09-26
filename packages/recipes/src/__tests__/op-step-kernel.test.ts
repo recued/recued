@@ -189,6 +189,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
       'timeout_ms',
       'on_timeout',
       'prompt',
+      'pages',
     ]);
   });
 
@@ -206,6 +207,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
       timeout_ms: 60_000,
       on_timeout: 'reject',
       prompt: 'Send this notification?',
+      pages: 'all',
     };
     const out = resolveKernelClosedKindOpStep(step);
     expect(out).toMatchObject({
@@ -219,6 +221,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
       timeout_ms: 60_000,
       on_timeout: 'reject',
       prompt: 'Send this notification?',
+      pages: 'all',
     });
     for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
       expect(out, `knob '${knob}' must survive the kernel lowering`).toHaveProperty(knob);

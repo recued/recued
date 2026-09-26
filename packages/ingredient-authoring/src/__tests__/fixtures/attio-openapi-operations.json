@@ -3,24 +3,24 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.attio.com/openapi/api",
-      "bytes": 773110,
-      "sha256": "25904e7bc1ce4a551a12a8108c8dd48b07c505c084b2e234f764f2f638f956e6",
+      "bytes": 1111571,
+      "sha256": "cd264259a8e892e0c54dcd058589dfa5a93329595e3db67a7385efa3d0518c6e",
       "openapi": "3.1.0",
       "api_version": "2.0.0",
-      "retrieved_on": "2026-08-03",
+      "retrieved_on": "2026-09-25",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract."
     },
-    "official_operation_count": 77,
-    "official_unique_route_count": 77,
+    "official_operation_count": 97,
+    "official_unique_route_count": 97,
     "admitted_unique_route_count": 73,
     "declared_operation_count": 79,
-    "excluded_operation_count": 4,
+    "excluded_operation_count": 24,
     "official_method_counts": {
-      "DELETE": 8,
-      "GET": 36,
-      "PATCH": 9,
-      "POST": 20,
-      "PUT": 4
+      "DELETE": 12,
+      "GET": 39,
+      "PATCH": 13,
+      "POST": 24,
+      "PUT": 9
     },
     "admitted_method_counts": {
       "DELETE": 8,
@@ -81,8 +81,8 @@
     ],
     "recipe_versions": {
       "relationship-operations-digest-attio": 1,
-      "record-activity-brief-attio": 1,
-      "list-pipeline-readiness-brief-attio": 1,
+      "record-activity-brief-attio": 2,
+      "list-pipeline-readiness-brief-attio": 2,
       "create-person-intake-attio": 2,
       "create-company-intake-attio": 2,
       "create-deal-intake-attio": 2,
@@ -90,7 +90,7 @@
       "add-record-note-attio": 2,
       "create-follow-up-task-attio": 2
     },
-    "composition_bytes": 103465,
+    "composition_bytes": 103765,
     "risk_counts": {
       "admin": 12,
       "destructive": 8,
@@ -125,6 +125,97 @@
     },
     "exclusions": [
       {
+        "operation_id": "object.delete",
+        "method": "DELETE",
+        "path": "/v2/objects/{object}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Deleting an OBJECT removes a CRM schema definition and every record under it: the most destructive route in this document, and irreversible. It must never inherit a default tier. Held out pending explicit review."
+      },
+      {
+        "operation_id": "activity.search",
+        "method": "GET",
+        "path": "/v2/activities",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity.create",
+        "method": "POST",
+        "path": "/v2/activities",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity.read",
+        "method": "GET",
+        "path": "/v2/activities/{activity}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity.update",
+        "method": "PATCH",
+        "path": "/v2/activities/{activity}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity.delete",
+        "method": "DELETE",
+        "path": "/v2/activities/{activity}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.list",
+        "method": "POST",
+        "path": "/v2/activities/{activity}/records/query",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.create",
+        "method": "POST",
+        "path": "/v2/activities/{activity}/records",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.upsert",
+        "method": "PUT",
+        "path": "/v2/activities/{activity}/records",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-09-23 pin — an upsert-by-matching-attribute over the same Activities family the other eleven routes belong to, and hidden/ALPHA like them. It is held out on the same terms: the family needs its entity mapping, result paths, pagination contract and risk review before any of it ships, and an upsert is the member of that family least safe to admit on method-shaped defaults."
+      },
+      {
+        "operation_id": "activity_record.read",
+        "method": "GET",
+        "path": "/v2/activities/{activity}/records/{record_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.update_overwrite",
+        "method": "PUT",
+        "path": "/v2/activities/{activity}/records/{record_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.update_append",
+        "method": "PATCH",
+        "path": "/v2/activities/{activity}/records/{record_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
+        "operation_id": "activity_record.delete",
+        "method": "DELETE",
+        "path": "/v2/activities/{activity}/records/{record_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin, as part of a new Activities object family of eleven routes. A whole new first-class record type needs its own entity mapping, result paths, pagination contract and risk review before installed recipes can reach it; inheriting the method-shaped defaults here would ship all eleven on assumptions nobody checked. Held out as a family until that review happens."
+      },
+      {
         "operation_id": "record.merge",
         "method": "POST",
         "path": "/v2/objects/{object}/records/merge",
@@ -132,11 +223,60 @@
         "reason": "Added by the vendor after the previous reviewed pin. Merging two records is irreversible and collapses identity across the CRM, so admitting it requires a deliberate risk-tier and approval review rather than inheriting the defaults this generator applies to write routes. Held out until that review happens."
       },
       {
+        "operation_id": "record_attribute_value.update_overwrite",
+        "method": "PUT",
+        "path": "/v2/objects/{object}/records/{record_id}/attributes/{attribute}/values",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. A PUT that OVERWRITES the values of a single attribute is destructive at field granularity and offers no read-back in the same call, so it cannot inherit the write-route defaults. Held out pending a risk-tier review."
+      },
+      {
+        "operation_id": "list_entry_attribute_value.update_overwrite",
+        "method": "PUT",
+        "path": "/v2/lists/{list}/entries/{entry_id}/attributes/{attribute}/values",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. A PUT that OVERWRITES the values of a single attribute is destructive at field granularity and offers no read-back in the same call, so it cannot inherit the write-route defaults. Held out pending a risk-tier review."
+      },
+      {
+        "operation_id": "note.update",
+        "method": "PATCH",
+        "path": "/v2/notes/{note_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Note bodies are user-authored content and an update route needs its own approval review before installed recipes can rewrite them. Held out until then."
+      },
+      {
         "operation_id": "email.search",
         "method": "GET",
         "path": "/v2/emails",
         "category": "unreviewed_new_route",
         "reason": "Added by the vendor after the previous reviewed pin. It exposes a new message-content read surface whose response shape, pagination contract and scope requirements have not been reviewed against this pack, and a read of mail bodies deserves that review before it ships. Held out until then."
+      },
+      {
+        "operation_id": "sequence_unsubscribe.create",
+        "method": "POST",
+        "path": "/v2/sequences/unsubscribed_emails",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Adding addresses to a sequence unsubscribe list has outward-facing consequences for every future send and cannot be undone through this API, so it needs its own approval review. Held out until then."
+      },
+      {
+        "operation_id": "meeting.update_overwrite",
+        "method": "PUT",
+        "path": "/v2/meetings/{meeting_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Meetings gained mutation and deletion routes with PATCH-versus-PUT append-or-overwrite semantics on linked records, a pair this generator has no rule for, so admitting them needs a deliberate idempotency and approval decision rather than the write defaults. Held out until then."
+      },
+      {
+        "operation_id": "meeting.update_append",
+        "method": "PATCH",
+        "path": "/v2/meetings/{meeting_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Meetings gained mutation and deletion routes with PATCH-versus-PUT append-or-overwrite semantics on linked records, a pair this generator has no rule for, so admitting them needs a deliberate idempotency and approval decision rather than the write defaults. Held out until then."
+      },
+      {
+        "operation_id": "meeting.delete",
+        "method": "DELETE",
+        "path": "/v2/meetings/{meeting_id}",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the 2026-08-03 pin. Meetings gained mutation and deletion routes with PATCH-versus-PUT append-or-overwrite semantics on linked records, a pair this generator has no rule for, so admitting them needs a deliberate idempotency and approval decision rather than the write defaults. Held out until then."
       },
       {
         "operation_id": "file.upload",
@@ -168,7 +308,7 @@
     "authority_notes": {
       "multipart_upload_excluded": true,
       "signed_download_excluded": true,
-      "hidden_alpha_operations_admitted_with_approval": 3,
+      "hidden_alpha_operations_admitted_with_approval": 0,
       "specialized_route_aliases": "company/person/deal create and search retain six compatibility operations over two generic official record routes."
     }
   },
@@ -280,6 +420,35 @@
       ]
     },
     {
+      "method": "DELETE",
+      "path": "/v2/objects/{object}",
+      "operation_id": "object.delete",
+      "tag": "Objects",
+      "summary": "Delete an object",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "object_configuration:read-write",
+        "record_permission:read-write"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
       "method": "GET",
       "path": "/v2/objects/{object}/views",
       "operation_id": "object_view.search",
@@ -325,6 +494,407 @@
       "operations": [
         "object_view.search"
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/v2/activities",
+      "operation_id": "activity.search",
+      "tag": "Activities",
+      "summary": "List activities",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_configuration:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/activities",
+      "operation_id": "activity.create",
+      "tag": "Activities",
+      "summary": "Create an activity",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_configuration:read-write"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/activities/{activity}",
+      "operation_id": "activity.read",
+      "tag": "Activities",
+      "summary": "Get an activity",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_configuration:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/activities/{activity}",
+      "operation_id": "activity.update",
+      "tag": "Activities",
+      "summary": "Update an activity",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_configuration:read-write"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/activities/{activity}",
+      "operation_id": "activity.delete",
+      "tag": "Activities",
+      "summary": "Delete an activity",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_configuration:read-write",
+        "activity_record:read-write"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/activities/{activity}/records/query",
+      "operation_id": "activity_record.list",
+      "tag": "Activity records",
+      "summary": "List activity records",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/activities/{activity}/records",
+      "operation_id": "activity_record.create",
+      "tag": "Activity records",
+      "summary": "Create an activity record",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read-write",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/activities/{activity}/records",
+      "operation_id": "activity_record.upsert",
+      "tag": "Activity records",
+      "summary": "Upsert an activity record",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read-write",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "matching_attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/activities/{activity}/records/{record_id}",
+      "operation_id": "activity_record.read",
+      "tag": "Activity records",
+      "summary": "Get an activity record",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/activities/{activity}/records/{record_id}",
+      "operation_id": "activity_record.update_overwrite",
+      "tag": "Activity records",
+      "summary": "Update an activity record (overwrite multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read-write",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/activities/{activity}/records/{record_id}",
+      "operation_id": "activity_record.update_append",
+      "tag": "Activity records",
+      "summary": "Update an activity record (append multiselect values)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read-write",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/activities/{activity}/records/{record_id}",
+      "operation_id": "activity_record.delete",
+      "tag": "Activity records",
+      "summary": "Delete an activity record",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "activity_record:read-write",
+        "activity_configuration:read",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "activity",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
     },
     {
       "method": "GET",
@@ -1032,7 +1602,7 @@
         "object_configuration:read"
       ],
       "maturity": "BETA",
-      "hidden": true,
+      "hidden": false,
       "parameters": [
         {
           "in": "path",
@@ -1104,6 +1674,49 @@
       "operations": [
         "record_attribute_value.search"
       ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/objects/{object}/records/{record_id}/attributes/{attribute}/values",
+      "operation_id": "record_attribute_value.update_overwrite",
+      "tag": "Records",
+      "summary": "Write record attribute values",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "record_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
     },
     {
       "method": "GET",
@@ -1662,6 +2275,49 @@
       ]
     },
     {
+      "method": "PUT",
+      "path": "/v2/lists/{list}/entries/{entry_id}/attributes/{attribute}/values",
+      "operation_id": "list_entry_attribute_value.update_overwrite",
+      "tag": "Entries",
+      "summary": "Write list entry attribute values",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "list_entry:read-write",
+        "list_configuration:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "list",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "entry_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "in": "path",
+          "name": "attribute",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
       "method": "GET",
       "path": "/v2/workspace_members",
       "operation_id": "workspace_member.search",
@@ -1817,6 +2473,38 @@
       "operations": [
         "note.read"
       ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/notes/{note_id}",
+      "operation_id": "note.update",
+      "tag": "Notes",
+      "summary": "Update a note",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "note:read-write",
+        "object_configuration:read",
+        "record_permission:read"
+      ],
+      "maturity": null,
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "note_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
     },
     {
       "method": "DELETE",
@@ -2101,7 +2789,7 @@
       "path": "/v2/threads/{thread_id}",
       "operation_id": "thread.read",
       "tag": "Threads",
-      "summary": "Get a thread",
+      "summary": "Get a thread and its comments",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2117,6 +2805,24 @@
           "in": "path",
           "name": "thread_id",
           "required": true,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "created_after",
+          "required": false,
           "type": "string"
         }
       ],
@@ -2224,7 +2930,7 @@
         "object_configuration:read"
       ],
       "maturity": "ALPHA",
-      "hidden": true,
+      "hidden": false,
       "parameters": [
         {
           "in": "query",
@@ -2273,8 +2979,37 @@
           "name": "sent_before",
           "required": false,
           "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "exclude_automated_participants",
+          "required": false,
+          "type": "boolean"
         }
       ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/sequences/unsubscribed_emails",
+      "operation_id": "sequence_unsubscribe.create",
+      "tag": "Sequences",
+      "summary": "Add emails to the unsubscribe list",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "sequence_unsubscribe:read-write"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [],
       "selected": false,
       "operations": [],
       "exclusion": "unreviewed_new_route"
@@ -2411,6 +3146,96 @@
       "operations": [
         "meeting.read"
       ]
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/meetings/{meeting_id}",
+      "operation_id": "meeting.update_overwrite",
+      "tag": "Meetings",
+      "summary": "Update a meeting (overwrite linked records)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read-write",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "PATCH",
+      "path": "/v2/meetings/{meeting_id}",
+      "operation_id": "meeting.update_append",
+      "tag": "Meetings",
+      "summary": "Update a meeting (append linked records)",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read-write",
+        "record_permission:read"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/meetings/{meeting_id}",
+      "operation_id": "meeting.delete",
+      "tag": "Meetings",
+      "summary": "Delete a meeting",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "meeting:read-write"
+      ],
+      "maturity": "BETA",
+      "hidden": false,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "meeting_id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
     },
     {
       "method": "GET",
@@ -5601,6 +6426,19 @@
           "key": "thread_id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.limit",
+          "type": "number"
+        },
+        {
+          "key": "query.cursor",
+          "type": "string"
+        },
+        {
+          "key": "query.created_after",
+          "type": "string",
           "affects_target": true
         }
       ],

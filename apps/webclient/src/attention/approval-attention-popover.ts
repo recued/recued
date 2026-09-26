@@ -315,9 +315,24 @@ export const ATTENTION_TOPBAR_STYLES = `
   padding: 0;
   list-style: none;
 }
+/* ⛔ THE ACTION TRACK WAS 'auto' — i.e. max-content — AND THE LABELS ARE NOT
+   OURS TO BOUND. renderGatewayAskRow emits one button per declared option, so
+   a three-option ask (Approve / Allow this session / Deny) claimed 254px of a
+   332px row and left the question 68px, which overflow-wrap: anywhere then
+   spilled into a 407px-tall column; a fourth option left it ZERO px and 2179px
+   tall. minmax(0, 1fr) let the body lose, and it lost all the way.
+
+   So the row WRAPS rather than divides. The body claims a 200px minimum and
+   the actions drop to their own line whenever they cannot sit beside it. That
+   is content-driven on purpose — a longer label or an extra option re-flows by
+   itself, where a rule keyed on the button COUNT would have to be revisited by
+   whoever adds the next one, which is exactly what did not happen here.
+   ⚠ Stacking is SHORTER, not taller: 161px against 407px, because the text
+   stops being a one-word column. A single action still sits inline — that is
+   the only case the side-by-side form was ever paying for. */
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   padding: 10px;
@@ -328,6 +343,9 @@ export const ATTENTION_TOPBAR_STYLES = `
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-body {
   display: grid;
   gap: 3px;
+  /* The wrap threshold: below 200px the question stops being readable, so the
+     actions take their own line instead of taking the space. */
+  flex: 1 1 200px;
   min-width: 0;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-title,
@@ -384,6 +402,8 @@ export const ATTENTION_TOPBAR_STYLES = `
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
+  /* Keeps the bar on the right edge on the line it wrapped onto. */
+  margin-left: auto;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action {
   box-sizing: border-box;
@@ -608,8 +628,17 @@ export const ATTENTION_TOPBAR_STYLES = `
     width: auto;
     max-height: calc(100dvh - 72px);
   }
-  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row {
-    grid-template-columns: 1fr;
+  /* ⚠ ONE AXIS ONLY — do NOT reach for flex-direction: column here. The row
+     stays row-direction + wrap and the body simply claims the whole line;
+     switching to a column re-points flex-basis: 200px at the HEIGHT and floors
+     every row at 200px (measured 270px against 163px when it was written that
+     way). */
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-body {
+    flex-basis: 100%;
+  }
+  [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions {
+    flex: 1 1 100%;
+    margin-left: 0;
   }
   [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-actions,
   [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-actions {

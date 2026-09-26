@@ -7,6 +7,7 @@ import type { RecipeWebhookRequirement, RecipeWebhookTrigger } from './webhook-p
 import type { PaidDocumentDirectCheckoutClaimConfiguration } from './paid-document-direct-checkout-config.js';
 import type { ReviewCriteriaDeclaration } from './review-criteria-config.js';
 import type { RecipeFormFieldRequirement } from './recipe-form-fields.js';
+import type { SpreadsheetImportDeclaration } from './spreadsheet-import.js';
 
 /** The well-known recipe variable name that, when declared by a recipe,
  *  gives end users the cost-upgrade toggle. Read by the LLM resolver at
@@ -948,6 +949,33 @@ export interface RecipeMetadata {
    *  shape); ABSENT means undeclared and unchecked. See
    *  `packages/contracts/src/recipe-form-fields.ts`. */
   requires_form_fields?: ReadonlyArray<RecipeFormFieldRequirement>;
+  /** D-292 — this recipe imports a spreadsheet the owner uploads: which
+   *  variable takes the file, which one makes a run a check that records
+   *  nothing, and which ones each name a header cell. A surface reads it to
+   *  guide the owner through upload → match columns → check → import instead of
+   *  asking them to type header names.
+   *
+   *  ⛔ ONE OPTIONAL FIELD, SHAPE OWNED ELSEWHERE (`spreadsheet-import.ts`),
+   *  after the `requires_form_fields` precedent. `validateRecipe` cross-checks it
+   *  against the recipe's own variables and steps — above all that `preview`
+   *  reaches `dry_run`, or a check would import for real. */
+  spreadsheet_import?: SpreadsheetImportDeclaration;
+  /** D-302 — variables an earlier version declared and this one dropped. A value
+   *  still saved for one is dropped before the run instead of refused: see
+   *  {@link withoutRetiredConfig}. `validateRecipe` refuses a name that is also
+   *  declared. */
+  retired_variables?: string[];
+  /** What a retired variable's saved value still means for the variables that
+   *  replaced it. When `variable` (retired above) was saved as `when`, a run sets
+   *  each `set` variable the owner has not saved. See {@link carriedFromRetired}. */
+  retired_carries?: RetiredCarry[];
+}
+
+/** One carry from a retired variable's saved value into its replacements. */
+export interface RetiredCarry {
+  readonly variable: string;
+  readonly when: string;
+  readonly set: Readonly<Record<string, string>>;
 }
 
 /** Recipe variable: shorthand primitive (default value) OR full hint for
@@ -1057,6 +1085,91 @@ export const undeclaredConfigArguments = (
     out.push({ key, origin: wireKeys?.has(key) === true ? 'wire' : 'overlay' });
   }
   return out;
+};
+
+/** D-302 — the recipe's retired variables (`metadata.retired_variables`); none
+ *  when absent or malformed (`validateRecipe` refuses a malformed list at install). */
+export const retiredVariablesOf = (recipe: { readonly metadata?: unknown }): readonly string[] => {
+  const metadata = recipe.metadata;
+  if (metadata === null || typeof metadata !== 'object') return [];
+  const list = (metadata as { retired_variables?: unknown }).retired_variables;
+  return Array.isArray(list) ? list.filter((name): name is string => typeof name === 'string' && name !== '') : [];
+};
+
+/** The recipe's retired carries (`metadata.retired_carries`), well-formed ones only
+ *  (`validateRecipe` refuses a malformed list at install). */
+export const retiredCarriesOf = (recipe: { readonly metadata?: unknown }): readonly RetiredCarry[] => {
+  const metadata = recipe.metadata;
+  if (metadata === null || typeof metadata !== 'object') return [];
+  const list = (metadata as { retired_carries?: unknown }).retired_carries;
+  if (!Array.isArray(list)) return [];
+  return list.filter((carry): carry is RetiredCarry =>
+    carry !== null && typeof carry === 'object'
+    && typeof (carry as RetiredCarry).variable === 'string'
+    && typeof (carry as RetiredCarry).when === 'string'
+    && (carry as RetiredCarry).set !== null && typeof (carry as RetiredCarry).set === 'object'
+    && Object.values((carry as RetiredCarry).set).every((value) => typeof value === 'string'));
+};
+
+/** The values a run takes from RETIRED variables' saved values
+ *  (`metadata.retired_carries`).
+ *
+ *  ⛔ WHY (integrity audit, 2026-09-24). D-302 retired the importers' thousands mark
+ *  and asked for the decimal mark instead, defaulting to the point. An owner whose
+ *  saved thousands mark was `.` had their amounts read with the point, so `1.200`
+ *  became 1.2, silently. Their old setting still says what the new one must be, and
+ *  a carry names that.
+ *
+ *  When a retired `variable` was saved as `when`, each `set` variable the config does
+ *  not hold takes the carried value. A value the owner saved for the new variable
+ *  always wins. A variable a later version declares again is not in `retired`, so it
+ *  carries nothing. */
+export const carriedFromRetired = (
+  recipe: { readonly metadata?: unknown },
+  config: Readonly<Record<string, unknown>>,
+  retired: readonly string[],
+): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const carry of retiredCarriesOf(recipe)) {
+    if (!retired.includes(carry.variable) || config[carry.variable] !== carry.when) continue;
+    for (const [name, value] of Object.entries(carry.set)) {
+      if (config[name] === undefined && !(name in out)) out[name] = value;
+    }
+  }
+  return out;
+};
+
+/** D-303 — the variables `before` declares that `after` does not: what an update
+ *  dropped. `before` null (a fresh install) drops nothing. */
+export const droppedVariables = (
+  before: { readonly variables?: unknown } | null,
+  after: { readonly variables?: unknown },
+): string[] => {
+  const names = (recipe: { readonly variables?: unknown } | null): string[] => {
+    const variables = recipe?.variables;
+    return variables !== null && typeof variables === 'object' && !Array.isArray(variables)
+      ? Object.keys(variables) : [];
+  };
+  const kept = new Set(names(after));
+  return names(before).filter((name) => !kept.has(name));
+};
+
+/** D-302 — `config` without the keys the recipe RETIRED.
+ *
+ *  ⛔ WHY A RETIRED KEY IS DROPPED, NOT REFUSED. D-222 refuses any config key the
+ *  recipe does not declare, from every contributor: the wire, and the install,
+ *  dish and group overlays saved earlier. So an update that removes a variable
+ *  would stop EVERY run of an owner who ever saved a value for it, and nothing
+ *  prunes those overlays. A recipe that lists the variable here says the knob is
+ *  gone on purpose, so its saved value is dropped. The value stays stored, and
+ *  nothing is lost. A key the recipe never declared is still refused. */
+export const withoutRetiredConfig = (
+  config: Readonly<Record<string, unknown>>,
+  retired: readonly string[],
+): Record<string, unknown> => {
+  if (retired.length === 0) return { ...config };
+  const drop = new Set(retired);
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !drop.has(key)));
 };
 
 /** The human half of the refusal. Kept beside the reporter so the wording lives

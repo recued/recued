@@ -3,14 +3,14 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://www.mongodb.com/docs/api/doc/atlas-admin-api-v2.json",
-      "bytes": 4801561,
-      "sha256": "996845fbf3380f22d9f518e0ee4be190e3a7df151f3d373b318ed639580b90d8",
+      "bytes": 4829665,
+      "sha256": "2e914fb8e357e45d272918882cfca431219bae0cc933dc5e9c1c5bb45df2793d",
       "openapi": "3.0.1",
       "title": "MongoDB Atlas Administration API",
       "api_version": "2.0",
-      "x_xgen_sha": "ed73f8c64c28ad35db951609976573e62907e790",
+      "x_xgen_sha": "a06785990fe6669e5123654fa1117c0e879e6616",
       "official_path_count": 319,
-      "retrieved_on": "2026-09-20",
+      "retrieved_on": "2026-09-24",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
         {
@@ -158,12 +158,12 @@
     },
     "composition_bytes": {
       "mongodb-atlas-organizations-projects": 155318,
-      "mongodb-atlas-credentials-access": 137217,
+      "mongodb-atlas-credentials-access": 137649,
       "mongodb-atlas-identity-governance": 115112,
-      "mongodb-atlas-clusters-compute": 122173,
+      "mongodb-atlas-clusters-compute": 121377,
       "mongodb-atlas-networking-integrations": 82795,
       "mongodb-atlas-backups-archive": 128151,
-      "mongodb-atlas-observability": 177903,
+      "mongodb-atlas-observability": 179307,
       "mongodb-atlas-search-streams": 153646
     },
     "body_mode_counts": {

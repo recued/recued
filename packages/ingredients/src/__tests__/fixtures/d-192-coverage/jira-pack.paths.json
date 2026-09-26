@@ -1,9 +1,9 @@
 {
   "_extract": {
-    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1, 421 paths; URL is unversioned (drift risk - re-pin at publish). Doc path keys are /rest/api/3/... while the community pack's wire paths carry the /ex/jira/{cloud_id} OAuth 3LO proxy prefix - reconciled at proof time by surfaces.api.openapi_source.path_alias.wire_prefix (D-192 CORE #8a). Distinct from the P1b-wave jira.paths.json, which pins the 2026-07-01 snapshot of the dac-static host for the synthetic coverage manifest.",
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1, 423 paths; URL is unversioned (drift risk - re-pin at publish). Doc path keys are /rest/api/3/... while the community pack's wire paths carry the /ex/jira/{cloud_id} OAuth 3LO proxy prefix - reconciled at proof time by surfaces.api.openapi_source.path_alias.wire_prefix (D-192 CORE #8a). Distinct from the P1b-wave jira.paths.json, which pins the 2026-07-01 snapshot of the dac-static host for the synthetic coverage manifest.",
     "url": "https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json",
-    "sha256": "90d1546f74f824416a43d9925cb3ede7313e7b04a0b06c9a5f6f972625cc0d0d",
-    "fetched_at": "2026-07-09"
+    "sha256": "6ecc461bb85e92a46331a4316b6c63c91c16ed6baf5f06b03ab616da3f1ab3d7",
+    "fetched_at": "2026-09-23"
   },
   "paths": {
     "/rest/api/3/search/jql": {

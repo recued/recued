@@ -40,6 +40,9 @@ export const INSTALL_CONNECT_NONE_ATTR = 'data-recued-install-connect-none';
 export const INSTALL_CONNECT_CUSTOMIZE_ATTR = 'data-recued-install-connect-customize';
 /** The deep-link to the BYO enroll form for this vendor. */
 export const INSTALL_CONNECT_ENROLL_ATTR = 'data-recued-install-connect-enroll';
+/** The collapsed one-line summary of the pick; `data-carried-over` when an update
+ *  keeps the account the pack uses now (D-294). */
+export const INSTALL_CONNECT_SUMMARY_ATTR = 'data-recued-install-connect-summary';
 
 const COPY = {
   heading: (vendor: string): string => `Connect your ${vendor} account`,
@@ -48,6 +51,9 @@ const COPY = {
   enroll_more: 'Connect a new account',
   hint: 'You can install it now and connect the account later.',
   summary_prefix: 'Will connect: ',
+  carried_prefix: 'Keeps using: ',
+  current_gone: (name: string): string =>
+    `This Pack used “${name}”, which is not connected now. Pick the account to use.`,
   none_label: 'Not now. Just install it',
   customize: 'Use a different account',
   none_option: 'Do not connect now, just install it',
@@ -77,6 +83,11 @@ export const defaultChosenConnection = (
 export const resolveChosenConnection = (
   explicit: { touched: boolean; pick: string | undefined },
   candidates: readonly EndpointCandidate[],
+  /** ⛔ D-294 — an UPDATE: the account the pack is bound to now. Untouched, it
+   *  wins over the name-sorted first candidate, which silently moved an owner
+   *  with two accounts of one vendor to the other one. Only while it is still a
+   *  candidate: a vanished account is never bound. */
+  current?: string,
 ): string | undefined => {
   if (
     explicit.touched &&
@@ -84,6 +95,7 @@ export const resolveChosenConnection = (
   ) {
     return explicit.pick;
   }
+  if (current !== undefined && candidates.some((c) => c.name === current)) return current;
   return defaultChosenConnection(candidates);
 };
 
@@ -98,6 +110,8 @@ export interface RenderInstallConnectPickerOptions {
   chosen: string | undefined;
   /** Whether the "Use a different account" expander is open. */
   expanded: boolean;
+  /** D-294 — an UPDATE: the account the pack is bound to now. */
+  current?: string;
   /** Disable interaction while an install rpc is in flight. */
   disabled: boolean;
   /** Pick a candidate by name, or undefined to install without connecting. */
@@ -154,11 +168,21 @@ export const renderInstallConnectPicker = (
   if (!expanded) {
     // Collapsed — the pre-selected pick, one line, with a Customize expander.
     const chosenCandidate = candidates.find((c) => c.name === chosen);
+    const keeps = opts.current !== undefined && chosenCandidate !== undefined && chosen === opts.current;
     const summary = doc.createElement('p');
     summary.className = 'packs-dialog-connect-summary';
-    summary.textContent =
-      COPY.summary_prefix + (chosenCandidate ? chosenCandidate.display_name : COPY.none_label);
+    summary.setAttribute(INSTALL_CONNECT_SUMMARY_ATTR, '');
+    if (keeps) summary.setAttribute('data-carried-over', '');
+    summary.textContent = (keeps ? COPY.carried_prefix : COPY.summary_prefix)
+      + (chosenCandidate ? chosenCandidate.display_name : COPY.none_label);
     section.appendChild(summary);
+    if (opts.current !== undefined && !candidates.some((c) => c.name === opts.current)) {
+      // Say so rather than quietly proposing another account.
+      const gone = doc.createElement('p');
+      gone.className = 'packs-dialog-connect-hint';
+      gone.textContent = COPY.current_gone(opts.current);
+      section.appendChild(gone);
+    }
 
     const customize = doc.createElement('button');
     customize.type = 'button';

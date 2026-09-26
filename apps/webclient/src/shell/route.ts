@@ -36,6 +36,22 @@ export const WEBCLIENT_ROUTE_IDS = [
   'recipes',
   'automation',
   'data',
+  /** D-291 — Saved views is its OWN surface, not a Data segment. A saved view
+   *  is the owner's curated entry point, and burying the list one level inside
+   *  the surface it launches meant reaching it through the thing it exists to
+   *  shortcut. `#data/view/<id>` rewrites to this below.
+   *
+   *  ⛔ The VIEW still renders the Data route — only the ADDRESS moved. That is
+   *  why `dataAddress` stops hardcoding `'data'`: while a view is bound the
+   *  Data route addresses as `views`, and the moment its filters diverge it
+   *  addresses as `data` again. */
+  'views',
+  // D-290 — Today is its OWN surface, not a Data tab. It aggregates tasks,
+  // commitments and calendar ACROSS sources, which is not what any other
+  // `#data` tab is (a view of one warehouse collection), and the drawer has
+  // treated it as a first-class destination since D-267 while the address said
+  // otherwise. `#data/today` rewrites to this below.
+  'today',
   'logs',
   // D-250 § D7 / § Open 10 — the owner's OWN metrics. Beside Logs in the review
   // section, NOT under Server (operational configuration) and not replacing Chat as the
@@ -97,6 +113,32 @@ export const parseShellRoute = (hash: string): ShellRoute => {
     .slice(1)
     .filter((part) => part.length > 0)
     .map(decodeSegment);
+  // D-290 — `#data/today` moved to `#today`. Rewritten HERE, at the one place
+  // every consumer resolves a hash: the drawer computes its active seat from
+  // this, the mount discriminator reads it, and the back stack is built from
+  // it. A redirect inside the Today route would leave a bookmarked
+  // `#data/today` mounting Today with the DATA seat lit.
+  //
+  // ⛔ THIS AND THE DATA ROUTE'S `today` TAB CANNOT COEXIST, which is why they
+  // shipped together. `dataAddress` asserts the hash parses as `data`; while
+  // the tab existed the Data route built `#data/today` links and then threw on
+  // its own address the moment this rewrite re-pointed them.
+  if (surface === 'data' && segments[0] === 'today') {
+    return { surface: 'today', segments: segments.slice(1) };
+  }
+  // D-291 — `#data/view/<id>` moved to `#views/<id>`. Rewritten here for the
+  // same reason as Today: every consumer resolves a hash through this function,
+  // so a bookmarked `#data/view/...` would otherwise mount Saved views with the
+  // DATA seat lit.
+  //
+  // ⛔ THIS AND `dataAddress` HARDCODING `'data'` CANNOT COEXIST. The Data route
+  // builds a saved-view address whenever a view is bound, and
+  // `hierarchicalAddressFromHash` THROWS when the hash does not parse as the
+  // surface it was handed — which is exactly how the Today rewrite broke its
+  // own route mid-flight. `dataAddress` now derives the surface from the hash.
+  if (surface === 'data' && segments[0] === 'view') {
+    return { surface: 'views', segments: segments.slice(1) };
+  }
   return { surface, segments };
 };
 
@@ -730,6 +772,16 @@ export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
     // R18 — external `#data/<tab>/<entity_id>` changes remount so the warehouse
     // explorer can hydrate a durable selection; in-page changes stay mounted.
     'data',
+    // D-291 — `#views` -> `#views/<id>` MUST remount: `savedViewId` is read at
+    // mount, so a route that stays mounted never learns which view to load and
+    // the list simply sits there with no content under it.
+    //
+    // ⛔⛔ A SET, NOT A `Record<WebclientRouteId, …>` — nothing type-checks this
+    // membership, so adding a route here is a separate act from adding the
+    // route. `#data/view/<id>` worked only because `data` was already a member;
+    // moving the address to its own surface silently left that behind, and
+    // every unit test stayed green. Found by driving a real browser.
+    'views',
     // Set up Chat can detour from a durable thread through Settings and return
     // to `#chat/session/<id>`. Treat Chat as addressable so the shell's bare
     // `#chat` / New chat navigation also tears that restored thread down.

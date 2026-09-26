@@ -5,6 +5,8 @@ import { LLM_GATEWAY_PAID_ACK_VERSION, SELLER_DEFAULT_DOOR_ID } from '@recued/co
 import type {
   SellerCreatePassTierResponse,
   SellerCustomer,
+  SellerManualTierReapplyCustomer,
+  SellerManualTierReapplyResponse,
   SellerListOrdersResponse,
   SellerManualCustomerIssueResponse,
   SellerManualCustomerReissueTokenResponse,
@@ -92,10 +94,14 @@ import {
   SELLER_PASS_TIER_FORM_FIELD_ATTR,
   SELLER_PASS_TIER_FORM_STATUS_ATTR,
   SELLER_PASS_TIER_FORM_SUBMIT_ATTR,
-  SELLER_TIER_BULK_ADJUST_FIELD_ATTR,
-  SELLER_TIER_BULK_ADJUST_FORM_ATTR,
-  SELLER_TIER_BULK_ADJUST_STATUS_ATTR,
-  SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR,
+  SELLER_CUSTOMER_REAPPLY_PREVIEW_ATTR,
+  SELLER_TIER_REAPPLY_FIELD_ATTR,
+  SELLER_TIER_REAPPLY_FORM_ATTR,
+  SELLER_TIER_REAPPLY_PICK_ATTR,
+  SELLER_TIER_REAPPLY_PREVIEW_ATTR,
+  SELLER_TIER_REAPPLY_ROW_ATTR,
+  SELLER_TIER_REAPPLY_STATUS_ATTR,
+  SELLER_TIER_REAPPLY_SUBMIT_ATTR,
   SELLER_TIER_ROW_ATTR,
   SELLER_TIER_USAGE_FORM_ATTR,
   SELLER_TIER_USAGE_FIELD_ATTR,
@@ -109,7 +115,7 @@ import {
   type SellerManualCustomerIssueCaller,
   type SellerManualCustomerReissueTokenCaller,
   type SellerManualCustomerSwapTierCaller,
-  type SellerManualTierBulkAdjustCaller,
+  type SellerManualTierReapplyCaller,
   type SellerListOrdersCaller,
   type SellerManualTierUpsertCaller,
   type SellerCreatePassTierCaller,
@@ -119,6 +125,7 @@ import {
 } from '../settings/seller-page.js';
 import {
   LIST_PREVIEW_ATTR,
+  LIST_PREVIEW_FACTS_ATTR,
   LIST_PREVIEW_OPEN_ATTR,
   updateListContinuity,
 } from '../shell/list-preview-continuity.js';
@@ -605,6 +612,115 @@ describe('D-196 S2 - Settings -> Seller page', () => {
       'push',
     );
     mount.dispose();
+  });
+
+  /** A preview's facts, label → value, in the order shown. */
+  const previewFacts = (preview: FakeElement): Record<string, string> => {
+    const list = findByAttr(preview, LIST_PREVIEW_FACTS_ATTR)!;
+    const values = findAllByTag(list, 'dd');
+    return Object.fromEntries(findAllByTag(list, 'dt').map((term, i) => [textOf(term), textOf(values[i]!)]));
+  };
+  /** Opens a row's preview the way the page listens for it: one click on the list. */
+  const openPreview = (host: FakeElement, itemId: string): FakeElement => {
+    const link = findByAttr(host, SELLER_COLLECTION_ITEM_LINK_ATTR, itemId)!;
+    for (const listener of host.children[0]!.listeners.get('click') ?? []) {
+      listener({ target: link, button: 0, preventDefault: () => undefined });
+    }
+    return findByAttr(host, LIST_PREVIEW_ATTR)!;
+  };
+
+  it('previews each Seller item as the item itself, then one button that opens it', async () => {
+    // The owner, 2026-09-24: "for a review to make sense it should be [list of
+    // tier item] [confirm]". The preview listed where the row sat (its list, its
+    // id, the page number) under "Review this tiers item", so there was nothing to
+    // review before opening it.
+    const base = overview();
+    const customer = base.customers[0]!;
+    const shop = overview({
+      tiers: [base.tiers[0]!, { ...base.tiers[0]!, tier_id: 'tier-2', display_name: 'Nobody yet' }],
+      customers: [
+        customer,
+        { ...customer, customer_id: 'customer-2', access_state: 'grace' },
+        { ...customer, customer_id: 'customer-3', access_state: 'closed' },
+      ],
+      offers: [{
+        offer_id: 'paid-document.outcome',
+        kind: 'document',
+        display_name: 'Paid document',
+        description: 'One reviewed and delivered PDF document',
+        pricing_kind: 'fixed',
+        amount_minor: 12_500,
+        currency: 'USD',
+        fulfillment_recipe_id: 'generate-paid-document',
+        checkout_url: null,
+        fulfillment_config: null,
+        state: 'draft',
+        created_by_recipe_id: 'start-paid-document-fulfillment',
+        created_at: 1_700_000_000_000,
+        updated_at: 1_700_000_000_000,
+      }],
+    });
+    const cases: ReadonlyArray<{
+      subpage: 'tiers' | 'customers' | 'offers' | 'orders' | 'usage';
+      id: string;
+      noun: string;
+      facts: Record<string, string>;
+    }> = [
+      {
+        subpage: 'tiers', id: 'tier-1', noun: 'package',
+        facts: {
+          Customers: '1 active, 1 in grace, 1 closed', Pass: '30d', Source: 'Manual',
+          Template: 'contract-template-1', ID: 'tier-1',
+        },
+      },
+      { subpage: 'tiers', id: 'tier-2', noun: 'package', facts: { Customers: 'None yet' } },
+      {
+        subpage: 'customers', id: 'customer-2', noun: 'customer',
+        facts: { Package: 'Consulting Basic', Access: 'Grace', Email: 'buyer@example.com', ID: 'customer-2' },
+      },
+      {
+        subpage: 'offers', id: 'paid-document.outcome', noun: 'offer',
+        facts: {
+          State: 'draft', About: 'One reviewed and delivered PDF document',
+          Fulfillment: 'generate-paid-document', ID: 'paid-document.outcome',
+        },
+      },
+      {
+        subpage: 'orders', id: 'ord:paid-doc:sub_1', noun: 'order',
+        // Whole values: the row's cells shorten the handle and the origin.
+        facts: {
+          Phase: 'awaiting_payment', Provider: 'stripe', Customer: 'Not set',
+          Handle: `oh_${'a'.repeat(64)}`, Origin: 'Reception Submission · sub_1',
+        },
+      },
+      {
+        subpage: 'usage', id: 'contract-customer-1:chat_turn:month:1700000000000', noun: 'usage record',
+        facts: { Kind: 'Chat Turn', Units: '17', Contract: 'contract-customer-1' },
+      },
+    ];
+    for (const item of cases) {
+      const host = makeFakeElement('div');
+      const mount = mountSellerPage({
+        host: host as unknown as HTMLElement,
+        document: makeFakeDocument() as unknown as Document,
+        initialSubpage: item.subpage,
+        runGetOverview: async () => shop,
+        runListOrders: async () => ordersResponse([makeOrder()]),
+      });
+      await mount.whenLoaded();
+      const preview = openPreview(host, item.id);
+      expect(preview.getAttribute('data-id')).toBe(item.id);
+      const eyebrow = findAllByTag(preview, 'span').find((el) => el.className === 'list-preview-eyebrow')!;
+      expect(textOf(eyebrow).toLowerCase()).toBe(item.noun);
+      const facts = previewFacts(preview);
+      expect(facts, `${item.subpage} ${item.id}`).toMatchObject(item.facts);
+      for (const aboutTheList of ['Collection', 'Record', 'List page']) {
+        expect(facts).not.toHaveProperty(aboutTheList);
+      }
+      expect(textOf(preview)).not.toContain('before you open everything');
+      expect(textOf(findByAttr(preview, LIST_PREVIEW_OPEN_ATTR)!)).toBe(`Open ${item.noun}`);
+      mount.dispose();
+    }
   });
 
   it('pages a collection list and opens one customer in a focused detail view', async () => {
@@ -2063,134 +2179,380 @@ describe('D-196 S2 - Settings -> Seller page', () => {
     mount.dispose();
   });
 
-  it('bulk adjusts manual tier customers through the owner RPC', async () => {
+  /** D-309 — one row of a re-apply answer. */
+  const reapplyRow = (
+    overrides: Partial<SellerManualTierReapplyCustomer> = {},
+  ): SellerManualTierReapplyCustomer => ({
+    customer_id: 'customer-1',
+    label: 'buyer@example.com',
+    access_state: 'active',
+    changed_by_hand: { end_date: false, permissions: false },
+    started_at: 1_700_000_000_000,
+    end_before: 1_701_000_000_000,
+    end_after: 1_702_592_000_000,
+    included: true,
+    skipped: null,
+    ...overrides,
+  });
+  const fireChange = (el: FakeElement): void => {
+    for (const listener of el.listeners.get('change') ?? []) listener({ target: el });
+  };
+  const reapplyField = (host: FakeElement, field: string): FakeElement => {
+    const el = findByAttr(host, SELLER_TIER_REAPPLY_FIELD_ATTR, field);
+    if (el === null) throw new Error(`missing re-apply field ${field}`);
+    return el;
+  };
+
+  it('D-309: re-applies the package from its Re-apply tab, previewed first', async () => {
     const host = makeFakeElement('div');
     const base = overview();
-    const secondCustomer: SellerCustomer = {
-      ...base.customers[0]!,
-      customer_id: 'customer-2',
-      source_customer_id: 'manual-cus-2',
-      contract_id: 'contract-customer-2',
-      inbound_token_id: 'inbound-2',
-      mcp_token_id: 'mcp-2',
-    };
-    const runBulkAdjustManualTierCustomers:
-      SellerManualTierBulkAdjustCaller = vi.fn(async (request) => {
-        const selectedIds = request.customer_ids ?? ['customer-1'];
-        const selectedCustomers = [base.customers[0]!, secondCustomer].filter(
-          (customer) => selectedIds.includes(customer.customer_id),
-        );
-        return {
-          tier: base.tiers[0]!,
-          adjusted_customers: selectedCustomers,
-          skipped_closed_customers: [],
-          overview: overview({
-            customers: [base.customers[0]!, secondCustomer],
-            counts: {
-              tiers: 1,
-              active_tiers: 1,
-              customers: 2,
-              active_customers: 2,
-              grace_customers: 0,
-              closed_customers: 0,
-            },
-          }),
-        };
-      });
+    const bea = reapplyRow({
+      customer_id: 'customer-2', label: 'bea@example.com',
+      changed_by_hand: { end_date: true, permissions: false },
+      end_after: 1_701_000_000_000, included: false, skipped: 'changed_by_hand',
+    });
+    const runReapplyManualTier: SellerManualTierReapplyCaller = vi.fn(async (request) => ({
+      tier: base.tiers[0]!,
+      preview: request.preview ?? false,
+      customers: [reapplyRow(), bea],
+      overview: base,
+    }));
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
       initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
       runGetOverview: async () => base,
-      runBulkAdjustManualTierCustomers,
+      runReapplyManualTier,
     });
-
     await mount.whenLoaded();
 
-    expect(findByAttr(host, SELLER_TIER_BULK_ADJUST_FORM_ATTR)).not.toBeNull();
-    findByAttr(host, SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR)?.click();
+    // Named for what it does: the Seller sections above it have a "Customers" too.
+    // The address keeps `customers`, so a link to it still lands here.
+    const tab = findByAttr(host, SELLER_DETAIL_TAB_ATTR, 'customers')!;
+    expect(textOf(tab)).toBe('Re-apply');
+    expect(tab.getAttribute('href')).toBe('#settings/seller/tiers/detail/tier-1/customers');
+    expect(findAllByAttr(host, SELLER_DETAIL_TAB_ATTR).map(textOf)).not.toContain('Customers');
+    expect(findByAttr(host, SELLER_TIER_REAPPLY_FORM_ATTR)).not.toBeNull();
+    const submit = findByAttr(host, SELLER_TIER_REAPPLY_SUBMIT_ATTR)!;
+    // Nothing can be re-applied before it has been previewed.
+    expect(submit.disabled).toBe(true);
+    const who = reapplyField(host, 'who');
+    who.value = 'unchanged';
+    fireChange(who);
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
     await flushAsync();
 
-    expect(runBulkAdjustManualTierCustomers).toHaveBeenCalledWith({
-      tier_id: 'tier-1',
+    expect(runReapplyManualTier).toHaveBeenCalledWith({
+      tier_id: 'tier-1', apply: { permissions: true, length: true }, who: 'unchanged', preview: true,
     });
-    let status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
-    expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Done. 1 adjusted, 0 skipped.');
+    const rows = findAllByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR);
+    expect(rows.map((row) => row.getAttribute(SELLER_TIER_REAPPLY_ROW_ATTR))).toEqual(['customer-1', 'customer-2']);
+    expect(textOf(rows[1]!)).toContain('Changed by hand, left alone');
+    expect(textOf(rows[1]!)).toContain('End date');
+    expect(textOf(findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!)).toContain('1 would be re-applied, 1 left alone.');
+    expect(submit.textContent).toBe('Re-apply to 1 customer');
+    expect(submit.disabled).toBe(false);
 
-    const allOpen = findByAttr(
-      host,
-      SELLER_TIER_BULK_ADJUST_FIELD_ATTR,
-      'all_open_customers',
-    );
-    const customerIds = findByAttr(
-      host,
-      SELLER_TIER_BULK_ADJUST_FIELD_ATTR,
-      'customer_ids',
-    );
-    if (allOpen === null || customerIds === null) {
-      throw new Error('missing bulk-adjust fields');
-    }
-    allOpen.checked = false;
-    for (const listener of allOpen.listeners.get('change') ?? []) {
-      listener({ target: allOpen });
-    }
-    customerIds.value = 'customer-1\ncustomer-2';
-
-    findByAttr(host, SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR)?.click();
+    submit.click();
     await flushAsync();
-
-    expect(runBulkAdjustManualTierCustomers).toHaveBeenLastCalledWith({
-      tier_id: 'tier-1',
-      customer_ids: ['customer-1', 'customer-2'],
+    expect(runReapplyManualTier).toHaveBeenLastCalledWith({
+      tier_id: 'tier-1', apply: { permissions: true, length: true }, who: 'unchanged', preview: false,
     });
-    status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
-    expect(status?.getAttribute('data-kind')).toBe('success');
-    expect(textOf(status!)).toContain('Done. 2 adjusted, 0 skipped.');
-    expect(mount.getState().overview?.counts.customers).toBe(2);
+    const status = findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!;
+    expect(status.getAttribute('data-kind')).toBe('success');
+    expect(textOf(status)).toContain('Done. 1 re-applied, 1 left alone.');
     mount.dispose();
   });
 
-  it('keeps invalid manual tier bulk-adjust customer IDs client-side', async () => {
+  it('D-309: re-applies to the ones ticked, and a choice changed after the preview asks for a new one', async () => {
     const host = makeFakeElement('div');
-    const runBulkAdjustManualTierCustomers =
-      vi.fn<SellerManualTierBulkAdjustCaller>();
+    const base = overview();
+    const runReapplyManualTier: SellerManualTierReapplyCaller = vi.fn(async (request) => ({
+      tier: base.tiers[0]!,
+      preview: request.preview ?? false,
+      customers: [reapplyRow(), reapplyRow({ customer_id: 'customer-2', label: 'bea@example.com' })],
+      overview: base,
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
+      runGetOverview: async () => base,
+      runReapplyManualTier,
+    });
+    await mount.whenLoaded();
+    const who = reapplyField(host, 'who');
+    who.value = 'picked';
+    fireChange(who);
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+
+    // Picking previews every open customer of the package AS picked, so each row
+    // shows what happens if it is ticked (one whose access ended included).
+    expect(runReapplyManualTier).toHaveBeenCalledWith({
+      tier_id: 'tier-1', apply: { permissions: true, length: true }, who: 'picked',
+      customer_ids: ['customer-1'], preview: true,
+    });
+    const submit = findByAttr(host, SELLER_TIER_REAPPLY_SUBMIT_ATTR)!;
+    expect(submit.textContent).toBe('Re-apply to 0 customers');
+    expect(submit.disabled).toBe(true);
+    const pick = findByAttr(host, SELLER_TIER_REAPPLY_PICK_ATTR, 'customer-2')!;
+    pick.checked = true;
+    fireChange(pick);
+    expect(submit.textContent).toBe('Re-apply to 1 customer');
+
+    submit.click();
+    await flushAsync();
+    expect(runReapplyManualTier).toHaveBeenLastCalledWith({
+      tier_id: 'tier-1', apply: { permissions: true, length: true }, who: 'picked',
+      customer_ids: ['customer-2'], preview: false,
+    });
+
+    // After the re-render, preview again, then change what is re-applied.
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+    expect(findAllByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR)).toHaveLength(2);
+    const permissions = reapplyField(host, 'permissions');
+    permissions.checked = false;
+    fireChange(permissions);
+    expect(findAllByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR)).toHaveLength(0);
+    expect(findByAttr(host, SELLER_TIER_REAPPLY_SUBMIT_ATTR)!.disabled).toBe(true);
+    expect(textOf(findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!))
+      .toContain('You changed a choice. Preview again before re-applying.');
+    mount.dispose();
+  });
+
+  it('D-309: a choice changed while the preview loads is never applied unpreviewed', async () => {
+    // Integrity audit, 2026-09-24: the preview took its key from the form when the
+    // answer LANDED, so a choice changed meanwhile passed as previewed.
+    const host = makeFakeElement('div');
+    const base = overview();
+    let answer: ((value: SellerManualTierReapplyResponse) => void) | undefined;
+    const runReapplyManualTier: SellerManualTierReapplyCaller = vi.fn((request) => request.preview
+      ? new Promise<SellerManualTierReapplyResponse>((resolve) => { answer = resolve; })
+      : Promise.resolve({ tier: base.tiers[0]!, preview: false, customers: [reapplyRow()], overview: base }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
+      runGetOverview: async () => base,
+      runReapplyManualTier,
+    });
+    await mount.whenLoaded();
+    const who = reapplyField(host, 'who');
+    who.value = 'unchanged';
+    fireChange(who);
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+    // While it loads, the owner switches to everyone…
+    who.value = 'everyone';
+    fireChange(who);
+    answer!({ tier: base.tiers[0]!, preview: true, customers: [reapplyRow()], overview: base });
+    await flushAsync();
+    // …so the "unchanged" answer is dropped, and nothing can be re-applied.
+    expect(findAllByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR)).toHaveLength(0);
+    expect(textOf(findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!))
+      .toContain('You changed a choice. Preview again before re-applying.');
+    const submit = findByAttr(host, SELLER_TIER_REAPPLY_SUBMIT_ATTR)!;
+    submit.click();
+    await flushAsync();
+    expect(runReapplyManualTier).not.toHaveBeenCalledWith(expect.objectContaining({ preview: false }));
+    mount.dispose();
+  });
+
+  it('D-309: a customer whose access already ended is shown as left alone', async () => {
+    const host = makeFakeElement('div');
+    const base = overview();
+    const lapsed = reapplyRow({
+      customer_id: 'customer-2', label: 'gone@example.com', included: false, skipped: 'lapsed',
+      end_after: 1_701_000_000_000,
+    });
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
+      runGetOverview: async () => base,
+      runReapplyManualTier: async (request) => ({
+        tier: base.tiers[0]!, preview: request.preview ?? false, customers: [reapplyRow(), lapsed], overview: base,
+      }),
+    });
+    await mount.whenLoaded();
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+    const row = textOf(findByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR, 'customer-2')!);
+    expect(row).toContain('Access already ended, left alone');
+    expect(row).toContain('Unchanged');
+    mount.dispose();
+  });
+
+  it('D-309: asks the server nothing until something is chosen to re-apply', async () => {
+    const host = makeFakeElement('div');
+    const runReapplyManualTier = vi.fn<SellerManualTierReapplyCaller>();
     const mount = mountSellerPage({
       host: host as unknown as HTMLElement,
       document: makeFakeDocument() as unknown as Document,
       initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
       runGetOverview: async () => overview(),
-      runBulkAdjustManualTierCustomers,
+      runReapplyManualTier,
     });
-
     await mount.whenLoaded();
-
-    const allOpen = findByAttr(
-      host,
-      SELLER_TIER_BULK_ADJUST_FIELD_ATTR,
-      'all_open_customers',
-    );
-    const customerIds = findByAttr(
-      host,
-      SELLER_TIER_BULK_ADJUST_FIELD_ATTR,
-      'customer_ids',
-    );
-    if (allOpen === null || customerIds === null) {
-      throw new Error('missing bulk-adjust fields');
-    }
-    allOpen.checked = false;
-    for (const listener of allOpen.listeners.get('change') ?? []) {
-      listener({ target: allOpen });
-    }
-    customerIds.value = 'customer-1, customer-1';
-
-    findByAttr(host, SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR)?.click();
+    // A Re-apply before any preview is refused, even if the button were pressable.
+    findByAttr(host, SELLER_TIER_REAPPLY_SUBMIT_ATTR)?.click();
     await flushAsync();
+    expect(runReapplyManualTier).not.toHaveBeenCalled();
+    expect(textOf(findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!))
+      .toContain('Preview it first, so you can see what changes.');
+    for (const field of ['permissions', 'length']) {
+      const box = reapplyField(host, field);
+      box.checked = false;
+      fireChange(box);
+    }
+    findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+    expect(runReapplyManualTier).not.toHaveBeenCalled();
+    const status = findByAttr(host, SELLER_TIER_REAPPLY_STATUS_ATTR)!;
+    expect(status.getAttribute('role')).toBe('alert');
+    expect(textOf(status)).toContain('Choose its permissions, its length, or both.');
+    mount.dispose();
+  });
 
-    expect(runBulkAdjustManualTierCustomers).not.toHaveBeenCalled();
-    const status = findByAttr(host, SELLER_TIER_BULK_ADJUST_STATUS_ATTR);
-    expect(status?.getAttribute('role')).toBe('alert');
-    expect(textOf(status!)).toContain('Each customer id can only appear once.');
+  it('D-309: a package\'s tab re-applies that package only, and says when a pass would end now', async () => {
+    // Live 2026-09-24: the tab offered a package picker, so from under one package
+    // the owner could re-apply another. And a pass whose length had run out showed
+    // its new end as a timestamp of that very minute, which does not read as "ends now".
+    const base = overview();
+    const second = { ...base.tiers[0]!, tier_id: 'tier-2', display_name: 'Consulting Plus' };
+    const twoPackages = overview({ tiers: [base.tiers[0]!, second] });
+    const month = 2_592_000_000;
+    const lapsed = reapplyRow({
+      customer_id: 'customer-2', label: 'lapsed@example.com',
+      started_at: 1_690_000_000_000, end_before: null, end_after: 1_700_000_000_000,
+    });
+    const same = reapplyRow({
+      customer_id: 'customer-3', label: 'same@example.com',
+      end_before: 1_700_000_000_000 + month, started_at: 1_700_000_000_000, end_after: 1_700_000_000_000 + month,
+    });
+    for (const tierId of ['tier-1', 'tier-2']) {
+      const host = makeFakeElement('div');
+      const runReapplyManualTier: SellerManualTierReapplyCaller = vi.fn(async (request) => ({
+        tier: twoPackages.tiers.find((tier) => tier.tier_id === request.tier_id)!,
+        preview: request.preview ?? false,
+        customers: [reapplyRow(), lapsed, same],
+        overview: twoPackages,
+      }));
+      const mount = mountSellerPage({
+        host: host as unknown as HTMLElement,
+        document: makeFakeDocument() as unknown as Document,
+        initialAddress: { kind: 'detail', subpage: 'tiers', itemId: tierId, tab: 'customers' },
+        runGetOverview: async () => twoPackages,
+        runReapplyManualTier,
+      });
+      await mount.whenLoaded();
+      expect(findByAttr(host, SELLER_TIER_REAPPLY_FIELD_ATTR, 'tier_id')).toBeNull();
+      findByAttr(host, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+      await flushAsync();
+      expect(runReapplyManualTier).toHaveBeenCalledWith(expect.objectContaining({ tier_id: tierId }));
+
+      const form = textOf(findByAttr(host, SELLER_TIER_REAPPLY_FORM_ATTR)!);
+      expect(form).toContain('Current end');
+      expect(form).toContain('After re-applying');
+      expect(form).not.toContain('Ends now');
+      const row = (id: string) => textOf(findByAttr(host, SELLER_TIER_REAPPLY_ROW_ATTR, id)!);
+      expect(row('customer-2')).toContain('Now, then 72h grace');
+      expect(row('customer-3')).toContain('Unchanged');
+      // A new end inside the package's length is a date, neither of the above.
+      expect(row('customer-1')).not.toMatch(/Now, then|Unchanged/);
+      mount.dispose();
+    }
+  });
+
+  it('D-309: a server from before re-applying is named as out of date, not by its rpc error', async () => {
+    // The webclient ships separately from the server, so a new webclient paired
+    // to 26.9.21 is expected until the owner updates. Its raw error named the rpc
+    // method, and the old bulk form it replaced is gone from this webclient.
+    const tooOld = async (): Promise<never> => {
+      throw { code: 'unknown_method', message: 'Unknown rpc method: server.seller.reapplyManualTier' };
+    };
+    const update = 'This server can’t re-apply a package yet. Update the server, then try again.';
+
+    const packageHost = makeFakeElement('div');
+    const packageMount = mountSellerPage({
+      host: packageHost as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'customers' },
+      runGetOverview: async () => overview(),
+      runReapplyManualTier: tooOld,
+    });
+    await packageMount.whenLoaded();
+    findByAttr(packageHost, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
+    await flushAsync();
+    const status = findByAttr(packageHost, SELLER_TIER_REAPPLY_STATUS_ATTR)!;
+    expect(textOf(status)).toBe(update);
+    expect(status.getAttribute('role')).toBe('alert');
+    expect(findByAttr(packageHost, SELLER_TIER_REAPPLY_SUBMIT_ATTR)!.disabled).toBe(true);
+    packageMount.dispose();
+
+    const customerHost = makeFakeElement('div');
+    const customerMount = mountSellerPage({
+      host: customerHost as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'customers', itemId: 'customer-1' },
+      runGetOverview: async () => overview(),
+      runReapplyManualTier: tooOld,
+    });
+    await customerMount.whenLoaded();
+    findByAttr(customerHost, SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply.preview')?.click();
+    await flushAsync();
+    expect(textOf(findByAttr(customerHost, SELLER_CUSTOMER_LIFECYCLE_STATUS_ATTR)!)).toBe(update);
+    expect(findByAttr(customerHost, SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply')!.disabled).toBe(true);
+    customerMount.dispose();
+  });
+
+  it('D-309: re-applies one customer\'s package from their page, previewed first', async () => {
+    const host = makeFakeElement('div');
+    const base = overview();
+    const runReapplyManualTier: SellerManualTierReapplyCaller = vi.fn(async (request) => ({
+      tier: base.tiers[0]!,
+      preview: request.preview ?? false,
+      customers: [reapplyRow({ changed_by_hand: { end_date: true, permissions: true } })],
+      overview: base,
+    }));
+    const mount = mountSellerPage({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      initialAddress: { kind: 'detail', subpage: 'customers', itemId: 'customer-1' },
+      runGetOverview: async () => base,
+      runReapplyManualTier,
+    });
+    await mount.whenLoaded();
+    const reapply = findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply')!;
+    expect(reapply.disabled).toBe(true);
+    // Refused before a preview, even if the button were pressable.
+    reapply.click();
+    await flushAsync();
+    expect(runReapplyManualTier).not.toHaveBeenCalled();
+
+    findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_SUBMIT_ATTR, 'reapply.preview')?.click();
+    await flushAsync();
+    const asked = {
+      tier_id: 'tier-1', apply: { permissions: true, length: true }, who: 'picked',
+      customer_ids: ['customer-1'],
+    };
+    expect(runReapplyManualTier).toHaveBeenCalledWith({ ...asked, preview: true });
+    const line = textOf(findByAttr(host, SELLER_CUSTOMER_REAPPLY_PREVIEW_ATTR)!);
+    expect(line).toContain('Current end: ');
+    expect(line).toContain('After re-applying: ');
+    expect(line).not.toContain('Ends now');
+    expect(line).toContain('Someone set their end date by hand; this replaces it.');
+    expect(line).toContain('Their permissions were changed by hand; they go back to the package’s own.');
+    expect(reapply.disabled).toBe(false);
+
+    reapply.click();
+    await flushAsync();
+    expect(runReapplyManualTier).toHaveBeenLastCalledWith({ ...asked, preview: false });
+    const status = findByAttr(host, SELLER_CUSTOMER_LIFECYCLE_STATUS_ATTR)!;
+    expect(status.getAttribute('data-kind')).toBe('success');
+    expect(textOf(status)).toContain('Their package is re-applied.');
     mount.dispose();
   });
 
@@ -3183,7 +3545,7 @@ describe('Seller polish (2026-09-03) — separate screens, every level addressab
   it('a tier record offers its edit and customers screens as addressed tabs only when they apply', async () => {
     const manual = mountAt(
       { kind: 'detail', subpage: 'tiers', itemId: 'tier-1', tab: 'edit' },
-      { runUpsertManualTier: vi.fn(), runBulkAdjustManualTierCustomers: vi.fn() },
+      { runUpsertManualTier: vi.fn(), runReapplyManualTier: vi.fn() },
     );
     await manual.mount.whenLoaded();
     expect(hrefsOf(manual.host, SELLER_DETAIL_TAB_ATTR)).toEqual({
@@ -3202,7 +3564,7 @@ describe('Seller polish (2026-09-03) — separate screens, every level addressab
     // A provider-synchronized tier has one screen: nothing to edit by hand.
     const synced = mountAt(
       { kind: 'detail', subpage: 'tiers', itemId: 'tier-stripe' },
-      { runUpsertManualTier: vi.fn(), runBulkAdjustManualTierCustomers: vi.fn() },
+      { runUpsertManualTier: vi.fn(), runReapplyManualTier: vi.fn() },
       overview({ tiers: [syncedTier()] }),
     );
     await synced.mount.whenLoaded();

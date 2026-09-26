@@ -1,0 +1,327 @@
+{
+  "manifest_version": 2,
+  "slug": "statement-import",
+  "publisher": "recued-core",
+  "name": "Bank statement import",
+  "version": 1,
+  "requires": [
+    "install_bulk_pack"
+  ],
+  "tags": [
+    "banking",
+    "finance",
+    "csv",
+    "import",
+    "records",
+    "reconciliation"
+  ],
+  "pack_kind": "app_pack",
+  "service_kind": "workflow",
+  "description": "Use “Bank statement import” in Recued to bring a statement you exported yourself — CSV from any bank — into your own warehouse, with no aggregator in the middle. Aggregators gate real account data behind an approved business account; a file needs no credentials and no third party sees your transactions. You name your bank's columns once, so nothing is guessed. Re-importing an overlapping export skips lines you already have instead of double-counting them. Feeds ledger-book and expense-ledger.",
+  "connection_hints": [],
+  "contents": [
+    {
+      "type": "composition",
+      "composition": {
+        "schema_version": 1,
+        "slug": "statement-import-comp",
+        "ingredients": [
+          {
+            "slug": "statement-import-records",
+            "kind": "storage",
+            "entities": {
+              "statement_line": {
+                "fields": [
+                  {
+                    "maps_to": "id",
+                    "field_path": "pk",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "external_id"
+                  },
+                  {
+                    "maps_to": "account_label",
+                    "field_path": "s1",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "content"
+                  },
+                  {
+                    "maps_to": "posted_on",
+                    "field_path": "s2",
+                    "type": "string",
+                    "source_operation": "line.get"
+                  },
+                  {
+                    "maps_to": "description",
+                    "field_path": "s3",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "content"
+                  },
+                  {
+                    "maps_to": "currency",
+                    "field_path": "s4",
+                    "type": "string",
+                    "source_operation": "line.get"
+                  },
+                  {
+                    "maps_to": "source_file",
+                    "field_path": "s5",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "external_id"
+                  },
+                  {
+                    "maps_to": "counterparty",
+                    "field_path": "s7",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "org"
+                  },
+                  {
+                    "maps_to": "category",
+                    "field_path": "s8",
+                    "type": "string",
+                    "source_operation": "line.get",
+                    "pii": "content"
+                  },
+                  {
+                    "maps_to": "amount",
+                    "field_path": "n1",
+                    "type": "number",
+                    "source_operation": "line.get",
+                    "optional": true
+                  },
+                  {
+                    "maps_to": "money_in",
+                    "field_path": "n3",
+                    "type": "number",
+                    "source_operation": "line.get",
+                    "optional": true
+                  },
+                  {
+                    "maps_to": "money_out",
+                    "field_path": "n4",
+                    "type": "number",
+                    "source_operation": "line.get",
+                    "optional": true
+                  },
+                  {
+                    "maps_to": "balance_after",
+                    "field_path": "n2",
+                    "type": "number",
+                    "source_operation": "line.get",
+                    "optional": true
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "operations": [
+          {
+            "op": "line.create",
+            "ingredient": "statement-import-records",
+            "risk": "write",
+            "approval": "never",
+            "description": "Record one statement line. Money is stored the way your export states it and not reinterpreted: a bank that prints ONE signed column fills `amount` (negative is money leaving), and a bank that prints a pair fills `money_in` and `money_out`. Recued does not fold a pair into a signed figure — which column means money out is a fact about your bank, not about statements, and a store that guessed it would hold a number no line of your file ever contained. Reading recipes combine the two; the stored line stays checkable against the paper.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string"
+              },
+              {
+                "key": "values",
+                "type": "object",
+                "required": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "create",
+              "entity": "statement_line"
+            }
+          },
+          {
+            "op": "line.import",
+            "ingredient": "statement-import-records",
+            "risk": "write",
+            "approval": "ask",
+            "description": "Import a whole statement CSV in one gated call: you name your bank's columns, and every line is parsed, identified and recorded inside the warehouse. ONE approval covers the file — approving it once is the point, because approving a thousand rows one at a time is not review, it is clicking. Each column you name is stored verbatim in the field you name; nothing is combined or recalculated on the way in, so every stored line can be checked against the paper it came from. Re-importing an overlapping export adds only what is genuinely new: each line's id is derived from its own content and your account label, so the same line reproduces the same id rather than a second row. The result reports what landed AND what did not — rows written, rows you already had, rows refused, and any cell that would not parse, with its line number. An unreadable number is recorded as empty, never as zero: a zero looks like a real transaction for nothing, and that is how an import quietly reports the wrong balance. Set “Check first” to rehearse instead: every line is parsed and put through the same checks against your real data, then thrown away, so you can see what a run would do before anything is recorded. Worth doing the first time you map a new bank, because a column pointed at the wrong field imports perfectly well and is wrong in a way nothing can flag. ⚠ There are two ways to hand the file over and they are not interchangeable. `csv` is the text itself — that is the route for a file you picked from your own inventory, which is read first and passed in as text, exactly as before. `csv_ref` takes a file another step in the SAME run just produced (a converted spreadsheet, a filtered extract) and moves its contents straight into the warehouse without them passing through the recipe. You cannot choose, type or otherwise name a `csv_ref` — it only ever comes from a preceding step's output and stops existing when the run ends. Pass one or the other, never both.",
+            "args": [
+              {
+                "key": "csv",
+                "type": "string"
+              },
+              {
+                "key": "csv_ref",
+                "type": "object"
+              },
+              {
+                "key": "spec",
+                "type": "object",
+                "required": true
+              },
+              {
+                "key": "dry_run",
+                "type": "boolean"
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "import",
+              "entity": "statement_line"
+            }
+          },
+          {
+            "op": "line.get",
+            "ingredient": "statement-import-records",
+            "risk": "read",
+            "approval": "never",
+            "description": "Read one statement line by row id.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "get",
+              "entity": "statement_line"
+            }
+          },
+          {
+            "op": "line.search",
+            "ingredient": "statement-import-records",
+            "risk": "read",
+            "approval": "never",
+            "description": "Page statement lines, most recently imported first. Filter on account_label, posted_on, currency, source_file, category. ⚠ Ordering is by when Recued recorded the line, NOT by the date printed on it: your bank's date is stored exactly as it wrote it (`20-Aug-2020`), and sorting text like that puts December before August. Reading a date would mean guessing your bank's format, and a guess about dates is how a statement silently reorders itself. Filter by `posted_on` to pick a day; the order within a page is the order the file listed. ⚠ Also not the importer's dedup path — a line's identity is its row id, derived from its own content, so `line.import` never reads anything back.",
+            "args": [
+              {
+                "key": "filters",
+                "type": "object"
+              },
+              {
+                "key": "sort",
+                "type": "string"
+              },
+              {
+                "key": "cursor",
+                "type": "string"
+              },
+              {
+                "key": "limit",
+                "type": "number"
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "search",
+              "entity": "statement_line",
+              "filter_fields": [
+                "account_label",
+                "posted_on",
+                "currency",
+                "source_file",
+                "category"
+              ],
+              "sort_fields": [
+                "_record.created_at"
+              ]
+            }
+          },
+          {
+            "op": "line.update",
+            "ingredient": "statement-import-records",
+            "risk": "write",
+            "approval": "never",
+            "description": "Change one statement line's owner-set fields under a CAS check — categorise it, name the counterparty, correct a mis-parsed amount.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "expected_version",
+                "type": "number",
+                "required": true
+              },
+              {
+                "key": "expected_revision",
+                "type": "number",
+                "required": true
+              },
+              {
+                "key": "set",
+                "type": "object"
+              },
+              {
+                "key": "unset",
+                "type": "array"
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "update",
+              "entity": "statement_line"
+            }
+          },
+          {
+            "op": "line.delete",
+            "ingredient": "statement-import-records",
+            "risk": "destructive",
+            "approval": "always",
+            "description": "Delete one statement line. Destructive: a deleted line is gone from every balance that summed it, and its row id goes with it — so a later re-import of the same export brings the line back rather than skipping it, because nothing is left to recognise it by.",
+            "args": [
+              {
+                "key": "id",
+                "type": "string",
+                "required": true,
+                "affects_target": true
+              },
+              {
+                "key": "expected_version",
+                "type": "number",
+                "required": true
+              },
+              {
+                "key": "expected_revision",
+                "type": "number",
+                "required": true
+              }
+            ],
+            "bind": {
+              "kind": "core.records",
+              "action": "delete",
+              "entity": "statement_line"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "recipe",
+      "slug": "statement-import-require-records-runtime",
+      "version": 1,
+      "visible": false
+    },
+    {
+      "type": "recipe",
+      "slug": "import-bank-statement",
+      "version": 1,
+      "visible": true
+    },
+    {
+      "type": "recipe",
+      "slug": "list-statement-lines",
+      "version": 1,
+      "visible": true
+    }
+  ]
+}

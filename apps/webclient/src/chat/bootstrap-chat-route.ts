@@ -4,7 +4,13 @@ import { createConversationFilesView, type ConversationFilesCaller } from './con
 import { CHAT_DELIVERY_STYLES, createChatDeliveryView, type ChatDeliveryClient } from './delivery-view.js';
 import { createMessengerSessionList, CHAT_MESSENGER_LIST_STYLES } from './messenger-session-list.js';
 import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES } from './history-filters.js';
-import { chatSessionMatchesFilters, hasChatHistoryFilters } from '@recued/contracts';
+import {
+  chatSessionMatchesFilters,
+  hasChatHistoryFilters,
+  type ListPageFields,
+  type ListPageRequest,
+} from '@recued/contracts';
+import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 /** D-174 P2 — top-level Chat route.
@@ -472,6 +478,12 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
     connections: ReadonlyArray<unknown>;
   }>;
   (method: 'recipe.list'): Promise<{ recipes: ReadonlyArray<unknown> }>;
+  /** Paged form (`@recued/contracts` `rpc/list-page.ts`). The activation read
+   *  asks for one row and reads `total`. */
+  (
+    method: 'recipe.list',
+    payload: ListPageRequest,
+  ): Promise<{ recipes: ReadonlyArray<unknown> } & ListPageFields>;
   (
     method: 'chat.session.export',
     payload: { session_id: string },
@@ -3979,6 +3991,24 @@ export const bootstrapChatRoute = (
   >();
   const announcedPlanVerificationStatuses = new Map<string, string>();
   let pendingConnectedSourceAnswer: PendingConnectedSourceAnswer | null = null;
+  /** The exact error a failed SEND produced. That one renders inside the
+   *  composer, beside the draft it rejected; every other error keeps its place
+   *  under the heading. Compared by identity, so a later load or plan error
+   *  (a new object) never inherits the composer placement.
+   *
+   *  ⛔ WHY. The route stacks history, filters and files above the thread, so
+   *  on a phone the heading is a screen away from the composer. A send error
+   *  rendered there was an `alert` the owner could not see (it began failing
+   *  the rejected-send e2e as the page grew). */
+  let sendError: ClassifiedRpcError | null = null;
+  const buildRouteError = (error: ClassifiedRpcError): HTMLElement => {
+    const element = doc.createElement('div');
+    element.setAttribute(CHAT_ROUTE_ERROR_ATTR, '');
+    element.setAttribute('role', 'alert');
+    if (error.connectionCaused) element.setAttribute('data-connection', 'true');
+    element.textContent = error.copy;
+    return element;
+  };
   let pendingConnectedSourceProvisionalTurnId: string | null = null;
   const completedMessageIdsByTurn = new Map<string, string>();
   // Terminal broadcasts can precede `chat.send`'s ack and can belong to a
@@ -7157,6 +7187,11 @@ export const bootstrapChatRoute = (
     const composer = doc.createElement('div');
     composer.className = 'chat-composer';
     composer.setAttribute(CHAT_ROUTE_COMPOSER_ATTR, '');
+    // A rejected send is reported HERE, beside the draft it rejected (see
+    // `sendError`); the heading can be a screen away on a phone.
+    if (state.error !== null && !state.error.suppressible && state.error === sendError) {
+      composer.appendChild(buildRouteError(state.error));
+    }
 
     const toolbar = doc.createElement('div');
     toolbar.className = 'chat-composer-toolbar';
@@ -8045,13 +8080,8 @@ export const bootstrapChatRoute = (
     // so they always show inline, humanized (Tier 1: no raw method / ms / code
     // leaks; the global offline banner is additive). Only a teardown/abort race
     // is suppressed. A connection-caused one carries a calm style hint.
-    if (state.error !== null && !state.error.suppressible) {
-      const error = doc.createElement('div');
-      error.setAttribute(CHAT_ROUTE_ERROR_ATTR, '');
-      error.setAttribute('role', 'alert');
-      if (state.error.connectionCaused) error.setAttribute('data-connection', 'true');
-      error.textContent = state.error.copy;
-      routeRoot.appendChild(error);
+    if (state.error !== null && !state.error.suppressible && state.error !== sendError) {
+      routeRoot.appendChild(buildRouteError(state.error));
     }
     if (returnTargetMissing) {
       const notice = doc.createElement('div');
@@ -9667,8 +9697,9 @@ export const bootstrapChatRoute = (
       })(),
       (async () => {
         try {
-          const { recipes } = await opts.conn('recipe.list');
-          if (!disposed) hasInstalledRecipe = recipes.length > 0;
+          // One row, not the library: only whether it is empty is read here.
+          const installed = await hasAnyRecipe((request) => opts.conn('recipe.list', request));
+          if (!disposed) hasInstalledRecipe = installed;
         } catch {
           /* leave unknown — see the header */
         }
@@ -11179,7 +11210,8 @@ export const bootstrapChatRoute = (
       // handoff and original draft stay available for a clean retry.
       pendingConnectedSourceAnswer = null;
       pendingConnectedSourceProvisionalTurnId = null;
-      state = { ...state, sending: false, error: classifyRpcError(err) };
+      sendError = classifyRpcError(err);
+      state = { ...state, sending: false, error: sendError };
       renderPreservingHandoffFocus();
     }
   };

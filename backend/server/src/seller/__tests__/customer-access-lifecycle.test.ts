@@ -5,8 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CONTRACT_DEFINITION_SCOPE,
+  TIER1_TOOL_NAMES,
+  primitiveGrantEntry,
   type ContractDefinition,
 } from '@recued/contracts';
+
+import { grandfatherPrimitiveGrants } from '../../owner-grant-reconcile.js';
+import { createCliReachabilityStore } from '../../storage/cli-reachability-store.js';
 
 import { createContractGrantEntryStore, type ContractGrantEntryStore } from '../../storage/contract-grant-entry-store.js';
 import { createContractStore, type ContractStore } from '../../storage/contract-store.js';
@@ -792,6 +797,83 @@ describe('seller customer access lifecycle', () => {
       customer_id: issued.customer.customer_id,
       source_status: 'attacker_status',
     } as never)).toThrow(/bearer rotation only/);
+  });
+
+  /** ⛔ D-297 — A NEW LINK IS THE SAME AGREEMENT UNDER A NEW ID. The rotation used
+   *  to re-seed from the tier template, so "Reissue token" and "Message customer"
+   *  wiped everything the owner had set for this one customer. */
+  it('a reissue carries the whole agreement — hand edits, a pack share, CLI allows, the usage cap and what was used — and the template stays out of it', () => {
+    putTemplate('ct_template_basic', { scope: { operation_ids: ['core.current'] }, door_types: ['mcp'] });
+    grantEntryStore.set('ct_template_basic', 'core.current', true, NOW);
+    upsertTier();
+    const issued = issueBasic();
+    const before = issued.customer.contract_id;
+    // What the owner set for THIS customer after it was issued…
+    grantEntryStore.set(before, 'core.current', false, NOW + 1);
+    grantEntryStore.set(before, 'core.extra', true, NOW + 2);
+    grantEntryStore.set(before, 'pack.op', true, NOW + 3, 'shared-pack');
+    contractStore.put(CONTRACT_DEFINITION_SCOPE, [before], {
+      ...customerDefinition(before), max_uses: 100, uses_remaining: 7, use_period: 'month',
+    });
+    createCliReachabilityStore(contractStore).allow(before, 'cli-tool', 'cli.op', NOW + 4);
+    // What they have used this month, which counts against the package's limit.
+    const usage = { usage_kind: 'tool_call', period_granularity: 'month', period_start: NOW - DAY_MS } as const;
+    sellerStore.recordUsage({ contract_id: before, ...usage, units: 40, now: NOW + 4 });
+    // …while the package moved on: that reaches new customers, not this one.
+    putTemplate('ct_template_basic', { scope: { operation_ids: ['core.current', 'core.later'] }, door_types: ['mcp'] });
+    grantEntryStore.set('ct_template_basic', 'core.later', true, NOW + 5);
+
+    now = NOW + 30_000;
+    const reissued = lifecycle.reissueCustomerToken({ customer_id: issued.customer.customer_id });
+    const after = reissued.customer.contract_id;
+    expect(after).not.toBe(before);
+
+    const { contract_id: _a, minted_at: _b, minted_by: _c, revoked_at: _d, revocation_reason: _e, ...agreement } =
+      customerDefinition(before);
+    expect(customerDefinition(after)).toEqual({
+      ...agreement, contract_id: after, minted_at: NOW + 30_000, minted_by: 'seller:test',
+    });
+    expect(customerDefinition(after)).toMatchObject({
+      scope: { operation_ids: ['core.current'] }, max_uses: 100, uses_remaining: 7, use_period: 'month',
+    });
+    expect(grantEntryStore.listForContract(after)).toEqual([
+      { entry_key: 'core.current', granted: false, set_at: NOW + 1 },
+      { entry_key: 'core.extra', granted: true, set_at: NOW + 2 },
+      { entry_key: 'pack.op', granted: true, set_at: NOW + 3, source_pack: 'shared-pack' },
+    ]);
+    expect(createCliReachabilityStore(contractStore).isAllowed(after, 'cli-tool', 'cli.op')).toBe(true);
+    // The usage moved with them: the limit keeps counting, the history stays in view.
+    expect(sellerStore.getUsageRollup({ contract_id: after, ...usage })?.units).toBe(40);
+    expect(sellerStore.listUsageRollups(before)).toEqual([]);
+    // The bearer is handed exactly that agreement.
+    expect(inboundTokenStore.getTokenById(reissued.issued_token.record.token_id)?.grants).toEqual({
+      'core.current': false, 'core.extra': true, 'pack.op': true,
+    });
+    // The pack still finds its share there (D-294): its update or uninstall clears it.
+    grantEntryStore.clearForSourcePack('shared-pack');
+    expect(grantEntryStore.get(after, 'pack.op')).toBeUndefined();
+  });
+
+  it('⛔ a reissue never widens the agreement at the next boot, and keeps its grandfather record', () => {
+    putTemplate('ct_template_basic', { scope: { operation_ids: ['core.current'] }, door_types: ['mcp'] });
+    upsertTier();
+    const issued = issueBasic();
+    const before = issued.customer.contract_id;
+    grandfatherPrimitiveGrants(contractStore, () => NOW + 1);
+    // A primitive this customer does NOT have — added after its contract was
+    // covered, so the fail-closed default keeps it off.
+    const later = primitiveGrantEntry(TIER1_TOOL_NAMES[0]!);
+    grantEntryStore.clear(before, later);
+
+    now = NOW + 30_000;
+    const after = lifecycle.reissueCustomerToken({ customer_id: issued.customer.customer_id }).customer.contract_id;
+    grandfatherPrimitiveGrants(contractStore, () => NOW + 40_000); // the next boot
+    expect(grantEntryStore.get(after, later)).toBeUndefined();
+    expect(grantEntryStore.listForContract(after)).toEqual(grantEntryStore.listForContract(before));
+    // Whether the agreement was grandfathered travels with it (a record since D-298).
+    expect(contractStore.get('primitive_grandfather', [after])?.value)
+      .toEqual(contractStore.get('primitive_grandfather', [before])?.value);
+    expect(contractStore.get('primitive_grandfather', [before])).not.toBeNull();
   });
 
   it('bulk adjusts open tier customers from the current template without reopening closed customers', () => {

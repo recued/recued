@@ -110,7 +110,7 @@ import {
   SELLER_COLLECTION_LIST_ATTR,
   SELLER_DIRECTORY_ATTR,
   SELLER_SETTINGS_FORM_ATTR,
-  SELLER_TIER_BULK_ADJUST_FORM_ATTR,
+  SELLER_TIER_REAPPLY_FORM_ATTR,
   SELLER_TIER_FORM_ATTR,
 } from '../settings/seller-page.js';
 import { createCertPinStateWatcher } from '../realtime/cert-pin-state-watcher.js';
@@ -1800,10 +1800,10 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
           closed_customers: 0,
         },
       }),
-      sellerManualTierBulkAdjustCaller: async () => ({
+      sellerManualTierReapplyCaller: async () => ({
         tier: sellerTier(),
-        adjusted_customers: [],
-        skipped_closed_customers: [],
+        preview: true,
+        customers: [],
         overview: {
           ...sellerOverview(),
           tiers: [sellerTier()],
@@ -1813,7 +1813,7 @@ describe('D-196 S2 - Settings route Seller section: wiring', () => {
 
     await route.sellerPage()?.whenLoaded();
 
-    expect(findByAttr(host, SELLER_TIER_BULK_ADJUST_FORM_ATTR)).not.toBeNull();
+    expect(findByAttr(host, SELLER_TIER_REAPPLY_FORM_ATTR)).not.toBeNull();
     route.dispose();
   });
 

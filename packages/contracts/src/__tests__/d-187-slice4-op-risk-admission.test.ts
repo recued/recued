@@ -155,19 +155,19 @@ describe('D-187 slice 4 — admitByOpRisk op-risk × stage-trust', () => {
 
   it('a write/admin op ADMITS at the admin ceiling (owner-direct / admin-shell) but ASKS at the LOW ceiling (automation / contracted)', () => {
     // Owner-direct + admin-shell → admin ceiling → write + admin run silent.
-    expect(opRisk('data-annotate', 'write', USER).verdict).toBe('admit');
+    expect(opRisk('annotation-create', 'write', USER).verdict).toBe('admit');
     expect(opRisk('admin-op', 'admin', USER).verdict).toBe('admit');
     expect(opRisk('admin-op', 'admin', HOUSEKEEPING).verdict).toBe('admit');
     // D-209 §1.4 — unattended owner AUTOMATION (schedule/reactive) now fails closed to the
     // LOW ceiling → its write + admin ops SURFACE for review (silence earned via the D-177
     // learner, never by default).
-    expect(opRisk('data-annotate', 'write', SCHEDULE).verdict).toBe('ask');
+    expect(opRisk('annotation-create', 'write', SCHEDULE).verdict).toBe('ask');
     expect(opRisk('admin-op', 'admin', SCHEDULE).verdict).toBe('ask');
     // Contracted → LOW ceiling → write + admin SURFACE (ask). This is "AI writes surface".
-    expect(opRisk('data-annotate', 'write', CHAT_CONTRACTED).verdict).toBe('ask');
+    expect(opRisk('annotation-create', 'write', CHAT_CONTRACTED).verdict).toBe('ask');
     expect(opRisk('admin-op', 'admin', MCP_BOUND_DOOR).verdict).toBe('ask');
-    expect(opRisk('data-annotate', 'write', MCP_UNBOUND_DOOR).verdict).toBe('ask');
-    expect(opRisk('data-annotate', 'write', SELF_RESTRICTED).verdict).toBe('ask');
+    expect(opRisk('annotation-create', 'write', MCP_UNBOUND_DOOR).verdict).toBe('ask');
+    expect(opRisk('annotation-create', 'write', SELF_RESTRICTED).verdict).toBe('ask');
   });
 
   it('a destructive op ALWAYS asks — the always-floor, even at the admin ceiling', () => {
@@ -179,7 +179,7 @@ describe('D-187 slice 4 — admitByOpRisk op-risk × stage-trust', () => {
   });
 
   it('an ask carries the effective_risk_tier verbatim (audit-honest, not reclassified)', () => {
-    const d = opRisk('data-annotate', 'write', MCP_BOUND_DOOR);
+    const d = opRisk('annotation-create', 'write', MCP_BOUND_DOOR);
     expect(d.verdict).toBe('ask');
     if (d.verdict === 'ask') expect(d.risk_tier).toBe('write');
   });
@@ -213,7 +213,7 @@ describe('D-187 slice 4 — outbound-send LIFT (user_self-scoped)', () => {
   });
 
   it('does NOT lift a non-send internal write at user_self (admin ceiling admits it)', () => {
-    expect(opRisk('data-annotate', 'write', USER).verdict).toBe('admit');
+    expect(opRisk('annotation-create', 'write', USER).verdict).toBe('admit');
   });
 
   it('isOutboundSendSlug covers the closed set + the core- kernel alias, not internal writes', () => {
@@ -221,7 +221,7 @@ describe('D-187 slice 4 — outbound-send LIFT (user_self-scoped)', () => {
     expect(isOutboundSendSlug('connection-mcp-write')).toBe(true);
     expect(isOutboundSendSlug('core-slack-post')).toBe(true);
     expect(isOutboundSendSlug('connection-mcp-read')).toBe(false);
-    expect(isOutboundSendSlug('data-annotate')).toBe(false);
+    expect(isOutboundSendSlug('annotation-create')).toBe(false);
   });
 });
 

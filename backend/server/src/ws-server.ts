@@ -451,6 +451,7 @@ import type { PairedInstancesStore } from './paired-instances-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import type { ContractStore } from './storage/contract-store.js';
 import type { SellerOrderStore } from './storage/seller-order-store.js';
+import type { RecordsStore } from './records/store.js';
 import type { SellerStore } from './storage/seller-store.js';
 import type { SellerClaimStore } from './storage/seller-claim-store.js';
 
@@ -923,6 +924,9 @@ export interface AttachWebSocketOptions {
   sellerInboundTokenStore?: ChatInboundTokenStore;
   /** D-196 S3c — sealed one-time claim substrate for bearer delivery. */
   sellerClaimStore?: SellerClaimStore;
+  /** D-309 — the records a free DeepTutor enrollment leaves, which date when a
+   *  re-applied package's length starts. */
+  sellerRecordsStore?: Pick<RecordsStore, 'exportNamespace'>;
   /** Bootstrap / status rpc deps (D-103 Phase A). When
    *  provided, the `server.getBootstrap` / `stageBootstrap` /
    *  `requestRestart` / `getStatus` / `setPaused` / `getPauseState`
@@ -1538,7 +1542,7 @@ const buildWsBinding = (
   const {
     executeDeps, scheduleDeps, dishDeps, cacheDeps, sharedDeps, authDeps, migrateDeps,
     llmConfigManager, llmProbe, runtimeConfig, sellerStore, sellerOrderStore, sellerContractStore, sellerInboundTokenStore,
-    sellerClaimStore,
+    sellerClaimStore, sellerRecordsStore,
     bootstrapDeps,
     serverId, pairedInstances, pairRevokeAuditLog, accountBindingDeps, proConvenienceDeps, ddnsDeps, updateDeps, recoveryKeyCheck, recoveryVaultDeps, clientTokens, pressureDeps,
     lifecycleHandlers, lifecycleState, collectionDeps,
@@ -1769,6 +1773,7 @@ const buildWsBinding = (
       ...(sellerContractStore ? { contractStore: sellerContractStore } : {}),
       ...(sellerInboundTokenStore ? { inboundTokenStore: sellerInboundTokenStore } : {}),
       ...(sellerClaimStore ? { sellerClaimStore } : {}),
+      ...(sellerRecordsStore ? { recordsStore: sellerRecordsStore } : {}),
       ...(providerTierProvider && sellerContractStore
         ? { providerTierProvider }
         : {}),

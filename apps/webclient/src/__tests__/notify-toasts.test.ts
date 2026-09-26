@@ -277,8 +277,16 @@ const mount = (
 
 describe('D-169 P2 Slice 5 notify toasts', () => {
   it.each([
+    // D-291 — the canonical saved-view address.
+    ['#views/view_00000000-0000-4000-8000-000000000001', true],
+    // ⚠ AND THE PRE-D-291 FORM, which notifications already delivered carry.
+    // Dropping it from the allowlist does not break the link (the parser still
+    // re-points it) — it stops the toast rendering a link AT ALL, silently.
     ['#data/view/view_00000000-0000-4000-8000-000000000001', true],
     ['https://recued.example/#data/view/view_00000000-0000-4000-8000-000000000001', true],
+    // ⛔ Neither spelling may be loosened into a general hash allowance.
+    ['#views/../settings', false],
+    ['#views/not-a-view-id', false],
     ['javascript:alert(1)', false],
     ['data:text/html,hello', false],
     ['//untrusted.example', false],

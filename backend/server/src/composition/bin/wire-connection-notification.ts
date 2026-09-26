@@ -116,6 +116,7 @@ export const composeConnectionNotification = (
       notificationHandler,
       channel: entry.channel,
       subtype: entry.subtype,
+      emitInApp: (body) => emitNotification(eventBus, { body }),
     });
   }
   // ⛔ COMPLETENESS IS CHECKED HERE, LOUDLY — this is the failure the registry's

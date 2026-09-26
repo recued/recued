@@ -329,24 +329,30 @@ const refuseWriteOnRespondingDoor = (
 };
 
 /** Bind (or re-bind) a recipe to a public intake endpoint. */
-export const bindReceptionDoor = (
+/** D-299 — what binding a recipe's door WOULD do, with nothing written: the door's
+ *  capability and execution policy, the door it would reuse, and the authority diff
+ *  against it. `bindReceptionDoor` is exactly this plus the write, so a pack update's
+ *  warning, which reads the plan before anything is installed, decides as the bind the
+ *  update then runs does. */
+export type ReceptionDoorPlan =
+  | { readonly kind: 'refused'; readonly refusal: ReceptionDoorRefusal }
+  | {
+      readonly kind: 'planned';
+      readonly capability: RecipeCapability;
+      readonly executionPolicy: ReturnType<typeof receptionDoorExecutionPolicy>;
+      readonly existingContractId: string | null;
+      readonly diff: ReturnType<typeof doorCapabilityChanged>;
+    };
+
+export const planReceptionDoor = (
   input: {
     readonly endpointId: string;
     readonly recipeId: string;
     readonly recipe: RecipeDefinition;
-    readonly mintedBy: string;
-    /** The owner has seen the widening diff and accepted it. */
-    readonly confirmed?: boolean;
-    /** D-207 follow-on — the owner opts this door's CONFIRMED closure into
-     *  standing approval, so the ops they just reviewed stop asking per
-     *  dispatch. Absent ⇒ off, which is every door bound before this existed.
-     *  ⚠ Carried on the BIND rather than set later, deliberately: the closure
-     *  the owner is consenting to is the one on the screen in front of them,
-     *  and a re-bind that widens it re-asks for the consent. */
     readonly standingClosure?: boolean;
   },
   deps: ReceptionDoorBindDeps,
-): ReceptionDoorBindResult => {
+): ReceptionDoorPlan => {
   const config = deps.resolveConfig(input.recipeId);
   const dispatchRecipe = deps.resolveDoorRecipe?.(input.recipe, config ?? {})
     ?? { ok: true as const, recipe: input.recipe };
@@ -394,6 +400,36 @@ export const bindReceptionDoor = (
     : deps.definitionStore.get(existingContractId);
 
   const diff = doorCapabilityChanged(stored, derived.capability, executionPolicy);
+  return {
+    kind: 'planned',
+    capability: derived.capability,
+    executionPolicy,
+    existingContractId,
+    diff,
+  };
+};
+
+export const bindReceptionDoor = (
+  input: {
+    readonly endpointId: string;
+    readonly recipeId: string;
+    readonly recipe: RecipeDefinition;
+    readonly mintedBy: string;
+    /** The owner has seen the widening diff and accepted it. */
+    readonly confirmed?: boolean;
+    /** D-207 follow-on — the owner opts this door's CONFIRMED closure into
+     *  standing approval, so the ops they just reviewed stop asking per
+     *  dispatch. Absent ⇒ off, which is every door bound before this existed.
+     *  ⚠ Carried on the BIND rather than set later, deliberately: the closure
+     *  the owner is consenting to is the one on the screen in front of them,
+     *  and a re-bind that widens it re-asks for the consent. */
+    readonly standingClosure?: boolean;
+  },
+  deps: ReceptionDoorBindDeps,
+): ReceptionDoorBindResult => {
+  const plan = planReceptionDoor(input, deps);
+  if (plan.kind === 'refused') return { kind: 'refused', refusal: plan.refusal };
+  const { capability, executionPolicy, existingContractId, diff } = plan;
 
   // Nothing about the door's AUTHORITY moved. Silent — however much the recipe's bytes
   // changed. This is the case that keeps the consent surface trustworthy.
@@ -401,7 +437,7 @@ export const bindReceptionDoor = (
     return {
       kind: 'bound',
       contract_id: existingContractId,
-      capability: derived.capability,
+      capability,
       unchanged: true,
     };
   }
@@ -413,8 +449,8 @@ export const bindReceptionDoor = (
       kind: 'needs_consent',
       added: diff.added,
       removed: diff.removed,
-      capability: derived.capability,
-      asks_anyway: opsThatAskAnyway(derived.capability, deps.resolveOpRisk),
+      capability,
+      asks_anyway: opsThatAskAnyway(capability, deps.resolveOpRisk),
     };
   }
 
@@ -429,7 +465,7 @@ export const bindReceptionDoor = (
     {
       door: 'reception',
       recipeId: input.recipeId,
-      capability: derived.capability,
+      capability,
       mintedBy: input.mintedBy,
       doorExecutionPolicy: executionPolicy,
       ...(input.standingClosure === true ? { standingClosure: true } : {}),
@@ -439,7 +475,7 @@ export const bindReceptionDoor = (
 
   deps.pairStore.setContractId({ endpoint_id: input.endpointId, contract_id });
 
-  return { kind: 'bound', contract_id, capability: derived.capability, unchanged: false };
+  return { kind: 'bound', contract_id, capability, unchanged: false };
 };
 
 /** Retire a door: revoke its contract and unlink it from the pair.

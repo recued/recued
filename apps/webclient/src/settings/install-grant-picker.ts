@@ -64,14 +64,15 @@
  *  (`resolveInstallGrantWriteSet` / `ACCESS_TIER_PERMITS`). */
 
 import {
-  normalizeBulkPackInstallPlan,
+  installAccessOptions,
+  installGrantableOps,
   type BulkPackManifest,
   type CompositionReviewOperationFamily,
   type InstallAccessTier,
   type InstallAudienceSelection,
+  type InstallGrantableOp,
   type InstallScopeWho,
   type McpPackReviewRow,
-  type OpKind,
   type RiskTier,
 } from '@recued/contracts';
 
@@ -82,10 +83,7 @@ import {
 /** One connection-backed op reduced to what the picker needs: its id (for the
  *  transparency caption) and its risk tier. cli ops are filtered out BEFORE this
  *  — every op here lands on a connection profile group. */
-interface TieredOp {
-  id: string;
-  risk: RiskTier;
-}
+type TieredOp = InstallGrantableOp;
 
 /** The picker's derived render model. Recipe tools are read-tier grantable
  *  entries, so a recipe-only pack still has a model. `null` means the pack has
@@ -104,13 +102,6 @@ export interface InstallGrantPickerModel {
   grantsByAccess: Record<InstallAccessTier, string[]>;
 }
 
-/** The cli kind is the only `OpKind` that is NOT connection-backed (§7.2 routes
- *  it to the per-contract reachability bit + the post-install cli grant dialog).
- *  Everything else (`http` / `connection` / `mcp` / `service` / `dom` / `ai` /
- *  `chat` / `storage`) resolves through a connection profile, so its grants are
- *  what `install_scope` writes. */
-const isConnectionBackedKind = (kind: OpKind): boolean => kind !== 'cli';
-
 /** Build the model from grantable entries. Returns `null` only when there are
  *  none. */
 const buildInstallGrantModel = (
@@ -118,18 +109,12 @@ const buildInstallGrantModel = (
 ): InstallGrantPickerModel | null => {
   if (connOps.length === 0) return null;
 
-  const hasWrite = connOps.some((o) => o.risk === 'write');
-  const hasAdminOrDestructive = connOps.some(
-    (o) => o.risk === 'admin' || o.risk === 'destructive',
-  );
-
   // `read` is always the offered floor + the pre-selected default (spec §7.1:
   // recommend pre-selecting Read so the happy path is one click; it is also the
   // safe minimum — a pack with only write ops still defaults to "grant nothing"
-  // until the owner steps up to +Write).
-  const accessOptions: InstallAccessTier[] = ['read'];
-  if (hasWrite) accessOptions.push('write');
-  if (hasAdminOrDestructive) accessOptions.push('all');
+  // until the owner steps up to +Write). D-310: the contracts derivation, shared
+  // with the server's list of the packs an install brings in.
+  const accessOptions = installAccessOptions(connOps);
 
   const opsAtRisk = (...risks: RiskTier[]): string[] =>
     connOps
@@ -172,29 +157,13 @@ export const installGrantModelFromManifest = (
   // carry recipe bodies — see `packs.install_preview`. Absent ⇒ `read`, the prior
   // behaviour, because a guessed higher tier would silently hide recipes the
   // owner did nothing about.
-  const connOps: TieredOp[] = normalizeBulkPackInstallPlan(manifest).recipes.map((recipe) => ({
-    id: `${manifest.publisher}/${recipe.slug}`,
-    risk: recipeRisk?.get(recipe.slug) ?? 'read',
-  }));
-  for (const content of manifest.contents ?? []) {
-    if (content.type !== 'composition') continue;
-    const composition = content.composition;
-    const kindBySlug = new Map<string, OpKind>();
-    for (const ingredient of composition.ingredients) {
-      kindBySlug.set(ingredient.slug, ingredient.kind);
-    }
-    for (const op of composition.operations) {
-      const kind = kindBySlug.get(op.ingredient);
-      // An op whose join key resolves to no ingredient row is a malformed
-      // composition the decompose validator would reject at install — treat it
-      // defensively as connection-backed (fail toward SHOWING the consent
-      // surface rather than silently skipping it).
-      if (kind === undefined || isConnectionBackedKind(kind)) {
-        connOps.push({ id: op.op, risk: op.risk });
-      }
-    }
-  }
-  return buildInstallGrantModel(connOps);
+  //
+  // D-310 — the walk (recipes at their risk, plus every composition op that runs
+  // through a connection: all kinds but `cli`, which §7.2 grants per agreement
+  // after install; an op naming no ingredient counts, so a malformed composition
+  // shows the choice rather than skip it) lives in contracts, so the server
+  // derives the tiers of the packs an install brings in exactly as this does.
+  return buildInstallGrantModel(installGrantableOps(manifest, recipeRisk));
 };
 
 /** Kitchen authoring path — derive the model from the decompose preview's
@@ -226,8 +195,14 @@ export const installGrantModelFromMcpReviewRows = (
 // ════════════════════════════════════════════════════════════════
 
 export const INSTALL_GRANT_PICKER_ATTR = 'data-recued-install-grant-picker';
+/** Present when an update carries the pack's current Access over; value = the tier. */
+export const INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR = 'data-recued-igp-carried-over';
+/** Present when an update carries who may use the pack over (D-294). */
+export const INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR = 'data-recued-igp-audience-carried-over';
 /** One access-tier radio. Carries `data-access` = the `InstallAccessTier`. */
 export const INSTALL_GRANT_ACCESS_OPTION_ATTR = 'data-recued-install-grant-access';
+/** D-310 REV 2 — the note that this Pack's own workflows need more than Read. */
+export const INSTALL_GRANT_OWN_NEEDS_ATTR = 'data-recued-install-grant-own-needs';
 /** The scope section wrapper (§7.2 / D-196 — audience picker). */
 export const INSTALL_GRANT_SCOPE_ATTR = 'data-recued-install-grant-scope';
 /** One broad audience checkbox. Carries legacy `data-scope` vocabulary. */
@@ -240,7 +215,9 @@ export const INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR =
 // Copy
 // ════════════════════════════════════════════════════════════════
 
-const ACCESS_LABEL: Record<InstallAccessTier, string> = {
+/** Exported for the install dialog's list of the packs an install brings in
+ *  (D-310), so each is named by the same words as this picker. */
+export const ACCESS_LABEL: Record<InstallAccessTier, string> = {
   read: 'Read only',
   write: 'Read + write',
   all: 'Full access',
@@ -250,6 +227,36 @@ const ACCESS_HINT: Record<InstallAccessTier, string> = {
   read: 'Look at things only. Safe, and running it twice changes nothing. This is what we suggest.',
   write: 'Also make and change things. Every change still asks you first.',
   all: 'Also delete things and change settings. Every one of these still asks you first.',
+};
+/** D-310 REV 2 — Read without "This is what we suggest", for a Pack whose own
+ *  workflows need more: the dialog must not suggest the tier that refuses them. */
+const READ_HINT_WITHOUT_SUGGESTION = 'Look at things only. Safe, and running it twice changes nothing.';
+
+/** D-310 REV 2 — what a Pack's own workflows do at each tier above Read. Shared
+ *  with the install dialog's list of the packs an install brings in. */
+export const OWN_NEEDS_WHAT: Record<'write' | 'all', string> = {
+  write: 'add and change things',
+  all: 'delete things or change settings',
+};
+
+const TIER_ORDER: readonly InstallAccessTier[] = ['read', 'write', 'all'];
+
+/** D-310 REV 2 — "Some of this Pack’s own workflows add and change things." and,
+ *  while the pick is below what they need, what happens then.
+ *
+ *  ⛔ The Access tier governs the owner's own runs too — a Records pack installed at
+ *  Read has its own write recipes refused when YOU run them (see COPY below) — and
+ *  the picker used to suggest Read with nothing said. "Some": not every workflow
+ *  needs the tier, only the ones that would be refused. */
+export const ownNeedsText = (
+  subject: string,
+  ownNeeds: 'write' | 'all',
+  access: InstallAccessTier,
+): string => {
+  const said = `Some of ${subject} own workflows ${OWN_NEEDS_WHAT[ownNeeds]}.`;
+  return TIER_ORDER.indexOf(access) < TIER_ORDER.indexOf(ownNeeds)
+    ? `${said} Choose ${ACCESS_LABEL[ownNeeds]}, or those steps will be refused.`
+    : said;
 };
 
 const SCOPE_LABEL: Record<InstallScopeWho, string> = {
@@ -353,6 +360,9 @@ export interface RenderInstallGrantPickerOptions {
   model: InstallGrantPickerModel;
   /** Currently selected access tier (host-owned state). */
   access: InstallAccessTier;
+  /** An UPDATE: the tier the pack holds now, which the choice starts at. Shown
+   *  so the owner knows the pick is theirs, not a suggestion. */
+  carriedOver?: InstallAccessTier;
   /** Independent D-196 audience checklist (host-owned; owner-only default). */
   audience?: InstallAudienceSelection;
   /** Legacy renderer input retained for narrowed/test hosts. */
@@ -361,8 +371,18 @@ export interface RenderInstallGrantPickerOptions {
   customerTierOptions?: readonly InstallAudienceOption[];
   /** Expanded individual contract choices, when the host can list contracts. */
   contractOptions?: readonly InstallAudienceOption[];
+  /** D-294 — customers an UPDATE's carried-over audience names one by one
+   *  (`contract_ids` that are customer contracts): listed under "All customers"
+   *  so the owner can see and untick them. A customer is otherwise chosen only
+   *  through its package. */
+  customerContractOptions?: readonly InstallAudienceOption[];
+  /** D-294 — an UPDATE: the audience starts at who may use the pack now. */
+  audienceCarriedOver?: boolean;
   /** Disable the radios while an install rpc is in flight. */
   disabled?: boolean;
+  /** D-310 REV 2 — the tier this Pack's own workflows need, when above Read
+   *  (`packs.install_preview` `own_needs`). Shown under the choices. */
+  ownNeeds?: 'write' | 'all';
   /** Fired when the owner picks a different access tier. The host updates its
    *  state + re-renders. */
   onAccess: (tier: InstallAccessTier) => void;
@@ -407,6 +427,14 @@ export const renderInstallGrantPicker = (
   intro.textContent = COPY.access_intro;
   section.appendChild(intro);
 
+  if (opts.carriedOver !== undefined) {
+    const carried = doc.createElement('p');
+    carried.className = 'igp-carried-over';
+    carried.setAttribute(INSTALL_GRANT_PICKER_CARRIED_OVER_ATTR, opts.carriedOver);
+    carried.textContent = `This Pack has “${ACCESS_LABEL[opts.carriedOver]}” now, so the update starts there. Pick another level to change it.`;
+    section.appendChild(carried);
+  }
+
   const list = doc.createElement('ul');
   list.className = 'igp-access-list';
   for (const tier of model.accessOptions) {
@@ -437,7 +465,7 @@ export const renderInstallGrantPicker = (
 
     const hint = doc.createElement('span');
     hint.className = 'igp-access-hint';
-    hint.textContent = ACCESS_HINT[tier];
+    hint.textContent = tier === 'read' && opts.ownNeeds !== undefined ? READ_HINT_WITHOUT_SUGGESTION : ACCESS_HINT[tier];
     label.appendChild(hint);
 
     item.appendChild(label);
@@ -456,6 +484,16 @@ export const renderInstallGrantPicker = (
   }
   section.appendChild(list);
 
+  // D-310 REV 2 — what this Pack's own workflows need, when that is more than Read.
+  if (opts.ownNeeds !== undefined && model.accessOptions.includes(opts.ownNeeds)) {
+    const note = doc.createElement('p');
+    const short = TIER_ORDER.indexOf(access) < TIER_ORDER.indexOf(opts.ownNeeds);
+    note.className = short ? 'igp-own-needs igp-own-needs-short' : 'igp-own-needs';
+    note.setAttribute(INSTALL_GRANT_OWN_NEEDS_ATTR, opts.ownNeeds);
+    note.textContent = ownNeedsText('this Pack’s', opts.ownNeeds, access);
+    section.appendChild(note);
+  }
+
   // ── Scope axis (§7.2 / D-196 — audience) ─────────────────────────
   const scopeSection = doc.createElement('div');
   scopeSection.setAttribute(INSTALL_GRANT_SCOPE_ATTR, '');
@@ -470,6 +508,16 @@ export const renderInstallGrantPicker = (
   scopeIntro.className = 'igp-intro';
   scopeIntro.textContent = COPY.scope_intro;
   scopeSection.appendChild(scopeIntro);
+
+  if (opts.audienceCarriedOver === true) {
+    const carried = doc.createElement('p');
+    carried.className = 'igp-carried-over';
+    carried.setAttribute(INSTALL_GRANT_PICKER_AUDIENCE_CARRIED_OVER_ATTR, '');
+    carried.textContent = 'Everyone ticked here may use this Pack now, so the update keeps sharing it '
+      + 'with them. Untick anyone to stop. What you set one operation at a time, in the '
+      + "Pack's Access tab, stays as it is.";
+    scopeSection.appendChild(carried);
+  }
 
   const scopeList = doc.createElement('ul');
   scopeList.className = 'igp-scope-list';
@@ -505,12 +553,19 @@ export const renderInstallGrantPicker = (
 
     item.appendChild(label);
 
-    const expandedOptions = who === 'all_customers'
-      ? opts.customerTierOptions
-      : who === 'all_other_contracts'
-        ? opts.contractOptions
-        : undefined;
-    if (expandedOptions !== undefined && expandedOptions.length > 0) {
+    // Each expanded choice writes one of two lists: a customer PACKAGE (tier)
+    // or one agreement (`contract_ids`, which also holds customers an update
+    // carried over one by one — D-294).
+    const expanded: Array<{ option: InstallAudienceOption; kind: 'tier' | 'contract' }> =
+      who === 'all_customers'
+        ? [
+          ...(opts.customerTierOptions ?? []).map((option) => ({ option, kind: 'tier' as const })),
+          ...(opts.customerContractOptions ?? []).map((option) => ({ option, kind: 'contract' as const })),
+        ]
+        : who === 'all_other_contracts'
+          ? (opts.contractOptions ?? []).map((option) => ({ option, kind: 'contract' as const }))
+          : [];
+    if (expanded.length > 0) {
       const details = doc.createElement('details');
       details.className = 'igp-audience-details';
       const summary = doc.createElement('summary');
@@ -518,28 +573,32 @@ export const renderInstallGrantPicker = (
         ? 'Choose customer packages'
         : 'Choose particular agreements';
       details.appendChild(summary);
-      const selectedIds = new Set(
-        who === 'all_customers'
-          ? audience.customer_tier_ids ?? []
-          : audience.contract_ids ?? [],
-      );
-      for (const option of expandedOptions) {
+      const selected = {
+        tier: new Set(audience.customer_tier_ids ?? []),
+        contract: new Set(audience.contract_ids ?? []),
+      };
+      // A section holding a pick opens, so a carried-over choice is never
+      // hidden behind a closed summary.
+      if (expanded.some(({ option, kind }) => selected[kind].has(option.id))) {
+        details.setAttribute('open', '');
+      }
+      for (const { option, kind } of expanded) {
         const detailLabel = doc.createElement('label');
         detailLabel.className = 'igp-audience-detail-label';
         const detailCheck = doc.createElement('input');
         detailCheck.setAttribute('type', 'checkbox');
         detailCheck.setAttribute(INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR, '');
-        detailCheck.setAttribute('data-audience-kind', who === 'all_customers' ? 'tier' : 'contract');
+        detailCheck.setAttribute('data-audience-kind', kind);
         detailCheck.setAttribute('data-audience-id', option.id);
-        detailCheck.checked = selectedIds.has(option.id);
+        detailCheck.checked = selected[kind].has(option.id);
         if (disabled) detailCheck.setAttribute('disabled', '');
         else detailCheck.addEventListener('change', () => {
-          const next = new Set(selectedIds);
+          const next = new Set(selected[kind]);
           if (detailCheck.checked) next.add(option.id);
           else next.delete(option.id);
           onAudience?.({
             ...audience,
-            ...(who === 'all_customers'
+            ...(kind === 'tier'
               ? { customer_tier_ids: [...next] }
               : { contract_ids: [...next] }),
           });
@@ -641,6 +700,19 @@ export const INSTALL_GRANT_PICKER_STYLES = `
   font-size: 11px;
   line-height: 1.45;
   color: var(--fg-muted);
+}
+[data-recued-install-grant-picker] .igp-own-needs {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[data-recued-install-grant-picker] .igp-own-needs-short {
+  padding: 7px 9px;
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: var(--warn-bg);
+  color: var(--fg);
 }
 [data-recued-install-grant-picker] .igp-access-ops {
   display: block;

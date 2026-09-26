@@ -7,6 +7,7 @@ import type {
   IngredientManifest,
   RecipeStep,
   StepMeta,
+  StepOptions,
   PreflightApprovedTarget,
   ForeachCheckpointProgress,
   ForeachCheckpointResult,
@@ -28,6 +29,7 @@ import {
   resolveDeep,
   resolveValue,
   preapprovalStepPath,
+  recipeCodeForRpcRefusal,
   shouldLink,
   SLOT_CANCELLED_ERROR_CODE,
   stepType,
@@ -342,7 +344,13 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       && adapterCodeRaw !== 'AI_MODEL_REFUSED'
       && Object.hasOwn(ERR, adapterCodeRaw)
         ? adapterCodeRaw as RecipeErrorCode
-        : undefined;
+        // A server handler behind a kernel op refuses with an rpc code and,
+        // most often, an HTTP-like status: the same refusal an adapter names
+        // with a recipe code, never a network error (D-313; `rpc-refusal.ts`
+        // says in what order the code and the status are read).
+        : typeof adapterCodeRaw === 'string'
+          ? recipeCodeForRpcRefusal(adapterCodeRaw, (e as { status?: unknown }).status)
+          : undefined;
     const code: RecipeErrorCode = cliFailure
       ? cliFailureErrorCode(cliFailure.reason)
       : containerPick
@@ -848,8 +856,14 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
 
   const output = s.output as Record<string, string> | undefined;
   const piiFields = s.pii_fields as string[] | undefined;
-  const stepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' as const }
-    : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' } : undefined;
+  const stepOptions: StepOptions | undefined = ((): StepOptions | undefined => {
+    const options: StepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' }
+      : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' } : {};
+    // `pages: "all"` rides beside `cache` to the gateway, which reads a Records
+    // search page by page (`StepPages`). Validated authoring-side; only "all".
+    if (s.pages === 'all') options.pages = 'all';
+    return Object.keys(options).length > 0 ? options : undefined;
+  })();
   const stepMeta = buildStepMeta(
     s,
     requireRecipe(ctx).recipe_id,
@@ -1099,7 +1113,7 @@ const buildStepMeta = (
     out.trigger_source = trigger_source;
   }
   // D-161 P1 — forward the run's actor + contract_id so kernel
-  // write-handlers (`enrichment-upsert` / `data-annotate` / `data-link`)
+  // write-handlers (`enrichment-upsert` / `annotation-create` / `link-create`)
   // can stamp the `origin_actor` provenance facet propagated from the
   // run's `ExecutionSource` (I-6). Mirrors `trigger_source` above.
   if (typeof actor === 'string' && actor.length > 0) {

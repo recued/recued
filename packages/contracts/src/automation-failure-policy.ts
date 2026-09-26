@@ -161,6 +161,18 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   MAIL_DRAFT_PRIOR_NOT_REMOVED: 'retry',
   MAIL_DRAFT_FOLDER_NOT_FOUND: 'stop',
   MAIL_DRAFT_ATTACHMENTS_OMITTED: 'stop',
+  // "This one needs a human": re-sending could duplicate a message the customer has.
+  MAIL_SEND_CLAIM_UNRESOLVED: 'stop',
+  // A server handler's refusal behind a kernel op. A missing thing or a missing
+  // setup is missing next time too; a conflict re-reads, and a server fault is a
+  // 5xx like any other.
+  NOT_FOUND: 'stop',
+  NOT_CONFIGURED: 'stop',
+  CONFLICT: 'retry',
+  SERVER_ERROR: 'retry',
+  // Locked until the owner unlocks it, and fine after: a routine lock should
+  // not switch an automation off. Nothing vault-gated runs while it is locked.
+  SERVER_LOCKED: 'retry',
   mail_draft_not_found: 'stop',
   mail_draft_stale: 'stop',
 

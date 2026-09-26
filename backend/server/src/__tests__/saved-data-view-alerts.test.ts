@@ -54,7 +54,7 @@ describe('saved task view alerts through real task queries, SQLite and notificat
     const entries = await h.activities.list();
     expect(entries).toHaveLength(1);
     expect(h.notify.mock.calls[0]?.[2]).toMatchObject({ persisted_activity_id: entries[0]!.activity_id,
-      ui_link_url: expect.stringMatching(/^#data\/view\/view_/) });
+      ui_link_url: expect.stringMatching(/^#views\/view_/) });
     expect(h.views.list()[0]?.alert).toMatchObject({ status: 'watching', last_notified_at: 2_000 });
     task(h.tasks, 'new', { done: true });
     await h.runtime.tick();

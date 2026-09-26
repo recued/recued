@@ -22,10 +22,11 @@ const setup = async (browser: Browser, messenger = false) => {
     (window as unknown as { queueTestEvent?(e: unknown): void }).queueTestEvent?.(event);
   }, { ...event, cursor: Date.now() }).catch(() => {}); } }, messenger, true);
   const calls: Array<{ method: string; args: Record<string, unknown> }> = []; let loseAck = false;
-  const failures = new Map<string, string>();
+  const failures = new Map<string, string>(); const holds = new Map<string, Promise<void>>();
   await context.route('**/existing-files-rpc', async route => {
     const { method, args } = route.request().postDataJSON(); calls.push({ method, args });
     try {
+      const hold = holds.get(method); if (hold) { holds.delete(method); await hold; }
       const failure = failures.get(method);
       if (failure) { failures.delete(method); throw new Error(failure); }
       const result = await fixture.rpc(method, args ?? {});
@@ -45,6 +46,10 @@ const setup = async (browser: Browser, messenger = false) => {
   };
   return { context, page, input, dialog, fixture, calls, pick,
     failNext: (method: string, message: string) => { failures.set(method, message); },
+    /** Park the next call to `method` until the returned release runs. */
+    holdNext: (method: string) => {
+      let release!: () => void; holds.set(method, new Promise<void>(done => { release = done; })); return () => release();
+    },
     chips: page.locator('[data-recued-chat-route-attachment]'),
     loseAck: () => { loseAck = true; },
     close: async () => { fixture.release(); await context.close(); fixture.close(); },
@@ -208,6 +213,49 @@ test('Data searches and pages source metadata, and a source-list failure keeps s
     await f.page.getByRole('button', { name: 'Load more files', exact: true }).click();
     await expect(f.page.locator('[data-collection-record]')).toHaveCount(35);
     expect(f.fixture.cloudSource!.downloads()).toBe(0);
+  } finally { await f.close(); }
+});
+
+// ⛔ The two races behind a "36 rows for 35" flake in the test above, made
+// deterministic: the first page of a source lands while the owner is already
+// searching it. Each let "Load more" page a search the owner never ran.
+test('Data keeps a search typed while a source is loading when its first page repaints', async ({ browser }) => {
+  const f = await setup(browser);
+  try {
+    for (let i = 0; i < 35; i++) f.fixture.cloudSource!.add(`invoice-${String(i).padStart(2, '0')}`, `Invoice ${i}.pdf`);
+    await f.page.evaluate(() => { location.hash = '#data/files'; });
+    const search = f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true });
+    const rows = f.page.locator('[data-collection-record]');
+    const release = f.holdNext('data.file.attachments.remote.list');
+    await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
+    await search.click(); await f.page.keyboard.type('clients');
+    release(); await expect(rows).toHaveCount(30);
+    await expect(search).toBeFocused(); await f.page.keyboard.type(' invoice');
+    await expect(search).toHaveValue('clients invoice'); await f.page.keyboard.press('Enter');
+    await expect.poll(() => f.calls.filter(call => call.method === 'data.file.attachments.remote.list').length).toBe(2);
+    await expect(rows).toHaveCount(30);
+    await f.page.getByRole('button', { name: 'Load more files', exact: true }).click();
+    await expect(rows).toHaveCount(35);
+    expect(f.calls.filter(call => call.method === 'data.file.attachments.remote.list').map(call => call.args.query))
+      .toEqual(['', 'clients invoice', 'clients invoice']);
+  } finally { await f.close(); }
+});
+
+test('Data searches on Enter while a source is still loading instead of dropping it', async ({ browser }) => {
+  const f = await setup(browser);
+  try {
+    for (let i = 0; i < 35; i++) f.fixture.cloudSource!.add(`invoice-${String(i).padStart(2, '0')}`, `Invoice ${i}.pdf`);
+    await f.page.evaluate(() => { location.hash = '#data/files'; });
+    const search = f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true });
+    const rows = f.page.locator('[data-collection-record]');
+    const release = f.holdNext('data.file.attachments.remote.list');
+    await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
+    await search.fill('clients invoice'); await search.press('Enter');
+    await expect(rows).toHaveCount(30); release();
+    await f.page.getByRole('button', { name: 'Load more files', exact: true }).click();
+    await expect(rows).toHaveCount(35);
+    expect(f.calls.filter(call => call.method === 'data.file.attachments.remote.list').map(call => call.args.query))
+      .toEqual(['', 'clients invoice', 'clients invoice']);
   } finally { await f.close(); }
 });
 

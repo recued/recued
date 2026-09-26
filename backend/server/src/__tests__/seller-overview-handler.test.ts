@@ -16,6 +16,7 @@ import {
   acknowledgeSellerLlmGatewayPaid,
   buildSellerOverview,
   bulkAdjustSellerManualTierCustomers,
+  reapplySellerManualTier,
   closeSellerManualCustomer,
   createSellerPassTier,
   extendSellerManualCustomer,
@@ -489,6 +490,7 @@ describe('makeSellerOverviewHandlers', () => {
       'server.seller.closeManualCustomer',
       'server.seller.reissueManualCustomerToken',
       'server.seller.bulkAdjustManualTierCustomers',
+      'server.seller.reapplyManualTier',
       'server.seller.synchronizeStripeEntitlements',
       'server.seller.synchronizeProviderTiers',
     ]);
@@ -1921,6 +1923,8 @@ describe('manual customer lifecycle owner handlers', () => {
     });
     const oldTokenId = issued.customer.inbound_token_id!;
     const oldBearer = consumeClaim(issued.claim!).bearer_plaintext;
+    // D-297 — something the owner set for this one customer, under Contracts.
+    grantEntryStore.set(issued.customer.contract_id, 'core.just_for_them', true, NOW + 1);
 
     sellerStore.upsertSettings({ sender_mail_instance_id: 'mail_primary', now: NOW });
     const isLiveSendCapableMailInstance = vi.fn(() => true);
@@ -1952,6 +1956,9 @@ describe('manual customer lifecycle owner handlers', () => {
       to: 'buyer@example.com',
     });
     expect(reissued.customer.claim_email_sent_at).toBe(NOW + 70);
+    // ⛔ D-297 — a fresh link is not a reset: the new agreement keeps the edit.
+    expect(reissued.customer.contract_id).not.toBe(issued.customer.contract_id);
+    expect(grantEntryStore.get(reissued.customer.contract_id, 'core.just_for_them')).toBe(true);
   });
 
   it('reissue WITHOUT send_claim_email surfaces the claim and sends nothing', async () => {
@@ -2152,6 +2159,63 @@ describe('manual customer lifecycle owner handlers', () => {
         method: 'server.seller.bulkAdjustManualTierCustomers',
       }),
     );
+  });
+
+  it('D-309: re-applies a package through the rpc — preview writes nothing, applying sets, bad asks refused', async () => {
+    putTemplate();
+    upsertSellerManualTier(
+      { sellerStore, now: () => NOW },
+      {
+        tier_id: 'tier_basic',
+        door_id: 'door_llm',
+        entitlement_key: 'basic',
+        display_name: 'Basic',
+        template_contract_id: 'ct_template_basic',
+        pass_duration_seconds: 7 * 24 * 60 * 60,
+      },
+    );
+    const byRule = await issueSellerManualCustomer(
+      issueDeps(),
+      { door_id: 'door_llm', source_customer_id: 'manual-1', entitlement_key: 'basic' },
+    );
+    const byHand = await issueSellerManualCustomer(
+      issueDeps(),
+      {
+        door_id: 'door_llm', source_customer_id: 'manual-2', entitlement_key: 'basic',
+        current_period_end: NOW + 60 * DAY_MS,
+      },
+    );
+    const request = {
+      tier_id: 'tier_basic',
+      apply: { permissions: false, length: true },
+      who: 'unchanged' as const,
+    };
+
+    const preview = reapplySellerManualTier(issueDeps(), { ...request, preview: true });
+    expect(preview.preview).toBe(true);
+    expect(preview.customers.map((c) => [c.customer_id, c.included, c.skipped])).toEqual([
+      [byRule.customer.customer_id, true, null],
+      [byHand.customer.customer_id, false, 'changed_by_hand'],
+    ]);
+
+    const everyone = reapplySellerManualTier(issueDeps(), { ...request, who: 'everyone' });
+    expect(everyone.preview).toBe(false);
+    expect(sellerStore.getCustomer(byHand.customer.customer_id)?.current_period_end)
+      .toBe(NOW + 7 * DAY_MS);
+    expect(everyone.overview.counts.customers).toBe(2);
+
+    for (const bad of [
+      { ...request, apply: { permissions: true } },
+      { ...request, who: 'nobody' },
+      { ...request, who: 'picked' },
+      { ...request, preview: 'yes' },
+    ]) {
+      expect(() => reapplySellerManualTier(issueDeps(), bad as never)).toThrowError(
+        expect.objectContaining({
+          code: 'bad_request', status: 400, method: 'server.seller.reapplyManualTier',
+        }),
+      );
+    }
   });
 
   it('closes a manual customer, revokes its inbound token, and returns closed counts', async () => {

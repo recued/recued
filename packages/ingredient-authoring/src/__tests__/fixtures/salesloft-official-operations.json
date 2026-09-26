@@ -15,7 +15,7 @@
       },
       "v2_chunk_set_sha256": "a84e28e73ba65d02e4242e010071738ec89c757a82f9f76620ba08351a44d581",
       "v2_decoded_authority_sha256": "9e88d77f1f2f9e8d66616fde73c0923ae906305b8b79d95c2d4bdd2ddf894620",
-      "retrieved_on": "2026-07-15",
+      "retrieved_on": "2026-08-04",
       "monolithic_openapi_public": false,
       "note": "Salesloft publishes one compressed OpenAPI operation fragment per content-hashed reference chunk. The build-time api-spec/v2/v2.json is not served. This fixture stores derived route contracts and hashes, not a rehosted vendor specification."
     },
@@ -155,10 +155,10 @@
     },
     "composition_bytes": {
       "salesloft": 53105,
-      "salesloft-crm-data": 84055,
-      "salesloft-cadence-workflow": 39266,
-      "salesloft-communications": 121929,
-      "salesloft-platform-admin": 51099
+      "salesloft-crm-data": 84065,
+      "salesloft-cadence-workflow": 39270,
+      "salesloft-communications": 121969,
+      "salesloft-platform-admin": 51131
     },
     "risk_counts": {
       "read": 112,
@@ -167,9 +167,8 @@
       "destructive": 23
     },
     "approval_counts": {
-      "never": 69,
-      "always": 86,
-      "ask": 43
+      "never": 112,
+      "always": 86
     },
     "idempotency_counts": {
       "safe": 112,
@@ -255,8 +254,8 @@
     },
     "recipe_versions": {
       "revenue-operations-digest-salesloft": 2,
-      "person-engagement-brief-salesloft": 2,
-      "cadence-readiness-brief-salesloft": 2,
+      "person-engagement-brief-salesloft": 3,
+      "cadence-readiness-brief-salesloft": 3,
       "create-person-intake-salesloft": 2,
       "add-person-to-cadence-salesloft": 2,
       "create-follow-up-task-salesloft": 2,
@@ -3206,7 +3205,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -3596,7 +3595,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -4577,7 +4576,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -5012,7 +5011,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -5633,7 +5632,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -5775,7 +5774,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -6461,7 +6460,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -6608,7 +6607,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -6805,7 +6804,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -6841,7 +6840,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -6877,7 +6876,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -7060,7 +7059,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -7731,7 +7730,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -7938,7 +7937,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -8389,7 +8388,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -8528,7 +8527,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -8592,7 +8591,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -9341,7 +9340,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -10765,7 +10764,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -10801,7 +10800,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -10915,7 +10914,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -10981,7 +10980,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -12681,7 +12680,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -12717,7 +12716,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -12814,7 +12813,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -13415,7 +13414,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -13635,7 +13634,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16192,7 +16191,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16260,7 +16259,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16361,7 +16360,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16406,7 +16405,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16540,7 +16539,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -16579,7 +16578,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17146,7 +17145,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17258,7 +17257,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17453,7 +17452,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17541,7 +17540,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17800,7 +17799,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -17892,7 +17891,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -18012,7 +18011,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -18048,7 +18047,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -18313,7 +18312,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []
@@ -18348,7 +18347,7 @@
       },
       "pagination": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "safety_required_arguments": []

@@ -22,6 +22,7 @@ import {
 
 import { e } from '../template.js';
 import { formatRecipeRunFacts } from '../run-facts.js';
+import { runFailureReason } from '../run-failure-reason.js';
 import {
   isInvocationVariable,
   renderVariableWidget,
@@ -42,6 +43,8 @@ export const RUN_MODAL_CONTEXT_ATTR = 'data-recued-run-modal-context';
 export const RUN_MODAL_IDENTITY_ATTR = 'data-recued-run-modal-identity';
 export const RUN_MODAL_RESULT_ATTR = 'data-recued-run-modal-result';
 export const RUN_MODAL_FACTS_ATTR = 'data-recued-run-modal-facts';
+/** Why a run returned errors: the first error's message and step (D-312). */
+export const RUN_MODAL_REASON_ATTR = 'data-recued-run-modal-reason';
 export const RUN_MODAL_PRESET_ATTR = 'data-recued-run-modal-preset';
 /** D-215 slice 5 — the Repeat toggle. Off ⇒ the datetime control replaces
  *  the CRON preset picker and Add creates a ONE-SHOT. */
@@ -244,6 +247,12 @@ const renderRunTab = (
   const runFacts = state.result === null
     ? null
     : formatRecipeRunFacts(state.result.run_facts);
+  // Only where the status says "Run returned errors": a hold and a terminated
+  // run say what they are already.
+  const failureReason = state.result !== null
+    && runResultStatusLabel(state.result) === 'Run returned errors'
+    ? runFailureReason(state.result.errors)
+    : null;
   const result = state.run_error !== null
     ? `<div ${RUN_MODAL_RESULT_ATTR} role="alert">${e(state.run_error)}</div>`
     : state.result !== null
@@ -252,6 +261,9 @@ const renderRunTab = (
           ${runFacts === null
             ? `<span> · ${e(String(state.result.duration_ms))} ms · ${e(plural(state.result.steps.length, 'step'))}</span>`
             : `<span class="run-modal-facts" ${RUN_MODAL_FACTS_ATTR}>${e(runFacts)}</span>`}
+          ${failureReason === null
+            ? ''
+            : `<p class="run-modal-reason" ${RUN_MODAL_REASON_ATTR}>${e(failureReason)}</p>`}
         </div>`
       : '';
 

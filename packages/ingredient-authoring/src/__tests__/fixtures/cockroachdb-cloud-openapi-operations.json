@@ -10,7 +10,7 @@
         "title": "CockroachDB Cloud API",
         "api_version": "2024-09-16",
         "official_path_count": 74,
-        "retrieved_on": "2026-07-20",
+        "retrieved_on": "2026-09-15",
         "mutability": "The pinned URL is a commit-immutable GitHub mirror (cockroach-cloud-sdk-go@d1d13eb0) adopted 2026-07-20 after the vendor-owned spec asset vanished in a docs replatform. Generation fails closed unless bytes and SHA-256 match this reviewed contract; the immutable pin no longer self-detects upstream drift, so advancing is a deliberate reviewed re-pin.",
         "servers": [
           {
@@ -34,7 +34,7 @@
         "url": "https://www.cockroachlabs.com/docs/cockroachcloud/cloud-api.md",
         "bytes": 36089,
         "sha256": "cf2faff7518cd7f559ff4412f0d6d0f67fc1da76c6795af4f7f4e575463cbb59",
-        "retrieved_on": "2026-07-20",
+        "retrieved_on": "2026-09-15",
         "proves": [
           "v1_api_version_2024_09_16",
           "cc_version_header_recommended",

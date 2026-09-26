@@ -171,6 +171,6 @@ describe('D-169 P2 Slice 2 composeNotificationBlock notification persistence', (
     expect(log.logActivity.mock.calls[0]?.[0]).toMatchObject({ activity_id: expect.stringMatching(/^saved-view-alert:/),
       action: 'notification_fired', target: view.id });
     expect(bus.emit).toHaveBeenCalledExactlyOnceWith({ kind: 'notification.notify', title: 'New task in “Overdue”',
-      text: expect.stringContaining('New invoice'), link_url: `#data/view/${view.id}` });
+      text: expect.stringContaining('New invoice'), link_url: `#views/${view.id}` });
   });
 });

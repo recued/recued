@@ -30,6 +30,9 @@ import {
   type SellerManualCustomerSwapTierResponse,
   type SellerManualTierBulkAdjustRequest,
   type SellerManualTierBulkAdjustResponse,
+  type SellerManualTierReapplyRequest,
+  type SellerManualTierReapplyResponse,
+  SELLER_REAPPLY_WHO,
   type SellerManualTierUpsertRequest,
   type SellerManualTierUpsertResponse,
   type SellerOfferStateTransitionRequest,
@@ -85,6 +88,8 @@ import {
   type SellerClaimStore,
 } from './storage/seller-claim-store.js';
 import type { SellerOrderStore } from './storage/seller-order-store.js';
+import type { RecordsStore } from './records/store.js';
+import { reapplyPackage, SellerPackageReapplyError } from './seller/package-reapply.js';
 import {
   SellerStoreConflictError,
   SellerStoreValidationError,
@@ -107,6 +112,7 @@ export type SellerOverviewMethods =
   | 'server.seller.closeManualCustomer'
   | 'server.seller.reissueManualCustomerToken'
   | 'server.seller.bulkAdjustManualTierCustomers'
+  | 'server.seller.reapplyManualTier'
   | 'server.seller.synchronizeStripeEntitlements'
   | 'server.seller.synchronizeProviderTiers';
 
@@ -116,6 +122,9 @@ export interface SellerOverviewHandlerDeps {
    *  the owner Orders view. Absent on db-less boots keeps `listOrders`
    *  explicitly `not_configured` while every other seller control stays usable. */
   readonly sellerOrderStore?: SellerOrderStore;
+  /** D-309 — where a free DeepTutor enrollment is recorded, which is when its
+   *  pass started. Absent ⇒ a re-applied length counts from purchases and joins. */
+  readonly recordsStore?: Pick<RecordsStore, 'exportNamespace'>;
   readonly contractStore?: ContractStore;
   readonly inboundTokenStore?: ChatInboundTokenStore;
   readonly sellerClaimStore?: SellerClaimStore;
@@ -162,6 +171,7 @@ const SELLER_MANUAL_CUSTOMER_REISSUE_TOKEN_METHOD =
   'server.seller.reissueManualCustomerToken';
 const SELLER_MANUAL_TIER_BULK_ADJUST_METHOD =
   'server.seller.bulkAdjustManualTierCustomers';
+const SELLER_MANUAL_TIER_REAPPLY_METHOD = 'server.seller.reapplyManualTier';
 const SELLER_STRIPE_SYNCHRONIZE_METHOD =
   'server.seller.synchronizeStripeEntitlements';
 const SELLER_PROVIDER_TIERS_SYNCHRONIZE_METHOD =
@@ -1466,6 +1476,58 @@ export const bulkAdjustSellerManualTierCustomers = (
   }
 };
 
+/** D-309 — re-apply a manual package to its customers. The owner chooses what
+ *  (permissions, length, or both) and who (everyone still active, everyone
+ *  nobody changed by hand, or the ones picked); `preview` writes nothing. */
+export const reapplySellerManualTier = (
+  deps: SellerOverviewHandlerDeps,
+  request: SellerManualTierReapplyRequest,
+): SellerManualTierReapplyResponse => {
+  const method = SELLER_MANUAL_TIER_REAPPLY_METHOD;
+  const { lifecycle } = createManualCustomerLifecycle(deps, method);
+  if (!isRecord(request)) {
+    throw badManualCustomerLifecycleRequest(method, 'args must be an object');
+  }
+  const badRequest = (message: string) =>
+    badManualCustomerLifecycleRequest(method, message);
+  const tier_id = requiredStringField(request, 'tier_id', badRequest);
+  const apply = request.apply as unknown;
+  if (
+    !isRecord(apply)
+    || typeof apply.permissions !== 'boolean'
+    || typeof apply.length !== 'boolean'
+  ) {
+    throw badRequest('apply must be { permissions: boolean, length: boolean }');
+  }
+  const who = request.who as unknown;
+  if (typeof who !== 'string' || !(SELLER_REAPPLY_WHO as readonly string[]).includes(who)) {
+    throw badRequest(`who must be one of ${SELLER_REAPPLY_WHO.join(', ')}`);
+  }
+  const customer_ids = optionalStringArrayField(request, 'customer_ids', badRequest);
+  const preview = request.preview === undefined ? false : request.preview;
+  if (typeof preview !== 'boolean') throw badRequest('preview must be a boolean');
+
+  try {
+    const result = reapplyPackage({
+      sellerStore: deps.sellerStore,
+      ...(deps.sellerOrderStore ? { orderStore: deps.sellerOrderStore } : {}),
+      ...(deps.recordsStore ? { records: deps.recordsStore } : {}),
+      lifecycle,
+      now: deps.now ?? (() => Date.now()),
+    }, {
+      tier_id,
+      apply: { permissions: apply.permissions, length: apply.length },
+      who: who as SellerManualTierReapplyRequest['who'],
+      ...(customer_ids !== undefined ? { customer_ids } : {}),
+      preview,
+    });
+    return { ...result, preview, overview: buildSellerOverview(deps) };
+  } catch (error) {
+    if (error instanceof SellerPackageReapplyError) throw badRequest(error.message);
+    return mapManualCustomerLifecycleError(method, error);
+  }
+};
+
 const stripeSyncExecutionSource = (client: WsClient) => ({
   channel: 'user' as const,
   actor: 'user_self' as const,
@@ -1600,6 +1662,7 @@ export const makeSellerOverviewHandlers = (
       'server.seller.closeManualCustomer',
       'server.seller.reissueManualCustomerToken',
       'server.seller.bulkAdjustManualTierCustomers',
+      'server.seller.reapplyManualTier',
       'server.seller.synchronizeStripeEntitlements',
       'server.seller.synchronizeProviderTiers',
     ],
@@ -1631,6 +1694,8 @@ export const makeSellerOverviewHandlers = (
         reissueSellerManualCustomerToken(deps, request),
       'server.seller.bulkAdjustManualTierCustomers': async (request) =>
         bulkAdjustSellerManualTierCustomers(deps, request),
+      'server.seller.reapplyManualTier': async (request) =>
+        reapplySellerManualTier(deps, request),
       'server.seller.synchronizeStripeEntitlements': async (request, client) =>
         synchronizeSellerStripeEntitlements(deps, request, client),
       'server.seller.synchronizeProviderTiers': async (request, client) =>

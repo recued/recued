@@ -1489,8 +1489,16 @@ export const mountNotificationsPanel = (
       const firstAxis = renderedAxisButtons.values().next().value as
         | HTMLButtonElement
         | undefined;
+      // ⚠ The per-device switches BEFORE the phrase. D-269 took the Bridge
+      // row's channel switch away, so on a server whose other channels are all
+      // always-on there is no axis button at all — and Retry then dropped focus
+      // past every recovered switch onto the phrase input further down.
+      const firstBridge = renderedBridgeButtons.values().next().value as
+        | HTMLButtonElement
+        | undefined;
       const replacement = state === 'ready'
         ? firstAxis
+          ?? firstBridge
           ?? (renderedPhraseInput as HTMLInputElement | undefined)
         : (renderedRetryButton as HTMLButtonElement | undefined);
       replacement?.focus?.({ preventScroll: true });

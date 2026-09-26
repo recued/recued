@@ -587,7 +587,7 @@ const MANIFESTS = [
   {
     "slug": "annotation-create",
     "name": "Create or replace an annotation",
-    "description": "Recipe-friendly write into the annotations sidecar. Accepts `target` as a combined `<collection>:<id>` string (e.g., `contact:jane@acme.com`) — the kernel adapter splits on the FIRST colon. \u26d4 `<collection>` is the CANONICAL bare collection name (`contact` / `mail` / `calendar`), NOT a `data.`-prefixed path: it is stored verbatim as `target_collection` and the per-record read path (`{{data.<collection>.<id>.annotations.<key>}}`) queries the bare name, so a `data.contact:` target writes a row no ref can ever read. `key` follows canonical-shapes.md (snake_case, dotted hierarchy ok), `value` is any JSON; optional `confidence` (0–1) is folded into the stored value as `{ value, confidence }` so consumers reading per-record refs see both. Idempotent on (target, key): re-runs replace the prior row's value rather than appending — engine deletes the previous annotation row before insert. `source_record_hash` is required wire-side and names the source record's content, so a changed source reads as stale. (`recipe_hash` was RETIRED \u2014 D-120: no author could produce a correct one, since the recipe hash covers the step's own args.) Routes via the paired server's `annotation.write` rpc.",
+    "description": "Recipe-friendly write into the annotations sidecar. Accepts `target` as a combined `<collection>:<id>` string (e.g., `contact:jane@acme.com`) — the kernel adapter splits on the FIRST colon. \u26d4 `<collection>` is the CANONICAL bare collection name (`contact` / `mail` / `calendar`), NOT a `data.`-prefixed path: it is stored verbatim as `target_collection` and the per-record read path (`{{data.<collection>.<id>.annotations.<key>}}`) queries the bare name, so a `data.contact:` target writes a row no ref can ever read. `key` follows canonical-shapes.md (snake_case, dotted hierarchy ok), `value` is any JSON; optional `confidence` (0–1) is folded into the stored value as `{ value, confidence }` so consumers reading per-record refs see both. Idempotent on (target, key): re-runs replace the prior row's value rather than appending — engine deletes the previous annotation row before insert. `source_record_hash` is required wire-side and names the source record's content, so a changed source reads as stale. (`recipe_hash` was RETIRED \u2014 D-120: no author could produce a correct one, since the recipe hash covers the step's own args.)",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -617,7 +617,7 @@ const MANIFESTS = [
   {
     "slug": "annotation-delete",
     "name": "Delete annotations by filter",
-    "description": "Bulk-delete annotations matching the filter. AT LEAST ONE filter field is required — refuses an empty filter to guard against accidental table-wipe. Returns the number of rows removed. Routes via the paired server's `annotation.delete` rpc.",
+    "description": "Bulk-delete the annotations THIS RECIPE wrote that match the filter. A recipe deletes only its own: the author is always the running recipe, whatever the step names, because housekeeping re-derives other annotations and the server keeps system state in some. At least one filter field is required, so an empty filter is refused rather than read as 'everything I wrote'. Returns the number of rows removed.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -645,7 +645,7 @@ const MANIFESTS = [
   {
     "slug": "annotation-list",
     "name": "List annotations",
-    "description": "Bulk-read annotations from the warehouse. Filters AND together; absent fields don't restrict. Indexes cover (target_collection, target_id) for per-record queries and (key) for cross-record bulk queries. Routes via the paired server's `annotation.list` rpc.",
+    "description": "Bulk-read annotations from the warehouse. Filters AND together; absent fields don't restrict. Indexes cover (target_collection, target_id) for per-record queries and (key) for cross-record bulk queries.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -673,7 +673,7 @@ const MANIFESTS = [
   {
     "slug": "annotation-search",
     "name": "Full-text search across annotations",
-    "description": "Run a SQLite FTS5 query against annotation values. Optional filters narrow by key or target_collection. Values larger than 64 KB (CAS-backed) are NOT indexed — documented limit, same as the shared store. Routes via the paired server's `annotation.search` rpc.",
+    "description": "Run a SQLite FTS5 query against annotation values. Optional filters narrow by key or target_collection. Values larger than 64 KB (CAS-backed) are NOT indexed — documented limit, same as the shared store.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -1189,7 +1189,7 @@ const MANIFESTS = [
   {
     "slug": "contact-resolve",
     "name": "Resolve a contact",
-    "description": "Resolve a local contact_id from a single identifier — email, phone, alias, or a { platform, id } pair. Routes via the paired server's `contact.resolve` rpc; exactly one identifier must be supplied (zero or more than one is a bad_request the handler raises). The email path walks the D-138 merged_into chain so a stale post-merge address still surfaces the surviving canonical contact. Read-only — never writes data.contact. Returns { contact_id, confidence, alternatives, contact }: contact_id is null on a miss (with alternatives carrying candidate contact_ids for an ambiguous phone / alias lookup); confidence is 0 on a miss and up to 1.0 on a confident hit; contact is the full record when resolved. Pairs with contact-upsert — upsert writes the row, resolve reads an identifier back to its contact_id (e.g. to attach an extracted counterparty email to a commitment).",
+    "description": "Resolve a local contact_id from a single identifier — email, phone, alias, or a { platform, id } pair. Exactly one identifier must be supplied (zero or more than one is a bad_request the handler raises). The email path walks the D-138 merged_into chain so a stale post-merge address still surfaces the surviving canonical contact. Read-only — never writes data.contact. Returns { contact_id, confidence, alternatives, contact }: contact_id is null on a miss (with alternatives carrying candidate contact_ids for an ambiguous phone / alias lookup); confidence is 0 on a miss and up to 1.0 on a confident hit; contact is the full record when resolved. Pairs with contact-upsert — upsert writes the row, resolve reads an identifier back to its contact_id (e.g. to attach an extracted counterparty email to a commitment).",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -1253,7 +1253,7 @@ const MANIFESTS = [
   {
     "slug": "contact-upsert",
     "name": "Upsert a contact",
-    "description": "Idempotent upsert into data.contact keyed on the canonical email. Supplied display_name + last_interaction + first_seen merge with the existing row when present (first-seen-wins on first_seen, latest-wins on last_interaction). Routes via the paired server's `contact.upsert` rpc; the underlying ContactStore canonicalizes the email (lowercases, strips +suffix per RFC 5322 conventions) before the upsert.",
+    "description": "Idempotent upsert into data.contact keyed on the canonical email. Supplied display_name + last_interaction + first_seen merge with the existing row when present (first-seen-wins on first_seen, latest-wins on last_interaction). The underlying ContactStore canonicalizes the email (lowercases, strips +suffix per RFC 5322 conventions) before the upsert.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -1737,7 +1737,7 @@ const MANIFESTS = [
   {
     "slug": "core-notification-send",
     "name": "Notification Send",
-    "description": "Dispatches a rendered notification through one or more configured output channels (Slack DM, Telegram, email, in-app banner). Omitting `channels` fans out to every supported channel; recipes should set channels only when the user expressed a delivery preference. Channel implementations route via the existing remote-trigger config (Slack/Telegram/email — D-099) and the broadcast bus (in-app — D-121 Phase 6). Generic — alert recipes use this rather than channel-specific ingredients (slack-post, telegram-send, etc.) so channel choice stays in the recipe's config rather than its step graph. Returns delivery results per-channel: `delivered_to[]` for successful channels, `failed[]` for failures. `link_url` (renamed from `url` in the spec to avoid collision with the engine-locked HTTP routing key) carries an optional deep link surfaced alongside the body.",
+    "description": "Dispatches a rendered notification through one or more configured output channels (Slack DM, Telegram, email, in-app banner). Omitting `channels` reaches the owner on every channel they have set up, and in-app is always set up (D-312); recipes should set channels only when the user expressed a delivery preference. Channel implementations route via the existing remote-trigger config (Slack/Telegram/email — D-099) and the broadcast bus (in-app — D-121 Phase 6). Generic — alert recipes use this rather than channel-specific ingredients (slack-post, telegram-send, etc.) so channel choice stays in the recipe's config rather than its step graph. Returns delivery results per-channel: `delivered_to[]` for successful channels, `failed[]` for failures. `link_url` (renamed from `url` in the spec to avoid collision with the engine-locked HTTP routing key) carries an optional deep link surfaced alongside the body.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -1751,12 +1751,7 @@ const MANIFESTS = [
       "action"
     ],
     "input": {
-      "channels": [
-        "slack",
-        "telegram",
-        "email",
-        "in_app"
-      ],
+      "channels": null,
       "text": null,
       "title": null,
       "link_url": null
@@ -2403,35 +2398,6 @@ const MANIFESTS = [
     }
   },
   {
-    "slug": "data-annotate",
-    "name": "Annotate a record",
-    "description": "Write a derived value (summary, classification, score, …) back to a source record in any data.* collection. Accepts either a canonical record reference (`ref: \"{{item}}\"` inside a foreach) or explicit `target_collection` + `target_id`. `source_record_hash` makes the annotation read as `⚠ stale` when its source moves. Nothing auto-deletes: a stale row is RENDERED stale and kept. Removal happens when the parent record is deleted (cascade) or through an explicit `annotation-delete` filter. Routes via the paired server's `annotation.write` rpc.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "action",
-    "risk_tier": "write",
-    "tags": [
-      "kernel",
-      "annotation",
-      "warehouse",
-      "write"
-    ],
-    "input": {
-      "ref": null,
-      "target_collection": null,
-      "target_id": null,
-      "key": null,
-      "value": null,
-      "authored_by_recipe_id": null,
-      "source_record_hash": null,
-      "model_used": null
-    },
-    "output": {
-      "annotation": "annotation"
-    }
-  },
-  {
     "slug": "file-put-ref",
     "name": "Write a file into a record you named",
     "description": "Write one data.file record's bytes into a record on a named file instance, server-side. `ref` takes EITHER a CAS record-id string OR a run-scoped temp file_ref object — a cli op's shape:'ref' output defaults to temp, so demanding a string rejected the convert-then-keep path outright. Closes the knot that a CAS id is content-derived — so a recipe cannot name its own file in advance — while the only writer for a named {slug, path} record is file-write, which takes body_b64 and therefore round-trips a large file through recipe step state. This gives a stable name AND memory-safe bytes: the content moves inside the server and never enters an op-step value. Pair with file-stat, which reports {exists, modified_at_ms} and treats a missing record as exists:false rather than an error, to decide whether to refill it. Requires the write capability on the destination instance — naming a file does not grant writing to it. Creates the record when absent, overwrites in place when present.",
@@ -2519,8 +2485,44 @@ const MANIFESTS = [
   },
   {
     "slug": "csv-filter",
+    "name": "Save matching CSV rows as a new file",
+    "description": "Save the rows of one stored CSV whose named column matches as a NEW data.file record, and return its file_ref. This writes: every run stores another record. To read the matching rows without saving anything, use csv-rows. The source bytes never enter recipe step state: reading a sheet to search it with data-file-read holds the base64, the decoded text AND the parsed rows for the rest of the run, which is what makes a large sheet unsearchable that way. Parsing is the same code csv_parse uses, so a file reads identically through either. Returns column_found separately from matched — zero rows because the column is missing and zero rows because nothing matched are the same count and completely different facts, and over a customer list conflating them answers 'no such customer' about a spelling mistake. No file_ref is returned when the column is absent, because a parseable empty file would be indistinguishable from a real miss. mode is 'contains' (default) or 'equal'; every cell is text, so contains matches numbers too.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": true,
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "file",
+      "csv",
+      "filter",
+      "write",
+      "warehouse"
+    ],
+    "input": {
+      "record_id": null,
+      "slug": null,
+      "path": null,
+      "column": null,
+      "match": null,
+      "mode": null,
+      "ignore_case": null,
+      "delimiter": null
+    },
+    "output": {
+      "file_ref": "file_ref",
+      "matched": "matched",
+      "scanned": "scanned",
+      "column_found": "column_found",
+      "columns": "columns"
+    }
+  },
+  {
+    "slug": "csv-rows",
     "name": "Search a stored CSV",
-    "description": "Keep the rows of one stored CSV whose named column matches, and return the result as a new data.file record. The source bytes never enter recipe step state: reading a sheet to search it with data-file-read holds the base64, the decoded text AND the parsed rows for the rest of the run, which is what makes a large sheet unsearchable that way. Parsing is the same code csv_parse uses, so a file reads identically through either. Returns column_found separately from matched — zero rows because the column is missing and zero rows because nothing matched are the same count and completely different facts, and over a customer list conflating them answers 'no such customer' about a spelling mistake. No file_ref is returned when the column is absent, because a parseable empty file would be indistinguishable from a real miss. mode is 'contains' (default) or 'equal'; every cell is text, so contains matches numbers too.",
+    "description": "Return the rows of one stored CSV whose named column matches, keyed by the header row, and save nothing. At most limit rows come back (default 100, at most 1000); matched counts every match and truncated says whether rows were left out. To keep the full match set as a file instead, use csv-filter, which saves one. The source bytes never enter recipe step state, only the rows returned. Parsing is the same code csv_parse uses, and the rows are exactly what csv_parse gives for a file holding only those rows. Returns column_found separately from matched: zero rows because the column is missing and zero rows because nothing matched are the same count and completely different facts. mode is 'contains' (default) or 'equal'; every cell is text, so contains matches numbers too.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -2543,12 +2545,14 @@ const MANIFESTS = [
       "match": null,
       "mode": null,
       "ignore_case": null,
-      "delimiter": null
+      "delimiter": null,
+      "limit": null
     },
     "output": {
-      "file_ref": "file_ref",
+      "rows": "rows",
       "matched": "matched",
       "scanned": "scanned",
+      "truncated": "truncated",
       "column_found": "column_found",
       "columns": "columns"
     }
@@ -2581,35 +2585,6 @@ const MANIFESTS = [
       "filename": "filename",
       "size_bytes": "size_bytes",
       "blob_hash": "blob_hash"
-    }
-  },
-  {
-    "slug": "data-link",
-    "name": "Link two records",
-    "description": "Write a typed cross-collection relationship between two records (`from` → `role` → `to`). Either side accepts a canonical record reference (`from: \"{{item}}\"` inside a foreach) or explicit `from_collection`+`from_id` / `to_collection`+`to_id`. Cascade-on-parent-delete is automatic — when either endpoint is removed from the warehouse, every link with that endpoint is removed in the same transaction. Routes via the paired server's `link.write` rpc.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "action",
-    "risk_tier": "write",
-    "tags": [
-      "kernel",
-      "link",
-      "warehouse",
-      "write"
-    ],
-    "input": {
-      "from": null,
-      "to": null,
-      "from_collection": null,
-      "from_id": null,
-      "to_collection": null,
-      "to_id": null,
-      "role": null,
-      "authored_by_recipe_id": null
-    },
-    "output": {
-      "link": "link"
     }
   },
   {
@@ -3235,7 +3210,7 @@ const MANIFESTS = [
   {
     "slug": "link-create",
     "name": "Create a typed cross-collection link",
-    "description": "Recipe-friendly write into the links graph. Accepts `source` / `target` as combined `<collection>:<id>` strings (e.g., `data.mail:msg-abc`) — the kernel adapter splits on the colon. `kind` carries the link taxonomy (`extraction.derived_contact`, `extraction.thread_participant`, …); engine-emitted kinds prefixed `execution.*` are reserved. Optional `confidence` (0–1) + `evidence` short string surface in the Memory tab provenance block. Idempotent on (source, target, kind): re-runs replace the prior row's confidence + evidence in place (no duplicate accretion). Routes via the paired server's `link.write` rpc.",
+    "description": "Recipe-friendly write into the links graph. Accepts `source` / `target` as combined `<collection>:<id>` strings (e.g., `data.mail:msg-abc`) — the kernel adapter splits on the colon. `kind` carries the link taxonomy (`extraction.derived_contact`, `extraction.thread_participant`, …); engine-emitted kinds prefixed `execution.*` are reserved. Optional `confidence` (0–1) + `evidence` short string surface in the Memory tab provenance block. Idempotent on (source, target, kind): re-runs replace the prior row's confidence + evidence in place (no duplicate accretion).",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3263,7 +3238,7 @@ const MANIFESTS = [
   {
     "slug": "link-delete",
     "name": "Delete links by filter",
-    "description": "Bulk-delete links matching the filter. AT LEAST ONE filter field is required — refuses an empty filter to guard against accidental table-wipe. Returns the number of rows removed. Routes via the paired server's `link.delete` rpc.",
+    "description": "Bulk-delete the links matching the filter, whichever recipe or person wrote them: links are shared, only recipes and the owner write them, and nothing regenerates a deleted one. At least one filter field is required, so an empty filter is refused rather than wiping the table. Returns the number of rows removed.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3293,7 +3268,7 @@ const MANIFESTS = [
   {
     "slug": "link-list",
     "name": "List links",
-    "description": "Bulk-read links from the warehouse. Filters AND together; absent fields don't restrict. Indexes cover (from_collection, from_id) for outbound queries and (to_collection, to_id) for inbound queries — both directions are O(index seek). Routes via the paired server's `link.list` rpc.",
+    "description": "Bulk-read links from the warehouse. Filters AND together; absent fields don't restrict. Indexes cover (from_collection, from_id) for outbound queries and (to_collection, to_id) for inbound queries — both directions are O(index seek).",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3526,7 +3501,7 @@ const MANIFESTS = [
   {
     "slug": "mail-send",
     "name": "Send mail",
-    "description": "Send mail through a registered data.mail.<name> account. Recipe-author surface for direct mail deliverables (follow-up drafts, scheduled sends, recipe-output digests). The named sender account must be enrolled with send capability — IMAP+SMTP, gmail-api with the gmail.send scope, or microsoft-graph with Mail.Send. Body is text or html (single-format); cc / bcc / threading headers (in_reply_to / references) / reply_to all forward to the underlying provider. An optional bounded reconciliation_id is carried as X-Recued-Reconciliation-ID and indexed again on provider ingest for exact post-dispatch lookup. Supplying one opts into the no-resend fence: core durably CLAIMS the send BEFORE dispatching, so a crash or timeout mid-send leaves a record to reconcile against rather than a guess. It therefore IS an idempotency anchor — a message the provider acknowledged, or that provider source truth has confirmed, is never dispatched twice and returns already_sent. The price of that promise is that an attempt whose outcome was never learned is refused (MAIL_SEND_CLAIM_UNRESOLVED) rather than blindly repeated: re-sending might duplicate a message the customer already has, not re-sending might never send, and neither is safe to guess — resolve it with core.mail.sent.reconcile. Absence still never authorizes a resend. A send with more than one recipient cannot carry a reconciliation_id, because a single-recipient envelope match cannot prove a fan-out. Omit the id for ordinary retry semantics. Optional attachments are exact data.file record refs, independently admitted through the data-file-read policy boundary before their bytes leave the warehouse. Sender ≠ to runtime guard rejects mail-to-self in the to list (cc / bcc self is allowed for archival). Sent records show up in your warehouse Sent folder on the next inbound delta. Routes via the paired server's collection.mail.send rpc.",
+    "description": "Send mail through a registered data.mail.<name> account. Recipe-author surface for direct mail deliverables (follow-up drafts, scheduled sends, recipe-output digests). The named sender account must be enrolled with send capability — IMAP+SMTP, gmail-api with the gmail.send scope, or microsoft-graph with Mail.Send. Body is text or html (single-format); cc / bcc / threading headers (in_reply_to / references) / reply_to all forward to the underlying provider. An optional bounded reconciliation_id is carried as X-Recued-Reconciliation-ID and indexed again on provider ingest for exact post-dispatch lookup. Supplying one opts into the no-resend fence: core durably CLAIMS the send BEFORE dispatching, so a crash or timeout mid-send leaves a record to reconcile against rather than a guess. It therefore IS an idempotency anchor — a message the provider acknowledged, or that provider source truth has confirmed, is never dispatched twice and returns already_sent. The price of that promise is that an attempt whose outcome was never learned is refused (MAIL_SEND_CLAIM_UNRESOLVED) rather than blindly repeated: re-sending might duplicate a message the customer already has, not re-sending might never send, and neither is safe to guess — resolve it with core.mail.sent.reconcile. Absence still never authorizes a resend. A send with more than one recipient cannot carry a reconciliation_id, because a single-recipient envelope match cannot prove a fan-out. Omit the id for ordinary retry semantics. Optional attachments are exact data.file record refs, independently admitted through the data-file-read policy boundary before their bytes leave the warehouse. Sender ≠ to runtime guard rejects mail-to-self in the to list (cc / bcc self is allowed for archival). Sent records show up in your warehouse Sent folder on the next inbound delta.",
     "author": "recued",
     "kind": "storage",
     "version": 2,
@@ -3578,7 +3553,7 @@ const MANIFESTS = [
   {
     "slug": "notify-booking-visitor",
     "name": "Notify a booking's visitor",
-    "description": "Tell the visitor behind a reception booking that their appointment changed (e.g. it was rescheduled) — server-side, without ever holding their email. Given booking_id (a data.booking row), the visitor's SEALED address is resolved INTERNALLY: the dispatcher follows the booking's own reception_record_id back to the reception submission row, decrypts ONLY the email, and sends — the recipient is never an argument, never reaches step state, and never appears in the output, so a recipe (or an AI step) can notify a booking's visitor with zero access to their PII. sender_mail_instance is a registered send-capable data.mail.<name> account (the owner's own sender — IMAP+SMTP, gmail.send, or Mail.Send); subject and body are the message (body_format text or html). Delivery routes through the same collection.mail.send path as mail-send, so the capability check, sender ≠ recipient guard, and mail_send audit row all fire — with the recipient list REDACTED from that audit row (D-210 audit finding 3b: the row records recipient_count, subject and message-id, never the sealed address; before the fix a one-recipient send always fell under the noise-redaction threshold and wrote it in plaintext to a durable row that travels with a backup). Returns { notified, reason }: notified:false with a coarse reason (not_a_reception_booking — the booking did not come from a visitor request, so there is nobody sealed behind it; booking_not_found; no_visitor_email — the visitor gave none) when there is nothing to send, and the address is never surfaced in any branch. This IS an irreversible external send: it lifts to the D-157 preflight gate, where the owner approves the notice bound to a specific booking (the raw email is deliberately not shown — it never left the substrate). Pair it with a booking-watcher reactive recipe to close the loop: the audit trail records that the owner moved the booking, this records that the visitor was told. Routes via the paired server; server-only because the visitor PII lives sealed in the warehouse.",
+    "description": "Tell the visitor behind a reception booking that their appointment changed (e.g. it was rescheduled) — server-side, without ever holding their email. Given booking_id (a data.booking row), the visitor's SEALED address is resolved INTERNALLY: the dispatcher follows the booking's own reception_record_id back to the reception submission row, decrypts ONLY the email, and sends — the recipient is never an argument, never reaches step state, and never appears in the output, so a recipe (or an AI step) can notify a booking's visitor with zero access to their PII. sender_mail_instance is a registered send-capable data.mail.<name> account (the owner's own sender — IMAP+SMTP, gmail.send, or Mail.Send); subject and body are the message (body_format text or html). Delivery routes through the same collection.mail.send path as mail-send, so the capability check, sender ≠ recipient guard, and mail_send audit row all fire — with the recipient list REDACTED from that audit row (D-210 audit finding 3b: the row records recipient_count, subject and message-id, never the sealed address; before the fix a one-recipient send always fell under the noise-redaction threshold and wrote it in plaintext to a durable row that travels with a backup). Returns { notified, reason }: notified:false with a coarse reason (not_a_reception_booking — the booking did not come from a visitor request, so there is nobody sealed behind it; booking_not_found; no_visitor_email — the visitor gave none) when there is nothing to send, and the address is never surfaced in any branch. This IS an irreversible external send: it lifts to the D-157 preflight gate, where the owner approves the notice bound to a specific booking (the raw email is deliberately not shown — it never left the substrate). Pair it with a booking-watcher reactive recipe to close the loop: the audit trail records that the owner moved the booking, this records that the visitor was told. Server-only: the visitor PII lives sealed in the warehouse.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3612,7 +3587,7 @@ const MANIFESTS = [
   {
     "slug": "mail-thread-reader",
     "name": "Assemble a mail thread",
-    "description": "Bundle every data.mail record sharing the same thread_id into a chronologically-sorted thread. Returns the messages array (oldest → newest by received_at), message_count, and first_at / last_at boundary timestamps. Bounded by max_messages (default 50) — older messages drop off the head when the thread exceeds the cap, so first_at reflects the bounded window's start, not the absolute thread start. Routes via the paired server's `mail.thread.read` rpc — server-only because mail bodies live in the warehouse.",
+    "description": "Bundle every data.mail record sharing the same thread_id into a chronologically-sorted thread. Returns the messages array (oldest → newest by received_at), message_count, and first_at / last_at boundary timestamps. Bounded by max_messages (default 50) — older messages drop off the head when the thread exceeds the cap, so first_at reflects the bounded window's start, not the absolute thread start. Server-only: mail bodies live in the warehouse.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3764,7 +3739,7 @@ const MANIFESTS = [
   {
     "slug": "notification-send",
     "name": "Notification Send",
-    "description": "Dispatches a rendered notification through one or more configured output channels (Slack DM, Telegram, email, in-app banner). Omitting `channels` fans out to every supported channel; recipes should set channels only when the user expressed a delivery preference. Channel implementations route via the existing remote-trigger config (Slack/Telegram/email — D-099) and the broadcast bus (in-app — D-121 Phase 6). Generic — alert recipes use this rather than channel-specific ingredients (slack-post, telegram-send, etc.) so channel choice stays in the recipe's config rather than its step graph. Returns delivery results per-channel: `delivered_to[]` for successful channels, `failed[]` for failures. `link_url` (renamed from `url` in the spec to avoid collision with the engine-locked HTTP routing key) carries an optional deep link surfaced alongside the body.",
+    "description": "Dispatches a rendered notification through one or more configured output channels (Slack DM, Telegram, email, in-app banner). Omitting `channels` reaches the owner on every channel they have set up, and in-app is always set up (D-312); recipes should set channels only when the user expressed a delivery preference. Channel implementations route via the existing remote-trigger config (Slack/Telegram/email — D-099) and the broadcast bus (in-app — D-121 Phase 6). Generic — alert recipes use this rather than channel-specific ingredients (slack-post, telegram-send, etc.) so channel choice stays in the recipe's config rather than its step graph. Returns delivery results per-channel: `delivered_to[]` for successful channels, `failed[]` for failures. `link_url` (renamed from `url` in the spec to avoid collision with the engine-locked HTTP routing key) carries an optional deep link surfaced alongside the body.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3778,12 +3753,7 @@ const MANIFESTS = [
       "action"
     ],
     "input": {
-      "channels": [
-        "slack",
-        "telegram",
-        "email",
-        "in_app"
-      ],
+      "channels": null,
       "text": null,
       "title": null,
       "link_url": null

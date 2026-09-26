@@ -1763,7 +1763,7 @@ const validateIngredients = (
  *  wrong. Same reason the field says "never recipe-authored, never
  *  Gateway-inferred": neither is in a position to know. */
 const PACK_OPERATION_ROW_KEYS = new Set([
-  'op', 'ingredient', 'risk', 'approval', 'approval_reason', 'args', 'bind', 'description',
+  'op', 'ingredient', 'risk', 'approval', 'approval_reason', 'spends_per_call', 'args', 'bind', 'description',
   'required_scopes', 'operation_bound_webhook', 'idempotency', 'accepts_media', 'produces_media',
   'request_schema', 'response_schema', 'editable_args', 'result_path', 'pagination',
   'timeout_ms', 'cache_ttl_ms', 'tags', 'record_id_arg',
@@ -1937,6 +1937,16 @@ const validateOperations = (
         'composition_operation_approval_reason_recommended',
         `${path}.approval_reason`,
         'a held read should explain its authored judgment with approval_reason',
+      );
+    }
+    // D-282 — the cost marker is a boolean; anything else would read as "does not
+    // spend" to the gate, which is the silent answer.
+    if (row.spends_per_call !== undefined && typeof row.spends_per_call !== 'boolean') {
+      add(
+        'error',
+        'composition_operation_spends_per_call_invalid',
+        `${path}.spends_per_call`,
+        'spends_per_call must be true or false when present',
       );
     }
     // D-185 Slice 3b — the `out` required-non-empty rule is RETIRED (the field is gone).

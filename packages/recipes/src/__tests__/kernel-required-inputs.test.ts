@@ -84,3 +84,74 @@ describe('kernel required-input validator rule', () => {
     expect(missing).toEqual([]);
   });
 });
+
+/** Every issue for a recipe, as `severity code path`. */
+const issuesOf = (recipe: Record<string, unknown>): string[] =>
+  ((validateRecipe(recipe) as { issues?: Array<{ severity: string; code: string; path: string }> }).issues ?? [])
+    .filter((i) => i.code === 'kernel_input_missing_key' || i.code.startsWith('ai_function_input'))
+    .map((i) => `${i.severity} ${i.code} ${i.path}`);
+
+describe('D-307: the 26 shipped steps no rule saw', () => {
+  it('⛔ an op backed by a core-* slug is checked (six digests sent `body` to notification-send)', () => {
+    expect(issuesOf(base({ id: 'n', op: 'core.notification.send', args: { title: 't', body: 'b' } })))
+      .toEqual(["warn kernel_input_missing_key steps[0].args['text']"]);
+    expect(issuesOf(base({ id: 'n', op: 'core.notification.send', args: { title: 't', text: 'b' } }))).toEqual([]);
+  });
+
+  it('⛔ trigger and prefetch steps are checked (four smoke recipes listed with no topic)', () => {
+    const list = { id: 'l', op: 'core.data.enrichment.list', args: { scope: 'connection.api.hubspot.contact' } };
+    expect(issuesOf({ ...base({ id: 's', transform: 'count', input: [] }), prefetch_steps: [list] }))
+      .toEqual(["warn kernel_input_missing_key prefetch_steps[0].args['topic']"]);
+    expect(issuesOf({ ...base({ id: 's', transform: 'count', input: [] }), trigger_steps: [list] }))
+      .toEqual(["warn kernel_input_missing_key trigger_steps[0].args['topic']"]);
+  });
+
+  it('⛔ an AI op step is checked like an AI ingredient step (16 summaries passed `input`)', () => {
+    expect(issuesOf(base({ id: 's', op: 'core.ai.summarize', args: { title: 't', input: {}, instructions: 'i' } })))
+      .toEqual(["warn ai_function_input_missing_key steps[0].args['llm.data']"]);
+    expect(issuesOf(base({ id: 's', op: 'core.ai.summarize', args: { 'llm.data': {}, 'llm.focus': 'i' } }))).toEqual([]);
+  });
+});
+
+/** ⛔ Severity is not a free choice here. Every server run parses its recipe
+ *  strictly (`execute-handler.ts`, `strict: true`), and an error-severity finding
+ *  refuses the whole run. So a finding the wider coverage NEWLY reaches must warn:
+ *  as an error it would stop an installed recipe that runs today, even one whose
+ *  broken step is never reached. What was already an error stays one. Shipped
+ *  recipes are held to zero findings by `recipe-corpus-validity.test.ts` instead. */
+describe('D-307: nothing that parsed before stops parsing', () => {
+  /** Error codes only. ⚠ Not `valid`: this file's `base` recipe fails on an
+   *  unrelated rule, so a `valid` check here would pass over nothing. */
+  const errorsOf = (recipe: Record<string, unknown>): string[] =>
+    ((validateRecipe(recipe) as { issues?: Array<{ severity: string; code: string }> }).issues ?? [])
+      .filter((i) => i.severity === 'error')
+      .map((i) => i.code);
+
+  it('a newly reached finding adds no error, so a strict run that starts today still starts', () => {
+    const pairs: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+      [{ id: 'n', op: 'core.notification.send', args: {} },
+        { id: 'n', op: 'core.notification.send', args: { title: 't', text: 'x' } }],
+      [{ id: 's', op: 'core.ai.summarize', args: { input: {} } },
+        { id: 's', op: 'core.ai.summarize', args: { 'llm.data': {} } }],
+    ];
+    for (const [broken, whole] of pairs) {
+      expect(issuesOf(base(broken)).length, JSON.stringify(broken)).toBeGreaterThan(0);
+      expect(errorsOf(base(broken)), JSON.stringify(broken)).toEqual(errorsOf(base(whole)));
+    }
+    const prefetching = (input: Record<string, unknown>) => ({
+      ...base({ id: 's', transform: 'count', input: [] }),
+      prefetch_steps: [{ id: 'c', ingredient: 'ai-classify', input }],
+    });
+    expect(issuesOf(prefetching({ 'llm.data': 'x' })))
+      .toEqual(["warn ai_function_input_missing_key prefetch_steps[0].input['llm.categories']"]);
+    expect(errorsOf(prefetching({ 'llm.data': 'x' })))
+      .toEqual(errorsOf(prefetching({ 'llm.data': 'x', 'llm.categories': ['a', 'b'] })));
+  });
+
+  it('the AI check on an ingredient step in `steps` is still an error, as it always was', () => {
+    expect(issuesOf(base({ id: 's', ingredient: 'core-ai-summarize', input: {} })))
+      .toEqual(["error ai_function_input_missing_key steps[0].input['llm.data']"]);
+    expect(issuesOf(base({ id: 's', ingredient: 'ai-summarize', input: {} })))
+      .toEqual(["error ai_function_input_missing_key steps[0].input['llm.data']"]);
+  });
+});

@@ -450,6 +450,7 @@ const csvFileDeps = async (
   const { handleFileRead } = await import('../../collections/file/file-read-handler.js');
   const { createHash } = await import('node:crypto');
   const remote = deps.getRemoteFileReadDeps?.();
+  const stack = deps.fileStack;
   return {
     reader: {
       readFile: (readInput) => handleFileRead(
@@ -462,6 +463,18 @@ const csvFileDeps = async (
         readInput,
       ),
     },
+    // D-245 — the `{slug, path}` address. ⛔ NEVER WIRED UNTIL 2026-09-23: the
+    // handler took an optional `instanceReader`, only its tests supplied one, and
+    // every named-file CSV op on a real server failed "needs a paired server" —
+    // `search-spreadsheet-onedrive` searches its named cache, so its search step
+    // could not succeed. The read is `core.storage.file.read`'s own (the file
+    // stack's live adapter, under the instance's read capability), wrapped inside
+    // the CSV op: the recipe needs no file-read step and no second grant. What it
+    // does face is the `data.file` fence, which `deriveDispatchScope` now applies
+    // to the CSV ops as it does to `file.read`.
+    ...(stack
+      ? { instanceReader: { readInstanceFile: (where) => stack.kernelDispatchers.fileRead(where) } }
+      : {}),
     ingest: async ({ bytes, filename, mime_type }) => {
       const collection = deps.collectionRegistry.get('file', 'received') as
         | { ingest?: (i: Record<string, unknown>) => Promise<{ record_id: string }> }
@@ -1190,6 +1203,37 @@ export const composeExecutorConfig = async (
                 input as unknown as Record<string, unknown>,
               );
             },
+            // ⛔ THE THREE READ VERBS WERE NEVER WIRED HERE. The kernel adapter
+            // declared them and only a test double supplied them
+            // (`kernel-annotation.test.ts`), so on a real server
+            // `annotation-list` / `annotation-search` / `link-list` failed
+            // "unavailable" on every run while their unit tests passed. The
+            // op gate is the usual per-dispatch one; a read stamps nothing, so
+            // there is no origin facet to lift.
+            annotationList: async (input) => {
+              const { handleAnnotationList } = await import('../../annotation-handler.js');
+              return handleAnnotationList(deps.annotationDeps!, input);
+            },
+            annotationSearch: async (input) => {
+              const { handleAnnotationSearch } = await import('../../annotation-handler.js');
+              return handleAnnotationSearch(deps.annotationDeps!, input);
+            },
+            linkList: async (input) => {
+              const { handleLinkList } = await import('../../annotation-handler.js');
+              return handleLinkList(deps.annotationDeps!, input);
+            },
+            // The two deletes were unwired for the same reason. Their SCOPE is
+            // decided in the kernel adapter, where the run's identity is: an
+            // annotation delete arrives pinned to the running recipe, a link
+            // delete does not (see the two cases in `kernel.ts`).
+            annotationDelete: async (input) => {
+              const { handleAnnotationDelete } = await import('../../annotation-handler.js');
+              return handleAnnotationDelete(deps.annotationDeps!, input);
+            },
+            linkDelete: async (input) => {
+              const { handleLinkDelete } = await import('../../annotation-handler.js');
+              return handleLinkDelete(deps.annotationDeps!, input);
+            },
           }
         : {}),
       ...(deps.db && deps.annotationStore && deps.auditLog
@@ -1417,6 +1461,14 @@ export const composeExecutorConfig = async (
       csvStats: async (input) => {
         const { handleCsvStats } = await import('../../collections/file/csv-filter-handler.js');
         return handleCsvStats(await csvFileDeps(deps), input);
+      },
+      // `csv-rows` — `csv-filter`'s READING twin. It gets the read half of the
+      // bundle only: the ingestor is dropped here, so the op that saves nothing
+      // is never handed the means to.
+      csvRows: async (input) => {
+        const { handleCsvRows } = await import('../../collections/file/csv-filter-handler.js');
+        const { ingest: _ingest, ...read } = await csvFileDeps(deps);
+        return handleCsvRows(read, input);
       },
       csvColumns: async (input) => {
         const { handleCsvColumns } = await import('../../collections/file/csv-filter-handler.js');
@@ -1688,9 +1740,9 @@ export const composeExecutorConfig = async (
       // subtype (slack / telegram / email / in-app); dispatch routes
       // through the same connection-notification handler the connection
       // adapter uses, so re-enrollments + auth refreshes pick up
-      // immediately. Absent dispatchers (no connectionStore in
-      // dbless harnesses, or no enrolled record for a channel) surface
-      // as `failed[]` per the substrate's contract.
+      // immediately. In-app needs no record (D-312). A channel with no
+      // record surfaces in `failed[]` when the recipe named it; a send that
+      // names none skips it, unless nothing got through at all.
       notificationSend: async (input) => {
         const { handleNotificationSend } = await import('../../notification-handler.js');
         return handleNotificationSend(
@@ -1746,10 +1798,24 @@ export const composeExecutorConfig = async (
           throw new Error('schedule-recipe unavailable — no schedule store wired');
         }
         const { createSchedule } = await import('../../schedule-handler.js');
+        const { createMissingPackDepsForRecipe } = await import('../../pack-inventory.js');
         return createSchedule(
           {
             ...scheduleDeps,
             recipeStore: deps.recipeStore,
+            // ⛔ The pack refusal the webclient's `schedules.create` runs, from
+            // the same factory. Without it a Schedule recipe run armed a cron for
+            // a recipe whose pack is not installed, which fails every firing.
+            // Absent contract store ⇒ no refusal, as on that route.
+            ...(deps.contractStore
+              ? {
+                missingPackDepsForRecipe: createMissingPackDepsForRecipe(
+                  deps.recipeStore,
+                  () => deps.contractStore!.scan('installed_pack', []),
+                  (slug) => deps.manifests.get(slug),
+                ),
+              }
+              : {}),
           },
           input,
         );
@@ -1907,7 +1973,12 @@ export const composeExecutorConfig = async (
             },
             customerAccessExtend: async (input) => {
               const { lifecycle } = await createCustomerAccessLifecycle();
-              return { customer: lifecycle.extendCustomer(input) };
+              // D-309 — how an end date was set is the server's to record: a
+              // step, chat or MCP call naming one is a hand change, whatever it
+              // claims. Dropped here, never forwarded.
+              const { period_origin: _serverOnly, ...request } = input as typeof input
+                & { readonly period_origin?: unknown };
+              return { customer: lifecycle.extendCustomer(request) };
             },
             customerAccessSwapTier: async (input) => {
               const { lifecycle } = await createCustomerAccessLifecycle();

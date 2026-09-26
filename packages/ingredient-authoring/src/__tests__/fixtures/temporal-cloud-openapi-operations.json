@@ -5,20 +5,20 @@
         "kind": "official_mutable_openapi_hash_locked",
         "url": "https://saas-api.tmprl.cloud/spec.json",
         "reference_url": "https://saas-api.tmprl.cloud/docs/httpapi.html",
-        "bytes": 291315,
-        "sha256": "f04da549be91bf0beabbabc8f238e3f8d08f63d81c0514bc53ca035b15af5a58",
-        "retrieved_on": "2026-07-16",
+        "bytes": 295332,
+        "sha256": "6eac4330524654c30f5f974b4dc595e64bf341323a0ce9b803ad2f15533f03e9",
+        "retrieved_on": "2026-09-22",
         "mutability": "The live first-party document is mutable. Generation verifies byte length, SHA-256, version, routes, auth inheritance, media, success shapes, and pagination before writing any artifact.",
         "evidence": [
-          "87 nondeprecated operations across 55 paths",
+          "88 nondeprecated operations across 56 paths",
           "top-level Bearer API-key authentication plus documented RBAC",
           "exact parameters, required JSON bodies, response schemas, and page-token contracts",
           "relative server / resolved against the official source to https://saas-api.tmprl.cloud"
         ],
         "openapi": "3.0.1",
         "title": "Temporal Cloud Ops API",
-        "api_version": "v0.19.1",
-        "official_path_count": 55,
+        "api_version": "v0.22.0",
+        "official_path_count": 56,
         "declared_server": [
           {
             "url": "/"
@@ -39,13 +39,13 @@
         ]
       }
     },
-    "official_operation_count": 87,
-    "admitted_operation_count": 87,
+    "official_operation_count": 88,
+    "admitted_operation_count": 88,
     "exclusion_count": 0,
     "official_method_counts": {
       "DELETE": 12,
       "GET": 38,
-      "POST": 37
+      "POST": 38
     },
     "official_tag_counts": {
       "Account": 10,
@@ -59,7 +59,7 @@
       "Namespaces": 8,
       "Nexus": 5,
       "Operations": 1,
-      "Projects": 12,
+      "Projects": 13,
       "Regions": 2,
       "Service Accounts": 7,
       "Users": 7
@@ -67,39 +67,39 @@
     "pack_operation_counts": {
       "temporal-cloud-namespaces-networking": 28,
       "temporal-cloud-identity-access": 34,
-      "temporal-cloud-projects-assignments": 12,
+      "temporal-cloud-projects-assignments": 13,
       "temporal-cloud-account-governance": 13
     },
     "composition_bytes": {
-      "temporal-cloud-namespaces-networking": 69578,
+      "temporal-cloud-namespaces-networking": 69642,
       "temporal-cloud-identity-access": 79350,
-      "temporal-cloud-projects-assignments": 27714,
-      "temporal-cloud-account-governance": 30224
+      "temporal-cloud-projects-assignments": 29870,
+      "temporal-cloud-account-governance": 30356
     },
     "body_mode_counts": {
       "none": 50,
-      "raw_json": 37
+      "raw_json": 38
     },
     "body_root_type_counts": {
-      "object": 37
+      "object": 38
     },
-    "required_body_count": 37,
+    "required_body_count": 38,
     "risk_counts": {
-      "admin": 5,
+      "admin": 6,
       "destructive": 44,
       "read": 38
     },
     "approval_counts": {
-      "always": 49,
+      "always": 50,
       "never": 38
     },
     "idempotency_counts": {
       "idempotent": 12,
-      "non_idempotent": 37,
+      "non_idempotent": 38,
       "safe": 38
     },
     "response_mode_counts": {
-      "json": 87
+      "json": 88
     },
     "pagination": {
       "automatic_operation_count": 20,
@@ -171,16 +171,16 @@
         }
       },
       "origin_matching": "fixed saas-api.tmprl.cloud host; per_org vendor-tag matching is deliberately disabled",
-      "inherited_top_level_security_operation_count": 87,
+      "inherited_top_level_security_operation_count": 88,
       "operation_security_override_count": 0,
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
-      "official_operation_ids_present": 87,
+      "official_operation_ids_present": 88,
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_official_operation_id>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
-      "exact_json_content_type_operation_count": 37,
+      "exact_json_content_type_operation_count": 38,
       "pagination_owned_parameters": [
         "GET /cloud/api-keys:pageSize",
         "GET /cloud/api-keys:pageToken",
@@ -263,6 +263,7 @@
         "POST /cloud/namespaces/{namespace}/export-sinks",
         "POST /cloud/namespaces/{namespace}/export-sinks/{spec.name}",
         "POST /cloud/namespaces/{namespace}/failover-region",
+        "POST /cloud/namespaces/{namespace}/move-to-project",
         "POST /cloud/namespaces/{namespace}/rename-custom-search-attribute",
         "POST /cloud/namespaces/{namespace}/service-accounts/{serviceAccountId}/access",
         "POST /cloud/namespaces/{namespace}/update-tags",
@@ -352,6 +353,7 @@
         "POST /cloud/namespaces/{namespace}/export-sinks",
         "POST /cloud/namespaces/{namespace}/export-sinks/{spec.name}",
         "POST /cloud/namespaces/{namespace}/failover-region",
+        "POST /cloud/namespaces/{namespace}/move-to-project",
         "POST /cloud/namespaces/{namespace}/rename-custom-search-attribute",
         "POST /cloud/namespaces/{namespace}/service-accounts/{serviceAccountId}/access",
         "POST /cloud/namespaces/{namespace}/update-tags",
@@ -662,8 +664,8 @@
         }
       }
     ],
-    "official_operation_ids_sha256": "54dea9215f052bccd3b89f9667b39bcc17f1965e1f9c69341115117e0ca20031",
-    "generated_operation_ids_sha256": "b6f971a276155b14a7a3d444d29443dfb1cae5444e8846e4fc8a1b6e5209430a"
+    "official_operation_ids_sha256": "0d4051a27fa53256783b3c42f9396082382392c22ed60ca56f263464c78d632e",
+    "generated_operation_ids_sha256": "c255c0f22e8ce1b10b8b04c3b81f7acc5283e23e1a01bb5c42f5fff1676ab700"
   },
   "official_operations": [
     {
@@ -1893,6 +1895,39 @@
       "exclusion_reason": null,
       "pack": "temporal-cloud-namespaces-networking",
       "op": "high_availability.failover_namespace_region"
+    },
+    {
+      "key": "POST /cloud/namespaces/{namespace}/move-to-project",
+      "method": "POST",
+      "path": "/cloud/namespaces/{namespace}/move-to-project",
+      "primary_tag": "Projects",
+      "tags": [
+        "Projects"
+      ],
+      "summary": "Move a namespace to a project",
+      "official_operation_id": "MoveNamespaceToProject",
+      "generated_operation_id": "projects.move_namespace_to_project",
+      "deprecated": false,
+      "security_source": "inherited_top_level",
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "temporal-cloud-projects-assignments",
+      "op": "projects.move_namespace_to_project"
     },
     {
       "key": "DELETE /cloud/namespaces/{namespace}/regions/{region}",
@@ -4464,7 +4499,7 @@
       "credential_response": false,
       "capability_url_response": false,
       "security_source": "inherited_top_level",
-      "response_schema_sha256": "a154ec661cc0f0be4ce194a3d2d224040ba02b2cb1a85fb0c9003999d53de9ed"
+      "response_schema_sha256": "a7041cd06b8dffc9c3264a9989e6e11cc940ecdad4cc0d88910bea4e3eb91a8c"
     },
     "GET /cloud/api-keys": {
       "key": "GET /cloud/api-keys",
@@ -5420,7 +5455,7 @@
       "credential_response": false,
       "capability_url_response": false,
       "security_source": "inherited_top_level",
-      "response_schema_sha256": "898eb0c68c0a2cb6f6ccb34521fad82788e9af2b2814d3fbb25aed8dfec5dffd"
+      "response_schema_sha256": "735c7740f9310cc96184fa50ee0a92f6113839877f99060a7239896ec12bf249"
     },
     "GET /cloud/namespaces/{namespace}": {
       "key": "GET /cloud/namespaces/{namespace}",
@@ -5476,7 +5511,7 @@
       "credential_response": false,
       "capability_url_response": false,
       "security_source": "inherited_top_level",
-      "response_schema_sha256": "c8113a1ec57c00ad1a09aa6ee4862e34436e1c70675aafd6214974c4e966c458"
+      "response_schema_sha256": "6d13bec3e2f125b93aa53d018b4f2019f37388d6ec107cd7a6ee577ee59d6355"
     },
     "GET /cloud/namespaces/{namespace}/capacity-info": {
       "key": "GET /cloud/namespaces/{namespace}/capacity-info",
@@ -8401,6 +8436,66 @@
       ],
       "summary": "Failover namespace region",
       "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "namespace",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "namespace",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": true,
+      "sensitive_response": true,
+      "credential_response": false,
+      "capability_url_response": false,
+      "security_source": "inherited_top_level",
+      "response_schema_sha256": "b0f53048af5eabb6cb4498506735f3f9a6470cdba1aaf5498e62ecc48644ff42"
+    },
+    "POST /cloud/namespaces/{namespace}/move-to-project": {
+      "key": "POST /cloud/namespaces/{namespace}/move-to-project",
+      "official_operation_id": "MoveNamespaceToProject",
+      "generated_operation_id": "projects.move_namespace_to_project",
+      "pack": "temporal-cloud-projects-assignments",
+      "op": "projects.move_namespace_to_project",
+      "method": "POST",
+      "path": "/cloud/namespaces/{namespace}/move-to-project",
+      "primary_tag": "Projects",
+      "tags": [
+        "Projects"
+      ],
+      "summary": "Move a namespace to a project",
+      "risk": "admin",
       "approval": "always",
       "idempotency": "non_idempotent",
       "parameters": [

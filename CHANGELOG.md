@@ -7,6 +7,470 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.25 — 2026-09-25
+
+Three kinds of work dominate this release. An update now keeps what you chose —
+who a pack is shared with, what it may write, which automations are on, which
+public forms take submissions — instead of coming back with a fresh install's
+answers, and it shows you what it will change before you press Update. A new
+month-end closer books an imported bank statement into Ledger book and closes
+the month against it, fed by a spreadsheet import you set up by pointing at your
+file's own columns. And a pack view that would write, spend or send no longer
+runs by itself when its tab opens; it waits for you to press it. One repair also
+changes customers' access, once, on the first start: if you sell passes or enrol
+students through DeepTutor, read the note on upgrading before you apply this
+release.
+
+### Added
+
+- **A month-end closer books your bank statement into Ledger book.** The new
+  pack installs Ledger book and Bank statement import with it; give both
+  "Read + write". Link your bank account once, and "Month to close" shows the
+  month side by side: booked, not booked, and the statement against the books.
+  Up to 30 ticked lines book together or not at all, each entry named after its
+  statement line so a line cannot be booked twice, with the amount read again
+  from the imported statement rather than taken from the page. "Match lines
+  typed by hand" pairs a line with an entry you already have when the amounts
+  agree to the penny and the dates are at most seven days apart.
+- **The closer suggests accounts from your own history first.** "Book as
+  suggested" uses the account your earlier booking of the same description used,
+  however old. "Suggest accounts with AI" asks your model only when you press
+  it, only for lines your history cannot explain, and only among your open
+  accounts in the bank's currency; any other answer is thrown away, and if your
+  books cannot be read, nothing is sent.
+- **Close the month against the statement.** Type the closing balance printed on
+  the statement; the difference must be zero or come with a reason, and checking
+  writes nothing and lists what stops the close. A sealed month refuses booking
+  and matching, and unsealing or sealing again is one click. Ledger book itself
+  is not locked, so the close screen tells you when something was posted after
+  the seal. A month with more than 1,000 rows in any search the closer needs
+  stops before anything is written.
+- **Explain the month, and hand your accountant a package.** "Explain the month"
+  lists the income and expense accounts that moved against last month by at
+  least 50 and 5% (both are settings), and "Ask AI to explain" sends only lines
+  with no explanation, or with an AI one written for other figures, so yours are
+  never replaced. The package is a summary and every line of the month as CSV,
+  money in and money out as separate positive columns, with your explanations,
+  ready to copy. A month-end reminder, on a schedule you add, tells you when
+  last month is not sealed or a sealed month has changed since, and is otherwise
+  silent, including about a month you unsealed on purpose.
+- **A guided spreadsheet import.** Bank statement import, Expense Ledger and
+  Photo Attribution's roster now open a form, from a pack's Use tab or Run in
+  Recipes, where you upload the file, match each field to one of its own header
+  cells, and press Check, which runs the import on your server without recording
+  anything and shows the first 10 lines as they would be stored. Before, the
+  bank importer wanted six header names typed by hand, and a misspelt one
+  imported every row with that field empty while reporting no failures.
+  "Remember these columns" keeps the mapping.
+- **Keep your version of a line, or take the file's.** "Keep what I already
+  have", beside Import, is ticked by default. Unticked, the file updates only
+  the columns it carries, such as a bank line's running balance or an expense's
+  tax, category and note, and never your period, currency, account or card; an
+  import nobody sees the box for, from chat or a schedule, keeps yours. Before,
+  both importers refused every line you already had with different details, and
+  uploading a statement again refused the lines it shared with an earlier
+  upload.
+- **Imports read a decimal comma, and the date format you name.** Under More
+  options, the bank and expense importers ask for the decimal mark and a date
+  format such as dd/mm/yyyy; before, `1.200,00` became 1.2 on every line of a
+  European export, and dates were kept as written, which do not sort. A wrong
+  decimal mark now leaves an amount unreadable rather than 100 times off, every
+  amount that read correctly before reads the same, and a thousands mark you had
+  saved as "." carries over as a decimal comma. Dates are stored as YYYY-MM-DD,
+  a two-digit year must come last in the format, and a date that reads only in
+  another order stops the import before anything is written. Setting a date
+  format for a file you imported before brings its lines in again as new, which
+  the setting warns you about.
+- **Re-apply a package to its customers, choosing what and who.** Re-apply its
+  permissions, its length, or both, to everyone still active, everyone nobody
+  changed by hand, or the customers you tick; closed customers are always left
+  alone, and nothing is written until you press Re-apply after a preview. End
+  dates are set exactly, the customer's start plus the package's length, so they
+  can shorten: a running pass whose length has run out ends now, then gets your
+  grace period, and one whose access has already ended is left alone unless you
+  pick it. Whether a date or an agreement was changed by hand is recorded from
+  now on (customers from before then are compared with the package). It is on
+  the package's new Re-apply tab, which replaces "Give everyone the new
+  package", and as "Re-apply their package" on a customer's page.
+- **Open a quote request by hand.** Most quote requests arrive by phone or in
+  person, so "Open a quote request by hand" takes the customer's email, what
+  they asked for and a reference, and sends nothing; "Price and send a quote"
+  prices either kind. It comes with Seller Quote Request 4.
+- **A pack can bring saved views of its own.** An installed pack may add up to
+  20 Data views on an allowance of their own, so your 100 are untouched, listed
+  in Saved views in a group named after the pack. The pack keeps each view's
+  name and settings, so you cannot rename or delete one, but you can hide it,
+  and the alert and review mark on it are yours.
+- **When an update replaces a saved view you had set up, it asks first.** A pack
+  view is known by its name, so a renamed view arrives as a new one. The old
+  one, if you had set it up, is retired rather than deleted, its alert stopped
+  and its settings kept, and Saved views asks whether to set up the new view the
+  same way, keep the old one as your own, or dismiss.
+- **More pack lists open the row they show**, among them Client Document
+  Intake's "Accept documents in bulk", Shortcut (with a new story detail page),
+  PandaDoc and Wise. Honeycomb's Open control, added earlier, is now offered to
+  packs already installed.
+- **For recipe authors: a Records search can read every page, and the annotation
+  and link steps work.** A search step that sets `pages: "all"` reads up to
+  1,000 rows instead of one page of at most 200. Listing, searching and deleting
+  annotations and links existed only in testing and failed on every real run;
+  they work now, and a delete refuses a filter key it does not know, or a field
+  that resolved to nothing, rather than deleting more than was named. The old
+  annotate and link steps are retired in favour of the create steps, and a
+  recipe can now retire one of its own settings by name and say what its saved
+  value still means.
+- **Packs for 49 vendors follow what those vendors publish today, and several
+  gain operations.** New: a Continuous Integration - Vercel pack that reads CI
+  runs, jobs and their logs and can retry a run; OneSignal's Journey Builder;
+  ten Make operations, among them connection and key locking, adopted after
+  seven weeks on hold; 36 operations across Deel's ten packs; and Personio's
+  recruiting operations, now out of beta. Further additions reach Confluent,
+  Aiven, Render (holding out the eight new operations that return environment
+  variables or secret files), Pulumi Cloud, Ashby, GitBook, PlanetScale,
+  Zendesk, Fivetran, Statsig, Hightouch, Close, Outreach, ClickHouse Cloud,
+  Apollo, Hetzner Cloud, Honeycomb, LaunchDarkly, PandaDoc, Temporal Cloud and
+  Vercel. Attio's 20 new routes are held for review.
+
+### Changed
+
+- **A pack view that would write, spend or send now waits for you to press it.**
+  A view runs by itself when its tab opens and whenever its pack's data changes,
+  and the check that allowed this never looked at built-in steps: 49 shipped
+  views held a write, such as a mail send or a shared-record delete, and 114
+  called the built-in AI. Each view is now asked whether it changes anything and
+  whether it costs anything to run again, a notification counting as a change,
+  and 173 views and one lookup became buttons. A webclient that cannot get that
+  answer from the server treats the recipe as spending, so an older server
+  cannot turn a view back on.
+- **Operations a vendor bills per call are marked, and a view that calls one
+  waits for you too.** Eighty-two operations now carry the mark: AI generation
+  and embeddings, reranking, transcription and speech, paid search, scraping,
+  crawling and computation, and data-enrichment credits. Seven shipped views
+  called one, among them four Tavily views, Exa search and Wolfram Alpha, and
+  they are buttons now, as a view calling the built-in AI already was. The mark
+  decides only when a view runs; no cost is counted anywhere.
+- **The update dialog shows what it will change.** It used to show only the
+  operations you had set rules for; it now lists those first, then everything
+  Added, Changed and Removed, and names each public form or link that would
+  stop, each automation it would switch off, and each saved setting the new
+  version no longer uses. There is no rename: a removed operation keeps your
+  rule for it, doing nothing in case it comes back, and its replacement arrives
+  at the pack's defaults.
+- **Uninstalling a pack removes what its recipes leave behind.** It used to
+  delete the recipes but keep their install settings, named setups, schedules,
+  your triggers and auto-run, so schedules failed "recipe not found" every time
+  they fired and a reinstalled recipe came back tripped. They now go with the
+  recipe, on uninstall, on an update that drops it and on a delete, and the
+  Delete confirmation lists them; connections and shared settings groups stay. A
+  recipe the server still bundles is left installed, with its settings,
+  schedules and triggers.
+- **A notification goes to every channel you have set up, and in-app is built
+  in.** A reminder that named no channel went to a fixed list, so every channel
+  you had not set up reported a failure, and in-app needed a connection nobody
+  could add. A channel setting left empty now means every channel you have set
+  up, rather than in-app alone, and four recipes and eleven packs that notified
+  without saying so now say so when you install or update them.
+- **Weekdays and notification channels are checkboxes.** Weekday settings wanted
+  "1, 2, 3, 4, 5" typed, with nothing saying 1 is Monday, and channel settings
+  wanted channel names; they are now boxes, Mon to Sun and Slack to In-app. No
+  channel ticked means every channel you have set up, while a weekday list with
+  none ticked is refused before it is saved, since the recipe would never run. A
+  server still on 26.9.21 installs these recipes too, and keeps the text box.
+- **Today and Saved views have pages of their own.** Today, which gathers tasks,
+  commitments and calendar across sources, moves to `#today` with its own place
+  in the drawer and can no longer be saved as a view, and Data now opens on
+  Contacts; a saved view that opened Today ("My day") opens `#today` instead.
+  Saved views moves to `#views`, between Contacts and Data in the drawer. Old
+  addresses, including links in notifications already delivered, still open.
+- **In Seller, a row's preview shows the item itself.** It used to describe the
+  list: its name, the record's id and the page number. It now shows the item's
+  own details (for a package, who is on it, its pass, its limits and its source)
+  and one button that opens it. On a package, the "Customers" tab is now
+  "Re-apply", and on a phone the re-apply preview no longer runs off the screen.
+- **The tool list and the recipe list arrive in pages.** Each was one message
+  with a row per installed tool or recipe, and on a server with 1,051 packs the
+  two together came within 256 KB of the 16 MiB at which the connection gives
+  up. Both now come in pages of at most 1 MiB, and the tool list no longer
+  carries each tool's full argument schema, which the screen reading it never
+  used and which was more than half its size; the model that calls a tool still
+  gets it. An older webclient, which does not ask for pages, still gets whole
+  lists.
+- **What a vendor withdrew or renamed leaves its pack.** Daytona withdrew
+  account unlinking and SMS two-factor enrolment, renamed its account-providers
+  read, and now takes 15 paging parameters as text ("100"); Make withdrew its
+  LLM configuration and cashier products and moved two sets of routes, which
+  renames their operations; Zendesk, PlanetScale, Outreach and Wise each
+  withdrew writes, and Wise's v2 business-profile pair ships again; Deel renamed
+  its IT asset and order reads; and LaunchDarkly folded AI Configs into
+  AgentControl without changing their permission levels. A renamed operation
+  appears in the update dialog as Removed plus Added, and a rule you set on the
+  old name is kept but does nothing.
+- **Northflank's operations ask for a team, and Samsara's attribute update is
+  admin.** Northflank shipped each operation twice, for the key's default team
+  and for a named team; only the named-team form ships now, so each of its
+  eleven workflows asks for the team at install. Samsara's attribute update is
+  admin rather than write, as its pack intended, so a delegation rule for writes
+  no longer covers it. Three Samsara hub-location operations carry the vendor's
+  notice to use places instead: closed to new customers on November 1, 2026,
+  removed on November 1, 2027.
+
+### Fixed
+
+- **An input a recipe left out reached built-in steps as an empty value, and
+  shipped recipes broke on it.** The paid-pass recipes and the free DeepTutor
+  enrolment gave access with no end (see the note on upgrading); four
+  plan-change recipes were refused on every Stripe, Paddle and Lemon Squeezy
+  change; eleven recipes read an empty calendar while reporting it fresh;
+  creating or updating a project, and all 16 work-item lists, failed; and link
+  and annotation deletes reported success having deleted nothing. A left-out
+  input is now dropped before the step sees it, and the refused plan changes
+  repair themselves wherever the provider's reconciler runs. Updating a booking
+  without naming its slot wiped the slot, and that cannot be repaired or even
+  detected: a slot may be empty by design, and no copy of the old one was kept.
+- **Twenty-six shipped recipes had a step that could never succeed**: summaries
+  passing the wrong input names, digests passing a body where the notification
+  step needs text, and enrichment lists with no topic. All are repaired and
+  republished. The recipe checker now looks at every step and warns, rather than
+  refusing, when a step lacks an input its type requires, because a server
+  refuses a whole recipe over one error and that would stop recipes that run
+  today.
+- **A pack update keeps every choice you made.** An update re-ran the install,
+  and whatever it did not carry came back as a fresh install's answer: it
+  withdrew the pack from every customer and agreement, turned a revoke for one
+  agreement into a grant, moved an owner with two accounts to the first one
+  matching by name, and took a "Read + write" pack's writes away unless you
+  re-picked, which broke Bank statement import's importer. The dialog now starts
+  at the pack's current audience, account and Access, never higher, and door
+  scopes, command-line allow-lists, AI-token operation lists, customer templates
+  and grants set by hand stay as set. Operations an update adds reach only the
+  pack's existing share, and re-reviewing a generated MCP pack no longer narrows
+  it back to Read, only you.
+- **An update no longer stops what was already working.** A saved setting that
+  an update dropped made every run refuse; it is now set aside, and kept in case
+  a later version wants it back. A public form or booking link refused every
+  visitor after any update, even a one-step fix, until you bound it again in
+  Reception; it now keeps working, Records pack updates included, unless its
+  form fields or the offer it sells changed; a door that needs fewer permissions
+  is re-made without asking, and one that needs more waits for you. An update
+  that changed a trigger created its replacement switched off; when one trigger
+  becomes one other, the replacement now keeps your on/off state, settings,
+  continuity and poll interval, and never switches on what you had off.
+- **Installing a pack no longer updates a Records pack you already have behind
+  your back.** A pack that needed a newer Records pack updated it as part of its
+  own install, skipping that pack's update review and resetting it to its
+  defaults: installing Seller Quote Payment Events would have dropped your quote
+  requests from "Read + write" to "Read only" and ended their share with your
+  agreements. The install now stops before writing anything and tells you to
+  update that pack first from Packs, and the install dialog warns you before you
+  press Install; a pack that holds no records is still updated along the way,
+  with your choices kept.
+- **An install asks about every pack it brings in.** The packs an install
+  brought with it were installed at Read only whatever you chose, so a workflow
+  writing into one, such as Invoice Book updating Billable Hours, was refused on
+  its first run. The dialog now gives each its own Access choice, lists the
+  permissions they need (without which Personal CRM could not be installed from
+  it at all), and sends the Access level it shows, where "Full access" could be
+  silently refused. A marketplace pack now brings in the packs it needs from the
+  marketplace, and a refused install names the pack you need to install first.
+- **A Records pack whose recipes changed is offered as an update.** It counted
+  as up to date on its pack version alone, so an owner who installed Bank
+  statement import on 26.9.21 was offered nothing and kept the old import form.
+  The Packs page now offers "↑ Update recipes", which goes through the usual
+  review.
+- **A new link for a customer keeps their agreement.** "Reissue token" and
+  "Message customer" issued a new contract stamped from the package template,
+  resetting what you had set for that customer: grants and revokes, shared
+  packs, command-line tools, their usage cap and their usage so far. The new
+  contract now carries the old agreement whole, and a retired template no longer
+  blocks a reissue. Moving a customer to another package still resets them to
+  it, and says so.
+- **Webhook packs install and update from Settings → Packs.** None of the 14
+  bundled webhook packs could, because the dialog never asked which webhook each
+  binding should use. It now offers the ones that fit, starts at the one in use,
+  and links to Connections → Webhooks when none does; an update keeps each
+  binding's webhook, and a webhook door you revoked stays revoked through a
+  reinstall.
+- **A paid quote now reaches paid.** The payment observer listened for a webhook
+  no pack declared, so on a real install a paid quote never got there. A new
+  pack, Seller Quote Payment Events, declares the Stripe checkout webhook and
+  takes over watching for payment; it needs Seller Quote Request 4, and its
+  install stops and says so until you have updated that pack from Packs.
+- **Every seller order read is fresh.** Seller order reads could be served from
+  a cache up to a minute old, so a payment could hit a conflict at its confirm
+  step, a fulfilment, renewal, pause, cancellation or tier change could act on a
+  stage the order had already left, and the quote board showed a priced order as
+  unpriced for a minute. All 43 in the shipped recipes now read fresh.
+- **An installed pack's Use tab shows its views and lookups.** Every read on an
+  installed pack appeared as an operation button, because the read-only check
+  could not read the steps install had rewritten: Rental Book showed eighteen
+  buttons, its lists and detail pages among them. It now shows 4 views, 3
+  lookups and 11 operations, and over a thousand read-only pack recipes became
+  views and lookups. A bookmarked or reloaded detail address now opens its
+  record instead of the pack's first view, after a wait that took 5 to 15
+  seconds in testing.
+- **A time gate reads 7 as Sunday, and three watchers stop failing every tick.**
+  Ten recipes' weekday settings say "1=Mon..7=Sun" while the time gate took 0 to
+  6, so Personal circle health brief and Unified Work Queue were refused on
+  their own defaults and had auto-run switched off; 0 and 7 now both mean
+  Sunday. A watcher got an empty value for an input it was not sent, so "Meeting
+  alerts before each event" failed every minute and Web Watch & Research's two
+  page watchers were refused on every tick. A recipe these switched off stays
+  off until you turn it on again.
+- **A list setting is saved as a list, and a refusal says what it is.** The
+  settings form saved a list as the text typed into it ("slack, email"), which,
+  among other things, made the time watcher refuse every window. A refused input
+  was reported as a network error, which an automation retried and an AI caller
+  read as "come back later"; each kind of refusal, such as a missing record, a
+  locked server or a mistyped schedule, now has its own name, and the run dialog
+  shows the first error and its step under "Run returned errors". A recipe step
+  that schedules a recipe now checks its packs first, so it can no longer arm a
+  schedule that fails every time.
+- **A run from the webclient is waited for as a run.** It gave up after 30
+  seconds, while one AI step alone can take 20 to 40, so runs that finished were
+  reported as timed out. The wait is now 5 minutes, and a longer run says it is
+  still going on the server, with its result in Logs.
+- **A date lands on the day it names.** West of UTC, a date with no time showed
+  a day early (Jul 31 for 2026-08-01), and 19 recipes took "today" from the UTC
+  clock, so from the evening on it was already tomorrow: bookings were dated a
+  day late, and on a month's last evening "last month" meant this month. "Today"
+  is now the server's calendar day.
+- **A spreadsheet search no longer saves a file every time it runs.** The CSV
+  filter step stored its matches as a new file on each run while rated a read;
+  it is now rated a write, and a new CSV rows step returns matches without
+  saving anything. "Search a spreadsheet like a database" in Excel Workbook Desk
+  uses it, and reads a named CSV file under your Files permission, which no CSV
+  step could do on a real server.
+- **A batch AI step works on OpenAI-compatible models.** A batch returns a JSON
+  array, one entry per record, but every structured call asked for JSON mode,
+  which on those models returns a single object, so a batch came back with one
+  record's answer and failed. Batch calls no longer ask for it; Gemini keeps its
+  JSON mode, which accepts arrays.
+- **A run that failed after some of its writes landed is asked about, even if
+  the first attempt was missed.** The server asks you about those writes, but
+  the question was raised on a best-effort basis, so a missed one left the run
+  silent. Each start now checks the 200 newest failed runs and asks about any
+  that were missed; a run the server crashed in the middle of is still not
+  covered.
+- **A recipe's Definition shows its steps again, and its card's "→ slack" and
+  "reads …" labels are back.** Both broke in 26.9.21, when the recipe list
+  stopped carrying step bodies: the Definition showed a recipe with no steps,
+  and the labels went missing or undercounted. The detail view now reads the
+  whole recipe, and the server sends the labels.
+- **The drift and promotion banners come back when they should, and stay
+  dismissed when you dismiss them.** Dismissing the drift banner lasted only
+  until the next reload; it is now saved on the server and holds until the
+  verdict changes. The banner suggesting that a topic run automatically showed
+  once, to whoever was looking at that moment; it is now drawn from the stored
+  suggestion, and hidden once dismissed or once the topic runs automatically.
+- **A pack is no longer refused at install because the machine was busy.** The
+  check that refuses request patterns slow enough to hang the process allowed
+  each measurement 50 ms, and the slowest shipped pattern took 63 ms under load,
+  so a busy machine refused the MongoDB Atlas networking pack outright. The
+  limit is now 250 ms, every known catastrophic pattern is still refused, and a
+  pattern is now also measured at its field's own maximum length.
+- **Descriptions say what an operation does and count what a pack holds.** Forty
+  operation descriptions contradicted their own operation (36 Airbyte reads said
+  approval was required every run, and never asked), and pack descriptions gave
+  the wrong number of built-in actions in 63 packs and of workflows in 36. Every
+  count now matches; HubSpot and Salesforce, for instance, now say 7 workflows,
+  which is what installing them gives.
+- **Approval buttons leave room for the question**, which three buttons used to
+  squeeze into a column of single words; the run palette's recipe list shows
+  more than one option at a time; Download works on a file that cannot be
+  previewed; Kitchen offers its form-response templates again; Retry in
+  Settings → Notifications puts focus back on the first switch; a chat message
+  the server refuses shows its error beside your draft; a Data → Files search
+  typed while a cloud source is loading is no longer dropped; and the Vercel
+  sandboxes list reads past its first page.
+
+### Security
+
+- **A new contract keeps exactly what its creator granted.** At each start the
+  server gives 17 basic tools, such as mail search, memory write and recipe run,
+  to contracts older than the tool gate, and nothing marked a newer contract as
+  already handled, so every contract made since the last restart got all 17 at
+  the next one: a door made with a short tool list, and a customer package
+  template made with none, which every customer issued from it then copied. On
+  most doors the token's own tool checklist still applied, so this removed one
+  of two guards. It now runs once per server; nothing already granted is taken
+  away.
+- **A webclient paired to an older server no longer treats every recipe as
+  read-only.** Such a server does not say whether a recipe is read-only, so the
+  webclient judged from the list row, and since 26.9.21 a row carries no steps,
+  so any recipe, a delete or a mail send included, looked read-only and could
+  run as a view. A recipe it cannot judge is now a button.
+- **An S3 file step can no longer reach the bucket itself.** A path that was
+  left out, resolved to nothing, or collapsed to nothing (".", "..", "a/..")
+  addressed the bucket instead of a file, so a delete could delete an empty
+  bucket and a read returned the bucket's listing as the file; on a path-style
+  endpoint such as MinIO, ".." reached the service root. A chat or MCP call that
+  left out the path could do this. Reads, writes, deletes and stats now refuse
+  such a path before any request goes out; listing, and names with dots inside
+  them, are unaffected.
+- **Two Ledger book operations that rewrite tags in bulk now ask every run.**
+  They were marked destructive but set never to ask, so once the pack was
+  granted they ran without a prompt, unlike its eight other destructive
+  operations. A check over every shipped operation now catches a destructive one
+  that never asks.
+- **The `webhook-inventory-planetscale` recipe is withdrawn.** Its whole output
+  was PlanetScale webhook signing secrets. Its pack no longer includes it, and
+  the marketplace no longer lists it on its own.
+- **A sensitive read is an ordinary read: your grant is the permission.** Reads
+  tagged sensitive were set to ask for approval, but under every default trust
+  ceiling nobody was ever asked, while their descriptions promised otherwise.
+  They now run unasked, as they already did, and no description says otherwise;
+  the tag stays as a record of what a read returns, and reads that return a
+  credential say so. The one change in behaviour: if you set a door's trust
+  ceiling to none, you were asked for these reads, and are not any more.
+
+### A note on upgrading
+
+On its first start, this release changes some customers' access, once. The
+defect described first under Fixed left every pass sold through the paid-pass
+recipes, and every free DeepTutor enrolment, without an end. The first start
+gives those passes the end they should have had, on evidence only: a paid order
+for that package linked to the customer, or a DeepTutor student record for its
+class, and the package unchanged since. A pass whose end has already gone by
+ends at that start, never in the past, and your usual grace period (72 hours
+unless you have changed it) applies before access stops; a customer who had
+access before their pass gets the pass's end, the least they are owed, and is
+flagged for you to check.
+
+A missing end date is not proof of the defect — lifetime access can be
+deliberate — so a customer with no such trace, or on a package edited since, is
+listed and left as they are. You get a notice naming every customer changed and
+when their access now stops, and every customer left alone and why, with how to
+decide; it links to the package's Re-apply tab, or to the packages list when
+they are on several. The repair is recorded together with its changes, so it
+runs once, and a failure part-way changes nothing and it tries again at the next
+start. The server log says how many passes were given an end and how many were
+left for you.
+
+Some approvals you gave on 26.9.21 will be asked for once more: an approval
+covers exactly what a step runs, and a built-in step that leaves out an input
+now runs something different.
+
+The notice's link needs a webclient from this release, since older webclients
+have no Re-apply tab; an older webclient keeps "Give everyone the new package",
+which this server still accepts. Paired to an older server, this release's
+webclient says to update the server, and treats a recipe as spending whenever
+the server cannot say whether it spends.
+
+Every recipe and pack changed since the last marketplace publish carries a new
+version — 360 recipes and 747 packs — so the copies you have installed are
+offered the change. The 22 bundled packs whose operations are now marked as
+billed per call reach a server only through this upgrade: 26.9.21 refuses that
+mark, and never reads the published copy of a pack it bundles.
+
+This release adds two database tables and two columns, and rebuilds nothing.
+Going back to 26.9.21 afterwards boots and reads your data, with four caveats.
+The end dates the repair set stay. A pass sold while reverted comes out without
+an end again, because 26.9.21 still has the defect, and the repair does not run
+a second time when you upgrade back. An end date set by hand while reverted is
+not recorded as set by hand, and that record is what Re-apply reads to tell your
+changes from the package's. And a recipe whose update set aside a setting you
+had saved refuses every run on 26.9.21 until you clear that setting.
+
 ## 26.9.21 — 2026-09-21
 
 Two kinds of work dominate this release. An installed pack stopped being a card

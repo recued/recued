@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  CloudFileListRequest,
+  CloudFileListResult,
+  CloudFileSelection,
   CollectionInstanceRow,
   ContactImportFilePlan,
   ContactMergeCandidate,
@@ -606,6 +609,7 @@ const mountRoute = (overrides: {
   collectionListInstancesCaller?: BootstrapDataRouteOptions['collectionListInstancesCaller'];
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
+  fileChatCallers?: BootstrapDataRouteOptions['fileChatCallers'];
   annotationListCaller?: BootstrapDataRouteOptions['annotationListCaller'];
   linkListCaller?: BootstrapDataRouteOptions['linkListCaller'];
   sharedListCaller?: BootstrapDataRouteOptions['sharedListCaller'];
@@ -852,6 +856,7 @@ const mountRoute = (overrides: {
       ? { sharedListCaller: overrides.sharedListCaller }
       : {}),
     ...(overrides.fileReadCaller !== undefined ? { fileReadCaller: overrides.fileReadCaller } : {}),
+    ...(overrides.fileChatCallers !== undefined ? { fileChatCallers: overrides.fileChatCallers } : {}),
     // ⚠ D-267 moved the ROUTE's bare-mount default from Contacts to Today. This
     // rig keeps pinning Contacts because ~44 cases below are about contacts,
     // import, and dialogs — not about which tab a tabless mount lands on. The
@@ -968,89 +973,10 @@ const mountRoute = (overrides: {
   };
 };
 
-describe('Today route refresh ownership', () => {
-  it('paints the current read and coalesces source changes into one follow-up', async () => {
-    const { subscribe, listeners } = makeSubscribe();
-    const releases: Array<() => void> = [];
-    const list = vi.fn<DataWorkEntityListCaller>(async ({ kind }) => {
-      if (kind !== 'task') return { entities: [], total: 0 };
-      await new Promise<void>((resolve) => { releases.push(resolve); });
-      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
-    });
-    const rig = mountRoute({ initialTab: 'today', now: () => NOW, subscribe, liveRefreshDebounceMs: 0,
-      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
-    const first = rig.route.whenLoaded();
-    for (let i = 0; i < 5; i++) listeners.get('warehouse')!({ kind: 'warehouse' });
-    expect(releases).toHaveLength(1);
-    releases[0]!();
-    await first;
-    expect(rig.root.children[0]!.innerHTML).toContain('Call Sam');
-    expect(releases).toHaveLength(2);
-    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
-    releases[1]!();
-    await rig.route.whenLoaded();
-    expect(releases).toHaveLength(2);
-    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
-    rig.route.dispose();
-  });
-
-  it('keeps recovery pending for the current read and reports partial failures as unavailable', async () => {
-    let release!: () => void;
-    let mode: 'ready' | 'held' | 'failed' = 'ready';
-    const list: DataWorkEntityListCaller = async ({ kind }) => {
-      if (kind !== 'task') return { entities: [], total: 0 };
-      if (mode === 'failed') throw new Error('Tasks unavailable');
-      if (mode === 'held') await new Promise<void>((resolve) => { release = resolve; });
-      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
-    };
-    const rig = mountRoute({ initialTab: 'today', now: () => NOW,
-      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
-    await rig.route.whenLoaded();
-    expect(rig.route.currentView()).toEqual({ tab: 'today' });
-    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
-    mode = 'held';
-    rig.route.refresh();
-    let settled = false;
-    const refreshed = rig.route.whenLoaded().then(() => { settled = true; });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
-    release();
-    await refreshed;
-    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
-    mode = 'failed';
-    rig.route.refresh();
-    await rig.route.whenLoaded();
-    expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
-    expect(rig.root.children[0]!.innerHTML).toContain('Results below may be incomplete');
-    rig.route.dispose();
-  });
-
-  it('does not let a superseded Today read restore old rows after a newer refresh', async () => {
-    let release!: () => void;
-    let mode: 'ready' | 'held' | 'empty' = 'ready';
-    const list: DataWorkEntityListCaller = async ({ kind }) => {
-      if (kind !== 'task' || mode === 'empty') return { entities: [], total: 0 };
-      if (mode === 'held') await new Promise<void>((resolve) => { release = resolve; });
-      return { entities: [taskEntity({ due_at: NOW + 100 })], total: 1 };
-    };
-    const rig = mountRoute({ initialTab: 'today', now: () => NOW,
-      workEntityListCaller: list, collectionListInstancesCaller: async () => ({ instances: [] }) });
-    await rig.route.whenLoaded();
-    expect(rig.root.children[0]!.innerHTML).toContain('Call Sam');
-    mode = 'held';
-    rig.route.refresh();
-    const retired = rig.route.whenLoaded();
-    mode = 'empty';
-    rig.route.refresh();
-    await rig.route.whenLoaded();
-    release();
-    await retired;
-    expect(rig.root.children[0]!.innerHTML).not.toContain('Call Sam');
-    expect(rig.route.getRecoveryContextFreshness()).toBe('current');
-    rig.route.dispose();
-  });
-});
+// ⛔ `Today route refresh ownership` MOVED to
+// `apps/webclient/src/today/__tests__/today-route.test.ts` (D-290). Today is
+// its own `#today` route; the Data route no longer hosts it, so the three
+// read-ownership tests now drive the surface that actually owns the read.
 
 describe('saved Data view hydration', () => {
   const saved = (definition: NonNullable<BootstrapDataRouteOptions['savedView']>['definition']) => ({
@@ -5487,21 +5413,24 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
     rig.route.dispose();
   });
 
-  it('⛔ D-267 — a tabless or unknown address lands on TODAY, not Contacts', async () => {
+  it('⛔ D-290 — a tabless or unknown address lands on CONTACTS', async () => {
     // ⛔ BOTH ARMS, AND THE SECOND IS THE ONE THAT MATTERS. The rig pins
     // `initialTab: 'contact'` for the contact-heavy cases around it, so an
     // assertion that only went through the rig would be asserting the RIG's
     // default and would stay green if the route's own fallback regressed. The
     // bare mount below bypasses it: `undefined` is what the drawer's Data seat
     // and every tabless link actually send.
+    // D-290 — was `today` under D-267; Today left for its own route and the
+    // owner picked Contacts as the landing. Pinned so the new default is a
+    // decision, not whatever the tab list happens to start with.
     const unknown = mountRoute({ initialTab: 'bogus-kind' });
     await unknown.route.whenLoaded();
-    expect(unknown.route.activeTab()).toBe('today');
+    expect(unknown.route.activeTab()).toBe('contact');
     unknown.route.dispose();
 
     const bare = mountRoute({ initialTab: null });
     await bare.route.whenLoaded();
-    expect(bare.route.activeTab()).toBe('today');
+    expect(bare.route.activeTab()).toBe('contact');
     bare.route.dispose();
   });
 
@@ -6589,6 +6518,190 @@ const importSourceHealth = (over: Record<string, unknown> = {}): ContactSourceHe
     ...over,
   }) as ContactSourceHealth;
 
+/** ⛔ A cloud search the owner submits while the list is still loading must
+ *  take effect. `browseCloudFiles` returned early on `explorerLoading` /
+ *  `cloudLoadingMore` BEFORE it kept the query, so an Enter pressed while a
+ *  source's first page loaded left the owner's search in the box over a list
+ *  that ignored it, and "Load more" then paged the OLD query: 36 rows for a
+ *  search that matches 35, the 36th a file the search excludes.
+ *
+ *  Its sibling race, the first page's repaint replacing the box the owner is
+ *  typing into, needs a real focus model, so `chat-cloud-files.spec.ts` pins
+ *  it. Either one produced the same 36-row e2e flake. */
+describe('Data → Files — a cloud search submitted while the list loads', () => {
+  const SOURCE_ID = 'google.work.file';
+  const SLUG = `remote:${SOURCE_ID}`;
+  const pad = (i: number): string => String(i).padStart(2, '0');
+  /** 35 invoices under /Clients, plus one file there that `clients invoice`
+   *  must NOT match. It sorts last, so an unfiltered second page carries it. */
+  const FILES: CloudFileSelection[] = [
+    ...Array.from({ length: 35 }, (_, i) => ({
+      record_id: `file:remote:invoice-${pad(i)}`,
+      filename: `Invoice ${pad(i)}.pdf`,
+      path: `/Clients/Invoice ${pad(i)}.pdf`,
+      selection_revision: 'v1',
+    })),
+    { record_id: 'file:remote:report', filename: 'Cloud report.pdf', path: '/Clients/Cloud report.pdf', selection_revision: 'v1' },
+  ];
+
+  /** Pages the way the server's `browse` does: every term must match, keyset
+   *  on the id, `limit + 1` to know there is more, and a cursor that is only
+   *  good for the query it was minted for. `holdNext` parks the next call. */
+  const fakeCloud = () => {
+    const calls: CloudFileListRequest[] = [];
+    let held: Promise<void> | null = null;
+    const list = async (args: CloudFileListRequest): Promise<CloudFileListResult> => {
+      calls.push(args);
+      const gate = held;
+      held = null;
+      if (gate !== null) await gate;
+      const query = (args.query ?? '').trim();
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      let after: string | undefined;
+      if (args.cursor !== undefined) {
+        const cursor = JSON.parse(args.cursor) as { query: string; after: string };
+        if (cursor.query !== query) throw new Error('Cloud file search changed. Search again.');
+        after = cursor.after;
+      }
+      const matches = FILES
+        .filter((f) => terms.every((t) => `${f.filename} ${f.path}`.toLowerCase().includes(t)))
+        .filter((f) => after === undefined || f.record_id > after)
+        .sort((a, b) => (a.record_id < b.record_id ? -1 : 1));
+      const page = matches.slice(0, args.limit ?? 30);
+      return {
+        files: page,
+        ...(matches.length > page.length
+          ? { next_cursor: JSON.stringify({ query, after: page.at(-1)!.record_id }) }
+          : {}),
+      };
+    };
+    const unused = async (): Promise<never> => { throw new Error('not used by these tests'); };
+    return {
+      calls,
+      holdNext: (): (() => void) => {
+        let release!: () => void;
+        held = new Promise<void>((resolve) => { release = resolve; });
+        return () => release();
+      },
+      callers: {
+        get: unused,
+        sessions: async () => ({ sessions: [] }),
+        cloud: {
+          sources: async () => ({
+            sources: [{ source_id: SOURCE_ID, label: 'Work drive', provider: 'google', last_synced_at: NOW, stale: false }],
+          }),
+          list,
+          get: unused,
+          importFile: unused,
+        },
+      },
+    };
+  };
+
+  const mountFiles = (fake: ReturnType<typeof fakeCloud>) => mountRoute({
+    initialTab: 'files',
+    collectionListInstancesCaller: (async () => ({
+      instances: [
+        { slug: 'received', platform: 'file', adapter_type: 'local', caps: {}, auth_state: 'ok', last_synced_at: null },
+      ],
+    })) as never,
+    collectionListCaller: (async () => ({ records: [] })) as never,
+    fileChatCallers: fake.callers,
+  });
+
+  /** The search box, as the route's delegated handlers see it. */
+  const searchBox = (value: string) => {
+    const box = {
+      value,
+      hasAttribute: (k: string) => k === 'data-recued-data-action',
+      getAttribute: (k: string) => (k === 'data-recued-data-action' ? 'file-cloud-query' : null),
+      closest: (sel: string) => (sel === '[data-recued-data-action]' ? box : null),
+    };
+    return box;
+  };
+  const searchWithEnter = (host: FakeEl, value: string): void => {
+    emitInput(host, searchBox(value));
+    for (const listener of host.listeners.get('keydown') ?? []) {
+      listener({ key: 'Enter', target: searchBox(value), preventDefault: () => {} } as unknown as Event);
+    }
+  };
+  const searchWithButton = (host: FakeEl, value: string): void => {
+    emitInput(host, searchBox(value));
+    emitClick(host, 'file-cloud-search');
+  };
+  const rows = (host: FakeEl): number => (host.innerHTML.match(/data-collection-record="/g) ?? []).length;
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+  const queries = (fake: ReturnType<typeof fakeCloud>): string[] => fake.calls.map((c) => c.query ?? '');
+
+  it('⛔ Enter while the source is still loading searches, and Load more pages THAT search', async () => {
+    const fake = fakeCloud();
+    const rig = mountFiles(fake);
+    await rig.route.whenLoaded();
+    const host = rig.root.children[0]!;
+
+    const release = fake.holdNext();
+    emitClick(host, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: SLUG });
+    searchWithEnter(host, 'clients invoice');
+    release();
+    await settle();
+    expect(rows(host)).toBe(30);
+
+    emitClick(host, 'file-cloud-more');
+    await settle();
+    expect(queries(fake)).toEqual(['', 'clients invoice', 'clients invoice']);
+    expect(rows(host)).toBe(35);
+    expect(host.innerHTML).not.toContain('Cloud report.pdf');
+    rig.route.dispose();
+  });
+
+  it('a second search while the first is loading wins, from the button too', async () => {
+    const fake = fakeCloud();
+    const rig = mountFiles(fake);
+    await rig.route.whenLoaded();
+    const host = rig.root.children[0]!;
+    emitClick(host, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: SLUG });
+    await settle();
+
+    const release = fake.holdNext();
+    searchWithEnter(host, 'report');
+    // Still loading, and Search stays usable: a newer search supersedes.
+    expect(host.innerHTML.match(/<button[^>]*file-cloud-search[^>]*>/)?.[0]).not.toContain('disabled');
+    searchWithButton(host, 'invoice');
+    release();
+    await settle();
+    expect(queries(fake)).toEqual(['', 'report', 'invoice']);
+    // The first search's single answer lands last and must not replace it.
+    expect(rows(host)).toBe(30);
+    expect(host.innerHTML).not.toContain('Cloud report.pdf');
+    rig.route.dispose();
+  });
+
+  it('a search while Load more is in flight replaces the list, and the late page is not added', async () => {
+    const fake = fakeCloud();
+    const rig = mountFiles(fake);
+    await rig.route.whenLoaded();
+    const host = rig.root.children[0]!;
+    emitClick(host, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: SLUG });
+    await settle();
+    expect(rows(host)).toBe(30);
+
+    const release = fake.holdNext();
+    emitClick(host, 'file-cloud-more');
+    expect(host.innerHTML).toContain('Loading…</button>');
+    searchWithEnter(host, 'report');
+    // The page walk is over the moment the search supersedes it.
+    expect(host.innerHTML).not.toContain('Loading…</button>');
+    release();
+    await settle();
+    expect(queries(fake)).toEqual(['', '', 'report']);
+    expect(rows(host)).toBe(1);
+    expect(host.innerHTML).toContain('Cloud report.pdf');
+    rig.route.dispose();
+  });
+});
+
 describe('D-205 #5b — the import page', () => {
   const rigWithImport = (over: Record<string, unknown> = {}) =>
     mountRoute({
@@ -7323,32 +7436,10 @@ describe('Data → Search never reaches the cloud on its own', () => {
   });
 });
 
-describe('D-267 — Today is the landing, and it can start you off', () => {
-  it('⛔ dispatches the Today capture to the SHARED opener, not a fourth form', async () => {
-    const openCreateOverlay = vi.fn();
-    const rig = mountRoute({ initialTab: 'today', openCreateOverlay });
-    await rig.route.whenLoaded();
-    expect(rig.route.activeTab()).toBe('today');
-
-    emitClick(rig.root.children[0]!, 'today-create');
-    expect(openCreateOverlay).toHaveBeenCalledTimes(1);
-    // ⛔ AND IT DOES NOT OPEN A DIALOG OF ITS OWN. The Data route already has a
-    // work-entity dialog and a contact dialog; routing Today at either would
-    // make a capture from Today a different act from one made in chat or the
-    // drawer, with a different commit path to keep honest.
-    expect(rig.route.workEntityState().dialog).toBeNull();
-    rig.route.dispose();
-  });
-
-  it('stays inert when no host wired an opener', async () => {
-    const rig = mountRoute({ initialTab: 'today' });
-    await rig.route.whenLoaded();
-    // The markup carries no button at all (asserted in today-view.test.ts), and
-    // a stray dispatch is a no-op rather than a throw.
-    expect(() => emitClick(rig.root.children[0]!, 'today-create')).not.toThrow();
-    rig.route.dispose();
-  });
-});
+// ⛔ D-267's `Today is the landing` suite is gone: Today is neither the landing
+// nor hosted here any more (D-290). Its two capture tests moved to
+// `apps/webclient/src/today/__tests__/today-route.test.ts`; the landing itself
+// is now pinned as `contact` in the deep-linking suite above.
 
 describe('D-267 — both ways into Search mount the same surface', () => {
   const searchRig = () => ({ collectionSearchAllCaller: vi.fn(async () => ({ groups: [] })) });
@@ -7374,7 +7465,10 @@ describe('D-267 — both ways into Search mount the same surface', () => {
 
   it('mounts search from an in-page tab selection', async () => {
     const { collectionSearchAllCaller } = searchRig();
-    const rig = mountRoute({ initialTab: 'today', collectionSearchAllCaller });
+    // ⚠ Any tab that is NOT search; `contact` since D-290 retired `'today'`,
+    // which this line used to name and which now resolves to `contact`
+    // silently — the test would have kept passing while saying something false.
+    const rig = mountRoute({ initialTab: 'contact', collectionSearchAllCaller });
     await rig.route.whenLoaded();
     await rig.route.selectTab('search');
     expect(rig.route.activeTab()).toBe('search');

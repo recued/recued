@@ -21,6 +21,7 @@ import { BULK_INSTALL_PACK_VERSION, BULK_PACK_INSTALL_PERMISSION } from '@recued
 import {
   clearBundledPackRosterCache,
   loadBundledPackManifests,
+  resolveBundledPackManifest,
 } from '../bundled-pack-source.js';
 
 let dir: string;
@@ -133,5 +134,48 @@ describe('bundled pack roster cache', () => {
     expect(explicitRoster.map((m) => m.slug)).toStrictEqual(['alpha']);
     // Re-reading through the explicit key stays the explicit answer.
     expect(loadBundledPackManifests(dir).map((m) => m.slug)).toStrictEqual(['alpha']);
+  });
+});
+
+/** D-310 — `resolveBundledPackManifest` reads a slug index built once per
+ *  unchanged tree. It walked and parsed until it found the slug, once per
+ *  lookup: an install's dependency walk makes one lookup per dependency, and
+ *  Procore's install preview (41 dependencies) took 33 s, past the webclient's
+ *  30 s wait, so the dialog listed none of the packs it brings in. The same
+ *  fingerprint as the roster decides when the index is stale. */
+describe('bundled pack slug lookup', () => {
+  it('finds a pack by its manifest slug, and says so when there is none', () => {
+    write('alpha');
+    writeFileSync(join(dir, 'named-otherwise.json'), manifest('beta'));
+    expect(resolveBundledPackManifest(dir, 'beta')?.slug).toBe('beta');
+    expect(resolveBundledPackManifest(dir, 'gamma')).toBeNull();
+  });
+
+  it('⛔ hands back a COPY — a caller that rewrites its manifest cannot change the next lookup', () => {
+    write('alpha', 1);
+    resolveBundledPackManifest(dir, 'alpha');                 // 1st: builds the index
+    const onAHit = resolveBundledPackManifest(dir, 'alpha')!; // 2nd: from the index
+    onAHit.version = 99;
+    onAHit.recipes.length = 0;
+    const next = resolveBundledPackManifest(dir, 'alpha')!;
+    expect(next.version).toBe(1);
+    expect(next.recipes).toHaveLength(1);
+  });
+
+  it('notices an ADDED and a REMOVED pack', () => {
+    write('alpha');
+    expect(resolveBundledPackManifest(dir, 'beta')).toBeNull();
+    write('beta');
+    expect(resolveBundledPackManifest(dir, 'beta')?.slug).toBe('beta');
+    rmSync(join(dir, 'beta.json'));
+    expect(resolveBundledPackManifest(dir, 'beta')).toBeNull();
+  });
+
+  it('notices an EDIT that preserves the file length, via mtime', () => {
+    write('alpha', 1);
+    expect(resolveBundledPackManifest(dir, 'alpha')?.version).toBe(1);
+    write('alpha', 9);
+    touchAhead('alpha', 5);
+    expect(resolveBundledPackManifest(dir, 'alpha')?.version).toBe(9);
   });
 });

@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import { runStep } from '../step-runner.js';
 import type { ExecutionContext, IngredientExecutor } from '../types.js';
-import { ERR } from '@recued/contracts';
+import { ERR, RPC_CODES_LEFT_UNNAMED, RPC_REFUSAL_RECIPE_CODES } from '@recued/contracts';
 import type { NamespaceStores, RecipeDefinition, RecipeStep } from '@recued/contracts';
 
 const minimalRecipe: RecipeDefinition = {
@@ -67,8 +67,79 @@ describe('runStep — an adapter\'s typed code across the step seam', () => {
   // ── the guard's POSITIVE case is above; these are the cases it must REFUSE ──
 
   it('⛔ a code OUTSIDE RecipeErrorCode falls back — no arbitrary string escapes', async () => {
-    // `BAD_INPUT` is really thrown by adapters today and is NOT a union member.
-    const log = await runStep(ingredientStep, throwingCtx({ code: 'BAD_INPUT' }));
+    // (`BAD_INPUT` was the example here until it joined the union: the ratchet
+    // below is what keeps every code an adapter throws a member.)
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'NOT_A_RECIPE_ERROR_CODE' }));
+    expect(log.error!.code).toBe('NETWORK_ERROR');
+  });
+
+  it('⛔ a refused input is BAD_INPUT, not a network error', async () => {
+    const log = await runStep(
+      ingredientStep,
+      throwingCtx({ code: 'BAD_INPUT' }, 'notification-send: "slak" is not a channel'),
+    );
+    expect(log.error!.code).toBe('BAD_INPUT');
+    expect(log.error!.message).toBe('notification-send: "slak" is not a channel');
+  });
+
+  it('⛔ a server handler\'s rpc `bad_request` is the same refusal', async () => {
+    // What `handleNotificationSend` and 432 other handler sites throw.
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'bad_request', status: 400 }));
+    expect(log.error!.code).toBe('BAD_INPUT');
+  });
+
+  it.each(Object.entries(RPC_REFUSAL_RECIPE_CODES))(
+    '⛔ a server handler\'s rpc `%s` is %s, not a network error',
+    async (rpcCode, recipeCode) => {
+      // Thrown with no status: the table alone decides it.
+      const log = await runStep(ingredientStep, throwingCtx({ code: rpcCode }));
+      expect(log.error!.code).toBe(recipeCode);
+      // The code is a real vocabulary member: its severity comes from `ERR`.
+      expect(log.error!.severity).toBe(ERR[recipeCode]);
+    },
+  );
+
+  it.each([
+    [400, 'BAD_INPUT'],
+    [403, 'NOT_AUTHORIZED'],
+    [404, 'NOT_FOUND'],
+    [409, 'CONFLICT'],
+    [413, 'BAD_INPUT'],
+    [422, 'BAD_INPUT'],
+    [423, 'SERVER_LOCKED'],
+    [429, 'API_RATE_LIMITED'],
+    [500, 'SERVER_ERROR'],
+    [503, 'SERVER_ERROR'],
+    [507, 'STORAGE_PRESSURE'],
+  ])('⛔ an rpc code the table does not name is read by its status: %i is %s', async (status, recipeCode) => {
+    // `endpoint_already_revoked`, `file_blob_missing`, `archive_realm_mismatch`:
+    // most of the 144 server codes carry a status that already says it.
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'some_handler_refusal', status }));
+    expect(log.error!.code).toBe(recipeCode);
+  });
+
+  it('the table outranks the status where a specific code says it better', async () => {
+    // A disabled dish is 409, but running it again cannot help: the owner turned it off.
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'dish_disabled', status: 409 }));
+    expect(log.error!.code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('⛔ an rpc code with no status and no table entry still falls back', async () => {
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'some_handler_refusal' }));
+    expect(log.error!.code).toBe('NETWORK_ERROR');
+  });
+
+  it('⛔ a code left unnamed on purpose stays a network error, whatever its status', async () => {
+    for (const code of Object.keys(RPC_CODES_LEFT_UNNAMED)) {
+      // 409 would otherwise name it CONFLICT: the list, not the status, keeps it.
+      const log = await runStep(ingredientStep, throwingCtx({ code, status: 409 }));
+      expect(log.error!.code, code).toBe('NETWORK_ERROR');
+    }
+  });
+
+  it('⛔ a system error is not read by its status: only an rpc-shaped code is', async () => {
+    // `ECONNRESET`, `SQLITE_BUSY`: not a handler's refusal, whatever else it carries.
+    const log = await runStep(ingredientStep, throwingCtx({ code: 'ECONNRESET', status: 404 }));
     expect(log.error!.code).toBe('NETWORK_ERROR');
   });
 

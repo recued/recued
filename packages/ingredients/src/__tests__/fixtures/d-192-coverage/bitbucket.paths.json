@@ -1,21 +1,12 @@
 {
   "_extract": {
-    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); Swagger 2.0, 193 paths; URL is unversioned (drift risk - re-pin at publish)",
+    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); Swagger 2.0, 170 paths; URL is unversioned (drift risk - re-pin at publish). The extract holds only paths the pinned document ACTUALLY declares: /workspaces and the two issue-tracker paths were dropped on the 2026-09-25 re-pin because Bitbucket no longer publishes them in swagger.json (nor in its OpenAPI 3 swagger.v3.json \u2014 0 paths matching \"issue\" in either). The four ops that need them carry `openapi_absent` with Atlassian documentation as evidence, re-read and confirmed on 2026-09-25.",
     "url": "https://api.bitbucket.org/swagger.json",
-    "sha256": "7e9be973015d29fbfcc05bddf1133f69622428ba54293b98d9c06e55df463a20",
-    "fetched_at": "2026-08-03"
+    "sha256": "9192ff8001bf666b00d00adaf3b93f151701e29ce527cb33adf2c5bb00096e6f",
+    "fetched_at": "2026-09-25"
   },
   "paths": {
-    "/workspaces": {
-      "get": {}
-    },
     "/repositories/{workspace}": {
-      "get": {}
-    },
-    "/repositories/{workspace}/{repo_slug}/issues": {
-      "get": {}
-    },
-    "/repositories/{workspace}/{repo_slug}/issues/{issue_id}": {
       "get": {}
     }
   }

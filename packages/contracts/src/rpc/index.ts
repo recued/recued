@@ -75,6 +75,18 @@ export type { HandlerSlice, AnyHandlerSlice, ComposedHandlers } from './compose.
 export { createPendingMap } from './pending-map.js';
 export type { PendingEntry, PendingMap } from './pending-map.js';
 
+export {
+  collectListPages,
+  LIST_PAGE_DEFAULT_LIMIT,
+  LIST_PAGE_MAX_LIMIT,
+} from './list-page.js';
+export type {
+  CollectListPagesOptions,
+  ListPage,
+  ListPageFields,
+  ListPageRequest,
+} from './list-page.js';
+
 // D-120 Phase 7 — unified memory export contracts (per-recipe, local-full,
 // server-full). The wire types + helper constants both extension and
 // server share when implementing the unified export dialog.

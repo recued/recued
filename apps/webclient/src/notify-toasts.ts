@@ -112,6 +112,17 @@ const DEFAULT_MAX_VISIBLE = 4;
 
 const safeNotifyLink = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
+  // ⛔ AN ALLOWLIST, NOT A ROUTER. A server supplies this and the client renders
+  // it as a clickable href, so anything not matched here is DROPPED — the toast
+  // still shows, silently without its "Open" link. That is why both spellings
+  // are listed rather than the canonical one only.
+  //
+  // D-291 moved the canonical saved-view address to `#views/<id>`; the
+  // `#data/view/<id>` form stays because notifications ALREADY DELIVERED carry
+  // it, in inboxes and OS notification centres no server can reach. Dropping it
+  // would not break the link — the shell's parser still re-points it — it would
+  // stop the link being rendered at all.
+  if (/^#views\/view_[a-f0-9-]{36}$/.test(value)) return value;
   if (/^#data\/view\/view_[a-f0-9-]{36}$/.test(value)) return value;
   try {
     const url = new URL(value);

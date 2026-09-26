@@ -32,6 +32,10 @@ import type { MetaFieldType } from './entity-schema.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
 import type { AcctAlias, CrmAlias, DateGranularity, FieldDerivation } from './connection-vendors.js';
 import type { WorkEntitySourceDeclaration } from './work-entity-sources.js';
+import {
+  SAVED_DATA_VIEW_NAME_LIMIT, parseSavedDataViewDefinition,
+  type SavedDataViewDefinition,
+} from './saved-data-views.js';
 // D-220 Slice B — pack-shipped intake templates ride `contents[]` by value and
 // are validated in full (ref grammar + provenance + body + safety matrix)
 // wherever the manifest is validated.
@@ -444,10 +448,12 @@ export type PackContentKind =
   | 'recipe' | 'ingredient' | 'operation_group' | 'channel_binding' | 'policy'
   | 'composition'
   // D-220 Slice B — a pack-shipped `intake_form` template (by value).
-  | 'reception_template';
+  | 'reception_template'
+  // D-289 — a pack-shipped saved Data view (by value).
+  | 'saved_view';
 export const PACK_CONTENT_KINDS: readonly PackContentKind[] = [
   'recipe', 'ingredient', 'operation_group', 'channel_binding', 'policy',
-  'composition', 'reception_template',
+  'composition', 'reception_template', 'saved_view',
 ];
 
 /** Role an ingredient content ref plays in the pack (spec § contents). */
@@ -580,6 +586,68 @@ export const isInstallGrantSelection = (v: unknown): v is InstallGrantSelection 
     (v as { scope?: unknown }).scope !== undefined
     && (v as { audience?: unknown }).audience !== undefined
   );
+
+/** D-310 — the Access choice for one pack an install brings in with it
+ *  (`packs.install` `dependency_install_scopes`). The pack is named by its
+ *  authored slug, as its manifest's `dependencies[]` entry names it. */
+export interface PackDependencyInstallScope {
+  pack_slug: string;
+  install_scope: InstallGrantSelection;
+}
+
+/** D-310 — one entry a pack's install Access choice grants: a recipe tool
+ *  (`<publisher>/<recipe>`) at the risk of what it reaches, or an operation of a
+ *  by-value composition that runs through a connection. A `cli` operation is not
+ *  one: it is granted per agreement after install (D-182 §7.2). */
+export interface InstallGrantableOp {
+  readonly id: string;
+  readonly risk: OperationRiskTier;
+}
+
+/** D-310 — what a pack's install Access choice grants.
+ *
+ *  ⛔ ONE DERIVATION for a pack's own install dialog and for the packs an install
+ *  brings in with it (`packs.install_preview` `dependency_packs`), so a bundled
+ *  pack is offered exactly the tiers its own dialog would offer.
+ *
+ *  `recipeRisk` is the per-recipe risk `packs.install_preview` resolved, keyed by
+ *  recipe slug. A recipe it does not name is `read`, which is what shipped before
+ *  D-247 and is only safe because the seed then lands it closed. An operation
+ *  whose ingredient is missing from the composition counts as connection-backed:
+ *  a malformed composition shows the choice rather than skip it. */
+export const installGrantableOps = (
+  manifest: BulkPackManifest,
+  recipeRisk?: ReadonlyMap<string, OperationRiskTier>,
+): InstallGrantableOp[] => {
+  const ops: InstallGrantableOp[] = normalizeBulkPackInstallPlan(manifest).recipes.map((recipe) => ({
+    id: `${manifest.publisher}/${recipe.slug}`,
+    risk: recipeRisk?.get(recipe.slug) ?? 'read',
+  }));
+  for (const content of manifest.contents ?? []) {
+    if (content.type !== 'composition') continue;
+    const kindBySlug = new Map<string, string>(
+      content.composition.ingredients.map((ingredient) => [ingredient.slug, ingredient.kind]),
+    );
+    for (const op of content.composition.operations) {
+      const kind = kindBySlug.get(op.ingredient);
+      if (kind === undefined || kind !== 'cli') ops.push({ id: op.op, risk: op.risk });
+    }
+  }
+  return ops;
+};
+
+/** D-310 — the Access tiers offered for these entries, in ceiling order: `read`
+ *  always (the safe floor and the default), `write` when one is write, `all` when
+ *  one is admin or destructive. Empty when there is nothing to grant. */
+export const installAccessOptions = (
+  ops: readonly InstallGrantableOp[],
+): InstallAccessTier[] => {
+  if (ops.length === 0) return [];
+  const options: InstallAccessTier[] = ['read'];
+  if (ops.some((op) => op.risk === 'write')) options.push('write');
+  if (ops.some((op) => op.risk === 'admin' || op.risk === 'destructive')) options.push('all');
+  return options;
+};
 
 export interface PackChannelBindingContentRef {
   type: 'channel_binding';
@@ -802,6 +870,33 @@ export interface PackReceptionTemplateContentRef {
   template: PackIntakeFormTemplate;
 }
 
+/** D-289 — a saved Data view the pack ships, by value.
+ *
+ *  A view is SETTINGS, never rows or an executable query
+ *  (`saved-data-views.ts`), so shipping one grants no read the owner did not
+ *  already have: opening it runs a query they could have typed. That is why
+ *  nothing here constrains the definition to the shipping pack's own entities
+ *  — a cross-pack view is legible rather than privileged, and the install
+ *  dialog discloses every content ref regardless.
+ *
+ *  ⚠ Compatibility: a server older than this kind refuses the WHOLE manifest
+ *  (`pack_content_type_unknown`) — fail-closed and visible, the same shape
+ *  every earlier content kind shipped with. There is no deploy order on a
+ *  self-hosted product, so the old end must reject rather than accept-and-
+ *  ignore; a silently dropped view would be a pack that installs "fine" and
+ *  is missing a screen. */
+export interface PackSavedViewContentRef {
+  type: 'saved_view';
+  /** Display name, and half the view's stable identity — see
+   *  `packSavedViewId`. ⛔ RENAMING IT IN A LATER PACK VERSION MINTS A NEW
+   *  VIEW and retires the old one, taking the owner's hide/alert/review state
+   *  with it. That is the cost of a content-addressed identity and it is the
+   *  right one: the alternative is an author-chosen id nobody can see in the
+   *  UI, drifting silently from the name that IS the UI. */
+  name: string;
+  definition: SavedDataViewDefinition;
+}
+
 export type PackContentRef =
   | PackRecipeContentRef
   | PackIngredientContentRef
@@ -809,7 +904,8 @@ export type PackContentRef =
   | PackChannelBindingContentRef
   | PackPolicyContentRef
   | PackCompositionContentRef
-  | PackReceptionTemplateContentRef;
+  | PackReceptionTemplateContentRef
+  | PackSavedViewContentRef;
 
 export type PackDependencyKind = 'ingredient' | 'pack';
 export const PACK_DEPENDENCY_KINDS: readonly PackDependencyKind[] = ['ingredient', 'pack'];
@@ -1035,6 +1131,29 @@ export interface PackListEntry {
    * this incoming pack version. Present only for an update and only when at
    * least one changed/removed overridden operation needs review. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** What the update does to EVERY operation of the pack — removed, changed,
+   *  added, with the owner's rule where they set one. Present only for an
+   *  update whose installed operations the server could read. */
+  operation_diff?: import('./owner-operation-override.js').PackOperationUpdateDiff;
+  /** The Access tier the pack holds NOW, read back from its granted operation
+   *  groups — where an update's Access choice STARTS. An update replaces the
+   *  pack's grants, and starting at the fresh-install default ("Read only")
+   *  quietly took a "Read + write" pack's writes away. Present only for an
+   *  update where it can be told: the installed catalogs declare grouped
+   *  operations and at least their read groups are granted (D-293). */
+  current_access?: InstallAccessTier;
+  /** Who may use the pack NOW, read back from its install fan-out rows — where
+   *  an update's "Who may use it" choice STARTS (D-294). An update replaces the
+   *  pack's share, and starting at "only you" withdrew it from every customer
+   *  and agreement it had. Categories are ticked only when every live agreement
+   *  of that kind has it; anyone else comes back one by one in `contract_ids`.
+   *  Present only for an offered update. */
+  current_audience?: InstallAudienceSelection;
+  /** The account the pack is bound to NOW — where an update's Connect choice
+   *  STARTS (D-294). The dialog proposed the first matching account by name, so
+   *  an owner with two accounts of one vendor was silently re-bound to the
+   *  other. Present only for an offered update of a pack bound to exactly one. */
+  current_connection?: string;
   /** D-221 — exact live Records transition rendered before an update. */
   records_review?: import('./records.js').RecordsPackUpdateReview;
   /** Review anchor for a bundled update. For Records this binds the manifest,
@@ -1201,6 +1320,14 @@ export interface PacksResolveResult {
   /** D-211 Slice 5 — same pre-update review projection as `PackListEntry`, for
    * marketplace manifests resolved by slug before install acceptance. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** Same whole-pack operation diff as `PackListEntry.operation_diff`. */
+  operation_diff?: import('./owner-operation-override.js').PackOperationUpdateDiff;
+  /** Same as `PackListEntry.current_access`. */
+  current_access?: InstallAccessTier;
+  /** Same as `PackListEntry.current_audience`. */
+  current_audience?: InstallAudienceSelection;
+  /** Same as `PackListEntry.current_connection`. */
+  current_connection?: string;
   /** D-221 — live Records transition facts bound into manifest_review_hash. */
   records_review?: import('./records.js').RecordsPackUpdateReview;
   /** Present iff `manifest` is null.
@@ -1436,6 +1563,7 @@ const validatePackRecipeRef = (
 const validatePackContentRef = (
   entry: unknown, path: string, recipeSeen: Set<string>, add: AddPackIssue,
   owner?: PackIntakeFormTemplateOwner, templateRefSeen: Set<string> = new Set(),
+  savedViewNameSeen: Set<string> = new Set(),
 ): void => {
   if (entry == null || typeof entry !== 'object' || Array.isArray(entry)) {
     add('error', 'pack_content_entry_shape', path, 'content entry must be an object');
@@ -1549,6 +1677,36 @@ const validatePackContentRef = (
         }
         templateRefSeen.add(ref);
       }
+      break;
+    }
+    case 'saved_view': {
+      // D-289 — validated IN FULL at authoring, so a view that the install
+      // would refuse fails at publish instead. `parseSavedDataViewDefinition`
+      // is the same STRICT decoder the rpc uses, and strictness is the point:
+      // its own header records that lenient decoding is how "a future/invalid
+      // filter quietly becomes All" — a pack shipping a view that silently
+      // widened to everything is the version of that bug with an author's name
+      // on it.
+      if (typeof c.name !== 'string' || c.name.trim().length === 0
+        || c.name.length > SAVED_DATA_VIEW_NAME_LIMIT) {
+        add('error', 'pack_content_saved_view_name', `${path}.name`,
+          `saved_view name must be 1–${SAVED_DATA_VIEW_NAME_LIMIT} characters`);
+        break;
+      }
+      if (parseSavedDataViewDefinition(c.definition) === null) {
+        add('error', 'pack_content_saved_view_definition', `${path}.definition`,
+          'saved_view definition is not a valid saved Data view');
+        break;
+      }
+      // ⛔ NAME IS IDENTITY (`packSavedViewId`), so a duplicate is not a
+      // cosmetic clash — the second entry would resolve to the FIRST's row and
+      // silently win or lose depending on iteration order.
+      const key = c.name.trim();
+      if (savedViewNameSeen.has(key)) {
+        add('error', 'pack_content_saved_view_duplicate', `${path}.name`,
+          `saved_view "${key}" is declared more than once`);
+      }
+      savedViewNameSeen.add(key);
       break;
     }
   }
@@ -1768,6 +1926,7 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
       } else {
         const recipeSeen = new Set<string>();
         const templateRefSeen = new Set<string>();
+        const savedViewNameSeen = new Set<string>();
         // D-220 Slice B — a template's ref must name THIS manifest. Only a
         // manifest whose identity fields are strings can be the owner; a
         // manifest missing them already fails its own field checks above.
@@ -1776,7 +1935,8 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
             ? { publisher: obj.publisher, slug: obj.slug }
             : undefined;
         obj.contents.forEach((entry: unknown, idx: number) =>
-          validatePackContentRef(entry, `contents[${idx}]`, recipeSeen, add, owner, templateRefSeen));
+          validatePackContentRef(entry, `contents[${idx}]`, recipeSeen, add, owner, templateRefSeen,
+            savedViewNameSeen));
       }
     }
     // At least one installable entry — recipes[] or contents[] non-empty.

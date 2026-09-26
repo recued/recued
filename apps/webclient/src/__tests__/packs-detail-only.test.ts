@@ -17,6 +17,7 @@ import {
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_PENDING_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_DIALOG_OPERATION_DIFF_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_RESOLVE_ERROR_ATTR,
@@ -582,6 +583,52 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await tick();
     expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  it('a marketplace update carries the whole operation diff and starts at the pack\'s current Access', async () => {
+    /** The detail-only path projects the resolve result itself
+     *  (`projectAddedManifest`) — a field it does not copy never reaches the
+     *  dialog, whatever the server sent. */
+    const withOps = manifest({
+      version: 3,
+      contents: [{
+        type: 'composition',
+        composition: {
+          schema_version: 1,
+          slug: 'acme',
+          ingredients: [{ slug: 'acme', kind: 'http' }],
+          operations: [
+            { op: 'deal.read', ingredient: 'acme', risk: 'read', approval: 'never', bind: {} },
+            { op: 'deal.create', ingredient: 'acme', risk: 'write', approval: 'ask', bind: {} },
+          ],
+        },
+      }],
+    });
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: withOps,
+      operation_diff: {
+        unchanged: 1,
+        items: [{
+          ingredient_id: 'acme', operation_id: 'acme.deal.create', change: 'added',
+          incoming: { risk: 'write', approval: 'ask' },
+        }],
+      },
+      current_access: 'write',
+      current_audience: { owner: false, all_customers: true, all_other_contracts: false },
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [{ slug: 'mkt-pack', version: 2 }] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+    m.clickInstall('mkt-pack');
+    await tick();
+    expect(text(findByAttr(host, PACKS_DIALOG_OPERATION_DIFF_ATTR)!)).toContain('acme.deal.create — Write · Ask');
+    expect(m.getDialogAccessTier()).toBe('write');
+    // D-294 — and "Who may use it" at who has the pack now.
+    expect(m.getDialogAudience()).toEqual({ owner: false, all_customers: true, all_other_contracts: false });
   });
 
   it('does not turn an older marketplace preview into a downgrade-shaped Update', async () => {

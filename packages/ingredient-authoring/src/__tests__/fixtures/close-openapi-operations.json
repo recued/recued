@@ -5,8 +5,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://api.close.com/api/openapi.json",
-      "sha256": "d4692c30ab5c8e4b7e73237a2c5b9cc1eafc7ed9e40eb2ef4c441fa19f51459d",
-      "bytes": 1242142,
+      "sha256": "0b8e90ff904caecd0cce4eb4340c31ede1959c25f317e6b3ae1f293a9ac6b8cd",
+      "bytes": 1371185,
       "openapi": "3.1.0",
       "info_version": "1.0.0",
       "server": "https://api.close.com/api/v1",
@@ -16,27 +16,27 @@
     "documentary_authority": {
       "index": {
         "url": "https://developer.close.com/llms.txt",
-        "sha256": "a32644dc86626be618c023dcb497abff44d8d54da7c8cf263827251486eeae4b",
-        "bytes": 59918,
-        "indexed_markdown_pages": 376
+        "sha256": "2c39749dad8f8320ea12a813205aa56d4d30ee756a56dad6329e6301c44de71a",
+        "bytes": 60263,
+        "indexed_markdown_pages": 378
       },
       "advanced_filtering": {
         "url": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26",
-        "bytes": 13429,
+        "sha256": "5dad896b9ff7859788733ff90ba8a3e9bc9e2b2becea480be6c20751a86f9f57",
+        "bytes": 13482,
         "method": "POST",
         "path": "/api/v1/data/search/",
         "reason": "Official callable route absent from the experimental OpenAPI; isolated in an unpinned dependency whose generator is pinned to this Markdown hash."
       },
       "pagination": {
         "url": "https://developer.close.com/api/overview/pagination.md",
-        "sha256": "9681efe9b0be5109fffc9ef9a68778ebe4d4c547dfade0827378929a5a5aa899",
-        "bytes": 2245
+        "sha256": "6784cdf42dc1e7bdc91d5553b4005f3199bef87a907f4c4c152ede51d74fd7eb",
+        "bytes": 2323
       },
       "events": {
         "url": "https://developer.close.com/api/resources/events/list.md",
-        "sha256": "0efccce81d216eea3554ae9f8f030bd7254cc55adbd9d4a9c9dad227b7c45e42",
-        "bytes": 13750,
+        "sha256": "e471abb79af962e45942c5d6f374a3eaafeee780bc38de50841fc951745b0865",
+        "bytes": 7066,
         "correction": "The endpoint documentation overrides the OpenAPI shared _skip parameter: Events uses _cursor and caps/defaults _limit at 50."
       },
       "exhaustive_endpoint_page_audit": {
@@ -50,48 +50,48 @@
         "prose_only_supplements": 1
       }
     },
-    "official_openapi_operation_count": 300,
+    "official_openapi_operation_count": 302,
     "documentary_supplement_count": 1,
-    "admitted_operation_count": 301,
+    "admitted_operation_count": 303,
     "excluded_operation_count": 0,
-    "unique_admitted_method_path_count": 301,
+    "unique_admitted_method_path_count": 303,
     "method_counts": {
-      "GET": 137,
-      "POST": 65,
+      "GET": 138,
+      "POST": 66,
       "PUT": 47,
       "DELETE": 52
     },
     "pack_operation_counts": {
       "close": 26,
-      "close-crm-activity": 86,
+      "close-crm-activity": 88,
       "close-communication-automation": 80,
       "close-data-customization": 82,
       "close-administration": 26,
       "close-advanced-filtering": 1
     },
     "pagination_counts": {
-      "offset": 44,
+      "offset": 45,
       "query_token": 2,
-      "none": 255
+      "none": 256
     },
     "risk_counts": {
       "admin": 66,
       "destructive": 56,
-      "read": 141,
-      "write": 38
+      "read": 142,
+      "write": 39
     },
     "approval_counts": {
       "always": 139,
-      "ask": 21,
-      "never": 141
+      "ask": 22,
+      "never": 142
     },
     "idempotency_counts": {
       "idempotent": 99,
-      "non_idempotent": 61,
-      "safe": 141
+      "non_idempotent": 62,
+      "safe": 142
     },
-    "raw_body_operation_count": 61,
-    "lossless_json_response_operation_count": 301,
+    "raw_body_operation_count": 74,
+    "lossless_json_response_operation_count": 303,
     "compatibility_operation_ids": [
       "lead.search",
       "lead.read",
@@ -860,6 +860,10 @@
       "put": {},
       "delete": {}
     },
+    "/lead/{id}/files/": {
+      "get": {},
+      "post": {}
+    },
     "/me/": {
       "get": {}
     },
@@ -1101,7 +1105,7 @@
     "/data/search/": {
       "post": {
         "source": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26"
+        "sha256": "5dad896b9ff7859788733ff90ba8a3e9bc9e2b2becea480be6c20751a86f9f57"
       }
     }
   },
@@ -6730,6 +6734,8 @@
         "data[]",
         "data[]._type",
         "data[].activity_at",
+        "data[].attachments",
+        "data[].attachments[]",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -6739,9 +6745,12 @@
         "data[].lead_id",
         "data[].note",
         "data[].note_html",
+        "data[].note_mentions",
+        "data[].note_mentions[]",
         "data[].organization_id",
         "data[].pinned",
         "data[].pinned_at",
+        "data[].source",
         "data[].title",
         "data[].updated_by",
         "data[].updated_by_name",
@@ -6899,13 +6908,21 @@
         "required": [
           "_type",
           "activity_at",
+          "attachments",
           "contact_id",
           "created_by",
           "date_created",
           "date_updated",
           "id",
           "lead_id",
+          "note",
+          "note_html",
+          "note_mentions",
           "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "title",
           "updated_by",
           "user_id",
           "users"
@@ -6983,13 +7000,31 @@
             "item_type": null,
             "item_format": null
           },
+          "note_mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "organization_id": {
             "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
+          "pinned": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -7030,6 +7065,24 @@
             "format": null,
             "item_type": "string",
             "item_format": null
+          },
+          "agent_action_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "agent_config_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
@@ -7052,8 +7105,12 @@
         "lead_id",
         "note",
         "note_html",
+        "note_mentions",
+        "note_mentions[]",
         "organization_id",
+        "pinned",
         "pinned_at",
+        "source",
         "title",
         "updated_by",
         "updated_by_name",
@@ -7233,13 +7290,21 @@
         "required": [
           "_type",
           "activity_at",
+          "attachments",
           "contact_id",
           "created_by",
           "date_created",
           "date_updated",
           "id",
           "lead_id",
+          "note",
+          "note_html",
+          "note_mentions",
           "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "title",
           "updated_by",
           "user_id",
           "users"
@@ -7317,6 +7382,12 @@
             "item_type": null,
             "item_format": null
           },
+          "note_mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "organization_id": {
             "type": "string",
             "format": null,
@@ -7330,13 +7401,19 @@
             "item_format": null
           },
           "pinned_at": {
-            "type": null,
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "title": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -7370,6 +7447,24 @@
             "format": null,
             "item_type": "string",
             "item_format": null
+          },
+          "agent_action_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "agent_config_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
@@ -7392,9 +7487,12 @@
         "lead_id",
         "note",
         "note_html",
+        "note_mentions",
+        "note_mentions[]",
         "organization_id",
         "pinned",
         "pinned_at",
+        "source",
         "title",
         "updated_by",
         "updated_by_name",
@@ -7588,13 +7686,21 @@
         "required": [
           "_type",
           "activity_at",
+          "attachments",
           "contact_id",
           "created_by",
           "date_created",
           "date_updated",
           "id",
           "lead_id",
+          "note",
+          "note_html",
+          "note_mentions",
           "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "title",
           "updated_by",
           "user_id",
           "users"
@@ -7610,6 +7716,12 @@
             "type": "string",
             "format": "date-time",
             "item_type": null,
+            "item_format": null
+          },
+          "attachments": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           },
           "contact_id": {
@@ -7666,6 +7778,12 @@
             "item_type": null,
             "item_format": null
           },
+          "note_mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "organization_id": {
             "type": "string",
             "format": null,
@@ -7679,6 +7797,12 @@
             "item_format": null
           },
           "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -7719,12 +7843,32 @@
             "format": null,
             "item_type": "string",
             "item_format": null
+          },
+          "agent_action_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "agent_config_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
         "activity_at",
+        "attachments",
+        "attachments[]",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -7734,9 +7878,12 @@
         "lead_id",
         "note",
         "note_html",
+        "note_mentions",
+        "note_mentions[]",
         "organization_id",
         "pinned",
         "pinned_at",
+        "source",
         "title",
         "updated_by",
         "updated_by_name",
@@ -7820,12 +7967,21 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
             "format": null,
             "item_type": "object",
+            "item_format": null
+          },
+          "has_more": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
             "item_format": null
           }
         }
@@ -7844,7 +8000,8 @@
         "data[].statuses[].id",
         "data[].statuses[].label",
         "data[].statuses[].type",
-        "data[].updated_by"
+        "data[].updated_by",
+        "has_more"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -7887,7 +8044,16 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "name",
+          "organization_id",
+          "statuses",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -7897,13 +8063,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -7993,7 +8159,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -8012,6 +8181,7 @@
       "response_example_paths": [
         "data",
         "data[]",
+        "data[].color",
         "data[].id",
         "data[].label",
         "data[].organization_id",
@@ -8058,7 +8228,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -15281,7 +15454,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -15301,6 +15477,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -15309,17 +15486,20 @@
         "data[].emails",
         "data[].emails[]",
         "data[].emails[]._type",
+        "data[].emails[].activity_at",
         "data[].emails[].attachments",
         "data[].emails[].attachments[]",
         "data[].emails[].bcc",
         "data[].emails[].bcc[]",
         "data[].emails[].body_preview",
+        "data[].emails[].bulk_email_action_id",
         "data[].emails[].cc",
         "data[].emails[].cc[]",
         "data[].emails[].contact_id",
         "data[].emails[].created_by",
         "data[].emails[].created_by_name",
         "data[].emails[].date_created",
+        "data[].emails[].date_scheduled",
         "data[].emails[].date_sent",
         "data[].emails[].date_updated",
         "data[].emails[].direction",
@@ -15347,17 +15527,22 @@
         "data[].emails[].envelope.to[]",
         "data[].emails[].envelope.to[].email",
         "data[].emails[].envelope.to[].name",
+        "data[].emails[].followup_sequence_add_cc_bcc",
+        "data[].emails[].followup_sequence_delay",
+        "data[].emails[].has_reply",
         "data[].emails[].id",
         "data[].emails[].in_reply_to_id",
         "data[].emails[].lead_id",
         "data[].emails[].message_ids",
         "data[].emails[].message_ids[]",
+        "data[].emails[].need_smtp_credentials",
         "data[].emails[].opens",
         "data[].emails[].opens[]",
         "data[].emails[].opens_summary",
         "data[].emails[].organization_id",
         "data[].emails[].references",
         "data[].emails[].references[]",
+        "data[].emails[].send_as_id",
         "data[].emails[].send_attempts",
         "data[].emails[].send_attempts[]",
         "data[].emails[].sender",
@@ -15543,7 +15728,22 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "latest_normalized_subject",
+          "lead_id",
+          "n_emails",
+          "organization_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -15551,33 +15751,39 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "created_by": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "created_by_name": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -15624,13 +15830,13 @@
             "item_format": null
           },
           "updated_by": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "updated_by_name": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -15652,11 +15858,36 @@
             "format": null,
             "item_type": "string",
             "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "importance": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "latest_emails": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -15665,17 +15896,20 @@
         "emails",
         "emails[]",
         "emails[]._type",
+        "emails[].activity_at",
         "emails[].attachments",
         "emails[].attachments[]",
         "emails[].bcc",
         "emails[].bcc[]",
         "emails[].body_preview",
+        "emails[].bulk_email_action_id",
         "emails[].cc",
         "emails[].cc[]",
         "emails[].contact_id",
         "emails[].created_by",
         "emails[].created_by_name",
         "emails[].date_created",
+        "emails[].date_scheduled",
         "emails[].date_sent",
         "emails[].date_updated",
         "emails[].direction",
@@ -15703,17 +15937,22 @@
         "emails[].envelope.to[]",
         "emails[].envelope.to[].email",
         "emails[].envelope.to[].name",
+        "emails[].followup_sequence_add_cc_bcc",
+        "emails[].followup_sequence_delay",
+        "emails[].has_reply",
         "emails[].id",
         "emails[].in_reply_to_id",
         "emails[].lead_id",
         "emails[].message_ids",
         "emails[].message_ids[]",
+        "emails[].need_smtp_credentials",
         "emails[].opens",
         "emails[].opens[]",
         "emails[].opens_summary",
         "emails[].organization_id",
         "emails[].references",
         "emails[].references[]",
+        "emails[].send_as_id",
         "emails[].send_attempts",
         "emails[].send_attempts[]",
         "emails[].sender",
@@ -17196,7 +17435,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -17216,20 +17458,27 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
+        "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
         "data[].date_created",
         "data[].date_updated",
+        "data[].destination_display_name",
         "data[].destination_lead_id",
         "data[].error_message",
         "data[].id",
         "data[].lead_id",
         "data[].merge_status",
         "data[].organization_id",
+        "data[].source_display_name",
         "data[].source_lead_id",
         "data[].updated_by",
         "data[].updated_by_name",
         "data[].user_id",
+        "data[].user_name",
+        "data[].users",
+        "data[].users[]",
         "has_more"
       ],
       "response_json": {
@@ -17381,7 +17630,26 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "destination_display_name",
+          "destination_lead_id",
+          "error_message",
+          "id",
+          "lead_id",
+          "merge_status",
+          "organization_id",
+          "source_display_name",
+          "source_lead_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -17389,13 +17657,43 @@
             "item_type": null,
             "item_format": null
           },
-          "date_created": {
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "contact_id": {
             "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
+          "created_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "created_by_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "destination_display_name": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -17408,7 +17706,7 @@
             "item_format": null
           },
           "error_message": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -17437,7 +17735,25 @@
             "item_type": null,
             "item_format": null
           },
+          "source_display_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "source_lead_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by_name": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -17448,21 +17764,44 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "user_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
+        "contact_id",
+        "created_by",
+        "created_by_name",
         "date_created",
         "date_updated",
+        "destination_display_name",
         "destination_lead_id",
         "error_message",
         "id",
         "lead_id",
         "merge_status",
         "organization_id",
+        "source_display_name",
         "source_lead_id",
-        "user_id"
+        "updated_by",
+        "updated_by_name",
+        "user_id",
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -17629,7 +17968,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -17649,6 +17991,10 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
+        "data[].actual_duration",
+        "data[].attached_call_ids",
+        "data[].attached_call_ids[]",
         "data[].attendees",
         "data[].attendees[]",
         "data[].attendees[].contact_id",
@@ -17658,8 +18004,16 @@
         "data[].attendees[].status",
         "data[].attendees[].user_id",
         "data[].calendar_event_link",
+        "data[].calendar_event_uids",
+        "data[].calendar_event_uids[]",
+        "data[].conference_links",
+        "data[].conference_links[]",
+        "data[].conference_links[].type",
+        "data[].conference_links[].url",
         "data[].connected_account_id",
         "data[].contact_id",
+        "data[].conversation_type_id",
+        "data[].conversation_type_reason",
         "data[].created_by",
         "data[].created_by_name",
         "data[].date_created",
@@ -17667,20 +18021,38 @@
         "data[].duration",
         "data[].ends_at",
         "data[].id",
+        "data[].integrations",
+        "data[].integrations[]",
         "data[].is_recurring",
         "data[].lead_id",
         "data[].location",
         "data[].note",
+        "data[].notetaker_id",
         "data[].organization_id",
+        "data[].outcome_autofill_confidence",
+        "data[].outcome_autofill_reasoning",
         "data[].outcome_id",
+        "data[].outcome_reason",
+        "data[].playbook_id",
+        "data[].playbook_reason",
+        "data[].provider_calendar_event_id",
+        "data[].provider_calendar_ids",
+        "data[].provider_calendar_ids[]",
+        "data[].provider_calendar_type",
         "data[].source",
         "data[].starts_at",
         "data[].status",
+        "data[].summary",
         "data[].title",
         "data[].updated_by",
         "data[].updated_by_name",
         "data[].user_id",
         "data[].user_name",
+        "data[].user_note",
+        "data[].user_note_date_updated",
+        "data[].user_note_html",
+        "data[].user_note_mentions",
+        "data[].user_note_mentions[]",
         "data[].users",
         "data[].users[]",
         "has_more"
@@ -17834,12 +18206,77 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "actual_duration",
+          "attached_call_ids",
+          "attendees",
+          "calendar_event_link",
+          "calendar_event_uids",
+          "conference_links",
+          "connected_account_id",
+          "contact_id",
+          "conversation_type_id",
+          "conversation_type_reason",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "duration",
+          "ends_at",
+          "id",
+          "integrations",
+          "is_recurring",
+          "lead_id",
+          "location",
+          "note",
+          "notetaker_id",
+          "organization_id",
+          "outcome_autofill_confidence",
+          "outcome_autofill_reasoning",
+          "outcome_id",
+          "outcome_reason",
+          "playbook_id",
+          "playbook_reason",
+          "provider_calendar_event_id",
+          "provider_calendar_ids",
+          "provider_calendar_type",
+          "source",
+          "starts_at",
+          "status",
+          "summary",
+          "title",
+          "updated_by",
+          "user_id",
+          "user_note",
+          "user_note_date_updated",
+          "user_note_html",
+          "user_note_mentions",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "actual_duration": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "attached_call_ids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
             "item_format": null
           },
           "attendees": {
@@ -17854,6 +18291,18 @@
             "item_type": null,
             "item_format": null
           },
+          "calendar_event_uids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "conference_links": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
           "connected_account_id": {
             "type": "string",
             "format": null,
@@ -17861,7 +18310,19 @@
             "item_format": null
           },
           "contact_id": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "conversation_type_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "conversation_type_reason": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -17880,13 +18341,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -17898,7 +18359,7 @@
           },
           "ends_at": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -17906,6 +18367,12 @@
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "integrations": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           },
           "is_recurring": {
@@ -17932,14 +18399,68 @@
             "item_type": null,
             "item_format": null
           },
+          "notetaker_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "organization_id": {
             "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
+          "outcome_autofill_confidence": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "outcome_autofill_reasoning": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "outcome_id": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "outcome_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "playbook_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "playbook_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "provider_calendar_event_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "provider_calendar_ids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "provider_calendar_type": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -17952,12 +18473,18 @@
           },
           "starts_at": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "status": {
             "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "summary": {
+            "type": "object",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -17992,16 +18519,62 @@
             "item_type": null,
             "item_format": null
           },
+          "user_note": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_note_date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "user_note_html": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_note_mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "users": {
             "type": "array",
             "format": null,
             "item_type": "string",
+            "item_format": null
+          },
+          "_paused_subscriptions": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "transcripts": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
+        "actual_duration",
+        "attached_call_ids",
+        "attached_call_ids[]",
         "attendees",
         "attendees[]",
         "attendees[].contact_id",
@@ -18011,8 +18584,16 @@
         "attendees[].status",
         "attendees[].user_id",
         "calendar_event_link",
+        "calendar_event_uids",
+        "calendar_event_uids[]",
+        "conference_links",
+        "conference_links[]",
+        "conference_links[].type",
+        "conference_links[].url",
         "connected_account_id",
         "contact_id",
+        "conversation_type_id",
+        "conversation_type_reason",
         "created_by",
         "created_by_name",
         "date_created",
@@ -18020,20 +18601,38 @@
         "duration",
         "ends_at",
         "id",
+        "integrations",
+        "integrations[]",
         "is_recurring",
         "lead_id",
         "location",
         "note",
+        "notetaker_id",
         "organization_id",
+        "outcome_autofill_confidence",
+        "outcome_autofill_reasoning",
         "outcome_id",
+        "outcome_reason",
+        "playbook_id",
+        "playbook_reason",
+        "provider_calendar_event_id",
+        "provider_calendar_ids",
+        "provider_calendar_ids[]",
+        "provider_calendar_type",
         "source",
         "starts_at",
         "status",
+        "summary",
         "title",
         "updated_by",
         "updated_by_name",
         "user_id",
         "user_name",
+        "user_note",
+        "user_note_date_updated",
+        "user_note_html",
+        "user_note_mentions",
+        "user_note_mentions[]",
         "users",
         "users[]"
       ],
@@ -18118,12 +18717,77 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "actual_duration",
+          "attached_call_ids",
+          "attendees",
+          "calendar_event_link",
+          "calendar_event_uids",
+          "conference_links",
+          "connected_account_id",
+          "contact_id",
+          "conversation_type_id",
+          "conversation_type_reason",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "duration",
+          "ends_at",
+          "id",
+          "integrations",
+          "is_recurring",
+          "lead_id",
+          "location",
+          "note",
+          "notetaker_id",
+          "organization_id",
+          "outcome_autofill_confidence",
+          "outcome_autofill_reasoning",
+          "outcome_id",
+          "outcome_reason",
+          "playbook_id",
+          "playbook_reason",
+          "provider_calendar_event_id",
+          "provider_calendar_ids",
+          "provider_calendar_type",
+          "source",
+          "starts_at",
+          "status",
+          "summary",
+          "title",
+          "updated_by",
+          "user_id",
+          "user_note",
+          "user_note_date_updated",
+          "user_note_html",
+          "user_note_mentions",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "actual_duration": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "attached_call_ids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
             "item_format": null
           },
           "attendees": {
@@ -18138,6 +18802,18 @@
             "item_type": null,
             "item_format": null
           },
+          "calendar_event_uids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "conference_links": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
           "connected_account_id": {
             "type": "string",
             "format": null,
@@ -18145,7 +18821,19 @@
             "item_format": null
           },
           "contact_id": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "conversation_type_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "conversation_type_reason": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -18164,13 +18852,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -18182,7 +18870,7 @@
           },
           "ends_at": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -18190,6 +18878,12 @@
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "integrations": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           },
           "is_recurring": {
@@ -18228,7 +18922,55 @@
             "item_type": null,
             "item_format": null
           },
+          "outcome_autofill_confidence": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "outcome_autofill_reasoning": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "outcome_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "outcome_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "playbook_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "playbook_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "provider_calendar_event_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "provider_calendar_ids": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "provider_calendar_type": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -18242,12 +18984,18 @@
           },
           "starts_at": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "status": {
             "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "summary": {
+            "type": "object",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -18282,10 +19030,28 @@
             "item_type": null,
             "item_format": null
           },
+          "user_note": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_note_date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "user_note_html": {
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "user_note_mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
             "item_format": null
           },
           "users": {
@@ -18293,11 +19059,33 @@
             "format": null,
             "item_type": "string",
             "item_format": null
+          },
+          "_paused_subscriptions": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "transcripts": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
+        "actual_duration",
+        "attached_call_ids",
+        "attached_call_ids[]",
         "attendees",
         "attendees[]",
         "attendees[].contact_id",
@@ -18307,8 +19095,16 @@
         "attendees[].status",
         "attendees[].user_id",
         "calendar_event_link",
+        "calendar_event_uids",
+        "calendar_event_uids[]",
+        "conference_links",
+        "conference_links[]",
+        "conference_links[].type",
+        "conference_links[].url",
         "connected_account_id",
         "contact_id",
+        "conversation_type_id",
+        "conversation_type_reason",
         "created_by",
         "created_by_name",
         "date_created",
@@ -18316,22 +19112,38 @@
         "duration",
         "ends_at",
         "id",
+        "integrations",
+        "integrations[]",
         "is_recurring",
         "lead_id",
         "location",
         "note",
         "notetaker_id",
         "organization_id",
+        "outcome_autofill_confidence",
+        "outcome_autofill_reasoning",
         "outcome_id",
+        "outcome_reason",
+        "playbook_id",
+        "playbook_reason",
+        "provider_calendar_event_id",
+        "provider_calendar_ids",
+        "provider_calendar_ids[]",
+        "provider_calendar_type",
         "source",
         "starts_at",
         "status",
+        "summary",
         "title",
         "updated_by",
         "updated_by_name",
         "user_id",
         "user_name",
+        "user_note",
+        "user_note_date_updated",
         "user_note_html",
+        "user_note_mentions",
+        "user_note_mentions[]",
         "users",
         "users[]"
       ],
@@ -18746,6 +19558,8 @@
         "data[].attachments[].size",
         "data[].attachments[].thumbnail_url",
         "data[].attachments[].url",
+        "data[].caller_id_mode",
+        "data[].caller_id_reason",
         "data[].contact_id",
         "data[].cost",
         "data[].created_by",
@@ -19012,6 +19826,15 @@
               "item_type": "object",
               "item_format": null
             },
+            "caller_id_mode": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "created_by": {
               "type": [
                 "null",
@@ -19072,6 +19895,8 @@
         "required": [
           "_type",
           "activity_at",
+          "caller_id_mode",
+          "caller_id_reason",
           "contact_id",
           "cost",
           "created_by",
@@ -19108,6 +19933,18 @@
           "activity_at": {
             "type": "string",
             "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "caller_id_mode": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "caller_id_reason": {
+            "type": "string",
+            "format": null,
             "item_type": null,
             "item_format": null
           },
@@ -19314,6 +20151,8 @@
       "response_example_paths": [
         "_type",
         "activity_at",
+        "caller_id_mode",
+        "caller_id_reason",
         "contact_id",
         "cost",
         "created_by",
@@ -19362,6 +20201,11 @@
         },
         {
           "key": "body.attachments",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "body.caller_id_mode",
           "type": "string",
           "affects_target": true
         },
@@ -19477,6 +20321,8 @@
         "required": [
           "_type",
           "activity_at",
+          "caller_id_mode",
+          "caller_id_reason",
           "contact_id",
           "cost",
           "created_by",
@@ -19520,6 +20366,18 @@
             "type": "array",
             "format": null,
             "item_type": "object",
+            "item_format": null
+          },
+          "caller_id_mode": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "caller_id_reason": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
             "item_format": null
           },
           "contact_id": {
@@ -19733,6 +20591,8 @@
         "attachments[].size",
         "attachments[].thumbnail_url",
         "attachments[].url",
+        "caller_id_mode",
+        "caller_id_reason",
         "contact_id",
         "cost",
         "created_by",
@@ -19847,6 +20707,15 @@
               "item_type": "object",
               "item_format": null
             },
+            "caller_id_mode": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "contact_id": {
               "type": [
                 "null",
@@ -19922,6 +20791,8 @@
         "required": [
           "_type",
           "activity_at",
+          "caller_id_mode",
+          "caller_id_reason",
           "contact_id",
           "cost",
           "created_by",
@@ -19958,6 +20829,18 @@
           "activity_at": {
             "type": "string",
             "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "caller_id_mode": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "caller_id_reason": {
+            "type": "string",
+            "format": null,
             "item_type": null,
             "item_format": null
           },
@@ -20164,6 +21047,8 @@
       "response_example_paths": [
         "_type",
         "activity_at",
+        "caller_id_mode",
+        "caller_id_reason",
         "contact_id",
         "cost",
         "created_by",
@@ -20213,6 +21098,11 @@
         },
         {
           "key": "body.attachments",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "body.caller_id_mode",
           "type": "string",
           "affects_target": true
         },
@@ -20454,7 +21344,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -20474,6 +21367,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -20490,6 +21384,8 @@
         "data[].updated_by_name",
         "data[].user_id",
         "data[].user_name",
+        "data[].users",
+        "data[].users[]",
         "has_more"
       ],
       "response_json": {
@@ -20666,7 +21562,22 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "lead_id",
+          "new_status_id",
+          "old_status_id",
+          "organization_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -20674,8 +21585,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -20694,13 +21611,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -20769,11 +21686,24 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "_paused_subscriptions": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -20789,7 +21719,9 @@
         "updated_by",
         "updated_by_name",
         "user_id",
-        "user_name"
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -20846,7 +21778,22 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "lead_id",
+          "new_status_id",
+          "old_status_id",
+          "organization_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -20854,8 +21801,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -20874,13 +21827,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -20949,11 +21902,24 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "_paused_subscriptions": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -20969,7 +21935,9 @@
         "updated_by",
         "updated_by_name",
         "user_id",
-        "user_name"
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -21193,7 +22161,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -21213,6 +22184,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -21221,23 +22193,29 @@
         "data[].id",
         "data[].lead_id",
         "data[].new_pipeline_id",
+        "data[].new_pipeline_name",
         "data[].new_status_id",
         "data[].new_status_label",
         "data[].new_status_type",
         "data[].old_pipeline_id",
+        "data[].old_pipeline_name",
         "data[].old_status_id",
         "data[].old_status_label",
         "data[].old_status_type",
+        "data[].opportunity_confidence",
         "data[].opportunity_date_won",
         "data[].opportunity_id",
         "data[].opportunity_value",
         "data[].opportunity_value_currency",
         "data[].opportunity_value_formatted",
+        "data[].opportunity_value_period",
         "data[].organization_id",
         "data[].updated_by",
         "data[].updated_by_name",
         "data[].user_id",
         "data[].user_name",
+        "data[].users",
+        "data[].users[]",
         "has_more"
       ],
       "response_json": {
@@ -21425,7 +22403,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "lead_id",
+          "new_status_id",
+          "old_status_id",
+          "opportunity_id",
+          "organization_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -21433,8 +22427,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -21453,13 +22453,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -21470,6 +22470,18 @@
             "item_format": null
           },
           "lead_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "new_pipeline_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "new_pipeline_name": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -21493,6 +22505,18 @@
             "item_type": null,
             "item_format": null
           },
+          "old_pipeline_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "old_pipeline_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "old_status_id": {
             "type": "string",
             "format": null,
@@ -21511,9 +22535,15 @@
             "item_type": null,
             "item_format": null
           },
+          "opportunity_confidence": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "opportunity_date_won": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -21536,7 +22566,13 @@
             "item_format": null
           },
           "opportunity_value_formatted": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "opportunity_value_period": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -21570,11 +22606,18 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -21582,22 +22625,30 @@
         "date_updated",
         "id",
         "lead_id",
+        "new_pipeline_id",
+        "new_pipeline_name",
         "new_status_id",
         "new_status_label",
         "new_status_type",
+        "old_pipeline_id",
+        "old_pipeline_name",
         "old_status_id",
         "old_status_label",
         "old_status_type",
+        "opportunity_confidence",
         "opportunity_date_won",
         "opportunity_id",
         "opportunity_value",
         "opportunity_value_currency",
         "opportunity_value_formatted",
+        "opportunity_value_period",
         "organization_id",
         "updated_by",
         "updated_by_name",
         "user_id",
-        "user_name"
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -21654,7 +22705,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "lead_id",
+          "new_status_id",
+          "old_status_id",
+          "opportunity_id",
+          "organization_id",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -21662,8 +22729,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -21682,13 +22755,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -21699,6 +22772,18 @@
             "item_format": null
           },
           "lead_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "new_pipeline_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "new_pipeline_name": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -21722,6 +22807,18 @@
             "item_type": null,
             "item_format": null
           },
+          "old_pipeline_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "old_pipeline_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "old_status_id": {
             "type": "string",
             "format": null,
@@ -21740,9 +22837,15 @@
             "item_type": null,
             "item_format": null
           },
+          "opportunity_confidence": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "opportunity_date_won": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -21765,7 +22868,13 @@
             "item_format": null
           },
           "opportunity_value_formatted": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "opportunity_value_period": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -21799,11 +22908,18 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -21811,22 +22927,30 @@
         "date_updated",
         "id",
         "lead_id",
+        "new_pipeline_id",
+        "new_pipeline_name",
         "new_status_id",
         "new_status_label",
         "new_status_type",
+        "old_pipeline_id",
+        "old_pipeline_name",
         "old_status_id",
         "old_status_label",
         "old_status_type",
+        "opportunity_confidence",
         "opportunity_date_won",
         "opportunity_id",
         "opportunity_value",
         "opportunity_value_currency",
         "opportunity_value_formatted",
+        "opportunity_value_period",
         "organization_id",
         "updated_by",
         "updated_by_name",
         "user_id",
-        "user_name"
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -22916,7 +24040,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -23193,71 +24317,9 @@
           "affects_target": true
         },
         {
-          "key": "body.activity_at",
+          "key": "body_raw",
           "type": "string",
           "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.attachments",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.contact_id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.direction",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.external_whatsapp_message_id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.integration_link",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.lead_id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.local_phone",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.message_markdown",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.remote_phone",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.response_to_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.user_id",
-          "type": "string",
           "affects_target": true
         }
       ],
@@ -23676,7 +24738,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -23954,53 +25016,9 @@
           "affects_target": true
         },
         {
-          "key": "body.activity_at",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.attachments",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.contact_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.direction",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.integration_link",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.local_phone",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.message_markdown",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.remote_phone",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.response_to_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.user_id",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -25411,6 +26429,384 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "close-crm-activity.leads_files_list": {
+      "source": "openapi",
+      "pack": "close-crm-activity",
+      "ingredient": "close-crm-activity",
+      "op": "leads_files_list",
+      "operation_id": "leads_files_list",
+      "method": "GET",
+      "path": "/lead/{id}/files/",
+      "wire_path": "/api/v1/lead/{{id}}/files/",
+      "official_path": "/api/v1/lead/{id}/files/",
+      "tags": [
+        "leads"
+      ],
+      "summary": "List files attached to a lead",
+      "compatibility": false,
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "_limit",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_skip",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "data",
+          "has_more"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "has_more": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "response_example_paths": [
+        "data",
+        "data[]",
+        "data[].checksum",
+        "data[].content_type",
+        "data[].date_created",
+        "data[].date_updated",
+        "data[].download_url",
+        "data[].id",
+        "data[].is_pinned",
+        "data[].last_activity_at",
+        "data[].last_object_id",
+        "data[].last_object_type",
+        "data[].lead_id",
+        "data[].name",
+        "data[].organization_id",
+        "data[].size",
+        "data[].thumbnail_url",
+        "data[].updated_by",
+        "has_more"
+      ],
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "_limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "_skip"
+        },
+        "start": 0,
+        "increment": "by_page_size",
+        "done_when": {
+          "path": "has_more",
+          "equals": false
+        }
+      },
+      "args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._limit",
+          "type": "number"
+        },
+        {
+          "key": "query._skip",
+          "type": "number"
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "close-crm-activity.leads_files_create": {
+      "source": "openapi",
+      "pack": "close-crm-activity",
+      "ingredient": "close-crm-activity",
+      "op": "leads_files_create",
+      "operation_id": "leads_files_create",
+      "method": "POST",
+      "path": "/lead/{id}/files/",
+      "wire_path": "/api/v1/lead/{{id}}/files/",
+      "official_path": "/api/v1/lead/{id}/files/",
+      "tags": [
+        "leads"
+      ],
+      "summary": "Attach a file to a lead",
+      "compatibility": false,
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_documented": true,
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [
+            "content_type",
+            "filename",
+            "url"
+          ],
+          "properties": {
+            "content_type": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "filename": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "url": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            }
+          }
+        },
+        "raw_body": false,
+        "decimal_integer_fields": [],
+        "unsafe_integer_occurrences": 0
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "checksum",
+          "content_type",
+          "date_created",
+          "date_updated",
+          "download_url",
+          "id",
+          "is_pinned",
+          "last_activity_at",
+          "last_object_id",
+          "last_object_type",
+          "lead_id",
+          "name",
+          "organization_id",
+          "size",
+          "thumbnail_url",
+          "updated_by"
+        ],
+        "properties": {
+          "checksum": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "content_type": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "download_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "is_pinned": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "last_activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "last_object_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "last_object_type": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "lead_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "organization_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "size": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "thumbnail_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "response_example_paths": [
+        "checksum",
+        "content_type",
+        "date_created",
+        "date_updated",
+        "download_url",
+        "id",
+        "is_pinned",
+        "last_activity_at",
+        "last_object_id",
+        "last_object_type",
+        "lead_id",
+        "name",
+        "organization_id",
+        "size",
+        "thumbnail_url",
+        "updated_by"
+      ],
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.content_type",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.filename",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.url",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "ask",
+      "idempotency": "non_idempotent"
+    },
     "close-crm-activity.opportunities_delete": {
       "source": "openapi",
       "pack": "close-crm-activity",
@@ -25637,7 +27033,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -25742,24 +27138,9 @@
       "pagination": null,
       "args": [
         {
-          "key": "body.applies_to",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.description",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.name",
+          "key": "body_raw",
           "type": "string",
           "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.type",
-          "type": "string",
           "affects_target": true
         }
       ],
@@ -25976,7 +27357,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -26087,23 +27468,9 @@
           "affects_target": true
         },
         {
-          "key": "body.applies_to",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.description",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.name",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.type",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -26182,16 +27549,24 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
-          "required": [],
+          "required": [
+            "name"
+          ],
           "properties": {
             "name": {
               "type": "string",
               "format": null,
               "item_type": null,
+              "item_format": null
+            },
+            "statuses": {
+              "type": "array",
+              "format": null,
+              "item_type": "object",
               "item_format": null
             }
           }
@@ -26206,7 +27581,16 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "name",
+          "organization_id",
+          "statuses",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -26216,13 +27600,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -26247,7 +27631,7 @@
           "statuses": {
             "type": "array",
             "format": null,
-            "item_type": null,
+            "item_type": "object",
             "item_format": null
           },
           "updated_by": {
@@ -26315,7 +27699,7 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
@@ -26345,7 +27729,16 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "name",
+          "organization_id",
+          "statuses",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -26355,13 +27748,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -26505,13 +27898,21 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
-          "required": [],
+          "required": [
+            "label"
+          ],
           "properties": {
             "label": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "color": {
               "type": "string",
               "format": null,
               "item_type": null,
@@ -26529,8 +27930,19 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "color",
+          "id",
+          "label",
+          "organization_id"
+        ],
         "properties": {
+          "color": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "id": {
             "type": "string",
             "format": null,
@@ -26552,6 +27964,7 @@
         }
       },
       "response_example_paths": [
+        "color",
         "id",
         "label",
         "organization_id"
@@ -26604,8 +28017,19 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "color",
+          "id",
+          "label",
+          "organization_id"
+        ],
         "properties": {
+          "color": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "id": {
             "type": "string",
             "format": null,
@@ -26627,6 +28051,7 @@
         }
       },
       "response_example_paths": [
+        "color",
         "id",
         "label",
         "organization_id"
@@ -26677,13 +28102,21 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
-          "required": [],
+          "required": [
+            "label"
+          ],
           "properties": {
             "label": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "color": {
               "type": "string",
               "format": null,
               "item_type": null,
@@ -26701,8 +28134,19 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "color",
+          "id",
+          "label",
+          "organization_id"
+        ],
         "properties": {
+          "color": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "id": {
             "type": "string",
             "format": null,
@@ -26724,6 +28168,7 @@
         }
       },
       "response_example_paths": [
+        "color",
         "id",
         "label",
         "organization_id"
@@ -26830,11 +28275,13 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
-          "required": [],
+          "required": [
+            "label"
+          ],
           "properties": {
             "label": {
               "type": "string",
@@ -26866,7 +28313,12 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "id",
+          "label",
+          "organization_id",
+          "type"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -26967,7 +28419,12 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "id",
+          "label",
+          "organization_id",
+          "type"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -27066,13 +28523,21 @@
           "application/json"
         ],
         "selected_media": "application/json",
-        "schema_documented": false,
+        "schema_documented": true,
         "schema": {
           "type": "object",
           "format": null,
-          "required": [],
+          "required": [
+            "label"
+          ],
           "properties": {
             "label": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "pipeline_id": {
               "type": "string",
               "format": null,
               "item_type": null,
@@ -27090,7 +28555,12 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "id",
+          "label",
+          "organization_id",
+          "type"
+        ],
         "properties": {
           "id": {
             "type": "string",
@@ -27491,7 +28961,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -27671,38 +29141,9 @@
           "affects_target": true
         },
         {
-          "key": "body.assigned_to",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.date",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.is_complete",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.organization_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.priority",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.resolution",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.text",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -31125,6 +32566,7 @@
         "data[].identities[]",
         "data[].identities[].email",
         "data[].identities[].name",
+        "data[].label",
         "data[].organization_id",
         "data[].synced_calendars",
         "data[].synced_calendars[]",
@@ -31210,6 +32652,12 @@
             "item_type": "object",
             "item_format": null
           },
+          "label": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "organization_id": {
             "type": "string",
             "format": null,
@@ -31237,6 +32685,7 @@
         "identities[]",
         "identities[].email",
         "identities[].name",
+        "label",
         "organization_id",
         "synced_calendars",
         "synced_calendars[]",
@@ -33045,6 +34494,12 @@
               "item_type": null,
               "item_format": null
             },
+            "assign_to": {
+              "type": "array",
+              "format": null,
+              "item_type": "string",
+              "item_format": null
+            },
             "bundle_id": {
               "type": "string",
               "format": null,
@@ -33071,7 +34526,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -33299,39 +34754,9 @@
       "pagination": null,
       "args": [
         {
-          "key": "body.bundle_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.carrier_type",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.country",
+          "key": "body_raw",
           "type": "string",
           "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.prefix",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.sharing",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.with_mms",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.with_sms",
-          "type": "boolean",
           "affects_target": true
         }
       ],
@@ -33743,7 +35168,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -34025,43 +35450,9 @@
           "affects_target": true
         },
         {
-          "key": "body.forward_to",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.forward_to_enabled",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.inbound_ring_duration",
-          "type": "number",
-          "affects_target": true
-        },
-        {
-          "key": "body.label",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.participants",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.phone_numbers",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.press_1_to_accept",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.voicemail_greeting_url",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -34330,7 +35721,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -34468,29 +35859,9 @@
       "pagination": null,
       "args": [
         {
-          "key": "body.custom_field_ids",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.description",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.name",
+          "key": "body_raw",
           "type": "string",
           "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.outcome_ids",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.summary_guidance",
-          "type": "string",
           "affects_target": true
         }
       ],
@@ -34734,7 +36105,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -34878,28 +36249,9 @@
           "affects_target": true
         },
         {
-          "key": "body.custom_field_ids",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.description",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.name",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.outcome_ids",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.summary_guidance",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -46515,7 +47867,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -46647,7 +48002,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -46815,7 +48173,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_format",
+          "date_updated",
+          "download_url",
+          "fields",
+          "format",
+          "id",
+          "n_docs",
+          "n_docs_processed",
+          "organization_id",
+          "send_done_email",
+          "status",
+          "type",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -46825,7 +48199,7 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -46837,12 +48211,12 @@
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "download_url": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -46866,7 +48240,7 @@
             "item_format": null
           },
           "n_docs": {
-            "type": null,
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -46884,7 +48258,7 @@
             "item_format": null
           },
           "results_limit": {
-            "type": null,
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -46920,6 +48294,24 @@
             "item_format": null
           },
           "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "params": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "query": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -47014,7 +48406,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_format",
+          "date_updated",
+          "download_url",
+          "fields",
+          "format",
+          "id",
+          "n_docs",
+          "n_docs_processed",
+          "organization_id",
+          "send_done_email",
+          "status",
+          "type",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -47024,7 +48432,7 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47036,7 +48444,7 @@
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47083,7 +48491,7 @@
             "item_format": null
           },
           "results_limit": {
-            "type": null,
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -47103,7 +48511,7 @@
           "sort": {
             "type": "array",
             "format": null,
-            "item_type": null,
+            "item_type": "object",
             "item_format": null
           },
           "status": {
@@ -47119,6 +48527,24 @@
             "item_format": null
           },
           "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "params": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "query": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -47220,7 +48646,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -47364,7 +48793,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_format",
+          "date_updated",
+          "download_url",
+          "fields",
+          "format",
+          "id",
+          "n_docs",
+          "n_docs_processed",
+          "organization_id",
+          "send_done_email",
+          "status",
+          "type",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -47374,7 +48819,7 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47386,12 +48831,12 @@
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "download_url": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -47415,7 +48860,7 @@
             "item_format": null
           },
           "n_docs": {
-            "type": null,
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -47460,6 +48905,36 @@
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "query": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "results_limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "s_query": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sort": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           }
         }
@@ -47540,7 +49015,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_format",
+          "date_updated",
+          "download_url",
+          "fields",
+          "format",
+          "id",
+          "n_docs",
+          "n_docs_processed",
+          "organization_id",
+          "send_done_email",
+          "status",
+          "type",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -47550,7 +49041,7 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47562,7 +49053,7 @@
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47636,6 +49127,36 @@
             "type": "string",
             "format": null,
             "item_type": null,
+            "item_format": null
+          },
+          "limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "query": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "results_limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "s_query": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sort": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
             "item_format": null
           }
         }
@@ -47721,7 +49242,23 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "created_by",
+          "date_created",
+          "date_format",
+          "date_updated",
+          "download_url",
+          "fields",
+          "format",
+          "id",
+          "n_docs",
+          "n_docs_processed",
+          "organization_id",
+          "send_done_email",
+          "status",
+          "type",
+          "updated_by"
+        ],
         "properties": {
           "created_by": {
             "type": "string",
@@ -47731,7 +49268,7 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -47743,12 +49280,12 @@
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "download_url": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -47789,26 +49326,8 @@
             "item_type": null,
             "item_format": null
           },
-          "results_limit": {
-            "type": null,
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "s_query": {
-            "type": "object",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
           "send_done_email": {
             "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "sort": {
-            "type": "array",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -47830,6 +49349,42 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "params": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "query": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "results_limit": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "s_query": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sort": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
           }
         }
       },
@@ -47846,16 +49401,7 @@
         "n_docs",
         "n_docs_processed",
         "organization_id",
-        "results_limit",
-        "s_query",
-        "s_query.queries",
-        "s_query.queries[]",
-        "s_query.queries[].object_type",
-        "s_query.queries[].type",
-        "s_query.type",
         "send_done_email",
-        "sort",
-        "sort[]",
         "status",
         "type",
         "updated_by"
@@ -48668,7 +50214,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -48770,18 +50316,9 @@
           "affects_target": true
         },
         {
-          "key": "body.name",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.type",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.url",
-          "type": "string",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -51550,7 +53087,20 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "auto_record_calls",
+          "default_caller_id",
+          "default_caller_id_mode",
+          "hangup_recording_url",
+          "id",
+          "may_workflows_impersonate",
+          "onboarding_status",
+          "organization_id",
+          "primary_personal_number",
+          "role_id",
+          "track_email_opens",
+          "user_id"
+        ],
         "properties": {
           "auto_record_calls": {
             "type": "string",
@@ -51559,25 +53109,25 @@
             "item_format": null
           },
           "default_caller_id": {
-            "type": null,
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "default_caller_id_mode": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "hangup_recording_url": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
           "id": {
             "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "is_free": {
-            "type": "boolean",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -51607,7 +53157,7 @@
             "item_format": null
           },
           "primary_personal_number": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -51635,15 +53185,75 @@
             "format": null,
             "item_type": null,
             "item_format": null
+          },
+          "user": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_email": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_first_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_full_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_google_profile_image_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_image": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_last_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_phone": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_phone_formatted": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_totp_auth_state": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
           }
         }
       },
       "response_example_paths": [
         "auto_record_calls",
         "default_caller_id",
+        "default_caller_id_mode",
         "hangup_recording_url",
         "id",
-        "is_free",
         "may_workflows_impersonate",
         "onboarding_status",
         "organization_id",
@@ -51723,6 +53333,12 @@
               "item_type": null,
               "item_format": null
             },
+            "default_caller_id_mode": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "hangup_recording_url": {
               "type": "string",
               "format": null,
@@ -51743,7 +53359,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -51773,33 +53389,9 @@
       "pagination": null,
       "args": [
         {
-          "key": "body.auto_record_calls",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.default_caller_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.hangup_recording_url",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.may_workflows_impersonate",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.role_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.track_email_opens",
-          "type": "boolean",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -51860,6 +53452,12 @@
               "item_type": null,
               "item_format": null
             },
+            "default_caller_id_mode": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "hangup_recording_url": {
               "type": "string",
               "format": null,
@@ -51880,7 +53478,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -51890,7 +53488,20 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "auto_record_calls",
+          "default_caller_id",
+          "default_caller_id_mode",
+          "hangup_recording_url",
+          "id",
+          "may_workflows_impersonate",
+          "onboarding_status",
+          "organization_id",
+          "primary_personal_number",
+          "role_id",
+          "track_email_opens",
+          "user_id"
+        ],
         "properties": {
           "auto_record_calls": {
             "type": "string",
@@ -51898,7 +53509,37 @@
             "item_type": null,
             "item_format": null
           },
+          "default_caller_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "default_caller_id_mode": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "hangup_recording_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "may_workflows_impersonate": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "onboarding_status": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -51916,12 +53557,6 @@
             "item_type": "string",
             "item_format": null
           },
-          "plan_type": {
-            "type": "string",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
           "primary_personal_number": {
             "type": "string",
             "format": null,
@@ -51934,7 +53569,79 @@
             "item_type": null,
             "item_format": null
           },
+          "track_email_opens": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "user_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "role": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_email": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_first_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_full_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_google_profile_image_url": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_image": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_last_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_phone": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_phone_formatted": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_totp_auth_state": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -51944,13 +53651,18 @@
       },
       "response_example_paths": [
         "auto_record_calls",
+        "default_caller_id",
+        "default_caller_id_mode",
+        "hangup_recording_url",
         "id",
+        "may_workflows_impersonate",
+        "onboarding_status",
         "organization_id",
         "permissions_granted",
         "permissions_granted[]",
-        "plan_type",
         "primary_personal_number",
         "role_id",
+        "track_email_opens",
         "user_id"
       ],
       "response_json": {
@@ -51966,33 +53678,9 @@
           "affects_target": true
         },
         {
-          "key": "body.auto_record_calls",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.default_caller_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.hangup_recording_url",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.may_workflows_impersonate",
-          "type": "boolean",
-          "affects_target": true
-        },
-        {
-          "key": "body.role_id",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.track_email_opens",
-          "type": "boolean",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -53444,7 +55132,7 @@
             }
           }
         },
-        "raw_body": false,
+        "raw_body": true,
         "decimal_integer_fields": [],
         "unsafe_integer_occurrences": 0
       },
@@ -53581,23 +55269,9 @@
           "affects_target": true
         },
         {
-          "key": "body.events",
-          "type": "array",
-          "affects_target": true
-        },
-        {
-          "key": "body.status",
+          "key": "body_raw",
           "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.url",
-          "type": "string",
-          "affects_target": true
-        },
-        {
-          "key": "body.verify_ssl",
-          "type": "boolean",
+          "required": true,
           "affects_target": true
         }
       ],
@@ -53658,7 +55332,7 @@
     "close-advanced-filtering.advanced_filter.search": {
       "source": "official_markdown",
       "source_url": "https://developer.close.com/api/resources/advanced-filtering.md",
-      "source_sha256": "77aaf03d9263be6274029a3d35fec3bd1dccaacab829508c4c4e3bcd291d4a26",
+      "source_sha256": "5dad896b9ff7859788733ff90ba8a3e9bc9e2b2becea480be6c20751a86f9f57",
       "pack": "close-advanced-filtering",
       "ingredient": "close-advanced-filtering",
       "op": "advanced_filter.search",

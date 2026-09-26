@@ -98,6 +98,9 @@ export interface AutoRunSettingsStore {
     dish_id: string | null,
     defaultEnabled?: boolean,
   ): void;
+  /** D-304 — drop the recipe's row (its on/off and config pointer): the recipe was
+   *  uninstalled. `true` when there was one. Optional for test doubles. */
+  forget?(recipe_id: string): boolean;
 }
 
 /** SQLite-backed settings store. Creates the table on first use —
@@ -169,6 +172,12 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
             dish_id = excluded.dish_id,
             updated_at = excluded.updated_at
         `).run(recipe_id, defaultEnabled ? 1 : 0, Date.now(), dish_id);
+      });
+    },
+    forget(recipe_id) {
+      return mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
+        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
+        return db.prepare('DELETE FROM auto_run_settings WHERE recipe_id = ?').run(recipe_id).changes > 0;
       });
     },
   };

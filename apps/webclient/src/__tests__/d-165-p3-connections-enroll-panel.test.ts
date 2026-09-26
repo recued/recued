@@ -1071,6 +1071,54 @@ describe('D-228 MCP enrollment — generated-pack install scope', () => {
     rig.mount.dispose();
   });
 
+  it('⛔ a RE-review starts where the owner left the pack, so Save without touching keeps the share (D-294)', async () => {
+    // It started at a first install's answers (Read, only you), and Save committed them as a
+    // choice: re-reviewing a pack shared at Read + write withdrew the share and narrowed it.
+    const shared = { owner: true, all_customers: false, all_other_contracts: true };
+    const runMcpPackCommit = vi.fn<ConnectionsMcpPackCommitCaller>(async () => ({
+      pack_slug: 'mcp-generated-pack',
+      operations: 1,
+    }));
+    const rig = mountPanel({
+      connections: [connection('issue-mcp', { kind: 'mcp', subtype: 'sse' })],
+      runMcpPackPreview: async () => ({
+        pack_slug: 'mcp-generated-pack',
+        rows: previewRows,
+        current_access: 'write',
+        current_audience: shared,
+      }),
+      runMcpPackCommit,
+    });
+    await rig.mount.whenLoaded();
+    rig.click({ action: 'connections-mcp-pack-review', name: 'issue-mcp' });
+    await tick();
+    expect(rig.mount.getMcpPackInstallScope()).toEqual({ access: 'write', audience: shared });
+
+    rig.click({ action: 'connections-mcp-pack-save' });
+    await tick();
+    expect(runMcpPackCommit.mock.calls[0]?.[0].install_scope).toEqual({ access: 'write', audience: shared });
+    rig.mount.dispose();
+  });
+
+  it('a tier the tools no longer offer starts at the default, and the share is still kept', async () => {
+    const shared = { owner: true, all_customers: true, all_other_contracts: false };
+    const rig = mountPanel({
+      connections: [connection('issue-mcp', { kind: 'mcp', subtype: 'sse' })],
+      runMcpPackPreview: async () => ({
+        pack_slug: 'mcp-generated-pack',
+        rows: previewRows,
+        current_access: 'all',
+        current_audience: shared,
+      }),
+      runMcpPackCommit: async () => ({ pack_slug: 'mcp-generated-pack', operations: 1 }),
+    });
+    await rig.mount.whenLoaded();
+    rig.click({ action: 'connections-mcp-pack-review', name: 'issue-mcp' });
+    await tick();
+    expect(rig.mount.getMcpPackInstallScope()).toEqual({ access: 'read', audience: shared });
+    rig.mount.dispose();
+  });
+
   it('drops a cancelled review’s grants before the next server review', async () => {
     const rig = mountPanel({
       connections: [connection('issue-mcp', { kind: 'mcp', subtype: 'sse' })],

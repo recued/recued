@@ -74,6 +74,23 @@ export interface ContractGrantEntryStore {
    *  uninstall). Throws on an empty id (a degenerate key the structural gate would reject —
    *  fail loud with a clear error). `now` is epoch-ms. */
   set(contract_id: string, entry_key: string, granted: boolean, now: number, source_pack?: string): void;
+  /** D-294 — a pack fan-out write: pin the row stamped `source_pack`, UNLESS a row
+   *  is already there WITHOUT a stamp. Returns true iff it wrote.
+   *
+   *  ⛔ An unstamped row is an owner's or a door's OWN decision — a grant or revoke
+   *  set one operation at a time (the Access tab, a contract's grants), a door's
+   *  minted scope, a customer template's copy — and it outranks a pack-level share.
+   *  The fan-out used {@link set}, which replaces the row: an owner's revoke came
+   *  back as a grant, and a door's own grant was stamped as the pack's, so the next
+   *  update or uninstall DELETED it. A row another pack stamped is still replaced
+   *  (one stamp per row, as before). */
+  setForSourcePack(
+    contract_id: string,
+    entry_key: string,
+    granted: boolean,
+    now: number,
+    source_pack: string,
+  ): boolean;
   /** D-247 — seed a row ONLY when none exists. Returns true iff it wrote.
    *  ⛔ Atomic: `get`-then-`set` races another process and can overwrite an
    *  explicit revoke written between the two calls. */
@@ -116,7 +133,7 @@ const isBool = (v: unknown): v is boolean => typeof v === 'boolean';
 export const createContractGrantEntryStore = (
   contractStore: ContractStore,
 ): ContractGrantEntryStore => {
-  return {
+  const store: ContractGrantEntryStore = {
     get(contract_id, entry_key) {
       if (!contract_id || !entry_key) return undefined; // an empty id is never a real key
       const row = contractStore.get(CONTRACT_GRANT_SCOPE, [contract_id, entry_key]);
@@ -164,6 +181,17 @@ export const createContractGrantEntryStore = (
           ...(source_pack ? { source_pack } : {}),
         } satisfies GrantEntryRow,
       );
+    },
+
+    setForSourcePack(contract_id, entry_key, granted, now, source_pack) {
+      if (!source_pack) throw new Error('contract_grant_source_pack_required');
+      const existing = contractStore.get(CONTRACT_GRANT_SCOPE, [contract_id, entry_key]);
+      if (
+        existing !== null
+        && (existing.value as Partial<GrantEntryRow> | null)?.source_pack === undefined
+      ) return false;
+      store.set(contract_id, entry_key, granted, now, source_pack);
+      return true;
     },
 
     clear(contract_id, entry_key) {
@@ -252,4 +280,5 @@ export const createContractGrantEntryStore = (
       );
     },
   };
+  return store;
 };

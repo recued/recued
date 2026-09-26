@@ -15,9 +15,11 @@ import type {
 import type { IngredientManifest } from '@recued/contracts';
 import type { RecipeStore } from '../../recipe-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
+import type { SavedDataViewStore } from '../../saved-data-view-store.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
+import type { WebhookIngressStore } from '../../storage/webhook-ingress-store.js';
 import type { SellerInstallAudienceStore } from '../../ingredient-authoring/install-composition.js';
 import type { RecordsStore } from '../../records/index.js';
 
@@ -30,6 +32,9 @@ export interface ComposePackInstallRpcDepsInput {
   recordsStore?: RecordsStore;
   /** D-201 Slice 4 — exact ingress binding and trigger materialization store. */
   webhookConsumerStore?: WebhookConsumerStore;
+  /** D-295 — the owner's webhooks, so the install dialog can offer the ones that
+   *  fit a pack's webhook requirements. */
+  webhookIngressStore?: Pick<WebhookIngressStore, 'list'>;
   /** D-139 P6.B — MCP body-content visibility grant store. Optional —
    *  present → pack-declared body grants persist on install; absent →
    *  skipped (MCP body content stays stripped). */
@@ -39,6 +44,15 @@ export interface ComposePackInstallRpcDepsInput {
    *  `installed_ingredient` inventory after a successful install; absent
    *  (dbless / pre-contract-store boot) → no inventory recorded. */
   contractStore?: ContractStore;
+  /** D-289 — late-bound saved-view store; see `PackInstallRpcDeps`. Absent ⇒
+   *  a manifest's `saved_view` contents install nothing. */
+  getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  /** D-296 — late-bound trigger preview; see `PackInstallRpcDeps`. */
+  getTriggerPreview?: PackInstallRpcDeps['getTriggerPreview'];
+  /** D-299 — late-bound Reception pair substrate; see `PackInstallRpcDeps`. */
+  getReceptionPairs?: PackInstallRpcDeps['getReceptionPairs'];
+  /** D-303 — where the owner's settings are saved, for the update preview. */
+  getSavedSettings?: PackInstallRpcDeps['getSavedSettings'];
   /** D-196 install grant audiences. Optional — customer-scoped fan-out sees no
    *  seller customer rows when absent. */
   sellerStore?: SellerInstallAudienceStore;
@@ -97,8 +111,13 @@ export const composePackInstallRpcDeps = (
     recipeStore,
     recordsStore,
     webhookConsumerStore,
+    webhookIngressStore,
     mcpBodyVisibilityStore,
     contractStore,
+    getSavedDataViewStore,
+    getTriggerPreview,
+    getReceptionPairs,
+    getSavedSettings,
     sellerStore,
     inboundTokenStore,
     eventBus,
@@ -117,8 +136,13 @@ export const composePackInstallRpcDeps = (
     recipeStore,
     ...(recordsStore ? { recordsStore } : {}),
     ...(webhookConsumerStore ? { webhookConsumerStore } : {}),
+    ...(webhookIngressStore ? { webhookIngressStore } : {}),
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),
+    ...(getSavedDataViewStore ? { getSavedDataViewStore } : {}),
+    ...(getTriggerPreview ? { getTriggerPreview } : {}),
+    ...(getReceptionPairs ? { getReceptionPairs } : {}),
+    ...(getSavedSettings ? { getSavedSettings } : {}),
     ...(sellerStore ? { sellerStore } : {}),
     ...(inboundTokenStore ? { inboundTokenStore } : {}),
     ...(eventBus ? { broadcast: packInstallEmitterFromBus(eventBus) } : {}),

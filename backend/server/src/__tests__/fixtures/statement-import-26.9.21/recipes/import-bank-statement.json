@@ -1,0 +1,397 @@
+{
+  "recipe_id": "import-bank-statement",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 0,
+  "metadata": {
+    "name": "Import a bank statement (CSV)",
+    "description": "Use “Import a bank statement (CSV)” in Recued. Reads a statement CSV you exported from your bank, maps its columns the way you named them, and records every line in your own warehouse. Re-importing an overlapping export adds only what is new.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/statement-import",
+    "tags": [
+      "pack:statement-import",
+      "banking",
+      "csv",
+      "import",
+      "reconciliation"
+    ],
+    "budget_ms": 120000,
+    "readme": "## Why a file, not a bank login\n\nEvery open-banking aggregator gates real account data behind an approved business account, and talking to a bank directly needs PSD2 authorisation. A statement export needs neither, works for banks no aggregator covers, and no third party ever sees the transactions.\n\n## Setting it up once\n\nOpen your export and read the header row. Put those exact column names into the settings below. Two layouts are supported:\n\n- **One signed amount column** (common in the UK/US): set `column_amount`, leave the debit/credit pair blank.\n- **A debit + credit pair** (common in Europe and India): leave `column_amount` blank and set both `column_debit` and `column_credit`. Recued stores each column as its own figure and does not fold them together — which column means money out is a fact about your bank, and a stored line you can check against the paper is worth more than a tidier table. Listing recipes add them up when they show you a total.\n\nSet exactly one of the two layouts.\n\n## Re-running is safe\n\nBank exports overlap by design — the last 90 days, every time. Each line's id is derived from its own content plus your account label, so importing the same export twice reproduces the same ids and adds nothing. The summary says how many you already had.\n\n**Give each account its own label.** The id is scoped to it, so the same amount on the same day in two accounts stays two lines.\n\n## Check first\n\nTurn on **Check first** and Recued reads the whole file, puts every line through exactly the checks a real import would, then throws the result away and tells you what would have happened. Nothing is recorded.\n\nDo this the first time you map a bank. A column pointed at the wrong field imports perfectly — every line lands, nothing is refused — and the only sign is that the numbers are wrong. Reading the first few lines back before you commit is the only thing that catches it.\n\n## When a number will not read\n\nA cell that cannot be parsed is stored EMPTY, never as zero, and the line still lands. The summary counts them and shows the first few with their line numbers, so you can open the file at that line. A zero would look like a real transaction for nothing and would quietly move your balance."
+  },
+  "depends_on": [
+    "recued-core.statement-import"
+  ],
+  "variables": {
+    "file": {
+      "label": "Statement CSV exported from your bank",
+      "type": "file_ref"
+    },
+    "account_label": {
+      "label": "Which account is this? (e.g. “barclays-current”)",
+      "type": "string",
+      "default": ""
+    },
+    "currency": {
+      "label": "Currency",
+      "type": "string",
+      "default": "GBP"
+    },
+    "delimiter": {
+      "label": "CSV delimiter",
+      "type": "string",
+      "default": ","
+    },
+    "column_date": {
+      "label": "Column holding the date",
+      "type": "string",
+      "default": "Date"
+    },
+    "column_description": {
+      "label": "Column holding the description",
+      "type": "string",
+      "default": "Description"
+    },
+    "column_amount": {
+      "label": "Column holding one SIGNED amount (leave blank if your bank uses debit + credit)",
+      "type": "string",
+      "default": "Amount"
+    },
+    "column_debit": {
+      "label": "Column holding money OUT (blank unless your bank splits them)",
+      "type": "string",
+      "default": ""
+    },
+    "column_credit": {
+      "label": "Column holding money IN (blank unless your bank splits them)",
+      "type": "string",
+      "default": ""
+    },
+    "column_balance": {
+      "label": "Column holding the running balance (optional)",
+      "type": "string",
+      "default": ""
+    },
+    "thousands_separator": {
+      "label": "Thousands separator used in the amounts (blank if none)",
+      "type": "string",
+      "default": ","
+    },
+    "check_first": {
+      "label": "Check first, record nothing (recommended the first time you map a bank)",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "requires": [],
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "file_id",
+      "transform": "trim",
+      "input": "{{config.file}}"
+    },
+    {
+      "id": "has_file",
+      "transform": "compare",
+      "left": "{{step.file_id}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "file_guard",
+      "guard": "{{step.has_file}} equal false"
+    },
+    {
+      "id": "acct",
+      "transform": "trim",
+      "input": "{{config.account_label}}"
+    },
+    {
+      "id": "has_account",
+      "transform": "compare",
+      "left": "{{step.acct}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "account_guard",
+      "guard": "{{step.has_account}} equal false"
+    },
+    {
+      "id": "file_read",
+      "op": "core.storage.data-file-read",
+      "args": {
+        "record_id": "{{step.file_id}}"
+      }
+    },
+    {
+      "id": "csv_text",
+      "transform": "decode_base64",
+      "input": "{{step.file_read.bytes_b64}}"
+    },
+    {
+      "id": "columns_all",
+      "transform": "default",
+      "value": [
+        {
+          "column": "{{config.column_date}}",
+          "field": "posted_on"
+        },
+        {
+          "column": "{{config.column_description}}",
+          "field": "description"
+        },
+        {
+          "column": "{{config.column_balance}}",
+          "field": "balance_after"
+        },
+        {
+          "column": "{{config.column_amount}}",
+          "field": "amount"
+        },
+        {
+          "column": "{{config.column_credit}}",
+          "field": "money_in"
+        },
+        {
+          "column": "{{config.column_debit}}",
+          "field": "money_out"
+        }
+      ]
+    },
+    {
+      "id": "columns",
+      "transform": "filter",
+      "array": "{{step.columns_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "money_all",
+      "transform": "default",
+      "value": [
+        {
+          "field": "amount",
+          "column": "{{config.column_amount}}"
+        },
+        {
+          "field": "money_in",
+          "column": "{{config.column_credit}}"
+        },
+        {
+          "field": "money_out",
+          "column": "{{config.column_debit}}"
+        }
+      ]
+    },
+    {
+      "id": "money_present",
+      "transform": "filter",
+      "array": "{{step.money_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "money_fields",
+      "transform": "pluck",
+      "array": "{{step.money_present}}",
+      "field": "field"
+    },
+    {
+      "id": "numeric_all",
+      "transform": "default",
+      "value": [
+        {
+          "field": "balance_after",
+          "column": "{{config.column_balance}}"
+        }
+      ]
+    },
+    {
+      "id": "numeric_present",
+      "transform": "filter",
+      "array": "{{step.numeric_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "balance_fields",
+      "transform": "pluck",
+      "array": "{{step.numeric_present}}",
+      "field": "field"
+    },
+    {
+      "id": "numeric_fields",
+      "transform": "flatten",
+      "array": [
+        "{{step.money_fields}}",
+        "{{step.balance_fields}}"
+      ]
+    },
+    {
+      "id": "dedup_on",
+      "transform": "flatten",
+      "array": [
+        [
+          "posted_on",
+          "description"
+        ],
+        "{{step.money_fields}}"
+      ]
+    },
+    {
+      "id": "imported",
+      "op": "recued-core.statement-import.line.import",
+      "args": {
+        "csv": "{{step.csv_text}}",
+        "dry_run": "{{config.check_first}}",
+        "spec": {
+          "columns": "{{step.columns}}",
+          "numeric_fields": "{{step.numeric_fields}}",
+          "dedup_on": "{{step.dedup_on}}",
+          "scope": "{{step.acct}}",
+          "delimiter": "{{config.delimiter}}",
+          "thousands_separator": "{{config.thousands_separator}}",
+          "defaults": {
+            "account_label": "{{step.acct}}",
+            "currency": "{{config.currency}}",
+            "source_file": "{{step.file_id}}",
+            "counterparty": "",
+            "category": ""
+          }
+        }
+      }
+    },
+    {
+      "id": "any_unreadable",
+      "transform": "compare",
+      "left": "{{step.imported.unparsed}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "any_refused",
+      "transform": "compare",
+      "left": "{{step.imported.failed}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "stopped",
+      "transform": "default",
+      "value": "{{step.imported.halted_reason}}",
+      "fallback": "no — the whole file was processed"
+    },
+    {
+      "id": "was_check",
+      "transform": "compare",
+      "left": "{{step.imported.dry_run}}",
+      "operator": "equal",
+      "value": true
+    },
+    {
+      "id": "mode",
+      "transform": "ternary",
+      "if": "{{step.was_check}}",
+      "then": "Checked only — nothing was recorded",
+      "else": "Recorded in your warehouse"
+    },
+    {
+      "id": "unreadable",
+      "transform": "to_table",
+      "skip_when": "{{step.any_unreadable}} equal false",
+      "array": "{{step.imported.unparsed_sample}}",
+      "columns": [
+        {
+          "field": "line",
+          "label": "Line in your file"
+        },
+        {
+          "field": "column",
+          "label": "Column"
+        },
+        {
+          "field": "value",
+          "label": "Value we could not read"
+        }
+      ]
+    },
+    {
+      "id": "refused",
+      "transform": "to_table",
+      "skip_when": "{{step.any_refused}} equal false",
+      "array": "{{step.imported.failures_sample}}",
+      "columns": [
+        {
+          "field": "line",
+          "label": "Line in your file"
+        },
+        {
+          "field": "code",
+          "label": "Why"
+        },
+        {
+          "field": "reason",
+          "label": "Detail"
+        }
+      ]
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "What happened",
+          "value": "{{step.mode}}"
+        },
+        {
+          "label": "Lines in this file",
+          "value": "{{step.imported.rows_read}}"
+        },
+        {
+          "label": "Newly recorded",
+          "value": "{{step.imported.written}}"
+        },
+        {
+          "label": "Already had",
+          "value": "{{step.imported.replayed}}"
+        },
+        {
+          "label": "Refused",
+          "value": "{{step.imported.failed}}"
+        },
+        {
+          "label": "Not attempted",
+          "value": "{{step.imported.not_attempted}}"
+        },
+        {
+          "label": "Cells stored empty (check your column mapping)",
+          "value": "{{step.imported.unparsed}}"
+        },
+        {
+          "label": "Account",
+          "value": "{{step.acct}}"
+        },
+        {
+          "label": "Stopped early",
+          "value": "{{step.stopped}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      },
+      {
+        "type": "table",
+        "source": "step.unreadable"
+      },
+      {
+        "type": "table",
+        "source": "step.refused"
+      }
+    ]
+  }
+}

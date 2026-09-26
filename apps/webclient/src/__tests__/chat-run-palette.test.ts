@@ -362,6 +362,52 @@ describe('run-palette wire', () => {
     handle.destroy();
   });
 
+  /** The panel must not clip, because the recipe picker's dropdown is inside it.
+   *
+   *  ⛔ .ref-picker-results is position:absolute, so it adds NOTHING to the
+   *  panel's height and EVERYTHING to its overflow. Under overflow:auto the
+   *  panel sat at its natural 150px and turned the escaping list into a SECOND
+   *  scrollbar — and clipped a 270px dropdown to roughly one visible option.
+   *  Measured in real Chromium against the injected stylesheet: panel 150px
+   *  tall, scrollHeight 370, list bottom 427 against panel bottom 206.
+   *
+   *  ⚠ AND THE OVERFLOW WAS DOING A REAL JOB, so it is moved rather than
+   *  deleted: it kept a long panel reachable once max-height binds. The actions
+   *  row inherits it. Asserting only "the panel does not scroll" would pass a
+   *  patch that dropped reachability entirely, which is why both halves are
+   *  pinned here.
+   *
+   *  🔑 THE SHARP EDGE IS THAT A SCROLLING PANEL ALSO MOVES ON KEYBOARD NAV.
+   *  ref-picker/wire.ts calls scrollIntoView on the active option, and that
+   *  walks EVERY scrollable ancestor — so Down-arrow dragged the panel 221px
+   *  while the list moved 296px, sliding the input out from under the caret.
+   *  Restoring overflow on the panel brings that back, silently. */
+  it('⛔ the panel does not clip or scroll the picker dropdown', () => {
+    const { doc, handle } = mount();
+    const styles = doc.styles[0]?.textContent ?? '';
+    const rule = (selector: string): string => {
+      const at = styles.indexOf(selector + ' {');
+      expect(at, 'no rule for ' + selector).toBeGreaterThan(-1);
+      return styles.slice(at, styles.indexOf('}', at) + 1);
+    };
+    const panel = rule(`[${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-panel`);
+    // The whole defect in one assertion: an absolutely-positioned child cannot
+    // grow this box, so anything but `visible` clips the dropdown.
+    expect(panel).toMatch(/overflow:\s*visible/);
+    expect(panel).not.toMatch(/overflow:\s*(auto|scroll|hidden|clip)/);
+    // Rows pinned so the ACTIONS row is the one that gives, never the header
+    // or the search field the dropdown hangs off.
+    expect(panel).toMatch(/grid-template-rows:\s*auto auto minmax\(0, 1fr\)/);
+    expect(panel).toMatch(/max-height:\s*calc\(100vh - 80px\)/);
+    // ...and the scroller it replaced has to exist somewhere, or a long
+    // result becomes unreachable instead of merely ugly.
+    expect(rule(`[${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-actions`))
+      .toMatch(/overflow:\s*auto/);
+    // The dropdown keeps its own scroller — that one is intended.
+    expect(rule('.ref-picker-results')).toMatch(/overflow-y:\s*auto/);
+    handle.destroy();
+  });
+
   it('selecting a manual recipe offers Run + Schedule and opens the Run modal', async () => {
     const execute = vi.fn(async () => executeResponse());
     const { doc, handle } = mount({ execute });

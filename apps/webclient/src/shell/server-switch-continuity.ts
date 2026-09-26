@@ -164,6 +164,8 @@ const SURFACE_LABELS: Readonly<Record<
   recipes: 'Recipes',
   automation: 'Automation',
   data: 'Data',
+  views: 'Saved views',
+  today: 'Today',
   logs: 'Runs',
   stats: 'Stats',
   chat: 'Chat',

@@ -459,6 +459,8 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
     search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
     timeout_ms: resolveLLMTimeoutMs(timeout_ms),
     json: wantsJson && match.slot.supports_json === true,
+    // A batch contract answers with a JSON ARRAY — see `json_shape`.
+    ...(batchMode ? { json_shape: 'array' as const } : {}),
   };
 
   return { contracted, messages, options };

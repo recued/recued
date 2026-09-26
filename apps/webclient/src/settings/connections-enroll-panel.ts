@@ -340,7 +340,13 @@ export type ConnectionsProbeCaller = (args: {
 export type ConnectionsMcpPackPreviewCaller = (args: {
   name: string;
   kind: ConnectionKind;
-}) => Promise<{ pack_slug: string; rows: McpPackReviewRow[] }>;
+}) => Promise<{
+  pack_slug: string;
+  rows: McpPackReviewRow[];
+  /** D-294 — for a pack already installed, what it holds now: where a re-review starts. */
+  current_access?: InstallAccessTier;
+  current_audience?: InstallAudienceSelection;
+}>;
 
 /** D-225 Slice 2 — `collection.connection.mcpPackCommit` caller. `reviewed_ops`
  *  is the TOCTOU guard: the server refuses if its tools changed while the owner
@@ -7123,10 +7129,19 @@ export const mountConnectionsEnrollPanel = (
     };
     render();
     try {
-      const { pack_slug, rows } = await opts.runMcpPackPreview({ name, kind: 'mcp' });
+      const preview = await opts.runMcpPackPreview({ name, kind: 'mcp' });
+      const { pack_slug, rows } = preview;
       if (disposed || state.mcpPackReview?.connection.name !== name) return;
       mcpPackGrantModel = installGrantModelFromMcpReviewRows(rows);
-      mcpPackGrantAccess = mcpPackGrantModel?.defaultAccess ?? 'read';
+      // ⛔ D-294 — a RE-review starts where the owner left the pack. It started at a first
+      // install's answers (Read, only you) and Save committed them as a choice, which
+      // withdrew the pack's share and narrowed its Access (2026-09-24 audit). A tier the
+      // tools no longer offer falls back to the default, as a first review does.
+      mcpPackGrantAccess = preview.current_access !== undefined
+        && mcpPackGrantModel?.accessOptions.includes(preview.current_access) === true
+        ? preview.current_access
+        : mcpPackGrantModel?.defaultAccess ?? 'read';
+      mcpPackGrantAudience = resolveInstallAudienceSelection(preview.current_audience);
       state.mcpPackReview = {
         ...state.mcpPackReview,
         loading: false,

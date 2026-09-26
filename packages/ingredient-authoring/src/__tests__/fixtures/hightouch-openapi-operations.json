@@ -4,9 +4,9 @@
       "openapi": {
         "kind": "official_mutable_openapi_hash_locked",
         "url": "https://api.hightouch.io/api/swagger.json",
-        "bytes": 196984,
-        "sha256": "06eff2ce6d4c944d119572198d92f9a1d39e2d2efcc6656983f9f66ed4e75eff",
-        "retrieved_on": "2026-07-20",
+        "bytes": 205263,
+        "sha256": "5d508533e9bb0f45823b6d46e5a984bddedf87dbca826d6f719d9bca45bb2707",
+        "retrieved_on": "2026-09-24",
         "evidence": [
           "46 bearer-secured method/path operations across 32 paths",
           "exact parameters, required and optional JSON bodies, success response unions, and pagination defaults",
@@ -16,7 +16,7 @@
         "openapi": "3.0.0",
         "title": "Hightouch API",
         "api_version": "1.0.0",
-        "official_path_count": 32,
+        "official_path_count": 34,
         "declared_server": [
           {
             "url": "https://api.hightouch.com/api/v1"
@@ -33,12 +33,13 @@
       "api_guide_section": {
         "kind": "official_api_guide_section_hash_locked",
         "url": "https://hightouch.com/docs/developer-tools/api-guide",
-        "bytes": 4645,
-        "sha256": "8d70a5a24173f00c77c5fa5cf299dd86ae2c09bbc07b0121adf5d424676d3a32",
-        "retrieved_on": "2026-07-20",
+        "bytes": 8722,
+        "sha256": "5a55665c5dd8bda61883c880077011659a2ab49422f044a8f37a060c96b134aa",
+        "retrieved_on": "2026-09-24",
         "evidence": [
-          "API keys must be created by a workspace Admin",
-          "API keys provide read/write access to sensitive Hightouch resources",
+          "Only a workspace admin can create an API key",
+          "An API key inherits either one scoped user group's permissions or all of its creator's; scoping it to a group keeps it from having admin access",
+          "An API key provides access to sensitive Hightouch resources and should be kept secure",
           "200 requests per 10 seconds per workspace",
           "TLS 1.2 or later is required"
         ],
@@ -48,39 +49,39 @@
         "extraction_end_marker": "\n---\n"
       }
     },
-    "official_operation_count": 46,
-    "admitted_operation_count": 45,
+    "official_operation_count": 48,
+    "admitted_operation_count": 47,
     "exclusion_count": 1,
     "official_method_counts": {
-      "GET": 21,
+      "GET": 22,
+      "PATCH": 7,
+      "POST": 19
+    },
+    "admitted_method_counts": {
+      "GET": 22,
       "PATCH": 7,
       "POST": 18
     },
-    "admitted_method_counts": {
-      "GET": 21,
-      "PATCH": 7,
-      "POST": 17
-    },
     "pack_operation_counts": {
-      "hightouch-data-resources": 14,
+      "hightouch-data-resources": 16,
       "hightouch-sync-runtime": 9,
       "hightouch-identity-resolution": 4,
       "hightouch-decisioning-campaigns": 10,
       "hightouch-event-contracts": 8
     },
     "composition_bytes": {
-      "hightouch-data-resources": 42293,
+      "hightouch-data-resources": 46461,
       "hightouch-sync-runtime": 28021,
       "hightouch-identity-resolution": 9003,
       "hightouch-decisioning-campaigns": 28651,
       "hightouch-event-contracts": 23952
     },
     "body_mode_counts": {
-      "none": 23,
+      "none": 25,
       "raw_json": 23
     },
     "admitted_body_mode_counts": {
-      "none": 23,
+      "none": 25,
       "raw_json": 22
     },
     "official_body_count": 23,
@@ -88,18 +89,18 @@
     "official_optional_body_count": 6,
     "admitted_optional_body_count": 5,
     "risk_counts": {
-      "admin": 17,
+      "admin": 18,
       "destructive": 7,
-      "read": 21
+      "read": 22
     },
     "approval_counts": {
-      "always": 24,
-      "never": 21
+      "always": 25,
+      "never": 22
     },
     "idempotency_counts": {
       "idempotent": 7,
-      "non_idempotent": 17,
-      "safe": 21
+      "non_idempotent": 18,
+      "safe": 22
     },
     "pagination": {
       "automatic_operation_count": 9,
@@ -131,7 +132,7 @@
           "type": "bearer"
         }
       },
-      "explicitly_secured_operation_count": 46,
+      "explicitly_secured_operation_count": 48,
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
@@ -171,6 +172,7 @@
       "exact_decimal_string_parameters": [
         "GET /destinations/{destinationId}:destinationId",
         "GET /models/{modelId}/match-booster/runs:modelId",
+        "GET /models/{modelId}/size/{jobId}:modelId",
         "GET /models/{modelId}:modelId",
         "GET /sources/{sourceId}:sourceId",
         "GET /syncs/{syncId}/runs:runId",
@@ -181,7 +183,8 @@
         "PATCH /models/{modelId}:modelId",
         "PATCH /sources/{sourceId}:sourceId",
         "PATCH /syncs/{syncId}:syncId",
-        "POST /models/{modelId}/match-booster/trigger:modelId"
+        "POST /models/{modelId}/match-booster/trigger:modelId",
+        "POST /models/{modelId}/size:modelId"
       ],
       "response_error_envelope_operation_ids": [
         "CloneMessage",
@@ -192,6 +195,7 @@
         "CreateModel",
         "CreateSource",
         "CreateSync",
+        "GetAudienceSize",
         "GetContract",
         "GetDomain",
         "GetFlow",
@@ -200,6 +204,7 @@
         "ListFlows",
         "ListMessages",
         "RunFlow",
+        "StartAudienceSizeJob",
         "TriggerCampaign",
         "TriggerEnrichment",
         "TriggerRunCustom",
@@ -302,6 +307,23 @@
       }
     ],
     "workflows": [
+      {
+        "recipe_id": "get-audience-size-hightouch",
+        "operation_id": "GetAudienceSize",
+        "key": "GET /models/{modelId}/size/{jobId}",
+        "pack": "hightouch-data-resources",
+        "op": "model.get_audience_size",
+        "required_args": [
+          "modelId",
+          "jobId"
+        ],
+        "supplied_args": [
+          "modelId",
+          "jobId"
+        ],
+        "pagination": null,
+        "response_error_envelope": true
+      },
       {
         "recipe_id": "get-flow-hightouch",
         "operation_id": "GetFlow",
@@ -594,7 +616,7 @@
         "response_error_envelope": false
       }
     ],
-    "operation_ids_sha256": "1554b556e51576050f2e0b508316885c2856978393d409f4eacd71d39fc37ce4"
+    "operation_ids_sha256": "130fe04bf1cd0f97e540b7c149f873912efc9bb169edd78fa593f5eed717f076"
   },
   "official_operations": [
     {
@@ -656,6 +678,62 @@
       "exclusion_reason": null,
       "pack": "hightouch-decisioning-campaigns",
       "op": "campaign.get_send_statuses"
+    },
+    {
+      "key": "POST /models/{modelId}/size",
+      "method": "POST",
+      "path": "/models/{modelId}/size",
+      "operation_id": "StartAudienceSizeJob",
+      "namespace": "model",
+      "summary": "Start an audience size job",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.start_audience_size_job"
+    },
+    {
+      "key": "GET /models/{modelId}/size/{jobId}",
+      "method": "GET",
+      "path": "/models/{modelId}/size/{jobId}",
+      "operation_id": "GetAudienceSize",
+      "namespace": "model",
+      "summary": "Get an audience size",
+      "deprecated": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hightouch-data-resources",
+      "op": "model.get_audience_size"
     },
     {
       "key": "GET /decision-engine/flow/{flowId}",
@@ -3116,7 +3194,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "89023431b582ef5a6bd3e947c539278b9ba5ddaa6933284722e7a4b0abd27fe5"
+      "response_schema_sha256": "b97edfb28b029ca4209ce939a4d727f8ed0a5187e5b8bf9e68b318d4b05286f8"
     },
     "GET /models/{modelId}/match-booster/runs": {
       "key": "GET /models/{modelId}/match-booster/runs",
@@ -3210,6 +3288,69 @@
         }
       ],
       "response_schema_sha256": "3242398066078f5d444b13a3b6668c98f282a9fe6c6a6f003e71de267d1ed8fd"
+    },
+    "GET /models/{modelId}/size/{jobId}": {
+      "key": "GET /models/{modelId}/size/{jobId}",
+      "operation_id": "GetAudienceSize",
+      "pack": "hightouch-data-resources",
+      "op": "model.get_audience_size",
+      "method": "GET",
+      "path": "/models/{modelId}/size/{jobId}",
+      "namespace": "model",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        },
+        {
+          "in": "path",
+          "wire_name": "jobId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "jobId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "6b7ba030f0bc0ea1ceb1df6194be6f853dae1dda631cff59854d742b089d89f1"
     },
     "GET /sources": {
       "key": "GET /sources",
@@ -4056,7 +4197,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "b157d1afbd6fe6f2beb82b0f47a1108eae99e3603aa8a982f976c4a59f0e62ec"
+      "response_schema_sha256": "add59fe950f0bb880159bf4e69c224e69c331c33014d42cb2ef33765b0900554"
     },
     "PATCH /sources/{sourceId}": {
       "key": "PATCH /sources/{sourceId}",
@@ -4671,7 +4812,7 @@
           "bearerAuth": []
         }
       ],
-      "response_schema_sha256": "b157d1afbd6fe6f2beb82b0f47a1108eae99e3603aa8a982f976c4a59f0e62ec"
+      "response_schema_sha256": "add59fe950f0bb880159bf4e69c224e69c331c33014d42cb2ef33765b0900554"
     },
     "POST /models/{modelId}/match-booster/trigger": {
       "key": "POST /models/{modelId}/match-booster/trigger",
@@ -4722,6 +4863,54 @@
         }
       ],
       "response_schema_sha256": "7afa07088620d36ebe68591483c7a3d1f4162e90d193b65d81a44928e9392d2a"
+    },
+    "POST /models/{modelId}/size": {
+      "key": "POST /models/{modelId}/size",
+      "operation_id": "StartAudienceSizeJob",
+      "pack": "hightouch-data-resources",
+      "op": "model.start_audience_size_job",
+      "method": "POST",
+      "path": "/models/{modelId}/size",
+      "namespace": "model",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "modelId",
+          "required": true,
+          "official_types": [
+            "number"
+          ],
+          "official_format": "double",
+          "admitted_key": "modelId",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_identifier": true
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_error_envelope": true,
+      "result_path": null,
+      "pagination": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "response_schema_sha256": "e1587dbc93edca0c4aa33362236618f23d8c5c10533c2592110a8ab01cb1ffbc"
     },
     "POST /sources": {
       "key": "POST /sources",

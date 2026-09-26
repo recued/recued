@@ -24,7 +24,30 @@ export interface StepOptions {
   /** Step-level cache freshness override. Falls through to the default
    *  policy when omitted. */
   cache?: CacheFreshness;
+  /** The step's `pages` setting (see {@link StepPages}), carried to the gateway,
+   *  which reads a Records search page by page when it is `'all'`. */
+  pages?: StepPages;
 }
+
+/** A step's `pages` setting. `'all'`: read a Records `search` page by page, up to
+ *  `RECORDS_MAX_SEARCH_ROWS` rows, instead of the one page the store answers.
+ *
+ *  ⛔ EXPLICIT, BECAUSE THE 200-ROW PAGE IS SOMETIMES THE POINT. A recipe has no
+ *  loop to follow `next_cursor`, so a search that needed more than one page
+ *  stopped at the first without a word: the month-end closer lost every
+ *  statement line past the 200th from its counts and the accountant's CSV
+ *  (2026-09-24 audit). Reading more whenever a search asks for more would lift
+ *  a ceiling other recipes rely on: `describe-photos` must refuse a batch of 201
+ *  rather than start one, because the number the owner reads is the number the
+ *  store enforces. So a step asks for every page by name, and every other
+ *  search reaches the store exactly as before. Owner decision, 2026-09-25.
+ *
+ *  The answer keeps the store's shape: `records`, and `next_cursor` only while
+ *  rows are still left, so a step that needs all of them checks
+ *  `{{step.<id>.next_cursor}} is_empty`. Honoured on sequential op steps (and the
+ *  ingredient steps an install lowers them to); a step whose operation is not a
+ *  Records search fails at dispatch rather than ignoring it. */
+export type StepPages = 'all';
 
 /** Per-call step metadata the engine threads through the IngredientExecutor
  *  chain. D-113 uses it to attribute pending approvals back to the
@@ -91,7 +114,7 @@ export interface StepMeta {
   trigger_source?: string;
   /** D-161 P1 — the actor identity driving this execution
    *  (`execution_source.actor`), threaded so kernel write-handlers
-   *  (`enrichment-upsert`, `data-annotate`, `data-link`) can stamp the
+   *  (`enrichment-upsert`, `annotation-create`, `link-create`) can stamp the
    *  D-161 `origin_actor` provenance facet on the rows they write —
    *  propagated from the run's `ExecutionSource`, never re-derived (I-6).
    *  Mirrors `trigger_source` above: the engine forwards `ctx.actor`
@@ -352,6 +375,8 @@ export interface IngredientStep extends BaseStep {
    *  (extension, Slack, Telegram, email). Defaults to a generic
    *  "{slug} requested by recipe {recipe_id}" string. */
   prompt?: string;
+  /** Read a Records search page by page. See {@link StepPages}. */
+  pages?: StepPages;
 }
 
 export interface GuardStep extends BaseStep {

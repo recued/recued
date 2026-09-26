@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
-  SAVED_DATA_VIEW_LIMIT, parseSavedDataViewDefinition,
+  PACK_SAVED_VIEWS_PER_PACK_LIMIT, SAVED_DATA_VIEW_LIMIT, parseSavedDataViewDefinition,
   type SavedDataViewDefinition,
 } from '@recued/contracts';
+import { packSavedViewId } from '../pack-saved-views.js';
 import { createSavedDataViewStore } from '../saved-data-view-store.js';
 
 const definitions: SavedDataViewDefinition[] = [
@@ -226,5 +227,136 @@ describe('P2/F2 review mark', () => {
     expect(() => store.update({
       id: view.id, expected_revision: view.revision, review: bad as never,
     })).toThrow(/Invalid review mark/);
+  });
+});
+
+describe('D-289 pack-shipped saved views', () => {
+  const pack = { publisher: 'vendor', slug: 'invoices' } as const;
+  const other = { publisher: 'vendor', slug: 'other-pack' } as const;
+  const recordsView: SavedDataViewDefinition = {
+    tab: 'records', owner: { publisher: 'vendor', pack_slug: 'shop' }, entity: 'order',
+  };
+  const decl = (name: string, definition: SavedDataViewDefinition = recordsView) =>
+    ({ id: packSavedViewId(pack, name), name, definition });
+
+  const setup = () => {
+    const store = createSavedDataViewStore(open());
+    store.syncPackViews(pack, [decl('Overdue invoices')]);
+    const view = store.list().find((v) => v.pack !== undefined)!;
+    return { store, view };
+  };
+
+  it('installs pack views under a deterministic, existing-shaped id', () => {
+    const { view } = setup();
+    expect(view.pack).toEqual(pack);
+    // The id validator is `/^view_[a-f0-9-]{36}$/`; a fresh uuid per install
+    // would discard the owner's state on every pack update.
+    expect(view.id).toMatch(/^view_[a-f0-9-]{36}$/);
+    expect(view.id).toBe(packSavedViewId(pack, 'Overdue invoices'));
+  });
+
+  /** ⛔ THE TEST THIS FEATURE EXISTS TO PASS. The sibling precedent
+   *  (`pack-reception-templates`) is replace-clean, which is safe only because
+   *  its rows carry nothing the owner authored. Copying it here would un-hide
+   *  a dismissed view and reset a review mark on every reinstall. */
+  it('re-asserts pack fields on reinstall while keeping everything the owner set', () => {
+    const { store, view } = setup();
+    const hidden = store.setHidden({ id: view.id, expected_revision: view.revision, hidden: true });
+    const marked = store.update({
+      id: view.id, expected_revision: hidden.revision,
+      review: { at: 1_700_000_000_000, event_id: 'evt-1' },
+    });
+    expect(marked.hidden).toBe(true);
+    expect(marked.review).toBeDefined();
+
+    // A later pack version renames nothing but narrows the definition.
+    const narrowed: SavedDataViewDefinition = {
+      ...recordsView, filters: { status: { op: 'eq', value: 'open' } },
+    };
+    store.syncPackViews(pack, [decl('Overdue invoices', narrowed)]);
+
+    const after = store.list().find((v) => v.id === view.id)!;
+    expect(after.definition).toEqual(narrowed);   // pack-owned: re-asserted
+    expect(after.hidden).toBe(true);              // owner-owned: untouched
+    expect(after.review?.reviewed_through).toEqual({ at: 1_700_000_000_000, event_id: 'evt-1' });
+  });
+
+  it('does not churn revision when the declaration is unchanged', () => {
+    const { store, view } = setup();
+    const result = store.syncPackViews(pack, [decl('Overdue invoices')]);
+    expect(result).toEqual({ added: 0, updated: 0, retired: 0 });
+    // A boot re-scan must not invalidate every client's CAS for nothing.
+    expect(store.list().find((v) => v.id === view.id)!.revision).toBe(view.revision);
+  });
+
+  it('retires a view the pack stopped shipping, and leaves other packs alone', () => {
+    const { store } = setup();
+    store.syncPackViews(other, [{ ...decl('Elsewhere'), id: packSavedViewId(other, 'Elsewhere') }]);
+    const result = store.syncPackViews(pack, []);
+    expect(result.retired).toBe(1);
+    expect(store.list().map((v) => v.name)).toEqual(['Elsewhere']);
+  });
+
+  it('removes only the uninstalled pack’s views', () => {
+    const { store } = setup();
+    store.syncPackViews(other, [{ ...decl('Elsewhere'), id: packSavedViewId(other, 'Elsewhere') }]);
+    expect(store.removePackViews(pack.slug, pack.publisher)).toBe(1);
+    expect(store.list().map((v) => v.name)).toEqual(['Elsewhere']);
+  });
+
+  /** ⛔ Refuse what the next reinstall would silently undo (D-145 PA10). */
+  it('refuses rename, delete and settings edits on a pack view', () => {
+    const { store, view } = setup();
+    const at = { id: view.id, expected_revision: view.revision };
+    expect(() => store.rename({ ...at, name: 'Mine now' })).toThrow(/set by the pack/);
+    expect(() => store.delete(at)).toThrow(/set by the pack/);
+    expect(() => store.update({ ...at, definition: recordsView })).toThrow(/set by the pack/);
+  });
+
+  /** ⚠ PER-FIELD, NOT BLANKET — a pack view that cannot be alerted on is most
+   *  of the reason nobody would want one. */
+  it('still lets the owner set an alert and a review mark on a pack view', () => {
+    const { store, view } = setup();
+    const alerted = store.update({
+      id: view.id, expected_revision: view.revision,
+      alert: { enabled: false, time_zone: 'UTC' },
+    });
+    expect(alerted.alert).toBeDefined();
+    expect(() => store.update({
+      id: view.id, expected_revision: alerted.revision,
+      review: { at: 5, event_id: 'e' },
+    })).not.toThrow();
+  });
+
+  it('hides and unhides, and refuses to hide an owner view', () => {
+    const { store, view } = setup();
+    const hidden = store.setHidden({ id: view.id, expected_revision: view.revision, hidden: true });
+    expect(hidden.hidden).toBe(true);
+    expect(store.setHidden({ id: view.id, expected_revision: hidden.revision, hidden: false }).hidden)
+      .toBeUndefined();
+
+    const mine = store.create({ name: 'Mine', definition: { tab: 'today' } });
+    expect(() => store.setHidden({ id: mine.id, expected_revision: mine.revision, hidden: true }))
+      .toThrow(/Only a pack view can be hidden/);
+  });
+
+  it('caps how many views one pack may ship, and names the pack', () => {
+    const store = createSavedDataViewStore(open());
+    const many = Array.from({ length: PACK_SAVED_VIEWS_PER_PACK_LIMIT + 1 },
+      (_unused, i) => decl(`View ${i}`));
+    expect(() => store.syncPackViews(pack, many)).toThrow(/invoices pack ships 21 views/);
+  });
+
+  /** ⛔ The owner's 100 stays the OWNER's. */
+  it('does not spend the owner allowance on pack views', () => {
+    const store = createSavedDataViewStore(open());
+    store.syncPackViews(pack, Array.from({ length: 5 },
+      (_unused, i) => decl(`Packed ${i}`)));
+    for (let i = 0; i < SAVED_DATA_VIEW_LIMIT; i++) {
+      store.create({ name: `Mine ${i}`, definition: { tab: 'today' } });
+    }
+    expect(store.list()).toHaveLength(SAVED_DATA_VIEW_LIMIT + 5);
+    expect(() => store.create({ name: 'One too many', definition: { tab: 'today' } }))
+      .toThrow(/up to 100 views/);
   });
 });

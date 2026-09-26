@@ -60,7 +60,17 @@ import {
   prepareRecordsUpdateReview,
   type PackInstallRpcDeps,
 } from './pack-install-handler.js';
-import type { RecordsMigrationArtifact } from './records/install-coordinator.js';
+import { hasPrivilegedRecordsStep, type RecordsMigrationArtifact } from './records/install-coordinator.js';
+import {
+  carriesRecords,
+  compositionPackCurrentAccess,
+  diffCompositionPackForUpdate,
+  diffRecordsPackForUpdate,
+  recordsPackCurrentAccess,
+} from './pack-operation-update-diff.js';
+import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
+import type { SellerInstallAudienceStore } from './ingredient-authoring/install-composition.js';
+import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { ContractRow, ContractStore } from './storage/contract-store.js';
 import type { WsClient } from './ws-server.js';
@@ -80,6 +90,12 @@ export interface PackListRpcDeps {
   contractStore?: ContractStore;
   /** D-221 full-ref install/readiness registry. */
   recordsStore?: RecordsStore;
+  /** The installed catalogs, so an offered update can carry the operation diff
+   *  (`operation_diff`). Absent ⇒ no diff; the update is still offered. */
+  localManifestStore?: Pick<LocalManifestStore, 'getManifest'>;
+  /** Customer packages, so an offered update's audience can name the tiers it
+   *  is shared with (D-294). Absent ⇒ shared customers come back one by one. */
+  sellerStore?: SellerInstallAudienceStore;
   resolveRecordsMigrationArtifacts?: (input: {
     owner: { publisher: string; pack_slug: string };
     from_version: number;
@@ -214,6 +230,8 @@ const projectManifest = (
   recipeStore: RecipeStore,
   contractStore: ContractStore | undefined,
   lookups: PackRosterLookups,
+  localManifestStore?: Pick<LocalManifestStore, 'getManifest'>,
+  sellerStore?: SellerInstallAudienceStore,
 ): PackListEntry => {
   const recordsNamespace = lookups.namespace(manifest.publisher, manifest.slug);
   if (recordsNamespace !== null) {
@@ -312,6 +330,33 @@ const projectManifest = (
     contractStore !== undefined && installedAnyVersion && !installed
       ? reviewOwnerOperationsForPackUpdate(contractStore, manifest)
       : [];
+  // The whole-pack diff an update review shows: every removed, changed and
+  // added operation, not only the ones the owner set a rule for.
+  const offeredUpdate = contractStore !== undefined && localManifestStore !== undefined
+    && installedAnyVersion && !installed;
+  const operationDiff = offeredUpdate
+    ? diffCompositionPackForUpdate(contractStore!, localManifestStore!, manifest)
+    : undefined;
+  // Where the update's Access choice STARTS: what the pack holds now.
+  const currentAccess = offeredUpdate
+    ? compositionPackCurrentAccess(contractStore!, localManifestStore!, manifest)
+    : undefined;
+  // …and "Who may use it" starts at who has it now (D-294). A Records pack
+  // stamps its share with its catalog id, not this slug — its branch below.
+  const currentAudience = contractStore !== undefined && installedAnyVersion && !installed
+    && !carriesRecords(manifest)
+    ? currentPackAudience({
+      contractStore,
+      ...(sellerStore !== undefined ? { sellerStore } : {}),
+      sourcePack: manifest.slug,
+      now: Date.now,
+    })
+    : undefined;
+  // …and Connect at the account it uses now.
+  const currentConnection = contractStore !== undefined && installedAnyVersion && !installed
+    && !carriesRecords(manifest)
+    ? currentPackConnection(contractStore, manifest.slug)
+    : undefined;
   return {
     slug: manifest.slug,
     publisher: manifest.publisher,
@@ -324,6 +369,10 @@ const projectManifest = (
     ...(ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
       : {}),
+    ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
+    ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
+    ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
+    ...(currentConnection !== undefined ? { current_connection: currentConnection } : {}),
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
     body_visibility_grant_count:
@@ -409,8 +458,35 @@ export const handlePacksList = async (
       deps.recipeStore,
       deps.contractStore,
       lookups,
+      deps.localManifestStore,
+      deps.sellerStore,
     );
-    if (deps.recordsStore === undefined || base.installed) return base;
+    if (deps.recordsStore === undefined) return base;
+    // ⛔⛔ A RECORDS PACK READS AS INSTALLED ON ITS VERSION ALONE, and its recipes
+    // can move without one. D-292 moved three importers' pins at the same pack
+    // version; every owner who already had the pack kept `installed: true`, was
+    // offered nothing, and Pack Use kept running the v1 body (proved by booting
+    // the current server on a 26.9.21 realm). The update itself was never
+    // missing: recipe bodies are in the artifact digest, so the review builder
+    // already answers a same-version recipe change with a transition — only this
+    // list never asked. An installed records pack whose stored recipes are
+    // BEHIND its pins is offered that review like any other update. Behind, not
+    // different: a newer stored version is never offered as a downgrade.
+    //
+    // ⚠ Only the recipes an install STORES: its business recipes. The runtime
+    // canary and migration recipes never get a row, so a missing row for one is
+    // not "behind" — counted, every records pack would read as out of date
+    // forever, including right after its update (caught by
+    // `records-same-version-recipe-update.test.ts`, not by reading it).
+    const recipesBehind = base.installed
+      && lookups.namespace(manifest.publisher, manifest.slug) !== null
+      && manifest.recipes.some((ref) => {
+        const bundled = deps.recipeStore.getBundled(ref.slug);
+        if (bundled !== null && hasPrivilegedRecordsStep(bundled)) return false;
+        const stored = deps.recipeStore.getStored(ref.slug);
+        return stored === null || stored.version < ref.version;
+      });
+    if (base.installed && !recipesBehind) return base;
     try {
       const prepared = await prepareRecordsUpdateReview(
         deps as PackInstallRpcDeps,
@@ -422,13 +498,40 @@ export const handlePacksList = async (
             : { recipe, publisher_id: manifest.publisher, version: recipe.version };
         },
       );
-      return prepared?.transition === null || prepared === null
-        ? base
-        : {
-            ...base,
-            records_review: prepared.transition.review,
-            manifest_review_hash: prepared.review_hash,
-          };
+      if (prepared?.transition === null || prepared === null) return base;
+      // The same shape a version update has: not installed AT this manifest,
+      // installed at some version, and the owner-operation review a version
+      // update carries (computed only when `installed` was false).
+      const ownerOperationReview = recipesBehind && deps.contractStore !== undefined
+        ? reviewOwnerOperationsForPackUpdate(deps.contractStore, manifest)
+        : [];
+      // ⛔ A RECORDS pack's operations live in its STAMPED catalog, keyed by the
+      // derived `records-<hash>` id its owner rules and grants use — not the
+      // composition's authored slug, which is why D-211's review never saw them.
+      const operationDiff = deps.contractStore !== undefined && deps.localManifestStore !== undefined
+        ? diffRecordsPackForUpdate(deps.contractStore, deps.localManifestStore, prepared.target.catalog)
+        : undefined;
+      const currentAccess = deps.contractStore !== undefined && deps.localManifestStore !== undefined
+        ? recordsPackCurrentAccess(deps.contractStore, deps.localManifestStore, prepared.target)
+        : undefined;
+      const currentAudience = deps.contractStore !== undefined
+        ? currentPackAudience({
+          contractStore: deps.contractStore,
+          ...(deps.sellerStore !== undefined ? { sellerStore: deps.sellerStore } : {}),
+          sourcePack: prepared.target.catalog.slug,
+          now: Date.now,
+        })
+        : undefined;
+      return {
+        ...base,
+        ...(recipesBehind ? { installed: false } : {}),
+        ...(ownerOperationReview.length > 0 ? { owner_operation_review: ownerOperationReview } : {}),
+        ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
+        ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
+        ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
+        records_review: prepared.transition.review,
+        manifest_review_hash: prepared.review_hash,
+      };
     } catch {
       // Fail closed: no review token means the update submit is refused. The
       // authoring/install diagnostics retain the concrete validation message.

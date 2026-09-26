@@ -197,6 +197,7 @@ import {
   serializeChatAnswerAddress,
   serializeChatPlanAddress,
   serializeLogsRunAddress,
+  parseShellRoute,
   serializeShellRoute,
   serializeSourceRecordAddress,
   serializeSourceRecordVerificationAddress,
@@ -207,7 +208,6 @@ import {
   type SourceRecordDataTab,
 } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
-import { loadToday, renderToday, replaceTodayTask, writableTodayTask, TODAY_CREATE_ACTION, TODAY_VIEW_STYLES, type TodaySnapshot, type TodayTaskEdit } from './today-view.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
@@ -504,7 +504,6 @@ export type DataTabId =
   | 'webhook'
   | 'records'
   | 'search'
-  | 'today'
   | DataSingleCollectionTabId;
 
 export const DATA_OWN_IT_TABS: readonly DataOwnItTabId[] = [
@@ -542,8 +541,12 @@ export const DATA_RECORDS_TABS: readonly DataTabId[] = ['records'];
  *  or "Owned" would imply a scope it does not have. */
 const DATA_SEARCH_TABS: readonly DataTabId[] = ['search'];
 
+// ⛔ D-290 — `today` is not here, and is no longer a `DataTabId` at all. Today
+// is its own `#today` route and
+// `parseShellRoute` rewrites the legacy address; leaving it here would let
+// this route build a `#data/today` link that the parser re-points at another
+// surface, and `dataAddress` then throws on its own address.
 const DATA_TABS: readonly DataTabId[] = [
-  'today',
   ...DATA_OWN_IT_TABS,
   ...DATA_RECEIVED_TABS,
   'webhook',
@@ -982,15 +985,12 @@ export interface BootstrapDataRouteOptions {
   fileUsageCaller?: (args: { record_id: string }) => Promise<FileLifecyclePreview>;
   fileMutateCaller?: (args: FileLifecycleMutation) => Promise<FileLifecyclePreview>;
   subscribe?: BroadcastSubscriber['on'];
-  /** D-267 — the shell's shared Create opener, the same modal the chat composer
-   *  chip and the drawer seat open. Wired → Today's zero-state offers a capture
-   *  button; absent → it renders nothing at all rather than a dead control. */
-  openCreateOverlay?: () => void;
   /** Keep the shell router's cached hash aligned with successful in-page
    *  history writes, which do not emit hashchange. */
   onHashSync?: (hash: string) => void;
   /** R18 — deep-link hydration (`#data/<tab>/<entity_id>`, R16). `initialTab`
-   *  is validated against the known tabs (invalid → the default Today tab, D-267);
+   *  is validated against the known tabs (invalid → the default Contacts tab,
+   *  D-290 — it was Today until Today became its own route);
    *  `initialEntityId` opens that entity's timeline detail on the contact +
    *  mirror tabs (work-entity tabs hydrate the tab only — their detail is a
    *  modal edit, not a timeline view yet). */
@@ -2279,8 +2279,6 @@ const isDataTab = (tab: string): tab is DataTabId =>
 
 const tabLabel = (tab: DataTabId): string => {
   switch (tab) {
-    case 'today':
-      return 'Today';
     case 'search':
       return 'Search';
     case 'contact':
@@ -2750,7 +2748,6 @@ const renderTabGroup = (
 const renderTabs = (active: DataTabId, locked = false): string => `
   <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR}
     role="tablist" aria-label="Data collections" aria-orientation="horizontal">
-    ${renderTabGroup('Overview', ['today'], active, locked)}
     ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active, locked)}
     ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active, locked)}
     ${renderTabGroup('Connected', DATA_MIRROR_TABS, active, locked)}
@@ -4937,7 +4934,6 @@ export const bootstrapDataRoute = (
       COLLECTION_EXPLORER_STYLES,
       // 2026-08-28 — universal search across every collection.
       UNIVERSAL_SEARCH_STYLES,
-      TODAY_VIEW_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
       RECORDS_EXPLORER_STYLES,
     ].join('\n');
@@ -4953,12 +4949,6 @@ export const bootstrapDataRoute = (
   let filePreviewRecord: { id: string; slug: string | null } | null = null;
   let fileChatAbort: AbortController | null = null;
   let fileChatRecord: { id: string; slug: string | null } | null = null;
-  let todaySnapshot: TodaySnapshot | null = null;
-  let todayRefreshing = false;
-  let todayLiveRefreshQueued = false;
-  let todayTaskEdit: TodayTaskEdit | null = null;
-  let todayTaskNotice: string | null = null;
-  let todayTaskSequence = 0;
   // R18 — hydrate the initial tab from the `#data/<tab>` deep link (validated;
   // unknown → Contacts). A work-entity tab seeds the work-entity page state to
   // that kind so the deep link lands on the right list.
@@ -5018,16 +5008,18 @@ export const bootstrapDataRoute = (
     && opts.memoryUpdateCaller !== undefined
     && opts.memoryDeleteCaller !== undefined
     && opts.memoryGetCaller !== undefined;
-  // D-267 — bare `#data` (the drawer seat, and every link that names no tab)
-  // resolves to Today, not Contacts. `today` already leads `DATA_TABS` and owns
-  // the `Overview` group, but the fallback pointed at `contact`, so the one tab
-  // that composes across kinds — and the only one that reads as somebody's day
-  // — was never the one an owner arrived at. A fresh install got an empty
-  // contact table as its first look at its own warehouse.
+  // ⚠ D-267 made bare `#data` resolve to Today on the reasoning that it was the
+  // one tab composing across kinds. That reasoning is SPENT, not merely
+  // outvoted: Today is no longer a tab here, so there is nothing for it to
+  // choose. Left as history because the next person to wonder why the landing
+  // moved twice will find the answer here rather than re-deriving it.
+  // D-290 — `contact` is the landing now Today has its own route (owner's
+  // call, 2026-09-22). It is the other zero-config surface: no model, no
+  // mailbox and no connection needed to show something real.
   let activeTab: DataTabId =
     opts.initialTab !== undefined && isDataTab(opts.initialTab)
       ? opts.initialTab
-      : 'today';
+      : 'contact';
   // Identifies the tab represented by the current DOM. State changes before a
   // repaint, so comparing this with `activeTab` prevents a focused source chip
   // from one collection from claiming a same-named chip on another tab.
@@ -5937,7 +5929,7 @@ export const bootstrapDataRoute = (
       <p>These files stay in the connected source. Import saves a separate copy in Files.</p>
       ${!detail ? `<label>Search file names and paths <input class="data-input" type="search" maxlength="200"
         aria-label="Search cloud files" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-query" value="${e(cloudFileQueryInput)}" /></label>
-        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search"${explorerLoading ? ' disabled' : ''}>Search files</button>` : ''}` : '';
+        <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-search">Search files</button>` : ''}` : '';
     return `<section ${DATA_ROUTE_MIRROR_ATTR}="files">
       ${cloudSourcesError ? `<p role="alert">${e(cloudSourcesError)}
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-cloud-refresh">Reload file sources</button></p>` : ''}
@@ -6048,7 +6040,6 @@ export const bootstrapDataRoute = (
       || contactImport !== null || contactScan !== null || currentDeepLinkEntity() !== undefined) return null;
     if (activeTab === 'contact') return { tab: activeTab, query: contactSearch };
     if (activeTab === 'search') return { tab: activeTab, query: universalSearchQuery };
-    if (activeTab === 'today') return todayTaskEdit === null ? { tab: activeTab } : null;
     if (isWorkEntityTab(activeTab)) return {
       tab: activeTab, query: workEntityState.search_query, source_id: workEntityState.selected_source_id,
       booking_lifecycle: activeTab === 'booking' ? bookingLifecycleFilter : 'all',
@@ -6086,23 +6077,6 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
-    const focusedTodayControl = activeLens === 'data' && activeTab === 'today'
-      && activeElement?.closest?.('[data-today-view]') != null ? activeElement : null;
-    const focusedTodayHref = focusedTodayControl?.getAttribute('href');
-    const focusedTodayRefresh = focusedTodayControl?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'refresh-today';
-    const focusedTodaySources = focusedTodayControl?.tagName === 'SUMMARY';
-    const focusedTodayAction = focusedTodayControl?.getAttribute(DATA_ROUTE_ACTION_ATTR);
-    const focusedTodayTaskKey = focusedTodayControl?.getAttribute('data-today-task');
-    const focusedTodayNotice = focusedTodayControl?.hasAttribute('data-today-task-notice');
-    const focusedTodayError = focusedTodayControl?.hasAttribute('data-today-task-error');
-    // ⚠ OPTIONAL CALL. D-267 made Today the default tab, so this probe now runs
-    // on the FIRST render of every bare `#data` mount — including the fake-DOM
-    // hosts whose `routeRoot` has no `querySelector`. It was previously reached
-    // only by a host that had already navigated to Today, which is why an
-    // unguarded call survived here: five unhandled rejections, and the suite
-    // still reported 224 passed.
-    const todaySourcesOpen = activeLens === 'data' && activeTab === 'today'
-      ? routeRoot.querySelector?.<HTMLDetailsElement>('.today-sources')?.open : undefined;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -6491,6 +6465,22 @@ export const bootstrapDataRoute = (
                   selectionEnd: activeSearch.selectionEnd,
                   selectionDirection: activeSearch.selectionDirection,
                 }
+            // ⛔ The cloud file search box was missing too, and its list repaints
+            // when a source's first page lands, which is just when an owner who
+            // picked the source starts typing. The repaint replaced the box, so
+            // focus fell to <body> and the rest of the search went nowhere: Enter
+            // then searched for part of it, or for nothing.
+            : activeLens === 'data'
+              && renderedActiveTab === activeTab
+              && activeTab === 'files'
+              && activeSearch?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query'
+              ? {
+                  tab: activeTab,
+                  kind: 'cloud-file' as const,
+                  selectionStart: activeSearch.selectionStart,
+                  selectionEnd: activeSearch.selectionEnd,
+                  selectionDirection: activeSearch.selectionDirection,
+                }
             : null;
     const focusedTabRaw = activeElement?.getAttribute?.(DATA_ROUTE_TAB_ATTR);
     const focusedTab = focusedTabRaw !== null
@@ -6564,13 +6554,7 @@ export const bootstrapDataRoute = (
         pendingExplorerRecordFocus = null;
       }
     }
-    const body = activeTab === 'today'
-      ? renderToday(todaySnapshot, loading || todayRefreshing, DATA_ROUTE_ACTION_ATTR, todaySourcesOpen, opts.openCreateOverlay !== undefined, {
-          canComplete: opts.taskMarkDoneCaller !== undefined && opts.workEntityGetCaller !== undefined && opts.workEntitySourceListCaller !== undefined,
-          canReschedule: opts.workEntityUpsertCaller !== undefined && opts.workEntityGetCaller !== undefined && opts.workEntitySourceListCaller !== undefined,
-          edit: todayTaskEdit, notice: todayTaskNotice,
-        })
-      : activeTab === 'contact'
+    const body = activeTab === 'contact'
       ? renderContactSurface(
           contacts,
           contactRollups,
@@ -6825,7 +6809,6 @@ export const bootstrapDataRoute = (
         DATA_ROUTE_ACTION_ATTR,
         memoryExporting
           || memoryFilteringOrigin !== null
-          || todayTaskEdit?.busy === true
           || hasRecordsInFlightWork(),
       )}
       ${activeLens === 'memory'
@@ -6834,7 +6817,6 @@ export const bootstrapDataRoute = (
             activeTab,
             savingFormResponse
               || formResponseDiscardGuardOpen
-              || todayTaskEdit?.busy === true
               || hasRecordsInFlightWork(),
           )}
       ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
@@ -6848,20 +6830,6 @@ export const bootstrapDataRoute = (
       ${verificationNext}
     `;
     renderedActiveTab = activeTab;
-    if (focusedTodayHref) {
-      const replacement = Array.from(routeRoot.querySelectorAll<HTMLAnchorElement>('[data-today-view] a'))
-        .find((link) => link.getAttribute('href') === focusedTodayHref);
-      (replacement ?? routeRoot.querySelector<HTMLElement>('.today-refresh'))?.focus({ preventScroll: true });
-    } else if (focusedTodayRefresh || focusedTodaySources) {
-      routeRoot.querySelector<HTMLElement>(focusedTodayRefresh ? '.today-refresh' : '.today-sources summary')?.focus({ preventScroll: true });
-    } else if (focusedTodayAction?.startsWith('today-task-')) {
-      const replacement = Array.from(routeRoot.querySelectorAll<HTMLElement>(`[data-today-view] [${DATA_ROUTE_ACTION_ATTR}]`))
-        .find(control => control.getAttribute(DATA_ROUTE_ACTION_ATTR) === focusedTodayAction
-          && control.getAttribute('data-today-task') === focusedTodayTaskKey);
-      (replacement ?? routeRoot.querySelector<HTMLElement>('[data-today-task-notice], .today-refresh'))?.focus({ preventScroll: true });
-    } else if (focusedTodayNotice || focusedTodayError) {
-      routeRoot.querySelector<HTMLElement>(focusedTodayError ? '[data-today-task-error]' : '[data-today-task-notice]')?.focus({ preventScroll: true });
-    }
     if (opts.savedView !== undefined && currentView() !== null
       && (activeLens === 'memory' ? !memoryLoading : !loading && !explorerLoading && !recordsState.loading)) {
       syncDataHash();
@@ -6954,6 +6922,8 @@ export const bootstrapDataRoute = (
           )
         : focusedSearch.kind === 'universal'
         ? routeRoot.querySelector?.<HTMLInputElement>(`[${SEARCH_INPUT_ATTR}]`) ?? null
+        : focusedSearch.kind === 'cloud-file'
+        ? routeRoot.querySelector?.<HTMLInputElement>(`input[${DATA_ROUTE_ACTION_ATTR}="file-cloud-query"]`) ?? null
         : routeRoot.querySelector<HTMLInputElement>(
             `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
             + `[data-kind="${focusedSearch.tab}"]`,
@@ -7917,15 +7887,23 @@ export const bootstrapDataRoute = (
     return opts.collectionGetCaller(args);
   };
 
+  /** A search REPLACES the list, so it supersedes any list read in flight: the
+   *  `explorerSeq` bump drops that read's answer. A page walk CONTINUES the list
+   *  on screen, so it waits for that list.
+   *
+   *  ⛔ A search used to wait as well, by returning before it kept the query. An
+   *  Enter pressed while a source's first page loaded left the owner's search in
+   *  the box over a list that ignored it, and "Load more" then paged the OLD
+   *  query: 36 rows for a search that matches 35. */
   const browseCloudFiles = async (append: boolean): Promise<void> => {
     const slug = explorerSelectedSlug;
     const sourceId = slug ? cloudFileSourceId(slug) : undefined;
     const cloud = opts.fileChatCallers?.cloud;
-    if (activeTab !== 'files' || !sourceId || !cloud || explorerLoading || cloudLoadingMore) return;
+    if (activeTab !== 'files' || !sourceId || !cloud) return;
+    if (append && (explorerLoading || cloudLoadingMore || !cloudFileCursor)) return;
     if (!append) cloudFileQuery = cloudFileQueryInput.trim();
-    if (append && !cloudFileCursor) return;
     const seq = ++explorerSeq;
-    if (!append) { explorerLoading = true; explorerDetail = null; }
+    if (!append) { explorerLoading = true; explorerDetail = null; cloudLoadingMore = false; }
     else cloudLoadingMore = true;
     cloudBrowseError = ''; render();
     try {
@@ -9321,46 +9299,7 @@ export const bootstrapDataRoute = (
     }
 
     const nextErrors: DataLoadErrors = {};
-    if (activeTab === 'today') {
-      todayRefreshing = true;
-      todayLiveRefreshQueued = false;
-      const stillCurrent = (): boolean => !disposed && generation === loadGeneration;
-      // ⛔⛔ PARTIAL PAINTS ON THE FIRST LOAD ONLY — never on a refresh, and the
-      // reason is focus. Each paint replaces the view's DOM, and the route
-      // recaptures the focused control from `doc.activeElement` at the START of
-      // every render: the first partial that does not yet contain the focused
-      // row drops focus to <body>, and every later paint then reads "nothing
-      // was focused" and has nothing to restore. Caught by the e2e that focuses
-      // a row and advances the clock, not by any unit test.
-      //
-      // ⚖ And it costs nothing: a refresh already has the previous snapshot on
-      // screen under "Loading again. These are the old results." Painting partials
-      // over results that are already there buys no earlier information — the
-      // problem partials exist to solve is the FIRST paint withholding
-      // everything while three of four reads have answered.
-      const paintPartials = todaySnapshot === null;
-      const snapshot = await loadToday(
-        opts,
-        (opts.now ?? Date.now)(),
-        stillCurrent,
-        // ⛔ Guarded by the SAME generation check as the final assignment: a
-        // partial from a retired load must not overwrite a newer one, and
-        // unlike the final assignment this callback can fire many times while a
-        // newer refresh is already running. ⚠ `loading` stays true throughout
-        // and the snapshot carries `complete: false`, so no partial paint
-        // claims a finished read.
-        paintPartials
-          ? (partial) => {
-              if (!stillCurrent()) return;
-              todaySnapshot = partial;
-              render();
-            }
-          : undefined,
-      );
-      if (disposed || generation !== loadGeneration) return;
-      todaySnapshot = snapshot;
-      todayRefreshing = false;
-    } else if (activeTab === 'contact') {
+    if (activeTab === 'contact') {
       // D-205 #2c — in PARALLEL: the strip diagnoses the list, so making the user
       // wait for one before the other buys nothing, and a slow Source-health read
       // must not delay the contacts themselves.
@@ -9391,10 +9330,6 @@ export const bootstrapDataRoute = (
     errors = nextErrors;
     loading = false;
     render();
-    if (activeTab === 'today' && todayLiveRefreshQueued) {
-      todayLiveRefreshQueued = false;
-      scheduleLiveRefresh();
-    }
   };
 
   const startRefresh = (): void => {
@@ -9687,11 +9622,18 @@ export const bootstrapDataRoute = (
     }
     return undefined;
   };
+  /** ⛔ THE SURFACE COMES FROM THE HASH, NOT FROM THIS MODULE'S NAME. While a
+   *  saved view is bound this route addresses as `views` (D-291) and the moment
+   *  its filters diverge it addresses as `data` again — one route, two
+   *  surfaces, decided per navigation. Hardcoding `'data'` here made
+   *  `hierarchicalAddressFromHash` throw the instant the parser re-pointed
+   *  `#data/view/...`, which is the same way the D-290 Today rewrite broke its
+   *  own route. */
   const dataAddress = (
     hash: string,
     deepLinkEntity: string | undefined,
   ) => hierarchicalAddressFromHash(
-    'data',
+    parseShellRoute(hash).surface,
     hash,
     ...(activeLens === 'memory'
       ? [hierarchicalLevel('data-lens:memory', 'memory')]
@@ -9714,7 +9656,7 @@ export const bootstrapDataRoute = (
   const dataHistory = createHierarchicalHistory({
     initial: dataAddress(
       opts.savedView !== undefined
-        ? serializeShellRoute('data', 'view', opts.savedView.id)
+        ? serializeShellRoute('views', opts.savedView.id)
         : activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
         : serializeShellRoute('data', activeTab, initialDataEntity),
@@ -9729,7 +9671,7 @@ export const bootstrapDataRoute = (
     const definition = currentView();
     if (savedViewLinked && savedViewBinding !== undefined && definition !== null
       && sameSavedDataViewDefinition(definition, savedViewBinding.definition)) {
-      dataHistory.navigate(dataAddress(serializeShellRoute('data', 'view', savedViewBinding.id), undefined));
+      dataHistory.navigate(dataAddress(serializeShellRoute('views', savedViewBinding.id), undefined));
       return;
     }
     // D-198 Slice 1b — the Memory lens addresses as `#data/memory` (no entity
@@ -9807,7 +9749,6 @@ export const bootstrapDataRoute = (
     focusActivatedTab = false,
   ): Promise<void> => {
     if (activeTab === tab) return;
-    if (todayTaskEdit?.busy) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
       return;
@@ -9829,7 +9770,6 @@ export const bootstrapDataRoute = (
       return;
     }
     if (focusActivatedTab) pendingCollectionTabFocus = tab;
-    todayTaskEdit = null; todayTaskNotice = null; todayTaskSequence += 1;
     navigationGeneration += 1;
     timelineLoadGeneration += 1;
     loadingTimeline = false;
@@ -9883,7 +9823,6 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
-    if (todayTaskEdit?.busy) return;
     if (hasRecordsInFlightWork()) {
       focusRecordsInFlightOwner();
       return;
@@ -9926,7 +9865,6 @@ export const bootstrapDataRoute = (
       focusMemoryImportSubmit();
       return;
     }
-    todayTaskEdit = null; todayTaskNotice = null; todayTaskSequence += 1;
     navigationGeneration += 1;
     retireRunVerification();
     workEntityDialogOpenSeq += 1;
@@ -13285,77 +13223,6 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const focusTodayTask = (selector: string): void => {
-    // Explicit actions reveal their editor/result, including tasks far down
-    // the list. Background render() restoration still preserves scroll.
-    routeRoot.querySelector<HTMLElement>(selector)?.focus();
-  };
-  const todayOwnsFocus = (): boolean => doc.activeElement == null || doc.activeElement === doc.body
-    || (doc.activeElement as HTMLElement).closest?.('[data-today-view]') != null;
-  const closeTodayTaskEditor = (): void => {
-    if (!todayTaskEdit || todayTaskEdit.busy) return;
-    const { key, action: editing } = todayTaskEdit;
-    todayTaskEdit = null; todayTaskSequence += 1; render();
-    const control = Array.from(routeRoot.querySelectorAll<HTMLElement>('[data-today-task]'))
-      .find(button => button.getAttribute('data-today-task') === key
-        && button.getAttribute(DATA_ROUTE_ACTION_ATTR) === `today-task-${editing}`);
-    (control ?? routeRoot.querySelector<HTMLElement>('.today-refresh'))?.focus();
-  };
-  const submitTodayTask = async (): Promise<void> => {
-    const edit = todayTaskEdit;
-    const get = opts.workEntityGetCaller;
-    const listSources = opts.workEntitySourceListCaller;
-    if (!edit || edit.busy || !get || !listSources || disposed || activeTab !== 'today' || activeLens !== 'data') return;
-    if (edit.action === 'complete' ? !opts.taskMarkDoneCaller : !opts.workEntityUpsertCaller) return;
-    const due = new Date(edit.value).getTime();
-    if (edit.action === 'reschedule' && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(edit.value)
-      || !Number.isFinite(due) || toDatetimeLocal(due) !== edit.value)) {
-      todayTaskEdit = { ...edit, error: 'Pick a valid due date and time in your local time zone.' };
-      render(); focusTodayTask(`[${DATA_ROUTE_ACTION_ATTR}="today-task-due"]`); return;
-    }
-    const sequence = ++todayTaskSequence;
-    todayTaskEdit = { ...edit, busy: true, error: null };
-    render();
-    try {
-      // A task can disappear or lose its source while its row is on screen.
-      // Send only the selected change; never replay fields from that old row.
-      const [{ entity }, { sources }] = await Promise.all([get({ kind: 'task', id: edit.id }), listSources()]);
-      if (disposed || sequence !== todayTaskSequence) return;
-      const source = entity ? sources.find(entry => entry.id === entity.source_id) : undefined;
-      if (!entity || entity._kind !== 'task' || entity.deleted_at != null || entity.sync_state !== 'live'
-        || source?.top_tier_kind !== 'task' || !source.write_capable || source.sync_posture === 'read_through') {
-        throw new Error('This task cannot be changed here now. Refresh Today and check its source.');
-      }
-      const result = edit.action === 'complete'
-        ? await opts.taskMarkDoneCaller!({ id: edit.id, done: true })
-        : await opts.workEntityUpsertCaller!({ kind: 'task', id: edit.id, due_at: due });
-      if (disposed || sequence !== todayTaskSequence) return;
-      if (result.entity.pending_write) {
-        throw new Error('Your change is saved in Recued, but the source has not confirmed it yet. Refresh Today to check before trying again.');
-      }
-      if (result.entity._kind !== 'task' || result.entity.id !== edit.id
-        || result.entity.sync_state !== 'live' || result.entity.deleted_at != null
-        || (edit.action === 'complete' ? !result.entity.done : result.entity.due_at !== due)) {
-        throw new Error('The server did not confirm the change. Refresh Today to check the task.');
-      }
-      const carryFocus = todayOwnsFocus();
-      if (todaySnapshot) todaySnapshot = replaceTodayTask(todaySnapshot, result.entity);
-      todayTaskEdit = null;
-      todayTaskNotice = `${edit.action === 'complete' ? 'Completed' : 'Rescheduled'} “${edit.title}”.`;
-      // Retire any older read before it can restore the pre-write row. Do not
-      // hold a successful task change hostage to an unrelated calendar read.
-      pendingLoadPromise = refreshActive(true);
-      render();
-      if (carryFocus) focusTodayTask('[data-today-task-notice]');
-    } catch (error) {
-      if (disposed || sequence !== todayTaskSequence) return;
-      const carryFocus = todayOwnsFocus();
-      todayTaskEdit = { ...edit, busy: false, error: errMessage(error) };
-      render();
-      if (carryFocus) focusTodayTask('[data-today-task-error]');
-    }
-  };
-
   const onClick = (ev: Event): void => {
     // Form-renderer array Add/Remove for the work-entity dialog's
     // `data.contact` ref arrays (note/project related contacts). These
@@ -13427,38 +13294,6 @@ export const bootstrapDataRoute = (
     if (action === 'select-tab') {
       const tab = target.getAttribute(DATA_ROUTE_TAB_ID_ATTR);
       if (tab !== null && isDataTab(tab)) void selectTab(tab);
-      return;
-    }
-    if (action === 'refresh-today') {
-      if (!loading && !todayRefreshing) startRefresh();
-      return;
-    }
-    if (action === 'today-task-complete' || action === 'today-task-reschedule') {
-      if (todayTaskEdit?.busy || activeTab !== 'today' || activeLens !== 'data') return;
-      if (todayTaskEdit) {
-        focusTodayTask(`[${DATA_ROUTE_ACTION_ATTR}="today-task-due"], [data-today-task-error]`);
-        return;
-      }
-      const item = writableTodayTask(todaySnapshot, target.getAttribute('data-today-task') ?? '');
-      if (!item?.taskId || !opts.workEntityGetCaller || !opts.workEntitySourceListCaller) return;
-      if (action === 'today-task-complete' ? !opts.taskMarkDoneCaller : !opts.workEntityUpsertCaller) return;
-      todayTaskSequence += 1;
-      todayTaskNotice = null;
-      todayTaskEdit = { key: item.key, id: item.taskId, title: item.title,
-        action: action === 'today-task-complete' ? 'complete' : 'reschedule',
-        value: toDatetimeLocal(item.when), busy: false, error: null };
-      if (todayTaskEdit.action === 'complete') void submitTodayTask();
-      else { render(); focusTodayTask(`[${DATA_ROUTE_ACTION_ATTR}="today-task-due"]`); }
-      return;
-    }
-    if (action === 'today-task-save') { void submitTodayTask(); return; }
-    if (action === 'today-task-cancel') { closeTodayTaskEditor(); return; }
-    // D-267 — Today's zero-state opens the SAME shared Create overlay as the
-    // chat composer chip and the drawer seat. Not a fourth capture form: one
-    // modal, one commit path, so a capture made from Today is indistinguishable
-    // from one made anywhere else. The button only renders when this is wired.
-    if (action === TODAY_CREATE_ACTION) {
-      opts.openCreateOverlay?.();
       return;
     }
     // D-198 Slice 1b — Data | Memory lens switch + Memory origin filter.
@@ -14263,11 +14098,6 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
-    if (target.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'today-task-due'
-      && todayTaskEdit?.action === 'reschedule' && !todayTaskEdit.busy) {
-      todayTaskEdit = { ...todayTaskEdit, value: target.value, error: null };
-      return;
-    }
     if (typeof target.getAttribute === 'function' && target.getAttribute('data-action') === 'records-filter-value'
       && changeRecordsViewDraft(target as HTMLInputElement)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
@@ -14512,13 +14342,6 @@ export const bootstrapDataRoute = (
   };
 
   const onKeyDown = (ev: KeyboardEvent): void => {
-    if (ev.key === 'Escape' && !ev.isComposing && todayTaskEdit
-      && (ev.target as HTMLElement | null)?.closest?.('[data-today-task-editor]')) {
-      ev.preventDefault(); ev.stopPropagation(); closeTodayTaskEditor(); return;
-    }
-    if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'today-task-due') {
-      ev.preventDefault(); void submitTodayTask(); return;
-    }
     if (ev.key === 'Enter' && targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)?.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query') {
       ev.preventDefault(); void browseCloudFiles(false); return;
     }
@@ -14774,12 +14597,6 @@ export const bootstrapDataRoute = (
         || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
         || hasRecordsInFlightWork()
         || (doc.activeElement as HTMLElement | null)?.closest?.('.records-view-controls, .records-pagination') != null)) return;
-    // A calendar sync can keep emitting warehouse changes while Today pages
-    // through its sources. Finish and paint this read before one follow-up.
-    if (activeLens === 'data' && activeTab === 'today' && todayRefreshing) {
-      todayLiveRefreshQueued = true;
-      return;
-    }
     pendingLoadPromise = refreshActive(true);
     if (contactDetail !== null) {
       void openContactDetail(contactDetail.email);
@@ -14799,16 +14616,6 @@ export const bootstrapDataRoute = (
       runLiveRefresh();
     }, liveRefreshDebounceMs);
   };
-  // Deadlines and local-day boundaries advance even without warehouse writes.
-  const todayClock = doc.defaultView?.setInterval?.(() => {
-    if (activeLens === 'data' && activeTab === 'today' && !loading && !todayRefreshing
-      && doc.visibilityState !== 'hidden') runLiveRefresh();
-  }, 60_000);
-  const onTodayVisible = (): void => {
-    if (doc.visibilityState === 'visible' && activeLens === 'data' && activeTab === 'today'
-      && !loading && !todayRefreshing) runLiveRefresh();
-  };
-  doc.addEventListener?.('visibilitychange', onTodayVisible);
   if (opts.subscribe !== undefined) {
     liveUnsubscribers.push(
       opts.subscribe('warehouse', scheduleLiveRefresh),
@@ -14877,7 +14684,6 @@ export const bootstrapDataRoute = (
   }
 
   const hasDataInFlightWork = (): boolean => opaqueMutationsInFlight > 0
-    || todayTaskEdit?.busy === true
     || workEntityState.dialog?.submitting === true
     || contactDialog?.submitting === true
     || savingFormResponse
@@ -14908,7 +14714,6 @@ export const bootstrapDataRoute = (
         : loading || Object.values(errors).some(Boolean)
           || (activeTab === 'records' && (recordsState.loading || recordsState.error !== undefined))
           || (activeTab === 'search' && (universalSearchLoading || universalSearchError !== undefined))
-          || (activeTab === 'today' && (todayRefreshing || todaySnapshot === null || todaySnapshot.issues.length > 0))
           || ((isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) && (explorerLoading || explorerError !== undefined));
       return disposed || unavailable ? 'unavailable' : 'current';
     },
@@ -14985,8 +14790,6 @@ export const bootstrapDataRoute = (
       if (disposed) return;
       disposed = true;
       fileChatAbort?.abort(); filePreviewAbort?.abort();
-      if (todayClock !== undefined) doc.defaultView?.clearInterval(todayClock);
-      doc.removeEventListener?.('visibilitychange', onTodayVisible);
       contactSearchRefresh.cancel();
       bookingSearchRefresh.cancel();
       taskSearchRefresh.cancel();

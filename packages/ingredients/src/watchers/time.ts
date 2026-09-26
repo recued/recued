@@ -4,8 +4,12 @@
  *  set + optional start/end hour range in the runtime's local TZ.
  *
  *  Conventions:
- *    - `weekdays`: subset of {0..6}; 0 = Sunday. Empty array ⇒ never
- *      matches (empty set semantics).
+ *    - `weekdays`: subset of {0..7}; 0 = Sunday, and 7 = Sunday too. The
+ *      two numberings people use (JavaScript's 0=Sun..6=Sat and ISO 8601's
+ *      1=Mon..7=Sun) agree on 1..6 and differ only on Sunday, so accepting
+ *      both is unambiguous. 10 shipped recipes tell the owner "1=Mon..7=Sun",
+ *      and two defaulted to a 7 that was refused, tripping on their first run.
+ *      Empty array ⇒ never matches (empty set semantics).
  *    - `start_hour` / `end_hour`: integers in [0, 24]. 24 is accepted
  *      for the end-bound convenience. Range is half-open [start, end).
  *    - Overnight window: when `start_hour > end_hour` the range wraps
@@ -38,7 +42,7 @@ const isInteger = (v: unknown): v is number =>
   typeof v === 'number' && Number.isInteger(v);
 
 const validateWeekday = (d: unknown): d is number =>
-  isInteger(d) && d >= 0 && d <= 6;
+  isInteger(d) && d >= 0 && d <= 7;
 
 const validateHour = (h: unknown, allow24: boolean): h is number =>
   isInteger(h) && h >= 0 && h <= (allow24 ? 24 : 23);
@@ -48,7 +52,7 @@ const validate = (args: TimeWatcherArgs): void => {
     if (!Array.isArray(args.weekdays)) {
       throw new IngredientError(
         'TRANSFORM_INVALID_INPUT',
-        'time-watcher: weekdays must be an array of integers in [0,6]',
+        'time-watcher: weekdays must be an array of integers in [0,7] (0 or 7 = Sunday)',
         { got: args.weekdays },
       );
     }
@@ -56,7 +60,7 @@ const validate = (args: TimeWatcherArgs): void => {
       if (!validateWeekday(d)) {
         throw new IngredientError(
           'TRANSFORM_INVALID_INPUT',
-          'time-watcher: weekday must be an integer in [0,6] (0=Sunday)',
+          'time-watcher: weekday must be an integer in [0,7] (0 or 7 = Sunday)',
           { got: d },
         );
       }
@@ -93,7 +97,8 @@ export const evaluateTimeWatcher = (
 
   if (args.weekdays !== undefined) {
     const day = now.getDay();
-    if (!args.weekdays.includes(day)) return { should_run: false };
+    const sunday = day === 0 && args.weekdays.includes(7);
+    if (!args.weekdays.includes(day) && !sunday) return { should_run: false };
   }
 
   const startSet = args.start_hour !== undefined;

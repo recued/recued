@@ -6,7 +6,11 @@
  * owner-only reader fetches the accepted response at run time.
  */
 
-import type { RecipeDefinition, ServerRecipeListEntry } from '@recued/contracts';
+import type {
+  RecipeDefinition,
+  ServerRecipeFullEntry,
+  ServerRecipeListEntry,
+} from '@recued/contracts';
 import {
   FORM_RESPONSE_ON_SHORTHAND,
   parseRecipeBundleKey,
@@ -48,12 +52,18 @@ const hasCanonicalAcceptedResponseReader = (recipe: Record<string, unknown>): bo
   });
 };
 
-/** Narrow a runtime recipe-list row to an installed, inert form-response
- * workflow template. A pack install persists the selected member and
- * `recipe.list` returns that stored row as `pair-sync`; bundled availability or
- * an inline authoring row is not proof that the owner installed its carrier. */
-export const isInstalledFormResponseWorkflowTemplate = (
-  entry: ServerRecipeListEntry,
+/** Everything a `recipe.list` ROW can prove about a form-response workflow
+ * template: installed, inert, and its carrier's identity. A pack install
+ * persists the selected member and `recipe.list` returns that stored row as
+ * `pair-sync`; bundled availability or an inline authoring row is not proof
+ * that the owner installed its carrier.
+ *
+ * ⛔ NOT THE WHOLE TEST. The canonical accepted-response reader lives in
+ * `prefetch_steps`, and a list row has carried no step bodies since f95faec10.
+ * A row that passes here is a CANDIDATE; {@link isInstalledFormResponseWorkflowTemplate}
+ * decides, against the body `recipe.get` returns. */
+export const isFormResponseWorkflowTemplateCandidate = (
+  entry: ServerRecipeListEntry | ServerRecipeFullEntry,
 ): boolean => {
   if (entry.source !== 'pair-sync' || !isRecord(entry.recipe)) return false;
   const recipe = entry.recipe;
@@ -68,9 +78,20 @@ export const isInstalledFormResponseWorkflowTemplate = (
     && isEmptyOptionalArray(recipe.event_triggers)
     && isEmptyOptionalArray(recipe.webhook_triggers)
     && recipe.auto_run === undefined
-    && isEmptyOptionalArray(recipe.trigger_steps)
-    && hasCanonicalAcceptedResponseReader(recipe);
+    && isEmptyOptionalArray(recipe.trigger_steps);
 };
+
+/** An installed, inert form-response workflow template, proven against its
+ * FULL body: a candidate whose prefetch reads the accepted response the
+ * trigger names. Typed to the body-carrying entry on purpose. Passed a list
+ * row, the reader check would see no `prefetch_steps` and refuse every
+ * template, which is what happened after the list was trimmed. */
+export const isInstalledFormResponseWorkflowTemplate = (
+  entry: ServerRecipeFullEntry,
+): boolean =>
+  isFormResponseWorkflowTemplateCandidate(entry)
+  && isRecord(entry.recipe)
+  && hasCanonicalAcceptedResponseReader(entry.recipe as unknown as Record<string, unknown>);
 
 /** Generate a fresh local store key for each starter. `recipe.save` is an
  * intentional upsert, so a deterministic id derived only from the form would
@@ -132,7 +153,9 @@ export const createFormResponseAutomationSeed = (
  * materialized disarmed by the normal recipe-save/trigger-reconcile path.
  */
 export const createFormResponseAutomationFromWorkflowTemplate = (
-  entry: ServerRecipeListEntry,
+  // ⛔ THE FULL ENTRY (`recipe.get`), never a list row: this CLONES the body,
+  // and a list row has no steps to clone.
+  entry: ServerRecipeFullEntry,
   formDefinitionId: string,
   draftKey: string,
 ): RecipeDefinition => {

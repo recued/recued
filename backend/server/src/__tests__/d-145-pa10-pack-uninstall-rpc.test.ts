@@ -740,14 +740,16 @@ describe('D-145 PA10 follow-on Slice B — makePackUninstallHandlers', () => {
     expect(makePackUninstallHandlers(undefined)).toBeUndefined();
   });
 
-  it('returns a slice with packs.uninstall when deps are wired', () => {
+  it('returns a slice with packs.uninstall and its preview when deps are wired', () => {
     const slice = makePackUninstallHandlers({
       recipeStore,
       packDir,
     });
     expect(slice).toBeDefined();
-    expect(slice!.methods).toEqual(['packs.uninstall']);
+    // D-304 — the preview is the Delete confirmation's "also removes …".
+    expect(slice!.methods).toEqual(['packs.uninstall', 'packs.uninstall_preview']);
     expect(typeof slice!.handlers['packs.uninstall']).toBe('function');
+    expect(typeof slice!.handlers['packs.uninstall_preview']).toBe('function');
   });
 
   it('factory handler delegates to handlePacksUninstall', async () => {

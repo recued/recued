@@ -17,6 +17,7 @@ import {
   INSTALL_CONNECT_CUSTOMIZE_ATTR,
   INSTALL_CONNECT_ENROLL_ATTR,
   INSTALL_CONNECT_NONE_ATTR,
+  INSTALL_CONNECT_SUMMARY_ATTR,
   INSTALL_CONNECT_PICKER_STYLES,
   defaultChosenConnection,
   renderInstallConnectPicker,
@@ -142,6 +143,7 @@ interface RenderOverrides {
   chosen?: string | undefined;
   expanded?: boolean;
   disabled?: boolean;
+  current?: string;
 }
 
 const render = (over: RenderOverrides = {}) => {
@@ -154,6 +156,7 @@ const render = (over: RenderOverrides = {}) => {
     chosen: 'chosen' in over ? over.chosen : undefined,
     expanded: over.expanded ?? false,
     disabled: over.disabled ?? false,
+    ...(over.current !== undefined ? { current: over.current } : {}),
     onPick,
     onToggleExpanded,
   }) as unknown as FakeElement;
@@ -200,6 +203,38 @@ describe('resolveChosenConnection — render↔submit agreement', () => {
 
   it('falls back to undefined when the pick vanished AND no candidates remain', () => {
     expect(resolveChosenConnection({ touched: true, pick: 'gone-od' }, [])).toBeUndefined();
+  });
+});
+
+describe('D-294 — an update starts at the account the pack uses now', () => {
+  /** An update RE-BINDS the pack. Pre-selecting the first matching account by
+   *  name silently moved an owner with two accounts of one vendor to the other. */
+  const cs = [candidate('home-od', 'home@live'), candidate('work-od', 'work@contoso')];
+
+  it('untouched → the account it uses now, even when another sorts first', () => {
+    expect(resolveChosenConnection({ touched: false, pick: undefined }, cs, 'work-od')).toBe('work-od');
+  });
+
+  it('an account that is no longer a candidate is never bound — the default again', () => {
+    expect(resolveChosenConnection({ touched: false, pick: undefined }, cs, 'gone-od')).toBe('home-od');
+  });
+
+  it('the owner\'s own pick still wins', () => {
+    expect(resolveChosenConnection({ touched: true, pick: 'home-od' }, cs, 'work-od')).toBe('home-od');
+  });
+
+  it('says it KEEPS the account — and says so only for that account', () => {
+    const kept = render({ candidates: cs, chosen: 'work-od', current: 'work-od' }).el;
+    const summary = findByAttr(kept, INSTALL_CONNECT_SUMMARY_ATTR)!;
+    expect(summary.hasAttribute('data-carried-over')).toBe(true);
+    expect(collectText(summary)).toBe('Keeps using: work@contoso');
+    const moved = render({ candidates: cs, chosen: 'home-od', current: 'work-od' }).el;
+    expect(findByAttr(moved, INSTALL_CONNECT_SUMMARY_ATTR)!.hasAttribute('data-carried-over')).toBe(false);
+  });
+
+  it('says so when the account it used is not connected now', () => {
+    const { el } = render({ candidates: cs, chosen: 'home-od', current: 'gone-od' });
+    expect(collectText(el)).toContain('This Pack used “gone-od”, which is not connected now.');
   });
 });
 

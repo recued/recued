@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "3024e7f033cfe87c82becd65d6e1de926ed3e8db",
-    "tree": "493a6b8fdf9b99a432ee5e85738f5c9d3764da2b",
-    "committed_at": "2026-09-21T19:52:58-07:00"
+    "commit": "443a12c80b7a74a7da98e012341ee30c9ec2cff9",
+    "tree": "fea64902c6c59374cfb368496c8f7c60428eda11",
+    "committed_at": "2026-09-25T17:31:04-07:00"
   },
-  "export_manifest_sha256": "f6439a71a80ceaf117f74d2165626212f501e469b58b26b7ebd61b3fffdb2dfe",
-  "version": "26.9.21",
+  "export_manifest_sha256": "37a8999501f2aa6dbf8cc8467d90df0e648494c1984f38d9b57d5a04419d9cf2",
+  "version": "26.9.25",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -49,8 +49,12 @@
     "paths": [
       "apps/webclient/e2e/live-update-path.spec.ts",
       "apps/webclient/src/__tests__/d-148-i15-no-smart-redirect.test.ts",
+      "apps/webclient/src/__tests__/d-174-p4-recipes-route.test.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/d-282-b6-bulk-action.test.ts",
+      "apps/webclient/src/__tests__/d-282-unprompted-run-corpus.test.ts",
+      "apps/webclient/src/__tests__/d-292-spreadsheet-import-flow.test.ts",
+      "apps/webclient/src/__tests__/d-292-spreadsheet-import-model.test.ts",
       "apps/webclient/src/__tests__/pack-app-model.test.ts",
       "apps/webclient/src/__tests__/recipes-required-file-slugs.test.ts",
       "apps/webclient/src/__tests__/settings-connect-device-readability.test.ts",
@@ -155,6 +159,13 @@
       "backend/server/src/__tests__/d-272-one-listen-site.ratchet.test.ts",
       "backend/server/src/__tests__/d-282-b6-bulk-accept-drive.test.ts",
       "backend/server/src/__tests__/d-282-repair-blank-lines-drive.test.ts",
+      "backend/server/src/__tests__/d-294-records-dependency-update-needs-review.test.ts",
+      "backend/server/src/__tests__/d-301-import-number-and-date-formats.test.ts",
+      "backend/server/src/__tests__/d-302-retired-variables-run.test.ts",
+      "backend/server/src/__tests__/d-310-install-asks-access-for-each-pack-it-brings-in.test.ts",
+      "backend/server/src/__tests__/d-311-marketplace-pack-brings-its-dependencies.test.ts",
+      "backend/server/src/__tests__/d-312-a-notification-reaches-every-channel-set-up.test.ts",
+      "backend/server/src/__tests__/d-312-notification-channel-settings.ratchet.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -180,12 +191,18 @@
       "backend/server/src/__tests__/installer-shell-functions.test.ts",
       "backend/server/src/__tests__/kernel-manifests.test.ts",
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
+      "backend/server/src/__tests__/list-settings-offer-their-choices.ratchet.test.ts",
+      "backend/server/src/__tests__/list-settings-typed-in-the-form-are-lists.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
       "backend/server/src/__tests__/mcp-listen-source.test.ts",
       "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
       "backend/server/src/__tests__/mcp-subscriptions-probe.test.ts",
       "backend/server/src/__tests__/mcp-token-standing-closure-e2e.test.ts",
+      "backend/server/src/__tests__/month-end-closer-booking-history.test.ts",
+      "backend/server/src/__tests__/month-end-closer-business-workflow.test.ts",
+      "backend/server/src/__tests__/month-end-closer-past-one-page.test.ts",
+      "backend/server/src/__tests__/notification-send-is-declared.ratchet.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
@@ -202,11 +219,13 @@
       "backend/server/src/__tests__/provider-mock-paddle-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe-pass-lane-semi-live.test.ts",
+      "backend/server/src/__tests__/provider-mock-stripe-quote-lane-semi-live.test.ts",
       "backend/server/src/__tests__/provider-mock-stripe.test.ts",
       "backend/server/src/__tests__/queue-desk-business-workflow.test.ts",
       "backend/server/src/__tests__/queue-desk-door-mechanisms.test.ts",
       "backend/server/src/__tests__/queue-desk-mcp-staff-lane.test.ts",
       "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
+      "backend/server/src/__tests__/recipe-list-handler-shipped-importer.test.ts",
       "backend/server/src/__tests__/records-pack-entry-points.test.ts",
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
@@ -215,7 +234,10 @@
       "backend/server/src/__tests__/ripgrep-find-live-drive.test.ts",
       "backend/server/src/__tests__/saga-write-seal.test.ts",
       "backend/server/src/__tests__/sea-entry-is-cjs.test.ts",
+      "backend/server/src/__tests__/seller-quote-payment-events-install.test.ts",
+      "backend/server/src/__tests__/serve-compose-execution-context.test.ts",
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
+      "backend/server/src/__tests__/spreadsheet-import-corpus.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
       "backend/server/src/__tests__/supervisor-contract.test.ts",
@@ -229,6 +251,8 @@
       "backend/server/src/records/__tests__/client-document-intake-golden.test.ts",
       "backend/server/src/records/__tests__/job-status-board-golden.test.ts",
       "backend/server/src/records/__tests__/ledger-book-structures.test.ts",
+      "backend/server/src/records/__tests__/records-same-version-recipe-update.test.ts",
+      "backend/server/src/records/__tests__/records-update-carries-reception-pairs.test.ts",
       "backend/server/src/records/__tests__/records-update-review.test.ts",
       "backend/server/src/records/__tests__/request-path-pii.test.ts",
       "backend/server/src/records/__tests__/root-projection-batch.test.ts",
@@ -236,6 +260,8 @@
       "backend/server/src/records/__tests__/root-projection-from-pack.test.ts",
       "backend/server/src/records/__tests__/seller-quote-request-golden.test.ts",
       "backend/server/src/seller/__tests__/d-196-1d-pass-checkout.integration.test.ts",
+      "backend/server/src/seller/__tests__/d-308-permanent-pass-repair.test.ts",
+      "backend/server/src/seller/__tests__/d-309-package-reapply.test.ts",
       "backend/server/src/seller/__tests__/seller-stripe-pack-transport.test.ts",
       "backend/server/src/seller/__tests__/seller-stripe-pack-transport.ts",
       "packages/contracts/src/__tests__/d-145-phase-10-pack-manifest.test.ts",
@@ -314,6 +340,7 @@
       "packages/ingredient-authoring/src/__tests__/cli-argv-pin-shipped-packs.test.ts",
       "packages/ingredient-authoring/src/__tests__/cli-pack-request-schema.test.ts",
       "packages/ingredient-authoring/src/__tests__/closable-request-schema-ratchet.test.ts",
+      "packages/ingredient-authoring/src/__tests__/composition-bytes-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-hints-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/connection-scope-prefill-corpus.test.ts",
       "packages/ingredient-authoring/src/__tests__/create-invoice-template-boilerplate.test.ts",
@@ -408,6 +435,7 @@
       "packages/ingredient-authoring/src/__tests__/d-234-peer-review-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-254-hubspot-record-id-arg.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-259-cli-corpus-ratchet.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-282-spends-per-call-validate.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/derivable-request-schema-ratchet.test.ts",
@@ -436,6 +464,7 @@
       "packages/ingredient-authoring/src/__tests__/recipe-description-readability.test.ts",
       "packages/ingredient-authoring/src/__tests__/recipe-owner-surface-reachability.test.ts",
       "packages/ingredient-authoring/src/__tests__/records-expected-version-coupling.test.ts",
+      "packages/ingredient-authoring/src/__tests__/seller-quote-payment-events-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/seller-quote-request-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/smb-finance-slice3-storage-gdrive.test.ts",
       "packages/ingredient-authoring/src/__tests__/spreadsheet-workbook-read-audit.test.ts",
@@ -494,6 +523,7 @@
       "packages/recipes/src/__tests__/d-282-b6-table-select.test.ts",
       "packages/recipes/src/__tests__/d-282-pack-app-authoring-hints.test.ts",
       "packages/recipes/src/__tests__/d-282-row-action-config-corpus.test.ts",
+      "packages/recipes/src/__tests__/d-292-spreadsheet-import-declaration.test.ts",
       "packages/recipes/src/__tests__/databricks-pack-audit.test.ts",
       "packages/recipes/src/__tests__/datadog-cost-truth-window-pack-audit.test.ts",
       "packages/recipes/src/__tests__/deel-payout-blockers-pack-audit.test.ts",
@@ -605,7 +635,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
       "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
     ],
-    "sha256": "15eec473a7986b106eb02cf025a8c7d794b29f89ade76b25054ac4c0319cda57",
+    "sha256": "174d74d738476fc7161b39ac058c1fa82e58aab88f8e2b6d371bb96565d48384",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -622,15 +652,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1083,
+    "files_changed": 1088,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1015
+        "comments_rewritten": 1017
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 127
+        "comments_rewritten": 132
       },
       {
         "id": "internal-handover-note",
@@ -720,7 +750,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6149,
-    "sha256": "93672de6d1fcfc6cafe4a6ffa4f280a585cbf5713244fdf7a93ffd658bd2d3b4"
+    "file_count": 6226,
+    "sha256": "7133fe13c3d198bd62a922e31b11927de7beaf2df3e58de30e20d97bd3309cca"
   }
 }

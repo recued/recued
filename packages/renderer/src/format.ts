@@ -61,11 +61,27 @@ export const formatCurrency = (n: number): string => {
   return `$${n.toFixed(2)}`;
 };
 
+/** A date with no time, `2026-08-01`, names a calendar DAY, not an instant.
+ *  `new Date('2026-08-01')` reads it as midnight UTC, and showing that in the
+ *  viewer's zone put every such date a day early west of UTC: Jul 31 for
+ *  2026-08-01 (the month-end drive, 2026-09-24). Shown in UTC, it stays the
+ *  day it names in every zone. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/u;
+const isDateOnly = (s: string): boolean => DATE_ONLY.test(s.trim());
+
+/** Today in the viewer's zone, as the midnight UTC a date-only value parses
+ *  to, so the two compare as calendar days. */
+const todayAsDateOnly = (now: number): number => {
+  const today = new Date(now);
+  return Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+};
+
 export const formatDate = (s: string): string => {
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
+    ...(isDateOnly(s) ? { timeZone: 'UTC' } : {}),
   });
 };
 
@@ -78,6 +94,8 @@ export const formatDate = (s: string): string => {
  *  most. A fixture cannot catch this; it renders exactly as wrongly and looks
  *  fine. */
 export const formatDateTime = (s: string): string => {
+  // A date with no time has no time to show: a midnight would be invented.
+  if (isDateOnly(s)) return formatDate(s);
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleString(undefined, {
@@ -89,7 +107,8 @@ export const formatDateTime = (s: string): string => {
 export const formatRelative = (s: string, now: number = Date.now()): string => {
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return s;
-  const diffMs = now - d.getTime();
+  // A calendar day is counted from the viewer's today, not from this instant.
+  const diffMs = (isDateOnly(s) ? todayAsDateOnly(now) : now) - d.getTime();
   const days = Math.floor(Math.abs(diffMs) / (24 * 60 * 60 * 1000));
   if (days === 0) return 'today';
   const suffix = diffMs > 0 ? 'ago' : 'from now';

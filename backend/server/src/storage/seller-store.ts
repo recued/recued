@@ -360,6 +360,8 @@ const sellerCustomersCreateDdl = (table: string): string => `
       claim_email_marker       TEXT,
       status_email_sent_at     INTEGER,
       status_email_marker      TEXT,
+      period_set_by            TEXT,
+      permissions_stamp        TEXT,
       created_at               INTEGER NOT NULL,
       updated_at               INTEGER NOT NULL,
       UNIQUE (lifecycle_source, source_customer_id, door_id)
@@ -569,6 +571,23 @@ export const ensureSellerSchema = (db: Database.Database): void => {
     db.exec(`ALTER TABLE ${SELLER_ORDERS_TABLE} ADD COLUMN fulfillment_config TEXT`);
   }
 
+  // D-309 — how a customer's end date and permissions were last set, so a
+  // package can be re-applied to "everyone you haven't changed by hand". Plain
+  // nullable adds, BEFORE the converge so a rebuild copies them. NULL means the
+  // row predates the record, and D-309 compares it with its package instead.
+  // ⚠ No SQL CHECK on `period_set_by`: a CHECK is frozen at CREATE in every
+  // existing database (the trap the converge above exists for). The store
+  // validates the vocabulary in code instead.
+  const customerColumns = (
+    db.prepare(`PRAGMA table_info(${SELLER_CUSTOMERS_TABLE})`).all() as { name: string }[]
+  ).map((column) => column.name);
+  if (customerColumns.length > 0 && !customerColumns.includes('period_set_by')) {
+    db.exec(`ALTER TABLE ${SELLER_CUSTOMERS_TABLE} ADD COLUMN period_set_by TEXT`);
+  }
+  if (customerColumns.length > 0 && !customerColumns.includes('permissions_stamp')) {
+    db.exec(`ALTER TABLE ${SELLER_CUSTOMERS_TABLE} ADD COLUMN permissions_stamp TEXT`);
+  }
+
   convergeSellerOffersSchema(db);
   convergeSellerOrdersSchema(db);
   convergeLifecycleSourceTable(db, SELLER_TIERS_TABLE, sellerTiersCreateDdl, sellerTiersIndexDdl);
@@ -684,7 +703,26 @@ export interface SellerCustomerUpsertInput {
   readonly claim_email_marker?: string | null;
   readonly status_email_sent_at?: number | null;
   readonly status_email_marker?: string | null;
+  /** D-309 — how `current_period_end` was set by THIS write. undefined preserves
+   *  the recorded value; only a write that sets the period should name one. */
+  readonly period_set_by?: SellerCustomerPeriodSetBy | null;
+  /** D-309 — the agreement fingerprint right after it was stamped from the
+   *  package. undefined preserves. */
+  readonly permissions_stamp?: string | null;
   readonly now: number;
+}
+
+/** D-309 — how a customer's end date was last set: by the package's own rule
+ *  (its pass length, or none), or by hand (a date someone chose). */
+export const SELLER_CUSTOMER_PERIOD_SET_BY = ['package', 'hand'] as const;
+export type SellerCustomerPeriodSetBy = (typeof SELLER_CUSTOMER_PERIOD_SET_BY)[number];
+
+/** D-309 — the record of how a customer was last set, kept off `SellerCustomer`
+ *  (the wire shape) because only re-applying a package reads it. NULL fields
+ *  predate the record. */
+export interface SellerCustomerStamps {
+  readonly period_set_by: SellerCustomerPeriodSetBy | null;
+  readonly permissions_stamp: string | null;
 }
 
 export interface SellerUsageRecordInput {
@@ -759,6 +797,9 @@ export interface SellerStore {
     active?: boolean;
   }): SellerTier[];
   upsertCustomer(input: SellerCustomerUpsertInput): SellerCustomer;
+  /** D-309 — how the customer's end date and permissions were last set; null
+   *  when there is no such customer. */
+  customerStamps(customer_id: string): SellerCustomerStamps | null;
   getCustomer(customer_id: string): SellerCustomer | null;
   findCustomerBySource(input: {
     lifecycle_source: SellerLifecycleSource;
@@ -823,6 +864,11 @@ export interface SellerStore {
     period_start: number;
   }): SellerCustomerUsageRollup | null;
   listUsageRollups(contract_id: string): SellerCustomerUsageRollup[];
+  /** D-297 — re-key a customer's usage onto the contract a reissue rotated them
+   *  to. Usage is keyed by contract, so without this a fresh link zeroed the
+   *  period's count (the limit refilled) and the owner's overview lost the
+   *  history. Returns the number of rows moved. */
+  moveUsageRollups(from_contract_id: string, to_contract_id: string): number;
 }
 
 interface SettingsRow {
@@ -889,6 +935,8 @@ interface CustomerRow {
   claim_email_marker: string | null;
   status_email_sent_at: number | null;
   status_email_marker: string | null;
+  period_set_by: string | null;
+  permissions_stamp: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -1076,6 +1124,15 @@ const assertAccessState = (value: SellerAccessState): void => {
   if (!isSellerAccessState(value)) {
     throw new SellerStoreValidationError(`unknown access_state: ${String(value)}`);
   }
+};
+
+const assertPeriodSetBy = (
+  value: SellerCustomerPeriodSetBy | null,
+): SellerCustomerPeriodSetBy | null => {
+  if (value !== null && !(SELLER_CUSTOMER_PERIOD_SET_BY as readonly string[]).includes(value)) {
+    throw new SellerStoreValidationError(`unknown period_set_by: ${String(value)}`);
+  }
+  return value;
 };
 
 const assertUsage = (
@@ -1331,13 +1388,15 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
        tier_id, contract_id, inbound_token_id, mcp_token_id,
        external_subscription_id, source_status, current_period_end, grace_until,
        access_state, claim_email_sent_at, claim_email_marker,
-       status_email_sent_at, status_email_marker, created_at, updated_at)
+       status_email_sent_at, status_email_marker, period_set_by, permissions_stamp,
+       created_at, updated_at)
     VALUES
       (@customer_id, @lifecycle_source, @source_customer_id, @door_id, @email,
        @tier_id, @contract_id, @inbound_token_id, @mcp_token_id,
        @external_subscription_id, @source_status, @current_period_end, @grace_until,
        @access_state, @claim_email_sent_at, @claim_email_marker,
-       @status_email_sent_at, @status_email_marker, @created_at, @updated_at)
+       @status_email_sent_at, @status_email_marker, @period_set_by, @permissions_stamp,
+       @created_at, @updated_at)
     ON CONFLICT (customer_id) DO UPDATE SET
       email = excluded.email,
       tier_id = excluded.tier_id,
@@ -1353,6 +1412,8 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
       claim_email_marker = excluded.claim_email_marker,
       status_email_sent_at = excluded.status_email_sent_at,
       status_email_marker = excluded.status_email_marker,
+      period_set_by = excluded.period_set_by,
+      permissions_stamp = excluded.permissions_stamp,
       updated_at = excluded.updated_at
   `);
   const reserveClaimEmailDeliveryStmt = db.prepare(`
@@ -1380,6 +1441,9 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
        AND period_granularity = ?
        AND period_start = ?
   `);
+  const moveUsageStmt = db.prepare(
+    `UPDATE ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE} SET contract_id = ? WHERE contract_id = ?`,
+  );
   const listUsageStmt = db.prepare(`
     SELECT * FROM ${SELLER_CUSTOMER_USAGE_ROLLUPS_TABLE}
      WHERE contract_id = ?
@@ -1983,10 +2047,27 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
           input.status_email_marker === undefined
             ? existing?.status_email_marker ?? null
             : cleanNullableString(input.status_email_marker),
+        period_set_by:
+          input.period_set_by === undefined
+            ? existing?.period_set_by ?? null
+            : assertPeriodSetBy(input.period_set_by),
+        permissions_stamp:
+          input.permissions_stamp === undefined
+            ? existing?.permissions_stamp ?? null
+            : cleanNullableString(input.permissions_stamp),
         created_at,
         updated_at: input.now,
       });
       return customerFromRow(readCustomer(customer_id)!);
+    },
+    customerStamps(customer_id) {
+      const row = readCustomer(cleanString(customer_id, 'customer_id'));
+      return row === undefined
+        ? null
+        : {
+          period_set_by: row.period_set_by as SellerCustomerPeriodSetBy | null,
+          permissions_stamp: row.permissions_stamp,
+        };
     },
     getCustomer(customer_id) {
       const row = readCustomer(cleanString(customer_id, 'customer_id'));
@@ -2138,6 +2219,13 @@ export const createSellerStore = (db: Database.Database): SellerStore => {
     listUsageRollups(contract_id) {
       return (listUsageStmt.all(cleanString(contract_id, 'contract_id')) as UsageRow[])
         .map(usageFromRow);
+    },
+
+    moveUsageRollups(from_contract_id, to_contract_id) {
+      return moveUsageStmt.run(
+        cleanString(to_contract_id, 'to_contract_id'),
+        cleanString(from_contract_id, 'from_contract_id'),
+      ).changes;
     },
   };
 };

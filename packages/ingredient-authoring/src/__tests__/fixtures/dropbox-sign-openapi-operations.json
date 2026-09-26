@@ -4,12 +4,12 @@
       "kind": "openapi",
       "reference_url": "https://developers.hellosign.com/api/api-reference-welcome",
       "repository_url": "https://github.com/hellosign/hellosign-openapi",
-      "url": "https://raw.githubusercontent.com/hellosign/hellosign-openapi/31136f9035133acb5f055a94f24e006857210fdb/openapi.yaml",
+      "url": "https://raw.githubusercontent.com/hellosign/hellosign-openapi/1ea296e45b1a1048825dbb989354620050f0eb9a/openapi.yaml",
       "current_url": "https://raw.githubusercontent.com/hellosign/hellosign-openapi/main/openapi.yaml",
-      "commit": "31136f9035133acb5f055a94f24e006857210fdb",
-      "sha256": "2ea3f04008afe945d45ba8a6da41c4f1612cc899ba0c96cf36b4da00ce7419ec",
-      "bytes": 589837,
-      "retrieved_on": "2026-07-15",
+      "commit": "1ea296e45b1a1048825dbb989354620050f0eb9a",
+      "sha256": "90a72b0656c88c376fb822cac9046ecc78555e1d89f984009e8ddac52abea9aa",
+      "bytes": 599086,
+      "retrieved_on": "2026-09-22",
       "openapi": "3.0.3",
       "info_version": "3.0.0",
       "server": "https://api.hellosign.com/v3",
@@ -56,8 +56,8 @@
     },
     "composition_bytes": {
       "dropbox-sign": 22991,
-      "dropbox-sign-signing-workflows": 78331,
-      "dropbox-sign-platform-admin": 32902
+      "dropbox-sign-signing-workflows": 79549,
+      "dropbox-sign-platform-admin": 32926
     },
     "risk_counts": {
       "read": 31,
@@ -66,9 +66,9 @@
       "admin": 9
     },
     "approval_counts": {
-      "never": 10,
+      "never": 31,
       "always": 39,
-      "ask": 24
+      "ask": 3
     },
     "idempotency_counts": {
       "safe": 31,
@@ -911,7 +911,7 @@
       "accept": "application/json",
       "content_type": "application/json",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1052,7 +1052,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1123,7 +1123,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1354,7 +1354,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1439,7 +1439,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1623,7 +1623,7 @@
       "accept": "application/pdf",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1670,7 +1670,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1738,7 +1738,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1923,7 +1923,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -1970,7 +1970,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2108,7 +2108,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -2240,7 +2240,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2361,7 +2361,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -2442,7 +2442,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -2556,7 +2556,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -2693,7 +2693,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -2864,6 +2864,7 @@
           "test_mode",
           "title",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "populate_auto_fill_fields",
           "expires_at"
         ],
@@ -3015,6 +3016,7 @@
           "test_mode",
           "title",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "expires_at"
         ],
         "omitted_binary_properties": [
@@ -3097,6 +3099,7 @@
           "test_mode",
           "title",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "populate_auto_fill_fields",
           "expires_at"
         ],
@@ -3332,7 +3335,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3384,7 +3387,7 @@
       "accept": "application/pdf, application/zip",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3516,6 +3519,7 @@
           "test_mode",
           "title",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "expires_at"
         ],
         "omitted_binary_properties": [
@@ -3632,7 +3636,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": true
@@ -3670,7 +3674,8 @@
           "subject",
           "test_mode",
           "title",
-          "use_preexisting_fields"
+          "use_preexisting_fields",
+          "ignore_text_tags_extraction_errors"
         ],
         "omitted_binary_properties": [
           "files"
@@ -3746,7 +3751,8 @@
           "subject",
           "test_mode",
           "title",
-          "use_preexisting_fields"
+          "use_preexisting_fields",
+          "ignore_text_tags_extraction_errors"
         ],
         "omitted_binary_properties": [
           "files"
@@ -3871,7 +3877,7 @@
       "accept": "application/json",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -3923,7 +3929,7 @@
       "accept": "application/pdf, application/zip",
       "content_type": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "compatibility": false,
       "supplemental": false
@@ -4148,6 +4154,7 @@
           "type",
           "use_preexisting_fields",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "expires_at"
         ],
         "omitted_binary_properties": [
@@ -4234,6 +4241,7 @@
           "type",
           "use_preexisting_fields",
           "use_text_tags",
+          "ignore_text_tags_extraction_errors",
           "populate_auto_fill_fields",
           "expires_at"
         ],

@@ -1,7 +1,7 @@
 {
   "recipe_id": "today",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Today",
@@ -30,6 +30,9 @@
     "weekdays": {
       "label": "Active weekdays (1=Mon..7=Sun)",
       "type": "array",
+      "options": [
+        "@weekdays"
+      ],
       "default": [1, 2, 3, 4, 5]
     },
     "open_loop_limit": {

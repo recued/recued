@@ -1,11 +1,11 @@
 {
   "vendor": "Shortcut",
   "url": "https://developer.shortcut.com/api/rest/v3/shortcut.openapi.json",
-  "sha256": "22610cedf8cf1284116a4933efcae3b155e588d45d5671d310a5cf8b54e5e3cc",
+  "sha256": "a66a0a9979fbf019e6966bd7caf50cd82fca11a05a7059b53eb21db37032e49e",
   "openapi": "3.0.0",
   "title": "Shortcut API",
   "version": "3.0",
-  "byte_length": 568325,
+  "byte_length": 568738,
   "path_count": 85,
   "operation_count": 143,
   "selected_operation_count": 142,

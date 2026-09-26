@@ -45,6 +45,9 @@
  *  locally (copied rather than imported, mirroring the Slice 1 / Slice
  *  1.5 split for SI panel tests — keeps test files self-contained). */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -56,11 +59,14 @@ import {
   PACKS_ROW_DELETE_CANCEL_BTN_ATTR,
   PACKS_ROW_DELETE_CONFIRM_BTN_ATTR,
   PACKS_ROW_DELETE_ERROR_ATTR,
+  PACKS_ROW_DELETE_REMOVES_ATTR,
   PACKS_ROW_INSTALL_BTN_ATTR,
+  deleteRemovesText,
   mountPacksPanel,
   type PacksInstallCaller,
   type PacksListCaller,
   type PacksUninstallCaller,
+  type PacksUninstallPreviewCaller,
 } from '../settings/packs-panel.js';
 import type {
   BulkPackInstallResultLike,
@@ -291,6 +297,8 @@ interface SetupOptions {
   runList?: PacksListCaller;
   runInstall?: PacksInstallCaller | null; // null → omit
   runUninstall?: PacksUninstallCaller | null; // null → omit
+  /** D-304 — the Delete confirmation's "also removes …" seam. */
+  runUninstallPreview?: PacksUninstallPreviewCaller;
   /** Seed the DETAIL selection on mount. The panel is now the
    *  `#packs/<slug>` detail only, so the shared-machinery seams act on the
    *  selected pack. Defaults to the first pack in `initialPacks`. */
@@ -350,6 +358,7 @@ const setupMount = (
     ...(overrides.runUninstall === null
       ? {}
       : { runUninstall: overrides.runUninstall ?? defaultRunUninstall }),
+    ...(overrides.runUninstallPreview ? { runUninstallPreview: overrides.runUninstallPreview } : {}),
   });
 
   return {
@@ -767,5 +776,110 @@ describe('D-145 PA10 follow-on Slice B — lifecycle', () => {
     );
     // Install button still in the dialog.
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)).not.toBeNull();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// D-304 — the Delete confirmation says what goes with the pack
+// ══════════════════════════════════════════════════════════════════
+
+describe('D-304 — the Delete confirmation says what goes with the pack\'s recipes', () => {
+  const settle = async (): Promise<void> => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+  const removesLine = (host: FakeElement, slug = 'test-pack'): string | null =>
+    findByAttrValue(host, PACKS_ROW_DELETE_REMOVES_ATTR, slug)?.textContent ?? null;
+
+  it('⛔ asks the server when the confirmation opens, and names what goes', async () => {
+    const asked: string[] = [];
+    const { host, mount } = setupMount([installedEntry()], {
+      runUninstallPreview: async ({ pack_slug }) => {
+        asked.push(pack_slug);
+        return { schedules: 2, automations: 1, recipes_with_settings: 3 };
+      },
+    });
+    await mount.whenLoaded();
+    mount.clickDelete('test-pack');
+    await settle();
+    expect(asked).toEqual(['test-pack']);
+    expect(removesLine(host)).toBe('Also removes 2 schedules, 1 automation and the saved settings of 3 recipes.');
+    // It arrives after the confirmation opened, so a screen reader is told.
+    expect(findByAttrValue(host, PACKS_ROW_DELETE_REMOVES_ATTR, 'test-pack')?.getAttribute('role')).toBe('status');
+  });
+
+  // Found driving a live server: unstyled, the line sat under the pack's name as
+  // plain text, reading as the pack's description rather than as what the Delete
+  // below it takes. It shares the foundation warning's rule, so the two stay alike.
+  it('the line reads as part of the confirmation, styled like the foundation warning', () => {
+    expect(PACKS_PANEL_STYLES).toMatch(
+      /\.packs-row-delete-foundation-warn,\s*\[[^\]]+\] \.packs-row-delete-removes\s*\{[^}]*background:\s*var\(--warn-bg\)/s,
+    );
+  });
+
+  it('nothing goes with it, or a server that predates the preview: no line', async () => {
+    for (const runUninstallPreview of [
+      async () => ({ schedules: 0, automations: 0, recipes_with_settings: 0 }),
+      async () => { throw new Error('unknown method'); },
+    ] as PacksUninstallPreviewCaller[]) {
+      const { host, mount } = setupMount([installedEntry()], { runUninstallPreview });
+      await mount.whenLoaded();
+      mount.clickDelete('test-pack');
+      await settle();
+      expect(removesLine(host)).toBeNull();
+      expect(mount.getConfirmingDeleteFor()).toBe('test-pack');
+    }
+  });
+
+  it('the line goes when the confirmation closes', async () => {
+    const { host, mount } = setupMount([installedEntry()], {
+      runUninstallPreview: async () => ({ schedules: 1, automations: 0, recipes_with_settings: 0 }),
+    });
+    await mount.whenLoaded();
+    mount.clickDelete('test-pack');
+    await settle();
+    expect(removesLine(host)).toBe('Also removes 1 schedule.');
+    mount.clickCancelDelete();
+    expect(removesLine(host)).toBeNull();
+  });
+
+  // ⛔ The render alone already hides an answer that lands after Cancel, so a Cancel
+  // test cannot see the guard on the answer. What the guard is FOR: the owner opens
+  // Delete on one pack, moves to another and opens Delete there. The first pack's
+  // late answer must not replace the second's line (it would blank it, being keyed
+  // to a pack no longer confirmed). Mutation R21 survived the Cancel test alone.
+  it('⛔ a late answer for a pack the owner moved away from leaves the open confirmation\'s line', async () => {
+    type Removes = { schedules: number; automations: number; recipes_with_settings: number };
+    const answers = new Map<string, (value: Removes) => void>();
+    const other = installedEntry({ manifest: baseManifest({ slug: 'other-pack', name: 'Other Pack' }) });
+    const { host, mount } = setupMount([installedEntry(), other], {
+      runUninstallPreview: ({ pack_slug }) => new Promise((resolve) => { answers.set(pack_slug, resolve); }),
+    });
+    await mount.whenLoaded();
+    mount.clickDelete('test-pack');
+    mount.clickSelectPack('other-pack');
+    mount.clickDelete('other-pack');
+    expect(mount.getConfirmingDeleteFor()).toBe('other-pack');
+    expect([...answers.keys()]).toEqual(['test-pack', 'other-pack']);
+    answers.get('other-pack')!({ schedules: 0, automations: 2, recipes_with_settings: 0 });
+    await settle();
+    expect(removesLine(host, 'other-pack')).toBe('Also removes 2 automations.');
+    answers.get('test-pack')!({ schedules: 5, automations: 0, recipes_with_settings: 0 });
+    await settle();
+    expect(removesLine(host, 'other-pack')).toBe('Also removes 2 automations.');
+    expect(removesLine(host, 'test-pack')).toBeNull();
+  });
+
+  it('the seam is wired end to end: the rpc, the route, the panel', () => {
+    const src = (rel: string): string => readFileSync(resolve(import.meta.dirname, '..', rel), 'utf-8');
+    const bootstrap = src('webclient-bootstrap.ts');
+    expect(bootstrap).toContain("rpcConn.call('packs.uninstall_preview', args)");
+    // Built AND passed on: a built-but-unpassed caller is the classic shape of this bug.
+    expect(bootstrap).toMatch(/\{\s*packsUninstallPreviewCaller\s*\}/);
+    expect(src('packs/bootstrap-packs-route.ts')).toContain('runUninstallPreview: opts.packsUninstallPreviewCaller');
+  });
+
+  it('deleteRemovesText says each part once, in the singular where it is one', () => {
+    expect(deleteRemovesText({ schedules: 1, automations: 0, recipes_with_settings: 0 })).toBe('Also removes 1 schedule.');
+    expect(deleteRemovesText({ schedules: 0, automations: 2, recipes_with_settings: 1 }))
+      .toBe('Also removes 2 automations and the saved settings of 1 recipe.');
+    expect(deleteRemovesText({ schedules: 0, automations: 0, recipes_with_settings: 0 })).toBeNull();
   });
 });

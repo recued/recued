@@ -1,10 +1,10 @@
 {
   "source": "https://docs.wise.com/_bundle/api-reference/@legacy/index.json",
-  "sha256": "b644a8ffca792593ab32de0e41cfc18473097231ef08baff44ee09d246cbd4f7",
+  "sha256": "536cca4c5953c49352c2ff5e8d531bcb6d6dd88238d2fb2a682696f2240f7d4b",
   "openapi": "3.1.0",
-  "path_count": 199,
+  "path_count": 198,
   "operation_count": 240,
-  "selected_operation_count": 58,
+  "selected_operation_count": 59,
   "operations": [
     {
       "method": "POST",
@@ -354,9 +354,23 @@
       "reason": "outside the documented SMB personal-token business surface"
     },
     {
+      "method": "GET",
+      "path": "/v1/auth/jose/playground/jwsjwe",
+      "operation_id": "josePlaygroundJwsJweGet",
+      "tags": [
+        "jose"
+      ],
+      "security": [
+        "ClientCredentialsToken"
+      ],
+      "deprecated": false,
+      "selected": false,
+      "reason": "outside the documented SMB personal-token business surface"
+    },
+    {
       "method": "POST",
       "path": "/v1/auth/jose/playground/jwsjwe",
-      "operation_id": "josePlaygroundJwsJwe",
+      "operation_id": "josePlaygroundJwsJwePost",
       "tags": [
         "jose"
       ],
@@ -1949,9 +1963,10 @@
         "UserToken",
         "PersonalToken"
       ],
-      "deprecated": true,
-      "selected": false,
-      "reason": "deprecated official operation"
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
     },
     {
       "method": "POST",
@@ -2190,9 +2205,10 @@
         "UserToken",
         "PersonalToken"
       ],
-      "deprecated": true,
-      "selected": false,
-      "reason": "deprecated official operation"
+      "deprecated": false,
+      "selected": true,
+      "pack": "wise-core",
+      "reason": "OpenAPI explicitly permits PersonalToken"
     },
     {
       "method": "POST",
@@ -2717,9 +2733,9 @@
       "security": [
         "UserToken"
       ],
-      "deprecated": true,
+      "deprecated": false,
       "selected": false,
-      "reason": "deprecated official operation"
+      "reason": "outside the documented SMB personal-token business surface"
     },
     {
       "method": "POST",
@@ -3315,22 +3331,6 @@
       "deprecated": false,
       "selected": false,
       "reason": "outside the documented SMB personal-token business surface"
-    },
-    {
-      "method": "POST",
-      "path": "/v4/profiles/business-profile",
-      "operation_id": "profileBusinessCreateV4",
-      "tags": [
-        "profile"
-      ],
-      "security": [
-        "UserToken",
-        "PersonalToken"
-      ],
-      "deprecated": false,
-      "selected": true,
-      "pack": "wise-core",
-      "reason": "OpenAPI explicitly permits PersonalToken"
     },
     {
       "method": "GET",

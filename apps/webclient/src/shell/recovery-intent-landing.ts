@@ -347,6 +347,38 @@ const ROUTE_LANDING_POLICIES: Record<WebclientRouteId, RouteLandingPolicy> = {
       heading('data-recued-automation-heading'),
     ],
   },
+  // D-290 — Today is one list with one refresh control; there is no tab strip
+  // or row grid to land inside, so choose_again and continue converge. Review
+  // targets the write outcome, which is the only thing that can go wrong here.
+  today: {
+    choose_again: [control('.today-refresh'), heading('data-recued-data-route-heading')],
+    continue: [control('.today-refresh'), heading('data-recued-data-route-heading')],
+    review: [control('[data-today-task-error]'), control('[data-today-task-notice]')],
+  },
+  /** D-291 — `#views` is the saved-view list; `#views/<id>` is that list plus
+   *  the Data route rendered underneath. So the targets are the list's own
+   *  controls FIRST (the thing this surface is for) and Data's after, for the
+   *  id case. ⚠ Not an alias of `data`: landing on a view must reach the view
+   *  row, not the tab strip that happens to be below it. */
+  views: {
+    choose_again: [
+      activeControl('data-view-action'),
+      control('data-recued-data-route-tab'),
+      heading('data-recued-data-route-heading'),
+    ],
+    continue: [
+      control('data-view-action'),
+      control('data-recued-data-contact-row'),
+      heading('data-recued-data-route-heading'),
+    ],
+    review: [
+      self('data-view-error'),
+      self('data-recued-data-source-error'),
+      alertTarget,
+      statusTarget,
+      heading('data-recued-data-route-heading'),
+    ],
+  },
   data: {
     choose_again: [
       {
@@ -523,6 +555,15 @@ const ROUTE_LANDING_INVALIDATIONS: Record<
     invalidation('data-recued-data-source-error'),
     invalidation('data-recued-data-unavailable'),
   ],
+  // D-291 — a failed view action (rename / delete / alert / load) is the one
+  // thing that demotes a still-valid landing on this surface to Review.
+  views: [
+    invalidation('data-view-error'),
+    invalidation('data-recued-data-source-error'),
+  ],
+  // D-290 — a failed task write is the one thing that demotes a still-valid
+  // landing to Review.
+  today: [invalidation('[data-today-task-error]')],
   // D-250 § D7 — one section, one error surface; nothing to scope against a sibling.
   stats: [],
   logs: [

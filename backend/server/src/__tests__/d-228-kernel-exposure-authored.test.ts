@@ -137,7 +137,7 @@ describe('the REAL kernel manifests', () => {
     // `MCP_RESERVED_RPC_PREFIXES`, so the owner control plane stays unreachable
     // from this channel. An agent gets the governed kernel ops and nothing else.
     expect(flagged).toEqual([
-      'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+      'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
       'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
@@ -150,7 +150,7 @@ describe('the REAL kernel manifests', () => {
     // a new entry landed between two existing ones. The property is which slugs
     // are reachable, not the file's layout.
     expect(reachable.map((m) => m.slug).sort()).toEqual([
-      'csv-columns', 'csv-filter', 'csv-stats', 'data-file-read',
+      'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
       'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);

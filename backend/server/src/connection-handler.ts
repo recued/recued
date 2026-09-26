@@ -109,6 +109,8 @@ import type {
   ConnectionView,
   HandlerSlice,
   IngredientManifest,
+  InstallAccessTier,
+  InstallAudienceSelection,
   MessageMatchPattern,
   MessengerVendorDeclaration,
   OperationGroupGrantView,
@@ -252,6 +254,13 @@ export interface ConnectionRpcDeps {
    *  the manifest registry's whole surface. Absent ⇒ the badge reports
    *  `unknown` rather than a false all-clear. */
   getInstalledCatalog?: (slug: string) => IngredientManifest | null;
+  /** D-294 — the Access and audience an INSTALLED generated pack holds now, so its re-review
+   *  starts there rather than at a first install's defaults. `null` when the pack is not
+   *  installed. Absent ⇒ the review starts at the defaults, as before. */
+  currentGeneratedPackChoices?: (packSlug: string) => {
+    access?: InstallAccessTier;
+    audience: InstallAudienceSelection;
+  } | null;
   /** D-225 auto-mint — the tool names this server exposes to the contract a peer
    *  presents when it calls us (`config.peer_contract_id`). The ONLY input to the
    *  loopback diff; see `peer-exposed-tools.ts` for what it reads and why both of
@@ -3725,6 +3734,9 @@ export const handleMcpPackPreview = async (
    *  server's own, coming back through the peer. Named so the review screen can
    *  say why a tool the peer advertises is not on the form. */
   reflected_dropped?: string[];
+  /** D-294 — where a re-review starts, for a pack already installed. */
+  current_access?: InstallAccessTier;
+  current_audience?: InstallAudienceSelection;
 }> => {
   const a = ensureRecordArgs('collection.connection.mcpPackPreview', args);
   const name = ensureName('collection.connection.mcpPackPreview', a.name);
@@ -3740,11 +3752,15 @@ export const handleMcpPackPreview = async (
     'collection.connection.mcpPackPreview',
     { name, kind },
   );
+  const packSlug = await mcpGeneratedPackSlug({ kind, name });
+  const current = deps.currentGeneratedPackChoices?.(packSlug) ?? null;
   return {
-    pack_slug: await mcpGeneratedPackSlug({ kind, name }),
+    pack_slug: packSlug,
     connection: { kind, name },
     rows: await mcpPackReviewRows(descriptors),
     ...(dropped.length > 0 ? { reflected_dropped: dropped.map((d) => d.name) } : {}),
+    ...(current?.access !== undefined ? { current_access: current.access } : {}),
+    ...(current !== null ? { current_audience: current.audience } : {}),
   };
 };
 

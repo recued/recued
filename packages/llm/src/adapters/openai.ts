@@ -33,7 +33,11 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
       // openai-compatible endpoints require alongside this flag. The executor only
       // sets `options.json` for `supports_json` slots and degrades gracefully if a
       // misconfigured endpoint rejects the param (completeWithJsonFallback).
-      ...(options.json ? { response_format: { type: 'json_object' } } : {}),
+      // ⛔ Never for an ARRAY reply: `json_object` can only return an object, so a
+      // batch answered one record and dropped the rest (see `json_shape`).
+      ...(options.json && options.json_shape !== 'array'
+        ? { response_format: { type: 'json_object' } }
+        : {}),
       // `content_parts`, when present, is the source of truth (never `m.content`
       // — a D-172 additive parts list ≠ content): a multimodal turn renders the
       // OpenAI content-part array (image_url / input_audio / file); an all-text

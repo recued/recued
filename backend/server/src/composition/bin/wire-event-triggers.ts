@@ -104,6 +104,9 @@ export interface EventTriggersBundle {
    *  caller chains a watch recompute). Hooked to recipe-store
    *  mutations + maintenance exit by the composition. */
   reconcile: () => boolean;
+  /** D-296 — the vendor registry the reconcile compiles sugar against, so the
+   *  pack install preview compiles the SAME declarations. */
+  getVendorEntities: () => ReturnType<typeof liveVendorRegistry>;
 }
 
 export const composeEventTriggers = (
@@ -250,6 +253,7 @@ export const composeEventTriggers = (
   dispatcher.rebuild();
 
   return {
+    getVendorEntities: reconcilerDeps.getVendorEntities,
     triggersDeps: {
       store,
       dispatcher,

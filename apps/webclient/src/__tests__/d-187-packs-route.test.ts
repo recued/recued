@@ -794,6 +794,90 @@ describe('Packs R22 — route list→detail wiring', () => {
     route.dispose();
   });
 
+  /** D-282 B5 — ⛔⛔ THE SAME ADDRESS, DELIVERED THE WAY THE SERVER DELIVERS IT.
+   *
+   *  `packs.list` sends no manifest (`PackListEntry.manifest`); the detail
+   *  backfills it through `packs.resolveBySlug`, and on a real server the recipe
+   *  read can answer first. The test above hands the panel a list row that still
+   *  carries its manifest, which no server sends any more, so it could not see
+   *  what a live reload did: classification ran without the manifest, answered
+   *  "this pack ships nothing", and the stale-deep-link collapse threw the
+   *  address away. Measured on a booted server: discarded at 3.3 s, the manifest
+   *  landed at 8.3 s, and the Use tab opened on the first view. */
+  it('⛔ keeps a bookmarked lookup address while the manifest is still in flight', async () => {
+    const calls: string[] = [];
+    const doc = makeFakeDocument() as FakeDoc & {
+      defaultView?: {
+        history: {
+          replaceState: (s: unknown, t: string, url: string) => void;
+          pushState: (s: unknown, t: string, url: string) => void;
+        };
+      };
+    };
+    doc.defaultView = {
+      history: {
+        replaceState: (_s, _t, url) => { calls.push(`replace ${url}`); },
+        pushState: (_s, _t, url) => { calls.push(`push ${url}`); },
+      },
+    };
+    const root = doc.createElement('div');
+    const execute = vi.fn<PackAppExecuteCaller>(async ({ recipe_id }) => ({
+      recipe_id,
+      recipe_hash: `run-${recipe_id}`,
+      success: true,
+      duration_ms: 1,
+      steps: [],
+      errors: [],
+      output: { render: [{ type: 'table', data: { rows: [] } }], sidebar: [] },
+    }));
+    const detailRecipe = {
+      ...viewRecipe('detail-a'),
+      recipe: {
+        ...viewRecipe('detail-a').recipe,
+        variables: { id: { label: 'The record', type: 'string' } },
+      },
+    } as unknown as ServerRecipeListEntry;
+    const manifest = baseManifest({
+      slug: 'app-pack',
+      name: 'App Pack',
+      recipes: [{ slug: 'view-a', version: 1 }, { slug: 'detail-a', version: 1 }],
+    });
+    // The list row as the server sends it: installed, and no manifest.
+    const { manifest: _notSent, ...listRow } = baseEntry({ installed: true, manifest });
+    let landManifest!: () => void;
+    const manifestLanded = new Promise<void>((resolve) => { landManifest = resolve; });
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [listRow as PackListEntry] })),
+      packsResolveCaller: vi.fn(async () => {
+        await manifestLanded;
+        return { manifest };
+      }),
+      recipesListCaller: vi.fn(async () => ({
+        recipes: [viewRecipe('view-a'), detailRecipe],
+      })),
+      recipeExecuteCaller: execute,
+      initialPackSlug: 'app-pack',
+      initialPackViewId: 'detail-a',
+      initialPackViewTarget: 'rec_7',
+    });
+    await route.packsPanel()!.whenLoaded();
+    await tick(20);
+
+    // The recipes have answered; the manifest has not. Nothing is decided yet.
+    expect(execute).not.toHaveBeenCalled();
+    expect(calls, 'an unfetched manifest is not an answer').not.toContain('replace #packs/app-pack');
+
+    landManifest();
+    await tick(40);
+    expect(execute.mock.calls.map((call) => call[0]!.recipe_id)).toEqual(['view-a', 'detail-a']);
+    expect(execute.mock.calls[1]![0]).toEqual({ recipe_id: 'detail-a', config: { id: 'rec_7' } });
+    expect(calls).not.toContain('replace #packs/app-pack');
+    expect(calls).not.toContain('replace #packs/app-pack/use/view-a');
+    route.dispose();
+  });
+
   /** D-282 slice C — the pin control, where an app actually is.
    *
    *  ⛔ IT LIVES INSIDE THE `showUse` BRANCH ON PURPOSE. A capability pack —

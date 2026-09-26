@@ -9,7 +9,12 @@ export const savedViewAlertMessage = (notice: SavedDataViewAlertNotice, publicBa
     text: `${notice.count === 1 ? `A ${noun} now matches` : `${notice.count} ${noun}s now match`} your saved view “${notice.view_name}”.`
       + (notice.titles ?? []).map(title => `\n• ${title}`).join('')
       + `\nOpen the view to review the matching ${noun}s.`,
-    ...(publicBaseUrl ? { link_url: `${publicBaseUrl}/#data/view/${encodeURIComponent(notice.view_id)}` } : {}),
+    // D-291 — the canonical saved-view address is `#views/<id>`. ⚠ Notifications
+    // ALREADY DELIVERED carry the old `#data/view/<id>`, in inboxes and OS
+    // notification centres this server cannot reach; they keep working because
+    // the shell's parser still re-points that address. Emitting the new one is
+    // for links sent from here on, not a migration.
+    ...(publicBaseUrl ? { link_url: `${publicBaseUrl}/#views/${encodeURIComponent(notice.view_id)}` } : {}),
   };
 };
 
@@ -34,7 +39,7 @@ export const createSavedDataViewAlertRuntime = (deps: {
       for (const notice of deps.store.pending()) {
         if (stopped) break;
         const message = savedViewAlertMessage(notice, deps.publicBaseUrl);
-        const ui_link_url = `#data/view/${encodeURIComponent(notice.view_id)}`;
+        const ui_link_url = `#views/${encodeURIComponent(notice.view_id)}`;
         await deps.auditLog.logActivity({ activity_id: notice.id, timestamp: notice.created_at,
           action: 'notification_fired', target: notice.view_id,
           detail: JSON.stringify({ ...message, link_url: message.link_url ?? ui_link_url }) });

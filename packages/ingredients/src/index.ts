@@ -23,6 +23,7 @@ export { withIngredientCache, type IngredientCacheOptions } from './cache.js';
 export {
   createIngredientExecutor,
   mergeManifestStepInput,
+  withoutManifestPlaceholders,
   mergeManifestStepOutput,
   resolveDispatchSlot,
   type Adapter,

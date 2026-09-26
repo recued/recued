@@ -5,9 +5,9 @@
       "reference_url": "https://secure.na1.adobesign.com/public/docs/restapi/v6",
       "repository_url": "https://github.com/adobe/acrobat-sign",
       "url": "https://secure.na1.adobesign.com/restapijson/v6/restapi.json",
-      "sha256": "c88bf384171b40442e12bfc7b83d490c775405b9d0ac8a116ea0a563ed364d25",
-      "bytes": 1181806,
-      "retrieved_on": "2026-07-15",
+      "sha256": "1fa08149acd86e015dce015a542743c04fc1c0ca90d08266457c4c05636c889a",
+      "bytes": 1187945,
+      "retrieved_on": "2026-09-23",
       "openapi": "3.1.0",
       "info_version": "6.0.0",
       "server": "/api/rest/v6",
@@ -143,10 +143,10 @@
       "adobe-sign-platform-admin": 38
     },
     "composition_bytes": {
-      "adobe-sign": 24734,
-      "adobe-sign-agreement-workflows": 45162,
-      "adobe-sign-signing-content": 86343,
-      "adobe-sign-platform-admin": 44662
+      "adobe-sign": 24878,
+      "adobe-sign-agreement-workflows": 45408,
+      "adobe-sign-signing-content": 86463,
+      "adobe-sign-platform-admin": 45390
     },
     "risk_counts": {
       "write": 40,
@@ -5840,6 +5840,14 @@
           "type": "string",
           "required": true,
           "omission": null
+        },
+        {
+          "name": "documentUpdateOnly",
+          "in": "query",
+          "admitted_name": "query.documentUpdateOnly",
+          "type": "boolean",
+          "required": false,
+          "omission": null
         }
       ],
       "request": {
@@ -5884,6 +5892,7 @@
           "notaryInfo",
           "parentId",
           "participantSetsInfo",
+          "pauseInfo",
           "postSignOption",
           "redirectOptions",
           "restrictedFor",
@@ -8540,6 +8549,7 @@
         ],
         "admitted_properties": [
           "accountId",
+          "areaCode",
           "company",
           "email",
           "firstName",
@@ -8547,7 +8557,9 @@
           "initials",
           "isAccountAdmin",
           "lastName",
+          "lastPasswordChange",
           "locale",
+          "passwordExpiration",
           "phone",
           "primaryGroupId",
           "title"
@@ -9063,13 +9075,16 @@
           "status"
         ],
         "admitted_properties": [
+          "areaCode",
           "company",
           "email",
           "firstName",
           "id",
           "initials",
           "lastName",
+          "lastPasswordChange",
           "locale",
+          "passwordExpiration",
           "phone",
           "status",
           "title"
@@ -13845,6 +13860,14 @@
           "type": "string",
           "required": true,
           "omission": null
+        },
+        {
+          "name": "documentUpdateOnly",
+          "in": "query",
+          "admitted_name": "query.documentUpdateOnly",
+          "type": "boolean",
+          "required": false,
+          "omission": null
         }
       ],
       "request": {
@@ -13922,7 +13945,7 @@
         "application/json"
       ],
       "selected_response_media": "application/json",
-      "response_status": "200",
+      "response_status": "204",
       "response_schema": {
         "type": "string",
         "properties": {}
@@ -16560,6 +16583,7 @@
           "notaryInfo",
           "parentId",
           "participantSetsInfo",
+          "pauseInfo",
           "postSignOption",
           "redirectOptions",
           "reminderFrequency",
@@ -16958,6 +16982,9 @@
           },
           "restrictedFor": {
             "type": "string"
+          },
+          "pauseInfo": {
+            "type": "object"
           },
           "reminderFrequency": {
             "type": "string"
@@ -17439,7 +17466,13 @@
       "response_schema": {
         "type": "object",
         "properties": {
+          "securedUserId": {
+            "type": "string"
+          },
           "apiAccessPoint": {
+            "type": "string"
+          },
+          "homeShard": {
             "type": "string"
           },
           "webAccessPoint": {
@@ -17826,6 +17859,9 @@
           "lastName": {
             "type": "string"
           },
+          "passwordExpiration": {
+            "type": "string"
+          },
           "initials": {
             "type": "string"
           },
@@ -17844,6 +17880,9 @@
           "firstName": {
             "type": "string"
           },
+          "areaCode": {
+            "type": "number"
+          },
           "isAccountAdmin": {
             "type": "boolean"
           },
@@ -17860,6 +17899,9 @@
             "type": "string"
           },
           "id": {
+            "type": "string"
+          },
+          "lastPasswordChange": {
             "type": "string"
           },
           "email": {

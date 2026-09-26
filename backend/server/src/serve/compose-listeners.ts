@@ -128,7 +128,7 @@ import {
 } from '../recipe-runnability-handler.js';
 import {
   buildPackOpResolution,
-  missingPackDependencies,
+  createMissingPackDepsForRecipe,
   privateByoDropIds,
 } from '../pack-inventory.js';
 import type { ContractBroadcastEvent } from '../contract-handler.js';
@@ -162,7 +162,8 @@ import {
   getDefaultWatchSourceRegistry,
   messengerSourceKey,
 } from '../watch/source-registry.js';
-import { emitAutomationRule } from '../events/emit-sites.js';
+import { emitAutomationRule, emitSchedule } from '../events/emit-sites.js';
+import { removeRecipeOwnedState, type RecipeOwnedStateDeps } from '../recipe-owned-state.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
 import {
@@ -184,6 +185,7 @@ import {
 } from '@recued/contracts';
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
+import { currentGeneratedPackChoices } from '../pack-update-carry-over.js';
 import { handlePacksUninstall } from '../pack-uninstall-handler.js';
 import { reconcileInstalledPacksOnBoot } from '../pack-reconciliation.js';
 import {
@@ -470,6 +472,10 @@ export interface ComposeListenersOptions {
     | 'engagementHealthDeps'
     | 'notificationsDeps'
     | 'packInstallDeps'
+    | 'publishSavedDataViewStore'
+    | 'publishTriggerPreview'
+    | 'publishReceptionPairs'
+    | 'publishRecipeOwnedState'
     | 'packListDeps'
     | 'packUninstallDeps'
     | 'observabilityBundle'
@@ -1868,6 +1874,31 @@ export const composeListeners = async (
       }
       : {}),
   });
+  // D-296 — the pack install preview names an armed automation an update
+  // switches off; it reads the trigger rows and compiles declarations with
+  // the SAME vendor registry as the reconcile. Published before listeners start.
+  if (eventTriggersBundle) {
+    rpc.publishTriggerPreview({
+      store: eventTriggersBundle.store,
+      getVendorEntities: eventTriggersBundle.getVendorEntities,
+    });
+  }
+  // D-299 — the Reception pairs a pack's recipes back: an update keeps the ones whose
+  // parameters and door are unchanged, and its preview names the rest. Read at call time,
+  // like the pair rpcs themselves.
+  if (receptionRpcDeps) {
+    rpc.publishReceptionPairs(() => {
+      const pairs = receptionRpcDeps.getIntakeRecipePairStore?.();
+      if (!pairs) return undefined;
+      const door = receptionRpcDeps.getDoorBindDeps?.();
+      return {
+        endpoints: receptionRpcDeps.getStore(),
+        pairs,
+        ...(door ? { door } : {}),
+        now: () => Date.now(),
+      };
+    });
+  }
 
   let refreshPreapprovalAutomations: (() => void | Promise<void>) | undefined;
   const preapproval = storage.preapprovalStorage && app.clientTokensRef && app.connectionStoreRef
@@ -1927,6 +1958,40 @@ export const composeListeners = async (
   if (eventTriggersBundle && watchBundle) {
     eventTriggersBundle.triggersDeps.onRulesChanged = () => watchBundle.manager.recompute();
   }
+  // D-304 — a recipe's own state goes with it. Unconditional, and on the store's
+  // DELETION hook, so every uninstall path (a pack deleted, a Records pack removing
+  // a recipe, `recipe.delete`) cleans up through this one seam. It runs before the
+  // mutation hook below, so the reconcile sees what it removed. The same stores feed
+  // the uninstall preview ("also removes …").
+  const recipeOwnedState: RecipeOwnedStateDeps = {
+    recipes: execution.executeDeps.recipeStore,
+    ...(dishDeps ? { dishes: dishDeps.store } : {}),
+    ...(dishDeps?.contextStore ? { dishContext: dishDeps.contextStore } : {}),
+    ...(scheduleDeps ? { schedules: scheduleDeps.store } : {}),
+    ...(rpc.autoRunDeps
+      ? { autoRun: rpc.autoRunDeps.settingsStore, autoRunCircuit: rpc.autoRunDeps.circuitStore }
+      : {}),
+    ...(eventTriggersBundle ? { triggers: eventTriggersBundle.store } : {}),
+  };
+  rpc.publishRecipeOwnedState(() => recipeOwnedState);
+  execution.executeDeps.recipeStore.addOnDeleted?.((recipe_id) => {
+    // Read first: the live roster still holds the recipe, with its failure trip.
+    const autoRun = rpc.autoRunDeps?.getHandle();
+    const onRoster = autoRun?.roster.has(recipe_id) === true;
+    const removed = removeRecipeOwnedState(recipe_id, recipeOwnedState);
+    if (removed.schedules > 0) emitSchedule(storage.eventBus, 'updated');
+    if (removed.automations > 0) {
+      // A removed trigger must stop firing now, not at the next rebuild.
+      eventTriggersBundle?.dispatcher.rebuild();
+      emitAutomationRule(storage.eventBus, 'event_trigger');
+    }
+    if (removed.automations > 0 || onRoster) {
+      // The recipe leaves the live roster now. A rebuild keeps the failure trip of
+      // every entry it finds, so waiting would hand this one's trip to a reinstall.
+      void Promise.resolve(autoRun?.refreshRoster()).catch(() => undefined);
+      emitAutomationRule(storage.eventBus, 'auto_run');
+    }
+  });
   if (eventTriggersBundle || watchBundle) {
     execution.executeDeps.recipeStore.setOnMutated(() => {
       eventTriggersBundle?.reconcile();
@@ -2167,6 +2232,21 @@ export const composeListeners = async (
       ? {
           getInstalledCatalog: (slug: string) =>
             packInstallDepsWithComposition.registry!.get(slug),
+        }
+      : {}),
+    // D-294 — where a generated pack's RE-review starts: the Access and audience it
+    // holds now, read back as `packs.list` reads any other pack's.
+    ...(packInstallDepsWithComposition?.contractStore && packInstallDepsWithComposition.localManifestStore
+      ? {
+          currentGeneratedPackChoices: (packSlug: string) => currentGeneratedPackChoices({
+            contractStore: packInstallDepsWithComposition.contractStore!,
+            localManifestStore: packInstallDepsWithComposition.localManifestStore!,
+            ...(packInstallDepsWithComposition.sellerStore
+              ? { sellerStore: packInstallDepsWithComposition.sellerStore }
+              : {}),
+            packSlug,
+            now: Date.now,
+          }),
         }
       : {}),
     // ⛔⛔ D-228 slice 3 — carry the owner's existing per-tool `read`
@@ -2571,6 +2651,12 @@ export const composeListeners = async (
     ...(execution.notificationBlock && storage.auditLog
       ? { readRecords: createSavedRecordsViewReader(storage.recordsStore) } : {}),
   });
+  // D-289 — hand it to the pack install/uninstall deps, which composed a stage
+  // earlier and hold a getter over this. Published HERE because this is where
+  // the store can first exist: its alert runtime needs the notification block.
+  // ⛔ Before the listeners start, so a pack installed by the very first
+  // request already has somewhere to put its views.
+  rpc.publishSavedDataViewStore(savedDataViewStore);
   const savedDataViewAlerts = execution.notificationBlock && storage.auditLog
     ? createSavedDataViewAlertRuntime({ store: savedDataViewStore.alerts, auditLog: storage.auditLog,
       notifier: execution.notificationBlock,
@@ -2647,17 +2733,12 @@ export const composeListeners = async (
     scheduleDeps: scheduleDeps && contractStore
       ? {
           ...scheduleDeps,
-          missingPackDepsForRecipe: (recipe_id: string) => {
-            const recipe = storage.recipeStore.get(recipe_id);
-            if (recipe === null) return [];
-            return missingPackDependencies(
-              recipe,
-              buildPackOpResolution(
-                () => contractStore.scan('installed_pack', []),
-                (slug: string) => execution.executorConfig.manifests.get(slug),
-              ),
-            );
-          },
+          // The same factory the `core.schedule.recipe` step composes with.
+          missingPackDepsForRecipe: createMissingPackDepsForRecipe(
+            storage.recipeStore,
+            () => contractStore.scan('installed_pack', []),
+            (slug: string) => execution.executorConfig.manifests.get(slug),
+          ),
         }
       : scheduleDeps,
     ...(dishDeps ? { dishDeps } : {}),
@@ -2748,6 +2829,7 @@ export const composeListeners = async (
     sellerContractStore: app.contractStoreRef,
     sellerInboundTokenStore: app.chatInboundTokenStoreRef,
     sellerClaimStore: app.sellerClaimStoreRef,
+    sellerRecordsStore: storage.recordsStore,
     runtimeConfig,
     bootstrapDeps,
     serverId: storage.serverInstanceId,
@@ -3348,7 +3430,17 @@ export const composeListeners = async (
         }
       : {}),
     ...(rpc.packListDeps
-      ? { packListDeps: rpc.packListDeps }
+      ? {
+          packListDeps: {
+            ...rpc.packListDeps,
+            // The installed catalogs an update is diffed against — the SAME
+            // store `packs.install` provisions them into (above).
+            localManifestStore: storage.localManifestStore,
+            // Customer packages, so an update's audience names the tiers it is
+            // shared with (D-294).
+            ...(app.sellerStoreRef ? { sellerStore: app.sellerStoreRef } : {}),
+          },
+        }
       : {}),
     // D-259 — the durable half of the boot pack finding. Composed HERE rather
     // than threaded through `rpc`, because both inputs are already in scope and

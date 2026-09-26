@@ -173,6 +173,7 @@ import {
 } from './realtime/subscriber.js';
 import {
   createWebclientRpcConn,
+  WEBCLIENT_RUN_RPC_TIMEOUT_MS,
   type WebclientRpcConn,
 } from './realtime/rpc-conn.js';
 import {
@@ -215,6 +216,7 @@ import {
   type AccountMenuMount,
 } from './shell/account-menu.js';
 import { humanizeRpcError } from './shell/rpc-error-copy.js';
+import { listAllRecipes, listAllTools } from './shell/paged-lists.js';
 import { runSelfPairRevocation } from './shell/server-profile-revocation.js';
 import {
   consumeServerSwitchArrival,
@@ -302,6 +304,7 @@ import type {
   HousekeepingDismissPromotionCaller,
   HousekeepingRegistryDescribeCaller,
   HousekeepingRunNowCaller,
+  HousekeepingDriftDismissCaller,
   HousekeepingDriftReadCaller,
   HousekeepingStatusReadCaller,
   HousekeepingTopicResetCaller,
@@ -376,6 +379,14 @@ import {
   type RecipesToolCatalogCaller,
 } from './recipes/bootstrap-recipes-route.js';
 import { fileRefOptionsFromMirrorResults } from './recipes/file-ref-picker.js';
+import {
+  createSheetImportUploader,
+  ensureSheetImportResultStyles,
+  renderSheetImportResult,
+  sheetImportFor,
+  wireSheetImport,
+  type SheetImportHandle,
+} from './recipes/spreadsheet-import/index.js';
 import type { PackInstalledListCaller, RosterPack } from './discover/pack-discovery.js';
 import { mountDiscoverySurface } from './discover/discovery-surface.js';
 import { mountRecipeDiscovery } from './discover/recipe-discovery.js';
@@ -574,6 +585,7 @@ import type {
 import type {
   PacksInstallBySlugCaller,
   PacksInstallPreviewCaller,
+  PacksUninstallPreviewCaller,
   PacksInstallCaller,
   PacksListCaller,
   PacksResolveCaller,
@@ -615,6 +627,7 @@ import {
   type AttentionRecoveryIntentReviewTarget,
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
+import { bootstrapTodayRoute } from './today/bootstrap-today-route.js';
 import {
   createBrowserInactiveProfileRecoveryDiscovery,
   createInactiveProfileRecoveryReviewContinuity,
@@ -796,7 +809,7 @@ import type {
   SellerManualCustomerReissueTokenCaller,
   SellerManualCustomerSwapTierCaller,
   SellerAcknowledgeLlmGatewayPaidCaller,
-  SellerManualTierBulkAdjustCaller,
+  SellerManualTierReapplyCaller,
   SellerManualTierUpsertCaller,
   SellerTierUsagePolicyCaller,
   SellerCreatePassTierCaller,
@@ -1023,10 +1036,14 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     items: [
       { id: 'create', label: 'Create', glyph: '✎', route: null, action: 'create' },
       { id: 'find', label: 'Find', glyph: '🔍', route: 'data', segments: ['search'] },
-      { id: 'today', label: 'Today', route: 'data', segments: ['today'] },
+      { id: 'today', label: 'Today', route: 'today' },
       { id: 'tasks', label: 'Tasks', route: 'data', segments: ['task'] },
       { id: 'notes', label: 'Notes', route: 'data', segments: ['note'] },
       { id: 'contacts', label: 'Contacts', route: 'data', segments: ['contact'] },
+      // D-291 — the owner's OWN curated entry points, promoted out of Data.
+      // Reaching a shortcut by first opening the surface it shortcuts was the
+      // whole reason to move it.
+      { id: 'views', label: 'Saved views', route: 'views' },
       { id: 'data', label: 'Data', route: 'data', highlight: true },
     ],
   },
@@ -4709,6 +4726,10 @@ export const bootstrapWebclient = async (
       recipes: { label: 'Finishing a Recipe action', returnLabel: 'Return to Recipes' },
       automation: { label: 'Updating automation', returnLabel: 'Return to Automation' },
       data: { label: 'Saving a Data change', returnLabel: 'Return to Data' },
+      // D-291 — `#views/<id>` renders the Data route, so in-flight work here is
+      // the same kind of work; what differs is where "return" sends you.
+      views: { label: 'Saving a Data change', returnLabel: 'Return to Saved views' },
+      today: { label: 'Saving a task change', returnLabel: 'Return to Today' },
       logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
       stats: { label: 'Finishing a stats action', returnLabel: 'Return to Stats' },
       chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
@@ -6902,6 +6923,12 @@ export const bootstrapWebclient = async (
     options.enablePacksPanel === false
       ? undefined
       : (args) => rpcConn.call('packs.install_preview', args);
+  // D-304 — the Delete confirmation's "also removes …". A server predating it
+  // rejects the method, which the panel reads as "no line".
+  const packsUninstallPreviewCaller: PacksUninstallPreviewCaller | undefined =
+    options.enablePacksPanel === false
+      ? undefined
+      : (args) => rpcConn.call('packs.uninstall_preview', args);
   const packsResolveCaller: PacksResolveCaller | undefined =
     options.enablePacksPanel === false
       ? undefined
@@ -6939,8 +6966,14 @@ export const bootstrapWebclient = async (
   // D-174 P4 — Recipes route callers. `recipe.list` is the installed-library
   // inventory; the run modal uses the existing top-level `execute` RPC
   // (there is no separate `recipe.execute` registry key today).
-  const recipesListCaller: RecipesListCaller = () =>
-    rpcConn.call('recipe.list', undefined);
+  //
+  // ⛔ A WHOLE-LIST READ OF `recipe.list` GOES THROUGH `listAllRecipes`, never a
+  // bare `rpcConn.call`: one row per installed recipe, so the unpaged frame
+  // grows with installs and a paged read does not. Every caller below shares
+  // `readAllRecipes`.
+  const readAllRecipes = () =>
+    listAllRecipes((request) => rpcConn.call('recipe.list', request));
+  const recipesListCaller: RecipesListCaller = readAllRecipes;
   // Discover (#recipes → Discovery tab) — install a standalone marketplace
   // recipe by slug. A standalone recipe carries no pack `requires[]`, so there's
   // no consent gate: one trusted server call fetches + validates + saves it.
@@ -6956,7 +6989,7 @@ export const bootstrapWebclient = async (
   const recipesPiiCaller: RecipesPiiCaller = () =>
     rpcConn.call('recipe.pii', undefined);
   const recipeExecuteCaller: RecipeExecuteCaller = (args) =>
-    rpcConn.call('execute', buildRecipeExecuteArgs(args));
+    rpcConn.call('execute', buildRecipeExecuteArgs(args), { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS });
 
   // D-210 Appendix B — build the absolute manage URL from the paired WS server.
   // The RPC intentionally returns a path: a WS call has no request Host, while
@@ -7290,6 +7323,19 @@ export const bootstrapWebclient = async (
       );
     });
   };
+  // D-292 — the guided spreadsheet import uploads through the SAME resumable
+  // `upload.*` path + binary socket as Data → Files and the chat composer, so a
+  // statement dropped into the import lands in the ONE `data.file` inventory.
+  // Built once; both hosts that open the flow (Pack Use, Recipes) share it.
+  const sheetImportUploader = createSheetImportUploader({
+    callers: {
+      create: dataUploadCreateCaller,
+      probe: dataUploadProbeCaller,
+      finalize: dataUploadFinalizeCaller,
+      delete: dataUploadDeleteCaller,
+    },
+    connect: uploadConnectFactory,
+  });
   const runsListCaller: RunsListCaller = (args) =>
     rpcConn.call('execution.list', args);
   const runsGetCaller: RunsGetCaller = (args) =>
@@ -7461,7 +7507,7 @@ export const bootstrapWebclient = async (
   // view and the Runs Recipe-filter combobox (identical shape; the
   // `AutomationRecipeNamesCaller` annotation just pins it).
   const recipeNamesCaller: AutomationRecipeNamesCaller = async () => {
-    const result = await rpcConn.call('recipe.list', undefined);
+    const result = await readAllRecipes();
     return {
       recipes: result.recipes.map((r) => {
         const name = r.recipe.metadata?.name;
@@ -8574,12 +8620,15 @@ export const bootstrapWebclient = async (
   // D-171 slice 2c — the grant checklist's live self tool catalog. Read-only;
   // local-UI only over the pair WS-rpc (`chat.inbound_token.` is reserved from
   // the MCP channel). Gates the checklist alongside the update caller above.
+  // Read page by page: about 12 tools per installed pack, the largest
+  // install-proportional list on the socket.
   const permissionsToolCatalogCaller:
     | PermissionsToolCatalogCaller
     | undefined =
     options.enablePermissionsPanel === false
       ? undefined
-      : () => rpcConn.call('chat.inbound_token.tool_catalog', undefined);
+      : () => listAllTools((request) =>
+        rpcConn.call('chat.inbound_token.tool_catalog', request));
   const recipesToolCatalogCaller: RecipesToolCatalogCaller | undefined =
     permissionsToolCatalogCaller;
   // D-171 slice 3b / D-196 R3 — the `#contracts` normal authoring caller plus
@@ -8670,7 +8719,7 @@ export const bootstrapWebclient = async (
   const grantRecipeListCaller: GrantRecipeListCaller | undefined =
     options.enableContractsPanel === false
       ? undefined
-      : () => rpcConn.call('recipe.list', undefined);
+      : readAllRecipes;
   // D-211 — owner replacements for pack-authored operation defaults are
   // global, actorless, and edited only from the pack detail. Keep their
   // inventory reader independent of the contract-grant feature flag: Access
@@ -8948,11 +8997,11 @@ export const bootstrapWebclient = async (
       options.enableSellerPage === false
         ? undefined
         : (args) => rpcConn.call('server.seller.reissueManualCustomerToken', args);
-  const sellerManualTierBulkAdjustCaller:
-    SellerManualTierBulkAdjustCaller | undefined =
+  const sellerManualTierReapplyCaller:
+    SellerManualTierReapplyCaller | undefined =
       options.enableSellerPage === false
         ? undefined
-        : (args) => rpcConn.call('server.seller.bulkAdjustManualTierCustomers', args);
+        : (args) => rpcConn.call('server.seller.reapplyManualTier', args);
   const sellerStripeSynchronizeCaller: SellerStripeSynchronizeCaller | undefined =
     options.enableSellerPage === false
       ? undefined
@@ -9182,6 +9231,14 @@ export const bootstrapWebclient = async (
     options.enableHousekeepingPanel === false
       ? undefined
       : () => rpcConn.call('housekeeping.drift.read', undefined);
+  // D-285 follow-up — the owner's dismissal, persisted so the banner does not
+  // come back on the next mount.
+  const housekeepingPanelDriftDismissCaller:
+    | HousekeepingDriftDismissCaller
+    | undefined =
+    options.enableHousekeepingPanel === false
+      ? undefined
+      : (args) => rpcConn.call('housekeeping.drift.dismiss', args);
   const housekeepingPanelTrustWriteCaller:
     | HousekeepingTrustWriteCaller
     | undefined =
@@ -10097,6 +10154,10 @@ export const bootstrapWebclient = async (
        *  panel) so the one-modal-at-a-time rule is a property of the route
        *  rather than of whichever surface happened to open it. */
       let packsRunModal: RunModal.RunModalHandle | null = null;
+      /** D-292 — the guided spreadsheet import, opened INSTEAD of the run modal
+       *  for a recipe whose `spreadsheet_import` declaration holds. Shares the
+       *  one-dialog-at-a-time rule with `packsRunModal`. */
+      let packsSheetImport: SheetImportHandle | null = null;
       // The unified `#packs` surface — one list → detail (the [Installed |
       // Discover] tab split is retired). `bootstrapPacksRoute` now composes the
       // browse list (discover panel over the catalog ∪ roster union) → the
@@ -10117,6 +10178,9 @@ export const bootstrapWebclient = async (
         ...(packsResolveCaller !== undefined ? { packsResolveCaller } : {}),
         ...(packsInstallPreviewCaller !== undefined
           ? { packsInstallPreviewCaller }
+          : {}),
+        ...(packsUninstallPreviewCaller !== undefined
+          ? { packsUninstallPreviewCaller }
           : {}),
         ...(packsInstallBySlugCaller !== undefined
           ? {
@@ -10143,7 +10207,35 @@ export const bootstrapWebclient = async (
         // the route so one-modal-at-a-time holds; `onRan` hands the returned
         // output back to Pack Use, where it becomes the current task result.
         openRunModal: (entry, onRan, prefill) => {
-          if (packsRunModal !== null) return;
+          if (packsRunModal !== null || packsSheetImport !== null) return;
+          // D-292 — an import that declares its file, its check switch and its
+          // columns gets the guided flow: upload → match the file's own columns →
+          // a real server check → import. Re-checked here (`sheetImportFor`), not
+          // trusted from install: a declaration that does not hold keeps the
+          // modal below, which runs every recipe regardless.
+          const sheet = sheetImportFor(entry);
+          if (sheet !== null) {
+            ensureSheetImportResultStyles(doc);
+            packsSheetImport = wireSheetImport({
+              recipe: entry,
+              declaration: sheet,
+              mount: (doc as { body?: HTMLElement }).body ?? appShell.contentRoot,
+              ...(options.document !== undefined ? { document: options.document } : {}),
+              execute: switchWorkTracker.track(recipeExecuteCaller),
+              uploadFile: sheetImportUploader,
+              readFile: (args) => rpcConn.call('data.file.read', args),
+              fileRefSearch: fileRefSearchCaller,
+              configGet: (args) => rpcConn.call('recipe_config.get', args),
+              configSet: switchWorkTracker.track((args: {
+                recipe_id: string; publisher_id?: string; config_overlay: Record<string, unknown>;
+              }) => rpcConn.call('recipe_config.set', args)),
+              renderResult: renderSheetImportResult,
+              ...(prefill?.config !== undefined ? { prefill: prefill.config } : {}),
+              onClose: () => { packsSheetImport = null; },
+              ...(onRan !== undefined ? { onRan } : {}),
+            });
+            return;
+          }
           const runRecordRefSearch = bindRecordRefSearchToRecipe(
             recordRefSearchCaller,
             entry.recipe,
@@ -10321,6 +10413,8 @@ export const bootstrapWebclient = async (
             displayPrefsSetCaller: recipesDisplayPrefsSetCaller,
           }),
           recipesListCaller,
+          // The detail view's Definition: the full body, which list rows no longer carry.
+          recipeGetCaller: (args) => rpcConn.call('recipe.get', args),
           recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
           runnabilityCaller: recipesRunnabilityCaller,
           piiCaller: recipesPiiCaller,
@@ -10369,6 +10463,8 @@ export const bootstrapWebclient = async (
           recipeConfigSetCaller: switchWorkTracker.track(setRecipeConfig),
           fileRefSearchCaller,
           recordRefSearchCaller,
+          // D-292 — the guided spreadsheet import's upload (see the Packs host).
+          sheetImportUploadCaller: sheetImportUploader,
           // D-200 — the same paired-client owner read used by Data Files backs
           // exact artifact preview/download in recipe results. The result host
           // rechecks ref/hash/MIME/name/size before it opens returned bytes.
@@ -10443,7 +10539,10 @@ export const bootstrapWebclient = async (
         },
       }));
     }
-    if (route === 'data') {
+    // D-291 — ONE mount for both surfaces. `#views/<id>` renders the Data route
+    // under the saved-view list, so forking this (very large) options bag would
+    // give two compositions that must stay identical by hand.
+    if (route === 'data' || route === 'views') {
       activeSettingsRoute = null;
       const parsedDataRoute = hashSource === null
         ? null
@@ -10467,10 +10566,14 @@ export const bootstrapWebclient = async (
           update: switchWorkTracker.track((args) => rpcConn.call('data_views.update', args)),
           rename: switchWorkTracker.track((args) => rpcConn.call('data_views.rename', args)),
           delete: switchWorkTracker.track((args) => rpcConn.call('data_views.delete', args)),
+          resolveRetired: switchWorkTracker.track((args) => rpcConn.call('data_views.retired.resolve', args)),
         },
-        ...(parsedDataRoute?.segments[0] === 'view'
-          ? { savedViewId: parsedDataRoute.segments[1] ?? '' }
+        // The parser already re-pointed `#data/view/<id>`, so segment 0 IS the
+        // id on the `views` surface — there is no `view` segment left to strip.
+        ...(parsedDataRoute?.surface === 'views' && parsedDataRoute.segments[0] !== undefined
+          ? { savedViewId: parsedDataRoute.segments[0] }
           : {}),
+        chrome: route === 'views' ? 'views' : 'data',
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
@@ -10563,7 +10666,6 @@ export const bootstrapWebclient = async (
         // D-267 — Today's zero-state capture button. The SAME shared opener the
         // drawer seat and the chat composer chip use, so a capture made from
         // Today is indistinguishable from one made anywhere else.
-        openCreateOverlay: () => createSeatHandler?.(),
         // Exact citation route wins over the legacy positional deep link. It
         // carries the collection instance needed to disambiguate two accounts.
         ...(sourceRecordAddress !== null
@@ -10691,7 +10793,7 @@ export const bootstrapWebclient = async (
         authStateCaller: automationAuthStateCaller,
         // R21 create path — Add → recipe picker → the shared run-modal on
         // the Schedule|Trigger tab.
-        recipeEntriesCaller: () => rpcConn.call('recipe.list', undefined),
+        recipeEntriesCaller: readAllRecipes,
         schedulesCreateCaller: switchWorkTracker.track(
           createAutomationSchedule,
         ),
@@ -10719,6 +10821,23 @@ export const bootstrapWebclient = async (
           };
         })(),
         ...(options.now !== undefined ? { now: options.now } : {}),
+        subscribe: subscriber.on,
+      }));
+    }
+    if (route === 'today') {
+      activeSettingsRoute = null;
+      return withTrackedServerSwitchWork(bootstrapTodayRoute({
+        container: appShell.contentRoot,
+        callers: {
+          workEntitySourceListCaller: dataWorkEntitySourceListCaller,
+          workEntityListCaller: dataWorkEntityListCaller,
+          workEntityGetCaller: dataWorkEntityGetCaller,
+          workEntityUpsertCaller: dataWorkEntityUpsertCaller,
+          taskMarkDoneCaller: dataTaskMarkDoneCaller,
+          collectionListInstancesCaller: dataCollectionListInstancesCaller,
+          collectionListCaller: dataCollectionListCaller,
+          openCreateOverlay: () => createSeatHandler?.(),
+        },
         subscribe: subscriber.on,
       }));
     }
@@ -10922,7 +11041,7 @@ export const bootstrapWebclient = async (
           listMailInstances: () =>
             rpcConn.call('collection.mail.list', undefined),
           runExecute: (args) =>
-            rpcConn.call('execute', { ...args, trigger_source: 'manual' }),
+            rpcConn.call('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
           listFiles: () => listComposeFiles(dataMirrorSearchCaller),
           pickFiles: async (selected, signal) => {
             const inventory = await listComposeFiles(dataMirrorSearchCaller);
@@ -11536,10 +11655,10 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
-        ...(sellerManualTierBulkAdjustCaller !== undefined
+        ...(sellerManualTierReapplyCaller !== undefined
           ? {
-              sellerManualTierBulkAdjustCaller: switchWorkTracker.track(
-                sellerManualTierBulkAdjustCaller,
+              sellerManualTierReapplyCaller: switchWorkTracker.track(
+                sellerManualTierReapplyCaller,
               ),
             }
           : {}),
@@ -11749,6 +11868,13 @@ export const bootstrapWebclient = async (
           : {}),
         ...(housekeepingPanelDriftReadCaller !== undefined
           ? { housekeepingPanelDriftReadCaller }
+          : {}),
+        ...(housekeepingPanelDriftDismissCaller !== undefined
+          ? {
+              housekeepingPanelDriftDismissCaller: switchWorkTracker.track(
+                housekeepingPanelDriftDismissCaller,
+              ),
+            }
           : {}),
         ...(housekeepingPanelTrustReadCaller !== undefined
           ? { housekeepingPanelTrustReadCaller }
@@ -12005,7 +12131,7 @@ export const bootstrapWebclient = async (
         ...(options.document !== undefined ? { document: options.document } : {}),
         listMailInstances: () => rpcConn.call('collection.mail.list', undefined),
         runExecute: (args) =>
-          rpcConn.call('execute', { ...args, trigger_source: 'manual' }),
+          rpcConn.call('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }),
         // The attachment chooser's inventory. Same read Data → Files browses,
         // so an uploaded file is attachable without a second index.
         searchFiles: (args) => rpcConn.call('data.mirror.search', args),
@@ -12165,6 +12291,8 @@ export const bootstrapWebclient = async (
           root: kitchenChrome.contentRoot,
           formDefinitionId: kitchenRecipeSeed.form_definition_id,
           listCaller: recipesListCaller,
+          // A template is proven and cloned from its BODY; list rows carry none.
+          getCaller: (args) => rpcConn.call('recipe.get', args),
           validateCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.validate', args),
           ),

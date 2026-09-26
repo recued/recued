@@ -26,6 +26,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 export const validateContracts = (r: Record<string, unknown>, add: AddFn): void => {
+  // ⛔ Input contracts hold for EVERY step list. They ran on `steps` only, so a trigger
+  // or prefetch step missing a required input was never checked: four shipped smoke
+  // recipes listed enrichments with no `topic`, refused on every run, and nothing said so.
+  for (const list of ['trigger_steps', 'prefetch_steps', 'steps'] as const) {
+    const listed = Array.isArray(r[list]) ? (r[list] as Array<Record<string, unknown>>) : [];
+    listed.forEach((s, i) => {
+      if (s !== null && typeof s === 'object') validateInputContracts(s, list, `${list}[${i}]`, add);
+    });
+  }
+
   const steps = Array.isArray(r.steps)
     ? (r.steps as Array<Record<string, unknown>>)
     : [];
@@ -59,20 +69,6 @@ export const validateContracts = (r: Record<string, unknown>, add: AddFn): void 
       }
     }
 
-    // Ingredient-step AI function input contracts. §5 — a `core-<bare>` kernel
-    // alias carries the same input contract as its bare slug, so strip before the
-    // lookup (e.g. `core-ai-classify` still requires `llm.categories`).
-    if (typeof s.ingredient === 'string' && AI_FUNCTION_REQUIRED_INPUTS[stripCorePrefix(s.ingredient)]) {
-      validateAiFunctionInputs(s, path, add);
-    }
-
-    // Kernel ingredient input contracts — the general case the AI-function rule
-    // above only ever covered for AI slugs. Resolves an op step to its backing
-    // slug first (`args` ARE the backing ingredient's `input`, identity map), so
-    // `op: 'core.data.enrichment.upsert'` is checked exactly like
-    // `ingredient: 'enrichment-upsert'`.
-    validateKernelRequiredInputs(s, path, add);
-
     // § 234.4p.16c — the `connection` direct-adapter hatch is a HOST
     // primitive (run-less, kind-pinned, tool-pinned — three D-234
     // peer-exchange call sites) and recipes may not bind it. The
@@ -95,6 +91,46 @@ export const validateContracts = (r: Record<string, unknown>, add: AddFn): void 
         + 'connection generates one op per tool, each with its own risk tier and approval.');
     }
   }
+};
+
+/** The ingredient a step dispatches to, with any `core-` alias stripped:
+ *  `ingredient: 'core-ai-summarize'` and `op: 'core.ai.summarize'` both give
+ *  `ai-summarize`. ⛔ The op branch used to skip the strip, so every op backed by a
+ *  `core-*` slug (`core.notification.send` → `core-notification-send`) missed both
+ *  tables, and the AI rule never looked at op steps at all: 16 shipped summaries
+ *  passed `input` for `llm.data` and failed on every run. */
+const stepSlug = (s: Record<string, unknown>): string | undefined => {
+  const raw = typeof s.ingredient === 'string'
+    ? s.ingredient
+    : typeof s.op === 'string'
+      ? getKernelOp(s.op)?.backing_slug
+      : undefined;
+  return raw === undefined ? undefined : stripCorePrefix(raw);
+};
+
+/** Required inputs, for an `ingredient` step and an `op` step alike (an op step's
+ *  `args` ARE the backing ingredient's `input`).
+ *
+ *  ⛔ WHAT THIS COVERAGE NEWLY REACHES WARNS; IT DOES NOT ERROR. Every server run
+ *  parses its recipe strictly (`execute-handler.ts`, `strict: true`), so an error
+ *  here would stop an installed recipe that runs today, even one whose broken
+ *  step is never reached: the kernel rule's reason, below. Only the AI check on
+ *  an `ingredient` step in `steps` was an error before, and it stays one. What
+ *  keeps SHIPPED recipes at zero findings of either severity is
+ *  `recipe-corpus-validity.test.ts`, not the severity. */
+const validateInputContracts = (
+  s: Record<string, unknown>,
+  list: 'trigger_steps' | 'prefetch_steps' | 'steps',
+  path: string,
+  add: AddFn,
+): void => {
+  const slug = stepSlug(s);
+  if (slug === undefined) return;
+  if (AI_FUNCTION_REQUIRED_INPUTS[slug]) {
+    const checkedBefore = list === 'steps' && typeof s.ingredient === 'string';
+    validateAiFunctionInputs(s, slug, path, checkedBefore ? 'error' : 'warn', add);
+  }
+  validateKernelRequiredInputs(s, slug, path, add);
 };
 
 /** Validate to_checklist.items[] — each item is a user-visible row in the
@@ -431,23 +467,28 @@ const validateMergeShape = (
  *  llm.categories won't work, and the validator should catch it statically. */
 const validateAiFunctionInputs = (
   step: Record<string, unknown>,
+  bareSlug: string,
   path: string,
+  severity: 'error' | 'warn',
   add: AddFn,
 ): void => {
-  const slug = step.ingredient as string; // raw, for author-facing messages
-  const required = AI_FUNCTION_REQUIRED_INPUTS[stripCorePrefix(slug)];
+  const slug = String(step.ingredient ?? step.op); // raw, for author-facing messages
+  const required = AI_FUNCTION_REQUIRED_INPUTS[bareSlug];
   if (!required) return;
+  // An op step's `args` ARE the backing ingredient's `input` (identity map).
+  const field = typeof step.op === 'string' && typeof step.ingredient !== 'string' ? 'args' : 'input';
+  const bag = step[field];
 
-  if (!step.input || typeof step.input !== 'object' || Array.isArray(step.input)) {
-    add('error', 'ai_function_input_missing', `${path}.input`,
-      `${slug} requires input with keys: ${required.join(', ')}`);
+  if (!bag || typeof bag !== 'object' || Array.isArray(bag)) {
+    add(severity, 'ai_function_input_missing', `${path}.${field}`,
+      `${slug} requires ${field} with keys: ${required.join(', ')}`);
     return;
   }
-  const input = step.input as Record<string, unknown>;
+  const input = bag as Record<string, unknown>;
   for (const key of required) {
     if (!(key in input)) {
-      add('error', 'ai_function_input_missing_key', `${path}.input['${key}']`,
-        `${slug} requires input.${key}`);
+      add(severity, 'ai_function_input_missing_key', `${path}.${field}['${key}']`,
+        `${slug} requires ${field}.${key}`);
       continue;
     }
     // Optional type checks for the array-valued ones
@@ -456,11 +497,11 @@ const validateAiFunctionInputs = (
       // Skip references — they resolve at runtime
       if (typeof val === 'string' && REF_PATTERN.test(val)) continue;
       if (!Array.isArray(val)) {
-        add('error', 'ai_function_input_wrong_type', `${path}.input['${key}']`,
-          `${slug} expects input.${key} to be an array`);
+        add(severity, 'ai_function_input_wrong_type', `${path}.${field}['${key}']`,
+          `${slug} expects ${field}.${key} to be an array`);
       } else if (val.length === 0) {
-        add('warn', 'ai_function_input_empty_array', `${path}.input['${key}']`,
-          `${slug} input.${key} is an empty array — the AI has nothing to work with`);
+        add('warn', 'ai_function_input_empty_array', `${path}.${field}['${key}']`,
+          `${slug} ${field}.${key} is an empty array — the AI has nothing to work with`);
       }
     }
   }
@@ -586,21 +627,21 @@ const validatePiiFields = (
  *  INVALIDATE recipes that parse today — including deliberately skeletal test
  *  fixtures (`{ id: 'reply', op: 'core.mail.send' }` in the D-207 door-binding
  *  suite, which is asserting bind behaviour, not mail validity) and any
- *  installed recipe whose never-reached step omits a field. Measured: the rule
- *  finds ZERO violations across all 2,272 shipped recipes, so erroring buys
- *  nothing today while breaking binds. It surfaces the mistake at authoring
- *  time, which is the whole ask; the dispatch guard still refuses the call. */
+ *  installed recipe whose never-reached step omits a field. It surfaces the
+ *  mistake at authoring time, which is the whole ask; the dispatch guard still
+ *  refuses the call.
+ *
+ *  ⚠ "Measured: ZERO violations across all 2,272 shipped recipes" (2026-08-21)
+ *  was a zero from a rule that could not see: it read `steps` only, and an op
+ *  backed by a `core-*` slug missed the table. Seeing both, it found 10 (and the
+ *  AI rule 16 more), all repaired by D-307. What holds shipped recipes at zero is
+ *  `recipe-corpus-validity.test.ts`, which refuses this finding at any severity. */
 const validateKernelRequiredInputs = (
   s: Record<string, unknown>,
+  slug: string,
   path: string,
   add: AddFn,
 ): void => {
-  const slug = typeof s.ingredient === 'string'
-    ? stripCorePrefix(s.ingredient)
-    : typeof s.op === 'string'
-      ? getKernelOp(s.op)?.backing_slug
-      : undefined;
-  if (slug === undefined) return;
   const required = KERNEL_REQUIRED_INPUTS[slug];
   if (!required) return;
   const bag = (s.args ?? s.input);

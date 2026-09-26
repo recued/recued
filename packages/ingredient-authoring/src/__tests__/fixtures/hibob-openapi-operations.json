@@ -1,6 +1,6 @@
 {
   "vendor": "hibob",
-  "retrieved_on": "2026-07-20",
+  "retrieved_on": "2026-08-04",
   "official_index": {
     "url": "https://apidocs.hibob.com/llms.txt",
     "bytes": 137720,
@@ -1643,7 +1643,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -1685,7 +1685,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -1727,7 +1727,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -2190,7 +2190,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -2682,7 +2682,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -2823,7 +2823,7 @@
         }
       },
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -2965,7 +2965,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3007,7 +3007,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3049,7 +3049,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3091,7 +3091,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3133,7 +3133,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3710,7 +3710,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3830,7 +3830,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -3928,7 +3928,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4090,7 +4090,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4248,7 +4248,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4406,7 +4406,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4564,7 +4564,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4684,7 +4684,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4726,7 +4726,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -4982,7 +4982,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5080,7 +5080,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5196,7 +5196,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5318,7 +5318,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5380,7 +5380,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5442,7 +5442,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5582,7 +5582,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -5736,7 +5736,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -6976,7 +6976,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -7159,7 +7159,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -7371,7 +7371,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -7449,7 +7449,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -7580,7 +7580,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -7710,7 +7710,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -8911,7 +8911,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -8977,7 +8977,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9119,7 +9119,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9194,7 +9194,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9327,7 +9327,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9405,7 +9405,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9483,7 +9483,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9561,7 +9561,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9639,7 +9639,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9717,7 +9717,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9795,7 +9795,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9873,7 +9873,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -9951,7 +9951,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10029,7 +10029,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10107,7 +10107,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10185,7 +10185,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10263,7 +10263,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10497,7 +10497,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10852,7 +10852,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -10921,7 +10921,7 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12053,7 +12053,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12122,7 +12122,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12264,7 +12264,7 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12339,7 +12339,7 @@
       },
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12469,7 +12469,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],
@@ -12539,7 +12539,7 @@
       "manual_pagination": null,
       "response_capture": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "tags": [
         "sensitive-read"
       ],

@@ -453,6 +453,50 @@ describe('D-132 P4 — task.run_now manual_run_count + promotion fire', () => {
     expect(after.manual_run_count).toBe(MANUAL_RUN_THRESHOLD);
   });
 
+  it('the crossed row is exactly what the promotion banner restores from', async () => {
+    // ⛔ The pairing, not either side. The banner used to render only from the
+    // `enrichment_promotion_suggested` broadcast, so it vanished on reload
+    // while THIS row sat in the trust rows the panel had just fetched. It is
+    // now rebuilt from these three fields, so the server has to keep producing
+    // them together: suggested, not dismissed, and NOT yet accepted — nothing
+    // clears `promotion_suggested_at` on acceptance, so `trust_state` is the
+    // only thing that says the question has been answered.
+    const task = aiEnrichmentTask('enrichment.purpose', 'purpose' as EnrichmentTopic);
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'manual' }, NOW);
+    const { bus } = stubEventBus();
+    const deps = buildDeps({ registry: () => [task], eventBus: bus });
+    for (let i = 0; i < MANUAL_RUN_THRESHOLD; i += 1) {
+      await handleHousekeepingTaskRunNow(deps, { task_id: task.meta.id });
+    }
+
+    const row = (await handleHousekeepingTrustRead(deps)).rows
+      .find((r) => r.topic === 'purpose');
+    expect(row).toBeDefined();
+    expect(row!.promotion_suggested_at).not.toBeNull();
+    expect(row!.promotion_dismissed_at).toBeNull();
+    expect(row!.trust_state).toBe('manual');
+  });
+
+  it('accepting the promotion leaves promotion_suggested_at SET — trust_state is the discriminator', async () => {
+    // 🔑 Pins the reason the banner's restore predicate needs a third clause.
+    // If this ever starts clearing the timestamp the clause becomes dead code,
+    // and whoever removes it should be told by a test rather than by a user
+    // who stopped being nagged.
+    const task = aiEnrichmentTask('enrichment.purpose', 'purpose' as EnrichmentTopic);
+    trustStore.write('purpose' as EnrichmentTopic, { trust_state: 'manual' }, NOW);
+    const { bus } = stubEventBus();
+    const deps = buildDeps({ registry: () => [task], eventBus: bus });
+    for (let i = 0; i < MANUAL_RUN_THRESHOLD; i += 1) {
+      await handleHousekeepingTaskRunNow(deps, { task_id: task.meta.id });
+    }
+
+    await handleHousekeepingTrustWrite(deps, { topic: 'purpose', trust_state: 'auto' });
+
+    const row = trustStore.read('purpose' as EnrichmentTopic, true);
+    expect(row.trust_state).toBe('auto');
+    expect(row.promotion_suggested_at).not.toBeNull();
+  });
+
   it('does not emit when the topic was previously dismissed', async () => {
     const task = aiEnrichmentTask('enrichment.purpose', 'purpose' as EnrichmentTopic);
     trustStore.write(

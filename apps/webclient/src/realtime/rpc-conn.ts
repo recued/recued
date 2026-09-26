@@ -72,6 +72,20 @@ import type { WebclientConnectionStatusController } from './connection-status.js
  *  the caller forever. */
 export const WEBCLIENT_RPC_DEFAULT_TIMEOUT_MS = 30_000;
 
+/** How long the webclient waits for a recipe run (`execute`).
+ *
+ *  ⛔ A run is not a page read. One AI step alone can take 20–40 s, so the 30 s
+ *  default gave up on runs that went on to finish: the month-end drive
+ *  (2026-09-24) saw its AI steps reported as timed out while the server
+ *  completed them. The learning panel met the same loss at exactly 30 s and
+ *  settled on 3 minutes (`LEARNING_DRAFT_RPC_TIMEOUT_MS`). A run can hold several
+ *  such steps, hence 5.
+ *
+ *  ⚠ Still BOUNDED, and waiting longer never parks the page on a server that
+ *  is gone: a dropped connection fails a waiting call at once
+ *  (`failPendingOffline`), and the Run button says "Running..." throughout. */
+export const WEBCLIENT_RUN_RPC_TIMEOUT_MS = 300_000;
+
 /** Outbound rpc envelope shape — mirrors the backend `ws-server.ts`
  *  contract (`Extension → Server: { type: 'rpc', request_id, method,
  *  args? }`). Exported for tests + future transports that need to

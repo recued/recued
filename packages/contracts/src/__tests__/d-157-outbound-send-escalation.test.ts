@@ -116,7 +116,7 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
       ],
     );
     for (const slug of SENDS) expect(isOutboundSendSlug(slug)).toBe(true);
-    expect(isOutboundSendSlug('data-annotate')).toBe(false);
+    expect(isOutboundSendSlug('annotation-create')).toBe(false);
     expect(isOutboundSendSlug('mail-reader')).toBe(false);
     // The read sibling stays out — Tier-3 reads are pass-through (D-177 D7).
     expect(isOutboundSendSlug('connection-mcp-read')).toBe(false);
@@ -175,9 +175,9 @@ describe('D-157 outbound-send promise via D-187 op-risk lift (admitByOpRisk)', (
   });
 
   it('does NOT lift an internal write (non-send) at (user, user_self)', () => {
-    // `data-annotate` is `risk_tier: 'write'` like the sends, but it is not an
+    // `annotation-create` is `risk_tier: 'write'` like the sends, but it is not an
     // external send — the admin ceiling relaxes it to admit and it must stay silent.
-    expect(admit('data-annotate', USER, 'write').verdict).toBe('admit');
+    expect(admit('annotation-create', USER, 'write').verdict).toBe('admit');
   });
 
   it('does NOT lift a read at (user, user_self)', () => {

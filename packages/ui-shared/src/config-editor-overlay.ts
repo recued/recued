@@ -13,6 +13,7 @@
 import type { VariableDefault } from '@recued/contracts';
 
 import {
+  choiceListProblem,
   FILE_REF_VARIABLE_ATTR,
   fileRefDisplayLabel,
   fileRefVariablePickerId,
@@ -147,6 +148,8 @@ const CONFIG_EDITOR_STYLES = `
 .config-editor-panel .var-multi-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;
 }
+/* D-314 — short choices (weekdays) take narrow columns: a week is one or two rows. */
+.config-editor-panel .var-multi-grid--compact { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); }
 .config-editor-panel .var-multi-opt { display: flex; align-items: center; min-height: 36px; gap: 6px; font-size: 12px; color: var(--fg); }
 .config-editor-panel .ref-picker-input {
   min-height: 36px;
@@ -372,6 +375,16 @@ export const wireConfigEditorOverlay = (
     if (error !== null) {
       error.hidden = true;
       error.textContent = '';
+    }
+    // D-314 — a required list with every box unticked is not saved: dropped, its
+    // default would come back ticked; kept, the recipe would get no days.
+    const listProblem = choiceListProblem(opts.variables, config);
+    if (listProblem !== null) {
+      if (error !== null) {
+        error.hidden = false;
+        error.textContent = listProblem;
+      }
+      return;
     }
     let outcome: void | Promise<void>;
     try {

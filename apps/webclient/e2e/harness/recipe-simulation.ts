@@ -9,8 +9,13 @@ const recipe: RecipeDefinition = {
 };
 export const recipeSimulationDemoReply = (method: string, args: unknown): { result: unknown } | null => {
   if (new URLSearchParams(location.search).get('recipe_simulation') !== '1') return null;
-  if (method === 'recipe.list') return { result: { recipes: [{ recipe_id: recipe.recipe_id,
-    publisher_id: 'owner', version: 1, source: 'inline', recipe }] } };
+  const entry = { recipe_id: recipe.recipe_id, publisher_id: 'owner', version: 1, source: 'inline', recipe };
+  if (method === 'recipe.list') return { result: { recipes: [entry] } };
+  // The editor's FIRST read since the list lost its step bodies (f95faec10);
+  // unanswered, it never settled and the editor sat on "Loading recipe…".
+  if (method === 'recipe.get') {
+    return { result: { recipe: (args as { recipe_id?: unknown }).recipe_id === recipe.recipe_id ? entry : null } };
+  }
   if (method === 'webhook.ingress.list') return { result: { ingresses: [] } };
   if (method === 'recipe.webhook.status') {
     const webhook: LocalRecipeWebhookStatus = { declared: false, configured: false, armed: false, bindings: [] };

@@ -2,8 +2,8 @@
   "_extract": {
     "note": "paths-only extract of the pinned official OpenAPI (crossCheckCatalogOpenApi reads only paths); the moving vendor URL is hash-locked by the pack generator",
     "url": "https://api.attio.com/openapi/api",
-    "sha256": "25904e7bc1ce4a551a12a8108c8dd48b07c505c084b2e234f764f2f638f956e6",
-    "fetched_at": "2026-08-03"
+    "sha256": "cd264259a8e892e0c54dcd058589dfa5a93329595e3db67a7385efa3d0518c6e",
+    "fetched_at": "2026-09-25"
   },
   "paths": {
     "/v2/tasks": {

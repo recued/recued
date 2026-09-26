@@ -43,6 +43,17 @@ describe('Seller addresses — one hash per screen, at every level', () => {
     expect(sellerSetupAddress('providers', 'paddle').hash).toBe('#settings/seller/setup/providers/paddle');
   });
 
+  it('opens the package\'s Re-apply tab from the link the D-308 repair notice sends', () => {
+    // Pairs with `backend/server/src/seller/__tests__/d-308-permanent-pass-repair.test.ts`,
+    // which pins the server's side of this same string. The server cannot import
+    // this builder, so each side pins it: an id with a space and a slash.
+    const link = '#settings/seller/tiers/detail/tier%20day%2F1/customers';
+    expect(sellerDetailAddress('tiers', 'tier day/1', 'customers').hash).toBe(link);
+    expect(parseSellerAddress(parseShellRoute(link))).toEqual({
+      kind: 'detail', subpage: 'tiers', itemId: 'tier day/1', tab: 'customers',
+    });
+  });
+
   it('round-trips every kind through the parser and back to the same hash', () => {
     const addresses: SellerAddress[] = [
       { kind: 'directory' },

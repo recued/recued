@@ -71,6 +71,36 @@ export interface OwnerOperationUpdateReviewItem {
   };
 }
 
+/** One operation that differs between the installed pack and its update —
+ *  EVERY operation, customized or not (`OwnerOperationUpdateReviewItem` covers
+ *  only the ones the owner set a rule for).
+ *
+ *  ⛔ THERE IS NO RENAME. An operation id carries no durable identity across
+ *  pack versions, so nothing can tie `abc` to `bcd`: that is `abc` REMOVED —
+ *  the owner's rule for it goes dark, kept but doing nothing, in case the
+ *  operation ever comes back — and `bcd` ADDED on the pack's defaults. */
+export interface PackOperationUpdateDiffItem {
+  ingredient_id: string;
+  operation_id: string;
+  change: 'added' | 'removed' | 'changed';
+  /** The installed definition's risk and approval — absent for `added`. */
+  installed?: { risk: OperationRiskTier; approval?: OperationApproval };
+  /** The incoming definition's risk and approval — absent for `removed`. */
+  incoming?: { risk: OperationRiskTier; approval?: OperationApproval };
+  /** The owner's own rule for this operation, when they set one. */
+  owner_policy?: Omit<OwnerOperationPolicyInput, 'confirm_risk_downgrade'>;
+}
+
+/** What a pack update does to the pack's operations. `changed` is any change
+ *  to the operation's definition (`operationSpecHash`) — the same test that
+ *  marks an owner's rule stale — so risk and approval are carried on both
+ *  sides to say what, if anything, moved there. */
+export interface PackOperationUpdateDiff {
+  items: PackOperationUpdateDiffItem[];
+  /** Operations present in both versions with an identical definition. */
+  unchanged: number;
+}
+
 /** One operation projected for the pack-detail owner-default editor. Unlike
  * the legacy catalog inventory, this includes the slug-keyed operation of a
  * simple-form ingredient too. */

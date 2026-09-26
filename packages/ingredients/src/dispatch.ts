@@ -94,6 +94,51 @@ export const mergeManifestStepInput = (
   ...filterInputKeys(stepInput, { stripLocked: !opts.trustedSurfaceDispatch }),
 });
 
+/** ⛔⛔ A manifest's `null` is a PLACEHOLDER, not a value.
+ *
+ *  A manifest declares an optional input with the value `null`, meaning "this
+ *  input exists and has no default". `mergeManifestStepInput` spreads it under the
+ *  step's args, so an input the caller OMITTED reached the adapter as `null`,
+ *  indistinguishable from a `null` the caller wrote. Handlers read that `null` as a
+ *  value. The 2026-09-24 audit of every kernel step found:
+ *  - paid time-limited passes granted as PERMANENT access (`period_end: null` means
+ *    open-ended), and plan changes refused for Stripe, Paddle and Lemon Squeezy
+ *    customers;
+ *  - `calendar-list` filtering `calendar_id = NULL`, so 11 shipped recipes read an
+ *    empty calendar, and `link-list` / `annotation-list` / `annotation-search`
+ *    matching nothing;
+ *  - every shipped `project-create`, `project-update` and `work-entity-list` step
+ *    throwing;
+ *  - `booking-update` wiping the appointment slot.
+ *
+ *  Where the caller WRITES `null` it is theirs, and some handlers give it a meaning
+ *  (seller `period_end` and `email`: open-ended or clear; `shared-compare-and-set`
+ *  `expected_revision`: create only). So only the placeholders go: a key the manifest
+ *  declares `null` that the step did not supply. A step value that resolves to
+ *  `null` is the caller's and stays.
+ *
+ *  🔑 This shapes only what the KERNEL adapter receives (see the call site). The
+ *  Gateway's action-identity basis applies it too, for the kernel slot, so the
+ *  action an approval names is the one that runs (`actionIdentityBasis`, server).
+ *  ⛔ It first kept the placeholders "so an approval made before this still
+ *  matches", and then "omitted" and "explicitly null" hashed alike while running
+ *  differently: one approval admitted a seller pass with the package's length and
+ *  a permanent one (integrity audit, 2026-09-24). */
+export const withoutManifestPlaceholders = (
+  input: Record<string, unknown>,
+  manifestInput: Record<string, unknown> | undefined,
+  stepInput: Record<string, unknown>,
+): Record<string, unknown> => {
+  let out: Record<string, unknown> | undefined;
+  for (const [key, declared] of Object.entries(manifestInput ?? {})) {
+    if (declared !== null || input[key] !== null) continue;
+    if (Object.prototype.hasOwnProperty.call(stepInput, key)) continue;
+    out ??= { ...input };
+    delete out[key];
+  }
+  return out ?? input;
+};
+
 /** Output selectors can be effects for DOM/chat adapters. Preparation must
  * pin the same merged mapping that the real adapter receives. */
 export const mergeManifestStepOutput = (
@@ -340,7 +385,14 @@ export const createIngredientExecutor = (
   const resolved: ResolvedCall = {
     slug: manifest.slug,
     risk_tier: riskTier,
-    input: resolvedInput,
+    // Kernel steps only: their handlers are where the placeholder nulls did harm.
+    // The provider adapters (ai, http, mcp, dom) were audited null-safe, and a
+    // pre-approval checks that each provider call's input hashes EXACTLY to the one
+    // it reviewed, which was built with the placeholders (`preapproval-execution`
+    // `validateProvider`). Stripping theirs would refuse every pre-approved run.
+    input: slot === 'kernel'
+      ? withoutManifestPlaceholders(resolvedInput, manifest.input, stepInput)
+      : resolvedInput,
     output: mergedOutput,
     fallback: manifest.fallback,
     ...(stepMeta ? { stepMeta } : {}),

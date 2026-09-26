@@ -49,7 +49,7 @@
       },
       "openapi_source": {
         "url": "https://developer.todoist.com/openapi.json",
-        "sha256": "625e364bbc8265f0d683dd776456f2b785caff79ebd8bd24d0b5dc5fc926ba80"
+        "sha256": "3cfb079ce8174b236f28146cd4caa4a87814c3a92ff4bdefa3a34f47d0306172"
       },
       "executes": {
         "task.list": {
@@ -90,7 +90,7 @@
         "kind": "openapi",
         "surface": "surfaces.api.openapi_source",
         "url": "https://developer.todoist.com/openapi.json",
-        "sha256": "625e364bbc8265f0d683dd776456f2b785caff79ebd8bd24d0b5dc5fc926ba80",
+        "sha256": "3cfb079ce8174b236f28146cd4caa4a87814c3a92ff4bdefa3a34f47d0306172",
         "operations": [
           "task.list",
           "task.read",

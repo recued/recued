@@ -66,6 +66,8 @@ import {
   PACKS_DIALOG_ERROR_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
+  PACKS_DIALOG_OPERATION_DIFF_ATTR,
+  PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_ATTR,
@@ -82,6 +84,7 @@ import {
   PACKS_ROW_SELECT_ATTR,
   PACKS_ROW_SLUG_ATTR,
   PACKS_DETAIL_BACK_ATTR,
+  PACKS_DETAIL_SAVED_VIEWS_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
   PACKS_SECTION_ATTR,
   PACKS_KIND_GROUP_ATTR,
@@ -758,6 +761,24 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(btn!.textContent, 'the bare Install wording must be gone').not.toBe('Install');
   });
 
+  it('⛔ installed at THIS version but not current — newer recipes — says Update recipes, not Install', async () => {
+    /** D-292 moved a records pack's importers at the same pack version. Booting the
+     *  current server on a 26.9.21 realm, the pack page offered the update review
+     *  (its dialog said "Update") under a button that said "Install". "v1→v1" would
+     *  be no better: it reads as nothing changing. */
+    const { host, mount } = setupMount(
+      [baseEntry({ version: 1, installed: false, installed_any_version: true })],
+      {
+        runList: async () => ({
+          packs: [baseEntry({ version: 1, installed: false, installed_any_version: true })],
+          installed_versions: [{ slug: 'test-pack', version: 1 }],
+        }) as never,
+      },
+    );
+    await mount.whenLoaded();
+    expect(findByAttr(host, PACKS_ROW_INSTALL_BTN_ATTR)?.textContent).toBe('↑ Update recipes');
+  });
+
   it('⚠ a plain uninstalled pack still says Install — the update label is not blanket', async () => {
     /** The control. Without it, labelling EVERY install "Update" would pass the test
      *  above, and a first-time install would tell the owner they are updating something
@@ -810,6 +831,84 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(copy).toContain('Pack approval: ask');
     expect(copy).toContain('your rule for it is kept but does nothing');
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  it('⛔ an update shows EVERY operation change — the owner\'s rules first — and a rename as removed + added', async () => {
+    /** An owner can set each operation's risk and approval; an update can remove,
+     *  change or add operations. The D-211 card listed only the operations the
+     *  owner had ruled on, and never an added one — a new thing the pack could do,
+     *  granted by pressing Update, shown nowhere. */
+    const { host, mount } = setupMount([
+      baseEntry({
+        installed: false,
+        installed_any_version: true,
+        owner_operation_review: [{
+          ingredient_id: 'recued-core/acme', operation_id: 'acme.deal.archive',
+          change: 'removed', owner_policy: { approval: 'always' },
+        }],
+        operation_diff: {
+          unchanged: 7,
+          items: [
+            { ingredient_id: 'acme', operation_id: 'acme.deal.archive', change: 'removed',
+              installed: { risk: 'admin', approval: 'ask' }, owner_policy: { approval: 'always' } },
+            { ingredient_id: 'acme', operation_id: 'acme.deal.create', change: 'changed',
+              installed: { risk: 'write', approval: 'ask' }, incoming: { risk: 'destructive', approval: 'always' },
+              owner_policy: { risk: 'admin' } },
+            { ingredient_id: 'acme', operation_id: 'acme.users.get_account_providers', change: 'added',
+              incoming: { risk: 'read', approval: 'never' } },
+            { ingredient_id: 'acme', operation_id: 'acme.users.get_available_account_providers', change: 'removed',
+              installed: { risk: 'read', approval: 'never' } },
+            { ingredient_id: 'acme', operation_id: 'acme.note.read', change: 'changed',
+              installed: { risk: 'read', approval: 'never' }, incoming: { risk: 'read', approval: 'never' } },
+          ],
+        },
+      }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+
+    const diff = findByAttr(host, PACKS_DIALOG_OPERATION_DIFF_ATTR);
+    expect(diff, 'the diff renders').not.toBeNull();
+    expect(diff!.getAttribute('role')).toBe('region');
+    const rows = findAllByAttr(diff!, PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR);
+    // The owner's rules FIRST, then the rest by kind.
+    expect(rows.map((row) => [row.getAttribute(PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR), row.getAttribute('data-owner-rule')]))
+      .toEqual([
+        ['acme.deal.archive', 'true'],
+        ['acme.deal.create', 'true'],
+        ['acme.users.get_account_providers', null],
+        ['acme.note.read', null],
+        ['acme.users.get_available_account_providers', null],
+      ]);
+    const copy = collectTextContent(diff!);
+    expect(copy).toContain('Operations you set rules for');
+    expect(copy).toContain('acme.deal.archive — removed. Your rule (approval Always) is kept but does nothing, unless it comes back.');
+    expect(copy).toContain('acme.deal.create — changed (Write · Ask → Destructive · Always). Your rule (risk Admin) still applies.');
+    expect(copy).toContain('Added (1)');
+    expect(copy).toContain('acme.users.get_account_providers — Read · Never');
+    expect(copy).toContain('acme.note.read — definition changed, same risk and approval');
+    expect(copy).toContain('Removed (1)');
+    expect(copy).toContain('7 unchanged.');
+    expect(copy).toContain('A renamed operation shows as removed and added');
+    // The D-211 card would say the same thing twice.
+    expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).toBeNull();
+  });
+
+  it('a server that sends no diff still gets the D-211 card', async () => {
+    const { host, mount } = setupMount([
+      baseEntry({
+        installed: false,
+        installed_any_version: true,
+        owner_operation_review: [{
+          ingredient_id: 'recued-core/acme', operation_id: 'acme.deal.archive',
+          change: 'removed', owner_policy: { approval: 'always' },
+        }],
+      }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(findByAttr(host, PACKS_DIALOG_OPERATION_DIFF_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();
   });
 
   it('renders and echoes the exact Records transition review', async () => {
@@ -1237,5 +1336,73 @@ describe('Packs — detail selection seams (driven by the surface)', () => {
     mount.clickInstall('pack-a');
     expect(mount.getDialogOpenFor()).toBe('pack-a');
     expect(findByAttr(host, PACKS_DIALOG_ATTR)).not.toBeNull();
+  });
+});
+
+/** D-289 — the pack's declared saved views, read-only on the detail.
+ *
+ *  ⛔ READ-ONLY IS THE POINT. The only control that applies to a pack view is
+ *  Hide, and that lives in Data where the owner reads the view. Rendering it
+ *  here too would put one decision in two places with two revisions to CAS
+ *  against. This surface answers "what did this Pack add?" and stops. */
+describe('D-289 declared saved views on the pack detail', () => {
+  const withViews = (names: readonly string[]) => baseEntry({
+    installed: true,
+    manifest: {
+      ...baseManifest(),
+      contents: names.map((name) => ({
+        type: 'saved_view' as const,
+        name,
+        definition: {
+          tab: 'records' as const,
+          owner: { publisher: 'recued-core', pack_slug: 'invoice-desk' },
+          entity: 'invoice',
+        },
+      })),
+    } as never,
+  });
+  const saysText = (host: FakeElement, text: string): boolean =>
+    collectTextContent(host).includes(text);
+
+  it('lists each declared view by name, and counts them', async () => {
+    const { host, mount } = setupMount([withViews(['Overdue invoices', 'Paid last quarter'])]);
+    await mount.whenLoaded();
+
+    const list = findByAttr(host, PACKS_DETAIL_SAVED_VIEWS_ATTR);
+    expect(list).not.toBeNull();
+    // ⛔ READING `textContent` IS THE ESCAPING CHECK, not a style choice. A PACK
+    // AUTHOR names these, so the row assigns `textContent` and never
+    // `innerHTML`; a "tidy" to the latter empties `textContent` and turns this
+    // line red. Driven live against `<img src=x onerror=...>` — escaped, zero
+    // <img>, no execution.
+    expect(list!.children.map((row) => row.textContent))
+      .toEqual(['Overdue invoices', 'Paid last quarter']);
+    expect(saysText(host, '2 saved views')).toBe(true);
+    mount.dispose();
+  });
+
+  it('says "1 saved view", not "1 saved views"', async () => {
+    const { host, mount } = setupMount([withViews(['Overdue invoices'])]);
+    await mount.whenLoaded();
+    expect(saysText(host, '1 saved view')).toBe(true);
+    expect(saysText(host, '1 saved views')).toBe(false);
+    mount.dispose();
+  });
+
+  it('renders nothing for a pack that ships none', async () => {
+    const { host, mount } = setupMount([baseEntry({ installed: true })]);
+    await mount.whenLoaded();
+    expect(findByAttr(host, PACKS_DETAIL_SAVED_VIEWS_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  /** ⚠ `packs.list` never sends the manifest — the detail backfills it via
+   *  `packs.resolveBySlug`. Until that lands the section must be ABSENT rather
+   *  than claim the pack ships none, which is the same fact rendered as a lie. */
+  it('stays absent while the manifest has not been backfilled', async () => {
+    const { host, mount } = setupMount([baseEntry({ installed: true, manifest: undefined })]);
+    await mount.whenLoaded();
+    expect(findByAttr(host, PACKS_DETAIL_SAVED_VIEWS_ATTR)).toBeNull();
+    mount.dispose();
   });
 });

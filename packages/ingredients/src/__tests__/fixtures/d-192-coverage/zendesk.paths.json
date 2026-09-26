@@ -2,7 +2,7 @@
   "_extract": {
     "note": "Paths-only extract of the hash-pinned official Zendesk Support OpenAPI document used by the D-192 Source prover. Document paths retain the full /api/v2 prefix and omit the optional .json wire suffix; path_alias.strip_suffix reconciles that suffix fail-closed.",
     "url": "https://developer.zendesk.com/zendesk/oas.yaml",
-    "sha256": "5f0f601e1f9fc89978c288983766e34133a4668d6a2fbda1430ba674a8d69527",
+    "sha256": "9e46cc4c22e42dea4e382ce141b3e0aee373258f0c069e9760b0fbea78e0f776",
     "fetched_at": "2026-08-03"
   },
   "paths": {

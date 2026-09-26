@@ -4,55 +4,55 @@
       "kind": "openapi",
       "reference_url": "https://developers.pandadoc.com/reference",
       "repository_url": "https://github.com/PandaDoc/pandadoc-openapi-specification",
-      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/d2896842e9e519aa36da5072dba83ef54fbe3c10/openapi.json",
+      "url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/d7e89b7f5bcb5982b0c84d34302a25934798bd45/openapi.json",
       "current_url": "https://raw.githubusercontent.com/PandaDoc/pandadoc-openapi-specification/main/openapi.json",
-      "commit": "d2896842e9e519aa36da5072dba83ef54fbe3c10",
-      "sha256": "ac102f69684772e21225e5652eeada24f90966793aa996f01228e0980f72894a",
-      "bytes": 879075,
-      "retrieved_on": "2026-07-20",
+      "commit": "d7e89b7f5bcb5982b0c84d34302a25934798bd45",
+      "sha256": "8d1f9f081df2befcf454e814a780adb74369116f76c77cb1690d2c5c83f7c739",
+      "bytes": 886406,
+      "retrieved_on": "2026-09-21",
       "openapi": "3.0.3",
-      "info_version": "8.9.0",
+      "info_version": "8.13.0",
       "server": "https://api.pandadoc.com",
       "mutability": "The composition pins an immutable official repository commit. Generation also verifies that current main is byte-identical, so a new vendor revision fails closed until consciously upgraded."
     },
     "reference_fragment": {
       "url": "https://developers.pandadoc.com/reference/list-documents.md",
-      "sha256": "8bd0de8bc3e31e7633eb951f2ef3debd8b30d2e8b279a0c79462b4a282e4116e",
-      "bytes": 20338,
+      "sha256": "bd8116ad3a6d2138d7c03349d55908bb607fa9d371966e04826ab8174c01419a",
+      "bytes": 20509,
       "openapi": "3.0.3",
-      "info_version": "8.9.0",
+      "info_version": "8.18.0",
       "path_count": 1,
       "operation_count": 1,
       "operation_id": "listDocuments",
       "reconciliation": "PandaDoc publishes per-operation reference fragments at v8.8.0, not one complete hashable v8.8.0 catalog. The official full repository document is also v8.8.0 as of the reviewed commit; its overlapping listDocuments route matches this fragment and is the pinned suite authority."
     },
-    "official_path_count": 97,
-    "official_operation_count": 129,
-    "admitted_operation_count": 118,
-    "declared_operation_count": 125,
+    "official_path_count": 98,
+    "official_operation_count": 130,
+    "admitted_operation_count": 119,
+    "declared_operation_count": 126,
     "excluded_operation_count": 11,
-    "unique_admitted_operation_id_count": 118,
-    "unique_admitted_method_path_count": 118,
-    "unique_declared_qualified_operation_count": 125,
+    "unique_admitted_operation_id_count": 119,
+    "unique_admitted_method_path_count": 119,
+    "unique_declared_qualified_operation_count": 126,
     "official_method_counts": {
       "POST": 40,
       "GET": 57,
       "DELETE": 12,
-      "PATCH": 16,
+      "PATCH": 17,
       "PUT": 4
     },
     "admitted_method_counts": {
       "GET": 55,
       "POST": 33,
       "DELETE": 11,
-      "PATCH": 15,
+      "PATCH": 16,
       "PUT": 4
     },
     "declared_method_counts": {
       "GET": 60,
       "POST": 35,
       "DELETE": 11,
-      "PATCH": 15,
+      "PATCH": 16,
       "PUT": 4
     },
     "tag_counts": {
@@ -79,38 +79,38 @@
       "Quotes": 1,
       "Template Settings": 4,
       "Templates": 9,
-      "User and Workspace management": 10,
+      "User and Workspace management": 11,
       "Webhook events": 2,
       "Webhook subscriptions": 6
     },
     "pack_operation_counts": {
       "pandadoc": 12,
       "pandadoc-document-workflows": 53,
-      "pandadoc-content-platform": 60
+      "pandadoc-content-platform": 61
     },
     "composition_bytes": {
       "pandadoc": 24915,
       "pandadoc-document-workflows": 76589,
-      "pandadoc-content-platform": 79751
+      "pandadoc-content-platform": 81137
     },
     "risk_counts": {
       "read": 61,
       "write": 37,
       "destructive": 19,
-      "admin": 8
+      "admin": 9
     },
     "approval_counts": {
       "never": 61,
       "ask": 2,
-      "always": 62
+      "always": 63
     },
     "idempotency_counts": {
       "safe": 61,
       "non_idempotent": 38,
-      "idempotent": 26
+      "idempotent": 27
     },
     "pagination_counts": {
-      "none": 110,
+      "none": 111,
       "offset": 15
     },
     "paginated_operations": [
@@ -491,7 +491,7 @@
       "downloadDocumentAttachment",
       "downloadProtectedDocument"
     ],
-    "json_request_operation_count": 50,
+    "json_request_operation_count": 51,
     "requiredness_overrides": {
       "createDocumentAttachment": [
         "source"
@@ -593,7 +593,7 @@
     },
     "omitted_binary_request_fields": {},
     "omitted_credential_request_fields": {},
-    "lossless_integer_operation_count": 103,
+    "lossless_integer_operation_count": 104,
     "compatibility_operation_ids": [
       "contact.read",
       "contact.search",
@@ -614,9 +614,10 @@
     "recipe_versions": {
       "document-status-digest-pandadoc": 1,
       "document-evidence-brief-pandadoc": 1,
-      "template-readiness-brief-pandadoc": 1,
+      "template-readiness-brief-pandadoc": 2,
       "create-template-document-pandadoc": 2,
-      "send-document-pandadoc": 1
+      "send-document-pandadoc": 1,
+      "show-document-pandadoc": 1
     },
     "auth": {
       "selected": "OAuth bearer supplied only by the enrolled PandaDoc connection",
@@ -624,7 +625,7 @@
         "apiKey",
         "oauth2"
       ],
-      "authenticated_operations": 128,
+      "authenticated_operations": 129,
       "unauthenticated_bootstrap_operation_ids": [
         "accessToken"
       ],
@@ -1531,6 +1532,12 @@
     "/public/beta/documents/search": {
       "get": {
         "operationId": "searchDocumentsAi",
+        "deprecated": false
+      }
+    },
+    "/public/beta/workspaces/{workspace_id}": {
+      "patch": {
+        "operationId": "updateWorkspace",
         "deprecated": false
       }
     }
@@ -5664,6 +5671,13 @@
       "wire_path": "/public/v1/workspaces",
       "parameters": [
         {
+          "name": "q",
+          "in": "query",
+          "admitted_name": "query.q",
+          "type": "string",
+          "required": false
+        },
+        {
           "name": "count",
           "in": "query",
           "admitted_name": "query.count",
@@ -5719,6 +5733,71 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
+      "compatibility": false,
+      "supplemental": false
+    },
+    "pandadoc-content-platform.workspace.update": {
+      "pack": "pandadoc-content-platform",
+      "op": "workspace.update",
+      "operation_id": "updateWorkspace",
+      "tag": "User and Workspace management",
+      "method": "PATCH",
+      "path": "/public/beta/workspaces/{workspace_id}",
+      "wire_path": "/public/beta/workspaces/{{workspace_id}}",
+      "parameters": [
+        {
+          "name": "workspace_id",
+          "in": "path",
+          "admitted_name": "workspace_id",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "official_required": true,
+        "profile": null,
+        "required_properties": [],
+        "writable_properties": [
+          "name",
+          "icon_url",
+          "branding"
+        ],
+        "omitted_binary_properties": [],
+        "omitted_credential_properties": []
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "branding": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "accept": "application/json",
+      "content_type": "application/json",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
       "compatibility": false,
       "supplemental": false
     },
@@ -9406,6 +9485,9 @@
             "type": "array"
           },
           "status": {
+            "type": "string"
+          },
+          "qes_status": {
             "type": "string"
           },
           "approval_execution": {

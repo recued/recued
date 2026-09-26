@@ -36,6 +36,7 @@ import {
   wireRunModal,
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_FACTS_ATTR,
+  RUN_MODAL_REASON_ATTR,
   RUN_MODAL_OVERLAY_ATTR,
   RUN_MODAL_PRESET_ATTR,
   type RunModalCaps,
@@ -459,6 +460,32 @@ describe('run-modal render', () => {
     expect(errored).toContain('role="alert"');
   });
 
+  it('⛔ Run tab: a run that returned errors says why (D-312)', () => {
+    // It said only "Run returned errors": a mistyped channel failed with no
+    // cause on screen, and the reason sat in the Logs detail.
+    const recipe = recipeEntry();
+    const failed = renderRunModal(stateWith({
+      result: executeResponse(false, {
+        errors: [{
+          code: 'BAD_INPUT',
+          message: 'notification-send: "slak" is not a channel',
+          source: { recipe_id: 'daily-brief', step_id: 'send', ingredient_slug: null },
+          details: { account_email: 'someone@example.com' },
+        }],
+      }),
+    }), recipe, CAPS_FULL);
+    expect(failed).toContain('Run returned errors');
+    expect(failed).toContain(RUN_MODAL_REASON_ATTR);
+    expect(failed).toContain('notification-send: &quot;slak&quot; is not a channel (step send)');
+    // An error's details can carry addresses; only its message is shown.
+    expect(failed).not.toContain('someone@example.com');
+    // A hold says what it is already.
+    const awaiting = renderRunModal(stateWith({
+      result: executeResponse(false, { awaiting_approval: true, errors: [{ message: 'held' }] }),
+    }), recipe, CAPS_FULL);
+    expect(awaiting).not.toContain(RUN_MODAL_REASON_ATTR);
+  });
+
   it('Run tab: not-wired execute degrades + disables Run', () => {
     const html = renderRunModal(stateWith(), recipeEntry(), {
       canExecute: false,
@@ -791,6 +818,25 @@ describe('run-modal wire', () => {
     expect(handle.getState().run_error).not.toBeNull();
   });
 
+  it('⛔ confirmRun blocks a required list with every box unticked (D-314)', async () => {
+    // An empty weekday list reaches the time watcher as no days: the recipe
+    // would never run, and nothing on screen would say why.
+    const execute = vi.fn(async () => executeResponse());
+    const weekdays = { label: 'Weekdays', type: 'array', options: ['@weekdays'], default: [1, 2, 3, 4, 5] };
+    const handle = wire({
+      recipe: recipeEntry('daily-brief', { variables: { weekdays } as never }),
+      execute,
+    });
+    handle.setConfigText('{"weekdays":[]}');
+    await handle.confirmRun();
+    expect(execute).not.toHaveBeenCalled();
+    expect(handle.getState().run_error).toBe('Weekdays: tick at least one.');
+
+    handle.setConfigText('{"weekdays":[6,7]}');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledWith({ recipe_id: 'daily-brief', config: { weekdays: [6, 7] } });
+  });
+
   it('confirmRun blocks a missing target, then runs with context once supplied', async () => {
     const execute = vi.fn(async () => executeResponse());
     const handle = wire({ recipe: targetedEntry(), execute });
@@ -805,6 +851,29 @@ describe('run-modal wire', () => {
       config: {},
       context: { entity_id: '123' },
     });
+  });
+
+  it.each([
+    ['⛔ the wait runs out', 'timeout', /^Still running on your server\. .*in Logs\.$/],
+    ['the connection drops after it was sent', 'connection_lost', /^The connection dropped while this ran.*Logs shows how it ended\.$/],
+  ])('a run whose answer never came is not reported as failed: %s', async (_label, code, copy) => {
+    // A run that outlived the wait finished on the server; it read as
+    // "webclient rpc: method 'execute' did not respond within 30000ms".
+    const execute = vi.fn(async () => {
+      throw Object.assign(new Error('webclient rpc: transport detail'), { code });
+    });
+    const handle = wire({ recipe: recipeEntry(), execute });
+    await handle.confirmRun();
+    expect(handle.getState().run_error).toMatch(copy);
+  });
+
+  it('any other failure is the error it is', async () => {
+    const execute = vi.fn(async () => {
+      throw Object.assign(new Error('Recipe not installed'), { code: 'not_found' });
+    });
+    const handle = wire({ recipe: recipeEntry(), execute });
+    await handle.confirmRun();
+    expect(handle.getState().run_error).toBe('Recipe not installed');
   });
 
   it('confirmRun with no execute caller surfaces the not-wired note', async () => {

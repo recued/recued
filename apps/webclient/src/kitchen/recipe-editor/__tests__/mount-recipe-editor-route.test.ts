@@ -3,6 +3,7 @@ import type {
   RecipeDefinition,
   RecipeEventTrigger,
   ServerRecipeFullEntry,
+  ServerRecipeListEntry,
 } from '@recued/contracts';
 import {
   validateRecipeContent,
@@ -279,6 +280,26 @@ const workflowTemplateEntry = (
     installed_at: 1,
     ...overrides,
   };
+};
+
+/** What `recipe.list` actually sends for `entry`: the same row with the step
+ *  bodies removed, exactly as the server's `listView` removes them. Feed THIS
+ *  to a list caller; a full entry there is a shape production stopped
+ *  sending, and it is how the template regression below stayed green. */
+const listRowOf = (entry: ServerRecipeFullEntry): ServerRecipeListEntry => {
+  if (entry.recipe === null || typeof entry.recipe !== 'object') {
+    return entry as unknown as ServerRecipeListEntry;
+  }
+  const { steps: _steps, prefetch_steps: _prefetch, ...view } = entry.recipe;
+  return { ...entry, recipe: view };
+};
+
+/** `recipe.get` over a set of full entries, counting its reads. */
+const getCallerFor = (...entries: ServerRecipeFullEntry[]) => {
+  const byId = new Map(entries.map((entry) => [entry.recipe_id, entry]));
+  return vi.fn(async ({ recipe_id }: { recipe_id: string }) => ({
+    recipe: byId.get(recipe_id) ?? null,
+  }));
 };
 
 const okValidate = async () => ({ ok: true, issues: [] });
@@ -689,8 +710,65 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
     ).toEqual([]);
   });
 
-  it('discovers only installed, inert, canonical workflow templates', () => {
+  it('⛔ proves a template against its BODY from recipe.get, since a list row has none', async () => {
+    // The regression: `recipe.list` has sent no step bodies since f95faec10, and
+    // the reader check lives in `prefetch_steps`, so every template was refused
+    // and none was ever offered. The fix reads the body by id; a trimmed row
+    // alone narrows to candidates and proves nothing.
     const installed = workflowTemplateEntry();
+    const getCaller = getCallerFor(installed);
+    const found = await findFormResponseWorkflowTemplates(
+      [listRowOf(installed), listRowOf(installed)],
+      getCaller,
+    );
+    expect(found).toEqual([{
+      entry: installed,
+      bundle_key: 'recued-core/paid-document-fulfillment',
+    }]);
+    // The match is the FULL entry, so choosing it clones real steps.
+    expect(found[0]!.entry.recipe.steps).toHaveLength(1);
+    // Duplicate rows collapse to one candidate, so the body is read once.
+    expect(getCaller).toHaveBeenCalledTimes(1);
+  });
+
+  it('never offers a template whose body could not be read', async () => {
+    const installed = workflowTemplateEntry();
+    // No `recipe.get` at all: the trimmed row cannot be proven or cloned.
+    await expect(findFormResponseWorkflowTemplates([listRowOf(installed)])).resolves.toEqual([]);
+    // `recipe.get` refused, found nothing, or answered for another recipe.
+    const refused = vi.fn(async () => { throw new Error('unknown_method'); });
+    await expect(findFormResponseWorkflowTemplates([listRowOf(installed)], refused)).resolves.toEqual([]);
+    await expect(findFormResponseWorkflowTemplates([listRowOf(installed)], getCallerFor())).resolves.toEqual([]);
+    const other = workflowTemplateEntry({ recipe_id: 'someone-else' });
+    const wrongId = vi.fn(async () => ({ recipe: other }));
+    await expect(findFormResponseWorkflowTemplates([listRowOf(installed)], wrongId)).resolves.toEqual([]);
+  });
+
+  it('refuses a template whose BODY does not read the accepted response', async () => {
+    const noReader = workflowTemplateEntry();
+    noReader.recipe.prefetch_steps = [];
+    const malformedPrefetch = workflowTemplateEntry({ recipe_id: 'malformed-prefetch' });
+    malformedPrefetch.recipe.recipe_id = 'malformed-prefetch';
+    (malformedPrefetch.recipe as unknown as { prefetch_steps: unknown })
+      .prefetch_steps = 'not-an-array';
+    for (const body of [noReader, malformedPrefetch]) {
+      const getCaller = getCallerFor(body);
+      await expect(findFormResponseWorkflowTemplates([listRowOf(body)], getCaller)).resolves.toEqual([]);
+      expect(getCaller).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('uses an older server\'s body-carrying list row as it is', async () => {
+    // A server from before `recipe.get` still sends bodies on the list, and has
+    // no `recipe.get` to ask.
+    const installed = workflowTemplateEntry();
+    await expect(findFormResponseWorkflowTemplates([installed])).resolves.toEqual([{
+      entry: installed,
+      bundle_key: 'recued-core/paid-document-fulfillment',
+    }]);
+  });
+
+  it('refuses what the ROW can already rule out, without reading any body', async () => {
     const bundledOnly = workflowTemplateEntry({ source: 'bundled' });
     const inlineOnly = workflowTemplateEntry({ source: 'inline' });
     const armed = workflowTemplateEntry();
@@ -704,37 +782,27 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       transform: 'template',
       template: 'not inert',
     }];
-    const noReader = workflowTemplateEntry();
-    noReader.recipe.prefetch_steps = [];
     const wrongPublisher = workflowTemplateEntry({ publisher_id: 'other' });
     const wrongStoredIdentity = workflowTemplateEntry({
       recipe_id: 'different-row-id',
     });
     const malformedRecipe = workflowTemplateEntry();
     (malformedRecipe as unknown as { recipe: unknown }).recipe = null;
-    const malformedPrefetch = workflowTemplateEntry();
-    (malformedPrefetch.recipe as unknown as { prefetch_steps: unknown })
-      .prefetch_steps = 'not-an-array';
 
-    const candidates = [
+    const rows = [
       malformedRecipe,
-      malformedPrefetch,
       bundledOnly,
       inlineOnly,
       armed,
       webhookArmed,
       reactive,
-      noReader,
       wrongPublisher,
       wrongStoredIdentity,
-      installed,
-      installed,
-    ];
-    expect(() => findFormResponseWorkflowTemplates(candidates)).not.toThrow();
-    expect(findFormResponseWorkflowTemplates(candidates)).toEqual([{
-      entry: installed,
-      bundle_key: 'recued-core/paid-document-fulfillment',
-    }]);
+    ].map(listRowOf);
+    // Each body would pass on its own: only the ROW is wrong, and nothing is read.
+    const getCaller = getCallerFor(workflowTemplateEntry());
+    await expect(findFormResponseWorkflowTemplates(rows, getCaller)).resolves.toEqual([]);
+    expect(getCaller).not.toHaveBeenCalled();
   });
 
   it('clones an installed template to one literal form without changing shared keys', () => {
@@ -781,13 +849,16 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
       document: doc as unknown as Document,
       formDefinitionId: 'project-intake',
       draftKey,
-      listCaller: async () => ({ recipes: [template] }),
+      // What production sends: a TRIMMED row, and the body from `recipe.get`.
+      listCaller: async () => ({ recipes: [listRowOf(template)] }),
+      getCaller: getCallerFor(template),
       validateCaller: okValidate,
       saveCaller: async ({ recipe }) => {
         saved = recipe;
         return okSave({ recipe });
       },
     });
+    await tick();
     await tick();
 
     expect(findByAttrValue(
@@ -824,6 +895,31 @@ describe('mountFormResponseRecipeSeedRoute — Data → Kitchen handoff', () => 
     expect(JSON.stringify(saved)).toContain(
       'data.shared.recipe.recued-core_paid-document-fulfillment.state.',
     );
+  });
+
+  it('⛔ offers no template it could not read, and starts a fresh draft instead', async () => {
+    // A trimmed row and no `recipe.get`: the template cannot be proven, and
+    // cloning it would copy a recipe with no steps. Better absent than empty.
+    const template = workflowTemplateEntry();
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    mountFormResponseRecipeSeedRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      formDefinitionId: 'project-intake',
+      draftKey,
+      listCaller: async () => ({ recipes: [listRowOf(template)] }),
+      validateCaller: okValidate,
+      saveCaller: okSave,
+    });
+    await tick();
+    await tick();
+    expect(findByAttrValue(
+      root,
+      FORM_RESPONSE_WORKFLOW_TEMPLATE_ATTR,
+      template.recipe_id,
+    )).toBeUndefined();
+    expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
   });
 
   it('mounts a seeded editor after finding no saved automation and protects it as unsaved', async () => {

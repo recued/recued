@@ -50,6 +50,13 @@ export interface FilePreviewBodyHost {
   isCurrent: () => boolean;
   /** Async failures raised AFTER this resolves (the pdf renderer does this). */
   onFailure: (failure: unknown) => void;
+  /** The file's details, as soon as they are known and BEFORE anything is
+   *  drawn. A draw can throw (a broken PDF, an image that will not decode,
+   *  binary text), and the result carries the same details only on success.
+   *  So chrome that must not depend on the draw, like the dialog's Download
+   *  button, reads them here. An unreadable file is exactly the one a person
+   *  needs to download. */
+  onMeta?: (meta: FilePreviewBodyResult) => void;
 }
 
 export interface FilePreviewBodyResult {
@@ -79,6 +86,7 @@ export const renderFilePreviewBody = async (
     can_download: file.can_download === true,
   };
   if (!host.isCurrent()) return meta;
+  host.onMeta?.(meta);
   if (!file.content) {
     host.status(file.unavailable_reason ?? 'No preview is available. You can download this file.');
     return meta;
@@ -182,11 +190,17 @@ export const openFilePreview = (
         status: text => { if (alive && own === generation) status.textContent = text; },
         isCurrent: () => alive && own === generation,
         onFailure: failed,
+        // ⛔ BEFORE the draw, not after it. Set after, a draw that throws left
+        // Download disabled on exactly the file that could not be shown, and
+        // the one a person most needs to save (D-274 regressed this).
+        onMeta: (known) => {
+          if (!alive || own !== generation) return;
+          title.textContent = known.filename;
+          details.textContent = `${known.mime_type}${typeof known.size_bytes === 'number' ? ` · ${known.size_bytes.toLocaleString()} bytes` : ''}`;
+          download.disabled = !known.can_download;
+        },
       }, target, callers);
       if (!alive || own !== generation) return;
-      title.textContent = meta.filename;
-      details.textContent = `${meta.mime_type}${typeof meta.size_bytes === 'number' ? ` · ${meta.size_bytes.toLocaleString()} bytes` : ''}`;
-      download.disabled = !meta.can_download;
       if (meta.bytes) cached = { bytes: meta.bytes, mime: meta.mime_type, filename: meta.filename };
     } catch (failure) { if (alive && own === generation) failed(failure); }
   };

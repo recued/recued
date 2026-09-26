@@ -5,10 +5,18 @@
  *
  *  ⚠ A TIMING CHECK THAT RUNS AT INSTALL TIME HAS TWO WAYS TO BE WRONG, and the
  *  expensive one is the false positive: refusing a legitimate pack on a loaded
- *  machine. The margin is what makes that safe — a benign pattern's ENTIRE sweep
- *  (~345 measurements) costs 0.3–1.1 ms, so one measurement is ~3 MICROSECONDS
- *  against a 50 ms bar. A suspect is also re-measured before it is reported, so
- *  a scheduling blip becomes a retry rather than a refusal. */
+ *  machine. This header used to say the margin made that safe — "one measurement
+ *  is ~3 MICROSECONDS against a 50 ms bar" — which described the median and not
+ *  the tail. On 2026-09-23 the worst shipped pattern measured 27 ms in one scan
+ *  and 63 ms in another: OVER the old bar, i.e. an outright refusal of a
+ *  legitimate mongodb-atlas pack. The bar is now 250 ms; see `per_probe_ms` for
+ *  the corpus measurement, and `npm run check:pattern-redos` for the standing
+ *  headroom report.
+ *
+ *  ⚠ AND THE RE-MEASURE IS NOT THE ANSWER. A suspect is measured twice, on the
+ *  premise that a scheduling blip does not repeat on demand — true of a blip,
+ *  false of sustained load, where both measurements come from the same slow
+ *  regime. The margin does the work; the retry only catches the easy case. */
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -60,6 +68,36 @@ describe('probePatternForBacktracking', () => {
     const flagged = SHIPPED_BENIGN
       .filter((p) => probePatternForBacktracking(p) !== null);
     expect(flagged, `false positives: ${flagged.join(', ')}`).toEqual([]);
+  });
+
+  it('⛔ measures at the property’s own bound, not only at the rung below it', () => {
+    // The long rungs are 64, 256 … 65,536. A property bounded between two of them
+    // was measured only up to the rung below its bound, where a quadratic pattern
+    // is up to 16x cheaper, so this one was admitted at `maxLength: 16_383`
+    // (2026-09-24 audit). The bar is set between what the pattern costs at the
+    // last rung and at the bound ON THIS MACHINE, so the verdict turns on where
+    // it was measured, not on how fast the machine is.
+    const pattern = '^\\s*(?:a|b)*a(?:a|b)*\\s*c$';
+    const re = new RegExp(pattern);
+    const cost = (length: number): number => {
+      const input = `${'a'.repeat(length)}!`;
+      let best = Infinity;
+      for (let i = 0; i < 2; i += 1) {
+        const started = performance.now();
+        re.test(input);
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const atLastRung = cost(4_096);
+    const atBound = cost(16_383);
+    expect(atBound / atLastRung, 'the test needs a pattern that grows with length').toBeGreaterThan(6);
+    const finding = probePatternForBacktracking(pattern, {
+      max_length: 16_383,
+      per_probe_ms: Math.sqrt(atLastRung * atBound),
+    });
+    expect(finding, 'admitted: nothing measured it at its own bound').not.toBeNull();
+    expect(finding!.input_length).toBeGreaterThanOrEqual(16_383);
   });
 
   it('an uncompilable pattern is not this check’s problem', () => {

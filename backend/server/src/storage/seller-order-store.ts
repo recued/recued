@@ -251,6 +251,13 @@ export interface SellerOrderStore {
   /** The visitor's confirm leg (§6.3a) carries ONLY the handle. */
   getOrderByHandle(order_handle: string): SellerOrder | null;
   listOrders(query?: SellerOrderListQuery): SellerOrder[];
+  /** D-309 — when a customer's PAID orders for one package were paid, first and
+   *  last; null when there are none. The key is the order's own snapshot of what
+   *  it sold, so a customer since moved to another package has none for it. */
+  paidOrderSpan(input: {
+    readonly customer_id: string;
+    readonly entitlement_key: string;
+  }): { readonly first_paid_at: number; readonly last_paid_at: number } | null;
   quoteOrder(input: SellerOrderQuoteInput): SellerOrderMutationResult;
   attachOrderPayment(input: SellerOrderAttachPaymentInput): SellerOrderMutationResult;
   confirmOrderPayment(input: SellerOrderConfirmPaymentInput): SellerOrderMutationResult;
@@ -390,6 +397,11 @@ export const createSellerOrderStore = (
   const getOrderByHandleStmt = db.prepare(
     `SELECT * FROM ${SELLER_ORDERS_TABLE} WHERE order_handle = ?`,
   );
+  const paidOrderSpanStmt = db.prepare(`
+    SELECT MIN(paid_at) AS first_paid_at, MAX(paid_at) AS last_paid_at
+      FROM ${SELLER_ORDERS_TABLE}
+     WHERE customer_id = ? AND entitlement_key = ? AND paid_at IS NOT NULL
+  `);
   const getOfferStmt = db.prepare(
     `SELECT * FROM ${SELLER_OFFERS_TABLE} WHERE offer_id = ?`,
   );
@@ -584,6 +596,13 @@ export const createSellerOrderStore = (
       return row === undefined ? null : orderFromRow(row);
     },
 
+    paidOrderSpan(input) {
+      const row = paidOrderSpanStmt.get(input.customer_id, input.entitlement_key) as
+        { first_paid_at: number | null; last_paid_at: number | null };
+      return row.first_paid_at === null || row.last_paid_at === null
+        ? null
+        : { first_paid_at: row.first_paid_at, last_paid_at: row.last_paid_at };
+    },
     listOrders(query = {}) {
       const clauses: string[] = [];
       const params: Record<string, unknown> = {};

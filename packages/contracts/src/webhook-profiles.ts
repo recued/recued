@@ -965,6 +965,27 @@ export interface PackWebhookRequirement {
 
 export type RecipeWebhookRequirement = PackWebhookRequirement;
 
+/** D-295 — one webhook the install dialog has the owner choose: a pack's
+ *  requirement, the owner's webhooks that FIT it (by the install's own rule, so
+ *  the dialog never offers one the install then refuses), and on an update the
+ *  one it uses now. Covers the pack and every dependency the install will touch. */
+export interface PackWebhookPlanEntry {
+  pack_slug: string;
+  pack_name: string;
+  binding: string;
+  /** Who sends the events (`stripe`, `calcom`, …), from the first profile. */
+  vendor: string;
+  /** Every event the chosen webhook must deliver: the requirement's own, and
+   *  each one a recipe of the pack triggers on. */
+  event_types: readonly string[];
+  /** The owner's webhooks that fit, by name. */
+  candidates: ReadonlyArray<{ ingress_id: string; display_name: string }>;
+  /** An update: the webhook this binding uses now. `fits: false` when it no
+   *  longer does (disabled, missing an event…) — the dialog says so rather than
+   *  quietly proposing another. */
+  current?: { ingress_id: string; display_name: string; fits: boolean };
+}
+
 export interface RecipeWebhookTrigger {
   binding: string;
   event_types: readonly string[];

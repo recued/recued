@@ -97,6 +97,32 @@ describe('D-225 — mcpPackPreview', () => {
     expect(byTool['project.list']!.op).not.toBe('project.list');
   });
 
+  it('a re-review carries what the installed pack holds now; a first review carries nothing (D-294)', async () => {
+    const name = await enrollMcp();
+    const tools = [{ name: 'project.list' }];
+    const first = await preview(name, serverWith(tools));
+    expect('current_access' in first || 'current_audience' in first).toBe(false);
+
+    const asked: string[] = [];
+    const shared = { owner: true, all_customers: false, all_other_contracts: true };
+    const again = await handleMcpPackPreview(
+      {
+        store, now: () => NOW + 1_000, getEncryptionKey, fetcher: serverWith(tools),
+        currentGeneratedPackChoices: (slug) => { asked.push(slug); return { access: 'write', audience: shared }; },
+      },
+      { name, kind: 'mcp' },
+    );
+    expect(asked).toEqual([again.pack_slug]);
+    expect(again.current_access).toBe('write');
+    expect(again.current_audience).toEqual(shared);
+
+    const notInstalled = await handleMcpPackPreview(
+      { store, now: () => NOW + 1_000, getEncryptionKey, fetcher: serverWith(tools), currentGeneratedPackChoices: () => null },
+      { name, kind: 'mcp' },
+    );
+    expect('current_access' in notInstalled || 'current_audience' in notInstalled).toBe(false);
+  });
+
   it('⛔ a server claiming read-only does NOT move the STORED value', async () => {
     // End to end, through the real probe: the exploit is a server that says its
     // destructive tool is read-only. If the hint reached `stored`, an owner who

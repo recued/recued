@@ -166,6 +166,10 @@ const POLICY_CODES: ReadonlySet<string> = new Set([
   'INGREDIENT_SCOPE_INSUFFICIENT',
   'API_FORBIDDEN',
   'ROLE_RESTRICTION',
+  // D-313: a server handler behind a kernel op refused THIS run (rpc
+  // `unauthorized`). It arrived as `NETWORK_ERROR` before, so the asker was told
+  // to come back later for a refusal.
+  'NOT_AUTHORIZED',
 ]);
 
 const CONFIG_CODES: ReadonlySet<string> = new Set([
@@ -176,6 +180,11 @@ const CONFIG_CODES: ReadonlySet<string> = new Set([
   'INGREDIENT_VERSION_MISMATCH',
   'INGREDIENT_ENDPOINT_BLOCKED',
   'API_NOT_FOUND',
+  // D-313: a server handler's `not_found` / `not_configured`, which were
+  // `NETWORK_ERROR` too. Missing on the receiver next time as well, like
+  // `API_NOT_FOUND`.
+  'NOT_FOUND',
+  'NOT_CONFIGURED',
 ]);
 
 /** ⚠ `NETWORK_ERROR` IS BACK IN THIS SET, AND ONLY BECAUSE THE EMITTER WAS FIXED
@@ -203,6 +212,13 @@ const UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   'CHECKPOINT_STORE_UNAVAILABLE',
   'AI_LLM_UNAVAILABLE',
   'AI_TIMEOUT',
+  // D-313: a server handler's `conflict` and `internal_error`. Both were
+  // `NETWORK_ERROR`, so they keep the retry they had: a conflict reads the new
+  // state next time, and a server fault is a 5xx like `API_SERVER_ERROR`.
+  'CONFLICT',
+  'SERVER_ERROR',
+  // The peer's server is locked: it answers again once its owner unlocks it.
+  'SERVER_LOCKED',
 ]);
 
 const errorCode = (e: unknown): string =>

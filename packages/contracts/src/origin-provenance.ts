@@ -134,7 +134,7 @@ export const isOriginProvenance = (value: unknown): value is OriginProvenance =>
  *  never re-aim a destination it — or its agent turns — authored"):
  *  the built-in chat agent and the messenger surface both run as
  *  `(channel, actor: 'user_self')`, so a chat-tool-driven
- *  `contact-upsert` / `data-annotate` write stamps `user_self` even
+ *  `contact-upsert` / `annotation-create` write stamps `user_self` even
  *  though the CONTENT is model-authored. The surface facet records the
  *  statically-known injection site instead:
  *
@@ -143,7 +143,7 @@ export const isOriginProvenance = (value: unknown): value is OriginProvenance =>
  *    Bridge over the `user` channel. The ONLY surface whose `user_self`
  *    rows read user-clean.
  *  - `'engine'` — any recipe-run write (kernel `contact-upsert` /
- *    `data-annotate` dispatch), whatever channel drove the run. The
+ *    `annotation-create` dispatch), whatever channel drove the run. The
  *    content is recipe- or model-computed even on a user-channel
  *    manual run — never user-clean.
  *  - `'system'` — engine-internal sync / derive / housekeeping writes

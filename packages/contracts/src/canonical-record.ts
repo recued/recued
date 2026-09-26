@@ -15,11 +15,11 @@
  *  fields that transforms preserve by default. Authors who want to
  *  strip them list them explicitly in `omit`.
  *
- *  The pair is what `data-annotate` / `data-link` (Phase 13+) accept
- *  as a canonical reference: passing `{{item}}` lets the engine
- *  extract `_collection` + `_id` without per-collection knowledge in
- *  the recipe. Phase 12 lays the wire shape; Phase 13 wires the
- *  annotation surface that consumes it. */
+ *  The pair names any record uniformly, so a recipe can address one
+ *  without per-collection knowledge: `annotation-create` / `link-create`
+ *  take it as `"{{item._collection}}:{{item._id}}"`. (Phase 13's
+ *  `data-annotate` / `data-link`, which took `{{item}}` itself, were
+ *  retired 2026-09-23 — never wired on the server.) */
 
 import type { WorkEntityKind } from './work-entities.js';
 
@@ -38,7 +38,7 @@ export interface CanonicalRecord {
  *  union; recipes / kernel ingredients narrow with `===` comparisons.
  *  D-119 Phase 13 added `'annotation'` and `'link'` — first-class
  *  warehouse collections recipes write back to source records via the
- *  `data-annotate` / `data-link` kernel ingredients. D-145 PA3 added
+ *  `annotation-create` / `link-create` kernel ops. D-145 PA3 added
  *  `'task'` / `'note'` / `'commitment'` / `'project'` — the canonical
  *  work-entity collections written by the PA3 kernel CRUD ingredients
  *  (recipes consume the stamped `_collection` to dispatch on kind). */
@@ -78,10 +78,10 @@ export const isCanonicalSystemField = (key: string): key is CanonicalSystemField
   (CANONICAL_SYSTEM_FIELDS as readonly string[]).includes(key);
 
 /** Extract `_id` + `_collection` from a value when present. Used by
- *  Phase 13 kernel ingredients (`data-annotate` / `data-link`) which
- *  accept either a canonical record reference (`{{item}}`) or an
- *  explicit `{ collection, id }` literal — this helper handles the
- *  ref case. Returns null when the value isn't a canonical record. */
+ *  Phase 13 kernel ingredients `data-annotate` / `data-link` (retired
+ *  2026-09-23), which accepted a canonical record reference (`{{item}}`);
+ *  kept as the contract's own reader of the pair. Returns null when the
+ *  value isn't a canonical record. */
 export const extractCanonicalRef = (
   value: unknown,
 ): { collection: string; id: string } | null => {

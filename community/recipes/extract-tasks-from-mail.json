@@ -1,7 +1,7 @@
 {
   "recipe_id": "extract-tasks-from-mail",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Extract tasks from mail",

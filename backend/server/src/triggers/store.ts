@@ -71,6 +71,11 @@ export interface EventTriggersStore {
   list(): EventTrigger[];
   /** List enabled rows only. Used by the dispatcher on boot. */
   listEnabled(): EventTrigger[];
+  /** D-296 — whether the OWNER has this trigger on. The row's `enabled` reads
+   *  false while a reviewed execution (D-261) parks it for its next fire; this
+   *  is the owner's state behind the park, the one the row goes back to. False
+   *  for an unknown id. */
+  ownerEnabled(trigger_id: string): boolean;
   /** Count rows. Exposed for admin / test visibility. */
   count(): number;
 }
@@ -317,6 +322,11 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
     list() {
       const rows = selectAll.all() as Row[];
       return rows.map(rowToTrigger);
+    },
+
+    ownerEnabled(trigger_id) {
+      const row = selectOne.get(trigger_id) as Row | undefined;
+      return row ? preapprovalLogicalEnabled(db, 'next_trigger', trigger_id, row.enabled === 1) : false;
     },
 
     listEnabled() {

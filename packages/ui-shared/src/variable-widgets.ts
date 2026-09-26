@@ -30,7 +30,8 @@
  *  + change-event path.
  */
 
-import type { VariableDefault, ValueHint } from '@recued/contracts';
+import { isListOfNumbers, listFromTypedText, listSettingChoices } from '@recued/contracts';
+import type { ListChoices, VariableDefault, ValueHint } from '@recued/contracts';
 import { initialRefPickerState } from './ref-picker/model.js';
 import { renderRefPicker } from './ref-picker/render.js';
 import { e } from './template.js';
@@ -85,7 +86,27 @@ export interface WidgetShape {
   entityFilter?: Readonly<Record<string, string>>;
   value: unknown;
   optional?: boolean;
+  /** A list setting (`type: 'array'`): still a one-line box, which shows the
+   *  list as `a, b` and reads back the list it spells, of numbers when the
+   *  default is. Without it the box handed a recipe the text.
+   *
+   *  D-314: on a list setting with choices, what its ticked boxes read as. */
+  list?: 'numbers' | 'text';
+  /** D-314 — a list setting with `options`: its checkboxes in order, each
+   *  `value` as the box carries it. A saved item that is none of the choices
+   *  comes last and ticked, so the owner sees it rather than losing it on the
+   *  next save. `value` above is then the ticked values, in this order. */
+  choices?: ReadonlyArray<{ value: string; label: string }>;
 }
+
+/** On a list setting's box: `numbers` or `text`, what its items read as.
+ *  D-314: also on the checkbox grid of a list setting with choices. */
+export const LIST_VARIABLE_ATTR = 'data-var-list';
+/** D-314 — on the checkbox grid of an optional list setting: nothing ticked is
+ *  no value, as a blank box is, so its consumer's "none" applies (channels:
+ *  every channel set up). Without it, nothing ticked reads as the empty list
+ *  the form refuses. */
+export const OPTIONAL_LIST_ATTR = 'data-var-optional';
 
 /** Marker on a `file_ref` variable row (value = recipe variable key). Hosts
  *  with a file-inventory search caller attach the shared RefPicker here; hosts
@@ -232,6 +253,20 @@ export const toWidgetShape = (
   if (isValidValueHint(def)) {
     const type = mapHintType(def);
     const value = override !== undefined ? override : def.default;
+    const listChoices = listSettingChoices(def);
+    if (listChoices !== undefined) {
+      const numbers = listChoices.choices.every((choice) => typeof choice.value === 'number');
+      return {
+        key,
+        label: def.label,
+        type: 'multi',
+        help: def.help,
+        link: def.link,
+        optional: def.optional,
+        list: numbers ? 'numbers' : 'text',
+        ...choiceListState(value, listChoices, numbers),
+      };
+    }
     return {
       key,
       label: def.label,
@@ -245,6 +280,11 @@ export const toWidgetShape = (
         : {}),
       value,
       optional: def.optional,
+      // Compared as a string, like `long_text`: `'array'` is authored but not a
+      // `ValueHintType` member (see `value-hint.ts`).
+      ...((def.type as string) === 'array'
+        ? { list: isListOfNumbers(def.default) ? 'numbers' as const : 'text' as const }
+        : {}),
     };
   }
 
@@ -266,6 +306,43 @@ export const toWidgetShape = (
     };
   }
   return { key, label: formatKey(key), type: 'text', value };
+};
+
+/** D-314 — a list setting's boxes, and which are ticked, from what is saved:
+ *  a list, or the text an older box saved (`"1, 3"`). Items are matched the
+ *  way the list's consumer reads them, so `in-app` ticks In-app and a saved `0`
+ *  ticks Sunday. */
+const choiceListState = (
+  saved: unknown,
+  listChoices: ListChoices,
+  numbers: boolean,
+): Pick<WidgetShape, 'choices' | 'value'> => {
+  const items = Array.isArray(saved)
+    ? saved
+    : typeof saved === 'string' ? listFromTypedText(saved, { numbers }) ?? [] : [];
+  const picked = new Set<string>();
+  const extras: Array<{ value: string; label: string }> = [];
+  for (const item of items) {
+    const known = listChoices.normalize(item);
+    if (known !== undefined) {
+      picked.add(String(known));
+      continue;
+    }
+    const written = typeof item === 'string' || typeof item === 'number' ? String(item).trim() : '';
+    if (written.length > 0 && !extras.some((extra) => extra.value === written)) {
+      extras.push({ value: written, label: written });
+    }
+  }
+  return {
+    choices: [
+      ...listChoices.choices.map((choice) => ({ value: String(choice.value), label: choice.label })),
+      ...extras,
+    ],
+    value: [
+      ...listChoices.choices.filter((choice) => picked.has(String(choice.value))).map((choice) => choice.value),
+      ...extras.map((extra) => extra.value),
+    ],
+  };
 };
 
 /** Coerce whatever a config holds for a `file_ref[]` variable into the
@@ -392,21 +469,30 @@ export const renderVariableWidget = (
   }
 
   if (w.type === 'multi') {
-    const options = w.options ?? [];
+    // A list setting's choices carry labels (Mon for 1); a bare list default's
+    // options are their own labels.
+    const boxes = w.choices ?? (w.options ?? []).map((opt) => ({ value: opt, label: opt }));
     const current = new Set(
       (Array.isArray(w.value) ? w.value : []).map(String),
     );
+    const listAttrs = w.list !== undefined && w.choices !== undefined
+      ? ` ${LIST_VARIABLE_ATTR}="${w.list}"${w.optional ? ` ${OPTIONAL_LIST_ATTR}=""` : ''}`
+      : '';
+    // Short labels (Mon, Tue) share a row; the hosts style the modifier.
+    const compact = w.choices !== undefined && w.choices.every((box) => box.label.length <= 5)
+      ? ' var-multi-grid--compact'
+      : '';
     return `
       <div class="var-row var-row-multi">
         <div class="var-multi-label">${e(w.label)}${
       w.optional ? ' <span class="var-optional">optional</span>' : ''
     }</div>
         ${help}
-        <div class="var-multi-grid" data-var-key="${e(w.key)}" data-var-type="multi">
-          ${options
-            .map((opt) => {
-              const optId = `${id}-${opt}`;
-              const on = current.has(opt);
+        <div class="var-multi-grid${compact}" data-var-key="${e(w.key)}" data-var-type="multi"${listAttrs}>
+          ${boxes
+            .map((box) => {
+              const optId = `${id}-${box.value}`;
+              const on = current.has(box.value);
               return `
                 <label for="${e(optId)}" class="var-multi-opt">
                   <input
@@ -414,10 +500,10 @@ export const renderVariableWidget = (
                     type="checkbox"
                     data-var-key="${e(w.key)}"
                     data-var-type="multi"
-                    data-option="${e(opt)}"
+                    data-option="${e(box.value)}"
                     ${on ? 'checked' : ''}
                   />
-                  <span>${e(opt)}</span>
+                  <span>${e(box.label)}</span>
                 </label>
               `;
             })
@@ -562,7 +648,9 @@ export const renderVariableWidget = (
   // string from a previous pass through the same box.
   const display = w.type === 'file_ref_array'
     ? toFileRefIds(w.value).join(', ')
-    : w.value === undefined || w.value === null ? '' : String(w.value);
+    : w.list !== undefined && Array.isArray(w.value)
+      ? w.value.map(String).join(', ')
+      : w.value === undefined || w.value === null ? '' : String(w.value);
   return `
     <div class="var-row">
       <label for="${e(id)}">${e(w.label)}${
@@ -574,6 +662,7 @@ export const renderVariableWidget = (
         type="${inputType}"
         data-var-key="${e(w.key)}"
         data-var-type="${w.type}"
+        ${w.list !== undefined ? `${LIST_VARIABLE_ATTR}="${w.list}"` : ''}
         value="${e(display)}"
         ${w.type === 'file_ref' ? 'placeholder="file:…" spellcheck="false"' : ''}
         ${w.type === 'file_ref_array' ? 'placeholder="file:…, file:…" spellcheck="false"' : ''}
@@ -614,7 +703,21 @@ export const readWidgetValue = (el: Element): unknown => {
     const boxes = Array.from(
       container.querySelectorAll<HTMLInputElement>('input[type="checkbox"][data-option]'),
     );
-    return boxes.filter((b) => b.checked).map((b) => b.dataset.option!);
+    const ticked = boxes.filter((b) => b.checked).map((b) => b.dataset.option!);
+    // D-314 — a list setting's grid reads as its consumer does: numbers for
+    // weekdays, and nothing ticked on an optional one is no value at all (the
+    // adapter refuses an empty channel list; it reads "none" as every channel).
+    const list = (container as HTMLElement).dataset.varList;
+    if (list === undefined) return ticked;
+    if (ticked.length === 0) {
+      return (container as HTMLElement).dataset.varOptional !== undefined ? undefined : [];
+    }
+    return list === 'numbers'
+      ? ticked.map((item) => {
+        const n = Number(item);
+        return item.trim() !== '' && Number.isFinite(n) ? n : item;
+      })
+      : ticked;
   }
   if (type === 'file_ref_array') {
     // Two renderings, one reader. With a file inventory the ORDERED `<li>`
@@ -633,6 +736,12 @@ export const readWidgetValue = (el: Element): unknown => {
       .map((item) => item.getAttribute(FILE_REF_ARRAY_ITEM_ATTR) ?? '')
       .filter((fileId) => fileId.length > 0);
   }
+  // A list setting's box reads back the list it spells; a blank box is no
+  // value, so the key drops out of the saved config and the default applies.
+  const list = (el as HTMLElement).dataset.varList;
+  if (list !== undefined) {
+    return listFromTypedText((el as HTMLInputElement).value, { numbers: list === 'numbers' });
+  }
   // text | number(fallthrough handled above) | select | secret
   return (el as HTMLInputElement | HTMLSelectElement).value;
 };
@@ -647,6 +756,21 @@ export const validateWidgetValue = (
   value: unknown,
 ): string | null => {
   if (w.optional) return null;
+
+  // D-314 — a required list with choices needs a box ticked. Checked before the
+  // box rule below, which would call an untouched list (its default) Required.
+  if (w.choices !== undefined) {
+    if (!Array.isArray(value) || value.length === 0) return 'Tick at least one';
+    return null;
+  }
+
+  // A list setting's box reads back a list (or, from a config saved before it
+  // did, the text), so the text rule below would call a good list "Required".
+  if (w.list !== undefined) {
+    if (typeof value === 'string') return value.trim() === '' ? 'Required' : null;
+    if (!Array.isArray(value) || value.length === 0) return 'Required';
+    return null;
+  }
 
   // `datetime` rides the string branch: its control emits a string, and a
   // required-but-empty one was silently valid before this — the same gap the
@@ -690,6 +814,25 @@ export const validateWidgetValue = (
     // `readWidgetValue` never produces one.
     if (!Array.isArray(value) || value.length === 0) return 'Choose at least one file';
     return null;
+  }
+  return null;
+};
+
+/** D-314 — the first list setting left with nothing ticked where one is
+ *  needed, as `Weekdays: tick at least one.`, or null. The settings editor and
+ *  the run dialog check this before they save or run. Without it, an empty
+ *  weekday list would reach the time watcher as no days, so the recipe would
+ *  never run, and nothing on screen would say so. */
+export const choiceListProblem = (
+  variables: Readonly<Record<string, VariableDefault | undefined>>,
+  config: Readonly<Record<string, unknown>>,
+): string | null => {
+  for (const [key, def] of Object.entries(variables)) {
+    if (def === undefined || !isValidValueHint(def)) continue;
+    const shape = toWidgetShape(key, def, config[key]);
+    if (shape.choices === undefined) continue;
+    const problem = validateWidgetValue(shape, shape.value);
+    if (problem !== null) return `${shape.label}: ${problem.toLowerCase()}.`;
   }
   return null;
 };

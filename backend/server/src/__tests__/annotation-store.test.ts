@@ -236,6 +236,25 @@ describe('createAnnotationStore', () => {
       );
     });
 
+    it('⛔ delete by filter never widens: an unknown key, or a field with no value, is refused', async () => {
+      // The compiler skips both, so a guard that counted keys ran these as
+      // "delete everything" (integrity audit, 2026-09-24). Any caller, not only
+      // the kernel, reaches this store.
+      const { store } = mkStore();
+      await seed(store);
+      const before = (await store.listAnnotations({})).length;
+      await expect(store.deleteAnnotations({ annotation_id: 'x' } as never))
+        .rejects.toThrow(/deleteAnnotations: 'annotation_id' is not a filter field/);
+      await expect(store.deleteAnnotations({ key: undefined, target_collection: 'mail' }))
+        .rejects.toThrow(/deleteAnnotations: 'key' has no value/);
+      await expect(store.deleteLinks({ link_id: 'x' } as never))
+        .rejects.toThrow(/deleteLinks: 'link_id' is not a filter field/);
+      await expect(store.deleteLinks({ from_id: undefined, role: 'r' }))
+        .rejects.toThrow(/deleteLinks: 'from_id' has no value/);
+      await expect(store.deleteLinks({ limit: 5 })).rejects.toThrow(/deleteLinks: at least one filter field is required/);
+      expect((await store.listAnnotations({})).length).toBe(before);
+    });
+
     it('delete by filter removes only matching rows', async () => {
       const { store } = mkStore();
       await seed(store);

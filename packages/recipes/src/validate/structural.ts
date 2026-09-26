@@ -39,7 +39,11 @@ import {
   validateRecipeFormFields,
   collectFormValueRefs,
   collectWholeFormRecordRefs,
+  spreadsheetImportProblems,
   VALUE_HINT_KEYS,
+  LIST_VOCABULARIES,
+  listSettingChoices,
+  listVocabularyRef,
   type EnrichmentDefinition,
   type EnrichmentTopic,
   type RecipeStep,
@@ -776,6 +780,44 @@ export const validateOnFailure = (r: Record<string, unknown>, add: AddFn): void 
  *  The max bound is enforced here (not in TRANSFORM_SCHEMAS) because
  *  the schema registry is pure shape; per-transform runtime bounds
  *  live next to their other cross-field rules. */
+/** `pages: "all"` — read a Records search page by page (`StepPages` in contracts).
+ *
+ *  - `step_pages_invalid` — any value but `"all"`.
+ *  - `step_pages_without_operation` — on a sequential step that dispatches
+ *    nothing (a transform or guard), where there is no search to read.
+ *  - `step_pages_not_sequential` — on a prefetch or trigger step. Only the
+ *    sequential runner carries it to the gateway, so it would be ignored there,
+ *    and an ignored `pages` reads one page while the recipe believes it read all.
+ *
+ *  Whether the operation IS a Records search is known at dispatch, where the
+ *  gateway refuses it on anything else. */
+export const validateStepPages = (r: Record<string, unknown>, add: AddFn): void => {
+  for (const key of ['prefetch_steps', 'steps', 'trigger_steps'] as const) {
+    const steps = r[key];
+    if (!Array.isArray(steps)) continue;
+    steps.forEach((step, i) => {
+      if (step === null || typeof step !== 'object') return;
+      const s = step as Record<string, unknown>;
+      if (s.pages === undefined) return;
+      const path = `${key}[${i}].pages`;
+      if (s.pages !== 'all') {
+        add('error', 'step_pages_invalid', path,
+          `pages takes one value, "all" (got ${JSON.stringify(s.pages)})`);
+        return;
+      }
+      if (key !== 'steps') {
+        add('error', 'step_pages_not_sequential', path,
+          `pages is honoured on sequential steps only; a ${key === 'prefetch_steps' ? 'prefetch' : 'trigger'} step would read one page`);
+        return;
+      }
+      if (!('op' in s) && !('ingredient' in s)) {
+        add('error', 'step_pages_without_operation', path,
+          'pages reads a Records search page by page, so it belongs on the step that runs the search');
+      }
+    });
+  }
+};
+
 export const validateWait = (r: Record<string, unknown>, add: AddFn): void => {
   const triggerSteps = Array.isArray(r.trigger_steps) ? r.trigger_steps : [];
   const seqSteps = Array.isArray(r.steps) ? r.steps : [];
@@ -1546,6 +1588,46 @@ export const validateVariables = (
   // Usage check comes in validateReferences (needs full ref walk first)
 };
 
+/** D-314 — a list setting's `options` are its checkboxes: the values, or one
+ *  list Recued keeps (`["@weekdays"]`). Shape is checked above (non-empty
+ *  strings, which is all an older server checks, so it installs these too).
+ *
+ *  ⛔ AN OPTIONAL LIST WITH OPTIONS HAS NO DEFAULT. Nothing ticked is how an
+ *  owner empties it, and an empty optional setting takes its default, so the
+ *  boxes they unticked would come back ticked. The two lists that carry options
+ *  today are each one side: channels are optional with no default (nothing
+ *  ticked is every channel set up), weekdays are required with one. */
+const validateListOptions = (
+  name: string,
+  hint: Record<string, unknown>,
+  issue: (field: string, message: string) => void,
+): void => {
+  const ref = listVocabularyRef(hint.options);
+  const isList = (hint.type as string) === 'array';
+  if (ref !== undefined && Object.hasOwn(LIST_VOCABULARIES, ref) && !isList) {
+    issue('options', `"@${ref}" is a list of choices, so only a list setting (type 'array') can offer it`);
+    return;
+  }
+  if (!isList || !Array.isArray(hint.options) || hint.options.length === 0) return;
+  if (ref !== undefined && !Object.hasOwn(LIST_VOCABULARIES, ref)) {
+    issue('options', `"@${ref}" is not a list Recued keeps. It keeps `
+      + `${Object.keys(LIST_VOCABULARIES).map((known) => `@${known}`).join(', ')}`);
+    return;
+  }
+  const choices = listSettingChoices(hint);
+  if (choices === undefined) return; // shape refused above
+  if (hint.default !== undefined) {
+    if (!Array.isArray(hint.default)
+        || hint.default.some((item) => choices.normalize(item) === undefined)) {
+      issue('default', `list setting "${name}" has a default that is not a list of its options`);
+    }
+    if (hint.optional === true) {
+      issue('default', `list setting "${name}" offers options and may be left empty, so it has no `
+        + 'default: unticking every box would bring the default back');
+    }
+  }
+};
+
 /** D-222 Slice 0 — TypeScript's `ValueHint` interface is not an install-time
  *  guarantee. An arbitrary object used to pass validation, then the widget
  *  layer treated an object without `label` as a primitive default and silently
@@ -1621,6 +1703,8 @@ const validateValueHint = (
       && (!Array.isArray(hint.options) || hint.options.length === 0)) {
     issue('options', 'an enum ValueHint requires at least one option');
   }
+
+  validateListOptions(name, hint, issue);
 
   // ⛔ A `record_ref` with no entity is a picker over nothing. It would render
   // as a plain text box — the raw-id field the type exists to replace — and
@@ -2476,6 +2560,126 @@ const validateFilterOutputSection = (
         `filter hidden variable "${key}" has credential type "${type}" and cannot be echoed into output`);
     }
   }
+};
+
+/** D-292 — `metadata.spreadsheet_import`: the recipe says it imports a
+ *  spreadsheet, so a surface may guide the owner through upload → match
+ *  columns → check → import. The shape and every cross-check live in
+ *  `@recued/contracts` (`spreadsheetImportProblems`) because the webclient asks
+ *  the SAME question before offering the flow — a server older than D-292
+ *  stores this block unvalidated (metadata keys are open), so the client cannot
+ *  trust that a stored recipe was ever checked. One function, two callers, no
+ *  second copy to drift.
+ *
+ *  ⛔ EVERY PROBLEM IS AN ERROR. The worst one — `preview` not reaching the
+ *  import's `dry_run` — makes the surface's Check button a real import. The
+ *  others make it offer a column picker that changes nothing, or put an upload
+ *  into a variable nothing reads. None of those is a degraded-but-working
+ *  recipe; each is a screen that lies. Absent is legal and unchecked. */
+export const validateSpreadsheetImport = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  for (const problem of spreadsheetImportProblems(r)) {
+    add('error', problem.code, problem.path, problem.detail);
+  }
+};
+
+/** D-302 — `metadata.retired_variables`: variables an earlier version declared
+ *  and this one dropped, whose saved values are dropped before a run instead of
+ *  refused (`withoutRetiredConfig`). Absent is legal.
+ *
+ *  ⛔ A RETIRED NAME CANNOT ALSO BE DECLARED: the run would drop the value the
+ *  recipe reads. A `{{config.<retired>}}` reference is already refused as
+ *  `undeclared_variable_ref`, since a retired name is by definition undeclared. */
+export const validateRetiredVariables = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  if (!r.metadata || typeof r.metadata !== 'object' || Array.isArray(r.metadata)) return;
+  const list = (r.metadata as Record<string, unknown>).retired_variables;
+  if (list === undefined) return;
+  const path = 'metadata.retired_variables';
+  if (!Array.isArray(list)) {
+    add('error', 'retired_variables_shape', path, 'retired_variables must be an array of variable names');
+    return;
+  }
+  const variables = r.variables !== null && typeof r.variables === 'object' && !Array.isArray(r.variables)
+    ? r.variables as Record<string, unknown> : {};
+  const seen = new Set<string>();
+  list.forEach((name, index) => {
+    if (typeof name !== 'string' || name === '') {
+      add('error', 'retired_variables_shape', `${path}[${index}]`, 'must name a variable');
+      return;
+    }
+    if (seen.has(name)) add('error', 'retired_variables_shape', `${path}[${index}]`, `'${name}' is listed twice`);
+    seen.add(name);
+    if (Object.prototype.hasOwnProperty.call(variables, name)) {
+      add('error', 'retired_variable_declared', `${path}[${index}]`,
+        `'${name}' is retired but still declared in variables: a run would drop the value the recipe reads`);
+    }
+  });
+};
+
+/** `metadata.retired_carries`: what a retired variable's saved value still means for
+ *  the variables that replaced it (`carriedFromRetired`, contracts). Absent is legal.
+ *
+ *  A carry is a claim about the recipe's own variables, so it is checked against
+ *  them. The `variable` must be retired, or there is nothing to carry from. Each `set`
+ *  name must be declared, or the run would add a key the D-222 boundary refuses. An
+ *  enum's value must be one of its options, or the owner's form shows the first
+ *  option instead. */
+export const validateRetiredCarries = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  if (!r.metadata || typeof r.metadata !== 'object' || Array.isArray(r.metadata)) return;
+  const metadata = r.metadata as Record<string, unknown>;
+  const list = metadata.retired_carries;
+  if (list === undefined) return;
+  const path = 'metadata.retired_carries';
+  if (!Array.isArray(list)) {
+    add('error', 'retired_carries_shape', path, 'retired_carries must be an array of { variable, when, set }');
+    return;
+  }
+  const retired = Array.isArray(metadata.retired_variables) ? metadata.retired_variables : [];
+  const variables = r.variables !== null && typeof r.variables === 'object' && !Array.isArray(r.variables)
+    ? r.variables as Record<string, unknown> : {};
+  list.forEach((carry, index) => {
+    const at = `${path}[${index}]`;
+    if (carry === null || typeof carry !== 'object' || Array.isArray(carry)) {
+      add('error', 'retired_carries_shape', at, 'must be { variable, when, set }');
+      return;
+    }
+    const { variable, when, set } = carry as Record<string, unknown>;
+    if (typeof variable !== 'string' || typeof when !== 'string'
+      || set === null || typeof set !== 'object' || Array.isArray(set) || Object.keys(set).length === 0) {
+      add('error', 'retired_carries_shape', at,
+        'must be { variable, when, set }: two strings, and at least one variable to set');
+      return;
+    }
+    if (!retired.includes(variable)) {
+      add('error', 'retired_carry_invalid', `${at}.variable`,
+        `'${variable}' is not in retired_variables, so no run drops a value to carry from`);
+    }
+    for (const [name, value] of Object.entries(set as Record<string, unknown>)) {
+      if (typeof value !== 'string') {
+        add('error', 'retired_carries_shape', `${at}.set.${name}`, 'must be a string');
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(variables, name)) {
+        add('error', 'retired_carry_invalid', `${at}.set.${name}`,
+          `'${name}' is not a declared variable, so the run would refuse the value it sets`);
+        continue;
+      }
+      const hint = variables[name];
+      const options = hint !== null && typeof hint === 'object' && !Array.isArray(hint)
+        && (hint as { type?: unknown }).type === 'enum' ? (hint as { options?: unknown }).options : undefined;
+      if (Array.isArray(options) && !options.some((option) => String(option) === value)) {
+        add('error', 'retired_carry_invalid', `${at}.set.${name}`, `'${value}' is not one of ${name}'s options`);
+      }
+    }
+  });
 };
 
 /** D-220 Slice A1 — `metadata.requires_form_fields` shape + the static

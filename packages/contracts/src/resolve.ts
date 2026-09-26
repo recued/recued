@@ -189,10 +189,22 @@ export const formatHint = (value: unknown, hint: RefHint): string => {
       const d = new Date(iso);
       // A string that does not parse keeps its pre-existing passthrough.
       if (isNaN(d.getTime())) return String(value);
+      // ⛔ A date with no time (`2026-08-01`) names a calendar DAY. It parses as
+      // midnight UTC, so formatting it in the local zone put it a day early west
+      // of UTC (Jul 31; the month-end drive, 2026-09-24). Shown in UTC it stays
+      // that day, and it is counted from today's calendar day, not from now.
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/u.test(iso.trim());
       if (hint === 'date') {
-        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(d);
+        return new Intl.DateTimeFormat(undefined, {
+          dateStyle: 'medium',
+          ...(dateOnly ? { timeZone: 'UTC' } : {}),
+        }).format(d);
       }
-      const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+      const today = new Date();
+      const from = dateOnly
+        ? Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())
+        : today.getTime();
+      const days = Math.floor((from - d.getTime()) / 86_400_000);
       if (days === 0) return 'today';
       if (days === 1) return 'yesterday';
       if (days > 0) return `${days} days ago`;

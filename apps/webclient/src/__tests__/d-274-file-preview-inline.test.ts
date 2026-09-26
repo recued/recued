@@ -115,6 +115,21 @@ describe('renderFilePreviewBody — the shared decoder, drawing into any contain
       .rejects.toThrow(/could not be displayed/i);
   });
 
+  it('⛔ reports the file\'s details BEFORE drawing, so a draw that throws still leaves them', async () => {
+    // D-274 regression: the dialog enabled Download from the RESULT, and a draw
+    // that threw returns none — so a file that could not be shown could not be
+    // downloaded either, the one case a person needs the button for.
+    const doc = fakeDoc({ imageDecodes: false }); const body = el('div');
+    const order: string[] = [];
+    const append = body.append.bind(body);
+    body.append = (child) => { order.push('draw'); append(child); };
+    await expect(renderFilePreviewBody({
+      ...host(doc, body),
+      onMeta: (meta) => order.push(`meta:${meta.filename}:${String(meta.can_download)}`),
+    }, { record_id: 'file_1' }, callersFor(imageFile()))).rejects.toThrow(/could not be displayed/i);
+    expect(order).toEqual(['meta:group.jpg:true', 'draw']);
+  });
+
   it('draws a <pre> for text, through the same entry point', async () => {
     const doc = fakeDoc(); const body = el('div');
     await renderFilePreviewBody(host(doc, body), { record_id: 'file_1' }, callersFor({

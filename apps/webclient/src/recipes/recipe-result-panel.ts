@@ -56,6 +56,7 @@ import {
 import {
   e,
   formatRecipeRunFacts,
+  runFailureReason,
   canSubmitTableEdit,
   formatClientDateTime,
   initialTableEditState,
@@ -172,6 +173,10 @@ ${REFERENCE_PROVENANCE_STYLES}
   margin: 0;
   font-size: 12px;
   color: var(--fg-muted);
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-result-reason {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-result-receipt {
   display: grid;
@@ -887,6 +892,9 @@ export const RECIPES_ROUTE_RESULT_PROVENANCE_ATTR =
   'data-recued-recipes-result-provenance';
 export const RECIPES_ROUTE_RESULT_FACTS_ATTR =
   'data-recued-recipes-result-facts';
+/** Why a run returned errors: the first error's message and step (D-312). */
+export const RECIPES_ROUTE_RESULT_REASON_ATTR =
+  'data-recued-recipes-result-reason';
 /** D-222 owner filter form + its page controls. Attribute value is the stable
  *  `<recipe_id>:<authored_hash>:<section_index>` result-state key. */
 export const RECIPES_ROUTE_RESULT_FILTER_ATTR =
@@ -2584,6 +2592,22 @@ export const renderRecipeResultSection = (
   suppressActions = false,
   selectStates: ReadonlyMap<string, OutputTableSelectState> = new Map(),
 ): string => {
+  // ⛔ D-292 — A TABLE WHOSE STEP WAS SKIPPED IS NOT A BROKEN TABLE. D-282 B3 split
+  // "no columns" (a block error) from "no rows" (an empty state); a THIRD case sat
+  // inside the first. `skip_when` on the producing `to_table` step leaves the section's
+  // data `null`, which drew *"the recipe declared none and no entity schema supplied
+  // any"* — false (the step declares its columns; it just did not run) — on every run
+  // where the author meant the block to be absent: every clean import printed that note
+  // twice ("unreadable cells", "refused rows"), and a check-only preview table skipped
+  // on real imports made it three. Absent data with no entity to derive columns from
+  // means the author chose not to show this block; honour it by drawing nothing.
+  if (
+    section.type === 'table'
+    && (section.data === null || section.data === undefined)
+    && !isResolvedRecordColumnsDescriptor(section.record_columns)
+  ) {
+    return '';
+  }
   const body =
     section.type === 'summary'
       ? renderSummaryResultSection(section)
@@ -2704,6 +2728,11 @@ export const renderRecipeResultPanel = (
         : result.success
           ? 'Run completed'
           : 'Run returned errors';
+  // Only where the status says "Run returned errors": a hold and a terminated
+  // run say what they are already.
+  const failureReason = result !== null && status === 'Run returned errors'
+    ? runFailureReason(result.errors)
+    : null;
   const sections = result === null || resultAwaitingApproval(result) || resultTerminated(result)
     ? []
     : resultOutputSections(result);
@@ -2817,6 +2846,9 @@ export const renderRecipeResultPanel = (
             ${runFacts === null
               ? ''
               : `<p class="recipes-result-facts" ${RECIPES_ROUTE_RESULT_FACTS_ATTR}>${e(runFacts)}</p>`}
+            ${failureReason === null
+              ? ''
+              : `<p class="recipes-result-reason" ${RECIPES_ROUTE_RESULT_REASON_ATTR}>${e(failureReason)}</p>`}
           </div>`
         : ''}
       ${refusedNote}

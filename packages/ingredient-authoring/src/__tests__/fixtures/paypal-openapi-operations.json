@@ -5,7 +5,7 @@
       "kind": "official_immutable_multi_document_openapi",
       "repository": "https://github.com/paypal/paypal-rest-api-specifications",
       "commit": "90e8041ffe02d80c452d2b476bedd59a8d219bdc",
-      "retrieved_on": "2026-07-16",
+      "retrieved_on": "2026-08-04",
       "document_count": 13,
       "aggregate_sha256": "25fd538b6b33a218324753fe5b5440454089f18de3989501bc6a65c484559072",
       "path_count": 89,

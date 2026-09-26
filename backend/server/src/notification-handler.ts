@@ -60,8 +60,11 @@ export interface NotificationDeps {
 }
 
 export interface NotificationSendArgs {
-  /** Omitted means fan out to every supported channel. Recipes should
-   *  only pass channels when the user expressed a delivery preference. */
+  /** Omitted means fan out to every channel the owner has SET UP (in-app is
+   *  always set up; D-312): a channel with nothing enrolled is left out of both
+   *  lists. Named channels are the owner's own choice, so a named one that is
+   *  not set up is reported in `failed`. Recipes should only pass channels when
+   *  the user expressed a delivery preference. */
   channels?: NotificationChannel[];
   text: string;
   title?: string;
@@ -121,6 +124,10 @@ export const handleNotificationSend = async (
   if (typeof args.text !== 'string' || args.text.length === 0) {
     throw new RpcError('bad_request', 'notification.send: text is required');
   }
+  // D-312 — no channels named: every channel the owner has set up. A recipe's
+  // default is this, and reporting each channel the owner never set up as a
+  // failure made every reminder say "Could not send to: slack, telegram, email".
+  const fanOut = args.channels === undefined;
   const channels = args.channels ?? [...ALL_NOTIFICATION_CHANNELS];
   for (const channel of channels) {
     if (!isChannel(channel)) {
@@ -138,9 +145,9 @@ export const handleNotificationSend = async (
   // others. The `Promise.all` shape preserves the index alignment so
   // the per-channel outcome maps back cleanly.
   const results = await Promise.all(
-    channels.map(async (channel): Promise<{ channel: NotificationChannel; ok: boolean }> => {
+    channels.map(async (channel): Promise<{ channel: NotificationChannel; ok: boolean; notSetUp: boolean }> => {
       const dispatcher = deps.dispatchers[channel];
-      if (!dispatcher) return { channel, ok: false };
+      if (!dispatcher) return { channel, ok: false, notSetUp: true };
       try {
         const out = await dispatcher({
           channel,
@@ -148,16 +155,20 @@ export const handleNotificationSend = async (
           ...(args.title !== undefined ? { title: args.title } : {}),
           ...(args.link_url !== undefined ? { link_url: args.link_url } : {}),
         });
-        return { channel, ok: out.ok };
+        return { channel, ok: out.ok, notSetUp: !out.ok && out.reason === 'NO_CONNECTION_BOUND' };
       } catch {
-        return { channel, ok: false };
+        return { channel, ok: false, notSetUp: false };
       }
     }),
   );
 
+  // A channel the owner never set up is left out of a fan-out's failures only
+  // while something got through: a note that reached nobody is reported, never
+  // quiet. In-app is built in, so on a server this takes a broken bus.
+  const reachedSomeone = results.some((result) => result.ok);
   for (const result of results) {
     if (result.ok) delivered.push(result.channel);
-    else failed.push(result.channel);
+    else if (!(fanOut && result.notSetUp && reachedSomeone)) failed.push(result.channel);
   }
 
   return { delivered_to: delivered, failed };

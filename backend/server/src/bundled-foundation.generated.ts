@@ -58,14 +58,14 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
-    "version": 4,
+    "version": 5,
     "bundled": true,
     "recipes": [],
     "contents": [
       {
         "type": "recipe",
         "slug": "today",
-        "version": 1,
+        "version": 2,
         "visible": true
       },
       {
@@ -89,19 +89,19 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "extract-commitments-from-mail",
-        "version": 1,
+        "version": 2,
         "visible": true
       },
       {
         "type": "recipe",
         "slug": "extract-tasks-from-mail",
-        "version": 1,
+        "version": 2,
         "visible": true
       },
       {
         "type": "recipe",
         "slug": "triage-inbox",
-        "version": 1,
+        "version": 2,
         "visible": true
       },
       {
@@ -718,7 +718,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "extract-commitments-from-mail": {
     "recipe_id": "extract-commitments-from-mail",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Extract commitments from mail",
@@ -1097,7 +1097,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "extract-tasks-from-mail": {
     "recipe_id": "extract-tasks-from-mail",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Extract tasks from mail",
@@ -2856,7 +2856,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "today": {
     "recipe_id": "today",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Today",
@@ -2894,6 +2894,9 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "weekdays": {
         "label": "Active weekdays (1=Mon..7=Sun)",
         "type": "array",
+        "options": [
+          "@weekdays"
+        ],
         "default": [
           1,
           2,
@@ -3050,11 +3053,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "triage-inbox": {
     "recipe_id": "triage-inbox",
     "chat_exposed": true,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "metadata": {
       "name": "Triage inbox",
-      "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send an in-app notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
+      "description": "Use “Triage inbox” in Recued. Classify each inbound email into urgentaction / awaitingresponse / fyi / promotional / spam and send a notification for urgentaction + awaitingresponse (subject, sender, suggested next action). Promotional / spam classify silently — no notification noise on bulk mail.",
       "author": "recued-core",
       "supported_platforms": [],
       "tags": [
@@ -3073,9 +3076,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "channels": {
         "label": "Notification channels",
         "type": "array",
-        "default": [
-          "in_app"
-        ]
+        "options": [
+          "@notification_channels"
+        ],
+        "optional": true,
+        "help": "Sends to every channel you have set up, unless you choose some, such as Slack, email or in-app."
       },
       "min_confidence": {
         "label": "Min confidence to notify (0..1)",

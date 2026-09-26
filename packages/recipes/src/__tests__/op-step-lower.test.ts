@@ -193,13 +193,13 @@ describe('lowerPackOpStep (D-182 Slice 5 Increment 2b — Tier-P pack-op resolut
   it('fails closed on a pack with no resolved catalog binding (not in the map)', () => {
     expect(() =>
       lowerOpStepRecipe(mkRecipe([{ id: 'x', op: 'alice.unknownpack.do.thing' }]), PACKS),
-    ).toThrow(/no resolved catalog binding/);
+    ).toThrow(/^step 'x' uses the alice\.unknownpack pack, which is not installed\. Install that pack, then try again\./);
   });
 
   it('fails closed on a pack op the catalog does not declare', () => {
     expect(() =>
       lowerOpStepRecipe(mkRecipe([{ id: 'x', op: 'recued-core.whisper.audio.translate' }]), PACKS),
-    ).toThrow(/declares no operation 'audio\.translate'/);
+    ).toThrow(/^step 'x' uses 'audio\.translate' from the recued-core\.whisper pack, and the installed version has no such operation\. Update that pack, then try again\./);
   });
 });
 
@@ -426,6 +426,7 @@ describe('Tier-P lowering — total knob carry (round-12 T2 Q1)', () => {
           timeout_ms: 60_000,
           on_timeout: 'reject',
           prompt: 'Transcribe this file?',
+          pages: 'all',
         },
       ]),
       PACKS,
@@ -443,6 +444,7 @@ describe('Tier-P lowering — total knob carry (round-12 T2 Q1)', () => {
       timeout_ms: 60_000,
       on_timeout: 'reject',
       prompt: 'Transcribe this file?',
+      pages: 'all',
     });
     for (const knob of OP_STEP_PASSTHROUGH_KNOBS) {
       expect(knob in step, `knob '${knob}' must survive the Tier-P lowering`).toBe(true);

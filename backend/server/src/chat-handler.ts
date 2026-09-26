@@ -33,6 +33,7 @@ import { randomUUID } from 'node:crypto';
 import { parseBrief } from './chat-rolling-brief.js';
 import { parseChatSearchCursor, searchChatHistory } from './chat-history-search.js';
 import { parseChatDeliveryListRequest } from './chat-delivery-read.js';
+import { createListPager, readListPageRequest, type ListPager } from './list-pager.js';
 import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_MODEL_SOURCE_ID_SET,
@@ -85,6 +86,7 @@ import {
   type McpInboundTokenRecord,
   type RecuedServerSignature,
   type ServerRpcRegistry,
+  type ToolCatalogEntryView,
   type ToolEntry,
 } from '@recued/contracts';
 import type {
@@ -2925,27 +2927,56 @@ export const handleInboundTokenDelete = async (
   return { deleted };
 };
 
+/** One per server. A tool's `name` is what grants key on, so it is also what
+ *  the page fingerprint follows. */
+const createToolCatalogPager = (): ListPager<ToolCatalogEntryView> =>
+  createListPager<ToolCatalogEntryView>({
+    method: 'chat.inbound_token.tool_catalog',
+    identity: (tool) => tool.name,
+  });
+
 /** D-171 slice 2c — `chat.inbound_token.tool_catalog`. Returns the live
- *  self tool catalog (`ToolEntry[]`) the Permissions → MCP door per-tool
- *  grant checklist renders. A read over the orchestrator's
+ *  self tool catalog the Permissions → MCP door per-tool grant checklist
+ *  renders, as `ToolCatalogEntryView[]` — every `ToolEntry` field except
+ *  `arg_schema`, which is 44-54% of the response and which this checklist
+ *  never reads (see the type's note; the registry keeps it for the LLM). A read over the orchestrator's
  *  `InternalToolRegistry.list()` (Tier 1 + 2 + 3 self tools) via the
  *  injected `catalogProvider`; the webclient groups it by ingredient kind
  *  + diffs it against a token's grants. Read per-call so installs /
  *  connection edits reshape the catalog without a restart. 501 when the
  *  provider isn't wired (dbless harness) — mirrors the store-unwired path
  *  on the rest of the family. Read-only; reserved local-UI only via the
- *  `chat.inbound_token.` prefix in `MCP_RESERVED_RPC_PREFIXES`. */
+ *  `chat.inbound_token.` prefix in `MCP_RESERVED_RPC_PREFIXES`.
+ *
+ *  Paged when `args` carries `limit` or `cursor` (see `list-pager.ts`). A
+ *  request with neither gets the whole catalog, unchanged. The default
+ *  `pager` keeps no memo between calls, so a direct caller still gets correct
+ *  pages; `makeChatHandlers` passes one shared pager so a read's later pages
+ *  come from the catalog its first page built. */
 export const handleInboundTokenToolCatalog = (
   deps: ChatRpcDeps,
-): { catalog: ReadonlyArray<ToolEntry> } => {
-  if (!deps.catalogProvider) {
+  args?: unknown,
+  pager: ListPager<ToolCatalogEntryView> = createToolCatalogPager(),
+): { catalog: ReadonlyArray<ToolCatalogEntryView>; next_cursor?: string | null; total?: number } => {
+  const provider = deps.catalogProvider;
+  if (!provider) {
     throw new RpcError(
       'not_configured',
       'chat.inbound_token.tool_catalog: tool-catalog provider is not wired (dbless / pre-init)',
       501,
     );
   }
-  return { catalog: deps.catalogProvider() };
+  // ⛔ PROJECT, DO NOT MUTATE. `catalogProvider` IS the orchestrator's live
+  // `InternalToolRegistry.list()`, and the same entries are what the LLM is
+  // told it can call — there `arg_schema` is the whole point. Dropping the
+  // field here is a view for the grant checklist, which never reads it; a
+  // delete on the source would take the shape out of every tool call.
+  const project = (): ToolCatalogEntryView[] =>
+    provider().map(({ arg_schema: _schema, ...rest }) => rest);
+  const request = readListPageRequest('chat.inbound_token.tool_catalog', args);
+  if (request === null) return { catalog: project() };
+  const page = pager.page(request, project);
+  return { catalog: page.items, next_cursor: page.next_cursor, total: page.total };
 };
 
 export const handleChatDelivery = async (deps: ChatRpcDeps, action: 'list' | 'retry' | 'skip' | 'connect', args: unknown):
@@ -2990,6 +3021,7 @@ export const makeChatHandlers = (
   deps: ChatRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ChatMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  const toolCatalogPager = createToolCatalogPager();
   return {
     methods: [
       'chat.sessions.list',
@@ -3169,8 +3201,8 @@ export const makeChatHandlers = (
         handleInboundTokenRevoke(deps, args),
       'chat.inbound_token.delete': async (args) =>
         handleInboundTokenDelete(deps, args),
-      'chat.inbound_token.tool_catalog': async () =>
-        handleInboundTokenToolCatalog(deps),
+      'chat.inbound_token.tool_catalog': async (args) =>
+        handleInboundTokenToolCatalog(deps, args, toolCatalogPager),
     },
   };
 };

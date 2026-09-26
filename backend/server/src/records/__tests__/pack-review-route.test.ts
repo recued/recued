@@ -126,6 +126,7 @@ const target = (
   migrationPlans: readonly RecordsMigrationPlan[],
 ): PreparedRecordsReviewTarget => ({
   composition: {} as PreparedRecordsReviewTarget['composition'],
+  catalog: {} as PreparedRecordsReviewTarget['catalog'],
   business_recipes: [],
   migration_plans: [...migrationPlans],
   target_storage_schema_hash: storageHash,

@@ -7,21 +7,21 @@
         "url": "https://docs.hetzner.cloud/cloud.spec.json",
         "reference_url": "https://docs.hetzner.cloud/reference/cloud",
         "changelog_url": "https://docs.hetzner.cloud/changelog",
-        "bytes": 3453181,
-        "sha256": "9ca6b542a057b002804b9f4f45ccfdb8b9a28c92b7e5bf5ae1b7f46b54fe0093",
-        "retrieved_on": "2026-07-16",
+        "bytes": 3508428,
+        "sha256": "592b22eb5a71b960d4d4b9cd13a026f8948828bf7ca7c5d88ea73ce9259b0fd5",
+        "retrieved_on": "2026-09-24",
         "mutability": "The live first-party document is mutable. Generation verifies byte length, SHA-256, OpenAPI identity, server, explicit operation auth, deprecations, media, success shapes, and pagination before writing any artifact.",
         "evidence": [
-          "189 operations across 151 paths; 177 active and 12 deprecated",
+          "190 operations across 152 paths; 178 active and 12 deprecated",
           "exact server https://api.hetzner.cloud/v1 and explicit APIToken Bearer security on every operation",
           "exact parameters, required JSON bodies, JSON-or-empty success responses, and repeated-array serialization",
-          "37 exact page/per_page loops with meta.pagination.next_page evidence",
+          "38 exact page/per_page loops with meta.pagination.next_page evidence",
           "project-scoped API token authority and 50-record page maximum in the embedded first-party guide"
         ],
         "openapi": "3.1.2",
         "title": "Hetzner Cloud API",
         "api_version": "1.0.0",
-        "official_path_count": 151,
+        "official_path_count": 152,
         "declared_server": [
           {
             "url": "https://api.hetzner.cloud/v1"
@@ -42,23 +42,23 @@
         ]
       }
     },
-    "official_operation_count": 189,
-    "active_operation_count": 177,
+    "official_operation_count": 190,
+    "active_operation_count": 178,
     "deprecated_operation_count": 12,
-    "admitted_operation_count": 177,
+    "admitted_operation_count": 178,
     "exclusion_count": 12,
     "exclusion_counts": {
       "provider_deprecated": 12
     },
     "official_method_counts": {
       "DELETE": 13,
-      "GET": 82,
+      "GET": 83,
       "POST": 81,
       "PUT": 13
     },
     "admitted_method_counts": {
       "DELETE": 13,
-      "GET": 70,
+      "GET": 71,
       "POST": 81,
       "PUT": 13
     },
@@ -79,7 +79,7 @@
       "Load Balancers": 6,
       "Locations": 2,
       "Network Actions": 10,
-      "Networks": 5,
+      "Networks": 6,
       "Placement Groups": 5,
       "Pricing": 1,
       "Primary IP Actions": 8,
@@ -111,7 +111,7 @@
       "Load Balancers": 6,
       "Locations": 2,
       "Network Actions": 9,
-      "Networks": 5,
+      "Networks": 6,
       "Placement Groups": 5,
       "Pricing": 1,
       "Primary IP Actions": 7,
@@ -129,18 +129,18 @@
     },
     "pack_operation_counts": {
       "hetzner-cloud-compute": 56,
-      "hetzner-cloud-networking-edge": 73,
+      "hetzner-cloud-networking-edge": 74,
       "hetzner-cloud-storage-certificates": 21,
       "hetzner-cloud-dns-catalog-actions": 27
     },
     "composition_bytes": {
-      "hetzner-cloud-compute": 131265,
-      "hetzner-cloud-networking-edge": 171761,
+      "hetzner-cloud-compute": 131373,
+      "hetzner-cloud-networking-edge": 174480,
       "hetzner-cloud-storage-certificates": 49930,
       "hetzner-cloud-dns-catalog-actions": 72462
     },
     "body_mode_counts": {
-      "none": 101,
+      "none": 102,
       "raw_json": 76
     },
     "request_media_counts": {
@@ -152,33 +152,33 @@
     "required_body_count": 76,
     "risk_counts": {
       "destructive": 107,
-      "read": 70
+      "read": 71
     },
     "approval_counts": {
       "always": 107,
-      "never": 70
+      "never": 71
     },
     "idempotency_counts": {
       "idempotent": 26,
       "non_idempotent": 81,
-      "safe": 70
+      "safe": 71
     },
     "response_mode_counts": {
       "empty": 10,
-      "json": 167
+      "json": 168
     },
     "response_media_counts": {
-      "application/json": 167
+      "application/json": 168
     },
     "success_status_counts": {
-      "200": 85,
+      "200": 86,
       "201": 82,
       "204": 10
     },
     "pagination": {
-      "automatic_operation_count": 37,
+      "automatic_operation_count": 38,
       "kind_counts": {
-        "offset": 37
+        "offset": 38
       },
       "automatic_operation_keys": [
         "GET /certificates",
@@ -202,6 +202,7 @@
         "GET /networks",
         "GET /networks/actions",
         "GET /networks/{id}/actions",
+        "GET /networks/{id}/members",
         "GET /placement_groups",
         "GET /primary_ips",
         "GET /primary_ips/actions",
@@ -229,6 +230,7 @@
         "load_balancer_types": 1,
         "load_balancers": 1,
         "locations": 1,
+        "members": 1,
         "networks": 1,
         "placement_groups": 1,
         "primary_ips": 1,
@@ -269,7 +271,7 @@
       "runtime_path_alias": {
         "wire_prefix": "/v1"
       },
-      "explicit_operation_security_count": 189,
+      "explicit_operation_security_count": 190,
       "top_level_security": [
         {
           "APIToken": []
@@ -278,7 +280,7 @@
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
-      "official_operation_ids_present": 189,
+      "official_operation_ids_present": 190,
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_official_operation_id>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
@@ -326,6 +328,8 @@
         "GET /networks/actions:per_page",
         "GET /networks/{id}/actions:page",
         "GET /networks/{id}/actions:per_page",
+        "GET /networks/{id}/members:page",
+        "GET /networks/{id}/members:per_page",
         "GET /networks:page",
         "GET /networks:per_page",
         "GET /placement_groups:page",
@@ -404,6 +408,10 @@
         "GET /networks/actions:status",
         "GET /networks/{id}/actions:sort",
         "GET /networks/{id}/actions:status",
+        "GET /networks/{id}/members:sort",
+        "GET /networks/{id}/members:status",
+        "GET /networks/{id}/members:subnet",
+        "GET /networks/{id}/members:type",
         "GET /networks:sort",
         "GET /placement_groups:sort",
         "GET /placement_groups:type",
@@ -519,6 +527,9 @@
         "GET /networks/{id}/actions:path:id",
         "GET /networks/{id}/actions:query:page",
         "GET /networks/{id}/actions:query:per_page",
+        "GET /networks/{id}/members:path:id",
+        "GET /networks/{id}/members:query:page",
+        "GET /networks/{id}/members:query:per_page",
         "GET /networks/{id}:path:id",
         "GET /networks:query:page",
         "GET /networks:query:per_page",
@@ -837,6 +848,7 @@
         "GET /networks/actions/{id}",
         "GET /networks/{id}",
         "GET /networks/{id}/actions",
+        "GET /networks/{id}/members",
         "GET /placement_groups",
         "GET /placement_groups/{id}",
         "GET /pricing",
@@ -1438,8 +1450,8 @@
         "pagination": null
       }
     ],
-    "official_operation_ids_sha256": "7028c2c4c803c40c4715c3fcfca3f0fc96a5bba865c41e6617f7f1b3767c186a",
-    "generated_operation_ids_sha256": "9f7cf16795ddcb3d2925792a074367916f69be15a30d44a5a7081b2922615ade"
+    "official_operation_ids_sha256": "bd3c1da3e334a933c3f10c2aa8281c6d653b6222f525f77de456d65150aa6b80",
+    "generated_operation_ids_sha256": "afcdf750e42e29b04b52708d6d2f3f895057e950a3adfa37d5525ccc403eb347"
   },
   "official_operations": [
     {
@@ -4329,6 +4341,36 @@
       "exclusion_reason": "The first-party OpenAPI marks this operation deprecated; no semantic substitution is emitted.",
       "pack": null,
       "op": null
+    },
+    {
+      "key": "GET /networks/{id}/members",
+      "method": "GET",
+      "path": "/networks/{id}/members",
+      "wire_path": "/v1/networks/{id}/members",
+      "primary_tag": "Networks",
+      "tags": [
+        "Networks"
+      ],
+      "summary": "List Members of a Network",
+      "official_operation_id": "list_network_members",
+      "generated_operation_id": "networks.list_network_members",
+      "deprecated": false,
+      "security_source": "explicit_operation_apitoken",
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "hetzner-cloud-networking-edge",
+      "op": "networks.list_network_members"
     },
     {
       "key": "GET /placement_groups",
@@ -10140,7 +10182,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "10bbee33b89c312414c7535235fea6cfb168d803ec7b63c601800462ed58c0b6"
+      "response_schema_sha256": "0603db570b0fb4627b2b6210792e27fb54d7eb056b5a361e58868bd3b5f8818f"
     },
     "GET /images/{id}/actions": {
       "key": "GET /images/{id}/actions",
@@ -11982,6 +12024,174 @@
       "security_source": "explicit_operation_apitoken",
       "response_schema_sha256": "b103c9a7c298ac7659644131811d71307a71b844ab9068987fe41d322255f9e5"
     },
+    "GET /networks/{id}/members": {
+      "key": "GET /networks/{id}/members",
+      "official_operation_id": "list_network_members",
+      "generated_operation_id": "networks.list_network_members",
+      "pack": "hetzner-cloud-networking-edge",
+      "op": "networks.list_network_members",
+      "method": "GET",
+      "path": "/networks/{id}/members",
+      "wire_path": "/v1/networks/{id}/members",
+      "primary_tag": "Networks",
+      "tags": [
+        "Networks"
+      ],
+      "summary": "List Members of a Network",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "type",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.type",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "subnet",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.subnet",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "status",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.status",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "sort",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.sort",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "page",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "per_page",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": "int64",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "result_path": "members",
+      "pagination_kind": "offset",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "per_page",
+          "value": 50,
+          "max": 50
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "explicit_operation_apitoken",
+      "response_schema_sha256": "383c679285407fbd23a45df17bb44bdc9497a9e8ffd39ae3a3290567f2479be8"
+    },
     "GET /networks/actions": {
       "key": "GET /networks/actions",
       "official_operation_id": "list_networks_actions",
@@ -12635,7 +12845,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "2daa2389a91f0a4a069e929140c47f441fe8fffffac945925fef52ef5f037ae3"
+      "response_schema_sha256": "1657e22d5364c84d398aa5df8a72cc2fadb30e97bd1008388c9165cecdfb9e40"
     },
     "GET /primary_ips/{id}/actions": {
       "key": "GET /primary_ips/{id}/actions",
@@ -17430,7 +17640,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "1c25afd587a9f302749ebee779e5f3bff8f70c897fc1732b3402cff2d9f97a5b"
+      "response_schema_sha256": "71a1d548441165405d687e5ec58a0563c3f6f7dbea0f0a25319448e60c95a86a"
     },
     "POST /primary_ips/{id}/actions/assign": {
       "key": "POST /primary_ips/{id}/actions/assign",
@@ -18217,7 +18427,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "0b6c29fa82ce4dbf1423c70f68f5a1943b54adabb8842794b994ed23c8546029"
+      "response_schema_sha256": "6ff756a7d4a80210d0eadcf32bf7a23a3bb31bc0e63bac93f34762438b78ce71"
     },
     "POST /servers/{id}/actions/detach_from_network": {
       "key": "POST /servers/{id}/actions/detach_from_network",
@@ -20609,7 +20819,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "10bbee33b89c312414c7535235fea6cfb168d803ec7b63c601800462ed58c0b6"
+      "response_schema_sha256": "0603db570b0fb4627b2b6210792e27fb54d7eb056b5a361e58868bd3b5f8818f"
     },
     "PUT /load_balancers/{id}": {
       "key": "PUT /load_balancers/{id}",
@@ -20857,7 +21067,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "explicit_operation_apitoken",
-      "response_schema_sha256": "2daa2389a91f0a4a069e929140c47f441fe8fffffac945925fef52ef5f037ae3"
+      "response_schema_sha256": "1657e22d5364c84d398aa5df8a72cc2fadb30e97bd1008388c9165cecdfb9e40"
     },
     "PUT /servers/{id}": {
       "key": "PUT /servers/{id}",

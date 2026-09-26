@@ -94,7 +94,7 @@
  *  unchanged, so clients keep working): the Chat row sends `chat_mode` only,
  *  the checklist sends `grants` only, and the rpc preserves the absent field
  *  so they never clobber each other. The checklist's catalog comes from
- *  `chat.inbound_token.tool_catalog` (the live self `ToolEntry[]`), grouped
+ *  `chat.inbound_token.tool_catalog` (the live self `ToolCatalogEntryView[]`), grouped
  *  by ingredient kind via `chat-inbound-tokens.ts`. The door opens with a
  *  least-privilege, never-expiring token (default-deny — nothing granted
  *  until the user toggles a tool / Chat on).
@@ -137,7 +137,7 @@ import type {
   MintContractRequest,
   OverridePolicyInput,
   OverrideView,
-  ToolEntry,
+  ToolCatalogEntryView,
 } from '@recued/contracts';
 import {
   isEmptyOverridePolicy,
@@ -254,14 +254,18 @@ export type PermissionsUpdateInboundTokenCaller = (
 ) => Promise<{ token: McpInboundTokenRecord }>;
 
 /** D-171 slice 2c — `chat.inbound_token.tool_catalog` caller seam. Returns
- *  the live self tool catalog (`ToolEntry[]` — Tier 1 + 2 + 3 self tools)
+ *  the live self tool catalog (`ToolCatalogEntryView[]` — Tier 1 + 2 + 3 self tools)
  *  the mcp door's per-tool grant checklist renders. Read-only; the panel
  *  groups it by ingredient kind + diffs it against the open token's grants.
  *  Loaded once on mount (alongside the inbound-token list); the catalog the
  *  grant keys lower onto is the same surface the inbound MCP dispatch gate
  *  authorises against. */
 export type PermissionsToolCatalogCaller = () => Promise<{
-  catalog: ReadonlyArray<ToolEntry>;
+  /** ⛔ The VIEW, not `ToolCatalogEntryView` — the wire drops `arg_schema`, which this
+   *  checklist has never read and which was half the response. Typing this as
+   *  `ToolCatalogEntryView` would compile while promising a field the server no longer
+   *  sends. */
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
 }>;
 
 // ── D-171 slice 3b — mcp door Advanced (lazy cap/expiry contract) seams ──
@@ -662,7 +666,7 @@ export const PERMISSIONS_MCP_DOOR_GRANT_KIND_ATTR =
 /** The per-kind master toggle (grants / revokes every tool in the kind). */
 export const PERMISSIONS_MCP_DOOR_GRANT_KIND_TOGGLE_ATTR =
   'data-recued-permissions-mcp-grant-kind-toggle';
-/** One per-tool row. Carries `data-tool` (the `ToolEntry.name`). */
+/** One per-tool row. Carries `data-tool` (the `ToolCatalogEntryView.name`). */
 export const PERMISSIONS_MCP_DOOR_GRANT_TOOL_ATTR =
   'data-recued-permissions-mcp-grant-tool';
 /** The per-tool toggle button. `data-granted` is the stable state hook. */
@@ -911,7 +915,7 @@ interface InternalState {
   /** The live self tool catalog backing the grant checklist; null until the
    *  on-mount load settles (or when the checklist isn't wired). The grant
    *  checklist renders a "Loading tools…" line while null. */
-  toolCatalog: ReadonlyArray<ToolEntry> | null;
+  toolCatalog: ReadonlyArray<ToolCatalogEntryView> | null;
   /** Tool-catalog load error, or null. Degrades only the grant checklist —
    *  the door lifecycle + token reveal + Chat row are unaffected. */
   toolCatalogError: string | null;

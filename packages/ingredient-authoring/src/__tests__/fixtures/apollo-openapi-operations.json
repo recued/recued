@@ -3,27 +3,27 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://docs.apollo.io/openapi/apollo-rest-api.json",
-      "bytes": 1098593,
-      "sha256": "701b51d2078419b89817027be7efee080b9c9f7faa784fc40fcc375d28aba661",
+      "bytes": 1221840,
+      "sha256": "6d6e9f8061c392cf25696c6f284745cdc0d0ce93c8ac2e28112e9a5b985b423c",
       "openapi": "3.1.0",
       "api_version": "1.0",
-      "retrieved_on": "2026-07-15",
+      "retrieved_on": "2026-09-22",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract."
     },
-    "official_operation_count": 79,
-    "official_unique_route_count": 79,
-    "admitted_unique_route_count": 79,
-    "declared_operation_count": 79,
+    "official_operation_count": 80,
+    "official_unique_route_count": 80,
+    "admitted_unique_route_count": 80,
+    "declared_operation_count": 80,
     "official_method_counts": {
       "GET": 26,
       "PATCH": 6,
-      "POST": 45,
+      "POST": 46,
       "PUT": 2
     },
     "declared_method_counts": {
       "GET": 26,
       "PATCH": 6,
-      "POST": 45,
+      "POST": 46,
       "PUT": 2
     },
     "compatibility_operation_count": 22,
@@ -54,8 +54,8 @@
     "compatibility_hashes": {
       "ids": "74a11c5aff425e0dcec8f8063c0b898dae376b79a69108e2a427c06ec236d13b",
       "rows": "4f6775cb0ff96d842566c54cb42e160b1c1cd81cb0d30fef1fe040356880f91b",
-      "arg_keys": "b3789e80dbe0e48a7295d5aa000165074a54722c4aec2bcaa47503ee68248a07",
-      "arg_metadata": "1164fe7a260dac44fccc6fb132087fecf7b4321ba5f9b028396456dffebc5d65"
+      "arg_keys": "17e98cbdce8e0f03d378410260466ce6b7fa6ad71240901bd0534ba7e1b2fa0a",
+      "arg_metadata": "d7d86775f4fc88997d0e239a2127398329c39659b80021e8de95ac07dcb5f995"
     },
     "legacy_compatibility_hashes": {
       "ids": "74a11c5aff425e0dcec8f8063c0b898dae376b79a69108e2a427c06ec236d13b",
@@ -65,8 +65,8 @@
     },
     "recipe_versions": {
       "revenue-operations-digest-apollo": 2,
-      "contact-engagement-brief-apollo": 2,
-      "sequence-readiness-brief-apollo": 2,
+      "contact-engagement-brief-apollo": 3,
+      "sequence-readiness-brief-apollo": 3,
       "create-account-intake-apollo": 2,
       "create-contact-intake-apollo": 2,
       "add-contacts-to-sequence-apollo": 3,
@@ -79,25 +79,25 @@
       "task.search": "unsupported body filters replaced by documented query parameters",
       "email_account.search": "unsupported page/per_page arguments removed"
     },
-    "composition_bytes": 131218,
+    "composition_bytes": 134026,
     "risk_counts": {
       "admin": 7,
       "destructive": 1,
-      "read": 43,
+      "read": 44,
       "write": 28
     },
     "approval_counts": {
       "always": 31,
       "ask": 5,
-      "never": 43
+      "never": 44
     },
     "idempotency_counts": {
       "idempotent": 8,
       "non_idempotent": 38,
-      "safe": 33
+      "safe": 34
     },
     "pagination_counts": {
-      "none": 65,
+      "none": 66,
       "offset": 14
     },
     "result_path_counts": {
@@ -120,7 +120,7 @@
       "label": 2,
       "matches": 1,
       "news_articles": 1,
-      "none": 12,
+      "none": 13,
       "notes": 1,
       "opportunities": 2,
       "opportunity": 3,
@@ -141,7 +141,7 @@
       "webhook_result": 1
     },
     "body_mode_counts": {
-      "none": 43,
+      "none": 44,
       "structured_json": 36
     },
     "credit_consuming_operation_count": 11,
@@ -266,7 +266,7 @@
       "operation_id": "people.enrich",
       "vendor_operation_id": "people-enrichment",
       "tag": "Enrichment",
-      "summary": "People Enrichment",
+      "summary": "People enrichment",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -396,6 +396,14 @@
           "type": "string",
           "selected": false,
           "omission": "arbitrary_external_callback"
+        },
+        {
+          "in": "query",
+          "name": "poll_only",
+          "arg_key": "query.poll_only",
+          "required": false,
+          "type": "boolean",
+          "selected": true
         }
       ],
       "body_properties": [],
@@ -414,7 +422,7 @@
       "operation_id": "people.bulk_enrich",
       "vendor_operation_id": "bulk-people-enrichment",
       "tag": "Enrichment",
-      "summary": "Bulk People Enrichment",
+      "summary": "Bulk people enrichment",
       "request_media": [
         "application/json"
       ],
@@ -474,6 +482,14 @@
           "type": "string",
           "selected": false,
           "omission": "arbitrary_external_callback"
+        },
+        {
+          "in": "query",
+          "name": "poll_only",
+          "arg_key": "query.poll_only",
+          "required": false,
+          "type": "boolean",
+          "selected": true
         }
       ],
       "body_properties": [
@@ -506,7 +522,7 @@
       "operation_id": "organization.enrich",
       "vendor_operation_id": "organization-enrichment",
       "tag": "Enrichment",
-      "summary": "Organization Enrichment",
+      "summary": "Organization enrichment",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -568,7 +584,7 @@
       "operation_id": "organization.bulk_enrich",
       "vendor_operation_id": "bulk-organization-enrichment",
       "tag": "Enrichment",
-      "summary": "Bulk Organization Enrichment",
+      "summary": "Bulk organization enrichment",
       "request_media": [
         "application/json"
       ],
@@ -623,7 +639,7 @@
       "operation_id": "people.search",
       "vendor_operation_id": "people-api-search",
       "tag": "Search",
-      "summary": "People API Search",
+      "summary": "People API search",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -658,6 +674,14 @@
           "in": "query",
           "name": "q_keywords",
           "arg_key": "query.q_keywords",
+          "required": false,
+          "type": "string",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "q_person_name",
+          "arg_key": "query.q_person_name",
           "required": false,
           "type": "string",
           "selected": true
@@ -808,6 +832,46 @@
         },
         {
           "in": "query",
+          "name": "organization_headcount_growth_past_n_months",
+          "arg_key": "query.organization_headcount_growth_past_n_months",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "organization_headcount_growth_range[min]",
+          "arg_key": "query.organization_headcount_growth_range[min]",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "organization_headcount_growth_range[max]",
+          "arg_key": "query.organization_headcount_growth_range[max]",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "lookalike_organization_ids[]",
+          "arg_key": "query.lookalike_organization_ids[]",
+          "required": false,
+          "type": "array",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "not_organization_websites_list[]",
+          "arg_key": "query.not_organization_websites_list[]",
+          "required": false,
+          "type": "array",
+          "selected": true
+        },
+        {
+          "in": "query",
           "name": "page",
           "arg_key": "query.page",
           "required": false,
@@ -838,7 +902,7 @@
       "operation_id": "organization.search",
       "vendor_operation_id": "organization-search",
       "tag": "Search",
-      "summary": "Organization Search",
+      "summary": "Organization search",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1031,6 +1095,46 @@
         },
         {
           "in": "query",
+          "name": "organization_headcount_growth_past_n_months",
+          "arg_key": "query.organization_headcount_growth_past_n_months",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "organization_headcount_growth_range[min]",
+          "arg_key": "query.organization_headcount_growth_range[min]",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "organization_headcount_growth_range[max]",
+          "arg_key": "query.organization_headcount_growth_range[max]",
+          "required": false,
+          "type": "number",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "lookalike_organization_ids[]",
+          "arg_key": "query.lookalike_organization_ids[]",
+          "required": false,
+          "type": "array",
+          "selected": true
+        },
+        {
+          "in": "query",
+          "name": "not_organization_websites_list[]",
+          "arg_key": "query.not_organization_websites_list[]",
+          "required": false,
+          "type": "array",
+          "selected": true
+        },
+        {
+          "in": "query",
           "name": "page",
           "arg_key": "query.page",
           "required": false,
@@ -1070,7 +1174,7 @@
       "operation_id": "organization.job.search",
       "vendor_operation_id": "organization-jobs-postings",
       "tag": "Search",
-      "summary": "Organization Job Postings",
+      "summary": "Organization job postings",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1124,7 +1228,7 @@
       "operation_id": "account.create",
       "vendor_operation_id": "create-an-account",
       "tag": "Accounts",
-      "summary": "Create an Account",
+      "summary": "Create an account",
       "request_media": [
         "application/json"
       ],
@@ -1191,7 +1295,7 @@
       "operation_id": "account.update",
       "vendor_operation_id": "update-an-account",
       "tag": "Accounts",
-      "summary": "Update an Account",
+      "summary": "Update an account",
       "request_media": [
         "application/json"
       ],
@@ -1268,7 +1372,7 @@
       "operation_id": "account.search",
       "vendor_operation_id": "search-for-accounts",
       "tag": "Accounts",
-      "summary": "Search for Accounts",
+      "summary": "Search for accounts",
       "request_media": [
         "application/json"
       ],
@@ -1342,7 +1446,7 @@
       "operation_id": "account.bulk_create",
       "vendor_operation_id": "bulk-create-accounts",
       "tag": "Accounts",
-      "summary": "Bulk Create Accounts",
+      "summary": "Bulk create accounts",
       "request_media": [
         "application/json"
       ],
@@ -1390,7 +1494,7 @@
       "operation_id": "account.bulk_update",
       "vendor_operation_id": "bulk-update-accounts",
       "tag": "Accounts",
-      "summary": "Bulk Update Accounts",
+      "summary": "Bulk update accounts",
       "request_media": [
         "application/json"
       ],
@@ -1452,7 +1556,7 @@
       "operation_id": "account.owner.bulk_update",
       "vendor_operation_id": "update-account-ownership",
       "tag": "Accounts",
-      "summary": "Update Account Owner for Multiple Accounts",
+      "summary": "Update account owner for multiple accounts",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1498,7 +1602,7 @@
       "operation_id": "account_stage.search",
       "vendor_operation_id": "list-account-stages",
       "tag": "Accounts",
-      "summary": "List Account Stages",
+      "summary": "List account stages",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1527,7 +1631,7 @@
       "operation_id": "contact.create",
       "vendor_operation_id": "create-a-contact",
       "tag": "Contacts",
-      "summary": "Create a Contact",
+      "summary": "Create a contact",
       "request_media": [
         "application/json"
       ],
@@ -1646,7 +1750,7 @@
       "operation_id": "contact.read",
       "vendor_operation_id": "view-a-contact",
       "tag": "Contacts",
-      "summary": "View a Contact",
+      "summary": "View a contact",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1685,7 +1789,7 @@
       "operation_id": "contact.update",
       "vendor_operation_id": "update-a-contact",
       "tag": "Contacts",
-      "summary": "Update a Contact",
+      "summary": "Update a contact",
       "request_media": [
         "application/json"
       ],
@@ -1807,7 +1911,7 @@
       "operation_id": "contact.deal.search",
       "vendor_operation_id": "view-associated-deals",
       "tag": "Contacts",
-      "summary": "View Associated Deals",
+      "summary": "View associated deals",
       "request_media": [
         "application/json"
       ],
@@ -1847,7 +1951,7 @@
       "operation_id": "contact.search",
       "vendor_operation_id": "search-for-contacts",
       "tag": "Contacts",
-      "summary": "Search for Contacts",
+      "summary": "Search for contacts",
       "request_media": [
         "application/json"
       ],
@@ -1921,7 +2025,7 @@
       "operation_id": "contact.stage.bulk_update",
       "vendor_operation_id": "update-contact-stage",
       "tag": "Contacts",
-      "summary": "Update Contact Stage for Multiple Contacts",
+      "summary": "Update contact stage for multiple contacts",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -1967,7 +2071,7 @@
       "operation_id": "contact.owner.bulk_update",
       "vendor_operation_id": "update-contact-ownership",
       "tag": "Contacts",
-      "summary": "Update Contact Owner for Multiple Contacts",
+      "summary": "Update contact owner for multiple contacts",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2013,7 +2117,7 @@
       "operation_id": "contact.bulk_create",
       "vendor_operation_id": "bulk-create-contacts",
       "tag": "Contacts",
-      "summary": "Bulk Create Contacts",
+      "summary": "Bulk create contacts",
       "request_media": [
         "application/json"
       ],
@@ -2066,7 +2170,7 @@
       "operation_id": "contact.bulk_update",
       "vendor_operation_id": "bulk-update-contacts",
       "tag": "Contacts",
-      "summary": "Bulk Update Contacts",
+      "summary": "Bulk update contacts",
       "request_media": [
         "application/json"
       ],
@@ -2169,7 +2273,7 @@
       "operation_id": "contact_stage.search",
       "vendor_operation_id": "list-contact-stages",
       "tag": "Contacts",
-      "summary": "List Contact Stages",
+      "summary": "List contact stages",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2198,7 +2302,7 @@
       "operation_id": "email_schedule.search",
       "vendor_operation_id": "list-email-schedules",
       "tag": "Sequences",
-      "summary": "List Email Schedules",
+      "summary": "List email schedules",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2227,7 +2331,7 @@
       "operation_id": "deal.create",
       "vendor_operation_id": "create-deal",
       "tag": "Deals",
-      "summary": "Create Deal",
+      "summary": "Create deal",
       "request_media": [
         "application/json"
       ],
@@ -2294,7 +2398,7 @@
       "operation_id": "deal.search",
       "vendor_operation_id": "list-all-deals",
       "tag": "Deals",
-      "summary": "List All Deals",
+      "summary": "List all deals",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2356,7 +2460,7 @@
       "operation_id": "deal.read",
       "vendor_operation_id": "view-deal",
       "tag": "Deals",
-      "summary": "View Deal",
+      "summary": "View deal",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2394,7 +2498,7 @@
       "operation_id": "deal.update",
       "vendor_operation_id": "update-deal",
       "tag": "Deals",
-      "summary": "Update Deal",
+      "summary": "Update deal",
       "request_media": [
         "application/json"
       ],
@@ -2465,7 +2569,7 @@
       "operation_id": "deal_stage.search",
       "vendor_operation_id": "list-deal-stages",
       "tag": "Deals",
-      "summary": "List Deal Stages",
+      "summary": "List deal stages",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2494,7 +2598,7 @@
       "operation_id": "sequence.search",
       "vendor_operation_id": "search-for-sequences",
       "tag": "Sequences",
-      "summary": "Search for Sequences",
+      "summary": "Search for sequences",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2551,7 +2655,7 @@
       "operation_id": "sequence.add_contacts",
       "vendor_operation_id": "add-contacts-to-sequence",
       "tag": "Sequences",
-      "summary": "Add Contacts to a Sequence",
+      "summary": "Add contacts to a sequence",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2731,7 +2835,7 @@
       "operation_id": "sequence.contact_status.update",
       "vendor_operation_id": "update-contact-status-sequence",
       "tag": "Sequences",
-      "summary": "Update Contact Status in a Sequence",
+      "summary": "Update contact status in a sequence",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2790,7 +2894,7 @@
       "operation_id": "sequence.create",
       "vendor_operation_id": "create-sequence",
       "tag": "Sequences",
-      "summary": "Create a Sequence",
+      "summary": "Create a sequence",
       "request_media": [
         "application/json"
       ],
@@ -2938,7 +3042,7 @@
       "operation_id": "sequence.update",
       "vendor_operation_id": "update-sequence",
       "tag": "Sequences",
-      "summary": "Update a Sequence",
+      "summary": "Update a sequence",
       "request_media": [
         "application/json"
       ],
@@ -2984,6 +3088,11 @@
           "name": "permissions",
           "required": false,
           "type": "string"
+        },
+        {
+          "name": "sharing_permission",
+          "required": false,
+          "type": "object"
         },
         {
           "name": "user_id",
@@ -3049,7 +3158,7 @@
       "operation_id": "task.create",
       "vendor_operation_id": "create-a-task",
       "tag": "Tasks",
-      "summary": "Create a Task",
+      "summary": "Create a task",
       "request_media": [
         "application/json"
       ],
@@ -3121,7 +3230,7 @@
       "operation_id": "task.bulk_create",
       "vendor_operation_id": "bulk-create-tasks",
       "tag": "Tasks",
-      "summary": "Bulk Create Tasks",
+      "summary": "Bulk create tasks",
       "request_media": [
         "application/json"
       ],
@@ -3189,7 +3298,7 @@
       "operation_id": "task.read",
       "vendor_operation_id": "get-a-task",
       "tag": "Tasks",
-      "summary": "Get a Task",
+      "summary": "Get a task",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3227,7 +3336,7 @@
       "operation_id": "task.update",
       "vendor_operation_id": "update-a-task",
       "tag": "Tasks",
-      "summary": "Update a Task",
+      "summary": "Update a task",
       "request_media": [
         "application/json"
       ],
@@ -3328,7 +3437,7 @@
       "operation_id": "task.complete",
       "vendor_operation_id": "complete-a-task",
       "tag": "Tasks",
-      "summary": "Complete a Task",
+      "summary": "Complete a task",
       "request_media": [
         "application/json"
       ],
@@ -3375,7 +3484,7 @@
       "operation_id": "task.skip",
       "vendor_operation_id": "skip-a-task",
       "tag": "Tasks",
-      "summary": "Skip a Task",
+      "summary": "Skip a task",
       "request_media": [
         "application/json"
       ],
@@ -3426,7 +3535,7 @@
       "operation_id": "task.search",
       "vendor_operation_id": "search-tasks",
       "tag": "Tasks",
-      "summary": "Search for Tasks",
+      "summary": "Search for tasks",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3493,7 +3602,7 @@
       "operation_id": "outreach_email.draft_create",
       "vendor_operation_id": "create-an-email-draft",
       "tag": "Emailer Messages",
-      "summary": "Create an Email Draft",
+      "summary": "Create an email draft",
       "request_media": [
         "application/json"
       ],
@@ -3570,7 +3679,7 @@
       "operation_id": "outreach_email.send",
       "vendor_operation_id": "send-email-now",
       "tag": "Emailer Messages",
-      "summary": "Send Email Now",
+      "summary": "Send email now",
       "request_media": [
         "application/json"
       ],
@@ -3616,7 +3725,7 @@
       "operation_id": "outreach_email.content.read",
       "vendor_operation_id": "get-email-content",
       "tag": "Emailer Messages",
-      "summary": "Get Email Content",
+      "summary": "Get email content",
       "request_media": [
         "application/json"
       ],
@@ -3658,7 +3767,7 @@
       "operation_id": "outreach_email.send_status",
       "vendor_operation_id": "check-email-send-status",
       "tag": "Emailer Messages",
-      "summary": "Check Email Send Status",
+      "summary": "Check email send status",
       "request_media": [
         "application/json"
       ],
@@ -3702,7 +3811,7 @@
       "operation_id": "user.search",
       "vendor_operation_id": "get-a-list-of-users",
       "tag": "Miscellaneous",
-      "summary": "Get a List of Users",
+      "summary": "Get a list of users",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3750,7 +3859,7 @@
       "operation_id": "user.profile",
       "vendor_operation_id": "get-current-user-profile",
       "tag": "Untagged",
-      "summary": "Get Current User Profile",
+      "summary": "Get current user profile",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3805,7 +3914,7 @@
       "operation_id": "email_account.search",
       "vendor_operation_id": "get-a-list-of-email-accounts",
       "tag": "Miscellaneous",
-      "summary": "Get a List of Email Accounts",
+      "summary": "Get a list of email accounts",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3834,7 +3943,7 @@
       "operation_id": "label.search",
       "vendor_operation_id": "get-a-list-of-all-lists",
       "tag": "Miscellaneous",
-      "summary": "Get a List of All Lists",
+      "summary": "Get a list of all lists",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -3861,7 +3970,7 @@
       "operation_id": "label.create",
       "vendor_operation_id": "create-a-list",
       "tag": "Miscellaneous",
-      "summary": "Create a List",
+      "summary": "Create a list",
       "request_media": [
         "application/json"
       ],
@@ -3908,7 +4017,7 @@
       "operation_id": "label.update",
       "vendor_operation_id": "update-a-list",
       "tag": "Miscellaneous",
-      "summary": "Update a List",
+      "summary": "Update a list",
       "request_media": [
         "application/json"
       ],
@@ -3959,7 +4068,7 @@
       "operation_id": "label.record.add",
       "vendor_operation_id": "add-records-to-a-list",
       "tag": "Miscellaneous",
-      "summary": "Add Records to a List",
+      "summary": "Add records to a list",
       "request_media": [
         "application/json"
       ],
@@ -4013,7 +4122,7 @@
       "operation_id": "label.record.remove",
       "vendor_operation_id": "remove-records-from-a-list",
       "tag": "Miscellaneous",
-      "summary": "Remove Records from a List",
+      "summary": "Remove records from a list",
       "request_media": [
         "application/json"
       ],
@@ -4067,7 +4176,7 @@
       "operation_id": "field.search",
       "vendor_operation_id": "get-a-list-of-fields",
       "tag": "Fields",
-      "summary": "Get a List of Fields",
+      "summary": "Get a list of fields",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4105,7 +4214,7 @@
       "operation_id": "field.create",
       "vendor_operation_id": "create-a-custom-field",
       "tag": "Fields",
-      "summary": "Create a Custom Field",
+      "summary": "Create a custom field",
       "request_media": [
         "application/json"
       ],
@@ -4157,7 +4266,7 @@
       "operation_id": "field.update",
       "vendor_operation_id": "update-a-custom-field",
       "tag": "Fields",
-      "summary": "Update a Custom Field",
+      "summary": "Update a custom field",
       "request_media": [
         "application/json"
       ],
@@ -4198,7 +4307,7 @@
       "operation_id": "custom_field.search",
       "vendor_operation_id": "get-a-list-of-all-custom-fields",
       "tag": "Fields",
-      "summary": "Get a List of All Custom Fields",
+      "summary": "Get a list of all custom fields",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4227,7 +4336,7 @@
       "operation_id": "organization.read",
       "vendor_operation_id": "get_organizations{id}",
       "tag": "Search",
-      "summary": "Get Complete Organization Info",
+      "summary": "Get complete organization info",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4265,7 +4374,7 @@
       "operation_id": "people.read",
       "vendor_operation_id": "get_people{id}",
       "tag": "Search",
-      "summary": "Get Complete Person Info",
+      "summary": "Get complete person info",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4303,7 +4412,7 @@
       "operation_id": "account.read",
       "vendor_operation_id": "get_accounts{id}",
       "tag": "Accounts",
-      "summary": "View an Account",
+      "summary": "View an account",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4343,7 +4452,7 @@
       "operation_id": "call.search",
       "vendor_operation_id": "get_phone_callssearch",
       "tag": "Calls",
-      "summary": "Search for Calls",
+      "summary": "Search for calls",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4474,7 +4583,7 @@
       "operation_id": "outreach_email.activity.read",
       "vendor_operation_id": "get_emailstats",
       "tag": "Sequences",
-      "summary": "Check Email Stats",
+      "summary": "Check email stats",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4513,7 +4622,7 @@
       "operation_id": "outreach_email.search",
       "vendor_operation_id": "emailer_messages/search",
       "tag": "Sequences",
-      "summary": "Search for Outreach Emails",
+      "summary": "Search for outreach emails",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4650,7 +4759,7 @@
       "operation_id": "webhook_result.read",
       "vendor_operation_id": "poll-webhook-result",
       "tag": "Miscellaneous",
-      "summary": "Poll Webhook Result",
+      "summary": "Poll webhook result",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4689,11 +4798,41 @@
     },
     {
       "method": "POST",
+      "path": "/usage_stats/credit_usage_stats",
+      "operation_id": "usage.credit.read",
+      "vendor_operation_id": "view-credit-usage-stats",
+      "tag": "Miscellaneous",
+      "summary": "View credit usage stats",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "security_schemes": [
+        "apiKey",
+        "bearerAuth"
+      ],
+      "selected": true,
+      "operations": [
+        "usage.credit.read"
+      ],
+      "parameters": [],
+      "body_properties": [],
+      "response_shape_source": "schema",
+      "response_top_level_keys": [
+        "credit_usage_stats",
+        "current_credit_cycle"
+      ],
+      "credit_consuming": false,
+      "master_key_required": false
+    },
+    {
+      "method": "POST",
       "path": "/usage_stats/api_usage_stats",
       "operation_id": "usage.read",
       "vendor_operation_id": "post_apiusage",
       "tag": "Miscellaneous",
-      "summary": "View API Usage Stats and Rate Limits",
+      "summary": "View API usage stats and rate limits",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4720,7 +4859,7 @@
       "operation_id": "call.create",
       "vendor_operation_id": "phonecalls_create",
       "tag": "Calls",
-      "summary": "Create Call Records",
+      "summary": "Create call records",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4856,7 +4995,7 @@
       "operation_id": "call.update",
       "vendor_operation_id": "put_phone_callsupdate",
       "tag": "Calls",
-      "summary": "Update Call Records",
+      "summary": "Update call records",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -4999,7 +5138,7 @@
       "operation_id": "news.search",
       "vendor_operation_id": "news_articles_search",
       "tag": "Search",
-      "summary": "News Articles Search",
+      "summary": "News articles search",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5078,7 +5217,7 @@
       "operation_id": "sequence.activity.read",
       "vendor_operation_id": "get-contact-sequence-activity",
       "tag": "Sequences",
-      "summary": "Get Contact Sequence Activity",
+      "summary": "Get contact sequence activity",
       "request_media": [
         "application/json"
       ],
@@ -5126,7 +5265,7 @@
       "operation_id": "sequence.activate",
       "vendor_operation_id": "approve-sequence",
       "tag": "Sequences",
-      "summary": "Activate a Sequence",
+      "summary": "Activate a sequence",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5165,7 +5304,7 @@
       "operation_id": "sequence.deactivate",
       "vendor_operation_id": "abort-sequence",
       "tag": "Sequences",
-      "summary": "Deactivate a Sequence",
+      "summary": "Deactivate a sequence",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5204,7 +5343,7 @@
       "operation_id": "sequence.archive",
       "vendor_operation_id": "archive-sequence",
       "tag": "Sequences",
-      "summary": "Archive a Sequence",
+      "summary": "Archive a sequence",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5242,7 +5381,7 @@
       "operation_id": "note.search",
       "vendor_operation_id": "get-a-list-of-notes",
       "tag": "Miscellaneous",
-      "summary": "Get a List of Notes",
+      "summary": "Get a list of notes",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5368,7 +5507,7 @@
       "operation_id": "analytics.report",
       "vendor_operation_id": "sync-report",
       "tag": "Analytics",
-      "summary": "Query Analytics Report",
+      "summary": "Query analytics report",
       "request_media": [
         "application/json"
       ],
@@ -5452,7 +5591,7 @@
       "operation_id": "conversation.search",
       "vendor_operation_id": "search-conversations",
       "tag": "Conversations",
-      "summary": "Search Conversations",
+      "summary": "Search conversations",
       "request_media": [
         "application/json"
       ],
@@ -5553,7 +5692,7 @@
       "operation_id": "conversation.read",
       "vendor_operation_id": "get-conversations-info",
       "tag": "Conversations",
-      "summary": "Get Conversations Info",
+      "summary": "Get conversations info",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -5626,7 +5765,7 @@
       "operation_id": "conversation.export.create",
       "vendor_operation_id": "export-conversations",
       "tag": "Conversations",
-      "summary": "Export Conversations",
+      "summary": "Export conversations",
       "request_media": [
         "application/json"
       ],
@@ -5674,7 +5813,7 @@
       "operation_id": "conversation.export.read",
       "vendor_operation_id": "get-conversations-export",
       "tag": "Conversations",
-      "summary": "Get Conversations Export",
+      "summary": "Get conversations export",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -7934,6 +8073,31 @@
           "affects_target": true
         },
         {
+          "key": "query.organization_headcount_growth_past_n_months",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_headcount_growth_range[min]",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_headcount_growth_range[max]",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.lookalike_organization_ids[]",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.not_organization_websites_list[]",
+          "type": "array",
+          "affects_target": true
+        },
+        {
           "key": "query.page",
           "type": "number"
         },
@@ -8238,6 +8402,11 @@
           "affects_target": true
         },
         {
+          "key": "query.poll_only",
+          "type": "boolean",
+          "affects_target": true
+        },
+        {
           "key": "body.details",
           "type": "array",
           "required": true,
@@ -8310,6 +8479,11 @@
           "key": "query.reveal_personal_emails",
           "type": "boolean",
           "affects_target": true
+        },
+        {
+          "key": "query.poll_only",
+          "type": "boolean",
+          "affects_target": true
         }
       ],
       "body_mode": "none",
@@ -8361,6 +8535,11 @@
         },
         {
           "key": "query.q_keywords",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.q_person_name",
           "type": "string",
           "affects_target": true
         },
@@ -8452,6 +8631,31 @@
         {
           "key": "query.organization_job_posted_at_range[max]",
           "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_headcount_growth_past_n_months",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_headcount_growth_range[min]",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_headcount_growth_range[max]",
+          "type": "number",
+          "affects_target": true
+        },
+        {
+          "key": "query.lookalike_organization_ids[]",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.not_organization_websites_list[]",
+          "type": "array",
           "affects_target": true
         },
         {
@@ -8933,6 +9137,11 @@
           "affects_target": true
         },
         {
+          "key": "body.sharing_permission",
+          "type": "object",
+          "affects_target": true
+        },
+        {
           "key": "body.user_id",
           "type": "string",
           "affects_target": true
@@ -9316,6 +9525,21 @@
         "application/json"
       ],
       "result_path": "task",
+      "pagination": null,
+      "credit_consuming": false,
+      "compatibility": false
+    },
+    "usage.credit.read": {
+      "official_route": "POST /usage_stats/credit_usage_stats",
+      "method": "POST",
+      "path": "/api/v1/usage_stats/credit_usage_stats",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "args": [],
+      "body_mode": "none",
+      "request_media": [],
+      "result_path": null,
       "pagination": null,
       "credit_consuming": false,
       "compatibility": false

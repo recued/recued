@@ -2,7 +2,7 @@
   "_extract": {
     "note": "paths-only extract of the pinned official document, VERBATIM. crossCheckCatalogOpenApi reads only `paths` and each path-item's method keys, so this proves exactly what the publish op-prover proves. ⛔ Path keys are the document's OWN keys — do NOT rewrite them to match a pack's wire paths (an earlier revision of this file applied the server base path to the keys, which made this test pass while the REAL pin still failed at publish; the pack now declares a path_alias instead).",
     "url": "https://developer.atlassian.com/cloud/confluence/openapi-v2.json",
-    "sha256": "145fc22be9184b41a7619585f065fe927519a733df37cb9b0c447e6c1d818f79",
+    "sha256": "a076001eb2abc1eb5e3e151b6966ddc30c7761c80ad4393a4db854867b48d644",
     "bytes": 973055,
     "openapi": "3.0.3",
     "path_count": 151,

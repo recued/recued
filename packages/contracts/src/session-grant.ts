@@ -223,8 +223,17 @@ export interface SessionGrantDefaults {
 }
 
 /** D-177 P3/P4 — the N.6 `('chat', 'user_self')` seed values: conservative
- *  starting bounds (1 h TTL, 5 uses, write+admin grantable — `destructive` is
- *  never session-grantable, D7). Since P4 these live ON the seeded
+ *  starting bounds (1 h TTL, 5 uses, read+write+admin grantable — `destructive` is
+ *  never session-grantable, D7).
+ *  ⚠ THIS SAID "write+admin grantable" UNTIL 2026-09-24, one line above a value that
+ *  already read `['read', 'write', 'admin']`. D-211 Slice 3 added `read` so an explicitly
+ *  held read — one at `approval: 'ask'`, such as a command-line tool read or an owner's
+ *  override (a `sensitive-read` was one until 2026-09-25) — could occupy the session
+ *  rung, and the prose beside it was not updated. A reader asking "can a sensitive read be
+ *  session-granted?" would have been told no by the comment and yes by the constant.
+ *  ⚠ The ATTENDED cells below grant reads; `(reception,…)`, `(schedule, system)` and
+ *  `(reactive, system)` are `['write']` only, so a read held at `ask` inside cron or reactive
+ *  automation holds every run and no session grant can absorb it. Since P4 these live ON the seeded
  *  `('chat','user_self')` cell (`BASELINE_POLICY_MATRIX_CELLS` references this
  *  constant, so seed and fallback can never drift). Doubles as the FLOOR the
  *  store's put-path guard enforces: a runtime cell edit may tighten below

@@ -124,6 +124,16 @@ export const CONFIDENCE_DRIFT_AUTHORED_BY = 'system.housekeeping.confidence_drif
 /** Topic key for the drift signal itself. */
 export const CONFIDENCE_DRIFT_TOPIC: EnrichmentTopic = 'confidence_drift_signal';
 
+/** Prefix of the derived-entity id: one row per source topic, keyed
+ *  `drift_<source_topic>`.
+ *
+ *  🔑 Exported because it stopped being this module's private business the
+ *  moment something else had to address the same row — D-285's read and its
+ *  follow-up's dismissal write. It was a bare literal in the two places below;
+ *  a third copy in another file is how the reader and the writer quietly stop
+ *  meaning the same row. */
+export const DRIFT_DERIVED_ID_PREFIX = 'drift_';
+
 // ────────────────────────────────────────────────────────────────
 // Internal types
 // ────────────────────────────────────────────────────────────────
@@ -276,7 +286,7 @@ const readPriorDriftSignal = (
   ctx: HousekeepingContext,
   source_topic: string,
 ): ConfidenceDriftSignal | null => {
-  const real = ctx.enrichmentStore.getDerived(CONFIDENCE_DRIFT_TOPIC, `drift_${source_topic}`);
+  const real = ctx.enrichmentStore.getDerived(CONFIDENCE_DRIFT_TOPIC, `${DRIFT_DERIVED_ID_PREFIX}${source_topic}`);
   if (!real) return null;
   return real.value as ConfidenceDriftSignal;
 };
@@ -287,7 +297,7 @@ const upsertDriftSignal = (
 ): void => {
   ctx.enrichmentStore.upsert({
     topic: CONFIDENCE_DRIFT_TOPIC,
-    derived_entity_id: `drift_${signal.source_topic}`,
+    derived_entity_id: `${DRIFT_DERIVED_ID_PREFIX}${signal.source_topic}`,
     value: signal,
     authored_by: CONFIDENCE_DRIFT_AUTHORED_BY,
     event_at: signal.computed_at,

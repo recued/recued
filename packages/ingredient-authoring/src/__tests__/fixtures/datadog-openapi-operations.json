@@ -90,21 +90,21 @@
     },
     "composition_bytes": {
       "datadog": 17239,
-      "datadog-v1-observability": 99218,
-      "datadog-v1-platform-integrations": 86816,
-      "datadog-v2-observability": 63705,
-      "datadog-v2-catalog-dashboards": 57397,
-      "datadog-v2-telemetry-data": 40870,
-      "datadog-v2-synthetics-rum": 76957,
-      "datadog-v2-incidents-cases-oncall": 77755,
-      "datadog-v2-security-monitoring": 80219,
-      "datadog-v2-appsec-csm": 51566,
-      "datadog-v2-identity-access-1": 87623,
-      "datadog-v2-identity-access-2": 7770,
-      "datadog-v2-org-governance": 35792,
-      "datadog-v2-cloud-integrations": 43671,
-      "datadog-v2-collaboration-integrations": 57419,
-      "datadog-v2-finops-usage": 57818,
+      "datadog-v1-observability": 99244,
+      "datadog-v1-platform-integrations": 86878,
+      "datadog-v2-observability": 63717,
+      "datadog-v2-catalog-dashboards": 57405,
+      "datadog-v2-telemetry-data": 40890,
+      "datadog-v2-synthetics-rum": 77029,
+      "datadog-v2-incidents-cases-oncall": 77773,
+      "datadog-v2-security-monitoring": 80287,
+      "datadog-v2-appsec-csm": 51594,
+      "datadog-v2-identity-access-1": 87701,
+      "datadog-v2-identity-access-2": 7772,
+      "datadog-v2-org-governance": 35822,
+      "datadog-v2-cloud-integrations": 43711,
+      "datadog-v2-collaboration-integrations": 57479,
+      "datadog-v2-finops-usage": 57886,
       "datadog-v2-automation-platform": 71536,
       "datadog-v1-network-ranges": 894,
       "datadog-v2-event-intake": 1957,
@@ -160,13 +160,12 @@
     "file_response_operation_count": 2,
     "sensitive_read_operation_count": 296,
     "policy_counts": {
-      "read/never/safe": 172,
+      "read/never/safe": 468,
       "write/ask/non_idempotent": 2,
       "admin/always/idempotent": 181,
       "admin/always/non_idempotent": 200,
       "destructive/always/idempotent": 167,
-      "destructive/always/non_idempotent": 17,
-      "read/ask/safe": 296
+      "destructive/always/non_idempotent": 17
     },
     "compatibility_operation_ids": [
       "auth.validate",
@@ -27762,7 +27761,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -27802,7 +27801,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -27840,7 +27839,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -27907,7 +27906,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -27956,7 +27955,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -27996,7 +27995,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -28034,7 +28033,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -28101,7 +28100,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -28150,7 +28149,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -28310,7 +28309,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_global_variable_read"
@@ -28583,7 +28582,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -28651,7 +28650,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -28679,7 +28678,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -28717,7 +28716,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -28745,7 +28744,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -28823,7 +28822,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -28993,7 +28992,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -29071,7 +29070,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29109,7 +29108,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29147,7 +29146,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_private_location_read"
@@ -29294,7 +29293,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29332,7 +29331,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29573,7 +29572,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -29603,7 +29602,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29641,7 +29640,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -29690,7 +29689,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -29748,7 +29747,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -29815,7 +29814,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -29891,7 +29890,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -29931,7 +29930,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -29969,7 +29968,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -30007,7 +30006,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -30093,7 +30092,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -30121,7 +30120,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -30149,7 +30148,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -30372,7 +30371,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_global_variable_read"
@@ -30543,7 +30542,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_private_location_read"
@@ -30573,7 +30572,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -30603,7 +30602,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -30631,7 +30630,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-observability",
@@ -30872,7 +30871,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v1-platform-integrations",
@@ -31036,7 +31035,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -31066,7 +31065,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -31573,7 +31572,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -33511,7 +33510,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -33541,7 +33540,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -33571,7 +33570,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_read"
@@ -34346,7 +34345,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read"
@@ -34378,7 +34377,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_write"
@@ -43700,7 +43699,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -43736,7 +43735,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -44281,7 +44280,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -44487,7 +44486,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -44515,7 +44514,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-incidents-cases-oncall",
@@ -44553,7 +44552,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-incidents-cases-oncall",
@@ -44581,7 +44580,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-incidents-cases-oncall",
@@ -44628,7 +44627,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -44666,7 +44665,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -44706,7 +44705,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -44878,7 +44877,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -44916,7 +44915,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -44954,7 +44953,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -44992,7 +44991,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -45068,7 +45067,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -45096,7 +45095,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -45124,7 +45123,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -45152,7 +45151,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -45319,7 +45318,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -45509,7 +45508,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-finops-usage",
@@ -45547,7 +45546,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cases_read"
@@ -45605,7 +45604,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -45643,7 +45642,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -45862,7 +45861,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -45902,7 +45901,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -45942,7 +45941,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -45991,7 +45990,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -46049,7 +46048,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -46089,7 +46088,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_critical_assets_read"
@@ -46213,7 +46212,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -46260,7 +46259,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -46288,7 +46287,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -46326,7 +46325,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -46364,7 +46363,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -46404,7 +46403,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -46453,7 +46452,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read"
@@ -46876,7 +46875,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "billing_read",
@@ -46957,7 +46956,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -47004,7 +47003,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -47180,7 +47179,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -47218,7 +47217,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -47256,7 +47255,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -47303,7 +47302,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -47368,7 +47367,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "billing_read",
@@ -47481,7 +47480,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -47511,7 +47510,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -47596,7 +47595,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read",
@@ -47637,7 +47636,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_invite"
@@ -47756,7 +47755,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -47784,7 +47783,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -47822,7 +47821,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -47860,7 +47859,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -47994,7 +47993,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "monitors_read"
@@ -48222,7 +48221,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "billing_read",
@@ -48263,7 +48262,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -48301,7 +48300,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -48348,7 +48347,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-incidents-cases-oncall",
@@ -48470,7 +48469,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -48508,7 +48507,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -48555,7 +48554,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -48620,7 +48619,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_authorized_apps_read"
@@ -48660,7 +48659,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -48707,7 +48706,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -48745,7 +48744,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -48861,7 +48860,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cases_read"
@@ -48910,7 +48909,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "billing_read",
@@ -48951,7 +48950,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cases_read"
@@ -48981,7 +48980,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cases_read"
@@ -49124,7 +49123,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_filters_read"
@@ -49164,7 +49163,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -49211,7 +49210,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -49249,7 +49248,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -49336,7 +49335,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -49364,7 +49363,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -49402,7 +49401,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -49440,7 +49439,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -49468,7 +49467,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -49506,7 +49505,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -49571,7 +49570,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -49789,7 +49788,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_filters_read"
@@ -49829,7 +49828,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_critical_assets_read"
@@ -49869,7 +49868,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read"
@@ -49909,7 +49908,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_signals_read"
@@ -49949,7 +49948,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_read"
@@ -50034,7 +50033,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -50081,7 +50080,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -50128,7 +50127,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -50255,7 +50254,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -50293,7 +50292,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -50321,7 +50320,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -50368,7 +50367,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -50406,7 +50405,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-observability",
@@ -50483,7 +50482,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -50521,7 +50520,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read",
@@ -50554,7 +50553,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_read"
@@ -50594,7 +50593,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_read"
@@ -50652,7 +50651,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_read"
@@ -50719,7 +50718,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -50759,7 +50758,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -50797,7 +50796,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -50837,7 +50836,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -50877,7 +50876,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -50944,7 +50943,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -51011,7 +51010,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -51089,7 +51088,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -51129,7 +51128,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51169,7 +51168,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51218,7 +51217,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51258,7 +51257,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51329,7 +51328,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51378,7 +51377,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51418,7 +51417,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51505,7 +51504,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51545,7 +51544,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -51585,7 +51584,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -51623,7 +51622,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -51663,7 +51662,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -51777,7 +51776,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -51807,7 +51806,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -51837,7 +51836,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "usage_read"
@@ -51877,7 +51876,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -51917,7 +51916,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "built_in_features"
@@ -51957,7 +51956,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_manage"
@@ -51997,7 +51996,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -52140,7 +52139,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -52168,7 +52167,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -52340,7 +52339,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -52645,7 +52644,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -52821,7 +52820,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -52849,7 +52848,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -52877,7 +52876,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -52905,7 +52904,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -53127,7 +53126,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -53228,7 +53227,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-security-monitoring",
@@ -53306,7 +53305,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -53418,7 +53417,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -53446,7 +53445,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -53474,7 +53473,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -53502,7 +53501,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -53667,7 +53666,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-finops-usage",
@@ -53790,7 +53789,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_service_catalog_read"
@@ -53852,7 +53851,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_service_catalog_read"
@@ -53941,7 +53940,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_service_catalog_read"
@@ -54131,7 +54130,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -54440,7 +54439,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54470,7 +54469,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54500,7 +54499,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54530,7 +54529,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54570,7 +54569,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54619,7 +54618,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54695,7 +54694,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54725,7 +54724,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -54763,7 +54762,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -54855,7 +54854,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -54883,7 +54882,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54913,7 +54912,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -54998,7 +54997,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -55562,7 +55561,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -55600,7 +55599,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -55788,7 +55787,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -55839,7 +55838,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -55869,7 +55868,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -55907,7 +55906,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -55935,7 +55934,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_management"
@@ -56024,7 +56023,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_management"
@@ -56103,7 +56102,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -56171,7 +56170,7 @@
       "pagination": null,
       "pagination_transport_gap": "The request uses literal body_raw to preserve nested int64 values, and body_raw takes precedence over paginator-injected body fields. Pass the next cursor in the literal JSON body explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -56199,7 +56198,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -56227,7 +56226,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -56351,7 +56350,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-telemetry-data",
@@ -56585,7 +56584,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -56613,7 +56612,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -56641,7 +56640,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -56679,7 +56678,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -56766,7 +56765,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_authorized_apps_read"
@@ -56864,7 +56863,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_authorized_apps_read"
@@ -56894,7 +56893,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -56959,7 +56958,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_connections_read"
@@ -56999,7 +56998,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "org_connections_write",
@@ -57040,7 +57039,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57068,7 +57067,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -57144,7 +57143,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -57434,7 +57433,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57546,7 +57545,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57584,7 +57583,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -57660,7 +57659,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -57736,7 +57735,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -57816,7 +57815,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57844,7 +57843,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57909,7 +57908,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -57965,7 +57964,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -58021,7 +58020,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -58113,7 +58112,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -58141,7 +58140,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -58169,7 +58168,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -58703,7 +58702,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_filters_read"
@@ -58733,7 +58732,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_filters_read"
@@ -58795,7 +58794,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_findings_read"
@@ -58825,7 +58824,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_critical_assets_read"
@@ -58892,7 +58891,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_read"
@@ -58972,7 +58971,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_signals_read"
@@ -59039,7 +59038,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_read"
@@ -59115,7 +59114,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -59207,7 +59206,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -59298,7 +59297,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59336,7 +59335,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59364,7 +59363,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59392,7 +59391,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59430,7 +59429,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59468,7 +59467,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59498,7 +59497,7 @@
       "pagination": null,
       "pagination_transport_gap": "The request uses literal body_raw to preserve nested int64 values, and body_raw takes precedence over paginator-injected body fields. Pass the next cursor in the literal JSON body explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_read"
@@ -59578,7 +59577,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_read"
@@ -59608,7 +59607,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-observability",
@@ -59636,7 +59635,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-appsec-csm",
@@ -59731,7 +59730,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -59823,7 +59822,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -59872,7 +59871,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -59964,7 +59963,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -60022,7 +60021,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -60327,7 +60326,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -60357,7 +60356,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -60559,7 +60558,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -60621,7 +60620,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -60710,7 +60709,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "teams_read"
@@ -60750,7 +60749,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-cloud-integrations",
@@ -60797,7 +60796,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -60866,7 +60865,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "built_in_features"
@@ -60991,7 +60990,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-1",
@@ -61029,7 +61028,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -61109,7 +61108,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "user_access_read"
@@ -61341,7 +61340,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-collaboration-integrations",
@@ -61751,7 +61750,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -61781,7 +61780,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "apm_service_catalog_read"
@@ -62676,7 +62675,7 @@
       "pagination": null,
       "pagination_transport_gap": "The request uses literal body_raw to preserve nested int64 values, and body_raw takes precedence over paginator-injected body fields. Pass the next cursor in the literal JSON body explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-org-governance",
@@ -62745,7 +62744,7 @@
       },
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cases_read"
@@ -62945,7 +62944,7 @@
       "pagination": null,
       "pagination_transport_gap": "The request uses literal body_raw to preserve nested int64 values, and body_raw takes precedence over paginator-injected body fields. Pass the next cursor in the literal JSON body explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-synthetics-rum",
@@ -62975,7 +62974,7 @@
       "pagination": null,
       "pagination_transport_gap": "The request uses literal body_raw to preserve nested int64 values, and body_raw takes precedence over paginator-injected body fields. Pass the next cursor in the literal JSON body explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_findings_read"
@@ -63007,7 +63006,7 @@
       "pagination": null,
       "pagination_transport_gap": "The provider cursor is nested inside a JSON request object, while the current REST paginator can replay only a top-level body field without changing its wire shape. Pass the next cursor inside the structured body object explicitly; automatic completeness is not claimed.",
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_signals_read"
@@ -63083,7 +63082,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "synthetics_read"
@@ -63671,7 +63670,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_write"
@@ -63703,7 +63702,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_write"
@@ -69722,7 +69721,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-identity-access-2",
@@ -69752,7 +69751,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-finops-usage",
@@ -69780,7 +69779,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [],
       "pack": "datadog-v2-finops-usage",
@@ -69840,7 +69839,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "cloud_cost_management_read"
@@ -69872,7 +69871,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_rules_write"
@@ -69904,7 +69903,7 @@
       "pagination": null,
       "pagination_transport_gap": null,
       "risk": "read",
-      "approval": "ask",
+      "approval": "never",
       "idempotency": "safe",
       "required_scopes": [
         "security_monitoring_suppressions_write"

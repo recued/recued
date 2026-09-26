@@ -327,6 +327,22 @@ describe('D-232 § 21 — unreachable vs refused', () => {
     }
   });
 
+  /** D-313: a server handler behind a kernel op refuses with an rpc code, and
+   *  the step runner now names it. Every one of these was `NETWORK_ERROR`, so an
+   *  asker was told to come back later for a refusal, a missing record and a
+   *  missing setup alike. The last row is the control: an unreachable peer. */
+  it.each([
+    ['NOT_AUTHORIZED', 'policy'],
+    ['NOT_FOUND', 'config'],
+    ['NOT_CONFIGURED', 'config'],
+    ['CONFLICT', 'unavailable'],
+    ['SERVER_ERROR', 'unavailable'],
+    ['SERVER_LOCKED', 'unavailable'],
+    ['NETWORK_ERROR', 'unavailable'],
+  ])("⛔ a server handler's %s reads to the asker as %s", (code, kind) => {
+    expect(classifyRunFailure([{ code, message: 'the handler said so' }]).kind).toBe(kind);
+  });
+
   it('only the unreachable one is safe for an unattended retry', () => {
     expect(isRetryableRemoteFailure('unavailable')).toBe(true);
     expect(isRetryableRemoteFailure('error')).toBe(false);

@@ -1,21 +1,21 @@
 {
   "_extract": {
     "note": "Complete reverse-audit extract for the LaunchDarkly six-pack suite. It admits all official method/path operations except two multipart CSV uploads that the current REST binding cannot represent safely.",
-    "generated_at": "2026-07-14",
+    "generated_at": "2026-09-25",
     "source": {
       "kind": "openapi",
       "url": "https://app.launchdarkly.com/api/v2/openapi.json",
-      "sha256": "e1aeb1530d89d7976da82205ee7ed4c2f06555bbf4a9318029777e05816b640e",
-      "bytes": 2986052,
+      "sha256": "49c294be14988ab80fbb6130725318a240e82996442750223b4dff1dea7749e3",
+      "bytes": 3003831,
       "openapi": "3.0.3",
       "info_version": "2.0"
     },
-    "official_operation_count": 403,
-    "admitted_operation_count": 398,
+    "official_operation_count": 404,
+    "admitted_operation_count": 399,
     "excluded_operation_count": 5,
-    "unique_admitted_method_path_count": 398,
+    "unique_admitted_method_path_count": 399,
     "method_counts": {
-      "GET": 194,
+      "GET": 195,
       "POST": 86,
       "PUT": 13,
       "PATCH": 58,
@@ -26,18 +26,18 @@
       "launchdarkly-agent-control": 60,
       "launchdarkly-flags-targeting": 62,
       "launchdarkly-release-experiment": 93,
-      "launchdarkly-insights-usage": 82,
+      "launchdarkly-insights-usage": 83,
       "launchdarkly-platform-admin": 90
     },
-    "beta_operation_count": 134,
+    "beta_operation_count": 135,
     "pagination_counts": {
       "offset": 45,
       "next_path": 1,
       "query_token": 4,
       "query_token_link": 5,
-      "none": 343
+      "none": 344
     },
-    "unpaged_collection_count": 51,
+    "unpaged_collection_count": 52,
     "unpaged_collections": [
       {
         "pack": "launchdarkly",
@@ -293,6 +293,13 @@
       },
       {
         "pack": "launchdarkly-insights-usage",
+        "op": "get_data_export_project_ranking",
+        "method": "GET",
+        "path": "/api/v2/usage/data-export-events/projects/ranking",
+        "result_path": "items"
+      },
+      {
+        "pack": "launchdarkly-insights-usage",
         "op": "get_deployment_frequency_chart",
         "method": "GET",
         "path": "/api/v2/engineering-insights/charts/deployments/frequency",
@@ -405,8 +412,8 @@
     "response_media": [
       "application/json"
     ],
-    "unsafe_integer_response_operation_count": 226,
-    "unsafe_integer_response_occurrence_count": 1053,
+    "unsafe_integer_response_operation_count": 227,
+    "unsafe_integer_response_occurrence_count": 1057,
     "unsafe_integer_request_operation_count": 18,
     "compatibility_operation_ids": [
       "project.search",
@@ -1116,6 +1123,9 @@
       "delete": {}
     },
     "/api/v2/tags": {
+      "get": {}
+    },
+    "/api/v2/usage/data-export-events/projects/ranking": {
       "get": {}
     },
     "/api/v2/projects/{projectKey}/ai-configs/{configKey}/targeting": {
@@ -18536,6 +18546,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -18734,6 +18750,12 @@
             "item_format": null
           },
           "notifyMemberIds": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "notifyTeamKeys": {
             "type": "array",
             "format": null,
             "item_type": "string",
@@ -18987,6 +19009,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -19233,6 +19261,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -19450,6 +19484,12 @@
             "item_format": null
           },
           "notifyMemberIds": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "notifyTeamKeys": {
             "type": "array",
             "format": null,
             "item_type": "string",
@@ -25113,6 +25153,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -25372,6 +25418,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -25579,6 +25631,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -25781,6 +25839,12 @@
             "item_format": null
           },
           "notifyMemberIds": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "notifyTeamKeys": {
             "type": "array",
             "format": null,
             "item_type": "string",
@@ -26080,6 +26144,12 @@
             "item_type": "string",
             "item_format": null
           },
+          "notifyTeamKeys": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
           "appliedDate": {
             "type": "integer",
             "format": "int64",
@@ -26309,6 +26379,12 @@
             "item_format": null
           },
           "notifyMemberIds": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "notifyTeamKeys": {
             "type": "array",
             "format": null,
             "item_type": "string",
@@ -35408,6 +35484,14 @@
           "exposed": true
         },
         {
+          "name": "destinationKind",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
           "name": "groupBy",
           "in": "query",
           "type": "string",
@@ -37776,6 +37860,14 @@
           "exposed": true
         },
         {
+          "name": "destinationKind",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
           "name": "destination",
           "in": "query",
           "type": "string",
@@ -38227,6 +38319,129 @@
       "result_path": "validVersions",
       "pagination": null,
       "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "launchdarkly-insights-usage.get_data_export_project_ranking": {
+      "pack": "launchdarkly-insights-usage",
+      "op": "get_data_export_project_ranking",
+      "operation_id": "getDataExportProjectRanking",
+      "method": "GET",
+      "path": "/api/v2/usage/data-export-events/projects/ranking",
+      "tags": [
+        "Account usage (beta)"
+      ],
+      "summary": "Rank Streaming usage by project",
+      "deprecated": false,
+      "beta": true,
+      "parameters": [
+        {
+          "name": "from",
+          "in": "query",
+          "type": "number",
+          "format": "int64",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "to",
+          "in": "query",
+          "type": "number",
+          "format": "int64",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "source",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "dimension",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "projectKey",
+          "in": "query",
+          "type": "array",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "search",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items",
+          "page",
+          "scope"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "page": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "scope": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 4,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "items",
+      "pagination": null,
+      "api_version": "beta",
       "content_type": null,
       "risk": "read",
       "approval": "never",
@@ -44090,6 +44305,14 @@
           "type": "string",
           "format": "string",
           "required": true,
+          "exposed": true
+        },
+        {
+          "name": "includePending",
+          "in": "query",
+          "type": "boolean",
+          "format": null,
+          "required": false,
           "exposed": true
         }
       ],

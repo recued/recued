@@ -200,6 +200,14 @@ describe('OpenAI adapter', () => {
     expect(body.response_format).toEqual({ type: 'json_object' });
   });
 
+  it('omits json_object for an ARRAY reply even when options.json is set', async () => {
+    // json_object can only return an object; a D-162 batch contract is an array.
+    fetchMock.mockImplementationOnce(mockFetch({ choices: [{ message: { content: '[]' } }] }));
+    await createOpenAIAdapter('openai-compatible').complete(slot, messages, { ...options, json: true, json_shape: 'array' });
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.response_format).toBeUndefined();
+  });
+
   it('omits response_format when options.json is not set', async () => {
     fetchMock.mockImplementationOnce(mockFetch({ choices: [{ message: { content: 'x' } }] }));
     await createOpenAIAdapter().complete(slot, messages, options);

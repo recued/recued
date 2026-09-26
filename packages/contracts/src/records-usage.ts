@@ -22,7 +22,8 @@
  *  a partial roster must not render as "touches nothing".
  */
 
-import { RECORDS_ACTIONS, RISK_TIER_RANK, isRecordsAction, isRiskTier, parseOpId, isRecordsBatchAction } from './index.js';
+import { RECORDS_ACTIONS, RISK_TIER_RANK, isRecordsAction, isRiskTier, parseOpId, isRecordsBatchAction,
+  kernelOpDelivers, kernelOpForBackingSlug, kernelOpIsWatcher, kernelOpRiskTier, kernelOpSpendsPerRun } from './index.js';
 import type { BulkPackManifest, OperationApproval, PackOperationRow, RecordsAction, RecordsBatchAllow, RiskTier } from './index.js';
 
 /** The subset of a `packs.list` row this join needs. The caller maps a
@@ -31,10 +32,11 @@ export interface RecordsUsagePack {
   slug: string;
   publisher: string;
   name: string;
-  /** Absent for an UNINSTALLED pack — `packs.list` forwards a manifest only
-   *  for installed packs (see `PackListEntry.manifest`). A pack with no
-   *  manifest contributes no operations, which is exactly the `unresolved`
-   *  outcome this module already models — not an empty one. */
+  /** Absent until fetched. `packs.list` sends none, for installed packs as
+   *  much as for the rest (see `PackListEntry.manifest`); a pack detail
+   *  backfills it through `packs.resolveBySlug`. A pack with no manifest
+   *  contributes no operations, which is exactly the `unresolved` outcome this
+   *  module already models — not an empty one. */
   manifest?: BulkPackManifest;
 }
 
@@ -114,23 +116,62 @@ export interface RecordsUsageRecipe {
   trigger_steps?: unknown;
 }
 
-const opIdsIn = (steps: unknown): string[] => {
+/** The op id one step runs, or null.
+ *
+ *  An authored step names it (`op`). ⛔ AN INSTALLED STEP NO LONGER DOES: pack
+ *  install LOWERS `<publisher>.<pack>.<operation>` into a call on the pack's
+ *  catalog ingredient — `{ ingredient: <catalog>, input: { operation, args } }`
+ *  — and stores that. Every proof here read only `op`, so on an installed pack
+ *  each read failed closed: `rental-book`, driven live, showed no views and no
+ *  lookups, only eighteen operation buttons.
+ *
+ *  Mapping it back is not a guess about a name. The catalog and the operation
+ *  are exactly what runs, and they resolve to the same op row the authored step
+ *  named. It needs the index's `byCatalog`, which only a caller that can derive
+ *  catalog slugs supplies; without it, or for a catalog it does not map, the
+ *  step resolves to nothing and every proof over it still fails closed.
+ *
+ *  A KERNEL op lowers the same way, onto its backing ingredient —
+ *  `{ ingredient: <backing_slug>, input: <args> }` — and maps back through
+ *  `kernelOpForBackingSlug`. That inverse is exact: the registry asserts at load
+ *  that no two ordinary ops share a backing slug. It is also the reading the
+ *  server's grants already take (`derive-recipe-capability.ts`,
+ *  `execute-handler.ts`), so the proof sees a kernel step exactly as it is
+ *  authorized. Until it did, a lowered `core.data.read` stayed un-analysable and
+ *  an installed pack lost 57 detail pages to operation buttons.
+ *
+ *  ⛔ An ingredient that is BOTH a kernel backing slug and a mapped catalog has
+ *  two readings, so it gets neither and fails closed. */
+const stepOpId = (step: unknown, index?: PackOperationIndex): string | null => {
+  if (step === null || typeof step !== 'object') return null;
+  const row = step as { op?: unknown; ingredient?: unknown; input?: unknown };
+  if (typeof row.op === 'string') return row.op === '' ? null : row.op;
+  if (typeof row.ingredient !== 'string') return null;
+  const kernel = kernelOpForBackingSlug(row.ingredient);
+  const packRef = index?.byCatalog.get(row.ingredient);
+  if (kernel !== undefined) return packRef === undefined ? kernel : null;
+  if (packRef === undefined || row.input === null || typeof row.input !== 'object') return null;
+  const operation = (row.input as { operation?: unknown }).operation;
+  return typeof operation === 'string' && operation !== '' ? `${packRef}.${operation}` : null;
+};
+
+const opIdsIn = (steps: unknown, index?: PackOperationIndex): string[] => {
   if (!Array.isArray(steps)) return [];
   const ids: string[] = [];
   for (const step of steps) {
-    if (step === null || typeof step !== 'object') continue;
-    const op = (step as { op?: unknown }).op;
-    if (typeof op === 'string' && op !== '') ids.push(op);
+    const id = stepOpId(step, index);
+    if (id !== null) ids.push(id);
   }
   return ids;
 };
 
 /** Every op id the recipe names, across all three step arrays, in encounter
- *  order with duplicates kept (the caller dedupes on what it groups by). */
-export const recipeOpIds = (recipe: RecordsUsageRecipe): string[] => [
-  ...opIdsIn(recipe.prefetch_steps),
-  ...opIdsIn(recipe.steps),
-  ...opIdsIn(recipe.trigger_steps),
+ *  order with duplicates kept (the caller dedupes on what it groups by). With
+ *  an index, a step install lowered from a pack op counts as that op. */
+export const recipeOpIds = (recipe: RecordsUsageRecipe, index?: PackOperationIndex): string[] => [
+  ...opIdsIn(recipe.prefetch_steps, index),
+  ...opIdsIn(recipe.steps, index),
+  ...opIdsIn(recipe.trigger_steps, index),
 ];
 
 export interface ResolvedOp {
@@ -154,12 +195,23 @@ export interface ResolvedOp {
  *  is where you build it, and that is visible at the call site. */
 export interface PackOperationIndex {
   readonly byOpId: ReadonlyMap<string, ResolvedOp>;
+  /** Catalog slug → the pack ref (`<publisher>.<slug>`) whose ops it carries,
+   *  so a step install lowered onto that catalog resolves back to its op (see
+   *  `stepOpId`). Empty unless the caller derived it: a Records catalog slug
+   *  is a digest of the pack's owner, computed asynchronously, which this pure
+   *  and synchronous module cannot do. */
+  readonly byCatalog: ReadonlyMap<string, string>;
 }
 
-/** Build the index. Once per roster — reuse it across every recipe. */
+const NO_CATALOGS: ReadonlyMap<string, string> = new Map();
+
+/** Build the index. Once per roster — reuse it across every recipe.
+ *  `catalogs` maps catalog slug → pack ref; pass it wherever the proofs run
+ *  over INSTALLED recipes, whose pack ops install has lowered. */
 export const buildPackOperationIndex = (
   packs: readonly RecordsUsagePack[],
-): PackOperationIndex => ({ byOpId: indexPackOperations(packs) });
+  catalogs: ReadonlyMap<string, string> = NO_CATALOGS,
+): PackOperationIndex => ({ byOpId: indexPackOperations(packs), byCatalog: catalogs });
 
 const indexPackOperations = (
   packs: readonly RecordsUsagePack[],
@@ -229,7 +281,7 @@ export const recipeRecordsUsage = (
     { pack_name: string; entities: Map<string, Set<RecordsAction>> }
   >();
 
-  for (const opId of recipeOpIds(recipe)) {
+  for (const opId of recipeOpIds(recipe, packs)) {
     const parsed = parseOpId(opId);
     if (parsed === null || parsed.tier !== 'pack') continue; // kernel / malformed
     const hit = index.get(opId);
@@ -293,7 +345,7 @@ export const recipeDeclaredOps = (
   let asks = false;
   let resolved = 0;
 
-  for (const opId of recipeOpIds(recipe)) {
+  for (const opId of recipeOpIds(recipe, packs)) {
     const parsed = parseOpId(opId);
     if (parsed === null || parsed.tier !== 'pack') continue;
     const hit = index.get(opId);
@@ -324,8 +376,12 @@ export const recipeDeclaredOps = (
  *  and `guard` are pure, `op` is what the two read-only axes inspect. A step
  *  matching none of them — an `ingredient` step, or a kind added later — is not
  *  understood, and "not understood" cannot be allowed to read as "harmless".
- *  See the header. */
-export const stepsAreAnalysable = (steps: unknown): boolean => {
+ *  See the header.
+ *
+ *  The one `ingredient` step it does understand is a pack op install LOWERED,
+ *  and only when the index maps its catalog back to that op (`stepOpId`); the
+ *  op itself is then judged like any other. */
+export const stepsAreAnalysable = (steps: unknown, index?: PackOperationIndex): boolean => {
   if (steps === undefined || steps === null) return true;
   if (!Array.isArray(steps)) return false;
   return steps.every((step) => {
@@ -333,7 +389,8 @@ export const stepsAreAnalysable = (steps: unknown): boolean => {
     const row = step as Record<string, unknown>;
     return typeof row.transform === 'string'
       || typeof row.op === 'string'
-      || row.guard !== undefined;
+      || row.guard !== undefined
+      || (typeof row.ingredient === 'string' && stepOpId(step, index) !== null);
   });
 };
 
@@ -351,7 +408,14 @@ export const stepsAreAnalysable = (steps: unknown): boolean => {
  *  `recipe.list` row whose body has been trimmed cannot be passed without the
  *  compiler saying so. Consumers of a trimmed row read the server's projected
  *  `provably_read_only` instead — computed HERE, on the server, where the
- *  whole definition is. */
+ *  whole definition is.
+ *
+ *  ⛔⛔ AND THE TYPE WAS NOT ENOUGH, SO THE BODY CHECKS TOO. A cast walks past a
+ *  parameter type, and the webclient's fallback for a row without the server's
+ *  answer did exactly that (`entry.recipe as never`): any trimmed row, a delete
+ *  included, came back read-only and ran as a view (2026-09-24 audit). Every
+ *  recipe has a `steps` array (2,389 of 2,389 in `community/`), so a body
+ *  without one was trimmed, and it proves nothing. */
 export const isProvablyReadOnly = (
   recipe: RecordsUsageRecipe & { steps: unknown },
   roster: PackOperationIndex,
@@ -359,18 +423,69 @@ export const isProvablyReadOnly = (
   const r = recipe as unknown as {
     steps?: unknown; prefetch_steps?: unknown; trigger_steps?: unknown;
   };
+  if (!Array.isArray(r.steps)) return false;
   if (
-    !stepsAreAnalysable(r.steps)
-    || !stepsAreAnalysable(r.prefetch_steps)
-    || !stepsAreAnalysable(r.trigger_steps)
+    !stepsAreAnalysable(r.steps, roster)
+    || !stepsAreAnalysable(r.prefetch_steps, roster)
+    || !stepsAreAnalysable(r.trigger_steps, roster)
   ) {
     return false;
   }
   const declared = recipeDeclaredOps(recipe, roster);
   if (declared.unresolved.length > 0) return false;
   if (declared.risk !== null && declared.risk !== 'read') return false;
+  // ⛔⛔ D-282 — THE KERNEL TIER, WHICH `recipeDeclaredOps` SKIPS BY DESIGN.
+  // Its loop reads `if (parsed.tier !== 'pack') continue`, which is right for
+  // ITS job (the D-221 Records disclosure is about pack ops) and left this
+  // proof — the one that decides a recipe may auto-run as a view, and which
+  // D-282 B4 then re-runs on every data burst — blind to `core.*` entirely.
+  // Measured before the fix: 49 of 396 views contained a kernel op the registry
+  // itself calls `write`, `core.mail.send` among them.
+  for (const opId of recipeOpIds(recipe, roster)) {
+    const parsed = parseOpId(opId);
+    // ⚠ An op id that does not PARSE is skipped by the loop above too, so it
+    // used to buy silence twice over. We cannot prove anything about it.
+    if (parsed === null) return false;
+    if (parsed.tier !== 'kernel') continue;
+    // `null` ⇒ this registry cannot classify it ⇒ fail closed, exactly as an
+    // unresolved pack op does two lines up.
+    if (kernelOpRiskTier(opId) !== 'read') return false;
+    // A `read`-risk op can still DELIVER something (a notification, an approval
+    // request). Nothing that runs unasked may send, so it is not read-only here.
+    if (kernelOpDelivers(opId)) return false;
+    // Nor a watcher: it fetches, drains or arms something, and belongs to an
+    // automation, never a view (the backstop `kernelOpIsWatcher` describes).
+    if (kernelOpIsWatcher(opId)) return false;
+  }
   return recipeRecordsUsage(recipe, roster).every((pack) =>
     pack.entities.every((entity) =>
       !entity.effects.includes('write') && !entity.effects.includes('delete')));
 };
+
+/** D-282 — does one run of this recipe SPEND the owner something?
+ *
+ *  🔑🔑 THE SECOND OF THE TWO QUESTIONS A SURFACE MUST ANSWER BEFORE RUNNING A
+ *  RECIPE NOBODY ASKED FOR. The first is "may I run this without being asked"
+ *  — an EFFECT question, which {@link isProvablyReadOnly} now answers across
+ *  both tiers. This is "may I run it REPEATEDLY without spending", and no risk
+ *  tier can answer it: `core.ai.summarize` is `risk: 'read'` and that is
+ *  correct — it changes nothing — while costing tokens every single time.
+ *  Measured 2026-09-21: 114 of 396 pack views called `core.ai.*`, each of them
+ *  an auto-run on tab selection and, after B4, a re-run on every data burst.
+ *
+ *  A kernel op id is visible in the recipe body alone, so that half needs no
+ *  roster and a client can always compute it.
+ *
+ *  🔑 AND A PACK OP MARKED `spends_per_call` SPENDS TOO (2026-09-25, owner
+ *  decision). The kernel half alone missed every metered vendor API: eight shipped
+ *  views called one (an OpenAI response, Tavily and Exa searches, Wolfram Alpha)
+ *  on every tab switch. That half needs the roster, which the server always has
+ *  (`recipe-list-handler.ts`). Without one, a recipe calling a pack op is not a
+ *  view anyway: its op does not resolve, so `isProvablyReadOnly` refuses it. */
+export const recipeSpendsPerRun = (
+  recipe: RecordsUsageRecipe,
+  roster?: PackOperationIndex,
+): boolean =>
+  recipeOpIds(recipe, roster).some((opId) =>
+    kernelOpSpendsPerRun(opId) || roster?.byOpId.get(opId)?.row.spends_per_call === true);
 

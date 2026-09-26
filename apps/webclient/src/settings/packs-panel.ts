@@ -320,6 +320,7 @@
 import type {
   BulkPackInstallResultLike,
   BulkPackManifest,
+  PackContentRef,
   BulkPackUninstallResultLike,
   ConnectionRequirement,
   EndpointCandidate,
@@ -327,6 +328,7 @@ import type {
   InstallAudienceSelection,
   InstallGrantSelection,
   InstallScopeWho,
+  PackDependencyInstallScope,
   PackListEntry,
   PacksResolveResult,
   PackServiceKind,
@@ -368,7 +370,6 @@ import {
   INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
   INSTALL_GRANT_SCOPE_OPTION_ATTR,
   installAudienceFromLegacyScope,
-  installGrantModelFromManifest,
   resolveInstallAudienceSelection,
   type InstallAudienceOption,
   type InstallGrantPickerModel,
@@ -398,12 +399,15 @@ import {
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_PERMISSION_ATTR,
   PACKS_DIALOG_SLUG_ATTR,
+  dependencyPacksToChoose,
+  installDialogGrantModel,
   installFailureCopy,
   renderPacksInstallDialog,
+  resolveDependencyAccess,
   resolveInstallDialogAccess,
   resolveInstallDialogAudience,
 } from './packs-install-dialog.js';
-import type { InstallPreview } from './packs-install-dialog.js';
+import type { InstallPreview, InstallWebhookChoice } from './packs-install-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 // Slice C — cross-pack recipe collision detection. Pure function over
 // the panel's `packs` array; recomputed on every render (cheap: bounded
@@ -575,6 +579,8 @@ export {
   PACKS_DIALOG_GRANT_OVERLAP_ITEM_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_OPERATION_DIFF_ATTR,
+  PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR,
@@ -608,6 +614,9 @@ export const PACKS_DETAIL_RESOLVE_RETRY_ATTR =
  *  failure must not silently remove the Use surface or retry in a loop. */
 export const PACKS_DETAIL_RECIPES_STATUS_ATTR =
   'data-recued-packs-detail-recipes-status';
+/** D-289 — the pack's declared saved-view list. */
+export const PACKS_DETAIL_SAVED_VIEWS_ATTR =
+  'data-recued-packs-detail-saved-views';
 export const PACKS_DETAIL_RECIPES_ERROR_ATTR =
   'data-recued-packs-detail-recipes-error';
 export const PACKS_DETAIL_RECIPES_RETRY_ATTR =
@@ -691,6 +700,12 @@ export type PacksInstallCaller = (args: {
    *  section; the install re-sources the grant + binding to it. Omitted when the
    *  pack declares no connection requirement OR the owner chose not to connect. */
   chosen_connection?: string;
+  /** D-295 — one owner-chosen webhook per binding of every pack the install
+   *  touches. Omitted when the preview named none (or could not say). */
+  webhook_bindings?: ReadonlyArray<{ pack_slug: string; binding: string; ingress_id: string }>;
+  /** D-310 — the owner's Access choice for each pack the install brings in.
+   *  Omitted when the preview listed none (or predates D-310). */
+  dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 /** D-145 PA10 follow-on Slice B — `packs.uninstall` caller seam. The
@@ -725,7 +740,36 @@ export type PacksResolveCaller = (input: string) => Promise<PacksResolveResult>;
  *  `packs.install_preview` with an unknown-method rejection. */
 export type PacksInstallPreviewCaller = (args: {
   manifest: unknown;
+  /** D-311 — the pack was resolved from the marketplace and installs by slug:
+   *  the server resolves its recipes and the packs it brings in from there. */
+  marketplace?: boolean;
 }) => Promise<InstallPreview>;
+
+/** D-304 — `packs.uninstall_preview`: what deleting a pack removes with its
+ *  recipes. A rejection (a server predating D-304) means "no line". */
+export type PacksUninstallPreviewCaller = (args: {
+  pack_slug: string;
+}) => Promise<{ schedules: number; automations: number; recipes_with_settings: number }>;
+
+/** D-304 — the Delete confirmation's "also removes …" line. */
+export const PACKS_ROW_DELETE_REMOVES_ATTR = 'data-recued-packs-row-delete-removes';
+
+/** D-304 — "Also removes 2 schedules, 1 automation and the saved settings of 3
+ *  recipes." `null` when nothing goes with the pack's recipes. */
+export const deleteRemovesText = (
+  removes: { schedules: number; automations: number; recipes_with_settings: number },
+): string | null => {
+  const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+  const parts = [
+    ...(removes.schedules > 0 ? [count(removes.schedules, 'schedule', 'schedules')] : []),
+    ...(removes.automations > 0 ? [count(removes.automations, 'automation', 'automations')] : []),
+    ...(removes.recipes_with_settings > 0
+      ? [`the saved settings of ${count(removes.recipes_with_settings, 'recipe', 'recipes')}`] : []),
+  ];
+  if (parts.length === 0) return null;
+  const listed = parts.length === 1 ? parts[0]! : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]!}`;
+  return `Also removes ${listed}.`;
+};
 
 /** Add-a-pack (2026-07-01) — install a resolved marketplace pack BY SLUG. The
  *  consent dialog for an added pack routes here (NOT the by-value
@@ -740,6 +784,10 @@ export type PacksInstallBySlugCaller = (args: {
   install_scope?: InstallGrantSelection;
   /** D-194 2b-2 — see {@link PacksInstallCaller}. */
   chosen_connection?: string;
+  /** D-295 — see {@link PacksInstallCaller}. */
+  webhook_bindings?: ReadonlyArray<{ pack_slug: string; binding: string; ingress_id: string }>;
+  /** D-310 — see {@link PacksInstallCaller}. */
+  dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 export type PacksPanelState = 'loading' | 'ready' | 'error';
@@ -918,6 +966,8 @@ export interface MountPacksPanelOptions {
    *  disclosure + grant-picker tier. Absent ⇒ no disclosure and the flat read
    *  tier; the dialog is fully functional without it. */
   runInstallPreview?: PacksInstallPreviewCaller;
+  /** D-304 — the Delete confirmation's "also removes …". Absent ⇒ no line. */
+  runUninstallPreview?: PacksUninstallPreviewCaller;
 }
 
 export interface PacksPanelMount {
@@ -994,6 +1044,12 @@ export interface PacksPanelMount {
    *  open, an install is in flight, the pack has no grantable model, or the
    *  tier isn't offered for this pack. */
   clickAccessOption(tier: InstallAccessTier): void;
+  /** D-310 — test-only: pick an Access tier for one pack the active dialog's
+   *  install brings in. Same guards as the radio. */
+  clickDependencyAccessOption(packSlug: string, tier: InstallAccessTier): void;
+  /** D-310 — what the active dialog's install will send for the packs it brings
+   *  in (`dependency_install_scopes`), or null when it sends none. */
+  getDialogDependencyScopes(): ReadonlyArray<PackDependencyInstallScope> | null;
   /** D-182 §7.2 / D-196 — test-only: pick a Scope in the active dialog's grant
    *  picker. No-op when no dialog is open, an install is in flight, or the pack
    *  has no grantable model. */
@@ -1060,6 +1116,9 @@ const COPY = {
   retry_label: 'Retry',
   retrying_label: 'Retrying…',
   install_label: 'Install',
+  /** An update that moves the pack's RECIPES at the same pack version — "v1→v1"
+   *  would say nothing changes, and it is not an install. */
+  update_recipes_label: '↑ Update recipes',
   /** Install, while this pack's manifest is still being fetched. */
   install_preparing_label: 'Preparing…',
   /** Shown where the consent dialog will appear, when Install was pressed
@@ -1122,6 +1181,10 @@ const COPY = {
   detail_resolve_error_retry_label: 'Try again',
   detail_unavailable_label: 'This server does not have that Pack.',
   detail_recipes_loading_label: 'Loading what this Pack can do…',
+  // D-289 — pack-shipped saved Data views.
+  saved_views_label: 'saved views',
+  saved_view_label: 'saved view',
+  detail_saved_views_note: 'These appear in Data under “From packs”. The Pack sets their name and settings; you can hide one there.',
   detail_recipes_error_prefix: 'Recued could not load what this Pack can do.',
   detail_access_placeholder:
     'One day you will manage this Pack’s access here. For now, it is set per agreement:',
@@ -1225,6 +1288,9 @@ export const mountPacksPanel = (
   const dialogGrantAudience = new Map<string, InstallAudienceSelection>();
   let customerTierOptions: InstallAudienceOption[] = [];
   let contractAudienceOptions: InstallAudienceOption[] = [];
+  /** D-294 — a customer contract's display label, for the customers an update's
+   *  carried-over audience names one by one. */
+  let customerLabelByContract = new Map<string, string>();
   /** D-194 2b-2 — the owner's EXPLICIT connection pick for the Connect section.
    *  Presence (`has`) means the owner touched the picker; the value is their
    *  choice (a connection name, or `undefined` = "don't connect now"). ABSENT ⇒
@@ -1232,6 +1298,11 @@ export const mountPacksPanel = (
    *  fresh from the (async-loaded) candidate list, so a pre-select appears once
    *  the connection list loads without clobbering an explicit later choice. */
   const dialogChosenConnection = new Map<string, string | undefined>();
+  /** D-295 — the owner's webhook picks for the open dialog: choice key → ingress. */
+  const dialogWebhookPicks = new Map<string, Map<string, string>>();
+  /** D-310 — the owner's Access pick for each pack the open dialog's install
+   *  brings in: pack slug → (brought-in pack slug → tier). Absent ⇒ Read only. */
+  const dialogDependencyAccess = new Map<string, Map<string, InstallAccessTier>>();
   /** D-194 2b-2 — whether the Connect section's "Use a different account" list is
    *  expanded for a slug. Cleared on dialog close alongside the picks. */
   const dialogConnectExpanded = new Set<string>();
@@ -1243,6 +1314,8 @@ export const mountPacksPanel = (
     dialogGrantAudience.delete(slug);
     dialogChosenConnection.delete(slug);
     dialogConnectExpanded.delete(slug);
+    dialogWebhookPicks.delete(slug);
+    dialogDependencyAccess.delete(slug);
   };
   /** D-247 D15 — the server-resolved install preview, cached against the
    *  MANIFEST OBJECT it was derived from rather than the slug alone. A detail
@@ -1289,13 +1362,23 @@ export const mountPacksPanel = (
     void (async () => {
       let preview: InstallPreview;
       try {
-        preview = await run({ manifest });
+        // D-311 — a pack resolved from the marketplace installs by slug, from the
+        // marketplace; its preview must resolve from there too, or on a deployed
+        // server (which bundles only its foundation packs) it lists nothing it brings in.
+        preview = await run({ manifest, ...(pendingAddEntry?.slug === slug ? { marketplace: true } : {}) });
       } catch {
         preview = { resolved: false, will_enable: [], hidden_count: 0 };
       }
       if (installPreviewInFlight === slug) installPreviewInFlight = null;
       if (disposed) return;
       dialogInstallPreview.set(slug, { manifest, preview });
+      // D-305 — the dialog usually opens before this lands (it is what asks). What
+      // the packs it brings in need joins the selection now, default-checked like
+      // the pack's own.
+      if (dialogOpenFor === slug) {
+        const selection = dialogPermissions.get(slug);
+        for (const dependency of preview.dependency_requires ?? []) selection?.add(dependency.permission);
+      }
       render();
     })();
   };
@@ -1318,6 +1401,8 @@ export const mountPacksPanel = (
    *  because only one Delete strip is open at a time (DD#9), so a
    *  single string is enough. */
   let deleteError: string | null = null;
+  /** D-304 — what the open Delete confirmation removes with the pack, once known. */
+  let deleteRemoves: { slug: string; text: string } | null = null;
   /** In-flight uninstall promise — lets `clickConfirmDelete` await the
    *  same rpc the Confirm button fires. */
   let pendingUninstallPromise: Promise<void> | null = null;
@@ -1408,8 +1493,18 @@ export const mountPacksPanel = (
     appViewSlug = null;
   };
 
+  /** The pack's app, or null while it cannot be classified yet.
+   *
+   *  ⛔ NOT ANSWERED UNTIL BOTH HALVES ARE IN HAND: the installed recipes AND
+   *  the manifest, which `packs.list` never sends, so `ensureDetailResolved`
+   *  backfills it. Classifying without it answered "this pack ships nothing",
+   *  and the deep-link collapse below took that for an answer. Measured on a
+   *  booted server: a reloaded `#packs/rental-book/use/show-building/<id>` was
+   *  discarded at 3.3 s, the manifest landed at 8.3 s, and the Use tab opened on
+   *  its first view. */
   const appSurfaceFor = (pack: PackListEntry): PackAppSurface | null => {
-    if (installedRecipes === null) return null;
+    const manifest = pack.manifest;
+    if (installedRecipes === null || manifest === undefined) return null;
     if (
       surfaceMemo !== null
       && surfaceMemo.pack === pack
@@ -1422,7 +1517,7 @@ export const mountPacksPanel = (
     // already guarded the classification, so the panel's cost is unchanged:
     // one build per (pack, installed, packs) miss, exactly as before.
     const value = packAppSurface(
-      pack, buildPackAppIndex(installedRecipes, rosterForUsage(packs)),
+      { ...pack, manifest }, buildPackAppIndex(installedRecipes, rosterForUsage(packs)),
     );
     surfaceMemo = { pack, installed: installedRecipes, packs, value };
     return value;
@@ -1544,6 +1639,10 @@ export const mountPacksPanel = (
     ownerOperationReview?: PackListEntry['owner_operation_review'],
     recordsReview?: PackListEntry['records_review'],
     manifestReviewHash?: string,
+    operationDiff?: PackListEntry['operation_diff'],
+    currentAccess?: PackListEntry['current_access'],
+    currentAudience?: PackListEntry['current_audience'],
+    currentConnection?: PackListEntry['current_connection'],
   ): PackListEntry => ({
     slug: manifest.slug,
     publisher: manifest.publisher,
@@ -1567,6 +1666,10 @@ export const mountPacksPanel = (
     ...(manifestReviewHash !== undefined
       ? { manifest_review_hash: manifestReviewHash }
       : {}),
+    ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
+    ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
+    ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
+    ...(currentConnection !== undefined ? { current_connection: currentConnection } : {}),
   });
 
   /** Detail-only — resolve a marketplace pack whose manifest isn't bundled (so
@@ -1579,11 +1682,12 @@ export const mountPacksPanel = (
   const ensureDetailResolved = (slug: string, retry = false): void => {
     if (opts.runResolvePack === undefined) return;
     // ⛔ Was `packs.some(...)` — skip anything already listed. That held while
-    // `packs.list` forwarded EVERY manifest; it no longer does (installed only,
-    // see `PackListEntry.manifest`). A listed-but-uninstalled bundled pack now
-    // arrives WITHOUT one, and its detail + install consent need it — so resolve
-    // exactly those. `packs.resolveBySlug` reads the server's own bundled copy
-    // first, so this is a local read, not a marketplace round-trip.
+    // `packs.list` forwarded EVERY manifest; it now forwards NONE, installed or
+    // not (see `PackListEntry.manifest` — this comment said "installed only" for a
+    // while, which hid that an installed pack's Use tab waits on this too). Every
+    // listed pack arrives without one, and its detail, install consent and app
+    // surface need it — so resolve it. `packs.resolveBySlug` reads the server's
+    // own bundled copy first, so this is a local read, not a marketplace round-trip.
     const listed = packs.find((p) => p.slug === slug);
     if (listed !== undefined && listed.manifest !== undefined) return;
     if (pendingAddEntry?.slug === slug) return;
@@ -1631,6 +1735,10 @@ export const mountPacksPanel = (
             result.owner_operation_review,
             result.records_review,
             result.manifest_review_hash,
+            result.operation_diff,
+            result.current_access,
+            result.current_audience,
+            result.current_connection,
           );
           pendingAddManifestHash = result.manifest_review_hash ?? null;
           detailResolveError = null;
@@ -1723,6 +1831,10 @@ export const mountPacksPanel = (
           id: tier.tier_id,
           label: `${tier.display_name} (${tier.entitlement_key})`,
         }));
+      customerLabelByContract = new Map(seller.value.customers.map((customer) => [
+        customer.contract_id,
+        customer.email ?? customer.source_customer_id,
+      ]));
     }
     if (contracts.status === 'fulfilled' && contracts.value !== undefined) {
       contractAudienceOptions = contracts.value.contracts
@@ -2293,6 +2405,12 @@ export const mountPacksPanel = (
     // stays in the set even if the user un-toggles other entries via
     // togglePermission's no-op guard.
     const seed = new Set<string>(target.requires);
+    // D-305 — and what the packs it brings in need, default-checked the same way:
+    // the install refuses without them. Only when the preview is already in hand;
+    // otherwise they join when it lands (`ensureInstallPreview`).
+    for (const dependency of installPreviewFor(slug, target.manifest)?.dependency_requires ?? []) {
+      seed.add(dependency.permission);
+    }
     seed.add(ALWAYS_REQUIRED_PERMISSION);
     dialogPermissions.set(slug, seed);
     // D-182 §7.1/§7.2 — authoritative reset of BOTH grant-picker picks (Access +
@@ -2332,7 +2450,11 @@ export const mountPacksPanel = (
   const grantModelFor = (pack: PackListEntry): InstallGrantPickerModel | null =>
     // No manifest ⇒ not installed and not yet resolved; there is no grant model
     // to compute rather than an empty one.
-    pack.manifest === undefined ? null : installGrantModelFromManifest(pack.manifest);
+    // ⛔ The dialog's OWN model — with the preview's per-recipe risk — so a tier
+    // the dialog offers is a tier this panel accepts and sends.
+    pack.manifest === undefined
+      ? null
+      : installDialogGrantModel(pack.manifest, installPreviewFor(pack.slug, pack.manifest));
 
   /** D-182 §7.1 (inc 5b.2) — the Access tier the install rpc will send for a
    *  connection-backed pack. The clamp itself lives with the dialog module
@@ -2341,7 +2463,27 @@ export const mountPacksPanel = (
     slug: string,
     model: InstallGrantPickerModel,
   ): InstallAccessTier =>
-    resolveInstallDialogAccess(dialogGrantAccess.get(slug), model);
+    resolveInstallDialogAccess(dialogGrantAccess.get(slug) ?? updateStartAccess(slug, model), model);
+
+  /** ⛔ AN UPDATE STARTS AT THE ACCESS THE PACK HOLDS NOW (`current_access`),
+   *  never the fresh-install default. An update REPLACES the pack's grants, so
+   *  starting at "Read only" quietly took a "Read + write" pack's writes away the
+   *  moment the owner pressed Update. Clamped to a tier this update offers — and
+   *  only ever DOWN from the current one, never above it. */
+  const updateStartAccess = (
+    slug: string,
+    model: InstallGrantPickerModel | null,
+  ): InstallAccessTier | undefined => {
+    const pack = findPackBySlug(slug);
+    if (pack === undefined || model === null) return undefined;
+    if (pack.installed_any_version !== true || pack.installed) return undefined;
+    if (pack.current_access === undefined) return undefined;
+    const order: readonly InstallAccessTier[] = ['read', 'write', 'all'];
+    const ceiling = order.indexOf(pack.current_access);
+    return [...model.accessOptions]
+      .filter((tier) => order.indexOf(tier) <= ceiling)
+      .sort((a, b) => order.indexOf(b) - order.indexOf(a))[0];
+  };
 
   /** D-182 §7.1 (inc 5b.2) — record the owner's Access-tier pick + re-render.
    *  Validates the tier is one the open pack actually offers (the radio only
@@ -2359,7 +2501,64 @@ export const mountPacksPanel = (
   };
 
   const grantAudienceFor = (slug: string): InstallAudienceSelection =>
-    resolveInstallDialogAudience(dialogGrantAudience.get(slug));
+    resolveInstallDialogAudience(dialogGrantAudience.get(slug) ?? updateStartAudience(slug));
+
+  /** D-310 — pick an Access tier for one pack the open dialog's install brings
+   *  in. Only a pack the list offers a choice for, and only a tier it offers. */
+  const setDependencyAccessInternal = (packSlug: string, tier: InstallAccessTier): void => {
+    if (dialogOpenFor === null || installing) return;
+    const pack = findPackBySlug(dialogOpenFor);
+    if (pack === undefined || pack.manifest === undefined) return;
+    const target = dependencyPacksToChoose(installPreviewFor(pack.slug, pack.manifest))
+      .find((dependency) => dependency.pack_slug === packSlug);
+    if (target === undefined || !target.access_options.includes(tier)) return;
+    const picks = dialogDependencyAccess.get(dialogOpenFor) ?? new Map<string, InstallAccessTier>();
+    picks.set(packSlug, tier);
+    dialogDependencyAccess.set(dialogOpenFor, picks);
+    render();
+  };
+
+  /** D-310 — what the install sends for the packs it brings in: each one the list
+   *  offers a choice for, at the owner's pick (else Read only), shared with the
+   *  people this pack is. `undefined` when the preview listed none, which is also
+   *  what a server that predates D-310 produces: it would ignore the field. */
+  const dependencyInstallScopesFor = (
+    pack: PackListEntry,
+  ): PackDependencyInstallScope[] | undefined => {
+    if (pack.manifest === undefined) return undefined;
+    const choose = dependencyPacksToChoose(installPreviewFor(pack.slug, pack.manifest));
+    if (choose.length === 0) return undefined;
+    const picks = dialogDependencyAccess.get(pack.slug);
+    return choose.map((dependency) => ({
+      pack_slug: dependency.pack_slug,
+      install_scope: {
+        access: resolveDependencyAccess(picks?.get(dependency.pack_slug), dependency),
+        audience: grantAudienceFor(pack.slug),
+      },
+    }));
+  };
+
+  /** ⛔ D-294 — AN UPDATE STARTS AT WHO MAY USE THE PACK NOW (`current_audience`),
+   *  never the fresh-install "only you". An update REPLACES the pack's share, so
+   *  starting at "only you" withdrew it from every customer and agreement it had
+   *  the moment the owner pressed Update. */
+  const updateStartAudience = (slug: string): InstallAudienceSelection | undefined => {
+    const pack = findPackBySlug(slug);
+    if (pack === undefined) return undefined;
+    if (pack.installed_any_version !== true || pack.installed) return undefined;
+    return pack.current_audience;
+  };
+
+  /** The customers an update's carried-over audience names one by one — shown
+   *  under "All customers" so they can be seen and unticked (a customer is
+   *  otherwise chosen only through its package). Known customers ONLY: an
+   *  agreement already appears under "Choose particular agreements", and an id
+   *  neither list knows is never guessed into one. */
+  const carriedCustomerOptions = (slug: string): InstallAudienceOption[] =>
+    (updateStartAudience(slug)?.contract_ids ?? []).flatMap((id) => {
+      const label = customerLabelByContract.get(id);
+      return label === undefined ? [] : [{ id, label }];
+    });
 
   /** D-196 R6 — record the complete independent checklist + re-render. */
   const setGrantAudienceInternal = (audience: InstallAudienceSelection): void => {
@@ -2424,7 +2623,18 @@ export const mountPacksPanel = (
     resolveChosenConnection(
       { touched: dialogChosenConnection.has(slug), pick: dialogChosenConnection.get(slug) },
       candidates,
+      updateStartConnection(slug),
     );
+
+  /** ⛔ D-294 — AN UPDATE STARTS AT THE ACCOUNT THE PACK USES NOW
+   *  (`current_connection`), not the first matching one by name: an update
+   *  re-binds, so an owner with two accounts of one vendor was silently moved. */
+  const updateStartConnection = (slug: string): string | undefined => {
+    const pack = findPackBySlug(slug);
+    if (pack === undefined) return undefined;
+    if (pack.installed_any_version !== true || pack.installed) return undefined;
+    return pack.current_connection;
+  };
 
   /** D-194 2b-2 — record the owner's connection pick (a name, or undefined =
    *  "don't connect now") + re-render. */
@@ -2444,6 +2654,55 @@ export const mountPacksPanel = (
     } else {
       dialogConnectExpanded.add(dialogOpenFor);
     }
+    render();
+  };
+
+  /** D-295 — the webhooks the open install needs chosen, from the install
+   *  preview, each with the pick it will send: the owner's own (while it still
+   *  fits), else the one in use now (an update keeps it), else the only one
+   *  that fits. `undefined` when the preview named none, could not say, or has
+   *  not answered. */
+  const webhookChoicesFor = (
+    pack: PackListEntry & { manifest: BulkPackManifest },
+  ): InstallWebhookChoice[] | undefined => {
+    const plan = installPreviewFor(pack.slug, pack.manifest)?.webhook_plan;
+    if (plan === undefined || plan.length === 0) return undefined;
+    const picks = dialogWebhookPicks.get(pack.slug);
+    return plan.map((entry) => {
+      const key = `${entry.pack_slug}\u0000${entry.binding}`;
+      const fits = (id: string | undefined): id is string =>
+        id !== undefined && entry.candidates.some((candidate) => candidate.ingress_id === id);
+      const own = picks?.get(key);
+      const pick = fits(own)
+        ? own
+        : entry.current?.fits === true && fits(entry.current.ingress_id)
+          ? entry.current.ingress_id
+          : entry.candidates.length === 1
+            ? entry.candidates[0]!.ingress_id
+            : undefined;
+      return { key, entry, pick };
+    });
+  };
+
+  /** D-295 — the pack declares webhooks and the preview has not answered: the
+   *  dialog says so and holds Install, rather than let it be refused. */
+  const webhooksLoadingFor = (pack: PackListEntry & { manifest: BulkPackManifest }): boolean =>
+    (pack.manifest.webhook_requirements?.length ?? 0) > 0
+    && opts.runInstallPreview !== undefined
+    && installPreviewFor(pack.slug, pack.manifest) === undefined;
+
+  /** D-305 — the pack brings other packs in with it and the preview has not said
+   *  what they need: the dialog holds Install, since the install would refuse. */
+  const dependenciesLoadingFor = (pack: PackListEntry & { manifest: BulkPackManifest }): boolean =>
+    (pack.manifest.dependencies?.length ?? 0) > 0
+    && opts.runInstallPreview !== undefined
+    && installPreviewFor(pack.slug, pack.manifest) === undefined;
+
+  const pickWebhookInternal = (key: string, ingressId: string): void => {
+    if (dialogOpenFor === null || installing) return;
+    const picks = dialogWebhookPicks.get(dialogOpenFor) ?? new Map<string, string>();
+    picks.set(key, ingressId);
+    dialogWebhookPicks.set(dialogOpenFor, picks);
     render();
   };
 
@@ -2500,6 +2759,24 @@ export const mountPacksPanel = (
       submittingSlug,
       dialogConnectionCandidates(dialogConnectionRequirement(submittingSlug)),
     );
+    // D-295 — one webhook per binding the preview named. A choice still open
+    // holds the install (the server would refuse it anyway).
+    const webhookChoices = target.manifest !== undefined
+      ? webhookChoicesFor(target as PackListEntry & { manifest: BulkPackManifest })
+      : undefined;
+    if (webhookChoices?.some((choice) => choice.pick === undefined)
+      || (target.manifest !== undefined
+        && webhooksLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))
+      || (target.manifest !== undefined
+        && dependenciesLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))) {
+      return Promise.resolve();
+    }
+    const webhookBindings = webhookChoices?.map((choice) => ({
+      pack_slug: choice.entry.pack_slug,
+      binding: choice.entry.binding,
+      ingress_id: choice.pick!,
+    }));
+    const dependencyScopes = dependencyInstallScopesFor(target);
     installing = true;
     dialogError = null;
     pendingInstallDialogFocus = { kind: 'submit', slug: submittingSlug };
@@ -2522,6 +2799,8 @@ export const mountPacksPanel = (
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
+              ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
+              ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
             })
           : await (opts.runInstall as PacksInstallCaller)({
               manifest: target.manifest,
@@ -2533,6 +2812,8 @@ export const mountPacksPanel = (
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
+              ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
+              ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
             });
         if (disposed) return;
         if (!response.result.ok) {
@@ -2658,10 +2939,22 @@ export const mountPacksPanel = (
     }
     confirmingDeleteFor = slug;
     deleteError = null;
+    deleteRemoves = null;
     pendingUninstallPromise = null;
     pendingDeleteActionFocus = { kind: 'confirm', slug };
     pendingInstallDialogFocus = null;
     render();
+    // D-304 — say what goes with the pack's recipes, once the server has counted.
+    const preview = opts.runUninstallPreview;
+    if (preview !== undefined) {
+      void preview({ pack_slug: slug }).then((removes) => {
+        if (disposed || confirmingDeleteFor !== slug) return;
+        const text = deleteRemovesText(removes);
+        if (text === null) return;
+        deleteRemoves = { slug, text };
+        render();
+      }, () => { /* a server predating D-304: no line */ });
+    }
   };
 
   const cancelDeleteConfirm = (slug: string): void => {
@@ -2863,13 +3156,19 @@ export const mountPacksPanel = (
       document: doc,
       pack,
       ...(installPreview !== undefined ? { installPreview } : {}),
+      ...(dependenciesLoadingFor(pack) ? { permissionsLoading: true } : {}),
+      ...(dialogDependencyAccess.has(pack.slug)
+        ? { dependencyAccessPicks: dialogDependencyAccess.get(pack.slug)! }
+        : {}),
+      onPickDependencyAccess: (packSlug, tier) => setDependencyAccessInternal(packSlug, tier),
       collision,
       grantOverlap,
       selection: dialogPermissions.get(pack.slug) ?? new Set<string>(),
-      accessPick: dialogGrantAccess.get(pack.slug),
-      audiencePick: dialogGrantAudience.get(pack.slug),
+      accessPick: dialogGrantAccess.get(pack.slug) ?? updateStartAccess(pack.slug, grantModelFor(pack)),
+      audiencePick: dialogGrantAudience.get(pack.slug) ?? updateStartAudience(pack.slug),
       customerTierOptions,
       contractOptions: contractAudienceOptions,
+      customerContractOptions: carriedCustomerOptions(pack.slug),
       connectionRequirement,
       connectionCandidates,
       connectionHintSetup,
@@ -2885,6 +3184,14 @@ export const mountPacksPanel = (
       onPickAudience: (audience) => setGrantAudienceInternal(audience),
       onPickConnection: (name) => pickConnectionInternal(name),
       onToggleConnectExpanded: () => toggleConnectExpandedInternal(),
+      ...((): { webhookChoices?: InstallWebhookChoice[]; webhooksLoading?: boolean } => {
+        const choices = webhookChoicesFor(pack);
+        return {
+          ...(choices !== undefined ? { webhookChoices: choices } : {}),
+          ...(webhooksLoadingFor(pack) ? { webhooksLoading: true } : {}),
+        };
+      })(),
+      onPickWebhook: (key, ingressId) => pickWebhookInternal(key, ingressId),
       onSubmit: () => {
         void submitInstall();
       },
@@ -2974,6 +3281,17 @@ export const mountPacksPanel = (
     // PackListEntry derivation), the install dialog's count-based
     // gate would render an empty heading; this surface gates on the
     // actual content so the heading + list always appear together.
+    // D-304 — what goes with the pack's recipes: their schedules, automations and
+    // saved settings. Only once the server has counted, and only when something does.
+    if (showDelete && confirmingDeleteFor === pack.slug && deleteRemoves?.slug === pack.slug) {
+      const removes = doc.createElement('p');
+      removes.className = 'packs-row-delete-removes';
+      removes.setAttribute(PACKS_ROW_DELETE_REMOVES_ATTR, pack.slug);
+      // It arrives after the confirmation opened, so a screen reader is told.
+      removes.setAttribute('role', 'status');
+      removes.textContent = deleteRemoves.text;
+      item.appendChild(removes);
+    }
     const grants = pack.body_visibility_grant_keys;
     const showDeleteBodyGrants =
       showDelete && grants.length > 0 && confirmingDeleteFor === pack.slug;
@@ -3081,11 +3399,24 @@ export const mountPacksPanel = (
           && !pack.installed
           && installedVersion !== undefined
           && installedVersion < pack.version;
+        /** ⛔ THE SAME FALL-THROUGH, ONE CASE OVER. Installed at THIS version yet
+         *  not current means the pack's recipes moved without a pack version bump
+         *  — a records pack's list now offers that as an update review (D-292's
+         *  importers reached no existing owner until it did), and a recipe-bearing
+         *  pack has always read it that way. The dialog already said "Update"; the
+         *  button said "Install". */
+        const isRecipeUpdate =
+          pack.installed_any_version === true
+          && !pack.installed
+          && installedVersion !== undefined
+          && installedVersion === pack.version;
         installBtn.textContent = resolvingThis
           ? COPY.install_preparing_label
           : isUpdate
             ? `↑ Update v${installedVersion}→v${pack.version}`
-            : COPY.install_label;
+            : isRecipeUpdate
+              ? COPY.update_recipes_label
+              : COPY.install_label;
         // ⚠ NOT disabled while resolving. Disabling it swallowed the click —
         // press Install during the fetch and nothing happened, the label flipped
         // back, and you had to press again. `openDialog` does not need the
@@ -3818,8 +4149,39 @@ export const mountPacksPanel = (
           `${pack.body_visibility_grant_count} ${COPY.body_grants_label}`,
         );
       }
+      // D-289 — saved views the pack ships. READ-ONLY here: this surface
+      // answers "what did this Pack add?", and the only control that applies
+      // to a pack view (Hide) belongs where the owner reads it, in Data.
+      //
+      // ⚠ Read off the manifest, which `packs.list` never sends — the detail
+      // backfills it via `ensureDetailResolved` → `packs.resolveBySlug`, so
+      // this is empty until that lands and fills in when it does, exactly
+      // like the other manifest-backed readers in this section.
+      const declaredViews = ((pack.manifest as BulkPackManifest | undefined)?.contents ?? [])
+        .filter((content): content is Extract<PackContentRef, { type: 'saved_view' }> =>
+          content.type === 'saved_view');
+      if (declaredViews.length > 0) {
+        parts.push(`${declaredViews.length} ${declaredViews.length === 1
+          ? COPY.saved_view_label : COPY.saved_views_label}`);
+      }
       counts.textContent = parts.join(' · ');
       declares.appendChild(counts);
+      if (declaredViews.length > 0) {
+        const list = doc.createElement('ul');
+        list.className = 'packs-detail-saved-views';
+        list.setAttribute(PACKS_DETAIL_SAVED_VIEWS_ATTR, '');
+        for (const view of declaredViews) {
+          const row = doc.createElement('li');
+          // textContent, not innerHTML — a pack author names these.
+          row.textContent = view.name;
+          list.appendChild(row);
+        }
+        declares.appendChild(list);
+        const note = doc.createElement('p');
+        note.className = 'packs-detail-note';
+        note.textContent = COPY.detail_saved_views_note;
+        declares.appendChild(note);
+      }
       // Connections readiness — per declared connection, enrolled + scope
       // coverage (null when the pack binds no connection).
       const connSection = connectionsReadiness.renderForPack(pack);
@@ -4203,6 +4565,12 @@ export const mountPacksPanel = (
     },
     togglePermission: (permission) => togglePermissionInternal(permission),
     clickAccessOption: (tier) => setGrantAccessInternal(tier),
+    clickDependencyAccessOption: (packSlug, tier) => setDependencyAccessInternal(packSlug, tier),
+    getDialogDependencyScopes: () => {
+      if (dialogOpenFor === null) return null;
+      const pack = findPackBySlug(dialogOpenFor);
+      return pack === undefined ? null : dependencyInstallScopesFor(pack) ?? null;
+    },
     clickScopeOption: (scope) => setGrantScopeInternal(scope),
     clickConfirmInstall: async () => {
       const b = findBtn(PACKS_DIALOG_INSTALL_BTN_ATTR);
@@ -4471,6 +4839,21 @@ export const PACKS_PANEL_STYLES = `
 [${PACKS_PANEL_ATTR}] .packs-detail-counts {
   font-variant-numeric: tabular-nums;
 }
+/* D-289 — the declared saved-view names. Sized from this panel's own scale,
+   not fresh literals: an unstyled class inside a styled surface renders flush
+   and as bullet points beside neighbours that do not. */
+[${PACKS_PANEL_ATTR}] .packs-detail-saved-views {
+  list-style: none;
+  margin: 6px 0 4px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-saved-views > li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 [${PACKS_PANEL_ATTR}] .packs-detail-desc {
   min-width: 0;
   max-width: 100%;
@@ -4715,6 +5098,80 @@ export const PACKS_PANEL_STYLES = `
   color: var(--fg-muted);
   font-size: 11px;
 }
+[${PACKS_PANEL_ATTR}] .packs-dialog-deps {
+  display: grid;
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
+  margin-top: 8px;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-deps-intro {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-list {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep {
+  box-sizing: border-box;
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunk);
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-note {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-access {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-needs {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-dep-needs-short {
+  padding: 7px 9px;
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: var(--warn-bg);
+  color: var(--fg);
+}
 [${PACKS_PANEL_ATTR}] .packs-dialog-error {
   margin: 0;
   padding: 10px 12px;
@@ -4725,6 +5182,18 @@ export const PACKS_PANEL_STYLES = `
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-warning {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  color: var(--fg);
+  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-actions {
   display: flex;
@@ -4883,7 +5352,10 @@ export const PACKS_PANEL_STYLES = `
 [${PACKS_PANEL_ATTR}] .packs-dialog-recipe-collision {
   color: var(--warn);
 }
-[${PACKS_PANEL_ATTR}] .packs-row-delete-foundation-warn {
+/* D-304 — what goes with the pack's recipes reads as part of the confirmation, the
+ * same way the foundation warning does, not as the pack's own description. */
+[${PACKS_PANEL_ATTR}] .packs-row-delete-foundation-warn,
+[${PACKS_PANEL_ATTR}] .packs-row-delete-removes {
   margin: 0;
   padding: 6px 8px;
   background: var(--warn-bg);

@@ -418,3 +418,113 @@ describe('start-boot-recovery-and-adapters source boundary', () => {
     expect(stripSourceComments(helperSource)).not.toMatch(/logBootBanner|installShutdown/);
   });
 });
+
+/** D-287 follow-on — the torn-saga boot sweep is REACHED, not merely written.
+ *
+ *  ⛔ THE LESSON THIS FILE ENCODES. `runTornSagaSweep` has its own suite, which
+ *  passes whether or not anything calls it — the change-review panel shipped
+ *  exactly that way and was dead on arrival. A disclosure pass nobody invokes
+ *  is worse than none: it reads as covered. */
+describe('startBootRecoveryAndAdapters — torn-saga sweep', () => {
+  const sweepResult = { scanned: 1, raised: 1, suppressed: 0, errored: 0 };
+
+  it('runs the sweep at boot', async () => {
+    const sagaSweep = vi.fn(async () => sweepResult);
+    await startBootRecoveryAndAdapters(makeOptions({ sagaSweep } as never));
+    expect(sagaSweep).toHaveBeenCalledTimes(1);
+  });
+
+  /** ⛔ ORDERING IS THE ONLY COUPLING BETWEEN THE TWO SWEEPS, so it is the one
+   *  thing worth pinning. A commit still in flight when the process died reads
+   *  non-terminal until `sweepPendingToInDoubt` settles it; disclosing first
+   *  would describe a torn run while the fate of one of its writes was still
+   *  unrecorded. */
+  it('runs it AFTER the commit sweep has settled in-flight commits', async () => {
+    const order: string[] = [];
+    const sagaSweep = vi.fn(async () => { order.push('saga'); return sweepResult; });
+    await startBootRecoveryAndAdapters(makeOptions({
+      commitStore: {
+        sweepPendingToInDoubt: vi.fn(async () => { order.push('commits'); return []; }),
+      },
+      sagaSweep,
+    } as never));
+    expect(order).toEqual(['commits', 'saga']);
+  });
+
+  /** A boot must not fail on a disclosure pass. */
+  it('survives a sweep that throws, and says so', async () => {
+    const warn = vi.fn();
+    const sagaSweep = vi.fn(async () => { throw new Error('audit log unreadable'); });
+    await expect(startBootRecoveryAndAdapters(makeOptions({
+      sagaSweep, warn,
+    } as never))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('audit log unreadable'));
+  });
+
+  it('boots normally when no sweep is bound', async () => {
+    await expect(startBootRecoveryAndAdapters(makeOptions()))
+      .resolves.toBeUndefined();
+  });
+
+  it('stays quiet when there was nothing to disclose', async () => {
+    const warn = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn,
+      sagaSweep: vi.fn(async () => ({ scanned: 4, raised: 0, suppressed: 4, errored: 0 })),
+    } as never));
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('[saga] boot sweep'));
+  });
+});
+
+/** D-308 — the permanent-pass repair is REACHED at boot, behind the lock claim,
+ *  and a failure costs the boot nothing. Its own suite proves what it does; this
+ *  proves something calls it, the saga sweep's lesson above. */
+describe('startBootRecoveryAndAdapters — D-308 permanent-pass repair', () => {
+  const result = { applied: true, repaired: 2, left: 1, noticed: true };
+
+  it('runs it once, after the signing identity boots behind the lock claim', async () => {
+    const order: string[] = [];
+    const permanentPassRepair = vi.fn(async () => { order.push('repair'); return result; });
+    await startBootRecoveryAndAdapters(makeOptions({
+      bootSigningIdentity: vi.fn(async () => { order.push('identity'); }),
+      permanentPassRepair,
+    } as never));
+    expect(permanentPassRepair).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['identity', 'repair']);
+  });
+
+  it('does not run without the lifecycle lock', async () => {
+    const permanentPassRepair = vi.fn(async () => result);
+    await startBootRecoveryAndAdapters(makeOptions({ lifecycle: undefined, permanentPassRepair } as never));
+    expect(permanentPassRepair).not.toHaveBeenCalled();
+  });
+
+  it('says what it changed, and nothing on a boot that changed nothing', async () => {
+    const warn = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn, permanentPassRepair: vi.fn(async () => result),
+    } as never));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('2 open-ended pass(es) given their end, 1 left for the owner'),
+    );
+
+    for (const quiet of [
+      { applied: false, repaired: 2, left: 1, noticed: false },
+      { applied: true, repaired: 0, left: 0, noticed: false },
+    ]) {
+      const silent = vi.fn();
+      await startBootRecoveryAndAdapters(makeOptions({
+        warn: silent, permanentPassRepair: vi.fn(async () => quiet),
+      } as never));
+      expect(silent).not.toHaveBeenCalledWith(expect.stringContaining('D-308'));
+    }
+  });
+
+  it('survives a repair that throws, and says the next boot retries it', async () => {
+    const warn = vi.fn();
+    await expect(startBootRecoveryAndAdapters(makeOptions({
+      warn, permanentPassRepair: vi.fn(async () => { throw new Error('database is locked'); }),
+    } as never))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('retrying next boot: database is locked'));
+  });
+});

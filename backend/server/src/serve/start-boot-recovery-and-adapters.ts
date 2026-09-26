@@ -26,6 +26,9 @@ import type { GatedActionStore } from '../gated-action-store.js';
 import type { PreflightBootSweepDeps } from '../preflight-boot-sweep.js';
 import type { PreapprovalStorage } from '../storage/preapproval-storage.js';
 
+import type { TornSagaSweepResult } from '@recued/gateway';
+import type { PermanentPassRepairBootResult } from '../seller/permanent-pass-repair.js';
+
 export interface StartBootRecoveryAndAdaptersOptions {
   readonly lifecycle: Lifecycle | undefined;
   readonly bootSigningIdentity: () => Promise<void>;
@@ -35,6 +38,16 @@ export interface StartBootRecoveryAndAdaptersOptions {
   readonly commitStore: CommitStore | undefined;
   readonly gatedActionStore?: GatedActionStore;
   readonly preapprovalStorage?: Pick<PreapprovalStorage, 'recover'> & Partial<Pick<PreapprovalStorage, 'repository'>>;
+  /** D-287 follow-on — one torn-saga disclosure pass, pre-bound by the
+   *  composition root (it holds the annotation store and the manifest map this
+   *  module has no other reason to know about). Absent ⇒ no sweep, which is
+   *  the correct degradation: a server with no notifier had nowhere to
+   *  disclose anyway. */
+  readonly sagaSweep?: () => Promise<TornSagaSweepResult>;
+  /** D-308 — the one-off repair of the passes D-306's defect left
+   *  open-ended, pre-bound by the composition root. Absent ⇒ it waits for a
+   *  boot that can tell the owner. */
+  readonly permanentPassRepair?: () => Promise<PermanentPassRepairBootResult>;
   readonly getBatch?: PreflightBootSweepDeps['getBatch'];
   readonly reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
   /** Exact peer-delivery journal recovery runs before generic dispatch-claim
@@ -215,6 +228,53 @@ export const startBootRecoveryAndAdapters = async (
           block: notificationBlock,
           sweptCommits,
         });
+      }
+    }
+
+    // D-287 follow-on — torn runs whose ask never reached the owner.
+    //
+    // ⚠ AFTER the commit sweep, not before. A commit still in flight when the
+    // process died reads non-terminal until `sweepPendingToInDoubt` settles it;
+    // running first would classify it as neither landed nor uncertain, and the
+    // owner would be shown a torn run missing the very write whose fate is
+    // unknown. Ordering is the only coupling between the two sweeps.
+    //
+    // Best-effort: a boot must not fail on a disclosure pass.
+    if (options.sagaSweep) {
+      try {
+        const swept = await options.sagaSweep();
+        if (swept.raised > 0 || swept.errored > 0) {
+          warn(
+            `[saga] boot sweep — ${swept.raised} torn run(s) disclosed, `
+              + `${swept.suppressed} already seen, ${swept.errored} unreadable `
+              + `(of ${swept.scanned} failed run(s) inspected)`,
+          );
+        }
+      } catch (error) {
+        warn(
+          '[saga] boot sweep failed: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    // D-308 — behind the lock claim too: it writes customers' access. The
+    // repair commits all or nothing and is retried by the next boot, and so
+    // is a notice that did not reach the history, so neither fails a boot.
+    if (options.permanentPassRepair) {
+      try {
+        const repair = await options.permanentPassRepair();
+        if (repair.applied && (repair.repaired > 0 || repair.left > 0)) {
+          warn(
+            `[seller] D-308 repair — ${repair.repaired} open-ended pass(es) `
+              + `given their end, ${repair.left} left for the owner to decide`,
+          );
+        }
+      } catch (error) {
+        warn(
+          '[seller] D-308 pass repair failed, retrying next boot: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
       }
     }
   }

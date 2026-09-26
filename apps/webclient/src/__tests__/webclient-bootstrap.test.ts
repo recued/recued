@@ -41,7 +41,8 @@ import type {
 } from '@recued/contracts';
 // ⚠ VALUE import, deliberately separate from the type block above — the
 // first cut folded it in there and it arrived `undefined` at runtime.
-import { CHAT_HISTORY_WINDOW } from '@recued/contracts';
+import { CHAT_HISTORY_WINDOW, LIST_PAGE_DEFAULT_LIMIT } from '@recued/contracts';
+import { RECIPES_ROUTE_RECIPE_CARD_ATTR } from '../recipes/bootstrap-recipes-route.js';
 import { RunModal } from '@recued/ui-shared';
 import { generateRecoveryKey } from '@recued/crypto';
 import type { WebclientLocalStore } from '../storage/local-store.js';
@@ -222,7 +223,7 @@ import {
   SELLER_OFFER_STATE_ACTION_ATTR,
   SELLER_SETTINGS_FORM_FIELD_ATTR,
   SELLER_SETTINGS_FORM_SUBMIT_ATTR,
-  SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR,
+  SELLER_TIER_REAPPLY_PREVIEW_ATTR,
 } from '../settings/seller-page.js';
 import {
   SETTINGS_ROUTE_ACTIVE_ATTR,
@@ -1821,6 +1822,11 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       'tasks',
       'notes',
       'contacts',
+      // D-291 — Saved views promoted OUT of `#data` to its own route, so it
+      // sits with the entity seats rather than inside the surface it launches.
+      // Unlike `tasks`/`notes`/`contacts` above, this one is a real route: the
+      // list is not a segment of Data, only the views it opens are.
+      'views',
       'data',
       'recipes',
       'automation',
@@ -1844,10 +1850,12 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       '#chat/new',
       '#chat',
       '#data/search',
-      '#data/today',
+      '#today',
       '#data/task',
       '#data/note',
       '#data/contact',
+      // D-291 — its own surface, not a `#data` segment.
+      '#views',
       '#data',
       '#recipes',
       '#automation',
@@ -2937,7 +2945,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
-  it('D-196 S2 wires Settings -> Seller manual tier bulk adjust by default', async () => {
+  it('D-309 wires Settings -> Seller re-applying a package by default', async () => {
     const fixture = buildOpts();
     fixture.hashSource.setHash('#settings/seller/tiers/detail/tier-basic/customers');
     const handle = await bootstrapWebclient(fixture.opts);
@@ -3009,20 +3017,22 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     });
     await sellerPage!.whenLoaded();
 
-    findChildByAttr(fixture.root, SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR)?.click();
+    findChildByAttr(fixture.root, SELLER_TIER_REAPPLY_PREVIEW_ATTR)?.click();
     await flush();
 
-    const bulkAdjustCall = fixture.transportControls.sendCalls().find(
+    const reapplyCall = fixture.transportControls.sendCalls().find(
       (s) =>
         s !== null
         && typeof s === 'object'
         && (s as { type?: unknown }).type === 'rpc'
-        && (s as { method?: unknown }).method
-          === 'server.seller.bulkAdjustManualTierCustomers',
+        && (s as { method?: unknown }).method === 'server.seller.reapplyManualTier',
     ) as { args?: unknown } | undefined;
-    expect(bulkAdjustCall).toBeDefined();
-    expect(bulkAdjustCall?.args).toEqual({
+    expect(reapplyCall).toBeDefined();
+    expect(reapplyCall?.args).toEqual({
       tier_id: 'tier-basic',
+      apply: { permissions: true, length: true },
+      who: 'everyone',
+      preview: true,
     });
 
     await handle.dispose();
@@ -14459,5 +14469,103 @@ describe('D-222 — buildRecipeExecuteArgs (the execute wire)', () => {
       ).toBe(true);
       expect(wire[key]).toEqual(supplied[key as keyof typeof supplied]);
     }
+  });
+});
+
+/** Paged list rpcs (internal design notes), through the
+ *  composition root rather than a hand-wired caller.
+ *
+ *  ⛔ WHAT A HAND-WIRED TEST COULD NOT SEE: whether `#recipes` is actually
+ *  handed the paging callers. A route given a plain `rpcConn.call('recipe.list')`
+ *  would still render every recipe against a fake that answers whole lists, so
+ *  the fake here pages and nothing else — it answers only the requests paging
+ *  sends, and the second page exists only behind the first page's cursor. */
+describe('paged list rpcs — the composition root reads recipe.list and the tool catalog page by page', () => {
+  const entry = (id: string) => ({
+    recipe_id: id,
+    publisher_id: 'recued-core',
+    version: 1,
+    recipe_hash: `hash-${id}`,
+    source: 'bundled',
+    installed_at: 0,
+    recipe: {
+      recipe_id: id,
+      version: 1,
+      ttl: 60,
+      metadata: { name: `Recipe ${id}`, description: '', author: 'test', supported_platforms: [] },
+      variables: {},
+      output: { sidebar: [] },
+    },
+  });
+  const tool = (name: string) => ({
+    name,
+    tier: 2,
+    description: `Tool ${name}.`,
+    topic_tags: [],
+    classification: 'read',
+    concurrency_safe: false,
+  });
+  const RECIPE_CURSOR = 'p1.0123456789abcdef.1';
+  const TOOL_CURSOR = 'p1.fedcba9876543210.1';
+
+  it('#recipes asks for pages, follows each cursor, and renders the rows of every page', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#recipes');
+    const handle = await bootstrapWebclient(fixture.opts);
+
+    type Call = { type: 'rpc'; request_id: string; method: string; args?: Record<string, unknown> };
+    const calls = (): Call[] => fixture.transportControls.sendCalls().filter(
+      (c): c is Call => c !== null && typeof c === 'object' && (c as { type?: unknown }).type === 'rpc',
+    );
+    const answered = new Set<string>();
+    const reply = (call: Call, answer: { result: unknown } | { error: { code: string; message: string } }): void => {
+      answered.add(call.request_id);
+      fixture.transportControls.fireMessage({ type: 'rpc_result', request_id: call.request_id, ...answer });
+    };
+    const refuse = (call: Call, why: string) =>
+      reply(call, { error: { code: 'bad_request', message: why } });
+
+    for (let round = 0; round < 12; round += 1) {
+      for (const call of calls()) {
+        if (answered.has(call.request_id)) continue;
+        const args = call.args ?? {};
+        if (call.method === 'recipe.list') {
+          if (args.limit === undefined) refuse(call, 'this fake only answers paged reads');
+          else if (args.cursor === undefined) {
+            reply(call, { result: { recipes: [entry('alpha')], next_cursor: RECIPE_CURSOR, total: 2 } });
+          } else if (args.cursor === RECIPE_CURSOR) {
+            reply(call, { result: { recipes: [entry('beta')], next_cursor: null, total: 2 } });
+          } else refuse(call, 'unknown cursor');
+        } else if (call.method === 'chat.inbound_token.tool_catalog') {
+          if (args.limit === undefined) refuse(call, 'this fake only answers paged reads');
+          else if (args.cursor === undefined) {
+            reply(call, { result: { catalog: [tool('recued-core/alpha')], next_cursor: TOOL_CURSOR, total: 2 } });
+          } else if (args.cursor === TOOL_CURSOR) {
+            reply(call, { result: { catalog: [tool('recued-core/beta')], next_cursor: null, total: 2 } });
+          } else refuse(call, 'unknown cursor');
+        } else {
+          // Everything else the route loads is a soft read it renders without.
+          reply(call, { error: { code: 'not_configured', message: 'not part of this test' } });
+        }
+      }
+      await flush();
+      await flush();
+    }
+
+    const argsOf = (method: string) => calls().filter((c) => c.method === method).map((c) => c.args);
+    expect(argsOf('recipe.list')).toEqual([
+      { limit: LIST_PAGE_DEFAULT_LIMIT },
+      { cursor: RECIPE_CURSOR, limit: LIST_PAGE_DEFAULT_LIMIT },
+    ]);
+    expect(argsOf('chat.inbound_token.tool_catalog')).toEqual([
+      { limit: LIST_PAGE_DEFAULT_LIMIT },
+      { cursor: TOOL_CURSOR, limit: LIST_PAGE_DEFAULT_LIMIT },
+    ]);
+    // Both pages reached the route: a card for the row that only page 2 held.
+    const html = subtreeInnerHtml(fixture.root);
+    expect(html).toContain(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}="alpha"`);
+    expect(html).toContain(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}="beta"`);
+
+    await handle.dispose();
   });
 });

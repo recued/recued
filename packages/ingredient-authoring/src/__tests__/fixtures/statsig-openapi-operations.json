@@ -4,11 +4,11 @@
       "openapi": {
         "kind": "official_versioned_openapi_hash_locked",
         "url": "https://api.statsig.com/openapi/20240601.json",
-        "bytes": 3179557,
-        "sha256": "d10f3b7cb337a269f158d2f1d3dd8f20de569c818e51222cbe993563f311016b",
-        "retrieved_on": "2026-07-20",
+        "bytes": 3463422,
+        "sha256": "23753feb412062a1fd472c6d8b4603635c15fcec6d4b46ed09cc3ac659731490",
+        "retrieved_on": "2026-09-25",
         "evidence": [
-          "321 explicitly Console-key-secured method/path operations across 206 paths",
+          "324 explicitly Console-key-secured method/path operations across 208 paths",
           "exact path and query parameters, required JSON bodies, success response schemas, and pagination metadata",
           "declared Statsig Console API server https://statsigapi.net"
         ],
@@ -16,7 +16,7 @@
         "openapi": "3.0.0",
         "title": "Console API",
         "api_version": "20240601.0.0",
-        "official_path_count": 206,
+        "official_path_count": 208,
         "declared_server": [
           {
             "url": "https://statsigapi.net"
@@ -33,9 +33,9 @@
       "console_intro_section": {
         "kind": "official_console_intro_section_hash_locked",
         "url": "https://docs.statsig.com/console-api/introduction",
-        "bytes": 1300,
-        "sha256": "c3c62485d74b332f9a8a316e3f84b4ef93a3f90be94f905e7fc3e42996775a06",
-        "retrieved_on": "2026-07-20",
+        "bytes": 2193,
+        "sha256": "1fd1ad0d360ca8df7b068b1a151e93adaf2d999f470b2cce078a7718bc026a83",
+        "retrieved_on": "2026-09-25",
         "evidence": [
           "Console CRUD base URL https://statsigapi.net",
           "STATSIG-API-KEY must contain a Console API Key",
@@ -51,8 +51,8 @@
         "kind": "official_api_key_guide_section_hash_locked",
         "url": "https://docs.statsig.com/access-management/api-keys",
         "bytes": 4696,
-        "sha256": "ce859aa6a839afdd18a00898e59af28da5c3d920c07389d51ededf3967cedf25",
-        "retrieved_on": "2026-07-20",
+        "sha256": "29fe084a36b69bb26d85d6ccb96150a6e60509cdaae6c7af2947befb86ed30cb",
+        "retrieved_on": "2026-09-25",
         "evidence": [
           "Console API Keys are the most powerful Statsig key type",
           "Console API Keys provide full project CRUD capability",
@@ -64,74 +64,73 @@
         "extraction_end_marker": "\n\n================================================================================\n"
       }
     },
-    "official_operation_count": 321,
-    "admitted_operation_count": 321,
+    "official_operation_count": 324,
+    "admitted_operation_count": 324,
     "exclusion_count": 0,
     "official_method_counts": {
-      "DELETE": 41,
+      "DELETE": 43,
       "GET": 124,
       "PATCH": 32,
-      "POST": 77,
+      "POST": 78,
       "PUT": 47
     },
     "pack_operation_counts": {
-      "statsig-feature-gates": 38,
+      "statsig-feature-gates": 39,
       "statsig-dynamic-config-layers": 37,
       "statsig-experiment-lifecycle": 34,
       "statsig-experiment-analytics": 29,
       "statsig-metrics-autotunes-holdouts": 55,
-      "statsig-audiences-prompts-metadata": 42,
-      "statsig-observability-ingestion-release": 49,
+      "statsig-audiences-prompts-metadata": 43,
+      "statsig-observability-ingestion-release": 50,
       "statsig-project-access-admin": 37
     },
     "composition_bytes": {
-      "statsig-feature-gates": 104649,
-      "statsig-dynamic-config-layers": 108551,
-      "statsig-experiment-lifecycle": 87249,
-      "statsig-experiment-analytics": 70892,
-      "statsig-metrics-autotunes-holdouts": 152260,
-      "statsig-audiences-prompts-metadata": 96895,
-      "statsig-observability-ingestion-release": 128332,
-      "statsig-project-access-admin": 75446
+      "statsig-feature-gates": 121667,
+      "statsig-dynamic-config-layers": 128763,
+      "statsig-experiment-lifecycle": 92059,
+      "statsig-experiment-analytics": 71610,
+      "statsig-metrics-autotunes-holdouts": 156956,
+      "statsig-audiences-prompts-metadata": 98120,
+      "statsig-observability-ingestion-release": 131530,
+      "statsig-project-access-admin": 76221
     },
     "body_mode_counts": {
-      "none": 191,
-      "raw_json": 130
+      "none": 193,
+      "raw_json": 131
     },
     "body_root_type_counts": {
       "array": 1,
-      "object": 129
+      "object": 130
     },
     "body_schema_shape_counts": {
       "array": 1,
-      "object": 123,
+      "object": 124,
       "oneOf": 6
     },
-    "required_body_count": 130,
+    "required_body_count": 131,
     "risk_counts": {
-      "admin": 57,
-      "destructive": 140,
+      "admin": 58,
+      "destructive": 142,
       "read": 124
     },
     "approval_counts": {
-      "always": 197,
+      "always": 200,
       "never": 124
     },
     "idempotency_counts": {
-      "idempotent": 99,
-      "non_idempotent": 98,
+      "idempotent": 101,
+      "non_idempotent": 99,
       "safe": 124
     },
     "response_mode_counts": {
-      "empty": 3,
       "file_ref": 1,
-      "json": 317
+      "json": 323
     },
     "pagination": {
-      "automatic_operation_count": 48,
+      "automatic_operation_count": 49,
       "kind_counts": {
         "cursor": 1,
-        "page_limit": 46,
+        "page_limit": 47,
         "page_only": 1
       },
       "automatic_operation_keys": [
@@ -142,6 +141,7 @@
         "GET /console/v1/autotunes/{id}/reviews",
         "GET /console/v1/dashboards",
         "GET /console/v1/dynamic_configs",
+        "GET /console/v1/dynamic_configs/{id}/reviews",
         "GET /console/v1/dynamic_configs/{id}/versions",
         "GET /console/v1/events",
         "GET /console/v1/events/{eventName}",
@@ -185,17 +185,15 @@
         "GET /console/v1/users/teams"
       ],
       "result_path_counts": {
-        "data": 47,
+        "data": 48,
         "data.ids": 1
       },
       "page_size_counts": {
-        "10": 43,
+        "10": 44,
         "100": 4,
         "provider_owned": 1
       },
-      "manual_operation_keys": [
-        "GET /console/v1/dynamic_configs/{id}/reviews"
-      ]
+      "manual_operation_keys": []
     },
     "auth": {
       "selected": "Statsig Console API Key resolved only by the trusted header-auth connection adapter",
@@ -210,7 +208,7 @@
         }
       },
       "origin_matching": "fixed statsigapi.net host; per_org vendor-tag matching is deliberately disabled",
-      "explicitly_secured_operation_count": 321,
+      "explicitly_secured_operation_count": 324,
       "credential_fields_in_pack_args": 0,
       "static_version_header": {
         "STATSIG-API-VERSION": "20240601"
@@ -221,7 +219,7 @@
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_http_method_and_official_summary>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
-      "exact_json_content_type_operation_count": 130,
+      "exact_json_content_type_operation_count": 131,
       "pagination_owned_parameters": [
         "GET /console/v1/alerts/{id}/events:limit",
         "GET /console/v1/alerts/{id}/events:page",
@@ -235,6 +233,8 @@
         "GET /console/v1/autotunes:page",
         "GET /console/v1/dashboards:limit",
         "GET /console/v1/dashboards:page",
+        "GET /console/v1/dynamic_configs/{id}/reviews:limit",
+        "GET /console/v1/dynamic_configs/{id}/reviews:page",
         "GET /console/v1/dynamic_configs/{id}/versions:limit",
         "GET /console/v1/dynamic_configs/{id}/versions:page",
         "GET /console/v1/dynamic_configs:limit",
@@ -352,8 +352,7 @@
       "exact_decimal_string_parameters": [
         "GET /console/v1/audit_logs:endTime",
         "GET /console/v1/audit_logs:startTime",
-        "GET /console/v1/dynamic_configs/{id}/reviews:limit",
-        "GET /console/v1/dynamic_configs/{id}/reviews:page",
+        "GET /console/v1/experiments/{id}/diagnostics_checks:lastDays",
         "GET /console/v1/logs:end_ts",
         "GET /console/v1/logs:start_ts",
         "GET /console/v1/project/usage_billing/report:end",
@@ -392,11 +391,7 @@
       "binary_response_capture_routes": [
         "GET /console/v1/project/usage_billing/report"
       ],
-      "empty_success_routes": [
-        "GET /console/v1/dynamic_configs/{id}/reviews",
-        "GET /console/v1/dynamic_configs/{id}/reviews/{reviewID}",
-        "POST /console/v1/dynamic_configs/{id}/reviews"
-      ],
+      "empty_success_routes": [],
       "hidden_retry_policy": "none"
     },
     "source_decision": {
@@ -436,7 +431,7 @@
       },
       {
         "severity": "medium",
-        "finding": "The official OpenAPI defines no operationId for any of its 321 operations.",
+        "finding": "The official OpenAPI defines no operationId for any of its 324 operations.",
         "resolution": "Derives deterministic names from the primary official tag, HTTP method, and official summary, proves uniqueness across the complete pinned inventory, and records the formula and IDs in the fixture."
       },
       {
@@ -451,7 +446,7 @@
       },
       {
         "severity": "medium",
-        "finding": "All 130 request bodies are required JSON: 123 object schemas, six object-union schemas, and one array schema.",
+        "finding": "All 131 request bodies are required JSON: 124 object schemas, six object-union schemas, and one array schema.",
         "resolution": "Every body uses required bounded body_raw with an authority-derived object or array wire-root pattern, preserving union branches, nested fields, nulls, and exact integer lexemes."
       },
       {
@@ -981,7 +976,7 @@
         }
       }
     ],
-    "operation_ids_sha256": "791cacdb7bdfc8639059a488ccd7f9cf45183fa1b5f7412c07276d3b438699aa"
+    "operation_ids_sha256": "2c69052fcc358af512e316b80f5d0fd6995589b076703eb7b1e6b32cb35fadf4"
   },
   "official_operations": [
     {
@@ -1259,6 +1254,43 @@
       "exclusion_reason": null,
       "pack": "statsig-observability-ingestion-release",
       "op": "alerts.post_mute_topline_alert"
+    },
+    {
+      "key": "POST /console/v1/alerts/{id}/unmute",
+      "method": "POST",
+      "path": "/console/v1/alerts/{id}/unmute",
+      "primary_tag": "Alerts",
+      "tags": [
+        "Alerts"
+      ],
+      "summary": "Unmute Topline Alert",
+      "official_operation_id": null,
+      "generated_operation_id": "alerts.post_unmute_topline_alert",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-observability-ingestion-release",
+      "op": "alerts.post_unmute_topline_alert"
     },
     {
       "key": "GET /console/v1/audit_logs",
@@ -2816,7 +2848,9 @@
       "success_statuses": [
         "200"
       ],
-      "response_media": [],
+      "response_media": [
+        "application/json"
+      ],
       "selected": true,
       "exclusion": null,
       "exclusion_reason": null,
@@ -2851,7 +2885,9 @@
       "success_statuses": [
         "201"
       ],
-      "response_media": [],
+      "response_media": [
+        "application/json"
+      ],
       "selected": true,
       "exclusion": null,
       "exclusion_reason": null,
@@ -2882,7 +2918,9 @@
       "success_statuses": [
         "200"
       ],
-      "response_media": [],
+      "response_media": [
+        "application/json"
+      ],
       "selected": true,
       "exclusion": null,
       "exclusion_reason": null,
@@ -6439,6 +6477,39 @@
       "op": "gates.delete_delete_gate_overrides"
     },
     {
+      "key": "DELETE /console/v1/gates/{id}/overrides/userID/{userID}",
+      "method": "DELETE",
+      "path": "/console/v1/gates/{id}/overrides/userID/{userID}",
+      "primary_tag": "Gates",
+      "tags": [
+        "Gates"
+      ],
+      "summary": "Delete a Single Gate User ID Override",
+      "official_operation_id": null,
+      "generated_operation_id": "gates.delete_delete_a_single_gate_user_id_override",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-feature-gates",
+      "op": "gates.delete_delete_a_single_gate_user_id_override"
+    },
+    {
       "key": "GET /console/v1/gates/{id}/reviews",
       "method": "GET",
       "path": "/console/v1/gates/{id}/reviews",
@@ -9643,6 +9714,39 @@
       "op": "prompts.patch_update_prompt_partial"
     },
     {
+      "key": "DELETE /console/v1/prompts/{id}",
+      "method": "DELETE",
+      "path": "/console/v1/prompts/{id}",
+      "primary_tag": "Prompts",
+      "tags": [
+        "Prompts"
+      ],
+      "summary": "Delete Prompt",
+      "official_operation_id": null,
+      "generated_operation_id": "prompts.delete_delete_prompt",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-audiences-prompts-metadata",
+      "op": "prompts.delete_delete_prompt"
+    },
+    {
       "key": "POST /console/v1/prompts/{id}/versions",
       "method": "POST",
       "path": "/console/v1/prompts/{id}/versions",
@@ -12811,7 +12915,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "DELETE /console/v1/experiments/{id}": {
       "key": "DELETE /console/v1/experiments/{id}",
@@ -13521,6 +13625,96 @@
       "request_body_mode": "none",
       "success_statuses": [
         "201"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "51d3e9d06befc3ae047b00b5b0771d76cf6bfb9f98fd12dfb3f0357a9c30c5c5"
+    },
+    "DELETE /console/v1/gates/{id}/overrides/userID/{userID}": {
+      "key": "DELETE /console/v1/gates/{id}/overrides/userID/{userID}",
+      "generated_operation_id": "gates.delete_delete_a_single_gate_user_id_override",
+      "pack": "statsig-feature-gates",
+      "op": "gates.delete_delete_a_single_gate_user_id_override",
+      "method": "DELETE",
+      "path": "/console/v1/gates/{id}/overrides/userID/{userID}",
+      "primary_tag": "Gates",
+      "tags": [
+        "Gates"
+      ],
+      "summary": "Delete a Single Gate User ID Override",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "userID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "userID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "groupID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.groupID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
       ],
       "response_media": [
         "application/json"
@@ -14501,6 +14695,64 @@
           ],
           "official_format": null,
           "admitted_key": "name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "e198a4761daed59654606a0e6d529477af19d8f6c9c0ea6139b8f91562f6aa39"
+    },
+    "DELETE /console/v1/prompts/{id}": {
+      "key": "DELETE /console/v1/prompts/{id}",
+      "generated_operation_id": "prompts.delete_delete_prompt",
+      "pack": "statsig-audiences-prompts-metadata",
+      "op": "prompts.delete_delete_prompt",
+      "method": "DELETE",
+      "path": "/console/v1/prompts/{id}",
+      "primary_tag": "Prompts",
+      "tags": [
+        "Prompts"
+      ],
+      "summary": "Delete Prompt",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -16009,7 +16261,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "01d00967b6a082d782583c082ea66ede4496a16ad2b3aac0b6ba8b2b0dce28ca"
+      "response_schema_sha256": "7f8050b8dfaf01326864fda29db04e3fc643f62f298842c07211599c849e862d"
     },
     "GET /console/v1/autotunes/{id}/reviews/{reviewID}": {
       "key": "GET /console/v1/autotunes/{id}/reviews/{reviewID}",
@@ -16083,7 +16335,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "GET /console/v1/company": {
       "key": "GET /console/v1/company",
@@ -16665,7 +16917,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "GET /console/v1/dynamic_configs/{id}/eligible_reviewers": {
       "key": "GET /console/v1/dynamic_configs/{id}/eligible_reviewers",
@@ -16767,9 +17019,9 @@
             "number"
           ],
           "official_format": null,
-          "admitted_key": "query.limit",
-          "admitted_type": "string",
-          "serialization": "exact_decimal_string",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "exact_integer": true,
@@ -16785,9 +17037,9 @@
             "number"
           ],
           "official_format": null,
-          "admitted_key": "query.page",
-          "admitted_type": "string",
-          "serialization": "exact_decimal_string",
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "exact_integer": true,
@@ -16802,12 +17054,31 @@
       "success_statuses": [
         "200"
       ],
-      "response_media": [],
-      "response_body_mode": "empty",
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
       "response_capture": null,
-      "result_path": null,
-      "pagination_kind": null,
-      "pagination": null,
+      "result_path": "data",
+      "pagination_kind": "page_limit",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 10
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page",
+        "done_when": {
+          "path": "pagination.nextPage",
+          "equals": null
+        }
+      },
       "sensitive_request": false,
       "sensitive_response": false,
       "security": [
@@ -16815,7 +17086,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "3d9b5de839396cd442fba32a4c268c9ca54fe765e735a265d2227cb0ae2428c2"
+      "response_schema_sha256": "0eb7712a02547b538e8377f0ffe8a1906500979db489324f677bb0ac1e120014"
     },
     "GET /console/v1/dynamic_configs/{id}/reviews/{reviewID}": {
       "key": "GET /console/v1/dynamic_configs/{id}/reviews/{reviewID}",
@@ -16874,8 +17145,10 @@
       "success_statuses": [
         "200"
       ],
-      "response_media": [],
-      "response_body_mode": "empty",
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
       "response_capture": null,
       "result_path": null,
       "pagination_kind": null,
@@ -16887,7 +17160,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "3d9b5de839396cd442fba32a4c268c9ca54fe765e735a265d2227cb0ae2428c2"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "GET /console/v1/dynamic_configs/{id}/rule/{ruleId}": {
       "key": "GET /console/v1/dynamic_configs/{id}/rule/{ruleId}",
@@ -16961,7 +17234,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "6cb970094e11c0e964deadb527f5e1a15e692dd39ff403ce1c8071dc50ad859d"
+      "response_schema_sha256": "2df3eb607009063dcda2ba0ddc02f2953782bd3b12dce3310fba22644fb47426"
     },
     "GET /console/v1/dynamic_configs/{id}/rules": {
       "key": "GET /console/v1/dynamic_configs/{id}/rules",
@@ -17088,6 +17361,38 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "startDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.startDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "endDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.endDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "request_media": [],
@@ -18139,6 +18444,22 @@
           "dropped_pattern": false,
           "exact_integer": false,
           "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "lastDays",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "official_format": null,
+          "admitted_key": "query.lastDays",
+          "admitted_type": "string",
+          "serialization": "exact_decimal_string",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": true,
+          "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
         }
       ],
       "request_media": [],
@@ -18164,7 +18485,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "5ab2ca62f029388c7e80150bb0db25d1319846c620ffd7a8546bd1652b1a428a"
+      "response_schema_sha256": "c3e0cc3449419bc710553080d2df2b7fcb3cf38b8eebb364a2cc97069750d37e"
     },
     "GET /console/v1/experiments/{id}/dimensional_exposures": {
       "key": "GET /console/v1/experiments/{id}/dimensional_exposures",
@@ -18770,6 +19091,22 @@
         },
         {
           "in": "query",
+          "wire_name": "benjaminiAcrossAllTestGroups",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.benjaminiAcrossAllTestGroups",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
           "wire_name": "metricID",
           "required": true,
           "official_types": [
@@ -19058,7 +19395,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "d0cf7425a3eff246500ec671d2f61774ed1a6c131697630120ee89c4c0c93b48"
+      "response_schema_sha256": "cab8294adcbdab3de557bc45692c48361d8004c903f11f7e652f9986fcfd256c"
     },
     "GET /console/v1/experiments/{id}/reviews": {
       "key": "GET /console/v1/experiments/{id}/reviews",
@@ -19169,7 +19506,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "01d00967b6a082d782583c082ea66ede4496a16ad2b3aac0b6ba8b2b0dce28ca"
+      "response_schema_sha256": "7f8050b8dfaf01326864fda29db04e3fc643f62f298842c07211599c849e862d"
     },
     "GET /console/v1/experiments/{id}/reviews/{reviewID}": {
       "key": "GET /console/v1/experiments/{id}/reviews/{reviewID}",
@@ -19243,7 +19580,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "GET /console/v1/experiments/{id}/summary_charts": {
       "key": "GET /console/v1/experiments/{id}/summary_charts",
@@ -19402,6 +19739,38 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "startDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.startDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "endDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.endDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "request_media": [],
@@ -20953,7 +21322,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "e805a87978822d8932174dc3dc53705b37b702b9bcc0cb71394df6f6611e04f1"
+      "response_schema_sha256": "0eb7712a02547b538e8377f0ffe8a1906500979db489324f677bb0ac1e120014"
     },
     "GET /console/v1/gates/{id}/reviews/{reviewID}": {
       "key": "GET /console/v1/gates/{id}/reviews/{reviewID}",
@@ -21027,7 +21396,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "GET /console/v1/gates/{id}/rules": {
       "key": "GET /console/v1/gates/{id}/rules",
@@ -21318,7 +21687,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "92251f0e13e6a3b5dc75a8b6f9531420a1acf21c01447dd228af74fe1975e73d"
+      "response_schema_sha256": "2d08550864fcf445f058c3718ec5b34715fa306f450895bf8726c0a7ce62a103"
     },
     "GET /console/v1/gates/{id}/versions": {
       "key": "GET /console/v1/gates/{id}/versions",
@@ -21387,6 +21756,38 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "startDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.startDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "endDate",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.endDate",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "request_media": [],
@@ -21779,7 +22180,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "92251f0e13e6a3b5dc75a8b6f9531420a1acf21c01447dd228af74fe1975e73d"
+      "response_schema_sha256": "2d08550864fcf445f058c3718ec5b34715fa306f450895bf8726c0a7ce62a103"
     },
     "GET /console/v1/ingestion": {
       "key": "GET /console/v1/ingestion",
@@ -22533,7 +22934,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "bc703bd4360d32bc9d981b4abca47632b0dffd38919519f6904df778c64d5674"
+      "response_schema_sha256": "2b0462ca033bfc963b84d212792c7cc46eb7b0c8362d77a2e880584a08b2dc67"
     },
     "GET /console/v1/keys/{id}": {
       "key": "GET /console/v1/keys/{id}",
@@ -22591,7 +22992,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "a1338b6d151a007beee507babbc477e4ed2ab5f556e30ba4177efe76d9c95e0e"
+      "response_schema_sha256": "8fe75644f15a36756fa3c911b471fc4a55bc3bd420fecf51b295b39eaa39a4fc"
     },
     "GET /console/v1/layers": {
       "key": "GET /console/v1/layers",
@@ -27006,7 +27407,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PATCH /console/v1/dynamic_configs/{id}/rule/{ruleId}": {
       "key": "PATCH /console/v1/dynamic_configs/{id}/rule/{ruleId}",
@@ -27100,7 +27501,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PATCH /console/v1/experiments/{id}": {
       "key": "PATCH /console/v1/experiments/{id}",
@@ -27815,7 +28216,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "a1338b6d151a007beee507babbc477e4ed2ab5f556e30ba4177efe76d9c95e0e"
+      "response_schema_sha256": "8fe75644f15a36756fa3c911b471fc4a55bc3bd420fecf51b295b39eaa39a4fc"
     },
     "PATCH /console/v1/keys/{id}/deactivate": {
       "key": "PATCH /console/v1/keys/{id}/deactivate",
@@ -27931,7 +28332,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "a1338b6d151a007beee507babbc477e4ed2ab5f556e30ba4177efe76d9c95e0e"
+      "response_schema_sha256": "8fe75644f15a36756fa3c911b471fc4a55bc3bd420fecf51b295b39eaa39a4fc"
     },
     "PATCH /console/v1/layers/{id}": {
       "key": "PATCH /console/v1/layers/{id}",
@@ -28812,6 +29213,68 @@
       ],
       "response_schema_sha256": "2b3d83e3c496cd92a1b2ade18daae6d73196628458b7fb27e912d633cfd22477"
     },
+    "POST /console/v1/alerts/{id}/unmute": {
+      "key": "POST /console/v1/alerts/{id}/unmute",
+      "generated_operation_id": "alerts.post_unmute_topline_alert",
+      "pack": "statsig-observability-ingestion-release",
+      "op": "alerts.post_unmute_topline_alert",
+      "method": "POST",
+      "path": "/console/v1/alerts/{id}/unmute",
+      "primary_tag": "Alerts",
+      "tags": [
+        "Alerts"
+      ],
+      "summary": "Unmute Topline Alert",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "2b3d83e3c496cd92a1b2ade18daae6d73196628458b7fb27e912d633cfd22477"
+    },
     "POST /console/v1/autotunes": {
       "key": "POST /console/v1/autotunes",
       "generated_operation_id": "autotunes.post_create_autotune",
@@ -29041,7 +29504,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "POST /console/v1/autotunes/{id}/schedule_start": {
       "key": "POST /console/v1/autotunes/{id}/schedule_start",
@@ -29300,7 +29763,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "POST /console/v1/dynamic_configs/{id}": {
       "key": "POST /console/v1/dynamic_configs/{id}",
@@ -29378,7 +29841,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "POST /console/v1/dynamic_configs/{id}/reviews": {
       "key": "POST /console/v1/dynamic_configs/{id}/reviews",
@@ -29425,8 +29888,10 @@
       "success_statuses": [
         "201"
       ],
-      "response_media": [],
-      "response_body_mode": "empty",
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
       "response_capture": null,
       "result_path": null,
       "pagination_kind": null,
@@ -29438,7 +29903,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "3d9b5de839396cd442fba32a4c268c9ca54fe765e735a265d2227cb0ae2428c2"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "POST /console/v1/environments": {
       "key": "POST /console/v1/environments",
@@ -30222,7 +30687,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "POST /console/v1/experiments/{id}/schedule_start": {
       "key": "POST /console/v1/experiments/{id}/schedule_start",
@@ -31071,7 +31536,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "POST /console/v1/gates/{id}/rule": {
       "key": "POST /console/v1/gates/{id}/rule",
@@ -31543,7 +32008,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "a1338b6d151a007beee507babbc477e4ed2ab5f556e30ba4177efe76d9c95e0e"
+      "response_schema_sha256": "8fe75644f15a36756fa3c911b471fc4a55bc3bd420fecf51b295b39eaa39a4fc"
     },
     "POST /console/v1/layers": {
       "key": "POST /console/v1/layers",
@@ -33277,7 +33742,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/autotunes/{id}/reviews/{reviewID}/approve": {
       "key": "PUT /console/v1/autotunes/{id}/reviews/{reviewID}/approve",
@@ -33355,7 +33820,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/autotunes/{id}/reviews/{reviewID}/commit": {
       "key": "PUT /console/v1/autotunes/{id}/reviews/{reviewID}/commit",
@@ -33507,7 +33972,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/autotunes/{id}/start": {
       "key": "PUT /console/v1/autotunes/{id}/start",
@@ -33689,7 +34154,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PUT /console/v1/dynamic_configs/{id}/disable": {
       "key": "PUT /console/v1/dynamic_configs/{id}/disable",
@@ -33747,7 +34212,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PUT /console/v1/dynamic_configs/{id}/enable": {
       "key": "PUT /console/v1/dynamic_configs/{id}/enable",
@@ -33805,7 +34270,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}": {
       "key": "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}",
@@ -33883,7 +34348,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}/approve": {
       "key": "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}/approve",
@@ -33961,7 +34426,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}/commit": {
       "key": "PUT /console/v1/dynamic_configs/{id}/reviews/{reviewID}/commit",
@@ -34113,7 +34578,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/dynamic_configs/{id}/unarchive": {
       "key": "PUT /console/v1/dynamic_configs/{id}/unarchive",
@@ -34175,7 +34640,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "0a381aa65cafca1eddf5990bdc5a8a84dd50519807908d36a07d27935664e27d"
+      "response_schema_sha256": "f1eb0edf6658d0467a92197842407b43dd3080aaf48015f2e72031e6604265ac"
     },
     "PUT /console/v1/experiments/{id}/abandon": {
       "key": "PUT /console/v1/experiments/{id}/abandon",
@@ -34559,7 +35024,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/experiments/{id}/reviews/{reviewID}/approve": {
       "key": "PUT /console/v1/experiments/{id}/reviews/{reviewID}/approve",
@@ -34637,7 +35102,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/experiments/{id}/reviews/{reviewID}/commit": {
       "key": "PUT /console/v1/experiments/{id}/reviews/{reviewID}/commit",
@@ -34789,7 +35254,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+      "response_schema_sha256": "4f7e0a73c15e500794ed4843443307a47309f43a8543b6830b70720568fc6428"
     },
     "PUT /console/v1/experiments/{id}/start": {
       "key": "PUT /console/v1/experiments/{id}/start",
@@ -35287,7 +35752,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/gates/{id}/reviews/{reviewID}/approve": {
       "key": "PUT /console/v1/gates/{id}/reviews/{reviewID}/approve",
@@ -35365,7 +35830,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/gates/{id}/reviews/{reviewID}/commit": {
       "key": "PUT /console/v1/gates/{id}/reviews/{reviewID}/commit",
@@ -35517,7 +35982,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "297f3599fad99c7049f02a6531fdef1ded9289fd5638e01d9a2af93c38ae829f"
+      "response_schema_sha256": "f96fb5910cbe072470f220c629a5220373fc366e89b3b17817e48227145c47d4"
     },
     "PUT /console/v1/gates/{id}/unarchive": {
       "key": "PUT /console/v1/gates/{id}/unarchive",

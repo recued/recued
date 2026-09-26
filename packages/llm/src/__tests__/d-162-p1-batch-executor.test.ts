@@ -126,6 +126,34 @@ describe('D-162 P1 executeLLM batch call count and usage', () => {
   });
 });
 
+describe('D-162 — a batch reply is an ARRAY, so it is never asked for as a JSON object', () => {
+  /** ⛔ Measured live 2026-09-24: an openai-compatible slot sent `json_object` mode for
+   *  an `ai-generate` batch of two records answered with ONE object and failed "invalid
+   *  or incomplete JSON array" three runs out of three. `json_shape` tells the adapter
+   *  which shape the contract expects; the OpenAI adapter then leaves the mode off. */
+  it('marks a batch call as an array and leaves a single call an object', async () => {
+    const data = [{ record_id: 'a', text: 'x' }, { record_id: 'b', text: 'y' }];
+    const adapter = fakeAdapter([
+      JSON.stringify(validClassifyEntries(data)),
+      JSON.stringify({ category: 'support', confidence: 0.9, reasoning: 'r' }),
+    ]);
+    const jsonConfig: LLMConfig = {
+      ...config,
+      slot_1: { provider: 'openai', model: 'gpt-fast', api_key: 'sk-1', supports_json: true },
+    };
+    const deps = { ...makeDeps(adapter), config: jsonConfig };
+
+    await executeLLM(classifyManifest, batchInput(data), deps);
+    await executeLLM(classifyManifest, { 'llm.data': 'hello', 'llm.categories': ['support', 'sales'] }, deps);
+
+    const calls = (adapter.complete as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![2]).toEqual(expect.objectContaining({ json: true, json_shape: 'array' }));
+    expect(calls[1]![2]).toEqual(expect.objectContaining({ json: true }));
+    expect(calls[1]![2].json_shape).toBeUndefined();
+  });
+});
+
 describe('D-162 P1 executeLLM batch carry-through merge', () => {
   it('I-2 carries through non-judgment input fields by reference and merges result fields', async () => {
     const headers = { from: 'alice@example.com' };

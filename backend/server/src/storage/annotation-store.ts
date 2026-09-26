@@ -28,8 +28,11 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import {
+  ANNOTATION_FILTER_FIELDS,
   ANNOTATION_INLINE_CUTOFF_BYTES,
+  LINK_FILTER_FIELDS,
   MAX_ANNOTATION_VALUE_BYTES,
+  deleteFilterProblem,
   isActor,
   isOriginSurface,
   type Actor,
@@ -998,12 +1001,14 @@ export const createAnnotationStore = (
   };
 
   const deleteAnnotationsByFilter = (filter: AnnotationFilter): number => {
-    if (Object.keys(filter).length === 0 || (Object.keys(filter).length === 1 && filter.limit !== undefined)) {
-      // Refuse to wipe the whole table — every other ingredient guards
-      // against it and we want this surface to behave the same.
-      throw new AnnotationKeyInvalidError(
-        'deleteAnnotations requires at least one filter field',
-      );
+    // Refuse to wipe the whole table — every other ingredient guards against
+    // it and we want this surface to behave the same. ⛔ Judged on what the
+    // compiler will USE, not on how many keys were passed: an unknown key or a
+    // field with no value drops out of the WHERE clause, and a delete that
+    // counted keys ran unfiltered (integrity audit, 2026-09-24).
+    const problem = deleteFilterProblem(filter, ANNOTATION_FILTER_FIELDS);
+    if (problem !== null) {
+      throw new AnnotationKeyInvalidError(`deleteAnnotations: ${problem}`);
     }
     const { sql, params } = compileAnnotationFilter(filter);
     const apply = db.transaction(() => {
@@ -1031,10 +1036,10 @@ export const createAnnotationStore = (
   };
 
   const deleteLinksByFilter = (filter: LinkFilter): number => {
-    if (Object.keys(filter).length === 0 || (Object.keys(filter).length === 1 && filter.limit !== undefined)) {
-      throw new AnnotationKeyInvalidError(
-        'deleteLinks requires at least one filter field',
-      );
+    // The same rule as `deleteAnnotationsByFilter`, for the same reason.
+    const problem = deleteFilterProblem(filter, LINK_FILTER_FIELDS);
+    if (problem !== null) {
+      throw new AnnotationKeyInvalidError(`deleteLinks: ${problem}`);
     }
     const { sql, params } = compileLinkFilter(filter);
     return db.prepare(`DELETE FROM ${LINK_TABLE} ${sql}`).run(...params).changes;

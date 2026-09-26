@@ -9521,19 +9521,16 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   const records = page.locator(`[${DATA_TAB}="records"]`);
   const search = page.locator(`[${DATA_TAB}="search"]`);
   await expect(tablist).toBeVisible();
-  await expect(tabs).toHaveCount(18);
+  // D-290 — 17, not 18: Today left this tablist for its own `#today` route.
+  await expect(tabs).toHaveCount(17);
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
-  // ⚠ D-267 — a tabless `#data` resolves to Today, not Contacts. This test is
-  // about the ARROW-KEY STOP, and it was reading the landing tab as a stand-in
-  // for "a tab is selected" — which quietly pinned the old default from a file
-  // about keyboard navigation. Assert the real landing, then drive the keyboard
-  // from Contacts explicitly (which the next line already did).
-  await expect(page.locator(`[${DATA_TAB}="today"]`))
-    .toHaveAttribute('aria-selected', 'true');
-  await expect(contacts).toHaveAttribute('aria-selected', 'false');
+  // ⚠ D-290 — a tabless `#data` lands on Contacts again (D-267 had made it
+  // Today, which is no longer a tab here). This test is about the ARROW-KEY
+  // STOP; the landing is asserted because it decides which tab holds that stop.
+  await expect(contacts).toHaveAttribute('aria-selected', 'true');
   await expect(contacts).toHaveAccessibleDescription('Owned');
   await expect(records).toHaveAccessibleDescription('Records');
-  await expect(page.getByRole('tabpanel', { name: 'Today' })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Contacts' })).toBeVisible();
 
   await contacts.focus();
   await page.keyboard.press('ArrowRight');
@@ -9553,9 +9550,9 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   await expect(records).toBeFocused();
 
   await page.keyboard.press('Home');
-  await expect(page).toHaveURL(/#data\/today$/);
-  await expect(page.locator(`[${DATA_TAB}="today"]`)).toHaveAttribute('aria-selected', 'true');
-  await expect(page.locator(`[${DATA_TAB}="today"]`)).toBeFocused();
+  await expect(page).toHaveURL(/#data\/contact$/);
+  await expect(contacts).toHaveAttribute('aria-selected', 'true');
+  await expect(contacts).toBeFocused();
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
 });
 
@@ -9574,7 +9571,8 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   const collectionTabs = page.getByRole('tablist', {
     name: 'Data collections',
   }).getByRole('tab');
-  await expect(collectionTabs).toHaveCount(18);
+  // D-290 — Today is its own route now, not one of these.
+  await expect(collectionTabs).toHaveCount(17);
   const tabHeights = await collectionTabs.evaluateAll((tabs) =>
     tabs.map((tab) => tab.getBoundingClientRect().height)
   );
@@ -23045,68 +23043,10 @@ test('Settings Devices returns a failed roster Retry to its alert action', async
   );
 });
 
-test('Settings notification switches retain exact mutation ownership', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(
-    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
-  );
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
-
-  const toggle = page.getByRole('switch', {
-    name: 'Browser Bridge, on your desktop notifications',
-    exact: true,
-  });
-  await expect(toggle).toHaveText('Off');
-  await toggle.focus();
-  await page.keyboard.press('Enter');
-
-  await expect(toggle).toHaveText('Updating…');
-  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
-  await expect(toggle).toHaveAttribute('aria-busy', 'true');
-  await expect(toggle).not.toHaveAttribute('disabled');
-  await expect(toggle).toBeFocused();
-  await toggle.evaluate((button: HTMLElement) => {
-    button.click();
-    button.click();
-  });
-  await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('notifications.set_channel')),
-  ).toBe(1);
-
-  await expect(toggle).toHaveText('On');
-  await expect(toggle).toHaveAttribute('aria-checked', 'true');
-  await expect(toggle).not.toHaveAttribute('aria-disabled');
-  await expect(toggle).not.toHaveAttribute('aria-busy');
-  await expect(toggle).toBeFocused();
-});
-
-test('Settings notification switch failures return to the exact control', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(
-    `${HARNESS_URL}?notifications=ready&notifications_response=fail-slow`,
-  );
-  await page.waitForFunction(() => window.__app?.ready === true);
-  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
-
-  const toggle = page.locator(
-    '[data-recued-notifications-row-toggle="bridge"]'
-      + '[data-recued-notifications-axis="notification"]',
-  );
-  await toggle.focus();
-  await page.keyboard.press('Enter');
-  await expect(toggle).toHaveText('Updating…');
-  await expect(toggle).toBeFocused();
-
-  await expect(page.getByRole('alert'))
-    .toContainText('Notification setting unavailable.');
-  await expect(toggle).toHaveText('Off');
-  await expect(toggle).toHaveAttribute('aria-checked', 'false');
-  await expect(toggle).not.toHaveAttribute('aria-disabled');
-  await expect(toggle).not.toHaveAttribute('aria-busy');
-  await expect(toggle).toBeFocused();
-});
-
+// D-269 retired the Bridge row's CHANNEL switch (it decided nothing), and the
+// two tests that drove it went with it. Their contracts live on in the
+// per-browser twins below: mutation ownership, and failures that return to
+// the exact control.
 test('Settings keeps a pending notification write attached on route leave', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(
@@ -23115,10 +23055,12 @@ test('Settings keeps a pending notification write attached on route leave', asyn
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#settings/notifications'));
 
-  const toggle = page.locator(
-    '[data-recued-notifications-row-toggle="bridge"]'
-      + '[data-recued-notifications-axis="notification"]',
-  );
+  // D-269 — the per-device switch: the Bridge row's channel switch is gone,
+  // and a pending per-device write must hold the route exactly as it did.
+  const toggle = page.getByRole('switch', {
+    name: 'Main browser notifications (bridge-main)',
+    exact: true,
+  });
   await toggle.focus();
   await page.keyboard.press('Enter');
   await expect(toggle).toHaveText('Updating…');
@@ -23143,7 +23085,7 @@ test('Settings keeps a pending notification write attached on route leave', asyn
   await expect(page).toHaveURL(/#settings\/notifications$/);
   await expect(toggle).toBeVisible();
   await expect(toggle).toBeFocused();
-  await expect(toggle).toHaveText('On');
+  await expect(toggle).toHaveText('Notifications On');
 
   await page.evaluate(() => window.__app.setHash('#chat'));
   await expect(page).toHaveURL(/#chat$/);
@@ -23335,6 +23277,13 @@ test('Settings notification Retry owns loading and advances into recovered contr
 
   await expect(page.getByRole('alert'))
     .toContainText('Notification channels unavailable.');
+  const describes = () =>
+    page.evaluate(() => window.__app.rpcCallCount('notifications.describe'));
+  // ⚠ NOT a fixed total. Two panels read this list on load (the channels and,
+  // since D-269, "What you are notified about"), so the failed load alone is
+  // two reads. Single-flight is the claim: Retry adds exactly ONE read.
+  await expect.poll(describes).toBeGreaterThan(0);
+  const beforeRetry = await describes();
   const retry = page.locator('[data-recued-notifications-retry]');
   await retry.focus();
   await page.keyboard.press('Enter');
@@ -23348,16 +23297,16 @@ test('Settings notification Retry owns loading and advances into recovered contr
     button.click();
     button.click();
   });
-  await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('notifications.describe')),
-  ).toBe(2);
+  await expect.poll(describes).toBe(beforeRetry + 1);
 
   await expect(retry).toHaveCount(0);
-  const firstSwitch = page.locator(
-    '[data-recued-notifications-row-toggle="bridge"]'
-      + '[data-recued-notifications-axis="notification"]',
-  );
-  await expect(firstSwitch).toHaveText('Off');
+  // D-269 — the Bridge row has no channel switch any more; its per-device
+  // switches are the first recovered control, and Retry advances into them.
+  const firstSwitch = page.getByRole('switch', {
+    name: 'Main browser notifications (bridge-main)',
+    exact: true,
+  });
+  await expect(firstSwitch).toHaveText('Notifications Off');
   await expect(firstSwitch).toBeFocused();
 });
 
@@ -23366,13 +23315,16 @@ test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({
   await page.evaluate(() => window.__app.setHash('#settings/server'));
 
   const tabs = page.locator(`[${SETTINGS_SUBTAB}]`);
+  // D-272 — Connect a device comes FIRST (the beginner's question), and the
+  // Reachability tab is gone, folded into it. The keyboard contract this test
+  // is about did not change; only the tabs it walks did.
+  const connect = page.locator(`[${SETTINGS_SUBTAB}="connect-device"]`);
   const exposure = page.locator(`[${SETTINGS_SUBTAB}="exposure"]`);
-  const reachability = page.locator(`[${SETTINGS_SUBTAB}="reachability"]`);
   const maintenance = page.locator(`[${SETTINGS_SUBTAB}="maintenance"]`);
   await expect(page.getByRole('tablist', {
     name: 'Server sections',
   })).toBeVisible();
-  await expect(exposure).toHaveAttribute('tabindex', '0');
+  await expect(connect).toHaveAttribute('tabindex', '0');
   expect(await tabs.evaluateAll((nodes) => nodes.filter(
     (node) => node.getAttribute('tabindex') === '0',
   ).length)).toBe(1);
@@ -23381,18 +23333,18 @@ test('Settings Server tabs form one full-size arrow-key keyboard stop', async ({
   );
   expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
 
-  await exposure.focus();
+  await connect.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(reachability).toHaveAttribute('aria-selected', 'true');
-  await expect(reachability).toHaveAttribute('tabindex', '0');
-  await expect(reachability).toBeFocused();
+  await expect(exposure).toHaveAttribute('aria-selected', 'true');
+  await expect(exposure).toHaveAttribute('tabindex', '0');
+  await expect(exposure).toBeFocused();
 
   await page.keyboard.press('End');
   await expect(maintenance).toHaveAttribute('aria-selected', 'true');
   await expect(maintenance).toBeFocused();
   await page.keyboard.press('Home');
-  await expect(exposure).toHaveAttribute('aria-selected', 'true');
-  await expect(exposure).toBeFocused();
+  await expect(connect).toHaveAttribute('aria-selected', 'true');
+  await expect(connect).toBeFocused();
 });
 
 test('Settings Exposure confirmations own keyboard focus', async ({ page }) => {

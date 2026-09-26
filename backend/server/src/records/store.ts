@@ -27,11 +27,16 @@ import {
   RECORDS_MAX_QUERY_ROWS,
   RECORDS_MAX_ROW_BYTES,
   RECORDS_MAX_TEXT_BYTES,
+  RECORDS_IMPORT_ECHO_CHARS,
+  RECORDS_IMPORT_HEADER_LIMIT,
+  RECORDS_IMPORT_PREVIEW_LIMIT,
   RECORDS_IMPORT_SAMPLE_LIMIT,
   RecordsContractError,
   isRecordsExecutionBinding,
   type RecordsErrorCode,
   type RecordsImportFailure,
+  type RecordsImportPreviewRow,
+  type RecordsImportRowOutcome,
   type RecordsImportResult,
   type EntitySchemaIngredientInput,
   type IngredientManifest,
@@ -71,8 +76,10 @@ import {
   type RecordsUpdateReviewFence,
 } from '@recued/contracts';
 import { hashRecipe } from '@recued/recipes';
-import { getTransform } from '@recued/transforms';
+import { csvColumns, getTransform } from '@recued/transforms';
 import {
+  dateFormatRefusal,
+  dateMismatchMessage,
   planCsvImport,
   validateCsvImportSpec,
   type CsvImportSpec,
@@ -539,6 +546,21 @@ export interface RecordsChangeNotice {
 /** What one imported row did. `'skipped'` and `'updated'` are reachable only
  *  under the matching `on_conflict` mode; a failure is a throw, never a value. */
 type RowOutcome = 'written' | 'replayed' | 'updated' | 'skipped';
+
+/** D-292 — how much of an import's text is re-read to echo its header. A header
+ *  row is one record at the top of the file; 64 KiB holds any real one many
+ *  times over, and a file whose first record is longer is not a spreadsheet
+ *  anyone can map by eye (the echo is display-only — the import's own parse of
+ *  the whole text is what decides everything written). */
+const IMPORT_HEADER_PREFIX_CHARS = 64 * 1024;
+
+/** D-292 — a string the import ECHOES back (a header name, a preview cell), cut
+ *  to `RECORDS_IMPORT_ECHO_CHARS` with a trailing `…`. Never applied to anything
+ *  written: a preview row shows at most a screenful, the rehearsal used it all. */
+const echoText = (value: string): string =>
+  value.length > RECORDS_IMPORT_ECHO_CHARS
+    ? `${value.slice(0, RECORDS_IMPORT_ECHO_CHARS)}…`
+    : value;
 
 const fail = (
   code: ConstructorParameters<typeof RecordsContractError>[0],
@@ -3167,6 +3189,12 @@ export const createRecordsStore = (
      *  ⚠ These are mutually exclusive by construction: a natural-key entity refuses a
      *  caller-supplied id outright, so `import` must not offer one. */
     const naturalKey = declaredNaturalKey(namespace, call.binding.entity);
+    // D-302 — the owner TYPES the date format, so a format that cannot be read is
+    // refused in their words first, not inside the spec problem list below.
+    const dateFormatProblem = dateFormatRefusal(
+      call.args.spec !== null && typeof call.args.spec === 'object'
+        ? (call.args.spec as { date_format?: unknown }).date_format : undefined);
+    if (dateFormatProblem !== null) fail('records_invalid', dateFormatProblem);
     const problems = validateCsvImportSpec(call.args.spec, writable, naturalKey);
     if (problems.length > 0) {
       fail('records_invalid', `import spec is not admissible: ${problems.join('; ')}`);
@@ -3184,6 +3212,43 @@ export const createRecordsStore = (
       {} as never,
     ) as Record<string, string>[];
     const plan = planCsvImport(rows, spec);
+    /** D-301 — ⛔ A DATE FORMAT THE FILE CONTRADICTS IS REFUSED, NOT HALF-APPLIED. A date
+     *  that reads only in another format means the file is not written the way the owner
+     *  said, so the dates that DID convert may be wrong — `04/12` is April or December
+     *  depending on which is true — and nothing afterwards could tell which lines those
+     *  were. Refused before any write, in a check exactly as in an import. */
+    if (plan.date_mismatch !== undefined) fail('records_invalid', dateMismatchMessage(plan.date_mismatch));
+
+    /** D-292 — WHAT THE FILE ACTUALLY HAS, measured by the same parser.
+     *
+     *  ⛔⛔ BEFORE THIS A MISSPELT COLUMN WAS SILENT: the planner reads a column
+     *  the file lacks as an empty cell, so `Date ` against a header `Date`
+     *  imported every row with no date and reported `failed: 0`. The spec is
+     *  now compared with the file and the difference is REPORTED — not halted
+     *  on (see `RecordsImportResult.columns_missing`).
+     *
+     *  🔑 Presence is read off a parsed ROW, not the raw header: `csv_parse`
+     *  pads every row to the header and DROPS the names it refuses
+     *  (`__proto__` / `constructor` / `prototype`), so a row's own keys are
+     *  exactly the columns a mapping can read — a dropped name is missing in
+     *  the only sense that matters. The raw header answers only when the file
+     *  has no data rows, where nothing is imported either way.
+     *
+     *  ⚠ The echoed header comes from a PREFIX of the text: a header row is
+     *  one record at the top, and re-parsing a 32 MiB file whole to display a
+     *  dozen names would double the parse for nothing. A header longer than
+     *  the prefix is cut, which only shortens what is displayed. */
+    const headerNames = csvColumns({
+      // `fail` above guarantees a string; the check restates it for the compiler.
+      text: typeof csv === 'string' ? csv.slice(0, IMPORT_HEADER_PREFIX_CHARS) : '',
+      ...(spec.delimiter === undefined ? {} : { delimiter: spec.delimiter }),
+    });
+    const firstRow = rows[0];
+    const hasColumn = firstRow === undefined
+      ? (column: string): boolean => headerNames.includes(column)
+      : (column: string): boolean => Object.prototype.hasOwnProperty.call(firstRow, column);
+    const columnsMissing = [...new Set(spec.columns.map((entry) => entry.column))]
+      .filter((column) => !hasColumn(column));
 
     // ⛔⛔ THE INNER WRITE RE-ENTERS `execute`, exactly as a batch's does — not a
     // second write path one edit away from disagreeing with the first. The
@@ -3307,12 +3372,29 @@ export const createRecordsStore = (
     let failed = 0;
     let halted: string | undefined;
     const failures: RecordsImportFailure[] = [];
+    /** D-292 — each of the first rows' OWN outcome in a dry run, noted where
+     *  the outcome is decided, so the preview reports what the rehearsal did to
+     *  that line rather than a guess. Only rows `< previewLimit` are kept; a
+     *  real import keeps none. */
+    const previewLimit = dryRun ? Math.min(RECORDS_IMPORT_PREVIEW_LIMIT, plan.rows.length) : 0;
+    const previewOutcomes = new Map<number, {
+      outcome: RecordsImportRowOutcome; code?: RecordsErrorCode; reason?: string;
+    }>();
+    const notePreview = (
+      index: number, outcome: RecordsImportRowOutcome, code?: RecordsErrorCode, reason?: string,
+    ): void => {
+      if (index >= previewLimit) return;
+      previewOutcomes.set(index, {
+        outcome, ...(code === undefined ? {} : { code }), ...(reason === undefined ? {} : { reason }),
+      });
+    };
     const record = (index: number, id: string, error: unknown): void => {
       const { code, reason } = classify(error);
       failed += 1;
       if (failures.length < RECORDS_IMPORT_SAMPLE_LIMIT) {
         failures.push({ line: index + 2, id, code, reason });
       }
+      notePreview(index, 'failed', code, reason);
       if (HALTING.has(code)) halted = `${code}: ${reason}`;
     };
 
@@ -3324,6 +3406,9 @@ export const createRecordsStore = (
         // WAL, and a crash costs at most this slice — which stable ids make a
         // re-run able to finish.
         const outcomes = db.transaction(() => slice.map(writeRow))();
+        // ⚠ Noted only AFTER the slice committed: a slice that throws is rolled
+        // back and replayed row by row below, and the replay is what decides.
+        outcomes.forEach((outcome, offset) => { notePreview(start + offset, outcome); });
         written += outcomes.filter((o) => o === 'written').length;
         replayed += outcomes.filter((o) => o === 'replayed').length;
         updated += outcomes.filter((o) => o === 'updated').length;
@@ -3343,6 +3428,7 @@ export const createRecordsStore = (
           if (halted !== undefined) break;
           try {
             const outcome = writeRow(row);
+            notePreview(start + offset, outcome);
             if (outcome === 'replayed') replayed += 1;
             else if (outcome === 'updated') updated += 1;
             else if (outcome === 'skipped') skipped += 1;
@@ -3382,6 +3468,26 @@ export const createRecordsStore = (
       writeAllRows();
     }
 
+    /** D-292 — the first rows as the rehearsal handled them. FILE-MAPPED fields
+     *  only, in spec order: `defaults` are the same constant on every line and
+     *  would bury the one thing a preview is for — seeing where each column
+     *  landed. A row the import never reached (it halted first) says so. */
+    const mappedFields = [...new Set(spec.columns.map((entry) => entry.field))];
+    const previewRows = (): RecordsImportPreviewRow[] =>
+      plan.rows.slice(0, previewLimit).map((row, index) => {
+        const noted = previewOutcomes.get(index) ?? { outcome: 'not_attempted' as const };
+        return {
+          line: index + 2,
+          outcome: noted.outcome,
+          values: Object.fromEntries(mappedFields.map((field) => {
+            const value = row.values[field];
+            return [field, typeof value === 'string' ? echoText(value) : value ?? null];
+          })),
+          ...(noted.code === undefined ? {} : { code: noted.code }),
+          ...(noted.reason === undefined ? {} : { reason: noted.reason }),
+        };
+      });
+
     const result: RecordsImportResult = {
       rows_read: plan.rows_read,
       written,
@@ -3401,6 +3507,9 @@ export const createRecordsStore = (
       unparsed_sample: plan.unparsed.slice(0, RECORDS_IMPORT_SAMPLE_LIMIT),
       ...(halted === undefined ? {} : { halted_reason: halted }),
       ...(dryRun ? { dry_run: true as const } : {}),
+      header: headerNames.slice(0, RECORDS_IMPORT_HEADER_LIMIT).map(echoText),
+      columns_missing: columnsMissing,
+      ...(dryRun ? { preview_sample: previewRows() } : {}),
     };
 
     /** ⛔⛔ THE DURABLE RECORD OF WHAT THIS IMPORT ACTUALLY DID, emitted HERE and

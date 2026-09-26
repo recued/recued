@@ -40,7 +40,7 @@
  *  §10 step 2. Pickup: internal design notes.
  */
 import { parseOpId } from './op-model.js';
-import { getKernelDomain } from './kernel-ops.js';
+import { getKernelDomain, kernelVerbRiskTier } from './kernel-ops.js';
 import type { RiskTier } from './ingredient.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -535,8 +535,10 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.memory.link.delete', 'memory', 'link-delete', 'write', 'memory'),
   op('core.memory.link.list', 'memory', 'link-list', 'read', 'memory'),
   op('core.memory.timeline.read', 'memory', 'timeline-read', 'read', 'memory'),
-  op('core.memory.annotate', 'memory', 'data-annotate', 'write', 'memory'),
-  op('core.memory.link', 'memory', 'data-link', 'write', 'memory'),
+  // ⛔ `core.memory.annotate` (`data-annotate`) and `core.memory.link` (`data-link`)
+  // were RETIRED 2026-09-23: never wired on the server (only a test double
+  // supplied their dispatchers), used by no shipped recipe, and duplicates of
+  // `annotation.create` / `link.create`, which write the same tables.
   // D-187 slice 3b — NATIVE verb-op for the `recued_getAudit` MCP tool (run-history /
   // audit-log read). No backing ingredient. OWNER-default-only (sensitive — run history
   // reveals the owner's automation activity): see OWNER_DEFAULT_ONLY_GRANT_ENTRIES.
@@ -777,8 +779,18 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
    *  with no warehouse at all — a file-reading transform would be both an
    *  unaudited second path to those bytes and undefined on two of three hosts.
    *  Transforms operate on what is already in step state; kernel ops are how
-   *  bytes enter it. */
-  op('core.storage.csv.filter', 'storage', 'csv-filter', 'read', 'file'),
+   *  bytes enter it.
+   *
+   *  ⛔ `csv.filter` SAVES, SO IT IS A WRITE (re-rated 2026-09-23). It stores the
+   *  matching rows as a NEW `data.file.received` record, one per run, exactly as
+   *  `file.persist` does; it was rated `read` on its name. That rating let a view
+   *  that runs unasked add a file on every tab switch, and let an MCP caller
+   *  under a read ceiling do the same without asking. Its id stays: installed
+   *  bodies reach it through the `csv-filter` slug and granted contracts name
+   *  this id, so re-binding either would strand them. The READING twin is
+   *  `csv.rows`, which returns the matches as a bounded value and saves nothing. */
+  op('core.storage.csv.filter', 'storage', 'csv-filter', 'write', 'file'),
+  op('core.storage.csv.rows', 'storage', 'csv-rows', 'read', 'file'),
   op('core.storage.csv.stats', 'storage', 'csv-stats', 'read', 'file'),
   op('core.storage.csv.columns', 'storage', 'csv-columns', 'read', 'file'),
   op('core.storage.data-file-read', 'storage', 'data-file-read', 'read', 'file'),
@@ -1244,3 +1256,107 @@ export const kernelOpBackingSlug = (opId: string): string | undefined =>
  *  op-scoped standing contract can match the kernel op on the op axis. */
 export const kernelOpForBackingSlug = (slug: string): string | undefined =>
   KERNEL_OP_BY_BACKING_SLUG.get(slug);
+
+// ────────────────────────────────────────────────────────────────
+// D-282 — the two questions a surface must answer before running a
+// recipe WITHOUT being asked
+// ────────────────────────────────────────────────────────────────
+
+/** The kernel-defined risk of ANY `core.*` op — registered or canonical —
+ *  or `null` when this file cannot classify it, in which case the caller
+ *  must fail closed.
+ *
+ *  ⛔⛔ WHY THIS EXISTS: `recipeDeclaredOps` skips every op whose tier is not
+ *  `pack` (`if (parsed.tier !== 'pack') continue`), so `isProvablyReadOnly` —
+ *  the predicate that decides a recipe may AUTO-RUN as a pack view, and which
+ *  D-282 B4 then re-runs on every data burst — was blind to the whole kernel
+ *  tier. Measured over the shipped corpus with the real classifier: of 396
+ *  views, 49 contained a kernel op this registry itself calls `write`,
+ *  including `core.mail.send` in `overdue-invoice-chase` and
+ *  `send-approved-stripe-invoice-chase`. `mail-estimate-quickbooks` —
+ *  two reads and a `core.mail.send` — answered `isProvablyReadOnly → true`.
+ *
+ *  🔑 The information was never missing. It is the `risk` on the row right
+ *  above, stamped for all 152 ops (76 read / 67 write / 9 destructive). The
+ *  proof simply never read it.
+ *
+ *  ⚠ TWO KINDS OF `core.*` OP, AND ONLY ONE IS IN THIS REGISTRY. The canonical
+ *  conventions (`core.crm.*` / `core.acct.*`) are deliberately unregistered —
+ *  they run-resolve to whichever vendor is bound — so their risk comes from the
+ *  VERB, exactly as `kernelOpRunnability` derives the unbound behaviour from it.
+ *  An op that is neither is unknown, and unknown is not evidence of innocence.
+ *
+ *  ⚠ The alias is NOT checked here, unlike `kernelOpRunnability`, because the
+ *  verb alone decides EFFECT: `core.crm.invoice.search` (an unregistered alias)
+ *  is still a read, and it fails closed at dispatch on its own. Being lenient
+ *  about the alias can only render an error; being lenient about the verb would
+ *  let a write auto-run. */
+export const kernelOpRiskTier = (opId: string): RiskTier | null => {
+  const registered = KERNEL_OP_BY_ID.get(opId);
+  if (registered !== undefined) return registered.risk;
+  const parsed = parseOpId(opId);
+  if (parsed === null || parsed.tier !== 'kernel') return null;
+  const dom = getKernelDomain(parsed.domain);
+  // A closed-kind domain's ops are ALL registered, so an unregistered one is a
+  // typo or a retired id — not something to guess a tier for.
+  if (dom === undefined || dom.class !== 'canonical_convention') return null;
+  const segments = parsed.op.split('.');
+  // `<alias>.<verb>` exactly — `core.crm.deal.extra.search` is malformed, and
+  // reading its last segment as the verb would classify a shape the runtime
+  // refuses.
+  if (segments.length !== 2) return null;
+  return kernelVerbRiskTier(segments[1]!);
+};
+
+/** Does running this op COST the owner something per run — tokens, credits,
+ *  a metered third party?
+ *
+ *  🔑🔑 THIS IS A SECOND AXIS, NOT A STRICTER RISK. Every `core.ai.*` op is
+ *  declared `risk: 'read'` and that declaration is CORRECT: summarizing changes
+ *  nothing, reverses nothing, and has nothing to audit as an action. What makes
+ *  it unfit to run unprompted — and far more unfit to re-run on every broadcast
+ *  — is that it spends. Risk has no vocabulary for that, and widening `risk` to
+ *  carry it would corrupt the one field the approval gate reads.
+ *
+ *  ⚠ Derived from `entity`, which every registry row must declare, rather than
+ *  from a new flag nobody would remember to set: all 11 `core.ai.*` ops carry
+ *  `entity: 'ai'`, and a twelfth cannot be added without choosing an entity.
+ *
+ *  ⛔ KNOWN LIMIT: a Tier-P pack op that wraps an AI ingredient is invisible
+ *  here. Nothing in a pack op's declaration says it spends, so this reaches the
+ *  kernel surface only. Measured 2026-09-21: every AI call in the shipped corpus
+ *  goes through `core.ai.*` (0 `ai-*` transforms exist), so the surface is
+ *  complete TODAY and would not stay complete on its own. */
+export const kernelOpSpendsPerRun = (opId: string): boolean =>
+  KERNEL_OP_BY_ID.get(opId)?.entity === 'ai';
+
+/** Does running this op DELIVER something to a person — a message, a
+ *  notification, an approval request?
+ *
+ *  🔑🔑 THE SAME SHAPE AS {@link kernelOpSpendsPerRun}, FOR THE SAME REASON.
+ *  `core.notification.send` and `core.preapproval.request` are declared
+ *  `risk: 'read'`, correctly for the approval gate: they change no stored
+ *  record, so asking the owner before a notification reaches the owner would
+ *  protect nothing. But a surface that runs with nobody asking must not send
+ *  anything, and risk has no word for that. Found 2026-09-23:
+ *  `meeting-action-item-digest-fireflies` reads meetings and, by default, sends
+ *  a notification, so it classified as a VIEW and would have notified the
+ *  owner's channels on every tab switch and every data burst. Only the
+ *  lowering bug that hid every installed kernel step kept it off screen.
+ *
+ *  ⚠ Derived from `entity`, like spend: every notification-entity op delivers,
+ *  and a new one cannot be added without choosing an entity. */
+export const kernelOpDelivers = (opId: string): boolean =>
+  KERNEL_OP_BY_ID.get(opId)?.entity === 'notification';
+
+/** Is this op a WATCHER — a trigger-position `core.watch.*` op?
+ *
+ *  ⛔ NEVER A READ A VIEW MAY RUN, WHATEVER ITS TIER. Watchers are `risk: 'read'`
+ *  for the approval gate, but `core.watch.http` fetches a URL the recipe names
+ *  and `core.watch.webhook` drains its own queue (D-228 recorded both, for MCP
+ *  exposure). None can reach a view today — the validator admits watchers only
+ *  in `trigger_steps`, `trigger_steps` requires `auto_run`, and `auto_run` makes
+ *  a recipe an automation — so this is the backstop for when any of those three
+ *  loosens. Derived from `entity`, like spend and delivery. */
+export const kernelOpIsWatcher = (opId: string): boolean =>
+  KERNEL_OP_BY_ID.get(opId)?.entity === 'watch';

@@ -7,15 +7,15 @@
         "url": "https://api.pulumi.com/api/openapi/pulumi-spec.json",
         "reference_url": "https://www.pulumi.com/docs/reference/cloud-rest-api/",
         "reference_source_url": "https://raw.githubusercontent.com/pulumi/docs/4fd0c5118c6c909fcc2209e1d0b76308c2cac50c/layouts/shortcodes/cloud-rest-api-intro.html",
-        "bytes": 2223004,
-        "sha256": "996a8cc6d564799b45f72a287542dd6456a8cc9ef73c2a11aa21545cbac3a176",
+        "bytes": 2355616,
+        "sha256": "2254881e2eebda5f9e7498b54b95e7db2b0f0ae20a014e89134be2ce6379c48f",
         "reference_bytes": 1473,
         "reference_sha256": "4bff8544a9b7f891f8d06bb1fe70fbc34e6ebc0f3b752c2596ca6c6622bc55b8",
-        "retrieved_on": "2026-07-20",
+        "retrieved_on": "2026-09-25",
         "mutability": "The live first-party OpenAPI is mutable and byte/hash locked. The separate origin/auth/header authority is fetched from an immutable first-party docs commit and independently byte/hash verified before any artifact is written.",
         "evidence": [
-          "619 official operations across 472 paths",
-          "555 nondeprecated and 64 provider-deprecated operations",
+          "626 official operations across 479 paths",
+          "561 nondeprecated and 65 provider-deprecated operations",
           "OpenAPI method, path, parameter, request, response, media, and deprecation contracts",
           "REST guide managed origin https://api.pulumi.com",
           "REST guide Authorization: token {token} authentication contract",
@@ -24,45 +24,45 @@
         "openapi": "3.0.3",
         "title": "Pulumi APIs",
         "api_version": "1.0.0",
-        "official_path_count": 472,
+        "official_path_count": 479,
         "declared_servers": null,
         "security_schemes": {},
         "top_level_security": null
       }
     },
-    "official_operation_count": 619,
-    "nondeprecated_operation_count": 555,
-    "deprecated_operation_count": 64,
-    "admitted_operation_count": 549,
-    "exclusion_count": 70,
+    "official_operation_count": 626,
+    "nondeprecated_operation_count": 561,
+    "deprecated_operation_count": 65,
+    "admitted_operation_count": 555,
+    "exclusion_count": 71,
     "official_method_counts": {
       "DELETE": 59,
-      "GET": 284,
+      "GET": 288,
       "HEAD": 6,
       "PATCH": 56,
-      "POST": 200,
+      "POST": 203,
       "PUT": 14
     },
     "admitted_method_counts": {
       "DELETE": 52,
-      "GET": 252,
+      "GET": 256,
       "PATCH": 52,
-      "POST": 180,
+      "POST": 182,
       "PUT": 13
     },
     "official_tag_counts": {
-      "AI": 1,
+      "AI": 2,
       "AI Agents": 13,
       "CloudSetup": 10,
       "Deployments": 40,
       "Environments": 117,
-      "Insights": 46,
+      "Insights": 48,
       "Miscellaneous": 4,
       "Neo": 7,
-      "Organizations": 158,
-      "Registry": 28,
+      "Organizations": 159,
+      "Registry": 29,
       "RegistryPreview": 10,
-      "Stacks": 115,
+      "Stacks": 117,
       "Users": 16,
       "VCS Integrations": 49,
       "Workflows": 5
@@ -72,18 +72,18 @@
       "CloudSetup": 10,
       "Deployments": 38,
       "Environments": 72,
-      "Insights": 45,
+      "Insights": 47,
       "Miscellaneous": 4,
       "Neo": 7,
-      "Organizations": 151,
-      "Registry": 27,
-      "Stacks": 114,
+      "Organizations": 152,
+      "Registry": 28,
+      "Stacks": 116,
       "Users": 15,
       "VCS Integrations": 49,
       "Workflows": 5
     },
     "exclusion_counts": {
-      "provider_deprecated": 64,
+      "provider_deprecated": 65,
       "runtime_method_unsupported": 5,
       "streaming_response_unsupported": 1
     },
@@ -91,66 +91,66 @@
       "pulumi-cloud-environments-read": 34,
       "pulumi-cloud-environments-write": 38,
       "pulumi-cloud-deployments-runners": 43,
-      "pulumi-cloud-insights": 45,
+      "pulumi-cloud-insights": 47,
       "pulumi-cloud-vcs-integrations": 49,
-      "pulumi-cloud-registry-service": 31,
+      "pulumi-cloud-registry-service": 32,
       "pulumi-cloud-account-agents-setup": 44,
       "pulumi-cloud-organization-identity": 54,
-      "pulumi-cloud-organization-governance": 39,
+      "pulumi-cloud-organization-governance": 40,
       "pulumi-cloud-organization-automation": 29,
       "pulumi-cloud-organization-change-search": 29,
       "pulumi-cloud-stack-state": 30,
-      "pulumi-cloud-stack-activity": 31,
+      "pulumi-cloud-stack-activity": 33,
       "pulumi-cloud-stack-engine": 53
     },
     "composition_bytes": {
-      "pulumi-cloud-environments-read": 74839,
-      "pulumi-cloud-environments-write": 96021,
+      "pulumi-cloud-environments-read": 74829,
+      "pulumi-cloud-environments-write": 96165,
       "pulumi-cloud-deployments-runners": 102174,
-      "pulumi-cloud-insights": 87157,
+      "pulumi-cloud-insights": 92510,
       "pulumi-cloud-vcs-integrations": 99090,
-      "pulumi-cloud-registry-service": 70776,
-      "pulumi-cloud-account-agents-setup": 84432,
-      "pulumi-cloud-organization-identity": 107286,
-      "pulumi-cloud-organization-governance": 80723,
+      "pulumi-cloud-registry-service": 74032,
+      "pulumi-cloud-account-agents-setup": 84889,
+      "pulumi-cloud-organization-identity": 107805,
+      "pulumi-cloud-organization-governance": 82432,
       "pulumi-cloud-organization-automation": 62809,
-      "pulumi-cloud-organization-change-search": 63019,
-      "pulumi-cloud-stack-state": 69464,
-      "pulumi-cloud-stack-activity": 81452,
+      "pulumi-cloud-organization-change-search": 63029,
+      "pulumi-cloud-stack-state": 69482,
+      "pulumi-cloud-stack-activity": 87453,
       "pulumi-cloud-stack-engine": 136212
     },
     "request_body_counts": {
-      "none": 353,
-      "raw": 196,
+      "none": 356,
+      "raw": 199,
       "official_required": 0,
-      "admitted_required": 196
+      "admitted_required": 199
     },
     "request_media_counts": {
-      "application/json": 195,
-      "application/x-yaml": 1
+      "application/json": 197,
+      "application/x-yaml": 2
     },
     "request_body_shape_counts": {
       "array": 1,
-      "object": 194,
-      "string": 1
+      "object": 196,
+      "string": 2
     },
     "response_mode_counts": {
       "empty": 155,
       "file_ref": 1,
-      "json": 364,
-      "json_or_text": 15,
+      "json": 368,
+      "json_or_text": 17,
       "text": 10,
       "undocumented_success": 4
     },
     "response_media_counts": {
-      "application/json": 379,
+      "application/json": 385,
       "application/x-tar": 1,
       "application/x-yaml": 5,
-      "text/markdown": 6,
+      "text/markdown": 8,
       "text/plain": 4
     },
     "success_status_set_counts": {
-      "200": 395,
+      "200": 401,
       "201": 12,
       "202": 4,
       "204": 124,
@@ -158,18 +158,18 @@
       "none": 4
     },
     "risk_counts": {
-      "admin": 58,
-      "destructive": 239,
-      "read": 252
+      "admin": 59,
+      "destructive": 240,
+      "read": 256
     },
     "approval_counts": {
-      "always": 297,
-      "never": 252
+      "always": 299,
+      "never": 256
     },
     "idempotency_counts": {
       "idempotent": 52,
-      "non_idempotent": 245,
-      "safe": 252
+      "non_idempotent": 247,
+      "safe": 256
     },
     "pagination": {
       "automatic_operation_count": 33,
@@ -268,7 +268,7 @@
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
-      "official_operation_ids_present": 619,
+      "official_operation_ids_present": 626,
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_official_operation_id>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
@@ -330,7 +330,7 @@
         }
       ],
       "template_lookup_constraint": "query.url or query.project is provider-enforced because the closed request-schema root does not admit anyOf.",
-      "systematic_request_body_required_repair": "196 body-bearing operations omit requestBody.required; all are admitted as required raw payloads.",
+      "systematic_request_body_required_repair": "199 body-bearing operations omit requestBody.required; all are admitted as required raw payloads.",
       "static_accept_default": "application/vnd.pulumi+8",
       "response_unsafe_integers": "All application/json responses use unsafe_integers:string.",
       "binary_capture_routes": [
@@ -379,6 +379,7 @@
         "POST /api/orgs/{orgName}/teams/{teamName}/tokens",
         "POST /api/orgs/{orgName}/tokens",
         "POST /api/projects/{orgName}/{projectName}/decrypt",
+        "POST /api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/decrypt",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/deployments/settings",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/destroy/{updateID}",
@@ -459,6 +460,7 @@
         "GET /api/esc/providers/{providerName}/schema",
         "GET /api/esc/rotators/{rotatorName}/schema",
         "GET /api/orgs/{orgName}/auditlogs",
+        "GET /api/orgs/{orgName}/auditlogs/event-types",
         "GET /api/orgs/{orgName}/auditlogs/export",
         "GET /api/orgs/{orgName}/auditlogs/export/config",
         "GET /api/orgs/{orgName}/auditlogs/reader-kind",
@@ -563,6 +565,7 @@
         "POST /api/projects/{orgName}/{projectName}/batch-decrypt",
         "POST /api/projects/{orgName}/{projectName}/decrypt",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/batch-decrypt",
+        "POST /api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/decrypt",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/decrypt/log-batch-decryption",
         "POST /api/stacks/{orgName}/{projectName}/{stackName}/decrypt/log-decryption",
@@ -896,8 +899,8 @@
         "pagination": null
       }
     ],
-    "official_operation_ids_sha256": "be97fad2df52b2bf554fe7657104344d5ff04d4bafb4457d90af7f93a1495ec7",
-    "generated_operation_ids_sha256": "91f4fcd0ddd5f5ae04622d4bfef03e2b5d827a6fc47ec85cd6edcc00a9e7b328"
+    "official_operation_ids_sha256": "9c6cf1a6b2df9caa6f35801b949cec3c5f300b484d64f7b2bd991033f50b0748",
+    "generated_operation_ids_sha256": "0e1e979321940cc8ce4df641a64c52c4adceca2bf7c0df36d578b0ad0fc2e353"
   },
   "official_operations": [
     {
@@ -1042,6 +1045,37 @@
       "exclusion_reason": null,
       "pack": "pulumi-cloud-account-agents-setup",
       "op": "ai_agents.claim_status"
+    },
+    {
+      "key": "POST /api/ai/chat/preview",
+      "method": "POST",
+      "path": "/api/ai/chat/preview",
+      "primary_tag": "AI",
+      "tags": [
+        "AI"
+      ],
+      "official_operation_id": "CopilotSkill",
+      "generated_operation_id": null,
+      "deprecated": true,
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": false,
+      "exclusion": "provider_deprecated",
+      "exclusion_reason": "The first-party OpenAPI marks this operation deprecated.",
+      "pack": null,
+      "op": null
     },
     {
       "key": "POST /api/ai/template",
@@ -3736,10 +3770,14 @@
       "official_operation_id": "CheckYAML_esc",
       "generated_operation_id": "environments.check_yaml_esc",
       "deprecated": false,
-      "request_media": [],
+      "request_media": [
+        "application/x-yaml"
+      ],
       "official_request_body_required": false,
-      "request_body_types": [],
-      "request_body_shape": null,
+      "request_body_types": [
+        "string"
+      ],
+      "request_body_shape": "string",
       "success_statuses": [
         "200"
       ],
@@ -3905,11 +3943,9 @@
       "request_body_types": [],
       "request_body_shape": null,
       "success_statuses": [
-        "200"
+        "204"
       ],
-      "response_media": [
-        "application/json"
-      ],
+      "response_media": [],
       "selected": false,
       "exclusion": "runtime_method_unsupported",
       "exclusion_reason": "The current REST composition binding does not admit HEAD; emitting GET would change semantics.",
@@ -5556,6 +5592,67 @@
       "op": "environments.get_rotator_schema"
     },
     {
+      "key": "GET /api/insights/graph/schema",
+      "method": "GET",
+      "path": "/api/insights/graph/schema",
+      "primary_tag": "Insights",
+      "tags": [
+        "Insights",
+        "ResourceSearch"
+      ],
+      "official_operation_id": "GetGraphQuerySchema",
+      "generated_operation_id": "insights.get_graph_query_schema",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json",
+        "text/markdown"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-insights",
+      "op": "insights.get_graph_query_schema"
+    },
+    {
+      "key": "POST /api/insights/{orgName}/graph/query",
+      "method": "POST",
+      "path": "/api/insights/{orgName}/graph/query",
+      "primary_tag": "Insights",
+      "tags": [
+        "Insights",
+        "ResourceSearch"
+      ],
+      "official_operation_id": "GraphQuery",
+      "generated_operation_id": "insights.graph_query",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-insights",
+      "op": "insights.graph_query"
+    },
+    {
       "key": "POST /api/oauth/token",
       "method": "POST",
       "path": "/api/oauth/token",
@@ -5845,6 +5942,34 @@
       "exclusion_reason": null,
       "pack": "pulumi-cloud-organization-governance",
       "op": "organizations.list_audit_log_events_handler_v1"
+    },
+    {
+      "key": "GET /api/orgs/{orgName}/auditlogs/event-types",
+      "method": "GET",
+      "path": "/api/orgs/{orgName}/auditlogs/event-types",
+      "primary_tag": "Organizations",
+      "tags": [
+        "Organizations",
+        "AuditLogs"
+      ],
+      "official_operation_id": "ListAuditLogEventTypes",
+      "generated_operation_id": "organizations.list_audit_log_event_types",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-organization-governance",
+      "op": "organizations.list_audit_log_event_types"
     },
     {
       "key": "GET /api/orgs/{orgName}/auditlogs/export",
@@ -10344,10 +10469,14 @@
       "official_operation_id": "CheckYAML_preview",
       "generated_operation_id": null,
       "deprecated": true,
-      "request_media": [],
+      "request_media": [
+        "application/x-yaml"
+      ],
       "official_request_body_required": false,
-      "request_body_types": [],
-      "request_body_shape": null,
+      "request_body_types": [
+        "string"
+      ],
+      "request_body_shape": "string",
       "success_statuses": [
         "200"
       ],
@@ -10542,11 +10671,9 @@
       "request_body_types": [],
       "request_body_shape": null,
       "success_statuses": [
-        "200"
+        "204"
       ],
-      "response_media": [
-        "application/json"
-      ],
+      "response_media": [],
       "selected": false,
       "exclusion": "provider_deprecated",
       "exclusion_reason": "The first-party OpenAPI marks this operation deprecated.",
@@ -13698,6 +13825,34 @@
       "op": "registry.post_publish_template_version_complete"
     },
     {
+      "key": "GET /api/registry/templates/{source}/{publisher}/{name}/versions/{version}/readme",
+      "method": "GET",
+      "path": "/api/registry/templates/{source}/{publisher}/{name}/versions/{version}/readme",
+      "primary_tag": "Registry",
+      "tags": [
+        "Registry"
+      ],
+      "official_operation_id": "GetTemplateReadme",
+      "generated_operation_id": "registry.get_template_readme",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json",
+        "text/markdown"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-registry-service",
+      "op": "registry.get_template_readme"
+    },
+    {
       "key": "GET /api/registry/terraform-modules",
       "method": "GET",
       "path": "/api/registry/terraform-modules",
@@ -14057,6 +14212,37 @@
       "exclusion_reason": null,
       "pack": "pulumi-cloud-stack-state",
       "op": "stacks.batch_encrypt_value"
+    },
+    {
+      "key": "POST /api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
+      "method": "POST",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
+      "primary_tag": "Stacks",
+      "tags": [
+        "Stacks"
+      ],
+      "official_operation_id": "BeginUpdate",
+      "generated_operation_id": "stacks.begin_update",
+      "deprecated": false,
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-stack-activity",
+      "op": "stacks.begin_update"
     },
     {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/collaborators",
@@ -15995,6 +16181,33 @@
       "exclusion_reason": null,
       "pack": "pulumi-cloud-stack-activity",
       "op": "stacks.update_stack_notification_settings"
+    },
+    {
+      "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/outputs",
+      "method": "GET",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/outputs",
+      "primary_tag": "Stacks",
+      "tags": [
+        "Stacks"
+      ],
+      "official_operation_id": "GetStackOutputs",
+      "generated_operation_id": "stacks.get_stack_outputs",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-stack-activity",
+      "op": "stacks.get_stack_outputs"
     },
     {
       "key": "POST /api/stacks/{orgName}/{projectName}/{stackName}/ownership",
@@ -25628,7 +25841,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "153d2714f711b29eebe4ae94e407dfa6a241a95b29c99d314885f8a990d64ca9"
+      "response_schema_sha256": "14264f130cb3c9ea7aa3bb4353151e420938a091f446bb4f1104575b1a2afe88"
     },
     "GET /api/esc/environments": {
       "key": "GET /api/esc/environments",
@@ -26238,12 +26451,16 @@
         }
       ],
       "parameter_repairs": [],
-      "request_media": [],
+      "request_media": [
+        "application/x-yaml"
+      ],
       "official_request_body_required": false,
-      "admitted_request_body_required": false,
-      "request_body_types": [],
-      "request_body_shape": null,
-      "request_body_mode": "none",
+      "admitted_request_body_required": true,
+      "request_body_types": [
+        "string"
+      ],
+      "request_body_shape": "string",
+      "request_body_mode": "raw",
       "success_statuses": [
         "200"
       ],
@@ -26257,7 +26474,7 @@
       "pagination": null,
       "pagination_signal": false,
       "manual_pagination": null,
-      "sensitive_request": false,
+      "sensitive_request": true,
       "sensitive_response": true,
       "secret_response": true,
       "secret_response_fields": [
@@ -26266,7 +26483,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
+      "response_schema_sha256": "42783fda742670b7de700adf20769066b0aa9afe47682263d48e49e66d53d01f"
     },
     "POST /api/esc/environments/{orgName}/yaml/open": {
       "key": "POST /api/esc/environments/{orgName}/yaml/open",
@@ -26871,7 +27088,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
+      "response_schema_sha256": "42783fda742670b7de700adf20769066b0aa9afe47682263d48e49e66d53d01f"
     },
     "POST /api/esc/environments/{orgName}/{projectName}/{envName}/clone": {
       "key": "POST /api/esc/environments/{orgName}/{projectName}/{envName}/clone",
@@ -32625,7 +32842,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
+      "response_schema_sha256": "42783fda742670b7de700adf20769066b0aa9afe47682263d48e49e66d53d01f"
     },
     "GET /api/esc/environments/{orgName}/{projectName}/{envName}/versions/{version}/decrypt": {
       "key": "GET /api/esc/environments/{orgName}/{projectName}/{envName}/versions/{version}/decrypt",
@@ -33481,7 +33698,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "ee268e8f1b81315e0e9322bd55ef0beb63b9793b91ce7596ead280371a866e24"
+      "response_schema_sha256": "7407f42c8e4b62a03d21249bb94233fcc42d196d9b2c2372ba1e4dec162529f0"
     },
     "GET /api/esc/rotators": {
       "key": "GET /api/esc/rotators",
@@ -33612,7 +33829,123 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "ee268e8f1b81315e0e9322bd55ef0beb63b9793b91ce7596ead280371a866e24"
+      "response_schema_sha256": "7407f42c8e4b62a03d21249bb94233fcc42d196d9b2c2372ba1e4dec162529f0"
+    },
+    "GET /api/insights/graph/schema": {
+      "key": "GET /api/insights/graph/schema",
+      "official_operation_id": "GetGraphQuerySchema",
+      "generated_operation_id": "insights.get_graph_query_schema",
+      "pack": "pulumi-cloud-insights",
+      "op": "insights.get_graph_query_schema",
+      "method": "GET",
+      "path": "/api/insights/graph/schema",
+      "primary_tag": "Insights",
+      "tags": [
+        "Insights",
+        "ResourceSearch"
+      ],
+      "summary": "GetGraphQuerySchema",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json",
+        "text/markdown"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json_or_text",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "6972c11ef1dff359197ba628ab3e6b5ea1072be9ef9dbd1d7513c0da22ae9308"
+    },
+    "POST /api/insights/{orgName}/graph/query": {
+      "key": "POST /api/insights/{orgName}/graph/query",
+      "official_operation_id": "GraphQuery",
+      "generated_operation_id": "insights.graph_query",
+      "pack": "pulumi-cloud-insights",
+      "op": "insights.graph_query",
+      "method": "POST",
+      "path": "/api/insights/{orgName}/graph/query",
+      "primary_tag": "Insights",
+      "tags": [
+        "Insights",
+        "ResourceSearch"
+      ],
+      "summary": "GraphQuery",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "admitted_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": true,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "e846008724c241cbc7e6ad56b98dca6ebb561b2ec6454376e012bd27eb6c5cea"
     },
     "POST /api/oauth/token": {
       "key": "POST /api/oauth/token",
@@ -33710,7 +34043,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "d7a19ad6de43b74d74eee1584d61d8a1cd8e3460563dc8378a32bea8f4cbeb1e"
+      "response_schema_sha256": "ac79d5f21b24bc32782380d222adfb19224f8c68945623ee78496c56c56d870e"
     },
     "GET /api/orgs/{orgName}": {
       "key": "GET /api/orgs/{orgName}",
@@ -33842,7 +34175,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "34b21b35b305541cfc5d4420cbd0d817e34a9a9e0c01033d807a8ec165faf252"
+      "response_schema_sha256": "16d69aefe5746d2a906698639396f59a31fcd95a311fadf0d5f34d1c8e004546"
     },
     "GET /api/orgs/{orgName}/agent-pools": {
       "key": "GET /api/orgs/{orgName}/agent-pools",
@@ -34428,6 +34761,71 @@
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "5b86aa4396f2529e705b4b39718addd4096b282de67e262139d923b12ca491c2"
+    },
+    "GET /api/orgs/{orgName}/auditlogs/event-types": {
+      "key": "GET /api/orgs/{orgName}/auditlogs/event-types",
+      "official_operation_id": "ListAuditLogEventTypes",
+      "generated_operation_id": "organizations.list_audit_log_event_types",
+      "pack": "pulumi-cloud-organization-governance",
+      "op": "organizations.list_audit_log_event_types",
+      "method": "GET",
+      "path": "/api/orgs/{orgName}/auditlogs/event-types",
+      "primary_tag": "Organizations",
+      "tags": [
+        "Organizations",
+        "AuditLogs"
+      ],
+      "summary": "ListAuditLogEventTypes",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": true,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "1c39804b71894ba4e13684860565ad67cbb01167a822ee9afab443fcfeaef185"
     },
     "GET /api/orgs/{orgName}/auditlogs/export": {
       "key": "GET /api/orgs/{orgName}/auditlogs/export",
@@ -38184,6 +38582,24 @@
         },
         {
           "in": "query",
+          "wire_name": "includeSuspended",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "official_format": null,
+          "admitted_key": "query.includeSuspended",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
           "wire_name": "type",
           "required": false,
           "official_types": [
@@ -38320,7 +38736,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "dd5e1f7b1fcd6b82a50f4f9abebcc23138d15c2ecc1da2a9ad2ddbb9dcb085d7"
+      "response_schema_sha256": "8955d82c8a08b5c2117d55bf2ef9a82e258e93b773fdc9a74e9d6c7d2895f096"
     },
     "PATCH /api/orgs/{orgName}/members/{userLogin}": {
       "key": "PATCH /api/orgs/{orgName}/members/{userLogin}",
@@ -38710,7 +39126,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "34b21b35b305541cfc5d4420cbd0d817e34a9a9e0c01033d807a8ec165faf252"
+      "response_schema_sha256": "16d69aefe5746d2a906698639396f59a31fcd95a311fadf0d5f34d1c8e004546"
     },
     "GET /api/orgs/{orgName}/neo/token-budget": {
       "key": "GET /api/orgs/{orgName}/neo/token-budget",
@@ -38792,7 +39208,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "30944c5e2567790a79afdee68b4d96a2dc714251b18d5c052bb25b1822778282"
+      "response_schema_sha256": "ea9c2e45251a814a3da5961c51c9176d68b2a7cde8d34bfb1e6c0f701e3b50ef"
     },
     "GET /api/orgs/{orgName}/neo/tokens/summary": {
       "key": "GET /api/orgs/{orgName}/neo/tokens/summary",
@@ -41931,6 +42347,24 @@
           "official_format": null,
           "admitted_key": "orgName",
           "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "assignedToMe",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "official_format": null,
+          "admitted_key": "query.assignedToMe",
+          "admitted_type": "boolean",
           "serialization": "scalar",
           "authority": {
             "kind": "official_openapi_parameter"
@@ -45637,6 +46071,24 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "parameter_repairs": [],
@@ -46727,6 +47179,24 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "parameter_repairs": [],
@@ -47246,7 +47716,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "b1a79bfbb8ecd2de219c302711bccc5c6e8d266afe4d66992ec6e2bd7ca68430"
+      "response_schema_sha256": "94656ba39ea04dc897cece86544b9f2aea6f5b41050e7c40e83b1620aca446c9"
     },
     "POST /api/preview/agents/{orgName}/tasks/{taskID}": {
       "key": "POST /api/preview/agents/{orgName}/tasks/{taskID}",
@@ -47418,7 +47888,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "b1a79bfbb8ecd2de219c302711bccc5c6e8d266afe4d66992ec6e2bd7ca68430"
+      "response_schema_sha256": "94656ba39ea04dc897cece86544b9f2aea6f5b41050e7c40e83b1620aca446c9"
     },
     "POST /api/preview/agents/{orgName}/tasks/{taskID}/cancel": {
       "key": "POST /api/preview/agents/{orgName}/tasks/{taskID}/cancel",
@@ -53068,7 +53538,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "9922e0b8606ad8638b6ae566ebc9f8567071e3f53ae290230d9508f1ed934a4c"
+      "response_schema_sha256": "30f599d3e0a58ed8c405ed692c3de3d2f8d8b1054b904b7483b0c708c4d1757c"
     },
     "GET /api/registry/packages/{source}/{publisher}/{name}/versions/{version}/examples": {
       "key": "GET /api/registry/packages/{source}/{publisher}/{name}/versions/{version}/examples",
@@ -54439,6 +54909,24 @@
       "parameters": [
         {
           "in": "query",
+          "wire_name": "backing",
+          "required": false,
+          "official_types": [
+            "array"
+          ],
+          "official_format": null,
+          "admitted_key": "query.backing",
+          "admitted_type": "array",
+          "serialization": "repeated_query_parameter",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
           "wire_name": "continuationToken",
           "required": false,
           "official_types": [
@@ -54554,7 +55042,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "bdd308bbf4aebf92d2636c35d77dd99d4d09bc7c658c502bf3505c07ef8cffae"
+      "response_schema_sha256": "c7eec881693b2e93fc3d630ceec65d8ea462607c5ada1c66d9b5ec2eeb8444c4"
     },
     "GET /api/registry/templates/{source}/{publisher}/{name}/versions": {
       "key": "GET /api/registry/templates/{source}/{publisher}/{name}/versions",
@@ -55176,6 +55664,161 @@
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "ac79d5f21b24bc32782380d222adfb19224f8c68945623ee78496c56c56d870e"
+    },
+    "GET /api/registry/templates/{source}/{publisher}/{name}/versions/{version}/readme": {
+      "key": "GET /api/registry/templates/{source}/{publisher}/{name}/versions/{version}/readme",
+      "official_operation_id": "GetTemplateReadme",
+      "generated_operation_id": "registry.get_template_readme",
+      "pack": "pulumi-cloud-registry-service",
+      "op": "registry.get_template_readme",
+      "method": "GET",
+      "path": "/api/registry/templates/{source}/{publisher}/{name}/versions/{version}/readme",
+      "primary_tag": "Registry",
+      "tags": [
+        "Registry"
+      ],
+      "summary": "GetTemplateReadme",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "source",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "source",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "publisher",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "publisher",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "version",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "version",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "lang",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.lang",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "os",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.os",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json",
+        "text/markdown"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json_or_text",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "2cd12214f8ef34d3f6ceceb9a9e4c1243ff65197bd2d5789f4283ac829444c3b"
     },
     "GET /api/registry/terraform-modules": {
       "key": "GET /api/registry/terraform-modules",
@@ -55884,7 +56527,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "778c1b826e44940ff5642facc45f008b06c00885a67e9c76ead1421dc305b7be"
+      "response_schema_sha256": "63f4133b45e1d17957232e687379096294116a36df8ec1557e221dea71b70863"
     },
     "DELETE /api/stacks/{orgName}/{projectName}/{stackName}": {
       "key": "DELETE /api/stacks/{orgName}/{projectName}/{stackName}",
@@ -56659,6 +57302,114 @@
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "a3f1813ea32217e8a2f56fc135282670deb2b1212f7addcbdc913870b2e980b7"
+    },
+    "POST /api/stacks/{orgName}/{projectName}/{stackName}/begin-update": {
+      "key": "POST /api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
+      "official_operation_id": "BeginUpdate",
+      "generated_operation_id": "stacks.begin_update",
+      "pack": "pulumi-cloud-stack-activity",
+      "op": "stacks.begin_update",
+      "method": "POST",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/begin-update",
+      "primary_tag": "Stacks",
+      "tags": [
+        "Stacks"
+      ],
+      "summary": "BeginUpdate",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "projectName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "projectName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "stackName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "stackName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "admitted_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": true,
+      "sensitive_response": true,
+      "secret_response": true,
+      "secret_response_fields": [
+        "stack.config.encryptedKey",
+        "stack.config.encryptionSalt",
+        "token"
+      ],
+      "credential_response": true,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "4839ed298d57cda5c3363df8de74e9b5008acf6b57164aa8f1ca2bc4be1f9c57"
     },
     "DELETE /api/stacks/{orgName}/{projectName}/{stackName}/collaborators/{userName}": {
       "key": "DELETE /api/stacks/{orgName}/{projectName}/{stackName}/collaborators/{userName}",
@@ -64355,6 +65106,106 @@
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "6276180f63ad383bb5603d022088a1524473c908ea68f397690e754fef59d479"
     },
+    "GET /api/stacks/{orgName}/{projectName}/{stackName}/outputs": {
+      "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/outputs",
+      "official_operation_id": "GetStackOutputs",
+      "generated_operation_id": "stacks.get_stack_outputs",
+      "pack": "pulumi-cloud-stack-activity",
+      "op": "stacks.get_stack_outputs",
+      "method": "GET",
+      "path": "/api/stacks/{orgName}/{projectName}/{stackName}/outputs",
+      "primary_tag": "Stacks",
+      "tags": [
+        "Stacks"
+      ],
+      "summary": "GetStackOutputs",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "orgName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "projectName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "projectName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "stackName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "stackName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": false,
+      "secret_response_fields": [],
+      "credential_response": false,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "68f9861e8dd48f5d8113c43253a1c253d0ac6a5f5b81c2d058f01d3c2ca7ca72"
+    },
     "POST /api/stacks/{orgName}/{projectName}/{stackName}/ownership": {
       "key": "POST /api/stacks/{orgName}/{projectName}/{stackName}/ownership",
       "official_operation_id": "ReassignStackOwnership",
@@ -66216,7 +67067,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c687a041ceac2c657468ef3c63d4108eae757a7b3bc480f707d0ce8bdadddf72"
+      "response_schema_sha256": "994f3924ba2788a889f244e73047339462237f854e6d7f9ee5b14599ea840802"
     },
     "GET /api/stacks/{orgName}/{projectName}/{stackName}/previews/{updateID}/summary": {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/previews/{updateID}/summary",
@@ -71472,7 +72323,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c687a041ceac2c657468ef3c63d4108eae757a7b3bc480f707d0ce8bdadddf72"
+      "response_schema_sha256": "994f3924ba2788a889f244e73047339462237f854e6d7f9ee5b14599ea840802"
     },
     "GET /api/stacks/{orgName}/{projectName}/{stackName}/updates/latest/previews": {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/updates/latest/previews",
@@ -71853,7 +72704,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "c687a041ceac2c657468ef3c63d4108eae757a7b3bc480f707d0ce8bdadddf72"
+      "response_schema_sha256": "994f3924ba2788a889f244e73047339462237f854e6d7f9ee5b14599ea840802"
     },
     "GET /api/stacks/{orgName}/{projectName}/{stackName}/updates/{version}/previews": {
       "key": "GET /api/stacks/{orgName}/{projectName}/{stackName}/updates/{version}/previews",
@@ -73073,6 +73924,24 @@
           "dropped_pattern": false,
           "exact_integer": true,
           "admitted_pattern": "^-?(?:0|[1-9][0-9]*)$"
+        },
+        {
+          "in": "query",
+          "wire_name": "search",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.search",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": {
+            "kind": "official_openapi_parameter"
+          },
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
         }
       ],
       "parameter_repairs": [],

@@ -37,6 +37,7 @@ import {
 import type { RecipeDefinition } from '@recued/contracts';
 import type { RecipeStore } from './recipe-store.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
+import { carryReceptionPairsAfterInstall, type ReceptionPairCarryDeps } from './reception-pair-carry.js';
 import type {
   WebhookConsumerRecipeDeclaration,
   WebhookConsumerSnapshot,
@@ -203,6 +204,16 @@ export interface InstallBulkPackOnServerDeps {
    *  validator-checked at parse, never persisted), so the MCP read path
    *  keeps stripping body content. */
   mcpBodyVisibilityStore?: McpBodyVisibilityStore;
+  /** D-299 — the Reception pairs a recipe backs. When present, a successful update
+   *  re-pins each pair whose recipe changed but whose parameters and door authority did
+   *  not (`carryReceptionPairs`). Absent ⇒ every changed pair goes stale, as before.
+   *
+   *  ⛔ Only for a caller with nothing to provision after this returns. The door check
+   *  reads operation risk and kind from the live registry, so a caller that provisions a
+   *  pack composition afterwards must carry AFTER that instead: `packs.install` passes
+   *  nothing here and carries once the pack is whole. Carrying here first judged an
+   *  updated operation by its old risk (2026-09-24 audit). */
+  receptionPairs?: ReceptionPairCarryDeps;
   /** Caller's publisher fallback when a stored row is missing the
    *  publisher_id (legacy rows from older builds). Defaults to
    *  `'recued-core'`. */
@@ -217,9 +228,12 @@ export const installBulkPackOnServer = async (
   deps: InstallBulkPackOnServerDeps,
 ): Promise<BulkPackInstallResult> => {
   const now = deps.now ?? Date.now();
+  // D-299 — each recipe as installed BEFORE this install, for the Reception pair carry.
+  const recipesBefore = new Map<string, RecipeDefinition | null>();
   for (const resolved of input.recipes) {
     const incoming = resolved.recipe?.recipe;
     if (!incoming) continue;
+    recipesBefore.set(incoming.recipe_id, deps.recipeStore.get(incoming.recipe_id));
     const stored = deps.recipeStore.getStored(incoming.recipe_id);
     const existing = deps.recipeStore.get(incoming.recipe_id);
     if (stored !== null
@@ -403,11 +417,19 @@ export const installBulkPackOnServer = async (
             // gate); the pack itself is only the distribution vehicle.
             mintedBy: 'pack_install',
             retireReason: 'pack_reinstalled',
+            // D-295 — an update never re-opens a door the owner revoked.
+            keepOwnerRevoked: true,
           },
           deps.webhookDoor,
         );
         for (const [recipeId, outcome] of outcomes) {
           if (outcome.kind === 'minted') continue;
+          if (outcome.kind === 'kept_revoked') {
+            console.info(
+              `[pack-install] webhook door for '${recipeId}' stays revoked, as its owner left it — its deliveries are refused`,
+            );
+            continue;
+          }
           const detail = outcome.kind === 'refused'
             ? outcome.refusal.reason
             : outcome.message;
@@ -422,6 +444,13 @@ export const installBulkPackOnServer = async (
         );
       }
     }
+  }
+  // D-299 — keep each Reception pair these recipes back alive where its parameters and its
+  // door's authority are unchanged. After the commit, like the doors above: the pair is
+  // re-pinned to the recipe now stored. A pair it cannot keep stays stale for its owner,
+  // who was told in the update dialog.
+  if (result.ok && deps.receptionPairs) {
+    carryReceptionPairsAfterInstall(recipesBefore, deps.recipeStore, deps.receptionPairs, input.pack_slug);
   }
   return result;
 };

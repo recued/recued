@@ -40,6 +40,7 @@ import {
   validateWebhookDeclarations,
   validateTriggerSteps,
   validateWait,
+  validateStepPages,
   validateOnFailure,
   validateProvenance,
   validateChatExposed,
@@ -47,6 +48,9 @@ import {
   validateRunMode,
   validateEnrichmentSteps,
   validateRequiresFormFields,
+  validateSpreadsheetImport,
+  validateRetiredVariables,
+  validateRetiredCarries,
 } from './validate/structural.js';
 import {
   validateReferences,
@@ -106,6 +110,7 @@ export const validateRecipe = (input: unknown): ValidationResult => {
   // so {{step.X}} can never collide with {{trigger.X}} via the same id.
   validateTriggerSteps(r, declaredStepIds, add);
   validateWait(r, add);
+  validateStepPages(r, add);
   validateOnFailure(r, add);
   validateProvenance(r, add);
   validateChatExposed(r, add);
@@ -113,6 +118,9 @@ export const validateRecipe = (input: unknown): ValidationResult => {
   validateRunMode(r, add);
   validateEnrichmentSteps(r, add);
   validateRequiresFormFields(r, add);
+  validateSpreadsheetImport(r, add);
+  validateRetiredVariables(r, add);
+  validateRetiredCarries(r, add);
   validateVariables(r, declaredStepIds, add);
   validateOutput(r, declaredStepIds, add);
   validateReferences(r, declaredStepIds, add);

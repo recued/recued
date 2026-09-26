@@ -300,14 +300,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   setVendorAliasRegistryResolver(() => liveVendorRegistry(localManifestStore));
   const sellerStore = createSellerStore(db);
   const sellerOrderStore = createSellerOrderStore(db);
+  // D-228 slice 5 — same grandfather as the serve path, same ordering: BEFORE the
+  // owner reconcile, whose primitive rows are how it knows a gate build ran here
+  // before (D-298). This is the surface that actually dispatches the gated Tier-1
+  // tools, so skipping it here would strip them from every scoped door on the MCP wire.
+  grandfatherPrimitiveGrants(contractStore);
   // D-187 AMENDMENT 3b — materialize the OWNER contract's grant rows (idempotent +
   // atomic), preserving any explicit owner revoke. Same db + boot ordering as the serve
   // path so both surfaces agree on the owner's "fully-granted contract" state.
   reconcileOwnerGrants(contractStore);
-  // D-228 slice 5 — same grandfather as the serve path, same ordering. This is
-  // the surface that actually dispatches the gated Tier-1 tools, so skipping it
-  // here would strip them from every scoped door on the MCP wire.
-  grandfatherPrimitiveGrants(contractStore);
   // D-247 D8 — the recipe grant seam, on THIS boot path too. The serve path
   // wires it in `compose-app-context.ts`; wiring it on only one surface is the
   // failure this module's own comments above keep naming — the two boots share a

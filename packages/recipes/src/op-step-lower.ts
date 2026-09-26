@@ -153,16 +153,23 @@ const lowerPackOpStep = (step: OpStep, packs: PackOpResolution): IngredientStep 
   const parsed = parseOpId(step.op);
   if (parsed === null || parsed.tier !== 'pack') return null;
   const binding = packs.get(parsed.pack_ref);
+  // ⚠ THE OWNER READS THESE: an install dialog shows them after "Recued did not
+  // install it", and a run shows them as its reason. They said "Tier-P op …
+  // has no resolved catalog binding — declare it in depends_on" (the month-end
+  // drive, 2026-09-24), which names neither what is missing in words an owner
+  // uses nor what they can do. The step, the pack and the operation stay, for
+  // whoever fixes the recipe; the author's cause comes last.
   if (binding === undefined) {
     throw new CanonicalOpResolutionError(
-      `Tier-P op '${step.op}' (step '${step.id}') names pack '${parsed.pack_ref}', which has no ` +
-        `resolved catalog binding — declare it in depends_on and install the pack`,
+      `step '${step.id}' uses the ${parsed.pack_ref} pack, which is not installed. Install that ` +
+        `pack, then try again. (If it is installed, this recipe does not list it in depends_on.)`,
     );
   }
   if (!binding.operations.has(parsed.operation)) {
     throw new CanonicalOpResolutionError(
-      `pack '${parsed.pack_ref}' (step '${step.id}') declares no operation '${parsed.operation}' ` +
-        `in catalog '${binding.catalog_slug}'`,
+      `step '${step.id}' uses '${parsed.operation}' from the ${parsed.pack_ref} pack, and the ` +
+        `installed version has no such operation. Update that pack, then try again. (If it is ` +
+        `up to date, this recipe names an operation the pack does not have.)`,
     );
   }
   return {

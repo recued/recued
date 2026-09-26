@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://planetscale.com/docs/openapi.yaml",
-      "bytes": 2926701,
-      "sha256": "c57fab5cdef055e6af94c80a4623aaf5db71c7870b138e50ef60df2dd41c53cb",
+      "bytes": 3043603,
+      "sha256": "b165cfe4c03985b72d40d354ff77d32406667783b73f15674b29f030cbdc646d",
       "openapi": "3.0.1",
       "title": "PlanetScale API",
       "api_version": "v1",
-      "official_path_count": 181,
-      "retrieved_on": "2026-07-15",
+      "official_path_count": 184,
+      "retrieved_on": "2026-09-23",
       "last_modified_observed": "Thu, 09 Jul 2026 16:00:53 GMT",
       "mutability": "The vendor-hosted URL is mutable and documented as weekly-updated. Generation fails closed unless its bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -42,6 +42,7 @@
               "branch:delete_branch": "Delete a database branch",
               "branch:manage_passwords": "Read, write, and delete branch passwords",
               "branch:manage_read_only_passwords": "Read, write, and delete read only branch passwords",
+              "branch:manage_topology": "Manage shard primaries and tablet serving for this branch",
               "branch:read_backups": "Read backups",
               "branch:read_branch": "Read a database branch",
               "branch:restore_backups": "Restore this branch's backups to new branches",
@@ -56,8 +57,10 @@
               "database:delete_production_branches": "Delete a production database branch",
               "database:demote_branches": "Demote production database branches",
               "database:deploy_deploy_requests": "Deploy deploy requests in a database",
+              "database:manage_branch_topologies": "Manage shard primaries and tablet serving for development branches in a database",
               "database:manage_passwords": "Read, write, and delete database branch passwords",
               "database:manage_production_branch_passwords": "Read, write, and delete production branch passwords",
+              "database:manage_production_branch_topologies": "Manage shard primaries and tablet serving for production branches in a database",
               "database:manage_production_read_only_passwords": "Read, write, and delete production read only branch passwords in an organization",
               "database:manage_read_only_passwords": "Read, write, and delete read only branch passwords in an organization",
               "database:promote_branches": "Promote database branches",
@@ -67,6 +70,7 @@
               "database:read_database": "Read database information",
               "database:read_deploy_requests": "Read deploy requests in a database",
               "database:read_members": "Read members",
+              "database:read_workflows": "Read database workflows",
               "database:restore_backups": "Restore backups to new branches",
               "database:restore_production_branch_backups": "Restore production branch backups to new branches",
               "database:write_backups": "Create and update backups",
@@ -75,6 +79,7 @@
               "database:write_database": "Write database",
               "database:write_deploy_requests": "Create and update deploy requests in a database",
               "database:write_members": "Write members",
+              "database:write_workflows": "Create and manage database workflows",
               "organization:approve_deploy_requests": "Approve deploy requests in an organization",
               "organization:create_databases": "Create organization databases",
               "organization:delete_backups": "Delete backups in an organization",
@@ -85,8 +90,10 @@
               "organization:delete_production_branch_backups": "Delete production backups in an organization",
               "organization:delete_production_branches": "Delete a production branch in an organization",
               "organization:deploy_deploy_requests": "Deploy deploy requests in an organization",
+              "organization:manage_branch_topologies": "Manage shard primaries and tablet serving for development branches in an organization",
               "organization:manage_passwords": "Read, write, and delete branch passwords in an organization",
               "organization:manage_production_branch_passwords": "Read, write, and delete production branch passwords in an organization",
+              "organization:manage_production_branch_topologies": "Manage shard primaries and tablet serving for production branches in an organization",
               "organization:manage_production_read_only_passwords": "Read, write, and delete production read only branch passwords in an organization",
               "organization:manage_read_only_passwords": "Read, write, and delete read only branch passwords in an organization",
               "organization:manage_sso": "Enable, configure, and disable organization SSO",
@@ -101,6 +108,7 @@
               "organization:read_members": "Read members in an organization",
               "organization:read_organization": "Read organization",
               "organization:read_payment_method": "Read organization payment method",
+              "organization:read_workflows": "Read workflows in an organization",
               "organization:restore_backups": "Restore backups to new branches in an organization",
               "organization:restore_production_branch_backups": "Restore production branch backups to new branches in an organization",
               "organization:write_backups": "Create and update backups in an organization",
@@ -111,6 +119,7 @@
               "organization:write_members": "Write members in an organization",
               "organization:write_organization": "Write organization",
               "organization:write_payment_method": "Update and delete the organization payment method",
+              "organization:write_workflows": "Create and manage workflows in an organization",
               "user:read_organizations": "Read a user's organizations",
               "user:read_user": "Read user",
               "user:write_user": "Write user"
@@ -156,21 +165,21 @@
         ]
       }
     ],
-    "official_operation_count": 276,
-    "admitted_operation_count": 257,
+    "official_operation_count": 280,
+    "admitted_operation_count": 261,
     "transport_exclusion_count": 19,
     "official_method_counts": {
       "DELETE": 38,
-      "GET": 141,
+      "GET": 144,
       "PATCH": 37,
-      "POST": 53,
+      "POST": 54,
       "PUT": 7
     },
     "admitted_method_counts": {
       "DELETE": 33,
-      "GET": 129,
+      "GET": 132,
       "PATCH": 36,
-      "POST": 52,
+      "POST": 53,
       "PUT": 7
     },
     "official_tag_counts": {
@@ -188,7 +197,7 @@
       "api-neki_router_parameters": 1,
       "api-neki_routers": 6,
       "api-neki_shard_configuration_profile_changes": 3,
-      "api-neki_shard_configuration_profile_extensions": 2,
+      "api-neki_shard_configuration_profile_extensions": 1,
       "api-neki_shard_configuration_profile_parameters": 1,
       "api-neki_shard_configuration_profile_shards": 8,
       "api-neki_shard_configuration_profiles": 7,
@@ -217,6 +226,8 @@
       "Database Postgres IP restrictions": 5,
       "Databases": 9,
       "Deploy requests": 21,
+      "Insights Agent schedules": 2,
+      "InsightsAgentRuns": 3,
       "Invoices": 3,
       "Keyspace resizes": 4,
       "Keyspace VSchemas": 2,
@@ -257,7 +268,7 @@
       "api-neki_default_shard_configuration_profiles": 1,
       "api-neki_router_parameters": 1,
       "api-neki_routers": 6,
-      "api-neki_shard_configuration_profile_extensions": 2,
+      "api-neki_shard_configuration_profile_extensions": 1,
       "api-neki_shard_configuration_profile_parameters": 1,
       "api-neki_shard_configuration_profile_shards": 8,
       "api-neki_shard_configuration_profiles": 7,
@@ -285,6 +296,8 @@
       "Database Postgres IP restrictions": 5,
       "Databases": 9,
       "Deploy requests": 21,
+      "Insights Agent schedules": 2,
+      "InsightsAgentRuns": 3,
       "Invoices": 3,
       "Keyspace resizes": 4,
       "Keyspace VSchemas": 2,
@@ -318,47 +331,47 @@
       "planetscale-databases-branches": 52,
       "planetscale-runtime-networking": 47,
       "planetscale-deploy-workflows": 42,
-      "planetscale-insights-reports": 22,
-      "planetscale-sharding-topology": 45
+      "planetscale-insights-reports": 27,
+      "planetscale-sharding-topology": 44
     },
     "composition_bytes": {
-      "planetscale-organizations-access": 119835,
-      "planetscale-databases-branches": 152582,
-      "planetscale-runtime-networking": 140630,
-      "planetscale-deploy-workflows": 130209,
-      "planetscale-insights-reports": 78247,
-      "planetscale-sharding-topology": 124478
+      "planetscale-organizations-access": 120048,
+      "planetscale-databases-branches": 153254,
+      "planetscale-runtime-networking": 141247,
+      "planetscale-deploy-workflows": 130501,
+      "planetscale-insights-reports": 93124,
+      "planetscale-sharding-topology": 121590
     },
     "body_mode_counts": {
-      "none": 192,
-      "raw_json": 65
+      "none": 195,
+      "raw_json": 66
     },
     "success_status_counts": {
-      "200": 203,
-      "201": 19,
+      "200": 206,
+      "201": 20,
       "204": 35
     },
     "response_body_mode_counts": {
-      "json": 222,
+      "json": 226,
       "none": 35
     },
     "risk_counts": {
-      "admin": 54,
+      "admin": 55,
       "destructive": 74,
-      "read": 129
+      "read": 132
     },
     "approval_counts": {
-      "always": 128,
-      "never": 129
+      "always": 129,
+      "never": 132
     },
     "idempotency_counts": {
       "idempotent": 76,
-      "non_idempotent": 52,
-      "safe": 129
+      "non_idempotent": 53,
+      "safe": 132
     },
     "pagination": {
-      "automatic_operation_count": 53,
-      "page_operation_count": 51,
+      "automatic_operation_count": 54,
+      "page_operation_count": 52,
       "cursor_operation_count": 2,
       "contract_gap_count": 0,
       "automatic_operation_keys": [
@@ -374,6 +387,7 @@
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/changes",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights",
+        "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/anomalies",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/errors",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/errors/{fingerprint}",
@@ -426,17 +440,17 @@
       "selected": "Connection-owned Authorization header containing the complete SERVICE_TOKEN_ID:SERVICE_TOKEN value",
       "official_openapi_model": "The OpenAPI declares OAuth2 authorization-code security on every operation.",
       "official_service_token_model": "The official service-token guide says all API endpoints require a service token and gives the exact TOKEN_ID:TOKEN_SECRET Authorization value.",
-      "oauth2_operation_count": 257,
-      "service_token_access_documented_operation_count": 236,
+      "oauth2_operation_count": 261,
+      "service_token_access_documented_operation_count": 240,
       "credential_fields_in_pack": 0
     },
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 0,
-      "effective_request_body_required_count": 65,
-      "exact_content_type_operation_count": 65,
-      "exact_accept_operation_count": 257,
+      "effective_request_body_required_count": 66,
+      "exact_content_type_operation_count": 66,
+      "exact_accept_operation_count": 261,
       "csv_query_parameters": [
         "DELETE /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards:shard_ids",
         "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/tags/summaries:fields",
@@ -533,7 +547,7 @@
       ],
       "empty_success_operation_count": 35,
       "alternate_empty_success_operation_count": 2,
-      "unsafe_integer_response_union_operation_count": 145
+      "unsafe_integer_response_union_operation_count": 150
     },
     "source_decision": {
       "admitted": false,
@@ -1171,22 +1185,6 @@
         "approval": "never"
       },
       {
-        "recipe_id": "webhook-inventory-planetscale",
-        "operation_id": "list_webhooks",
-        "key": "GET /organizations/{organization}/databases/{database}/webhooks",
-        "pack": "planetscale-deploy-workflows",
-        "op": "webhooks.list_webhooks",
-        "required_args": [
-          "organization",
-          "database"
-        ],
-        "supplied_args": [
-          "organization",
-          "database"
-        ],
-        "approval": "never"
-      },
-      {
         "recipe_id": "query-insights-planetscale",
         "operation_id": "list_branch_queries",
         "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights",
@@ -1342,6 +1340,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1376,6 +1376,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1410,6 +1412,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1444,6 +1448,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1478,6 +1484,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1513,6 +1521,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1547,6 +1557,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1581,6 +1593,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1616,6 +1630,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1650,6 +1665,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1685,6 +1702,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1720,6 +1738,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1755,6 +1774,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1789,6 +1810,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1824,6 +1847,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1860,6 +1884,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1894,6 +1920,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1928,6 +1956,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1962,6 +1992,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -1998,6 +2030,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2033,6 +2067,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2067,6 +2102,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2099,6 +2136,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2135,6 +2174,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2169,6 +2210,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2203,6 +2246,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2237,6 +2282,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2272,6 +2319,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2306,6 +2354,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2338,6 +2388,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2374,6 +2426,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2408,6 +2462,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2442,6 +2498,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2476,6 +2534,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2512,6 +2572,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2548,6 +2610,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2584,6 +2648,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2620,6 +2685,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -2652,6 +2718,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2688,6 +2756,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2724,6 +2794,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2760,6 +2832,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2796,6 +2870,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2832,6 +2908,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2884,6 +2962,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -2898,6 +2978,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -2950,6 +3032,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -2964,6 +3048,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3000,6 +3086,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3036,6 +3124,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3076,6 +3166,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3116,6 +3208,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3156,6 +3250,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3196,6 +3292,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3236,6 +3334,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -3274,6 +3374,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -3312,6 +3414,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3348,6 +3452,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3384,6 +3490,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3424,6 +3532,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3464,6 +3574,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3504,6 +3616,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3544,6 +3658,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3584,6 +3700,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3624,6 +3742,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3664,6 +3784,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3704,6 +3826,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3744,6 +3868,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -3782,6 +3908,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -3820,6 +3948,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3860,6 +3990,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3900,6 +4032,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3940,6 +4074,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -3980,6 +4116,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4020,6 +4158,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -4058,6 +4198,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4096,6 +4238,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4133,6 +4277,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4171,6 +4317,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4211,6 +4359,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4221,6 +4371,123 @@
       "exclusion_reason": null,
       "pack": "planetscale-insights-reports",
       "op": "api_query_insights_traffic_budgets.list_traffic_budgets_for_query"
+    },
+    {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "operation_id": "list_insights_agent_runs",
+      "tag": "InsightsAgentRuns",
+      "summary": "List Insights agent runs",
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "401",
+        "403",
+        "404",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.list_insights_agent_runs"
+    },
+    {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}",
+      "operation_id": "get_insights_agent_run",
+      "tag": "InsightsAgentRuns",
+      "summary": "Get an Insights agent run",
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "401",
+        "403",
+        "404",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.get_insights_agent_run"
+    },
+    {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules",
+      "operation_id": "list_insights_agent_schedules",
+      "tag": "Insights Agent schedules",
+      "summary": "List Insights Agent schedules",
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "401",
+        "403",
+        "404",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_schedules.list_insights_agent_schedules"
     },
     {
       "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/anomalies",
@@ -4248,6 +4515,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4285,6 +4554,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4322,6 +4593,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4359,6 +4632,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4396,6 +4671,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4434,6 +4711,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4472,6 +4751,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4510,6 +4791,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4546,6 +4829,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4582,6 +4867,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4618,6 +4905,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4654,6 +4943,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4690,6 +4981,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4730,6 +5023,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4771,6 +5066,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500",
         "503"
       ],
@@ -4813,6 +5110,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500",
         "503"
       ],
@@ -4854,6 +5153,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -4893,6 +5194,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -4933,6 +5236,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -4972,6 +5277,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500",
         "503"
       ],
@@ -5014,6 +5321,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500",
         "503"
       ],
@@ -5056,6 +5365,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5096,6 +5407,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5136,6 +5449,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5176,6 +5491,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5217,6 +5534,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5258,6 +5577,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5294,6 +5615,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5330,6 +5653,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5366,6 +5691,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -5404,6 +5731,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5444,6 +5773,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5484,6 +5815,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5524,6 +5857,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5564,6 +5899,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5605,6 +5942,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5646,6 +5985,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5687,6 +6028,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5727,6 +6070,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5767,6 +6112,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5807,6 +6154,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5847,6 +6196,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -5885,6 +6236,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -5923,6 +6276,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -5963,6 +6318,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6003,6 +6360,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6043,6 +6402,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6083,6 +6444,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6123,6 +6486,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6163,6 +6528,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6203,6 +6570,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -6241,6 +6610,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -6279,6 +6650,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6319,6 +6692,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6359,6 +6734,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6399,6 +6776,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6439,6 +6818,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6477,6 +6858,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6515,6 +6897,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6549,6 +6932,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6585,6 +6970,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6621,6 +7008,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6657,6 +7046,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6693,6 +7084,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6729,6 +7122,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6765,6 +7160,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6801,6 +7198,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6837,6 +7236,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6873,6 +7274,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6909,6 +7312,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -6961,6 +7366,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -6975,6 +7382,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7027,6 +7436,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -7041,6 +7452,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7077,6 +7490,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7113,6 +7528,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7150,6 +7567,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7186,6 +7605,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7222,6 +7643,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7256,6 +7679,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7290,6 +7715,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7326,6 +7753,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7362,6 +7791,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7398,6 +7829,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7434,6 +7867,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7470,6 +7905,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7506,6 +7943,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7542,6 +7981,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7578,6 +8019,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7614,6 +8057,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7650,6 +8095,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7686,6 +8133,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7722,6 +8171,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7758,6 +8209,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7794,6 +8247,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7830,6 +8285,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7868,6 +8325,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7906,6 +8364,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7944,6 +8403,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -7982,6 +8442,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8016,6 +8477,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8050,6 +8513,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8084,6 +8549,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8122,6 +8589,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8162,6 +8631,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8202,6 +8673,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8242,6 +8715,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8283,6 +8758,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8323,6 +8799,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8363,6 +8841,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8404,6 +8884,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8444,6 +8926,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -8483,6 +8967,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8493,47 +8978,6 @@
       "exclusion_reason": null,
       "pack": "planetscale-sharding-topology",
       "op": "api_neki_shard_configuration_profiles.update_shard_configuration_profile"
-    },
-    {
-      "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}",
-      "method": "PATCH",
-      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}",
-      "operation_id": "update_shard_configuration_profile_extension",
-      "tag": "api-neki_shard_configuration_profile_extensions",
-      "summary": "Enable or disable an extension for a Neki shard configuration profile",
-      "security": [
-        {
-          "oauth2": []
-        }
-      ],
-      "service_token_accesses": [
-        "write_database"
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "effective_request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "success_status": "200",
-      "response_statuses": [
-        "200",
-        "401",
-        "403",
-        "404",
-        "422",
-        "500"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "planetscale-sharding-topology",
-      "op": "api_neki_shard_configuration_profile_extensions.update_shard_configuration_profile_extension"
     },
     {
       "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
@@ -8565,6 +9009,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8606,6 +9051,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8616,6 +9062,48 @@
       "exclusion_reason": null,
       "pack": "planetscale-sharding-topology",
       "op": "api_neki_shard_configuration_profile_shards.update_shard_configuration_profile_shard"
+    },
+    {
+      "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}",
+      "method": "PATCH",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}",
+      "operation_id": "update_insights_agent_schedule",
+      "tag": "Insights Agent schedules",
+      "summary": "Update an Insights Agent schedule",
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "write_database"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_statuses": [
+        "200",
+        "401",
+        "403",
+        "404",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_schedules.update_insights_agent_schedule"
     },
     {
       "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/keyspaces/{keyspace}",
@@ -8646,6 +9134,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8688,6 +9178,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8730,6 +9221,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8770,6 +9263,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8812,6 +9307,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8853,6 +9350,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8889,6 +9387,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -8928,6 +9428,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -8968,6 +9469,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9009,6 +9512,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9049,6 +9553,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9089,6 +9595,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9129,6 +9637,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9169,6 +9679,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9203,6 +9715,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9237,6 +9751,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9271,6 +9787,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9305,6 +9823,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9339,6 +9859,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9373,6 +9895,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9407,6 +9931,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9441,6 +9967,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9481,6 +10009,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9523,6 +10053,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9559,6 +10090,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9599,6 +10132,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9639,6 +10174,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9681,6 +10218,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9721,6 +10260,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9761,6 +10302,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9802,6 +10345,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9838,6 +10382,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -9877,6 +10423,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9918,6 +10465,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -9959,6 +10507,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -9994,6 +10543,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10004,6 +10555,49 @@
       "exclusion_reason": null,
       "pack": "planetscale-databases-branches",
       "op": "database_branches.demote_branch"
+    },
+    {
+      "key": "POST /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "method": "POST",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "operation_id": "create_insights_agent_run",
+      "tag": "InsightsAgentRuns",
+      "summary": "Create an Insights agent run",
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "write_databases",
+        "write_database"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_statuses": [
+        "201",
+        "401",
+        "403",
+        "404",
+        "422",
+        "429",
+        "500"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.create_insights_agent_run"
     },
     {
       "key": "POST /organizations/{organization}/databases/{database}/branches/{branch}/keyspaces",
@@ -10034,6 +10628,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10074,6 +10670,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10115,6 +10713,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -10156,6 +10755,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10194,6 +10794,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10231,6 +10833,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10267,6 +10871,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10307,6 +10913,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10349,6 +10957,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10391,6 +11001,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -10427,6 +11039,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10465,6 +11079,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10503,6 +11119,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10544,6 +11162,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10578,6 +11197,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10614,6 +11235,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -10654,6 +11277,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10694,6 +11318,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10734,6 +11360,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10775,6 +11403,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10815,6 +11444,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10851,6 +11482,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10887,6 +11520,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10923,6 +11558,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10963,6 +11600,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -10999,6 +11638,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11035,6 +11676,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11076,6 +11719,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11112,6 +11757,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11152,6 +11799,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11192,6 +11841,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11228,6 +11879,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [],
@@ -11264,6 +11917,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11304,6 +11959,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11344,6 +12000,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11380,6 +12038,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11416,6 +12076,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11452,6 +12114,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11488,6 +12152,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11530,6 +12196,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11572,6 +12239,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11613,6 +12281,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11654,6 +12323,7 @@
         "403",
         "404",
         "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11694,6 +12364,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11735,6 +12407,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11773,6 +12447,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11813,6 +12489,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -11853,6 +12531,8 @@
         "401",
         "403",
         "404",
+        "422",
+        "429",
         "500"
       ],
       "response_media": [
@@ -14911,6 +15591,19 @@
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false
+        },
+        {
+          "in": "query",
+          "wire_name": "external",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.external",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
         }
       ],
       "request_media": [],
@@ -15068,6 +15761,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -15161,6 +15856,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -18316,6 +19013,294 @@
         "create_branch",
         "connect_production_branch",
         "connect_branch"
+      ]
+    },
+    "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs": {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "operation_id": "list_insights_agent_runs",
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.list_insights_agent_runs",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "tag": "InsightsAgentRuns",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "database",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "database",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "branch",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "branch",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "query",
+          "wire_name": "page",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "query",
+          "wire_name": "per_page",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "alternate_empty_success_statuses": [],
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "per_page",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page",
+        "done_when": {
+          "path": "next_page",
+          "equals": null
+        }
+      },
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
+      ]
+    },
+    "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}": {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}",
+      "operation_id": "get_insights_agent_run",
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.get_insights_agent_run",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}",
+      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs/{id}",
+      "tag": "InsightsAgentRuns",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "database",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "database",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "branch",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "branch",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "alternate_empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
+      ]
+    },
+    "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules": {
+      "key": "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules",
+      "operation_id": "list_insights_agent_schedules",
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_schedules.list_insights_agent_schedules",
+      "method": "GET",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules",
+      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules",
+      "tag": "Insights Agent schedules",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "database",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "database",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "branch",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "branch",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "alternate_empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "read_databases",
+        "read_database"
       ]
     },
     "GET /organizations/{organization}/databases/{database}/branches/{branch}/insights/anomalies": {
@@ -23246,6 +24231,32 @@
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false
+        },
+        {
+          "in": "query",
+          "wire_name": "router",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.router",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "query",
+          "wire_name": "shard",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.shard",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
         }
       ],
       "request_media": [],
@@ -26356,6 +27367,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -26493,6 +27506,8 @@
         "delete_production_branch_backups",
         "write_branch_vschema",
         "write_production_branch_vschema",
+        "write_branch_topology",
+        "write_production_branch_topology",
         "read_workflow",
         "write_workflow",
         "delete_workflow"
@@ -29633,112 +30648,6 @@
         "write_database"
       ]
     },
-    "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}": {
-      "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}",
-      "operation_id": "update_shard_configuration_profile_extension",
-      "pack": "planetscale-sharding-topology",
-      "op": "api_neki_shard_configuration_profile_extensions.update_shard_configuration_profile_extension",
-      "method": "PATCH",
-      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}",
-      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/extensions/{extension}",
-      "tag": "api-neki_shard_configuration_profile_extensions",
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "idempotent",
-      "parameters": [
-        {
-          "in": "path",
-          "wire_name": "organization",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "organization",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false
-        },
-        {
-          "in": "path",
-          "wire_name": "database",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "database",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false
-        },
-        {
-          "in": "path",
-          "wire_name": "branch",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "branch",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false
-        },
-        {
-          "in": "path",
-          "wire_name": "configuration_profile",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "configuration_profile",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false
-        },
-        {
-          "in": "path",
-          "wire_name": "extension",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "extension",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "official_request_body_required": false,
-      "effective_request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "request_body_mode": "raw_json",
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_body_mode": "json",
-      "alternate_empty_success_statuses": [],
-      "result_path": null,
-      "pagination": null,
-      "security": [
-        {
-          "oauth2": []
-        }
-      ],
-      "service_token_accesses": [
-        "write_database"
-      ]
-    },
     "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards": {
       "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/configuration-profiles/{configuration_profile}/shards",
       "operation_id": "assign_shard_configuration_profile_shards",
@@ -29905,6 +30814,99 @@
             "string"
           ],
           "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "alternate_empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "write_database"
+      ]
+    },
+    "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}": {
+      "key": "PATCH /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}",
+      "operation_id": "update_insights_agent_schedule",
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_schedules.update_insights_agent_schedule",
+      "method": "PATCH",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}",
+      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/schedules/{run_type}",
+      "tag": "Insights Agent schedules",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "database",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "database",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "branch",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "branch",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "run_type",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "run_type",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -32706,6 +33708,87 @@
       "service_token_accesses": [
         "connect_production_branch",
         "demote_branches"
+      ]
+    },
+    "POST /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs": {
+      "key": "POST /organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "operation_id": "create_insights_agent_run",
+      "pack": "planetscale-insights-reports",
+      "op": "insights_agent_runs.create_insights_agent_run",
+      "method": "POST",
+      "path": "/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "wire_path": "/v1/organizations/{organization}/databases/{database}/branches/{branch}/insights/agent/runs",
+      "tag": "InsightsAgentRuns",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organization",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organization",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "database",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "database",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        },
+        {
+          "in": "path",
+          "wire_name": "branch",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "branch",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_body_mode": "json",
+      "alternate_empty_success_statuses": [],
+      "result_path": null,
+      "pagination": null,
+      "security": [
+        {
+          "oauth2": []
+        }
+      ],
+      "service_token_accesses": [
+        "write_databases",
+        "write_database"
       ]
     },
     "POST /organizations/{organization}/databases/{database}/branches/{branch}/keyspaces": {

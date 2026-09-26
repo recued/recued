@@ -2,8 +2,8 @@
   "_extract": {
     "note": "paths-only extract of the pinned official Outreach OpenAPI document (crossCheckCatalogOpenApi reads only paths); OpenAPI 3.0.3; URL is unversioned and generation revalidates its exact hash",
     "url": "https://api.outreach.io/api/v2/schema/openapi.json",
-    "sha256": "d1f697f6558fda68cd6d8059044e323c20849aeebf303e15c43e0eb9875e2ef6",
-    "fetched_at": "2026-07-15"
+    "sha256": "00b502157f705773cd71553e01c493ec49a381866a252066741196e945b3c15b",
+    "fetched_at": "2026-09-23"
   },
   "paths": {
     "/tasks": {

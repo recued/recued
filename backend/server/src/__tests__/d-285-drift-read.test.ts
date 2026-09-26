@@ -41,6 +41,7 @@ import {
   type EnrichmentStore,
 } from '../storage/enrichment-store.js';
 import {
+  handleHousekeepingDriftDismiss,
   handleHousekeepingDriftRead,
   type HousekeepingRpcDeps,
 } from '../housekeeping-handler.js';
@@ -73,6 +74,9 @@ const deps = (over: Partial<HousekeepingRpcDeps> = {}): HousekeepingRpcDeps => (
   registry: () => [],
   runOnce: async () => { throw new Error('runOnce not used by drift.read'); },
   enrichmentStore: store,
+  // Deterministic clock — the dismissal stamps `deps.now?.() ?? Date.now()`,
+  // and a real clock makes every timestamp assertion a moving target.
+  now: () => NOW,
   ...over,
 });
 
@@ -181,5 +185,77 @@ describe('D-285 — housekeeping.drift.read', () => {
   it('refuses when no enrichment store is wired, rather than reporting calm', async () => {
     await expect(handleHousekeepingDriftRead(deps({ enrichmentStore: undefined })))
       .rejects.toBeInstanceOf(RpcError);
+  });
+});
+
+describe('D-285 follow-up — the dismissal has to outlive the tab', () => {
+  /** ⛔ WHAT WENT WRONG. D-285 made the panel LOAD the stored row on every
+   *  mount while the dismissal was still `setState`, so the banner came back
+   *  on every load — measured live: dismiss, reload, VISIBLE again. The read
+   *  traded a verdict nobody saw for one nobody could get rid of. */
+  const fire = () => {
+    seedRealShift();
+    const outcome = processOneConfidenceDriftTopic(ctx(), 'purpose', NOW);
+    expect(outcome.fired).not.toBeNull();
+  };
+
+  it('persists, so the next READ already knows', async () => {
+    fire();
+    await handleHousekeepingDriftDismiss(deps(), { source_topic: 'purpose' });
+
+    // Read it back the way a freshly-mounted panel would — no shared state
+    // between the write and this call.
+    const { rows } = await handleHousekeepingDriftRead(deps());
+    expect(rows[0]!.dismissed_at).toBe(NOW);
+  });
+
+  it('keeps the FIRST timestamp on a repeat, rather than sliding it forward', async () => {
+    fire();
+    await handleHousekeepingDriftDismiss(deps({ now: () => NOW }), { source_topic: 'purpose' });
+    const second = await handleHousekeepingDriftDismiss(
+      deps({ now: () => NOW + 60_000 }),
+      { source_topic: 'purpose' },
+    );
+    // A double click or a retry must not rewrite when they waved it away.
+    expect(second.effective.dismissed_at).toBe(NOW);
+  });
+
+  it('leaves the rest of the signal exactly as the producer wrote it', async () => {
+    fire();
+    const before = (await handleHousekeepingDriftRead(deps())).rows[0]!;
+    const after = (await handleHousekeepingDriftDismiss(deps(), { source_topic: 'purpose' })).effective;
+
+    expect({ ...after, dismissed_at: undefined })
+      .toEqual({ ...before, dismissed_at: undefined });
+  });
+
+  it('refuses a topic with no stored signal instead of answering "fine"', async () => {
+    // A dismissal for something the server does not hold means the client is
+    // out of step; a silent ok would hide that behind a banner that keeps
+    // coming back.
+    fire();
+    await expect(handleHousekeepingDriftDismiss(deps(), { source_topic: 'summary' }))
+      .rejects.toBeInstanceOf(RpcError);
+  });
+
+  it('refuses an empty topic and a missing store', async () => {
+    await expect(handleHousekeepingDriftDismiss(deps(), { source_topic: '' }))
+      .rejects.toBeInstanceOf(RpcError);
+    await expect(
+      handleHousekeepingDriftDismiss(deps({ enrichmentStore: undefined }), { source_topic: 'purpose' }),
+    ).rejects.toBeInstanceOf(RpcError);
+  });
+
+  it('the PRODUCER carries the dismissal while severity holds — the re-arm rule', async () => {
+    // 🔑 This is what scopes a dismissal to ONE computation, and the handler
+    // leans on it: dismiss once, and later cycles that reach the same verdict
+    // stay quiet, while a new severity raises the banner again.
+    fire();
+    await handleHousekeepingDriftDismiss(deps(), { source_topic: 'purpose' });
+
+    processOneConfidenceDriftTopic(ctx(), 'purpose', NOW + 60_000);
+
+    const { rows } = await handleHousekeepingDriftRead(deps());
+    expect(rows[0]!.dismissed_at).toBe(NOW);
   });
 });

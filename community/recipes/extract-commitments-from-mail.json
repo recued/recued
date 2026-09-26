@@ -1,7 +1,7 @@
 {
   "recipe_id": "extract-commitments-from-mail",
   "chat_exposed": true,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "metadata": {
     "name": "Extract commitments from mail",

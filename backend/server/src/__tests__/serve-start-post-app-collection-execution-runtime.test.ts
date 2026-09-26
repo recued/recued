@@ -245,6 +245,35 @@ describe('startPostAppCollectionExecutionRuntime', () => {
     });
   });
 
+  it('D-308: threads the pre-bound pass repair into boot recovery, and nothing when none is bound', async () => {
+    // The composer binds it and boot recovery runs it; this is the hop between,
+    // which a test of either end cannot see.
+    const permanentPassRepair = vi.fn();
+    const recoveries: Array<Record<string, unknown>> = [];
+    bridgeMocks.composeCollectionContext.mockImplementation(() => ({
+      collectionRegistry: { tag: 'collection-registry' },
+      startCollectionAdapters: vi.fn(async () => undefined),
+    }));
+    bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockImplementation(
+      async (actualOptions) => {
+        recoveries.push(actualOptions.runtime.recovery);
+        return { runtime: { tag: 'runtime' }, schedulersBundle: { tag: 'schedulers' } };
+      },
+    );
+    for (const bound of [true, false]) {
+      bridgeMocks.composeExecutionContext.mockImplementation(async () => ({
+        executorConfig: { tag: 'executor-config' },
+        executeDeps: { tag: 'execute-deps' },
+        notificationBlock: { tag: 'notification-block' },
+        serverDisplayName: 'test-server',
+        ...(bound ? { permanentPassRepair } : {}),
+      }));
+      await startPostAppCollectionExecutionRuntime(makeOptions());
+    }
+    expect(recoveries[0]?.permanentPassRepair).toBe(permanentPassRepair);
+    expect(recoveries[1]).not.toHaveProperty('permanentPassRepair');
+  });
+
   it('composes exact peer-delivery boot recovery and dispatch preservation', async () => {
     const peerOutbox = { tag: 'peer-outbox' };
     const peerAuditLog = { tag: 'peer-audit-log' };

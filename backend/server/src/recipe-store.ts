@@ -11,7 +11,7 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { RecipeDefinition } from '@recued/contracts';
+import { droppedVariables, type RecipeDefinition } from '@recued/contracts';
 
 import { BUNDLED_FOUNDATION_RECIPES } from './bundled-foundation.generated.js';
 import {
@@ -99,6 +99,20 @@ export interface RecipeStore {
     readonly expected_recipe_json: string;
     readonly now?: number;
   }): LocalRecipeCompareAndSaveResult;
+  /** D-303 — the variables an earlier version of this recipe declared that the stored
+   *  one does not: what updates dropped. A run drops a value still saved for one of
+   *  these instead of refusing it (`execute-handler`, beside D-302's
+   *  `metadata.retired_variables`). Recorded by every write (`save`,
+   *  `compareAndSaveLocalRecipe`); a name a later version declares again leaves the
+   *  list, so its saved value applies again. `[]` without a database. */
+  retiredVariables?(recipe_id: string): readonly string[];
+  /** D-303 — every recipe id with a retired list, for the boot sweep that forgets the
+   *  lists nothing needs any more (`retired-settings.ts`). */
+  retiredRecipeIds?(): string[];
+  /** D-303 — forget a recipe's retired list. D-304: with the recipe's settings when it
+   *  is uninstalled (`recipe-owned-state.ts`); at boot, a list left from before that
+   *  (`forgetUnusedRetirements`). */
+  forgetRetiredVariables?(recipe_id: string): void;
   /** Delete a recipe from SQLite. Cannot delete bundled recipes. */
   delete(recipe_id: string): boolean;
   /** D-145 PA10 follow-on — list recipe_ids owned by the given pack.
@@ -136,6 +150,12 @@ export interface RecipeStore {
    *  AND on delete, with the recipe id. Unlike {@link setOnMutated} this appends
    *  rather than replacing, so two consumers can coexist. */
   addOnMutated(hook: (recipe_id: string) => void): void;
+  /** D-304 — register a subscriber for a recipe's DELETION (a row actually
+   *  removed), fired before the mutation hooks so they see what it cleaned up.
+   *  The server removes the recipe's own settings, schedules and automations here
+   *  (`recipe-owned-state.ts`): one seam for every uninstall path. Optional, so a
+   *  test double without it behaves as before. */
+  addOnDeleted?(hook: (recipe_id: string) => void): void;
 }
 
 /** Scan a directory for *.json files and load each as a RecipeDefinition. */
@@ -249,6 +269,17 @@ export const createRecipeStore = (
         ON recipes (pack_slug)
         WHERE pack_slug IS NOT NULL;
     `);
+    // D-303 — the variables updates dropped, per recipe (`retiredVariables`). D-304:
+    // forgotten with the recipe's settings when it is uninstalled
+    // (`recipe-owned-state.ts`).
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS recipe_retired_variables (
+        recipe_id  TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        retired_at INTEGER NOT NULL,
+        PRIMARY KEY (recipe_id, name)
+      );
+    `);
   }
 
   const getFromDb = (recipe_id: string): StoredRecipe | undefined => {
@@ -281,6 +312,18 @@ export const createRecipeStore = (
    *  question. Mirrors `connectionStore.addOnUpsert`, two lines below the
    *  `setOnMutated` call site. */
   const onMutatedSubscribers: Array<(recipe_id: string) => void> = [];
+  /** D-304 — deletion subscribers (`addOnDeleted`). */
+  const onDeletedSubscribers: Array<(recipe_id: string) => void> = [];
+  const fireOnDeleted = (recipe_id: string): void => {
+    for (const sub of onDeletedSubscribers) {
+      try {
+        sub(recipe_id);
+      } catch {
+        // The row is already gone; a subscriber's failure must not report the
+        // delete as failed.
+      }
+    }
+  };
   const preapprovalMaterial = (id: string): unknown | null => {
     const row = db?.prepare('SELECT publisher_id,recipe_json FROM recipes WHERE recipe_id=?')
       .get(id) as { publisher_id: string; recipe_json: string } | undefined;
@@ -304,6 +347,35 @@ export const createRecipeStore = (
       // recipe save or delete.
     }
   };
+  /** D-303 — ⛔ AN UPDATE THAT DROPS A VARIABLE MUST NOT STOP THE RECIPE RUNNING.
+   *
+   *  D-222 refuses every config key a recipe does not declare, including values the
+   *  owner saved earlier: the install config, dishes, groups, and the managed dishes
+   *  behind schedules, triggers and auto-run. Nothing prunes those, so a version that
+   *  drops `x` would answer every run of an owner who ever saved `x` with a refusal.
+   *
+   *  Deleting the saved values is the wrong fix. A managed dish is immutable (one
+   *  dish id, one config), a pre-approval pins a dish's config, and a group can serve
+   *  more than one recipe. So nothing saved is rewritten. This records the names the
+   *  update dropped, the run drops their values (D-302's mechanism), and a later
+   *  version that declares a name again takes it off the list, so its saved value
+   *  applies again. Called inside the write's transaction, so the list and the stored
+   *  recipe cannot disagree. */
+  const recordRetired = (next: RecipeDefinition, priorJson: string | undefined, now: number): void => {
+    if (!db) return;
+    let prior: RecipeDefinition | null = null;
+    try {
+      prior = priorJson === undefined ? null : JSON.parse(priorJson) as RecipeDefinition;
+    } catch {
+      prior = null;
+    }
+    const retire = db.prepare(
+      'INSERT OR IGNORE INTO recipe_retired_variables (recipe_id, name, retired_at) VALUES (?, ?, ?)');
+    for (const name of droppedVariables(prior, next)) retire.run(next.recipe_id, name, now);
+    const revive = db.prepare('DELETE FROM recipe_retired_variables WHERE recipe_id = ? AND name = ?');
+    for (const name of Object.keys(next.variables ?? {})) revive.run(next.recipe_id, name);
+  };
+
   const fireOnUpgrade = (recipe_id: string): void => {
     if (!onUpgradeHook) return;
     try {
@@ -402,8 +474,8 @@ export const createRecipeStore = (
       const isUpgrade = mutatePreapprovalResource(db, 'recipe', recipe.recipe_id,
         () => preapprovalMaterial(recipe.recipe_id), () => {
         const priorRow = db
-          .prepare('SELECT recipe_hash, pack_slug FROM recipes WHERE recipe_id = ?')
-          .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null } | undefined;
+          .prepare('SELECT recipe_hash, pack_slug, recipe_json FROM recipes WHERE recipe_id = ?')
+          .get(recipe.recipe_id) as { recipe_hash: string; pack_slug: string | null; recipe_json: string } | undefined;
         const isUpgrade = priorRow != null && priorRow.recipe_hash !== hash;
         // ── D-247 D6 — A PACK-OWNED ROW IS THE PACK'S TO CHANGE ──────────────
         //
@@ -457,6 +529,7 @@ export const createRecipeStore = (
           installedAt,
           packSlugValue,
         );
+        recordRetired(recipe, priorRow?.recipe_json, installedAt);
         return isUpgrade;
       });
       if (isUpgrade) fireOnUpgrade(recipe.recipe_id);
@@ -527,6 +600,7 @@ export const createRecipeStore = (
               ? { kind: 'not_editable' }
               : { kind: 'conflict' };
         }
+        recordRetired(input.recipe, row.recipe_json, input.now ?? Date.now());
         return {
           kind: 'updated',
           prior_recipe_hash: row.recipe_hash,
@@ -547,7 +621,10 @@ export const createRecipeStore = (
       if (!db) return false;
       const result = mutatePreapprovalResource(db, 'recipe', recipe_id, () => preapprovalMaterial(recipe_id),
         () => db.prepare('DELETE FROM recipes WHERE recipe_id = ?').run(recipe_id));
-      if (result.changes > 0) fireOnMutated(recipe_id);
+      if (result.changes > 0) {
+        fireOnDeleted(recipe_id);
+        fireOnMutated(recipe_id);
+      }
       return result.changes > 0;
     },
 
@@ -577,6 +654,22 @@ export const createRecipeStore = (
       return db.prepare('SELECT * FROM recipes ORDER BY installed_at DESC').all() as StoredRecipe[];
     },
 
+    retiredVariables(recipe_id) {
+      if (!db) return [];
+      return (db.prepare('SELECT name FROM recipe_retired_variables WHERE recipe_id = ? ORDER BY name')
+        .all(recipe_id) as Array<{ name: string }>).map((row) => row.name);
+    },
+
+    retiredRecipeIds() {
+      if (!db) return [];
+      return (db.prepare('SELECT DISTINCT recipe_id FROM recipe_retired_variables ORDER BY recipe_id')
+        .all() as Array<{ recipe_id: string }>).map((row) => row.recipe_id);
+    },
+
+    forgetRetiredVariables(recipe_id) {
+      db?.prepare('DELETE FROM recipe_retired_variables WHERE recipe_id = ?').run(recipe_id);
+    },
+
     updateUpstream(recipe_id, upstream, now) {
       if (!db) return;
       db.prepare(`
@@ -591,6 +684,9 @@ export const createRecipeStore = (
 
     addOnMutated(hook) {
       onMutatedSubscribers.push(hook);
+    },
+    addOnDeleted(hook) {
+      onDeletedSubscribers.push(hook);
     },
     setOnMutated(hook) {
       onMutatedHook = hook;

@@ -349,13 +349,12 @@ const annotationTargetCollection = (
  *  Pure — no store reads, no clock. The result feeds
  *  `evaluateScopeRestrictions(scope_restrictions, scopePath)`. */
 /** D-249 — kernel slugs whose GOVERNED COLLECTION arrives in the args rather than
- *  in the slug. `work-entity-*` names it `kind`; `data-annotate` names it
- *  `target_collection`. Both are checked against `isReadableCollection` at the
- *  use site — the value is caller-supplied. */
+ *  in the slug: `work-entity-*` names it `kind`. It is checked against
+ *  `isReadableCollection` at the use site — the value is caller-supplied.
+ *  (`data-annotate`, which named it `target_collection`, was retired 2026-09-23.) */
 const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
   'work-entity-get',
   'work-entity-list',
-  'data-annotate',
 ]);
 
 /** D-249 — kernel slugs that write NO governed collection, so the scope axis does
@@ -378,17 +377,30 @@ const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
  *     `data.audit`, which is not a `READABLE_COLLECTION` and is gated by
  *     `core.audit.read` instead (D-232 § 20.9 put it on that existing door
  *     deliberately, rather than minting a second name for one authority).
- *   - `csv-*` — operate on a passed record/blob handle, not on a collection.
+ *   - ⛔ NOT the `csv-*` ops any more (2026-09-23). They sat here as "a passed
+ *     record/blob handle, not a collection", which D-245 made false: they read a
+ *     named file instance by `{slug, path}`, and by `record_id` they read a
+ *     `data.file.received` record. Either way they read FILE CONTENT, so they are
+ *     fenced as `data.file` below, like `data-file-read` and `file.read`.
  *   - the `seller-*` / `customer-access-*` families — offers, orders, tiers and
  *     customer access rows. A seller's ledger is its own store; the owner does
  *     not read it through `data.<collection>` and no grant row names it.
  *
  *  ⛔ NOT HERE, DELIBERATELY: the LINK family (`link-create` / `-delete` /
- *  `-list`, `data-link`). A link spans TWO records in TWO collections, and this
+ *  `-list`). A link spans TWO records in TWO collections, and this
  *  fence carries ONE path — so admitting it on either end would let one
  *  collection's grant reach every other, which is precisely the hazard the
  *  annotation sidecar note above describes. It stays denied at a fenced door
  *  until the fence can express a pair; that is a design change, not a list entry. */
+/** The CSV kernel ops: each reads one stored file's content (by `record_id` or
+ *  by a named instance's `{slug, path}`), so each is fenced as `data.file`. */
+const CSV_FILE_READ_SLUGS: ReadonlySet<string> = new Set([
+  'csv-columns',
+  'csv-filter',
+  'csv-rows',
+  'csv-stats',
+]);
+
 const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'peer-ask',
   'notification-send',
@@ -398,9 +410,6 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   // D-261 persists an inert owner-review proposal, not a data.preapproval collection.
   'preapproval-request',
   'exchange-status',
-  'csv-columns',
-  'csv-filter',
-  'csv-stats',
   'seller-offer-attach-fulfillment',
   'seller-offer-ensure',
   'seller-offer-get',
@@ -447,6 +456,15 @@ export const deriveDispatchScope = (
     // generic leading-segment rule below (verified by tests:
     // `mail-send`→`data.mail`, `enrichment-upsert`→`data.enrichment`, …).
     if (tool.slug === 'data-file-read') {
+      return 'data.file';
+    }
+    // ⛔ THE CSV OPS READ FILE CONTENT, so they face the same `data.file` fence.
+    // Their slug leads with `csv`, so the generic rule would derive `data.csv`,
+    // which no grant can name. It costs the owner nothing extra: the ops'
+    // entity is `file`, and the one Files toggle that grants them writes the
+    // `data.file` row too. Without this a door fenced away from files could
+    // read a named file through a CSV op, which `file.read` refuses.
+    if (CSV_FILE_READ_SLUGS.has(tool.slug)) {
       return 'data.file';
     }
     // FormResponses use the canonical underscore collection name. The generic
@@ -521,11 +539,10 @@ export const deriveDispatchScope = (
     }
     // ⛔⛔⛔ D-249 — A KERNEL OP THAT NAMES A COLLECTION IN ITS ARGS IS FENCED BY
     // THAT COLLECTION, NOT BY ITS SLUG. `work-entity-*` carries the collection as
-    // `kind` (task / project / note / commitment / booking) and `data-annotate`
-    // carries it as `target_collection` — the same shape the annotation sidecar
-    // above already handles for its four siblings, which is why it was written.
+    // `kind` (task / project / note / commitment / booking) — the same shape the
+    // annotation sidecar above already handles for its siblings.
     //
-    // 🔑 WITHOUT THIS THEY DERIVED `data.work` / `data.data`, which matches no
+    // 🔑 WITHOUT THIS THEY DERIVED `data.work`, which matches no
     // grant row — so a door granted `data.task` was DENIED a task read, and the
     // only way to admit it was to grant EVERY collection (which empties the
     // fence). The generic rule was fencing them on a name nobody can grant.
@@ -536,7 +553,7 @@ export const deriveDispatchScope = (
     // derive a keep-pattern family and admit unconditionally. An unknown /
     // absent value falls through to the generic rule below, which denies.
     if (COLLECTION_ARG_SLUGS.has(tool.slug)) {
-      const named = input?.['kind'] ?? input?.['target_collection'];
+      const named = input?.['kind'];
       if (typeof named === 'string') {
         const aliased = named === 'email' ? 'mail' : named;
         if (isReadableCollection(aliased)) return `data.${aliased}`;

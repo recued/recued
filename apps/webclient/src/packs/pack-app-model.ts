@@ -55,6 +55,15 @@
  *  `stepsAreAnalysable`. Widening that set is how a new step kind opts in, and
  *  it must be a deliberate act by someone who has decided the kind is pure.
  *
+ *  ⚠ That act was taken once, for the `ingredient` steps INSTALL produces. An
+ *  installed recipe's ops are lowered onto ingredients, so an unreadable
+ *  ingredient step made every installed read an operation. An ingredient step
+ *  now counts as the op it runs, when that is exactly knowable: a pack catalog
+ *  plus `input.operation`, or a kernel backing slug, which the registry maps
+ *  one-to-one onto its op. The op's declared risk then decides, so a
+ *  `mail-send` step is judged as `core.mail.send`, a write. Any other
+ *  ingredient step is still disqualifying.
+ *
  *  Pure: same pack + same recipes + same roster → same surface.
  */
 
@@ -69,6 +78,7 @@ import {
 
 import {
   isProvablyReadOnly,
+  recipeSpendsPerRun,
   buildPackOperationIndex,
   recipeDeclaredOps,
   recipeRecordsUsage,
@@ -165,6 +175,36 @@ export const requiredVariables = (
   return required;
 };
 
+/** Does one run of this recipe spend the owner something? The server's
+ *  projection wins; a row that still carries its steps (an older server) is
+ *  answered locally.
+ *
+ *  ⛔ ABSENT BOTH, IT SPENDS. A list row has carried no steps since the body came
+ *  off the list, so a local answer from it is always "does not spend": the gate
+ *  was off, masked only while the effect half failed every lowered kernel step
+ *  first. Answering "spends" costs a button where a tab would have been; the
+ *  other answer costs the owner's tokens on every tab switch and data burst. */
+const spendsPerRun = (entry: ServerRecipeListEntry, ops: PackOperationIndex): boolean =>
+  entry.spends_per_run
+  ?? (Array.isArray((entry.recipe as { steps?: unknown }).steps)
+    ? recipeSpendsPerRun(entry.recipe as never, ops)
+    : true);
+
+/** Is this recipe proven free of effects? The same rule as `spendsPerRun`: the
+ *  server's projection wins, and a row that still carries its steps (an older
+ *  server) is answered locally.
+ *
+ *  ⛔ ABSENT BOTH, IT IS NOT PROVEN. The fallback used to judge the row itself,
+ *  cast past the parameter type, and a row with no steps passes every check
+ *  over nothing: any recipe, a delete included, came back read-only and ran as
+ *  a view (2026-09-24 audit). Only a server composed without the pack roster
+ *  sends a row with neither, and a button is the safe answer there. */
+const provablyReadOnly = (entry: ServerRecipeListEntry, ops: PackOperationIndex): boolean =>
+  entry.provably_read_only
+  ?? (Array.isArray((entry.recipe as { steps?: unknown }).steps)
+    ? isProvablyReadOnly(entry.recipe as never, ops)
+    : false);
+
 /** Does the recipe require caller-supplied input or page context?
  *
  *  `deriveRecipeTargeting` is the shared modal/server rule for record and page
@@ -172,7 +212,7 @@ export const requiredVariables = (
  *  required input: `null` is required; a ValueHint object is required when it
  *  is not optional and has no default; primitive / array shorthand values are
  *  themselves defaults. Together these keep auto-run tabs self-sufficient. */
-const needsAnArgument = (recipe: ServerRecipeListEntry['recipe']): boolean => {
+const needsAnArgument =(recipe: ServerRecipeListEntry['recipe']): boolean => {
   if (deriveRecipeTargeting(recipe).targeted) return true;
   const required = requiredVariables(recipe);
   // Installed recipes are validated, but this is the auto-run classifier: a
@@ -260,8 +300,15 @@ export const buildPackAppIndex = (
   ops: buildPackOperationIndex(roster),
 });
 
+/** ⛔⛔ TAKES A PACK WHOSE MANIFEST IS IN HAND, AND THE TYPE IS THE GUARD.
+ *  `packs.list` sends no manifest for ANY pack (`PackListEntry.manifest`), so an
+ *  absent one means "not fetched yet", never "ships nothing". This used to read
+ *  it as the second (`?? { recipes: [] }`): an installed pack classified to an
+ *  empty surface while its manifest was in flight, the panel took that for an
+ *  answer, and a bookmarked detail address was discarded before the real
+ *  surface arrived. The caller decides what "not yet" looks like. */
 export const packAppSurface = (
-  pack: PackListEntry,
+  pack: PackListEntry & { manifest: BulkPackManifest },
   index: PackAppIndex,
 ): PackAppSurface => {
   const byId = index.byRecipeId;
@@ -271,9 +318,7 @@ export const packAppSurface = (
   const automations: PackAppRecipe[] = [];
   const missing: string[] = [];
 
-  // An uninstalled pack forwards no manifest, so it ships no visible recipes to
-  // project — the empty roster is correct, not a lost one.
-  for (const slug of shippedVisibleSlugs(pack.manifest ?? { recipes: [] } as never)) {
+  for (const slug of shippedVisibleSlugs(pack.manifest)) {
     const entry = byId.get(slug);
     if (entry === undefined) {
       missing.push(slug);
@@ -300,15 +345,45 @@ export const packAppSurface = (
     // `packs.list` no longer forwards manifests, so the local roster resolves
     // almost nothing and the local rule fails CLOSED on genuine views. The
     // local compute stays only for a server too old to project it, and only
-    // while the row still carries `steps`: once it does not, the type stops
-    // this line compiling, which is the point.
-    const readOnlyRenderer = rendersReadingSurface(entry.recipe)
-      && (entry.provably_read_only
-        ?? isProvablyReadOnly(entry.recipe as never, index.ops));
-    const bucket = !readOnlyRenderer
-      ? operations
-      : needsAnArgument(entry.recipe) ? lookups : views;
-    bucket.push(item);
+    // while the row still carries `steps` (see `provablyReadOnly`).
+    // ⛔⛔ D-282 — TWO QUESTIONS, AND A RECIPE MUST ANSWER BOTH TO RUN WITHOUT
+    // BEING ASKED. A view RUNS ON SELECTION and B4 re-runs it on every data
+    // burst, so the bar is not "is this a reading surface" but:
+    //
+    //   1. May I run it at all without asking?  — an EFFECT question,
+    //      `isProvablyReadOnly`, now across BOTH op tiers.
+    //   2. May I run it REPEATEDLY without spending? — a COST question, which
+    //      no risk tier can answer: every `core.ai.*` op is `risk: 'read'` and
+    //      correctly so, while costing tokens on each run.
+    //
+    // Either answer being no sends the recipe to `operations`, where a person
+    // presses a button — their attention is needed for it anyway. Measured at
+    // the change: 396 views → 233, with 49 kernel-writing and 114 AI-spending
+    // recipes moving to a button.
+    //
+    // ⛔ The cost half comes from the server too (`spends_per_run`). It used to be
+    // computed here from the row, which has carried no steps since the body came
+    // off the list, so it always answered "does not spend" — see `spendsPerRun`.
+    const effectFree = rendersReadingSurface(entry.recipe) && provablyReadOnly(entry, index.ops);
+    if (!effectFree) {
+      operations.push(item);
+      continue;
+    }
+    if (needsAnArgument(entry.recipe)) {
+      // ⚠ A LOOKUP ANSWERS ONLY THE FIRST QUESTION, AND THAT IS NOT LENIENCY.
+      // Question 2 is "may I run it REPEATEDLY without spending", and nothing
+      // repeats a lookup: `activeViewId` is only ever a view tab, so B4's
+      // redraw cannot reach one, and B5's bookmark hydration is a ONE-SHOT set
+      // at mount. It runs on a row press or a followed link — attention is
+      // present each time. Gating it on cost too would have demoted 65 detail
+      // pages to launcher rows with a hand-typed id, which is B5 undone for a
+      // repeat that cannot happen.
+      lookups.push(item);
+      continue;
+    }
+    // A view is the one thing that runs with nobody asking — on selection, and
+    // again on every coalesced data burst (B4) — so it must answer BOTH.
+    (spendsPerRun(entry, index.ops) ? operations : views).push(item);
   }
 
   return { views, lookups, operations, automations, missing };

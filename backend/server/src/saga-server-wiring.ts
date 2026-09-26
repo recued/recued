@@ -33,6 +33,7 @@
  */
 
 import type {
+  TornSagaSweepResult,
   SagaAnnotationWriter,
   SagaCompensationDispatcher,
   SagaCompensationPlanRef,
@@ -41,10 +42,14 @@ import type {
 } from '@recued/gateway';
 import {
   SAGA_ANNOTATION_KEY,
+  SAGA_HANDLER_KIND,
+  SAGA_SWEEP_DEFAULT_LIMIT,
   SAGA_TARGET_COLLECTION,
   registerSagaHandler,
+  sweepTornSagas,
 } from '@recued/gateway';
-import type { ExecutionSource, RecipeDefinition } from '@recued/contracts';
+import type { Commit, ExecutionSource, IngredientManifest, RecipeDefinition } from '@recued/contracts';
+import { deriveSagaPlans } from './saga-plans.js';
 import type { AuditLogStore } from '@recued/storage';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
@@ -198,4 +203,81 @@ export const registerSagaReconciliation = (
       auditLog: deps.auditLog,
     }),
   );
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-287 follow-on — the boot sweep for torn runs nobody was told about
+// ────────────────────────────────────────────────────────────────
+
+/** Stores the sweep reads. Narrow `Pick`s so a test supplies four methods
+ *  rather than four stores. */
+export interface TornSagaSweepWiring {
+  auditLog: Pick<AuditLogStore, 'listByCommitStatus'>;
+  commitStore: { listByRun(run_id: string, limit?: number): Promise<readonly Commit[]> };
+  annotationStore: Pick<AnnotationStore, 'annotationsForRecord'>;
+  notifier: SagaNotifier;
+  /** Open asks, read ONCE per sweep — see `surfacedRunIds`. */
+  listOpenAsks(): Promise<ReadonlyArray<{
+    handler_kind: string;
+    handler_payload: Record<string, unknown>;
+  }>>;
+  getManifest(slug: string): IngredientManifest | undefined;
+  log?(message: string): void;
+}
+
+/** Run ids already carrying an OPEN saga ask.
+ *
+ *  ⚠ ONE READ FOR THE WHOLE SWEEP, not one per candidate. The open-ask set is
+ *  small and bounded; asking per run turns a 200-anchor sweep into 200 store
+ *  reads to answer a question one read answers. */
+const surfacedRunIds = async (
+  listOpenAsks: TornSagaSweepWiring['listOpenAsks'],
+): Promise<ReadonlySet<string>> => {
+  const open = await listOpenAsks();
+  const ids = new Set<string>();
+  for (const ask of open) {
+    if (ask.handler_kind !== SAGA_HANDLER_KIND) continue;
+    const runId = ask.handler_payload.run_id;
+    if (typeof runId === 'string' && runId.length > 0) ids.add(runId);
+  }
+  return ids;
+};
+
+/** Sweep once, at boot, for torn runs whose ask never reached the owner.
+ *
+ *  ⛔ THE CANDIDATE QUERY IS `commit_status === 'failed'` AND THAT IS THE WHOLE
+ *  SAFETY ARGUMENT. `detectTornSaga` fires on any landed write and cannot tell
+ *  a failed run from a successful one, so widening this query is how the owner
+ *  gets told that every successful multi-write recipe failed. A future widener
+ *  must also exclude held anchors (`isHeldRunAnchorStatus`, NOT a comparison
+ *  against `'awaiting_approval'` — that literal misses `awaiting_peer`); the
+ *  exact-`'failed'` read here cannot return a held anchor, which is why no
+ *  such check appears below.
+ *
+ *  Best-effort by construction: a throw is logged and swallowed, because a boot
+ *  must not fail on a disclosure pass. */
+export const runTornSagaSweep = async (
+  wiring: TornSagaSweepWiring,
+  limit: number = SAGA_SWEEP_DEFAULT_LIMIT,
+): Promise<TornSagaSweepResult> => {
+  const openRunIds = await surfacedRunIds(wiring.listOpenAsks);
+  return sweepTornSagas({
+    listFailedRuns: async (max) =>
+      (await wiring.auditLog.listByCommitStatus('failed', max))
+        .map((entry) => ({ run_id: entry.run_id, recipe_id: entry.recipe_id })),
+    listRunCommits: (run_id) => wiring.commitStore.listByRun(run_id),
+    alreadySurfaced: async (run_id) => {
+      if (openRunIds.has(run_id)) return true;
+      // Answered: the reconciliation annotation is the durable record, and it
+      // outlives the ask it came from.
+      const rows = await wiring.annotationStore.annotationsForRecord(
+        SAGA_TARGET_COLLECTION, run_id,
+      );
+      return rows.some((row) => row.key === SAGA_ANNOTATION_KEY);
+    },
+    getManifest: wiring.getManifest,
+    derivePlans: (saga) => deriveSagaPlans(saga, wiring.getManifest),
+    notifier: wiring.notifier,
+    ...(wiring.log === undefined ? {} : { log: wiring.log }),
+  }, limit);
 };

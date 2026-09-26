@@ -1,9 +1,9 @@
 {
   "vendor": "Honeycomb",
-  "contract_retrieved_on": "2026-07-15",
+  "contract_retrieved_on": "2026-09-22",
   "url": "https://docs.honeycomb.io/api/openapi-public.yaml",
-  "sha256": "d5f0054f804790ce3c758f9fd449c16d99140c8717674af98039794fd8e51ed9",
-  "byte_length": 331868,
+  "sha256": "a1fbbaffc93032b8f475700ea97c18f516faa8a72122c18e47b59c36ab334eef",
+  "byte_length": 336687,
   "openapi": "3.1.0",
   "title": "Honeycomb API",
   "version": "1.0.0",
@@ -11,19 +11,19 @@
     "https://api.honeycomb.io",
     "https://api.eu1.honeycomb.io"
   ],
-  "path_count": 47,
-  "operation_count": 89,
-  "selected_operation_count": 89,
+  "path_count": 48,
+  "operation_count": 90,
+  "selected_operation_count": 90,
   "excluded_operation_count": 0,
   "method_counts": {
     "DELETE": 14,
     "GET": 38,
     "PATCH": 3,
-    "POST": 21,
+    "POST": 22,
     "PUT": 13
   },
   "auth_counts": {
-    "configuration": 75,
+    "configuration": 76,
     "firehose": 1,
     "ingest": 2,
     "management": 11
@@ -33,10 +33,10 @@
     "honeycomb-ingest": 2,
     "honeycomb-kinesis-ingest": 1,
     "honeycomb-management": 11,
-    "honeycomb-observability": 44
+    "honeycomb-observability": 45
   },
   "tag_counts": {
-    "Anomaly Detection": 4,
+    "Anomaly Detection": 5,
     "Auth": 2,
     "Boards": 10,
     "Burn Alerts": 5,
@@ -63,10 +63,10 @@
     "admin": 14,
     "destructive": 14,
     "read": 39,
-    "write": 22
+    "write": 23
   },
   "body_mode_counts": {
-    "json_fields": 35,
+    "json_fields": 36,
     "json_raw": 2,
     "none": 52
   },
@@ -4769,6 +4769,9 @@
       "op": "recipient.list",
       "risk": "read",
       "approval": "never",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe",
       "result_path": null,
       "pagination": null,
@@ -4913,6 +4916,9 @@
       "op": "recipients.get_recipient",
       "risk": "read",
       "approval": "never",
+      "tags": [
+        "sensitive-read"
+      ],
       "idempotency": "safe",
       "result_path": null,
       "pagination": null,
@@ -5442,6 +5448,52 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe",
+      "result_path": null,
+      "pagination": null,
+      "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
+    },
+    {
+      "method": "POST",
+      "path": "/1/signals/recipient_assignments",
+      "operation_id": "bulkAssignSignalRecipients",
+      "primary_tag": "Anomaly Detection",
+      "auth_class": "configuration",
+      "security_schemes": [
+        "configuration_key"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [],
+      "request_read_only_paths": [],
+      "request_internal_paths": [],
+      "request_int64_paths": [],
+      "response_int64_paths": [],
+      "emitted_args": [
+        {
+          "key": "body.selector",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.recipients",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "pack": "honeycomb-observability",
+      "op": "anomaly_detection.bulk_assign_signal_recipients",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
       "result_path": null,
       "pagination": null,
       "reason": "admitted from the hash-pinned official Honeycomb OpenAPI contract with a static REST binding"
@@ -7469,6 +7521,11 @@
     "/1/signals/{signalId}/historical_anomalies": {
       "get": {
         "operationId": "listSignalHistoricalAnomalies"
+      }
+    },
+    "/1/signals/recipient_assignments": {
+      "post": {
+        "operationId": "bulkAssignSignalRecipients"
       }
     },
     "/1/slos/{datasetSlug}": {

@@ -40,6 +40,9 @@ test('saved task filters survive reload and their relative dates advance on reop
   await tools.getByLabel('View name', { exact: true }).fill('Due today');
   await tools.getByRole('button', { name: 'Save view', exact: true }).click();
   await expect(tools.locator('[data-view-notice]')).toContainText('Saved');
+  // D-291 — the list lives on `#views`; `#data` keeps only "Save current view".
+  await page.evaluate(() => window.__app.setHash('#views'));
+  await expect(tools.locator('details')).toBeVisible();
   await tools.locator('summary').click();
   const link = tools.locator('details').getByRole('link', { name: 'Due today', exact: true });
   const href = await link.getAttribute('href');

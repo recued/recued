@@ -567,6 +567,30 @@ describe('D-209 #1 W2b — pack install mints per-recipe doors; uninstall retire
     expect(retired?.revoked_at).toBeDefined();
     expect(retired?.revocation_reason).toBe('pack_uninstalled');
   });
+
+  it('⛔ D-295 — a re-install keeps a door its OWNER revoked, revoked: an update never re-opens it', async () => {
+    /** A revoked prior "must never be re-used as the live door", so a re-install
+     *  minted a FRESH live door in its place — re-opening, on every pack update,
+     *  a door the owner had shut. */
+    const harness = await makeHarness();
+    await install(harness, 'pack-webhook-recipe');
+    const doorId = harness.consumerStore.doorContractIdForRecipe(
+      'pack_install', PACK_SLUG, 'pack-webhook-recipe', PUBLISHER,
+    )!;
+    harness.definitionStore.revoke(doorId, 'Revoked from Settings');
+
+    const result = await install(harness, 'pack-webhook-recipe');
+    expect(result.ok).toBe(true);
+    // Still the owner's revoked door on the rows — every delivery keeps being refused…
+    expect(harness.consumerStore.doorContractIdForRecipe(
+      'pack_install', PACK_SLUG, 'pack-webhook-recipe', PUBLISHER,
+    )).toBe(doorId);
+    expect(harness.definitionStore.get(doorId)).toMatchObject({ revocation_reason: 'Revoked from Settings' });
+    // …and no live webhook door was minted in its place.
+    const live = harness.definitionStore.list().filter((def) =>
+      def.door_types?.includes('webhook') === true && (def.revoked_at === undefined || def.revoked_at === null));
+    expect(live).toEqual([]);
+  });
 });
 
 // ── storage migration ─────────────────────────────────────────────────────

@@ -7,6 +7,15 @@ const ready = async (page: Page): Promise<void> => {
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(page.locator('[data-recued-data-route]')).toBeVisible();
 };
+/** D-291 — the LIST lives on `#views` now; `#data` keeps only "Save current
+ *  view". So a flow that saves and then manages crosses surfaces, exactly as
+ *  the owner's does. Once a view is OPEN (`#views/<id>`) the rail carries the
+ *  list again, so this is only needed on the first hop out of `#data`. */
+const openViewsList = async (page: Page): Promise<void> => {
+  await page.evaluate(() => window.__app.setHash('#views'));
+  await expect(page.locator('[data-saved-data-views] details')).toBeVisible();
+};
+
 const saveView = async (page: Page, name: string): Promise<void> => {
   await tools(page).getByRole('button', { name: 'Save current view', exact: true }).click();
   await tools(page).getByLabel('View name', { exact: true }).fill(name);
@@ -21,10 +30,11 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await ready(page);
   await query(page).fill('Acme');
   await saveView(page, 'Acme <Team>');
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   let link = tools(page).locator('details').getByRole('link', { name: 'Acme <Team>', exact: true });
   const href = await link.getAttribute('href');
-  expect(href).toMatch(/^#data\/view\/view_/);
+  expect(href).toMatch(/^#views\/view_/);
   await link.click();
   await expect(query(page)).toHaveValue('Acme');
   await expect(page).toHaveURL(new RegExp(`${href}$`));
@@ -68,8 +78,34 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   expect(errors).toEqual([]);
 });
 
+/** D-291 — the OLD address still opens the view.
+ *
+ *  ⛔ THIS IS NOT NOSTALGIA, IT IS THE COMPATIBILITY SURFACE. Alert
+ *  notifications already delivered carry `#data/view/<id>` — in inboxes and OS
+ *  notification centres no server can reach — and browsers keep bookmarks. The
+ *  parser re-points that address, and this is the only test that says so; every
+ *  other spec was switched to the canonical `#views/<id>` when it moved.
+ *
+ *  ⚠ The address BAR is not rewritten on arrival, deliberately: the route only
+ *  writes an address when it navigates. So this asserts the VIEW opened, not
+ *  that the URL changed. */
+test('Saved views still open from a pre-D-291 #data/view bookmark', async ({ page }) => {
+  await page.goto(`${URL_BASE}?data=contacts#data/contact`);
+  await ready(page);
+  await query(page).fill('Acme');
+  await saveView(page, 'Acme');
+  await openViewsList(page);
+  await tools(page).locator('summary').click();
+  const href = await tools(page).locator('details a').getAttribute('href');
+  const id = href!.replace('#views/', '');
+
+  await page.evaluate((legacy) => window.__app.setHash(legacy), `#data/view/${id}`);
+  await expect(query(page)).toHaveValue('Acme');
+  await expect(tools(page).locator('.saved-data-opened')).toContainText('Acme');
+});
+
 test('Saved views keep a missing or unavailable bookmark explicit and retryable', async ({ page }) => {
-  await page.goto(`${URL_BASE}?data=contacts&saved_views_get=fail#data/view/view_00000000-0000-4000-8000-000000000001`);
+  await page.goto(`${URL_BASE}?data=contacts&saved_views_get=fail#views/view_00000000-0000-4000-8000-000000000001`);
   await ready(page);
   await expect(page.getByRole('alert')).toContainText('temporarily unavailable');
   expect(await page.evaluate(() => window.__app.rpcCallCount('contact.list'))).toBe(0);
@@ -77,12 +113,10 @@ test('Saved views keep a missing or unavailable bookmark explicit and retryable'
   await expect(page.getByRole('alert')).toContainText('temporarily unavailable');
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.get'))).toBe(2);
   await page.getByRole('link', { name: 'Browse Data', exact: true }).click();
-  // ⚠ D-267 — the escape link is a bare `#data`, and a tabless address now
-  // resolves to Today rather than Contacts. This assertion used the contact
-  // search box as its proxy for "the escape landed somewhere usable", which
-  // quietly pinned the old default from here; name the destination instead.
-  await expect(page.locator('[data-today-view]')).toBeVisible();
-  await expect(page.getByRole('tab', { name: 'Today', exact: true }))
+  // ⚠ The escape link is a bare `#data`, and a tabless address lands on
+  // Contacts again (D-290 — Today is its own route; D-267 had made this
+  // Today). Name the destination rather than proxy for "somewhere usable".
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true }))
     .toHaveAttribute('aria-selected', 'true');
   // The escape must also clear the saved-view error rather than carry it along.
   await expect(page.getByRole('alert')).toHaveCount(0);
@@ -95,7 +129,7 @@ test('Saved views discard a delayed bookmark load after navigation', async ({ pa
       id: viewId, name: 'Old route', definition: { tab: 'contact', query: 'Acme' }, revision: 1, created_at: 1, updated_at: 1,
     }]));
   }, id);
-  await page.goto(`${URL_BASE}?data=contacts&hold_rpc=data_views.get#data/view/${id}`);
+  await page.goto(`${URL_BASE}?data=contacts&hold_rpc=data_views.get#views/${id}`);
   await ready(page);
   await expect(page.getByRole('status').filter({ hasText: 'Loading saved view…' })).toBeVisible();
   await page.evaluate(() => window.__app.setHash('#data/task'));
@@ -121,6 +155,7 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
   await expect(tools(page).getByRole('button', { name: 'Saving…' })).toBeDisabled();
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create'))).toBe(1);
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Saved');
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   await expect(tools(page).locator('details a')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -134,6 +169,8 @@ test('Saved views retain the exact Records publisher, pack, and kind', async ({ 
   await page.locator('[data-action="records-select-kind"][data-records-kind="job"]').click();
   await expect(page.getByRole('button', { name: 'Open record job-b', exact: true })).toBeVisible();
   await saveView(page, 'Publisher B jobs');
+  // D-291 — the list is its own route now; `#data` only saves and links there.
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   await tools(page).locator('details a').click();
   await page.reload();
@@ -152,11 +189,11 @@ for (const missing of ['pack', 'kind'] as const) {
         definition: { tab: 'records', owner: { publisher: absent === 'pack' ? 'missing' : 'publisher-b', pack_slug: 'same-board' }, entity: absent === 'kind' ? 'missing' : 'job' },
       }]));
     }, { viewId: id, absent: missing });
-    await page.goto(`${URL_BASE}?data=records-navigation#data/view/${id}`);
+    await page.goto(`${URL_BASE}?data=records-navigation#views/${id}`);
     await ready(page);
     await expect(page.locator('[data-recued-data-route]')).toContainText(`The ${missing === 'kind' ? 'kind' : 'Pack'} you picked is gone`);
     expect(await page.evaluate(() => window.__app.rpcCallCount('records.search'))).toBe(0);
-    await expect(page).toHaveURL(new RegExp(`#data/view/${id}$`));
+    await expect(page).toHaveURL(new RegExp(`#views/${id}$`));
   });
 }
 
@@ -171,6 +208,7 @@ test('Saved views reopen a Memory origin and preserve keyboard cancellation', as
   await expect(tools(page).getByLabel('View name', { exact: true })).toHaveCount(0);
   await expect(tools(page).getByRole('button', { name: 'Save current view' })).toBeFocused();
   await saveView(page, 'My memories');
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   await tools(page).locator('details a').click();
   await page.reload();
@@ -185,6 +223,7 @@ test('Saved views keep a conflicting rename for review before retrying', async (
   await page.goto(`${URL_BASE}?data=contacts#data/contact`);
   await ready(page);
   await saveView(page, 'Original');
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   await tools(page).getByRole('button', { name: 'Rename Original', exact: true }).click();
   await tools(page).getByLabel('View name', { exact: true }).fill('My edit');
@@ -207,6 +246,7 @@ test('Saved views can be deleted without discarding an open Data draft', async (
   await page.goto(`${URL_BASE}?data=contacts&saved_views_write=slow#data/contact`);
   await ready(page);
   await saveView(page, 'Contacts');
+  await openViewsList(page);
   await tools(page).locator('summary').click();
   const href = await tools(page).locator('details a').getAttribute('href');
   await tools(page).locator('details a').click();

@@ -33,23 +33,32 @@ import { join } from 'node:path';
 
 import {
   BULK_PACK_INSTALL_PERMISSION,
+  buildPackOperationIndex,
+  installAccessOptions,
+  installGrantableOps,
   isInstallGrantSelection,
   isPureWorkflowRecipe,
   normalizeBulkPackInstallPlan,
   parseBulkPackManifest,
   parseRecipeBundleKey,
   RECORDS_RUNTIME_CANARY_OP,
+  recipeOpIds,
   recipeTrustStateForPureWorkflow,
   RpcError,
   SLUG_RE,
   validateRecipeBundlePublisher,
   type BulkPackInstallResultLike,
   type BulkPackManifest,
+  type PackWebhookPlanEntry,
+  type RecipeWebhookTrigger,
   type CompositionIngredient,
   type HandlerSlice,
+  type InstallAccessTier,
   type InstallGrantSelection,
   type PackContentRef,
+  type PackDependencyInstallScope,
   type PackInstallPlan,
+  type PackPackDependency,
   type PacksResolveResult,
   type RecipeDefinition,
   type RecipePiiDisclosureEntry,
@@ -76,7 +85,7 @@ import type { ContractGrantEntryStore } from './storage/contract-grant-entry-sto
 
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
 import { isCoreFeaturePack, resolveBundledPackManifest } from './bundled-pack-source.js';
-import { buildPackInstallPreview } from './pack-install-preview.js';
+import { buildPackInstallPreview, RISK_RANK } from './pack-install-preview.js';
 import { seedPackRecipeGrants } from './recipe-grant-seed.js';
 import {
   applyInstallAudienceGrantIds,
@@ -100,6 +109,18 @@ import {
   recordPackReceptionTemplates,
 } from './pack-reception-templates.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
+import {
+  carriesRecords,
+  compositionPackCurrentAccess,
+  diffCompositionPackForUpdate,
+  diffRecordsPackForUpdate,
+  recordsPackCurrentAccess,
+} from './pack-operation-update-diff.js';
+import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
+import { planPackWebhookBindings } from './pack-webhook-plan.js';
+import { triggersSwitchedOff } from './pack-trigger-preview.js';
+import { carryReceptionPairsAfterInstall, receptionPairsAtRisk } from './reception-pair-carry.js';
+import { settingsNoLongerUsed } from './pack-settings-preview.js';
 import { validateRecipeInline } from './recipe-save-handler.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { RecipeRunnabilityBroadcaster } from './recipe-runnability-handler.js';
@@ -108,6 +129,8 @@ import {
   hasNonEmptyWebhookDeclarations,
 } from './webhook-declaration-gate.js';
 import type { ContractStore } from './storage/contract-store.js';
+import type { SavedDataViewStore } from './saved-data-view-store.js';
+import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
@@ -177,6 +200,9 @@ export interface PackInstallRpcDeps {
   }) => Promise<readonly RecordsMigrationArtifact[]>;
   /** D-201 Slice 4 — owner-approved pack webhook bindings. */
   webhookConsumerStore?: WebhookConsumerStore;
+  /** D-295 — the owner's webhooks: the install dialog's webhook plan offers the
+   *  ones that fit (`packs.install_preview`). Absent ⇒ no plan. */
+  webhookIngressStore?: Pick<import('./storage/webhook-ingress-store.js').WebhookIngressStore, 'list'>;
   /** D-209 #1 W2b — webhook DOOR substrate; a successful install mints one
    *  derived door per webhook-declaring recipe and stamps its trigger rows. */
   webhookDoor?: import('./webhook-door-enroll.js').WebhookDoorEnrollDeps;
@@ -198,6 +224,18 @@ export interface PackInstallRpcDeps {
    *  build `resolveMarketplaceRecipe` from this, so the by-value path never
    *  carries either.) */
   marketplaceFetch?: typeof globalThis.fetch;
+  /** D-311 — a pack an install brings in that this server does not bundle: the
+   *  marketplace copy fetched for this call (`fetchMarketplaceDependencies`).
+   *  Consulted after the bundled copy, by every dependency walk and by the
+   *  install's recursion. Set only on the marketplace paths — `packs.installBySlug`
+   *  and a `packs.install_preview` with `marketplace` — for the reason
+   *  `resolveMarketplaceRecipe` is: a by-value manifest must not point the server
+   *  at arbitrary marketplace rows. */
+  resolveDependencyManifest?: (slug: string) => BulkPackManifest | null;
+  /** D-311 — fetch, many at once, the recipes of the packs an install will
+   *  write, once its preflight has passed and before its recursion reads them one
+   *  by one. The marketplace path's resolver memoizes, so each is fetched once. */
+  warmMarketplaceRecipes?: (manifests: readonly BulkPackManifest[]) => Promise<void>;
   /** D-139 P6.B — per-pair MCP body-content visibility grant store. When
    *  present, packs that ship `mcp_body_visibility_grants[]` persist their
    *  closed-list grant keys on install (revoked on uninstall/rollback);
@@ -238,6 +276,29 @@ export interface PackInstallRpcDeps {
    *  / pre-contract-store boot harnesses keep working; absent → no
    *  inventory is recorded (the install still succeeds). */
   contractStore?: ContractStore;
+  /** D-289 — late-bound saved-view store.
+   *
+   *  ⛔ A GETTER, NOT THE STORE. The store is built in `compose-listeners`
+   *  (it needs `execution.notificationBlock` for its alert runtime) while these
+   *  deps compose a stage earlier in `compose-rpc-context`, so there is nothing
+   *  to hand over at construction. Reads resolve at CALL time — an install
+   *  always happens after boot — which is the same shape
+   *  `publishExecutionCaseOfferNotifier` uses for the same ordering problem.
+   *
+   *  Absent, or resolving undefined (db-less harness) ⇒ a manifest's
+   *  `saved_view` contents install nothing and the pack still succeeds: a view
+   *  is a convenience surface, never a capability. */
+  getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  /** D-296 — late-bound: the trigger store and the vendor registry the
+   *  reconcile compiles against, so the update preview can name an armed
+   *  automation the update switches off. Absent ⇒ no warning. */
+  getTriggerPreview?: () => import('./pack-trigger-preview.js').TriggerPreviewDeps | undefined;
+  /** D-299 — the Reception pairs recipes back: the update carries the ones it may keep, and
+   *  its preview names the ones it stops. Late-bound, like the trigger preview. */
+  getReceptionPairs?: () => import('./reception-pair-carry.js').ReceptionPairCarryDeps | undefined;
+  /** D-303 — where the owner's settings are saved, so the update preview can name the
+   *  saved ones an update stops using. Late-bound, like the trigger preview. */
+  getSavedSettings?: () => import('./pack-settings-preview.js').SavedSettingsReader | undefined;
   /** D-170 (packs.install composition branch) — local manifest body store +
    *  live manifest registry. When BOTH are present alongside `contractStore`,
    *  an app_pack carrying a `composition` content (N.17) has it decomposed +
@@ -286,9 +347,8 @@ type PacksInstallArgs = {
    *  composition the pack carries by value. Forwarded to
    *  `provisionPackCompositionForBulkInstall`. Absent ⇒ the provisioner fails
    *  closed (authored read/`approval: ask` defaults only). NOT propagated to
-   *  dependency packs — each pack that carries a composition needs its own
-   *  dialog grant (a dependency's composition fails closed to its authored
-   *  defaults; the owner grants it later via Settings). */
+   *  dependency packs: each takes its own from `dependency_install_scopes`
+   *  (D-310), and one not named there installs at its authored defaults. */
   install_scope?: InstallGrantSelection;
   /** D-194 2b — the owner's chosen connection from the install dialog's Connect
    *  section. Forwarded to `provisionPackCompositionForBulkInstall` (5th arg),
@@ -304,6 +364,11 @@ type PacksInstallArgs = {
   }>;
   /** Exact review anchor returned by packs.list for a bundled Records update. */
   expected_manifest_hash?: string;
+  /** D-310 — the owner's Access choice for each pack this install brings in with
+   *  it, by authored slug. Each is that pack's `install_scope` when the
+   *  recursion below installs it; a pack not named installs at its authored
+   *  defaults, as every dependency did before. */
+  dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
 };
 
 type InternalInstallOutcome = {
@@ -322,6 +387,33 @@ type InternalInstallContext = {
 
 const INSTALL_SCOPE_ERROR =
   'install_scope must carry access plus either legacy scope or the D-196 audience checklist';
+
+/** D-310 — a present-but-malformed `dependency_install_scopes` is a client bug:
+ *  refused loudly, like `install_scope`, so a mistyped choice cannot quietly
+ *  install a pack at its authored defaults. */
+const assertDependencyInstallScopes = (method: string, value: unknown): void => {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    throw new RpcError('bad_request', `${method}: dependency_install_scopes must be an array`);
+  }
+  const seen = new Set<string>();
+  value.forEach((entry: unknown, index) => {
+    if (entry === null
+      || typeof entry !== 'object'
+      || Object.getPrototypeOf(entry) !== Object.prototype
+      || Object.keys(entry).sort().join(',') !== 'install_scope,pack_slug'
+      || typeof (entry as { pack_slug?: unknown }).pack_slug !== 'string'
+      || !SLUG_RE.test((entry as { pack_slug: string }).pack_slug)
+      || !isInstallGrantSelection((entry as { install_scope?: unknown }).install_scope)) {
+      throw new RpcError('bad_request', `${method}: dependency_install_scopes[${index}] is invalid`);
+    }
+    const slug = (entry as { pack_slug: string }).pack_slug;
+    if (seen.has(slug)) {
+      throw new RpcError('bad_request', `${method}: dependency_install_scopes names ${JSON.stringify(slug)} twice`);
+    }
+    seen.add(slug);
+  });
+};
 
 const recipeRefKey = (ref: { slug: string; version: number }): string => `${ref.slug}@${ref.version}`;
 
@@ -422,7 +514,9 @@ const dependencyPreflightFailure = (
  *
  *  ⛔⛔ THIS EXISTS BECAUSE A DEPENDENCY ENTRY IS AN INSTALL, NOT AN ASSERTION.
  *  The recursion below hands each dependency to `handlePacksInstallInternal`
- *  forwarding `granted_permissions` and `webhook_bindings` and NOTHING else — so
+ *  forwarding `granted_permissions` and `webhook_bindings` and NOTHING else (and,
+ *  since D-310, the install dialog's Access choice for a pack it brings in, which
+ *  it asks only for a pack not yet installed) — so
  *  an absent `install_scope` (documented fail-closed: "grant ONLY the authored
  *  read / `approval: ask` defaults") and an absent `chosen_connection` (falls back
  *  to the authored `auth.connection` literal) REPLACED whatever the owner chose
@@ -467,9 +561,59 @@ const dependencyAlreadySatisfied = (
   return installed.version >= dependency.min_version;
 };
 
+/** ⛔⛔ D-294 — A RECORDS PACK THE OWNER HAS IS NOT UPDATED AS A DEPENDENCY.
+ *
+ *  An installed dependency below a pack's `min_version` is re-installed, and for
+ *  any other pack `carryOverUpdateChoices` keeps its Access and audience. A Records
+ *  pack was left out of that on the grounds that "its update requires the review",
+ *  but an update that arrives as a dependency carries no review: the recursion
+ *  forwards no fence and the Records coordinator treats one as optional, so the
+ *  update was applied at authored defaults. Installing `seller-quote-payment-events`
+ *  over a v26.9.21 Seller Quote Request (3; it needs 4) took the owner's write
+ *  grant on quotes with it (2026-09-24 audit; reproduced 2026-09-25).
+ *
+ *  So it is refused before anything is written, and the message says to update the
+ *  Records pack first, from its own dialog, which shows the review. Called after
+ *  `dependencyAlreadySatisfied`, so an installed pack here is one below the
+ *  required version.
+ *
+ *  ⚠ ENFORCED IN THE PREFLIGHT WALK, WHICH IS ALSO WHAT THE INSTALL DIALOG READS
+ *  (`dependencyRequirementsFor` answers `undefined`). The recursion needs no copy:
+ *  `handlePacksInstallInternal` has one caller, which runs the preflight first
+ *  over the same graph, and every pack the recursion installs is the bundled
+ *  version. ⇒ A new entry point into the recursion must run the preflight too. */
+const recordsDependencyUpdateRefusal = (
+  store: ContractStore | undefined,
+  parent: BulkPackManifest,
+  dependency: { slug: string; min_version?: number },
+  dependencyManifest: BulkPackManifest,
+): BulkPackInstallResultLike | null => {
+  if (store === undefined || !carriesRecords(dependencyManifest)) return null;
+  const installed = findInstalledPackByAuthoredSlug(store, dependency.slug);
+  if (installed === null) return null;
+  const name = dependencyManifest.name;
+  return dependencyPreflightFailure(
+    'version_mismatch',
+    `packs.install: ${parent.name} needs ${name} version ${dependency.min_version ?? dependencyManifest.version} `
+      + `or later, and version ${installed.version} is installed. Updating ${name} changes its records, which `
+      + `needs your review in its own update, so update ${name} first from Packs, then install ${parent.name} again.`,
+  );
+};
+
+/** D-311 — where a pack an install brings in comes from: the server's own
+ *  bundled copy, then the marketplace copy fetched for this call when the call is
+ *  a marketplace one (`resolveDependencyManifest`). One resolver for every walk
+ *  and for the install's recursion, so the preview, the preflight and the install
+ *  cannot resolve a dependency differently. Bundled first, as `packs.resolveBySlug`
+ *  orders the pack itself: the server's own copy cannot 404 or be substituted. */
+const dependencyManifestResolver = (
+  deps: Pick<PackInstallRpcDeps, 'packDir' | 'resolveDependencyManifest'>,
+): ((slug: string) => BulkPackManifest | null) =>
+  (slug) => resolveBundledPackManifest(deps.packDir, slug) ?? deps.resolveDependencyManifest?.(slug) ?? null;
+
 const collectTransitivePackRequirements = (
   manifest: BulkPackManifest,
-  packDir: string | undefined,
+  resolveDependency: (slug: string) => BulkPackManifest | null,
   required: Set<string>,
   visiting: Set<string>,
   visited: Set<string>,
@@ -487,7 +631,7 @@ const collectTransitivePackRequirements = (
   manifestsBySlug.set(manifest.slug, manifest);
   for (const dependency of manifest.dependencies ?? []) {
     if (dependency.type !== 'pack') continue;
-    const dependencyManifest = resolveBundledPackManifest(packDir, dependency.slug);
+    const dependencyManifest = resolveDependency(dependency.slug);
     if (dependencyManifest === null) {
       return dependencyPreflightFailure(
         'unresolved',
@@ -513,10 +657,14 @@ const collectTransitivePackRequirements = (
     // exactly the shape where a precheck refuses something the runtime would have
     // allowed (or the reverse), and each end reads as correct on its own.
     if (dependencyAlreadySatisfied(contractStore, dependency)) continue;
+    const needsItsOwnUpdate = recordsDependencyUpdateRefusal(
+      contractStore, manifest, dependency, dependencyManifest,
+    );
+    if (needsItsOwnUpdate !== null) return needsItsOwnUpdate;
     for (const permission of dependencyManifest.requires) required.add(permission);
     const failure = collectTransitivePackRequirements(
       dependencyManifest,
-      packDir,
+      resolveDependency,
       required,
       visiting,
       visited,
@@ -530,6 +678,35 @@ const collectTransitivePackRequirements = (
   return null;
 };
 
+/** D-305 — the permissions the packs this install brings in with it need beyond
+ *  the pack's own `requires`, each with the names of the packs that need it. The
+ *  install dialog offered only the pack's own, so an install whose dependency
+ *  needed more (Personal CRM → its foundation's `notification_send`) could never
+ *  succeed from the dialog. It was refused "granted permissions are missing
+ *  transitive pack requirements", and nothing on screen could grant the missing
+ *  permission.
+ *  🔑 THE INSTALL'S OWN WALK, with its already-installed skip: the dialog offers
+ *  exactly what `preflightTransitivePermissions` checks, so granting what it
+ *  offers installs. `undefined` when the walk fails; the install says why. */
+export const dependencyRequirementsFor = (
+  deps: Pick<PackInstallRpcDeps, 'packDir' | 'contractStore' | 'resolveDependencyManifest'>,
+  manifest: BulkPackManifest,
+): Array<{ permission: string; needed_by: string[] }> | undefined => {
+  const required = new Set<string>(manifest.requires);
+  const manifestsBySlug = new Map<string, BulkPackManifest>();
+  const failure = collectTransitivePackRequirements(
+    manifest, dependencyManifestResolver(deps), required, new Set(), new Set(), manifestsBySlug, deps.contractStore,
+  );
+  if (failure !== null) return undefined;
+  const own = new Set<string>([BULK_PACK_INSTALL_PERMISSION, ...manifest.requires]);
+  return [...required].filter((permission) => !own.has(permission)).sort().map((permission) => ({
+    permission,
+    needed_by: [...manifestsBySlug.values()]
+      .filter((other) => other.slug !== manifest.slug && other.requires.includes(permission))
+      .map((other) => other.name),
+  }));
+};
+
 const preflightTransitivePermissions = (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
@@ -539,7 +716,7 @@ const preflightTransitivePermissions = (
   const manifestsBySlug = new Map<string, BulkPackManifest>();
   const failure = collectTransitivePackRequirements(
     manifest,
-    deps.packDir,
+    dependencyManifestResolver(deps),
     required,
     new Set(),
     new Set(),
@@ -587,6 +764,20 @@ const preflightTransitivePermissions = (
     }
   }
 
+  // D-310 — an Access choice names a pack this install brings in. The pack being
+  // installed has its own (`install_scope`); any other name is a stale or wrong
+  // dialog, and the owner's choice would silently apply to nothing. Checked on the
+  // same walk the recursion takes, so a dependency already installed at the
+  // version needed (skipped by both) is refused too: it would not be touched.
+  for (const choice of args.dependency_install_scopes ?? []) {
+    if (choice.pack_slug === manifest.slug || !manifestsBySlug.has(choice.pack_slug)) {
+      return dependencyPreflightFailure(
+        'validator_rejected',
+        `packs.install: an Access choice names pack ${JSON.stringify(choice.pack_slug)}, which this install does not bring in`,
+      );
+    }
+  }
+
   const granted = new Set<string>([BULK_PACK_INSTALL_PERMISSION, ...args.granted_permissions]);
   const missing = [...required].filter((permission) => !granted.has(permission)).sort();
   if (missing.length === 0) return null;
@@ -626,6 +817,7 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
       'packs.install: chosen_connection must be a string',
     );
   }
+  assertDependencyInstallScopes('packs.install', args.dependency_install_scopes);
   if (args.expected_manifest_hash !== undefined
     && !/^[0-9a-f]{64}$/.test(args.expected_manifest_hash)) {
     throw new RpcError(
@@ -752,16 +944,67 @@ export const resolvePackRecipeBodies = async (
   return resolved;
 };
 
-const installSinglePack = async (
+/** ⛔ D-294 — AN UPDATE THAT BRINGS NO CHOICE KEEPS THE PACK'S CURRENT ONES.
+ *
+ *  Every install path writes the pack's authority from what the call carries:
+ *  its Access tier and audience (`install_scope`) and its account
+ *  (`chosen_connection`). A call that carries none — a dependency re-installed
+ *  below its `min_version`, a generated-pack re-commit, any rpc caller, or the
+ *  dialog before its account list loaded — fell back to a FRESH install's
+ *  answers on a pack the owner already has: authored grants only, the share
+ *  withdrawn from every customer and agreement, the pack re-bound to its
+ *  authored connection name.
+ *
+ *  So a missing choice on an update is filled from the pack as it is now
+ *  (`current_access` / `current_audience` / `current_connection`, the same
+ *  read-backs the update dialog starts from). A choice the caller made always
+ *  wins. The Access tier is filled only when it can be told, or when the pack
+ *  is shared beyond the owner (a share needs a tier to write; the install that
+ *  shared it granted at least Read). A Records pack is left alone: its update
+ *  requires the review, which the dialog fills, and one that would arrive as a
+ *  dependency is refused instead (`recordsDependencyUpdateRefusal`). */
+const carryOverUpdateChoices = (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
+  manifest: BulkPackManifest,
+): PacksInstallArgs => {
+  if (deps.contractStore === undefined || carriesRecords(manifest)) return args;
+  if (args.install_scope !== undefined && args.chosen_connection !== undefined) return args;
+  if (getInstalledPack(deps.contractStore, manifest.slug) === null) return args;
+  let installScope = args.install_scope;
+  if (installScope === undefined) {
+    const access = deps.localManifestStore !== undefined
+      ? compositionPackCurrentAccess(deps.contractStore, deps.localManifestStore, manifest)
+      : undefined;
+    const audience = currentPackAudience({
+      contractStore: deps.contractStore,
+      ...(deps.sellerStore !== undefined ? { sellerStore: deps.sellerStore } : {}),
+      sourcePack: manifest.slug,
+      now: deps.now ?? Date.now,
+    });
+    const sharedBeyondOwner = !audience.owner || audience.all_customers || audience.all_other_contracts
+      || (audience.customer_tier_ids?.length ?? 0) > 0 || (audience.contract_ids?.length ?? 0) > 0;
+    if (access !== undefined || sharedBeyondOwner) installScope = { access: access ?? 'read', audience };
+  }
+  const connection = args.chosen_connection ?? currentPackConnection(deps.contractStore, manifest.slug);
+  return {
+    ...args,
+    ...(installScope !== undefined ? { install_scope: installScope } : {}),
+    ...(connection !== undefined ? { chosen_connection: connection } : {}),
+  };
+};
+
+const installSinglePack = async (
+  deps: PackInstallRpcDeps,
+  requestArgs: PacksInstallArgs,
   options: {
     omitRecipeKeys?: ReadonlySet<string>;
     verifiedPublisher?: string;
     recordsReviewFence?: RecordsUpdateReviewFence;
   } = {},
 ): Promise<{ result: BulkPackInstallResultLike }> => {
-  const { manifest } = parsePacksInstallArgs(args);
+  const { manifest } = parsePacksInstallArgs(requestArgs);
+  const args = carryOverUpdateChoices(deps, requestArgs, manifest);
   // D-165 app-pack v2 — collapse v1/v2 to one install plan. `plan.recipes`
   // is the deduped recipe set the parser already lifted into
   // `manifest.recipes` (so the resolve loop below is unchanged for v1);
@@ -829,12 +1072,21 @@ const installSinglePack = async (
       },
     };
   }
+  // ⛔ Count only the selections that name THIS pack. A dependency install is
+  // handed the parent's whole `webhook_bindings` list (the dependency recursion
+  // in `handlePacksInstallInternal`), so a non-Records pack that listens on a webhook and
+  // depends on a Records pack used to be refused here for ITS OWN binding —
+  // the Records dependency could only be installed first, by hand. The rule is
+  // about this pack's sidecars, and a binding addressed to another pack is not
+  // one: that pack's own install step owns it.
+  const ownWebhookBindings = (args.webhook_bindings ?? [])
+    .filter((selection) => selection.pack_slug === manifest.slug);
   if (
     recordsComposition
     && (
       (manifest.webhook_requirements?.length ?? 0) > 0
       || (manifest.mcp_body_visibility_grants?.length ?? 0) > 0
-      || (args.webhook_bindings?.length ?? 0) > 0
+      || ownWebhookBindings.length > 0
     )
   ) {
     return {
@@ -1190,6 +1442,14 @@ const installSinglePack = async (
     ...args.granted_permissions,
   ]);
 
+  // D-299 — each recipe as stored BEFORE this install, so the Reception pairs they back
+  // can be carried once the pack is whole (see the carry below the provisioning).
+  const receptionPairs = deps.getReceptionPairs?.();
+  const recipesBefore = new Map<string, RecipeDefinition | null>(
+    resolved.flatMap((entry) => entry.recipe === null
+      ? []
+      : [[entry.recipe.recipe.recipe_id, deps.recipeStore.get(entry.recipe.recipe.recipe_id)] as const]),
+  );
   let recordsAtomic = false;
   let result: BulkPackInstallResultLike;
   if (recordsComposition) {
@@ -1450,6 +1710,26 @@ const installSinglePack = async (
     }
   }
 
+  // D-289 — pack-shipped saved Data views. AFTER the install succeeded, and
+  // best-effort: a view is a convenience surface, not a capability, so a
+  // failure here must not fail a pack whose recipes and grants all landed.
+  // The sync is idempotent and in-place, so the next install repairs it.
+  const savedViewStore = deps.getSavedDataViewStore?.();
+  if (result.ok && savedViewStore) {
+    const declared = packSavedViewsFrom(plan.contents);
+    const ref = { publisher: manifest.publisher, slug: manifest.slug };
+    try {
+      savedViewStore.syncPackViews(ref, declared.map((c) => ({
+        id: packSavedViewId(ref, c.name), name: c.name, definition: c.definition,
+      })));
+    } catch (e) {
+      console.warn(
+        `[d-289] failed to sync saved views for pack ${JSON.stringify(manifest.slug)}: `
+          + ((e as Error).message ?? String(e)),
+      );
+    }
+  }
+
   // D-196 R6 — recipe tools are grantable even when the pack carries no
   // composition. Apply the same install checklist to their authoritative
   // `<publisher>/<recipe_id>` names. A successfully provisioned composition
@@ -1483,6 +1763,19 @@ const installSinglePack = async (
       );
     }
   }
+  // ⛔ D-299 — carry the Reception pairs once the pack is WHOLE: its recipes committed and
+  // its composition in the registry. The door check reads each operation's risk and kind
+  // from the live registry, and this used to run inside `installBulkPackOnServer`, before
+  // `provisionPackCompositionForBulkInstall`, so an update that widened an operation was
+  // judged by its old risk: the pair was re-pinned behind a door that no longer covered
+  // it, looked alive, and failed at the next submission (2026-09-24 audit). A Records pack
+  // is whole when its atomic install returns. If a composition could not be provisioned,
+  // nothing is carried: the pairs stay stale for the owner rather than be judged against
+  // operations that are not live.
+  if (result.ok && receptionPairs && (compositionRefs.length === 0 || compositionProvisioned)) {
+    carryReceptionPairsAfterInstall(recipesBefore, deps.recipeStore, receptionPairs, manifest.slug);
+  }
+
   // D-145 PA10 follow-on — fan the success outcome out to every
   // paired client subscribed to `pack_installed`. Drives the Settings
   // → Packs panel's live refresh on sibling devices / tabs without
@@ -1640,13 +1933,13 @@ const handlePacksInstallInternal = async (
   }
 
   context.visiting.add(manifest.slug);
-  const packDir = deps.packDir;
+  const resolveDependency = dependencyManifestResolver(deps);
   const dependencyResults: BulkPackInstallResultLike[] = [];
   const dependencyRecipeKeys = new Set<string>();
 
   for (const dependency of manifest.dependencies ?? []) {
     if (dependency.type !== 'pack') continue;
-    const dependencyManifest = resolveBundledPackManifest(packDir, dependency.slug);
+    const dependencyManifest = resolveDependency(dependency.slug);
     if (dependencyManifest === null) {
       context.visiting.delete(manifest.slug);
       return {
@@ -1683,10 +1976,11 @@ const handlePacksInstallInternal = async (
     }
 
     // ⛔⛔⛔ A SATISFIED REQUIREMENT IS NOT RE-INSTALLED — the clobber fix. See
-    // `dependencyAlreadySatisfied`: the recursion below forwards
-    // `granted_permissions` and `webhook_bindings` and nothing else, so
-    // reinstalling a pack the owner already has REPLACES the `install_scope` and
-    // `chosen_connection` they picked at its own install with authored defaults.
+    // `dependencyAlreadySatisfied`: the recursion below forwards no
+    // `chosen_connection`, and an `install_scope` only for a pack the dialog asked
+    // about (D-310 asks only for one not yet installed), so reinstalling a pack
+    // the owner already has REPLACES the `install_scope` and `chosen_connection`
+    // they picked at its own install with authored defaults.
     //
     // ⚠ THE RECIPE KEYS STILL HAVE TO BE CONTRIBUTED. `omitRecipeKeys` is how the
     // parent avoids re-writing a recipe a dependency owns; dropping the skipped
@@ -1698,13 +1992,22 @@ const handlePacksInstallInternal = async (
       continue;
     }
 
+    // D-310 — the owner's Access choice for THIS pack, from the install dialog's
+    // list of the packs it brings in. Absent ⇒ its authored defaults, as before.
+    // The whole list travels down, so a dependency's own dependencies find theirs.
+    const dependencyScope = args.dependency_install_scopes
+      ?.find((entry) => entry.pack_slug === dependency.slug)?.install_scope;
     const dependencyOutcome = await handlePacksInstallInternal(
       deps,
       {
         manifest: dependencyManifest,
         granted_permissions: args.granted_permissions,
+        ...(dependencyScope !== undefined ? { install_scope: dependencyScope } : {}),
         ...(args.webhook_bindings !== undefined
           ? { webhook_bindings: args.webhook_bindings }
+          : {}),
+        ...(args.dependency_install_scopes !== undefined
+          ? { dependency_install_scopes: args.dependency_install_scopes }
           : {}),
       },
       context,
@@ -1760,15 +2063,240 @@ const handlePacksInstallInternal = async (
   };
 };
 
-export const handlePacksInstall = async (
+/** A pack's webhook bindings as they are now: binding → ingress id. */
+const currentWebhookBindings = (
+  deps: Pick<PackInstallRpcDeps, 'webhookConsumerStore'>,
+  packSlug: string,
+): Map<string, string> =>
+  new Map((deps.webhookConsumerStore?.listBindings({ consumer_kind: 'pack_install', consumer_id: packSlug }) ?? [])
+    .map((binding) => [binding.logical_binding, binding.ingress_id]));
+
+/** The packs an install of `manifest` will touch — itself and every dependency
+ *  it will install — by the SAME walk the install's preflight runs, so what is
+ *  asked about is exactly what the install will demand. `null` when the walk
+ *  itself fails (the install reports that). */
+const installTouchedManifests = (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): BulkPackManifest[] | null => {
+  const manifestsBySlug = new Map<string, BulkPackManifest>();
+  const failure = collectTransitivePackRequirements(
+    manifest,
+    dependencyManifestResolver(deps),
+    new Set(manifest.requires),
+    new Set(),
+    new Set(),
+    manifestsBySlug,
+    deps.contractStore,
+  );
+  return failure === null ? [...manifestsBySlug.values()] : null;
+};
+
+/** D-296 — every recipe an install of `manifest` writes, as it will be: the
+ *  pack's and those of each dependency it installs (the same walk), each under
+ *  the publisher it installs as. */
+const installIncomingRecipes = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<Array<{ recipe_id: string; publisher_id: string; definition: RecipeDefinition }>> => {
+  const out: Array<{ recipe_id: string; publisher_id: string; definition: RecipeDefinition }> = [];
+  for (const touched of installTouchedManifests(deps, manifest) ?? [manifest]) {
+    for (const entry of await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(touched), touched.publisher, deps)) {
+      if (entry.recipe === null) continue;
+      out.push({ recipe_id: entry.recipe.recipe_id, publisher_id: entry.recipe.publisher_id, definition: entry.recipe.recipe });
+    }
+  }
+  return out;
+};
+
+/** D-310 — one pack an install brings in with it, as the install dialog lists it.
+ *  The wire shape of `packs.install_preview` `dependency_packs`. */
+export interface InstallDependencyPack {
+  pack_slug: string;
+  name: string;
+  needed_by: string[];
+  updates?: true;
+  access_options: InstallAccessTier[];
+  needs?: { access: 'write' | 'all'; by: string[] };
+  /** D-310 REV 2 — the tier its OWN workflows need from its own Access, when
+   *  above Read. `needs` covers only the other packs of the install. */
+  own_needs?: 'write' | 'all';
+}
+
+/** D-310 REV 2 — what an install's Access choices must cover: the packs it brings
+ *  in, and the tier the installing pack's own workflows need from its own Access. */
+export interface InstallAccessNeeds {
+  dependency_packs: InstallDependencyPack[];
+  own_needs?: 'write' | 'all';
+}
+
+const accessTierForRisk = (rank: number): 'write' | 'all' => (rank >= RISK_RANK.admin ? 'all' : 'write');
+
+/** D-310 — the packs an install of `manifest` brings in with it, each with the
+ *  Access tiers its own dialog offers and what the other packs of the install
+ *  need from it.
+ *
+ *  ⛔ A BUNDLED PACK WAS INSTALLED AT ITS AUTHORED READ DEFAULTS, whatever the
+ *  owner chose for the pack that brought it (the recursion forwarded no
+ *  `install_scope`). Driven live: Month-end closer brought Ledger book in
+ *  read-only, and opening an account, the statement import and every booking
+ *  were refused `operation_not_granted` — reported as "Run returned errors", on
+ *  a pack no screen could re-grant.
+ *
+ *  🔑 The same walk the install takes (`installTouchedManifests`, which skips a
+ *  dependency already installed at the version needed), the same recipe
+ *  resolver, and for each pack the same tiers its own dialog would offer
+ *  (`buildPackInstallPreview` → `installGrantableOps` → `installAccessOptions`).
+ *  `needs` joins the Tier-P op ids the other packs' recipes name to the row that
+ *  declares each (`buildPackOperationIndex`, the Recipes detail's join) and
+ *  keeps the highest declared risk above read. `undefined` when the walk fails;
+ *  the install says why. */
+export const dependencyPacksFor = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<InstallDependencyPack[] | undefined> =>
+  (await installAccessNeedsFor(deps, manifest))?.dependency_packs;
+
+/** D-310 REV 2 — the same walk, also answering what each pack's OWN workflows
+ *  need from its own Access.
+ *
+ *  ⛔ D-310 left a pack's use of its own operations to "its own dialog", and no
+ *  dialog said it. The Access tier governs the owner's own runs too
+ *  (`install-grant-picker.ts`: a Records pack installed at Read has its own write
+ *  recipes refused when YOU run them), yet the pack's own picker suggested Read,
+ *  and a pack brought in was listed at Read with no word. Seller Quote Request,
+ *  brought in by Seller Quote Payment Events, is the case that showed it: its own
+ *  workflows open and price requests (`quote_request.create` / `.update`, both
+ *  write), and nothing on screen asked for Read + write.
+ *
+ *  🔑 The same join as `needs`, on the pack's OWN composition rows, counting only
+ *  a row its Access actually grants (`installGrantableOps`: not a local tool's). */
+export const installAccessNeedsFor = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<InstallAccessNeeds | undefined> => {
+  const touched = installTouchedManifests(deps, manifest);
+  if (touched === null) return undefined;
+  const brought = touched.filter((pack) => pack.slug !== manifest.slug);
+  const index = buildPackOperationIndex(touched.map((pack) => ({
+    slug: pack.slug, publisher: pack.publisher, name: pack.name, manifest: pack,
+  })));
+  const needs = new Map<string, { rank: number; by: Set<string> }>();
+  const ownNeeds = new Map<string, number>();
+  for (const pack of touched) {
+    const grantable = new Set(installGrantableOps(pack).map((op) => op.id));
+    for (const entry of await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(pack), pack.publisher, deps)) {
+      if (entry.recipe === null) continue;
+      for (const opId of recipeOpIds(entry.recipe.recipe)) {
+        const target = index.byOpId.get(opId);
+        if (target === undefined) continue;
+        const rank = RISK_RANK[target.row.risk];
+        if (rank === undefined || rank === 0) continue;
+        if (target.pack.slug === pack.slug) {
+          if (grantable.has(target.row.op)) ownNeeds.set(pack.slug, Math.max(ownNeeds.get(pack.slug) ?? 0, rank));
+          continue;
+        }
+        const need = needs.get(target.pack.slug) ?? { rank: 0, by: new Set<string>() };
+        need.rank = Math.max(need.rank, rank);
+        need.by.add(pack.name);
+        needs.set(target.pack.slug, need);
+      }
+    }
+  }
+  const out: InstallDependencyPack[] = [];
+  for (const pack of brought) {
+    const preview = await buildPackInstallPreview(pack, {
+      recipeStore: deps.recipeStore,
+      ...(deps.resolveMarketplaceRecipe ? { resolveMarketplaceRecipe: deps.resolveMarketplaceRecipe } : {}),
+      getManifest: (slug: string) => deps.getManifest?.(slug),
+    });
+    const recipeRisk = preview.resolved
+      ? new Map(preview.will_enable.map((r) => [r.recipe_id, r.top_risk ?? 'read' as const]))
+      : undefined;
+    const need = needs.get(pack.slug);
+    const installed = deps.contractStore !== undefined
+      && findInstalledPackByAuthoredSlug(deps.contractStore, pack.slug) !== null;
+    out.push({
+      pack_slug: pack.slug,
+      name: pack.name,
+      needed_by: touched
+        .filter((other) => (other.dependencies ?? [])
+          .some((dependency) => dependency.type === 'pack' && dependency.slug === pack.slug))
+        .map((other) => other.name),
+      ...(installed ? { updates: true as const } : {}),
+      access_options: installAccessOptions(installGrantableOps(pack, recipeRisk)),
+      ...(need !== undefined
+        ? { needs: { access: accessTierForRisk(need.rank), by: [...need.by].sort() } }
+        : {}),
+      ...(ownNeeds.has(pack.slug) ? { own_needs: accessTierForRisk(ownNeeds.get(pack.slug)!) } : {}),
+    });
+  }
+  const own = ownNeeds.get(manifest.slug);
+  return { dependency_packs: out, ...(own !== undefined ? { own_needs: accessTierForRisk(own) } : {}) };
+};
+
+/** ⛔ D-295 — AN UPDATE THAT BRINGS NO WEBHOOK CHOICE KEEPS THE WEBHOOKS THE PACK
+ *  USES NOW. The install requires one owner-selected webhook per binding and
+ *  refused a call carrying none — a dependency re-install, an rpc caller —
+ *  though the choice is on record (the pack's consumer bindings). Only a
+ *  binding that HAS a current webhook is filled: one the update adds still
+ *  needs the owner's choice. A caller that sends its own choices is never
+ *  second-guessed. */
+const carryOverWebhookBindings = (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
+  manifest: BulkPackManifest,
+): PacksInstallArgs => {
+  if (args.webhook_bindings !== undefined || deps.webhookConsumerStore === undefined) return args;
+  const carried: NonNullable<PacksInstallArgs['webhook_bindings']>[number][] = [];
+  for (const touched of installTouchedManifests(deps, manifest) ?? []) {
+    const current = currentWebhookBindings(deps, touched.slug);
+    for (const requirement of touched.webhook_requirements ?? []) {
+      const ingressId = current.get(requirement.binding);
+      if (ingressId !== undefined) {
+        carried.push({ pack_slug: touched.slug, binding: requirement.binding, ingress_id: ingressId });
+      }
+    }
+  }
+  return carried.length > 0 ? { ...args, webhook_bindings: carried } : args;
+};
+
+/** D-295 — the webhooks the install dialog has the owner choose: per binding of
+ *  every pack the install will touch, the owner's webhooks that fit and the one
+ *  in use now (`planPackWebhookBindings`). `undefined` when this server cannot
+ *  say (no webhook store) or the walk fails; `[]` when none are needed. */
+const webhookPlanFor = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<PackWebhookPlanEntry[] | undefined> => {
+  if (deps.webhookIngressStore === undefined) return undefined;
+  const touched = installTouchedManifests(deps, manifest);
+  if (touched === null) return undefined;
+  const listening = touched.filter((pack) => (pack.webhook_requirements?.length ?? 0) > 0);
+  if (listening.length === 0) return [];
+  const triggers = new Map<string, RecipeWebhookTrigger[]>();
+  for (const pack of listening) {
+    const recipes = await resolvePackRecipeBodies(normalizeBulkPackInstallPlan(pack), pack.publisher, deps);
+    triggers.set(pack.slug, recipes.flatMap((entry) => entry.recipe?.recipe.webhook_triggers ?? []));
+  }
+  return planPackWebhookBindings({
+    manifests: listening,
+    triggersFor: (slug) => triggers.get(slug) ?? [],
+    ingresses: deps.webhookIngressStore.list(),
+    currentFor: (slug) => currentWebhookBindings(deps, slug),
+  });
+};
+
+export const handlePacksInstall = async (
+  deps: PackInstallRpcDeps,
+  requestArgs: PacksInstallArgs,
   verifiedPublisher?: string,
   prevalidatedRecordsReview?: {
     fence?: RecordsUpdateReviewFence;
   },
 ): Promise<{ result: BulkPackInstallResultLike }> => {
-  const { manifest } = parsePacksInstallArgs(args);
+  const { manifest } = parsePacksInstallArgs(requestArgs);
+  const args = carryOverWebhookBindings(deps, requestArgs, manifest);
   // Owner ruling 2026-09-07 — a core feature is installed by the server, never
   // by the owner. Checked on the SUBMITTED manifest because this rpc takes the
   // manifest by value: refusing only what the roster offers would leave the
@@ -1835,6 +2363,9 @@ export const handlePacksInstall = async (
   }
   const preflight = preflightTransitivePermissions(deps, args, manifest);
   if (preflight !== null) return { result: preflight };
+  // D-311 — on the marketplace path, fetch every recipe the install writes, many at
+  // once, now that it is going ahead: a refused install counts no recipe installs.
+  await deps.warmMarketplaceRecipes?.(installTouchedManifests(deps, manifest) ?? [manifest]);
   const { result } = await handlePacksInstallInternal(
     deps,
     args,
@@ -1907,6 +2438,8 @@ type PacksInstallBySlugArgs = {
   chosen_connection?: string;
   /** D-201 Slice 4 — forwarded verbatim to the by-value install validator. */
   webhook_bindings?: PacksInstallArgs['webhook_bindings'];
+  /** D-310 — forwarded verbatim to the by-value install. */
+  dependency_install_scopes?: PacksInstallArgs['dependency_install_scopes'];
 };
 
 const marketplaceManifestReviewHash = (
@@ -1944,6 +2477,28 @@ const recordsCurrentVersion = (
       ? namespace.state.from_version
       : undefined;
 
+/** How many marketplace fetches one install or preview runs at once. */
+const MARKETPLACE_FETCH_CONCURRENCY = 8;
+
+/** Run `fn` over `items`, at most `limit` at a time, results in `items` order. */
+const mapBounded = async <T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> => {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      out[index] = await fn(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+};
+
 /** Read-only target staging shared by marketplace preview/confirm and bundled
  * list/confirm. It resolves exact recipe bodies because a ref-only manifest hash
  * cannot bind migration bodies or watcher behavior. */
@@ -1963,17 +2518,22 @@ export const prepareRecordsUpdateReview = async (
   if (deps.recordsStore === undefined) {
     throw new Error('Records runtime/storage is unavailable');
   }
-  const recipes: RecordsReviewRecipe[] = [];
-  for (const ref of plan.recipes) {
-    const row = await resolveRecipe(ref.slug);
+  // D-311 — resolved several at once. On the marketplace paths each is a network
+  // round trip, and one after another they took about a second each: opening
+  // Invoice Book's detail on a deployed layout took 9.6 s, and Fleet Money's 27
+  // recipes would near the webclient's 30 s wait. The first one missing, in the
+  // manifest's order, still refuses.
+  const rows = await mapBounded(plan.recipes, MARKETPLACE_FETCH_CONCURRENCY, (ref) => resolveRecipe(ref.slug));
+  const recipes: RecordsReviewRecipe[] = plan.recipes.map((ref, index) => {
+    const row = rows[index] ?? null;
     if (row === null) throw new Error(`Records recipe '${ref.slug}' could not be resolved for review`);
-    recipes.push({
+    return {
       slug: ref.slug,
       recipe: row.recipe,
       publisher_id: row.publisher_id,
       version: row.version,
-    });
-  }
+    };
+  });
   const target = await prepareRecordsReviewTarget({ manifest, recipes });
   if (target === null) return null;
   const owner = { publisher: manifest.publisher, pack_slug: manifest.slug };
@@ -2048,6 +2608,149 @@ const bulkFetchErrorToResult = (
   );
 };
 
+const packDependenciesOf = (
+  manifest: BulkPackManifest,
+): Array<{ dependency: PackPackDependency; declaredBy: string }> =>
+  (manifest.dependencies ?? [])
+    .filter((dependency): dependency is PackPackDependency => dependency.type === 'pack')
+    .map((dependency) => ({ dependency, declaredBy: manifest.slug }));
+
+/** D-311 — the packs a marketplace pack brings in that this server does not
+ *  bundle, fetched from the marketplace, and the ones they bring in in turn.
+ *
+ *  ⛔ A DEPLOYED SERVER BUNDLES ONLY ITS FOUNDATION PACKS. A distribution ships
+ *  `dist/`, not the pack tree, so a walk that looked each dependency up among the
+ *  bundled packs found nothing: every marketplace pack that brings others in was
+ *  refused "was not found in bundled packs". Invoice Book was refused even with
+ *  Billable Hours already installed, because the lookup comes before the
+ *  installed check. 208 shipped packs declare dependencies.
+ *
+ *  🔑 Fetched AHEAD of the walk, because the walk is synchronous and a fetch is
+ *  not, and by the walk's own rules so the two cannot disagree: the bundled copy
+ *  first; a dependency already installed at the version needed is not descended
+ *  into (the walk does not descend into it either); a fetched manifest must name
+ *  the slug it was fetched for, or it is not the pack that was asked for.
+ *
+ *  ⚠ THE MARKETPLACE COUNTS AN INSTALL FROM THE FETCH MARKER. `install` marks
+ *  the fetch of each pack the install will write, the way the pack itself is
+ *  marked. A pack already installed is fetched unmarked: the walk needs its
+ *  manifest, and nothing installs it. A preview never marks. */
+export const fetchMarketplaceDependencies = async (
+  deps: Pick<PackInstallRpcDeps, 'packDir' | 'contractStore'>,
+  root: BulkPackManifest,
+  fetchFn: typeof globalThis.fetch,
+  mode: 'install' | 'preview',
+): Promise<
+  | { ok: true; manifests: ReadonlyMap<string, BulkPackManifest> }
+  | { ok: false; failure: NonNullable<BulkPackInstallResultLike['failure']> }
+> => {
+  const manifests = new Map<string, BulkPackManifest>();
+  const seen = new Set<string>([root.slug]);
+  let level = packDependenciesOf(root);
+  while (level.length > 0) {
+    const fresh = level.filter(({ dependency }) => {
+      if (seen.has(dependency.slug)) return false;
+      seen.add(dependency.slug);
+      return true;
+    });
+    const found = await mapBounded(fresh, MARKETPLACE_FETCH_CONCURRENCY, async ({ dependency, declaredBy }) => {
+      const satisfied = dependencyAlreadySatisfied(deps.contractStore, dependency);
+      const bundled = resolveBundledPackManifest(deps.packDir, dependency.slug);
+      if (bundled !== null) return { dependency, declaredBy, satisfied, manifest: bundled, fetched: false };
+      try {
+        const manifest = await fetchBulkPackBySlug(
+          dependency.slug,
+          fetchFn,
+          { install: mode === 'install' && !satisfied },
+        );
+        return {
+          dependency,
+          declaredBy,
+          satisfied,
+          manifest: manifest !== null && manifest.slug === dependency.slug ? manifest : null,
+          fetched: true,
+        };
+      } catch (error) {
+        const failure = bulkFetchErrorToResult(dependency.slug, error).failure!;
+        return { dependency, declaredBy, satisfied, manifest: null, fetched: true, failure };
+      }
+    });
+    const next: typeof level = [];
+    for (const entry of found) {
+      const named = `dependency pack ${JSON.stringify(entry.dependency.slug)} declared by ${JSON.stringify(entry.declaredBy)}`;
+      if ('failure' in entry && entry.failure !== undefined) {
+        return { ok: false, failure: { ...entry.failure, message: `${named}: ${entry.failure.message}` } };
+      }
+      if (entry.manifest === null) {
+        return {
+          ok: false,
+          failure: { code: 'unresolved', message: `packs.installBySlug: ${named} was not found on the marketplace` },
+        };
+      }
+      if (entry.fetched) manifests.set(entry.dependency.slug, entry.manifest);
+      if (!entry.satisfied) next.push(...packDependenciesOf(entry.manifest));
+    }
+    level = next;
+  }
+  return { ok: true, manifests };
+};
+
+/** D-311 — a marketplace recipe resolver that fetches each slug once per call.
+ *  `warm` fetches the recipes of many packs at once, ahead of walks that read
+ *  them one at a time. A failure it meets stays in the memo, so the walk that
+ *  reads that slug meets the same failure it would have met on its own. */
+const memoizeMarketplaceRecipes = (
+  resolve: (slug: string) => Promise<MarketplaceRecipeResult | null>,
+): {
+  resolve: (slug: string) => Promise<MarketplaceRecipeResult | null>;
+  warm: (manifests: readonly BulkPackManifest[]) => Promise<void>;
+} => {
+  const memo = new Map<string, Promise<MarketplaceRecipeResult | null>>();
+  const get = (slug: string): Promise<MarketplaceRecipeResult | null> => {
+    let pending = memo.get(slug);
+    if (pending === undefined) {
+      pending = resolve(slug);
+      memo.set(slug, pending);
+    }
+    return pending;
+  };
+  return {
+    resolve: get,
+    warm: async (manifests) => {
+      const slugs = [...new Set(manifests.flatMap((manifest) =>
+        normalizeBulkPackInstallPlan(manifest).recipes.map((ref) => ref.slug)))];
+      await mapBounded(slugs, MARKETPLACE_FETCH_CONCURRENCY, (slug) => get(slug).catch(() => null));
+    },
+  };
+};
+
+/** D-311 — the deps a `packs.install_preview` with `marketplace` runs with: the
+ *  marketplace's recipes and the packs the pack brings in, resolved as
+ *  `packs.installBySlug` will resolve them, but unmarked, since a preview
+ *  installs nothing. A dependency that cannot be fetched leaves the walks to
+ *  fail as before, and the lists stay absent. */
+const marketplacePreviewDeps = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+): Promise<PackInstallRpcDeps> => {
+  const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
+  const recipes = memoizeMarketplaceRecipes(async (slug) => {
+    const row = await fetchRecipeBySlug(slug, fetchFn);
+    // The install's slug-confusion guard: a row naming another recipe is not this one.
+    return row !== null && row.recipe_id === slug && row.recipe.recipe_id === slug ? row : null;
+  });
+  const dependencies = await fetchMarketplaceDependencies(deps, manifest, fetchFn, 'preview');
+  const previewDeps: PackInstallRpcDeps = {
+    ...deps,
+    resolveMarketplaceRecipe: recipes.resolve,
+    ...(dependencies.ok
+      ? { resolveDependencyManifest: (slug: string) => dependencies.manifests.get(slug) ?? null }
+      : {}),
+  };
+  await recipes.warm(installTouchedManifests(previewDeps, manifest) ?? [manifest]);
+  return previewDeps;
+};
+
 /** Install seam 5c — install a marketplace pack by slug. Fetch the manifest,
  *  then drive the EXISTING `handlePacksInstall` transaction with the marketplace
  *  recipe resolver injected — so all the security-critical post-install
@@ -2102,6 +2805,7 @@ export const installPackBySlug = async (
       'packs.installBySlug: webhook_bindings must be an array',
     );
   }
+  assertDependencyInstallScopes('packs.installBySlug', args.dependency_install_scopes);
 
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
@@ -2182,6 +2886,13 @@ export const installPackBySlug = async (
     return { result: staleManifestReviewResult(args.slug) };
   }
 
+  // D-311 — the packs it brings in: the server's bundled copy, else the
+  // marketplace's, fetched now (marked, for each one this install will write).
+  const dependencies = await fetchMarketplaceDependencies(deps, manifest, fetchFn, 'install');
+  if (!dependencies.ok) {
+    return { result: { ok: false, installed: [], rolled_back: [], failure: dependencies.failure } };
+  }
+
   // Build the marketplace recipe resolver from the SAME fetch — present ONLY on
   // this by-slug call. It returns the full row because the constituent recipe's
   // marketplace `publisher_id` remains authoritative independently of the pack's
@@ -2218,12 +2929,15 @@ export const installPackBySlug = async (
     if (row.recipe_id !== slug || row.recipe.recipe_id !== slug) return null;
     return row;
   };
+  const recipes = memoizeMarketplaceRecipes(resolveMarketplaceRecipe);
 
   try {
     return await handlePacksInstall(
       {
         ...deps,
-        resolveMarketplaceRecipe,
+        resolveMarketplaceRecipe: recipes.resolve,
+        resolveDependencyManifest: (slug) => dependencies.manifests.get(slug) ?? null,
+        warmMarketplaceRecipes: recipes.warm,
         ...(preparedRecords !== null
           ? {
               resolveRecordsMigrationArtifacts: async () =>
@@ -2238,6 +2952,9 @@ export const installPackBySlug = async (
         ...(args.chosen_connection !== undefined ? { chosen_connection: args.chosen_connection } : {}),
         ...(args.webhook_bindings !== undefined
           ? { webhook_bindings: args.webhook_bindings }
+          : {}),
+        ...(args.dependency_install_scopes !== undefined
+          ? { dependency_install_scopes: args.dependency_install_scopes }
           : {}),
       },
       manifest.publisher,
@@ -2356,6 +3073,9 @@ export const resolvePackBySlug = async (
     };
   }
   let preparedRecords: PreparedRecordsUpdateReview | null = null;
+  const pinnedRecipes = normalizeBulkPackInstallPlan(manifest).recipes;
+  const pinnedVersion = (slug: string): number | undefined =>
+    pinnedRecipes.find((ref) => ref.slug === slug)?.version;
   try {
     preparedRecords = await prepareRecordsUpdateReview(
       deps,
@@ -2379,7 +3099,24 @@ export const resolvePackBySlug = async (
       // the pack's own publisher — which is exactly who ships it on disk.
       async (slug) => {
         const row = await fetchRecipeBySlug(slug, fetchFn).catch(() => null);
-        if (row !== null && row.recipe_id === slug && row.recipe.recipe_id === slug) {
+        // ⛔⛔ D-292 — THE MARKETPLACE SERVES ONLY ITS LATEST BODY, AND A BUNDLED
+        // MANIFEST PINS A VERSION. `fetchRecipeBySlug` has no version argument, so
+        // whenever the two disagree the published row is a body for a DIFFERENT
+        // version than this manifest names, and the review refused the whole pack
+        // as "drifted from its pinned identity". That happens on EVERY recipe bump
+        // inside a records pack, in both directions: a new server before the
+        // marketplace republishes (pin v2, published v1), and every older server
+        // after it does (pin v1, published v2). Found live — the guided-import
+        // recipes moved to v2 and `statement-import` stopped installing.
+        //
+        // 🔑 The published row still wins AT THE PINNED VERSION, exactly as before.
+        // At any other version the bundled body is the one this manifest means —
+        // and it is also the body the by-value install of a bundled pack uses
+        // (`resolvePackRecipeBodies` without a marketplace resolver), so the review
+        // now describes what will actually be installed.
+        const publishedAtPin = row !== null && row.recipe_id === slug && row.recipe.recipe_id === slug
+          && (bundled === null || row.version === pinnedVersion(slug));
+        if (publishedAtPin) {
           return { recipe: row.recipe, publisher_id: row.publisher_id, version: row.version };
         }
         if (bundled === null) return null;
@@ -2428,6 +3165,42 @@ export const resolvePackBySlug = async (
     )
       ? reviewOwnerOperationsForPackUpdate(deps.contractStore, manifest)
       : [];
+  // The whole-pack operation diff, same as `packs.list` carries for a bundled
+  // update: a records pack's stamped catalog, or the pack's own compositions.
+  const isUpdate = installed !== null
+    && (recordsNamespace?.state.state === 'orphaned'
+      || installed.version === undefined
+      || installed.version < manifest.version
+      || (preparedRecords?.transition !== null && preparedRecords !== null));
+  const operationDiff = !isUpdate || deps.contractStore === undefined || deps.localManifestStore === undefined
+    ? undefined
+    : preparedRecords !== null && preparedRecords !== undefined
+      ? diffRecordsPackForUpdate(deps.contractStore, deps.localManifestStore, preparedRecords.target.catalog)
+      : diffCompositionPackForUpdate(deps.contractStore, deps.localManifestStore, manifest);
+  // Where the update's Access choice starts: what the pack holds now. A
+  // Records pack's grants are keyed by its derived catalog id, not its slug.
+  const currentAccess = !isUpdate || deps.contractStore === undefined || deps.localManifestStore === undefined
+    ? undefined
+    : preparedRecords !== null && preparedRecords !== undefined
+      ? recordsPackCurrentAccess(deps.contractStore, deps.localManifestStore, preparedRecords.target)
+      : compositionPackCurrentAccess(deps.contractStore, deps.localManifestStore, manifest);
+  // …and "Who may use it" at who has it now (D-294): the fan-out's stamp is the
+  // pack slug, or a Records pack's catalog id.
+  const audienceSource = preparedRecords !== null && preparedRecords !== undefined
+    ? preparedRecords.target.catalog.slug
+    : carriesRecords(manifest) ? undefined : manifest.slug;
+  const currentAudience = !isUpdate || deps.contractStore === undefined || audienceSource === undefined
+    ? undefined
+    : currentPackAudience({
+      contractStore: deps.contractStore,
+      ...(deps.sellerStore !== undefined ? { sellerStore: deps.sellerStore } : {}),
+      sourcePack: audienceSource,
+      now: deps.now ?? Date.now,
+    });
+  // …and Connect at the account it uses now (a Records pack connects nothing).
+  const currentConnection = !isUpdate || deps.contractStore === undefined || carriesRecords(manifest)
+    ? undefined
+    : currentPackConnection(deps.contractStore, manifest.slug);
   return {
     manifest,
     manifest_review_hash: preparedRecords?.review_hash
@@ -2435,6 +3208,10 @@ export const resolvePackBySlug = async (
     ...(ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
       : {}),
+    ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
+    ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
+    ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
+    ...(currentConnection !== undefined ? { current_connection: currentConnection } : {}),
     ...(preparedRecords?.transition !== null && preparedRecords !== null
       ? { records_review: preparedRecords.transition.review }
       : {}),
@@ -2671,17 +3448,71 @@ export const makePackInstallHandlers = (
           manifest: (args as { manifest: unknown }).manifest,
           granted_permissions: [],
         } as never);
+        // D-311 — a pack the dialog resolved from the marketplace installs through
+        // `packs.installBySlug`, which takes its recipes and the packs it brings in
+        // from the marketplace. The preview resolves them the same way, or it
+        // describes an install that will not happen.
+        const previewDeps = (args as { marketplace?: unknown }).marketplace === true
+          ? await marketplacePreviewDeps(deps, manifest)
+          : deps;
         const preview = await buildPackInstallPreview(manifest, {
-          recipeStore: deps.recipeStore,
-          ...(deps.resolveMarketplaceRecipe
-            ? { resolveMarketplaceRecipe: deps.resolveMarketplaceRecipe }
+          recipeStore: previewDeps.recipeStore,
+          ...(previewDeps.resolveMarketplaceRecipe
+            ? { resolveMarketplaceRecipe: previewDeps.resolveMarketplaceRecipe }
             : {}),
           getManifest: (slug: string) => deps.getManifest?.(slug),
         });
+        const webhookPlan = await webhookPlanFor(previewDeps, manifest);
+        // D-305 — what the packs it brings in need, so the dialog can grant it.
+        const dependencyRequires = dependencyRequirementsFor(previewDeps, manifest);
+        // D-310 — and the packs themselves, so the dialog can ask what each may do;
+        // REV 2 — and what this pack's own workflows need from its own Access.
+        const accessNeeds = await installAccessNeedsFor(previewDeps, manifest);
+        const dependencyPacks = accessNeeds?.dependency_packs;
+        // D-296 — an armed automation this update switches off, named before
+        // the owner presses Update.
+        const triggerPreview = deps.getTriggerPreview?.();
+        const receptionPairs = deps.getReceptionPairs?.();
+        const savedSettings = deps.getSavedSettings?.();
+        const incoming = triggerPreview === undefined && receptionPairs === undefined && savedSettings === undefined
+          ? []
+          : await installIncomingRecipes(previewDeps, manifest);
+        const switchedOff = triggerPreview === undefined
+          ? []
+          : triggersSwitchedOff({ preview: triggerPreview, recipes: incoming });
+        // D-299 — a Reception form or link this update stops taking submissions.
+        const receptionsOff = receptionPairs === undefined
+          ? []
+          : receptionPairsAtRisk(
+            incoming.map((recipe) => ({
+              recipe_id: recipe.recipe_id,
+              before: deps.recipeStore.get(recipe.recipe_id),
+              after: recipe.definition,
+            })),
+            receptionPairs,
+          ).map(({ endpoint_id, name, reason }) => ({ endpoint_id, name, reason }));
+        // D-303 — a setting the owner saved that this update stops using.
+        const settingsDropped = savedSettings === undefined
+          ? []
+          : settingsNoLongerUsed(
+            incoming.map((recipe) => ({
+              recipe_id: recipe.recipe_id,
+              before: deps.recipeStore.get(recipe.recipe_id),
+              after: recipe.definition,
+            })),
+            savedSettings,
+          ).map(({ recipe_id, recipe, setting }) => ({ recipe_id, recipe, setting }));
         // Widen the readonly view to the rpc's mutable wire shape.
         return {
           resolved: preview.resolved,
           hidden_count: preview.hidden_count,
+          ...(webhookPlan !== undefined ? { webhook_plan: webhookPlan } : {}),
+          ...(dependencyRequires !== undefined ? { dependency_requires: dependencyRequires } : {}),
+          ...(dependencyPacks !== undefined ? { dependency_packs: dependencyPacks } : {}),
+          ...(accessNeeds?.own_needs !== undefined ? { own_needs: accessNeeds.own_needs } : {}),
+          ...(switchedOff.length > 0 ? { triggers_switched_off: switchedOff } : {}),
+          ...(receptionsOff.length > 0 ? { receptions_switched_off: receptionsOff } : {}),
+          ...(settingsDropped.length > 0 ? { settings_no_longer_used: settingsDropped } : {}),
           will_enable: preview.will_enable.map((r) => ({
             publisher_id: r.publisher_id,
             recipe_id: r.recipe_id,

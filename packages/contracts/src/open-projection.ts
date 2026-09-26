@@ -347,7 +347,7 @@ export interface ComputeOpenProjectionArgs {
 const STEP_CONTROL_FIELDS: ReadonlySet<string> = new Set([
   'id', 'transform', 'guard', 'ingredient', 'op', 'skip_when', 'fail_on',
   'cache', 'foreach', 'output', 'optional', 'ingredient_version',
-  'timeout_ms', 'on_timeout', 'prompt', 'pii_fields', 'connection',
+  'timeout_ms', 'on_timeout', 'prompt', 'pii_fields', 'connection', 'pages',
 ]);
 
 /** Thrown internally to unwind a walk into a refusal. Never escapes

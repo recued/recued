@@ -11,6 +11,17 @@ export const SAVED_DATA_VIEW_LIMIT = 100;
 export const SAVED_DATA_VIEW_NAME_LIMIT = 100;
 export const SAVED_DATA_VIEW_QUERY_LIMIT = 2000;
 
+/** D-289 — how many views ONE pack may ship.
+ *
+ *  ⛔ A SEPARATE ALLOWANCE, NOT A SHARE OF `SAVED_DATA_VIEW_LIMIT` (owner's
+ *  ruling, 2026-09-22). Counting pack views against the owner's 100 means
+ *  installing a pack silently spends slots they did not choose to spend, and
+ *  the refusal they eventually hit — *"You can save up to 100 views. Delete a
+ *  view to make room."* — blames them for a pack's decision. Per-PACK rather
+ *  than global so one greedy pack cannot crowd out every other pack's views,
+ *  and so the refusal can name the pack that overran. */
+export const PACK_SAVED_VIEWS_PER_PACK_LIMIT = 20;
+
 export type SavedDataViewDefinition =
   | { tab: 'search' | 'contact'; query: string }
   | {
@@ -24,6 +35,20 @@ export type SavedDataViewDefinition =
   | { tab: 'mail' | 'calendar' | 'files' | 'webhook'; collection_slug: string | null }
   | { tab: 'memory'; origin: 'all' | 'user_self' | 'contracted_user' | 'system' }
   | ({ tab: 'records'; owner: RecordsPackRef | null; entity: string | null } & RecordsViewSettings)
+  /** ⛔ `today` IS LEGACY AND UNCREATABLE — READ PATH ONLY. D-290 moved Today
+   *  to its own `#today` route, so there is no Today tab to press "Save current
+   *  view" on and no new row can carry it. The arm stays because rows created
+   *  BEFORE that move are on owners' disks right now.
+   *
+   *  ⛔⛔ DO NOT "TIDY" IT OUT OF THIS UNION. `parseSavedDataViewDefinition`
+   *  returning null makes `saved-data-view-store.ts` `decode` THROW, and `list`
+   *  maps decode over every row — so one legacy Today view would take the
+   *  owner's ENTIRE saved-view list with it, not just itself. Retiring the
+   *  vocabulary member and retiring the stored rows are separate decisions, and
+   *  only the first one is free.
+   *
+   *  Opening such a view routes to `#today` (`saved-data-route.ts`), which is
+   *  what its owner meant by it. */
   | { tab: 'today' | 'form_response' | 'annotation' | 'link' | 'shared' };
 
 export interface SavedDataView {
@@ -37,6 +62,55 @@ export interface SavedDataView {
   alert?: SavedDataViewAlert;
   /** P2/F2 — how far the owner has reviewed this Records view's changes. */
   review?: SavedDataViewReview;
+  /** D-289 — the pack that ships this view. Absent ⇒ owner-authored.
+   *
+   *  🔑 THE FIELD IS THE OWNERSHIP SPLIT, and every consumer reads it that
+   *  way: the PACK owns `name` and `definition` (a reinstall re-asserts both),
+   *  the OWNER owns {@link hidden}, {@link alert} and {@link review}. Rename,
+   *  edit and delete are refused on a pack view — not out of strictness, but
+   *  because the next install would silently undo them, and D-145 PA10 settled
+   *  that a control the substrate reverses must not be rendered at all. */
+  pack?: SavedDataViewPackRef;
+  /** D-289 — the owner hid a pack view.
+   *
+   *  ⛔ OWNER-OWNED, AND THE REINSTALL MUST STEP AROUND IT. The sibling
+   *  precedent (`pack-reception-templates.ts`) is REPLACE-CLEAN per pack, which
+   *  is safe only because its rows carry nothing the owner authored. This one
+   *  does, so a blind replace would un-hide, on every reinstall, a view the
+   *  owner deliberately dismissed — and they would have no way to tell it
+   *  apart from a fresh one. */
+  hidden?: boolean;
+  /** D-300 — a pack view the pack's update stopped shipping, kept because the owner had
+   *  set it up (hidden it, put an alert on it, reviewed it). A rename is exactly this: the
+   *  identity is publisher + slug + name, so the renamed view is a new one. Present ⇒ the
+   *  view is out of every listing and no alert watches it; it waits for the owner. */
+  retired?: SavedDataViewRetirement;
+}
+
+/** D-300 — see {@link SavedDataView.retired}. */
+export interface SavedDataViewRetirement {
+  /** When the update stopped shipping it. */
+  at: number;
+  /** The views the same update added — what it was most likely renamed to. */
+  replacements: Array<{ id: string; name: string }>;
+  /** The owner's alert as it was. A retired view no longer watches. */
+  alert?: SavedDataViewAlertSettings;
+}
+
+/** D-300 — the owner's answer to a retired pack view. */
+export type SavedDataViewRetiredResolveRequest =
+  /** Set up `to_id` (a view the update added) the way this one was, then drop this one. */
+  | { id: string; action: 'apply'; to_id: string }
+  /** Keep it as the owner's own view (a copy with a new id), then drop this one. */
+  | { id: string; action: 'keep' }
+  /** Drop it. */
+  | { id: string; action: 'dismiss' };
+
+/** The pack a view came from — `publisher` + the pack's own `slug`. Two packs
+ *  may share a slug under different publishers, so both segments are identity. */
+export interface SavedDataViewPackRef {
+  publisher: string;
+  slug: string;
 }
 
 /** Records alerts need one concrete pack and kind, just like its saved query. */
@@ -106,6 +180,13 @@ export interface SavedDataViewUpdateRequest extends SavedDataViewDeleteRequest {
   /** P2/F2 — set the review mark to the cursor the reviewer actually saw, or
    *  `null` to clear it and re-surface the whole history. */
   review?: RecordsChangeCursor | null;
+  /** D-289 — dismiss (or restore) a PACK view. Rides `data_views.update`
+   *  rather than earning its own method for the same reason `review` does:
+   *  it is owner-owned state ON a view, and the update path already CASes on
+   *  the revision that protects it. ⛔ Refused on an owner-authored view —
+   *  those have Delete, and two ways to make one row disappear is how a list
+   *  grows entries nobody can account for. */
+  hidden?: boolean;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>

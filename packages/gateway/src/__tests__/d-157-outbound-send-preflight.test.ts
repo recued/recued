@@ -60,10 +60,10 @@ describe('D-157 outbound-send preflight (gateway)', () => {
     expect(() => raiseOnAsk(decision, { slug: 'mail-send' })).toThrow(PreflightRequiredSignal);
   });
 
-  it('a user-driven internal write (data-annotate) → admit → no preflight', () => {
+  it('a user-driven internal write (annotation-create) → admit → no preflight', () => {
     const decision = evaluatePreflightAdmission({
       source: USER,
-      tool: { slug: 'data-annotate', kind: 'storage', risk_tier: 'write' },
+      tool: { slug: 'annotation-create', kind: 'storage', risk_tier: 'write' },
     });
     expect(decision.verdict).toBe('admit');
   });

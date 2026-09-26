@@ -1,5 +1,7 @@
-/** D-244 — `csv-filter` / `csv-columns`: search a stored CSV without pulling it
- *  through recipe step state.
+/** D-244 — `csv-filter` / `csv-rows` / `csv-columns` / `csv-stats`: search a
+ *  stored CSV without pulling it through recipe step state. `csv-filter` SAVES
+ *  its matches as a new record (a write); `csv-rows` returns them, capped, and
+ *  saves nothing.
  *
  *  ⛔⛔ THE PROBLEM THIS EXISTS FOR. Searching a stored sheet used to mean
  *  `data-file-read → decode_base64 → csv_parse → filter`, and every one of those
@@ -23,8 +25,8 @@
  */
 
 import {
-  csvColumns, csvFilter, csvStats,
-  type CsvMatchMode, type CsvStatsResult,
+  csvColumns, csvFilter, csvRows, csvStats,
+  type CsvMatchMode, type CsvRowsResult, type CsvStatsResult,
 } from '@recued/transforms';
 
 /** Read one `data.file.received` record's bytes — the same dep shape
@@ -104,8 +106,12 @@ export interface CsvAddress {
   path?: string;
 }
 
+/** Everything a CSV op needs to READ, and nothing it would need to save. The
+ *  reading ops take this, so they are never handed the ingestor. */
+export type CsvReadDeps = Omit<CsvFilterDeps, 'ingest'>;
+
 const decode = async (
-  deps: CsvFilterDeps,
+  deps: CsvReadDeps,
   where: CsvAddress,
 ): Promise<string> => {
   const hasRecord = typeof where.record_id === 'string' && where.record_id.trim().length > 0;
@@ -174,6 +180,46 @@ export const handleCsvFilter = async (
     mime_type: 'text/csv',
   });
   return { ...base, file_ref: record_id };
+};
+
+/** `csv-rows`' row cap when the caller names none, and the most it may ask for.
+ *  The cap is what keeps the reading op from becoming the retention D-244 exists
+ *  to avoid: a match-everything search on a large sheet would otherwise pull the
+ *  whole sheet into step state. `matched` still counts every match, and past the
+ *  ceiling `csv-filter` saves the full set as a file. */
+export const CSV_ROWS_DEFAULT_LIMIT = 100;
+export const CSV_ROWS_MAX_LIMIT = 1000;
+
+export interface CsvRowsArgs extends CsvFilterArgs {
+  limit?: number;
+}
+
+/** `csv-rows` — the READING twin of {@link handleCsvFilter}: the same matches,
+ *  returned as rows keyed by header, and nothing saved. Its deps are
+ *  {@link CsvReadDeps}, so it cannot reach the ingestor even by mistake. */
+export const handleCsvRows = async (
+  deps: CsvReadDeps,
+  args: CsvRowsArgs,
+): Promise<CsvRowsResult> => {
+  if (typeof args.column !== 'string' || args.column.length === 0) {
+    throw new Error('csv-rows: column is required');
+  }
+  const limit = args.limit ?? CSV_ROWS_DEFAULT_LIMIT;
+  // ⛔ Refused, not clamped: a caller asking for 5,000 rows and silently getting
+  // 1,000 would read `truncated` as a property of the sheet.
+  if (!Number.isInteger(limit) || limit < 1 || limit > CSV_ROWS_MAX_LIMIT) {
+    throw new Error(`csv-rows: limit must be a whole number from 1 to ${CSV_ROWS_MAX_LIMIT}`);
+  }
+  const text = await decode(deps, args);
+  return csvRows({
+    text,
+    column: args.column,
+    match: typeof args.match === 'string' ? args.match : '',
+    ...(args.mode !== undefined ? { mode: args.mode } : {}),
+    ...(args.ignore_case !== undefined ? { ignore_case: args.ignore_case } : {}),
+    ...(args.delimiter !== undefined ? { delimiter: args.delimiter } : {}),
+    limit,
+  });
 };
 
 export const handleCsvColumns = async (

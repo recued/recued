@@ -10,6 +10,7 @@ export * from './date-time.js';
 // D-269 REV 4 — the two-clock preview, beside the formatter it composes.
 export * from './two-clock.js';
 export * from './run-facts.js';
+export * from './run-failure-reason.js';
 export * from './reference-provenance.js';
 export * from './icon-render.js';
 export * as Icons from './icons.generated.js';

@@ -43,7 +43,6 @@ import {
   type PreparePreapproval,
   type PreapprovalResult,
   canonicalizeEmail,
-  extractCanonicalRef,
   MAIL_SENT_RECONCILIATION_MAX_WINDOW_MS,
   isEnrichmentScope,
   isMailReconciliationId,
@@ -121,12 +120,20 @@ import {
   type TimelineEntry,
   NOTIFICATION_DELIVERY_CHANNELS,
   type NotificationDeliveryChannel,
+  // D-312 — a channel setting given as text reads as the list it spells.
+  listFromTypedText,
+  // D-314 — the one reading of a channel name, shared with the settings form.
+  notificationChannelName,
   // D-207 slice 3d — the artifact pin is VERIFIED against `data.file` source
   // truth, never taken on the caller's word.
   verifySellerOrderArtifactPin,
   type PinnedCasFileRef,
   // D-236 — the source-freshness verdict that rides out with a collection read.
   type CollectionSourceFreshness,
+  // D-306 audit — what a link or annotation delete may be given.
+  ANNOTATION_FILTER_FIELDS,
+  LINK_FILTER_FIELDS,
+  deleteFilterProblem,
 } from '@recued/contracts';
 
 /** D-119 Phase 12 — stamp `_id` + `_collection` onto every record
@@ -158,11 +165,15 @@ const stampMany = <T extends object>(
   idOf: (r: T) => string,
 ): (T & CanonicalRecord)[] => records.map((r) => stampOne(r, collection, idOf(r)));
 
-/** D-192 seam 10 — the fan-out default IS the full delivery vocabulary (every
- *  declared chat transport + email + in_app), so a new chat transport joins the
- *  default fan-out with no edit here. */
-const DEFAULT_NOTIFICATION_CHANNELS = NOTIFICATION_DELIVERY_CHANNELS;
+/** D-192 seam 10 — the channels a notification may name: the full delivery
+ *  vocabulary (every declared chat transport + email + in_app), so a new chat
+ *  transport is nameable with no edit here. */
 const DELIVERY_CHANNEL_SET: ReadonlySet<string> = new Set(NOTIFICATION_DELIVERY_CHANNELS);
+
+/** D-312 — a channel name as an owner writes it: any case, with `in-app` for
+ *  `in_app`. D-314: the settings form reads saved names with the same rule, so
+ *  a ticked box and a typed name are the same channel. */
+const channelName = notificationChannelName;
 
 const withCreateOrigin = <T extends {
   origin_actor?: Actor;
@@ -835,6 +846,29 @@ export interface KernelDispatchers {
     column_found: boolean;
     columns: readonly string[];
   }>;
+  /** Backs `csv-rows`, the READING twin of `csv-filter`: the same matches,
+   *  returned as rows keyed by header and capped at `limit`, with nothing saved.
+   *  `csv-filter` stores its result as a new file record, so it is a write; this
+   *  one stores nothing, so a view that runs unasked may use it. The handler owns
+   *  `limit`'s default and ceiling. */
+  csvRows?: (input: {
+    record_id?: string;
+    slug?: string;
+    path?: string;
+    column: string;
+    match: string;
+    mode?: 'contains' | 'equal';
+    ignore_case?: boolean;
+    delimiter?: string;
+    limit?: number;
+  }) => Promise<{
+    rows: readonly Record<string, string>[];
+    matched: number;
+    scanned: number;
+    truncated: boolean;
+    column_found: boolean;
+    columns: readonly string[];
+  }>;
   /** D-245 — backs `file-put-ref`: writes a REF's bytes into a record the RECIPE
    *  named, server-side. The bytes never enter an op-step value, which is what
    *  separates "a file I own at a name I chose" from a base64 round trip. */
@@ -1083,30 +1117,15 @@ export interface KernelDispatchers {
   }) => Promise<{ source_id: string; response_status: string }>;
 
   // D-119 Phase 13 — annotation + link dispatcher slots. Recipe-side
-  // ingredient slugs (`data-annotate`, `annotation-list`,
-  // `annotation-search`, `annotation-delete`, `data-link`,
-  // `link-list`, `link-delete`) all route through these. The handler
+  // ingredient slugs (`annotation-list`, `annotation-search`,
+  // `annotation-delete`, `link-list`, `link-delete`) route through these;
+  // the writes are `annotation-create` / `link-create`. (`data-annotate` /
+  // `data-link` were RETIRED 2026-09-23: never wired on the server, unused,
+  // and duplicates of those two.) The handler
   // resolves canonical refs, stamps staleness fields, and rpcs to the
   // server's `annotation.*` / `link.*` methods. Absent slot →
   // SERVER_NOT_REACHABLE per the same pattern as other warehouse
   // surfaces; the warehouse fundamentally lives on the server.
-
-  /** Backs `data-annotate`. Accepts either a canonical record ref
-   *  (`{ ref: { _id, _collection, ... } }`) — typical when piped from
-   *  a `foreach` over a `data.*` collection — or an explicit
-   *  `{ target_collection, target_id }` pair. Engine pre-computes the
-   *  source / model hashes and supplies them on the dispatch
-   *  envelope so the kernel handler doesn't reach back into the
-   *  recipe metadata. (`recipe_hash` was RETIRED — D-120.) */
-  annotate?: (input: {
-    target_collection: string;
-    target_id: string;
-    key: string;
-    value: unknown;
-    authored_by_recipe_id: string;
-    source_record_hash: string;
-    model_used?: string;
-  }) => Promise<{ annotation: Annotation }>;
 
   /** Backs `annotation-list`. Filters AND together; absent fields
    *  don't restrict. */
@@ -1125,16 +1144,6 @@ export interface KernelDispatchers {
     ok: true;
     deleted: number;
   }>;
-
-  /** Backs `data-link`. Accepts canonical refs on either side. */
-  linkWrite?: (input: {
-    from_collection: string;
-    from_id: string;
-    to_collection: string;
-    to_id: string;
-    role: string;
-    authored_by_recipe_id: string;
-  }) => Promise<{ link: Link }>;
 
   /** Backs `link-list`. Filters AND together. */
   linkList?: (input: LinkFilter) => Promise<{ links: Link[] }>;
@@ -1414,7 +1423,8 @@ export interface KernelDispatchers {
    *  reports per-channel delivery outcome. `link_url` is the deep
    *  link target surfaced alongside the body — renamed from `url`
    *  to dodge collision with the engine-locked HTTP routing key.
-   *  Omitted channels fan out to every supported notification channel. */
+   *  Omitted channels fan out to every channel the owner has set up (D-312):
+   *  the adapter passes none rather than naming all of them. */
   notificationSend?: (input: {
     channels?: ReadonlyArray<NotificationDeliveryChannel>;
     text: string;
@@ -1954,11 +1964,14 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
-        const { key, expected_revision, value } = call.input as {
+        const { key, expected_revision: givenRevision, value } = call.input as {
           key: unknown;
-          expected_revision: number | null;
+          expected_revision?: number | null;
           value: unknown;
         };
+        // `null` means create-if-absent, the manifest's documented default. Dispatch
+        // drops the manifest's placeholder null, so an omitted revision gets it here.
+        const expected_revision = givenRevision === undefined ? null : givenRevision;
         if (typeof key !== 'string' || key.length === 0) {
           throw new IngredientError(
             'BAD_INPUT',
@@ -2506,6 +2519,46 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ...(call.stepMeta?.step_id ? { step_id: call.stepMeta.step_id } : {}),
         });
       }
+      case 'csv-rows': {
+        if (!dispatchers.csvRows) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'csv-rows unavailable — no paired server or csv dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as {
+          record_id?: unknown; column?: unknown; match?: unknown; mode?: unknown;
+          ignore_case?: unknown; delimiter?: unknown; limit?: unknown;
+        };
+        const csvAddressed = (typeof input.record_id === 'string' && input.record_id.length > 0)
+          || (typeof (input as { slug?: unknown }).slug === 'string'
+            && typeof (input as { path?: unknown }).path === 'string');
+        if (!csvAddressed) {
+          throw new IngredientError(
+            'BAD_INPUT', "csv-rows: 'record_id', or 'slug' + 'path', is required", { slug },
+          );
+        }
+        if (typeof input.column !== 'string' || input.column.length === 0) {
+          throw new IngredientError('BAD_INPUT', "csv-rows: 'column' is required", { slug });
+        }
+        if (input.limit !== undefined && input.limit !== null && typeof input.limit !== 'number') {
+          throw new IngredientError('BAD_INPUT', "csv-rows: 'limit' must be a number", { slug });
+        }
+        return dispatchers.csvRows({
+          ...(typeof input.record_id === 'string' ? { record_id: input.record_id } : {}),
+          ...(typeof (input as { slug?: unknown }).slug === 'string'
+            ? { slug: (input as { slug: string }).slug } : {}),
+          ...(typeof (input as { path?: unknown }).path === 'string'
+            ? { path: (input as { path: string }).path } : {}),
+          column: input.column,
+          match: typeof input.match === 'string' ? input.match : '',
+          ...(input.mode === 'equal' || input.mode === 'contains' ? { mode: input.mode } : {}),
+          ...(typeof input.ignore_case === 'boolean' ? { ignore_case: input.ignore_case } : {}),
+          ...(typeof input.delimiter === 'string' ? { delimiter: input.delimiter } : {}),
+          ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+        });
+      }
       case 'file-put-ref': {
         if (!dispatchers.filePutRef) {
           throw new IngredientError(
@@ -3017,36 +3070,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
       // server warehouse. Recipe-side input shapes accept canonical
       // refs (`{ ref: <canonical> }`) or explicit collection/id pairs;
       // we normalize before calling the dispatcher.
-      case 'data-annotate': {
-        if (!dispatchers.annotate) {
-          throw new IngredientError(
-            'SERVER_NOT_REACHABLE',
-            `data-annotate unavailable — no paired server or annotation dispatcher`,
-            { slug },
-          );
-        }
-        const input = call.input as {
-          ref?: unknown;
-          target_collection?: string;
-          target_id?: string;
-          key: string;
-          value: unknown;
-          authored_by_recipe_id: string;
-          source_record_hash: string;
-          model_used?: string;
-        };
-        const target = resolveTargetRef(input);
-        const dispatchInput: Parameters<NonNullable<KernelDispatchers['annotate']>>[0] = {
-          target_collection: target.collection,
-          target_id: target.id,
-          key: input.key,
-          value: input.value,
-          authored_by_recipe_id: stampedRecipeId(call, input.authored_by_recipe_id),
-          source_record_hash: input.source_record_hash,
-        };
-        if (input.model_used !== undefined) dispatchInput.model_used = input.model_used;
-        return dispatchers.annotate(dispatchInput);
-      }
       case 'annotation-list': {
         if (!dispatchers.annotationList) {
           throw new IngredientError(
@@ -3075,36 +3098,36 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
-        return dispatchers.annotationDelete(call.input as AnnotationFilter);
-      }
-      case 'data-link': {
-        if (!dispatchers.linkWrite) {
+        // ⛔ A RECIPE DELETES ONLY THE ANNOTATIONS IT WROTE (owner decision,
+        // 2026-09-23). Annotations are not one pool: housekeeping re-derives some
+        // every cycle (`frequent_touch`, `runtime_risk`) and the server keeps
+        // system state in others (saga and in-doubt markers), so deleting those
+        // would be undone next cycle or break what wrote them. The author is
+        // pinned to the ENGINE's identity for this run — the one every recipe
+        // write is stamped with (`stampedRecipeId`) — over any
+        // `authored_by_recipe_id` the step names. With no engine above there is
+        // no identity to scope to, so nothing is deleted.
+        const deleter = call.stepMeta?.recipe_id;
+        if (typeof deleter !== 'string' || deleter.length === 0) {
           throw new IngredientError(
-            'SERVER_NOT_REACHABLE',
-            `data-link unavailable — no paired server or link dispatcher`,
+            'ANNOTATION_DELETE_NEEDS_RECIPE',
+            'annotation-delete: only a recipe run may delete annotations, and only the ones it wrote',
             { slug },
           );
         }
-        const input = call.input as {
-          from?: unknown;
-          to?: unknown;
-          from_collection?: string;
-          from_id?: string;
-          to_collection?: string;
-          to_id?: string;
-          role: string;
-          authored_by_recipe_id: string;
-        };
-        const fromRef = resolveSidedRef(input, 'from');
-        const toRef = resolveSidedRef(input, 'to');
-        return dispatchers.linkWrite({
-          from_collection: fromRef.collection,
-          from_id: fromRef.id,
-          to_collection: toRef.collection,
-          to_id: toRef.id,
-          role: input.role,
-          authored_by_recipe_id: stampedRecipeId(call, input.authored_by_recipe_id),
-        });
+        const filter = (call.input ?? {}) as AnnotationFilter;
+        // The store refuses an empty filter so a slip cannot wipe the table.
+        // Pinning the author would turn `{}` into "every annotation I wrote", so
+        // the step's own filter is held to the same rule before the pin is added,
+        // and so is a key the filter does not know or a field with no value.
+        // The pin would otherwise make the store's own check pass on both. The
+        // step's own `authored_by_recipe_id` is replaced by the pin, so it
+        // narrows nothing.
+        const problem = deleteFilterProblem(filter, ANNOTATION_FILTER_FIELDS, ['authored_by_recipe_id']);
+        if (problem !== null) {
+          throw new IngredientError('BAD_INPUT', `annotation-delete: ${problem}`, { slug });
+        }
+        return dispatchers.annotationDelete({ ...filter, authored_by_recipe_id: deleter });
       }
       case 'link-list': {
         if (!dispatchers.linkList) {
@@ -3123,6 +3146,20 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             `link-delete unavailable — no paired server or link dispatcher`,
             { slug },
           );
+        }
+        // Links are NOT scoped to their author, on purpose (owner decision,
+        // 2026-09-23) — the opposite of `annotation-delete` above, for the
+        // reason that rule is conditioned on. Only recipes and the owner write
+        // typed links and nothing regenerates them (`link-discovery` reads the
+        // separate provenance table and writes ANNOTATIONS), so there is no
+        // derived row a recipe could wrongly remove. The store refuses a filter
+        // that would widen too, and so does this, with the step's slug in the
+        // message.
+        {
+          const problem = deleteFilterProblem((call.input ?? {}) as LinkFilter, LINK_FILTER_FIELDS);
+          if (problem !== null) {
+            throw new IngredientError('BAD_INPUT', `link-delete: ${problem}`, { slug });
+          }
         }
         return dispatchers.linkDelete(call.input as LinkFilter);
       }
@@ -3799,29 +3836,52 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           title?: unknown;
           link_url?: unknown;
         };
-        if (input.channels !== undefined && (!Array.isArray(input.channels) || input.channels.length === 0)) {
+        // ⛔ D-312 — NO CHANNELS IS NO PREFERENCE, AND IT MUST REACH THE SERVER AS
+        // THAT. This filled in the full channel list, so the server could not tell
+        // "every channel you set up" from "these four, by name", and reported each
+        // channel the owner never set up as a failure. Omitted, or a `null` the
+        // recipe wrote (a computed "no choice"), now dispatches with none named.
+        // An empty list is still refused: it names no channel, which is not "any".
+        //
+        // ⚠ A NAME IS THE OWNER'S, SO IT IS READ AS THEY WROTE IT. Their setting
+        // reaches here as a list (the server reads the settings box's text), and
+        // text still reads as the list it spells ("slack, email"; "" is no
+        // choice). A name that is no channel is refused by name: sending to the
+        // rest would leave the owner sure it went there too.
+        const requested = typeof input.channels === 'string'
+          ? listFromTypedText(input.channels)
+          : input.channels;
+        const noPreference = requested === undefined || requested === null;
+        if (!noPreference && (!Array.isArray(requested) || requested.length === 0)) {
           throw new IngredientError(
             'BAD_INPUT',
             'notification-send: channels[] is required',
             { slug },
           );
         }
-        const rawChannels = input.channels ?? DEFAULT_NOTIFICATION_CHANNELS;
-        const channels = rawChannels.filter(
-          (c): c is NotificationDeliveryChannel => DELIVERY_CHANNEL_SET.has(c),
-        );
-        if (channels.length === 0) {
-          throw new IngredientError(
-            'BAD_INPUT',
-            `notification-send: no valid channels in ${JSON.stringify(rawChannels)}`,
-            { slug },
-          );
+        let channels: NotificationDeliveryChannel[] | undefined;
+        if (!noPreference) {
+          const names = (requested as unknown[])
+            .map((c) => (typeof c === 'string' ? channelName(c) : c));
+          const unknownNames = names.filter((c) => typeof c !== 'string' || !DELIVERY_CHANNEL_SET.has(c));
+          if (unknownNames.length > 0) {
+            throw new IngredientError(
+              'BAD_INPUT',
+              `notification-send: ${unknownNames.map((name) => `"${String(name)}"`).join(', ')} `
+                + `${unknownNames.length === 1 ? 'is not a channel' : 'are not channels'}. Use `
+                + `${NOTIFICATION_DELIVERY_CHANNELS.map((c) => c.replace(/_/gu, '-')).join(', ')}, `
+                // D-314: "out", not "empty": a caller reads "empty" as [], which is refused above.
+                + 'or leave it out for every channel you have set up',
+              { slug },
+            );
+          }
+          channels = [...new Set(names as NotificationDeliveryChannel[])];
         }
         if (typeof input.text !== 'string' || input.text.length === 0) {
           throw new IngredientError('BAD_INPUT', 'notification-send: text is required', { slug });
         }
         const dispatchInput: Parameters<NonNullable<KernelDispatchers['notificationSend']>>[0] = {
-          channels,
+          ...(channels !== undefined ? { channels } : {}),
           text: input.text,
         };
         if (typeof input.title === 'string') dispatchInput.title = input.title;
@@ -5673,66 +5733,6 @@ const parseCustomerAccessTarget = (
   if (door_id !== undefined) target.door_id = door_id;
   if (source_customer_id !== undefined) target.source_customer_id = source_customer_id;
   return target;
-};
-
-/** Normalize a `data-annotate` input into `{ collection, id }`. The
- *  recipe surface accepts either `ref: <canonical record>` (typical
- *  inside a `foreach`) or explicit `target_collection` +
- *  `target_id`. Throws `BAD_INPUT` when neither path resolves. */
-const resolveTargetRef = (input: {
-  ref?: unknown;
-  target_collection?: string;
-  target_id?: string;
-}): { collection: string; id: string } => {
-  if (input.ref !== undefined) {
-    const extracted = extractCanonicalRef(input.ref);
-    if (extracted) return extracted;
-    throw new IngredientError(
-      'BAD_INPUT',
-      `data-annotate: ref is not a canonical record (missing _id / _collection)`,
-      {},
-    );
-  }
-  if (
-    typeof input.target_collection === 'string'
-    && typeof input.target_id === 'string'
-  ) {
-    return { collection: input.target_collection, id: input.target_id };
-  }
-  throw new IngredientError(
-    'BAD_INPUT',
-    `data-annotate: expected either ref or target_collection+target_id`,
-    {},
-  );
-};
-
-/** Normalize a `data-link` `from`/`to` side. Accepts either `${side}:
- *  <canonical record>` or explicit `${side}_collection` +
- *  `${side}_id`. */
-const resolveSidedRef = (
-  input: Record<string, unknown>,
-  side: 'from' | 'to',
-): { collection: string; id: string } => {
-  const ref = input[side];
-  if (ref !== undefined) {
-    const extracted = extractCanonicalRef(ref);
-    if (extracted) return extracted;
-    throw new IngredientError(
-      'BAD_INPUT',
-      `data-link: ${side} is not a canonical record (missing _id / _collection)`,
-      {},
-    );
-  }
-  const collection = input[`${side}_collection`];
-  const id = input[`${side}_id`];
-  if (typeof collection === 'string' && typeof id === 'string') {
-    return { collection, id };
-  }
-  throw new IngredientError(
-    'BAD_INPUT',
-    `data-link: expected ${side} (canonical ref) or ${side}_collection+${side}_id`,
-    {},
-  );
 };
 
 /** D-122 Phase 2 — split the combined `<collection>:<id>` entity ref

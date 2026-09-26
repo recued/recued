@@ -144,6 +144,25 @@ export const createCliReachabilityStore = (
   };
 };
 
+/** D-297 — copy every row one principal holds onto another, verbatim (the value
+ *  with its `set_at`). A customer contract rotated under a new id (Reissue token /
+ *  Message customer) keeps its CLI allow-list: the rows are keyed by the contract
+ *  id, so without this the new contract has none — fail closed, and the owner's
+ *  allow is gone. Returns the number of rows copied. */
+export const copyCliReachabilityRows = (
+  contractStore: ContractStore,
+  from: string,
+  to: string,
+): number => {
+  let copied = 0;
+  for (const row of contractStore.scan(CLI_REACHABILITY_SCOPE, [from])) {
+    if (row.segments.length !== CLI_REACHABILITY_SEGMENT_COUNT) continue;
+    contractStore.put(CLI_REACHABILITY_SCOPE, [to, ...row.segments.slice(1)], row.value);
+    copied += 1;
+  }
+  return copied;
+};
+
 /** D-182 §7.2 — the engine's per-contract cli reachability check (the gateway's
  *  `cli` authorization stage ENFORCES it). A recipe run under `principal` may
  *  reach `(ingredient_id, operation_id)` IFF a present row says `allowed: true`.

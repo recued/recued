@@ -26,6 +26,7 @@ import type {
   ShareCardsInput,
 } from '@recued/contracts';
 import {
+  LIST_PAGE_DEFAULT_LIMIT,
   RECEPTION_ENDPOINT_KIND_TO_PACKET_KIND,
   RECEPTION_RECOMMENDED_EXPOSURE_PROFILE,
 } from '@recued/contracts';
@@ -881,7 +882,11 @@ describe('D-200 Slice 6g.4 — bootstrapReceptionRoute: pair selector', () => {
       method: 'reception.intake_recipe_pair.get',
       payload: { endpoint_id: 'intake-1' },
     });
-    expect(fc.calls).toContainEqual({ method: 'recipe.list', payload: undefined });
+    // A page, not the whole list: `recipe.list` grows with installs (list-page.ts).
+    expect(fc.calls).toContainEqual({
+      method: 'recipe.list',
+      payload: { limit: LIST_PAGE_DEFAULT_LIMIT },
+    });
 
     route.dispose();
     expect(content.innerHTML).toBe('');

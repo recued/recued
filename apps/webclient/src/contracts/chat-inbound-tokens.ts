@@ -1,7 +1,7 @@
 /** D-137 P5 follow-on § A.9 — agent credential renderer substrate.
  *
  *  Pure projection of Bob's per-pair `McpInboundTokenRecord` rows +
- *  the live `ToolEntry[]` catalog into the per-token UI model the
+ *  the live `ToolCatalogEntryView[]` catalog into the per-token UI model the
  *  Contracts page iterates. Two views share these helpers:
  *
  *    - **Agent credential inventory** (`#contracts`) — list of every
@@ -40,7 +40,7 @@ import {
   type McpInboundTokenChatMode,
   type McpInboundTokenRecord,
   type Tier1ToolName,
-  type ToolEntry,
+  type ToolCatalogEntryView,
 } from '@recued/contracts';
 
 /** § A.9 — closed-list copy for each `McpInboundConcurrencyTier`. The
@@ -80,7 +80,7 @@ export const CHAT_INBOUND_TOKEN_CONCURRENCY_COPY: Readonly<Record<
  *      the `recued_` server-tools prefix and mislabel raw ops as Recued's own
  *      meta tools.
  *  These aren't `IngredientKind`s (they're not registry entries); the catalog
- *  provider projects them as `ToolEntry` and `inferChatInboundTokenToolKind`
+ *  provider projects them as `ToolCatalogEntryView` and `inferChatInboundTokenToolKind`
  *  groups them by NAME PREFIX. Distinct buckets (not folded into the
  *  ingredient-kind groups) keep their per-bucket master toggle from
  *  accidentally granting raw ingredient / raw operation / server-control access
@@ -173,15 +173,15 @@ export const CHAT_INBOUND_TOKEN_KIND_COPY: Readonly<Record<
 } as const;
 
 /** § A.9 — per-tool row in the per-token detail UI. Keyed on the
- *  catalog's `ToolEntry.name`; carries the live grant state + the
+ *  catalog's `ToolCatalogEntryView.name`; carries the live grant state + the
  *  catalog's classification + tier so the renderer can paint the
  *  per-row badge. */
 export interface ChatInboundTokenToolRow {
   tool_name: string;
-  /** Mirrors `ToolEntry.tier` so the renderer can paint `T1` / `T2` /
+  /** Mirrors `ToolCatalogEntryView.tier` so the renderer can paint `T1` / `T2` /
    *  `T3` chips alongside the per-tool checkbox. */
   tier: 1 | 2 | 3;
-  /** From `ToolEntry.classification` — `read` / `write` / `unknown`.
+  /** From `ToolCatalogEntryView.classification` — `read` / `write` / `unknown`.
    *  Drives the per-row risk badge. */
   classification: 'read' | 'write' | 'unknown';
   /** Live grant state (current vs the substrate's default-deny posture).
@@ -190,11 +190,11 @@ export interface ChatInboundTokenToolRow {
    *  "Bob unchecked a normally-on read tool" heuristic in the renderer. */
   granted: boolean;
   default_grant: boolean;
-  /** `ToolEntry.description` — surfaces in tooltip / expander. Empty
+  /** `ToolCatalogEntryView.description` — surfaces in tooltip / expander. Empty
    *  string when missing on the catalog entry. */
   description: string;
   /** D-192 Slice 7 — the container reads granting this raw op transitively
-   *  admits (`ToolEntry.also_reads`). Drives the per-tool "also reads: …"
+   *  admits (`ToolCatalogEntryView.also_reads`). Drives the per-tool "also reads: …"
    *  disclosure; absent when the tool admits none. */
   also_reads?: ReadonlyArray<DependencyReadAdmission>;
 }
@@ -279,7 +279,7 @@ export interface ChatInboundTokenTableRow {
  *  catches long before any tier check. Nothing produces a tier-3 entry today, so
  *  this branch is unreachable — kept because the function must be total.
  *
- *  Substrate-pure: same `ToolEntry` → same kind. Returns `'connection'`
+ *  Substrate-pure: same `ToolCatalogEntryView` → same kind. Returns `'connection'`
  *  for any T1 not in the static map (defensive — the closed Tier1
  *  type means this branch is unreachable today, but the fallback keeps
  *  the renderer paintable if the catalog grows).
@@ -316,7 +316,7 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
 } as const;
 
 export const inferChatInboundTokenToolKind = (
-  entry: ToolEntry,
+  entry: ToolCatalogEntryView,
 ): ChatInboundTokenGroupKind => {
   // D-171 slice-2c follow-on #1 — the legacy inbound surface is grouped by
   // NAME PREFIX, independent of the synthetic `tier: 2` the catalog provider
@@ -383,7 +383,7 @@ export const deriveChatInboundTokenKindMaster = (
  *  the per-page skeleton). */
 export const buildChatInboundTokenDetailModel = (args: {
   token: McpInboundTokenRecord | null | undefined;
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
   now: number;
 }): ChatInboundTokenDetailRenderModel => {
   const { token, catalog, now } = args;
@@ -476,7 +476,7 @@ export const buildChatInboundTokenDetailModel = (args: {
  *  "N / M tools" without re-projecting the per-token detail. */
 export const buildChatInboundTokenTableRows = (args: {
   tokens: ReadonlyArray<McpInboundTokenRecord>;
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
   now: number;
 }): ReadonlyArray<ChatInboundTokenTableRow> => {
   const { tokens, catalog, now } = args;
@@ -530,7 +530,7 @@ export const projectToggledChatInboundTokenTool = (args: {
  *  alone — only live catalog entries are touched. */
 export const projectToggledChatInboundTokenKind = (args: {
   current: Readonly<Record<string, boolean>>;
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
   kind: ChatInboundTokenGroupKind;
   next_granted: boolean;
 }): Record<string, boolean> => {
@@ -552,7 +552,7 @@ export const projectToggledChatInboundTokenKind = (args: {
  *  else false. The renderer wires the "Reset to defaults" button to
  *  this reducer. */
 export const projectDefaultChatInboundTokenGrants = (args: {
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
 }): Record<string, boolean> => {
   // `buildDefaultMcpInboundTokenGrants` already returns a fresh
   // Object.create(null)-style map; surface it directly so the
@@ -595,7 +595,7 @@ export interface ChatInboundTokenIssuanceDefaults {
 }
 
 export const buildChatInboundTokenIssuanceDefaults = (args: {
-  catalog: ReadonlyArray<ToolEntry>;
+  catalog: ReadonlyArray<ToolCatalogEntryView>;
   now: number;
 }): ChatInboundTokenIssuanceDefaults => ({
   grants: projectDefaultChatInboundTokenGrants(args),

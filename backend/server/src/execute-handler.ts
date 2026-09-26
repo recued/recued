@@ -57,7 +57,6 @@ import {
   type CommitRunIdentity,
   type PreflightAskContext,
   type PreflightNotifier,
-  type SagaCompensationPlanRef,
   type SagaNotifier,
   type PickNotifier,
   type SessionGrantGateCall,
@@ -138,6 +137,10 @@ import {
   UNDECLARED_CONFIG_ARGUMENT,
   undeclaredConfigArgumentMessage,
   undeclaredConfigArguments,
+  retiredVariablesOf,
+  withoutRetiredConfig,
+  carriedFromRetired,
+  readTypedListSettings,
   recipeOutputSections,
   WIRE_AUTHORITY_ARG_PATHS,
   type HandlerSlice,
@@ -167,15 +170,16 @@ import type { RecordsStore } from './records/index.js';
 import { composeRecordsOperationExecutor } from './records/import-csv-ref.js';
 import { readRootProjections } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
+import { deriveSagaPlans } from './saga-plans.js';
 import type { DishStore } from './dish-store.js';
 import type { DishContextStore } from './dish-context-store.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { reclaimRunScratchUnlessResumable } from './execution/run-scratch.js';
 import { mergeManifestStepInput } from '@recued/ingredients';
+import { actionIdentityBasis } from './action-identity-basis.js';
 import {
   applyKernelOpRunnability,
   canonicalRecipeDefinition,
-  deriveCompensation,
   flattenRecipe,
   hashRecipe,
   serializeFlattenedInsight,
@@ -2907,6 +2911,31 @@ const handleExecuteInner = async (
 
   // Build vault: base (file + env) + request overrides
   const vault = mergeVault(deps.baseVault, {}, request.vault);
+  // D-302 — a value still saved for a variable the recipe RETIRED is dropped
+  // here, before the boundary below would refuse it, and on `request` itself so
+  // every later reader (snapshots, held-action identity) sees the same config.
+  // See `withoutRetiredConfig`. D-303 — so is one an update DROPPED without saying
+  // so (`recipeStore.retiredVariables`). Never a name the recipe declares now: a
+  // variable a later version brings back gets its saved value back.
+  const declaredNow = recipe.variables ?? {};
+  const retired = [...retiredVariablesOf(recipe), ...(deps.recipeStore.retiredVariables?.(recipe.recipe_id) ?? [])]
+    .filter((name) => !Object.prototype.hasOwnProperty.call(declaredNow, name));
+  if (retired.length > 0 && request.config !== undefined) {
+    // A retired value may still say what its replacement must be
+    // (`metadata.retired_carries`): read it before it is dropped. The owner's
+    // own value for the replacement always wins.
+    const carried = carriedFromRetired(recipe, request.config, retired);
+    request = { ...request, config: { ...withoutRetiredConfig(request.config, retired), ...carried } };
+  }
+  // A list setting saved by the settings form is the text typed into it
+  // ("slack, email"), since the form has no list control. Read it as the list
+  // it spells before anything below sees it: the snapshot, the held-action
+  // identity, the engine and every later `request.config` reader. A blank one
+  // is dropped, so its default applies.
+  if (request.config !== undefined) {
+    const read = readTypedListSettings(recipe.variables, request.config);
+    if (read !== request.config) request = { ...request, config: read };
+  }
   const config = request.config ?? {};
 
   // ── D-222 Slice A — declaration-bounded config ──────────────────────
@@ -5072,16 +5101,19 @@ const handleExecuteInner = async (
           // dispatch is about to fail INGREDIENT_NOT_FOUND anyway; return
           // undefined so no identity is stamped. The Gateway projects +
           // hashes; this closure only merges + resolves.
+          //
+          // ⛔ And shaped as the adapter RECEIVES it: a kernel slot drops the
+          // placeholders the step did not supply, so the hash names the action
+          // that runs (`action-identity-basis.ts`).
           resolveArgsForHash: (slug, input, { surfaceDispatch }) => {
             const manifest = deps.executorConfig.manifests.get(slug);
             if (!manifest) return undefined;
-            const merged = mergeManifestStepInput(manifest.input, input, {
-              trustedSurfaceDispatch: surfaceDispatch,
-            });
-            return resolveDeep(merged, stores, { deferVault: true }) as Record<
-              string,
-              unknown
-            >;
+            return actionIdentityBasis(
+              manifest,
+              input,
+              (merged) => resolveDeep(merged, stores, { deferVault: true }) as Record<string, unknown>,
+              { surfaceDispatch },
+            );
           },
           // D-177 P1b — op-declared volatile exclusions (N.2). A catalog
           // surface dispatch resolves the OP row's declaration via the
@@ -5897,7 +5929,7 @@ const handleExecuteInner = async (
         : {}),
       // D-161 P1 — thread the run's contract_id (when contracted) onto
       // the engine ctx alongside `actor`, so kernel write-handlers
-      // (`enrichment-upsert` / `data-annotate` / `data-link`) can stamp
+      // (`enrichment-upsert` / `annotation-create` / `link-create`) can stamp
       // the `origin_contract_id` half of the origin facet (N.4). Absent
       // for unrestricted / system / no-source runs.
       ...(executionSource !== undefined
@@ -7936,29 +7968,12 @@ const handleExecuteInner = async (
             deps.executorConfig.manifests.get(slug) ?? undefined,
         });
         if (saga !== null) {
-          const plans = new Map<string, SagaCompensationPlanRef>();
-          for (const w of saga.landed_writes) {
-            // Only an unambiguous, fully-attributed landed write may
-            // derive an undo — ambiguity/drift discloses but never
-            // compensates (fail toward disclosure, away from undo).
-            if (!w.unambiguous || w.operation_key === '' || w.connection_name === '') {
-              continue;
-            }
-            const manifest = deps.executorConfig.manifests.get(w.catalog_slug);
-            if (!manifest) continue;
-            const plan = deriveCompensation(
-              {
-                commit_id: w.commit_id,
-                operation_key: w.operation_key,
-                operation_id: w.operation_id,
-                catalog_slug: w.catalog_slug,
-                connection_name: w.connection_name,
-                output: w.output,
-              },
-              manifest,
-            );
-            if (plan !== null) plans.set(w.commit_id, plan);
-          }
+          // ⛔ SHARED WITH THE BOOT SWEEP (`saga-plans.ts`), not inlined. The
+          // rule for which landed writes may derive an undo now has a second
+          // caller, and two copies of it drift into offering an undo one site
+          // would refuse.
+          const plans = deriveSagaPlans(saga, (slug) =>
+            deps.executorConfig.manifests.get(slug) ?? undefined);
           await raiseSagaAsk(deps.sagaNotifier, saga, plans);
         }
       } catch (e) {

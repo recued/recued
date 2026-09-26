@@ -1,4 +1,5 @@
 import type {
+  IngredientManifest,
   BulkPackManifest,
   CompositionIngredient,
   PackContentRef,
@@ -45,6 +46,10 @@ export interface RecordsReviewRecipe extends ResolvedRecordsPackRecipe {
 
 export interface PreparedRecordsReviewTarget {
   composition: CompositionIngredient;
+  /** The stamped catalog this update would install — its operation ids are the
+   *  ones the owner's rules and grants are keyed by (the composition's own slug
+   *  is not). What an update's operation diff compares against. */
+  catalog: IngredientManifest;
   business_recipes: ResolvedRecordsPackRecipe[];
   migration_plans: RecordsMigrationPlan[];
   target_storage_schema_hash: string;
@@ -186,6 +191,7 @@ export const prepareRecordsReviewTarget = async (input: {
   );
   return {
     composition,
+    catalog: stamped.manifest,
     business_recipes: businessRecipes,
     migration_plans: migrationPlans,
     target_storage_schema_hash: stamped.hashes.storage_schema_hash,

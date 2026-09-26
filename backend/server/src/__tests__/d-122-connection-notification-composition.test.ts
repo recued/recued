@@ -419,7 +419,7 @@ describe('composeConnectionNotification', () => {
     ]);
   });
 
-  it.each(CHANNELS)(
+  it.each(CHANNELS.filter((channel) => channel !== 'in_app'))(
     'returns NO_CONNECTION_BOUND for %s when the store is empty',
     async (channel) => {
       const bundle = composeConnectionNotification(buildDeps({
@@ -437,6 +437,32 @@ describe('composeConnectionNotification', () => {
       });
     },
   );
+
+  // D-312 — in-app has no credentials and no destination to enroll, so a server
+  // with nothing enrolled still delivers it: on its own broadcast bus, as the
+  // enrolled one does.
+  it('⛔ in_app is built in: with nothing enrolled it goes out on the bus', async () => {
+    const bus = eventBus();
+    const bundle = composeConnectionNotification(buildDeps({
+      connectionStore: buildStore([]),
+      eventBus: bus,
+    }));
+
+    const out = await bundle.channelDispatchers?.in_app({
+      channel: 'in_app',
+      text: 'No connection enrolled',
+      title: 'Reminder',
+      link_url: 'https://example.test/x',
+    });
+
+    expect(out).toEqual({ ok: true });
+    expect(bus.emit).toHaveBeenCalledWith({
+      kind: 'notification.notify',
+      title: 'Reminder',
+      text: 'No connection enrolled',
+      link_url: 'https://example.test/x',
+    });
+  });
 
   it('threads the created notification handler + connection store into every registry entry boot', async () => {
     const {

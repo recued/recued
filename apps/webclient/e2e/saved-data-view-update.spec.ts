@@ -11,7 +11,7 @@ const boot = async (page: Page, definition: SavedDataViewDefinition = { tab: 'co
   await page.addInitScript(({ key, view }) => {
     if (sessionStorage.getItem(key) === null) sessionStorage.setItem(key, JSON.stringify([view]));
   }, { key: KEY, view: { id: ID, name: 'My view', definition, revision: 1, created_at: 1, updated_at: 1 } });
-  await page.goto(`${BASE}?data=${definition.tab === 'task' ? 'work-entities-paged&task_filters=1' : 'contacts'}${holdUpdate ? '&hold_rpc=data_views.update' : ''}#data/view/${ID}`);
+  await page.goto(`${BASE}?data=${definition.tab === 'task' ? 'work-entities-paged&task_filters=1' : 'contacts'}${holdUpdate ? '&hold_rpc=data_views.update' : ''}#views/${ID}`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await expect(tools(page).getByRole('button', { name: 'Update view', exact: true })).toBeVisible();
 };
@@ -55,7 +55,7 @@ test('Saved view updates show Modified immediately and keep the bookmark and mou
   await expect(tools(page).locator('[data-view-notice]')).toContainText('bookmark stays the same');
   await expect(page.locator('[data-recued-data-route]')).toHaveAttribute('data-reader-kept', 'yes');
   await expect(tools(page).locator('[data-view-modified]')).toHaveCount(0);
-  await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
   expect(await stored(page)).toEqual([expect.objectContaining({ id: ID, name: 'My view', revision: 2,
     created_at: 1, definition: { tab: 'contact', query: 'Updated search' } })]);
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.get'))).toBe(1);
@@ -81,7 +81,7 @@ test('Saved view updates replace Overdue with Next seven days at the same task b
   await expect(page.getByLabel('Task status', { exact: true })).toHaveValue('open');
   await expect(page.getByLabel('Sort tasks', { exact: true })).toHaveValue('due_asc');
   await expect(page.getByRole('searchbox', { name: 'Search tasks' })).toHaveValue('Task');
-  await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: '/tmp/recued-saved-view-update.png', fullPage: true });
 });
@@ -103,7 +103,7 @@ test('Saved view updates offer Save as new without changing the original setting
   await tools(page).locator('summary').click();
   await tools(page).locator('details').getByRole('link', { name: 'A separate view', exact: true }).click();
   await expect(query(page)).toHaveValue('Copy settings');
-  await expect(page).toHaveURL(new RegExp(`#data/view/${views[1]!.id}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${views[1]!.id}$`));
   await expect(tools(page).locator('[data-view-modified]')).toHaveCount(0);
 });
 
@@ -128,7 +128,7 @@ test('Saved view updates require review after each competing revision and preser
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Updated “Other browser”');
   expect((await stored(page))[0]).toMatchObject({ revision: 4, definition: { tab: 'contact', query: 'My settings' } });
   await expect(review).toHaveCount(0);
-  await expect(page).toHaveURL(new RegExp(`#data/view/${ID}$`));
+  await expect(page).toHaveURL(new RegExp(`#views/${ID}$`));
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 

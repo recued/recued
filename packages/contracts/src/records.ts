@@ -12,6 +12,12 @@ import type { EntityFieldPrivacy } from './pii-alias.js';
 export const RECORDS_DECIMAL_SCALE = 4;
 export const RECORDS_DEFAULT_PAGE_SIZE = 50;
 export const RECORDS_MAX_PAGE_SIZE = 200;
+/** The most rows a step with `pages: "all"` (`StepPages`) reads from one
+ *  `search`. The store still answers a page at a time (`RECORDS_MAX_PAGE_SIZE`);
+ *  the gateway follows the pages (`readRecordsSearch` in `catalog-gateway.ts`),
+ *  because a recipe has no loop to follow `next_cursor` itself. The same bound
+ *  as the gateway's vendor page walk (`PAGINATION_MAX_RECORDS`). */
+export const RECORDS_MAX_SEARCH_ROWS = 1_000;
 export const RECORDS_MAX_GET_MANY_IDS = 100;
 export const RECORDS_MAX_PREDICATES = 16;
 export const RECORDS_MAX_IN_ITEMS = 100;
@@ -265,6 +271,61 @@ export const RECORDS_IMPORT_MAX_CSV_BYTES = 32 * 1024 * 1024;
  *  always exact — only the examples are trimmed. */
 export const RECORDS_IMPORT_SAMPLE_LIMIT = 20;
 
+/** D-292 — how many rows a DRY RUN hands back as `preview_sample`.
+ *
+ *  ⚠ SMALLER than `RECORDS_IMPORT_SAMPLE_LIMIT` on purpose. The failure samples
+ *  are diagnostics an owner scans; a preview row carries EVERY mapped field, so
+ *  it is the wider object, and its job — "did Amount land in the amount field?"
+ *  — is answered by the first handful of lines, not the first twenty. Being
+ *  ≤ the failure cap also means every refused preview row is among the
+ *  `failures_sample` entries, which are recorded in file order. */
+export const RECORDS_IMPORT_PREVIEW_LIMIT = 10;
+
+/** D-292 — how many header names an import echoes back in `header`. A header is
+ *  normally a dozen short names; the cap exists for the file that is not a CSV
+ *  at all (a pasted JSON blob, a PDF renamed `.csv`), whose "header" is one
+ *  enormous first line that would otherwise ride into step state whole. */
+export const RECORDS_IMPORT_HEADER_LIMIT = 100;
+
+/** D-292 — the longest string, in characters, `header` and `preview_sample`
+ *  echo back. Longer ones are cut and end in `…`. Display-only bounds: the
+ *  import itself never truncates anything it writes. */
+export const RECORDS_IMPORT_ECHO_CHARS = 200;
+
+/** D-292 — what the import did with one row. `written` / `replayed` /
+ *  `updated` / `skipped` / `failed` are the counters of `RecordsImportResult`,
+ *  per row; `not_attempted` is a row the import never reached because it
+ *  halted first. On a dry run each is what WOULD have happened, measured by
+ *  the rolled-back rehearsal rather than predicted. */
+export const RECORDS_IMPORT_ROW_OUTCOMES = [
+  'written', 'replayed', 'updated', 'skipped', 'failed', 'not_attempted',
+] as const;
+export type RecordsImportRowOutcome = typeof RECORDS_IMPORT_ROW_OUTCOMES[number];
+
+/** D-292 — one row of a dry run's `preview_sample`: what the import would do
+ *  with the line, and the values it would hand the store.
+ *
+ *  ⛔⛔ THIS IS WHAT `dry_run` WAS FOR AND NEVER RETURNED. The dry run exists
+ *  for a mapping that is VALID but points at the WRONG column — a thousand
+ *  successful wrong rows, `failed: 0`. Counts cannot show that; only the values
+ *  can. Before D-292 the planned rows existed inside the store and were thrown
+ *  away, so the one check built for the case could not see it.
+ *
+ *  ⚠ `values` holds the FILE-MAPPED fields only — never `defaults`, which are
+ *  the same constant on every row and would bury the one thing being checked.
+ *  Keyed by entity field, not by column: the question is where each column
+ *  LANDED. Strings longer than `RECORDS_IMPORT_ECHO_CHARS` are cut for display
+ *  (the rehearsal itself used the whole value). */
+export interface RecordsImportPreviewRow {
+  /** Same numbering as `failures_sample` / `unparsed_sample`. */
+  line: number;
+  outcome: RecordsImportRowOutcome;
+  values: Record<string, unknown>;
+  /** Present when `outcome` is `failed`: the store's own refusal. */
+  code?: RecordsErrorCode;
+  reason?: string;
+}
+
 /** A cell that arrived non-empty and did not parse. ⚠ The row STILL LANDED with
  *  the field null — this is a signal for the owner, never a verdict on the row.
  *  `line` is 1-based including the header, so it is the line an owner opening
@@ -367,7 +428,8 @@ export interface RecordsImportResult {
    *  imports a thousand successful, wrong rows — `failed: 0`, nothing to
    *  re-run, and the cleanup is manual because the ids were derived from the
    *  wrong values. Seeing the first rows before committing is the only thing
-   *  that stops it.
+   *  that stops it — and until D-292 a dry run did not return them; they now
+   *  arrive as `preview_sample`.
    *
    *  ⚠ A reader must never take `written` from a dry run as rows that exist.
    *  Anything rendering this result has to say "would" when this is set. */
@@ -387,6 +449,29 @@ export interface RecordsImportResult {
    *  bytes, and a caller comparing a dry run against the real one needs to know
    *  they were the same file. */
   source_sha256?: string;
+  /** D-292 — the file's header cells, in file order, as the importer's own
+   *  parser read them (capped at `RECORDS_IMPORT_HEADER_LIMIT` names, each at
+   *  `RECORDS_IMPORT_ECHO_CHARS`). Lets a caller that cannot see the file — an
+   *  AI over MCP, a summary card — say what the columns actually are.
+   *  ⚠ Absent from a server older than D-292. */
+  header?: string[];
+  /** D-292 — mapped `column`s this file does not have, in spec order.
+   *
+   *  ⛔⛔ BEFORE THIS A MISSPELT COLUMN WAS SILENT. The planner reads a missing
+   *  column as an empty cell, so `Date ` against a header `Date` imports every
+   *  row with an empty date and reports `failed: 0`. Every row of the file got
+   *  an empty value for each name listed here.
+   *
+   *  ⚠ REPORTED, NOT HALTED — the owner's standing rule for import is land what
+   *  you can and report the rest, and a halt would break a working mapping the
+   *  day a bank stops exporting an optional column. Anything presenting this
+   *  result should show it; empty means every mapped column was found.
+   *  ⚠ Absent from a server older than D-292 — which is "unknown", not "none". */
+  columns_missing?: string[];
+  /** D-292 — DRY RUN ONLY: the first `RECORDS_IMPORT_PREVIEW_LIMIT` rows in
+   *  file order, each with its own rehearsed outcome and the values the store
+   *  would receive. See `RecordsImportPreviewRow`. Absent on a real import. */
+  preview_sample?: RecordsImportPreviewRow[];
 }
 
 export const RECORDS_SLOT_FAMILIES = {
