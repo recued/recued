@@ -91,6 +91,17 @@ export const withIngredientCache = (
       emit('skipped', { slug });
       return rawExecutor(slug, input, stepOutput, stepOptions, stepMeta);
     }
+    // ⛔ A WRITE IS NEVER SERVED FROM THE CACHE. A catalog wrapper is read/data at
+    // the top whatever operation it runs, so the policy below would cache a
+    // write too — and the commit gateway, outside this cache, records a hit as
+    // done: two identical writes within the TTL reached the provider ONCE. The
+    // dispatch carries the operation's own tier; anything but `read` passes.
+    if (stepMeta?.surface_dispatch === true
+      && stepMeta.surface_risk_tier !== undefined
+      && stepMeta.surface_risk_tier !== 'read') {
+      emit('skipped', { slug });
+      return rawExecutor(slug, input, stepOutput, stepOptions, stepMeta);
+    }
 
     const freshness = stepOptions?.cache ?? 'acceptable';
 

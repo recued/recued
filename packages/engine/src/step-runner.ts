@@ -115,7 +115,10 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
         result: null, error: null, duration_ms: Date.now() - start,
       };
     }
-    return runForeach(step, ctx, foreachRef, type, start);
+    // `stop_when` is one decision about the whole step, so it reads the collected
+    // result once the loop is done — `runForeach` strips it from each iteration.
+    const log = await runForeach(step, ctx, foreachRef, type, start);
+    return log.error === null && stopsRun(step, ctx) ? { ...log, stopped: true } : log;
   }
 
   // D-103: pre-fetch any `{{shared.*}}` / `{{data.shared.*}}` refs into
@@ -196,6 +199,9 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       return { id, type, skipped: false, result, error, duration_ms: Date.now() - start };
     }
 
+    // stop_when — after `fail_on`, so a failure on the same step wins.
+    const stopped = stopsRun(step, ctx);
+
     // D-120 Phase 3 — emit provenance links for successful side-effecting
     // ingredient steps. Skipped on foreach iterations (parent scan
     // carries causality), pure reads / transforms / guards
@@ -204,7 +210,10 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       maybeEmitLinks(step, id, ctx, result);
     }
 
-    return { id, type, skipped: false, result, error: null, duration_ms: Date.now() - start };
+    return {
+      id, type, skipped: false, result, error: null, duration_ms: Date.now() - start,
+      ...(stopped ? { stopped: true } : {}),
+    };
   } catch (e) {
     // D-157 P1 slice 3 — a preflight pause signal must not be captured
     // as a step error. It is a control-flow signal raised by the
@@ -412,6 +421,9 @@ const runForeach = async (
 
   const innerStep: RecipeStep = { ...step } as RecipeStep;
   delete (innerStep as unknown as Record<string, unknown>).foreach;
+  // One decision for the whole step, made by `runStep` after the loop — an
+  // iteration that ended the run would leave the rest of the items undone.
+  delete (innerStep as unknown as Record<string, unknown>).stop_when;
 
   // Stash + restore any pre-existing `item` binding. Nested foreach
   // would shadow via save/restore.
@@ -589,7 +601,9 @@ const runForeach = async (
 };
 
 const runTransform = (step: RecipeStep, ctx: ExecutionContext): unknown => {
-  const { id: _, transform: name, skip_when: __, fail_on: ___, ...params } = step as Record<string, unknown>;
+  const {
+    id: _, transform: name, skip_when: __, fail_on: ___, stop_when: ____, ...params
+  } = step as Record<string, unknown>;
   const fn = getTransform(name as string);
   if (!fn) throw new Error(`Unknown transform: ${name}`);
   const resolved = resolveTransformParams(params, name as string, ctx);
@@ -639,6 +653,13 @@ const resolveTransformParams = (params: Record<string, unknown>, name: string, c
 /** Does a condition read the per-iteration binding? Decides whether a
  *  `foreach` step's `skip_when` gates the STEP or each ITEM. */
 const ITEM_REF_IN_CONDITION = /\{\{\s*item(?:\.|\s*\}\})/;
+
+/** Does this step's `stop_when` hold now that it has run? Read against the live
+ *  stores, so it sees the step's own result. Exported for the L2 step-cache
+ *  replay, which bypasses `runStep` and must still end the run where a fresh
+ *  run would. */
+export const stopsRun = (step: RecipeStep, ctx: ExecutionContext): boolean =>
+  step.stop_when !== undefined && evaluateCondition(step.stop_when, ctx.stores);
 
 /** Resolve step.ingredient to a concrete slug. Handles the kernel
  *  `run-ingredient` pattern where the slug is itself a ref like
@@ -858,7 +879,10 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   const piiFields = s.pii_fields as string[] | undefined;
   const stepOptions: StepOptions | undefined = ((): StepOptions | undefined => {
     const options: StepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' }
-      : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' } : {};
+      : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' }
+      // A read before a write (`step-seed.ts`) skips the host's L1 cache too.
+      : typeof s.id === 'string' && ctx.readFreshSteps?.has(s.id) ? { cache: 'fresh' }
+      : {};
     // `pages: "all"` rides beside `cache` to the gateway, which reads a Records
     // search page by page (`StepPages`). Validated authoring-side; only "all".
     if (s.pages === 'all') options.pages = 'all';

@@ -198,6 +198,16 @@ export interface InboxItem {
   /** Owner-only prior completed/no-show history for the opaque contact linked
    *  to a scheduling request. Never projected onto visitor/public surfaces. */
   booking_history?: BookingHistorySummary;
+  /** How many calls approving this item runs, when that is more than one: the
+   *  run paused a loop (`foreach`) at this item, and one approval runs it and
+   *  every remaining item of the step on the same account. Absent ⇒ one call.
+   *
+   *  A count, never a string, and it says whether it is exact. `exact: false` is
+   *  an UPPER BOUND — the items could not be listed, and one aimed at another
+   *  account is asked about on its own — so the surface words it "up to", as the
+   *  hold's ask does. Such an item offers no edits (`arg_schema.fields` is
+   *  empty): an edit would be applied to every one of the items. */
+  approval_covers?: { count: number; exact: boolean };
   /** D-177 N.14 — the "allow for this form" offer AS RAISED on the hold's
    *  ask (the `(reception, anonymous)` seed's bounds), read off the real
    *  ask row — a rendering hint for the "Approve & allow" affordance.

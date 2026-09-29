@@ -3,7 +3,7 @@ import type {
   CollectionInstanceRow, CollectionSourceFreshness, SourceRegistration,
   WorkEntity, WorkEntityListRpcRequest, WorkEntitySourceFreshness,
 } from '@recued/contracts';
-import { resolveTaskListFilter } from '@recued/contracts';
+import { isDateOnlyDue, resolveTaskListFilter } from '@recued/contracts';
 import { e } from '@recued/ui-shared';
 import { serializeShellRoute, serializeSourceRecordAddress } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -39,6 +39,9 @@ export interface TodayTaskEdit {
   title: string;
   action: 'complete' | 'reschedule';
   value: string;
+  /** The task was due on a whole DAY (`due-day.ts`). Picking another day at
+   *  midnight keeps it a whole day. */
+  allDay?: boolean;
   busy: boolean;
   error: string | null;
 }
@@ -129,11 +132,21 @@ const workItem = (entity: WorkEntity, window: ReturnType<typeof todayWindow>): T
   if (entity.deleted_at != null || (entity.sync_state !== 'live' && entity.sync_state !== 'stale_unreachable')) return null;
   if (entity._kind !== 'task' && entity._kind !== 'commitment') return null;
   if (entity._kind === 'task' ? entity.done : entity.lifecycle_state !== 'pending') return null;
-  const when = entity._kind === 'task' ? entity.due_at : entity.promised_for_at;
-  if (!validDate(when) || when >= window.before) return null;
+  const due = entity._kind === 'task' ? entity.due_at : entity.promised_for_at;
+  if (!validDate(due)) return null;
+  // ⛔ A due at UTC midnight names a DAY (`due-day.ts`): it sits on that day
+  // here, all day, and is overdue only once the day is over — not from the
+  // previous evening, which is where its instant falls west of UTC.
+  const allDay = isDateOnlyDue(due);
+  const when = allDay ? utcDayAsLocal(due) : due;
+  if (when >= window.before) return null;
+  const todayStart = new Date(window.now);
+  todayStart.setHours(0, 0, 0, 0);
+  const overdue = allDay ? when < todayStart.getTime() : when < window.now;
   return {
     key: `${entity._kind}:${entity.id}`, title: entity._kind === 'task' ? entity.title : entity.statement,
-    when, group: when < window.now ? 'overdue' : when < window.tomorrow ? 'today' : 'next',
+    when, group: overdue ? 'overdue' : when < window.tomorrow ? 'today' : 'next',
+    ...(allDay ? { allDay: true } : {}),
     kind: entity._kind, sourceKey: `work:${entity.source_id}`,
     href: serializeShellRoute('data', entity._kind, entity.id),
     ...(entity._kind === 'task' ? { taskId: entity.id } : {}),

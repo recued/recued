@@ -21,6 +21,7 @@ import {
   RECUED_BUILTIN_SOURCE_ID,
   taskIdFromIdempotencyKey,
   WORK_ENTITY_KINDS,
+  workEntityIdFromIdempotencyKey,
 } from '@recued/contracts';
 
 import {
@@ -123,6 +124,99 @@ beforeEach(() => {
 afterEach(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ────────────────────────────────────────────────────────────────
+// idempotent create — note / commitment / project (a task's contract)
+// ────────────────────────────────────────────────────────────────
+
+describe('idempotent create for notes, commitments and projects', () => {
+  // The check INSIDE the write: a repeat with the same key returns the record
+  // the first made, whatever an earlier read saw — the cache cannot answer it,
+  // and two runs racing get one record. Same contract a task create has.
+  type Kind = 'note' | 'commitment' | 'project';
+  const KINDS: Record<Kind, {
+    create: (extra: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    count: () => number;
+    remove: (id: string) => Promise<unknown>;
+    plant: (id: string) => void;
+    text: string;
+  }> = {
+    note: {
+      create: async (extra) => (await dispatchers.noteCreate({ body: 'Minutes of the sync', ...extra } as never)).note as never,
+      count: () => store.countNotes(),
+      remove: (id) => dispatchers.noteDelete({ id }),
+      plant: (id) => { store.writeNote({ id, source_id: RECUED_BUILTIN_SOURCE_ID('note'), body: 'Unrelated' }, NOW); },
+      text: 'body',
+    },
+    commitment: {
+      create: async (extra) => (await dispatchers.commitmentCreate({
+        direction: 'outbound', statement: 'Send the revised quote', derivation: 'user_declared', ...extra,
+      } as never)).commitment as never,
+      count: () => store.countCommitments(),
+      remove: (id) => dispatchers.commitmentDelete({ id }),
+      plant: (id) => {
+        store.writeCommitment({
+          id, source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+          direction: 'outbound', statement: 'Unrelated', derivation: 'user_declared',
+        }, NOW);
+      },
+      text: 'statement',
+    },
+    project: {
+      create: async (extra) => (await dispatchers.projectCreate({ title: 'Launch', ...extra } as never)).project as never,
+      count: () => store.countProjects(),
+      remove: (id) => dispatchers.projectDelete({ id }),
+      plant: (id) => { store.writeProject({ id, source_id: RECUED_BUILTIN_SOURCE_ID('project'), title: 'Unrelated' }, NOW); },
+      text: 'title',
+    },
+  };
+  const kinds = Object.keys(KINDS) as Kind[];
+
+  it.each(kinds)('%s: a repeat with the same key returns the first record — never a second', async (kind) => {
+    const k = KINDS[kind];
+    const first = await k.create({ idempotency_key: 'meeting-minutes:site-sync:2026-09-28' });
+    const again = await k.create({ idempotency_key: 'meeting-minutes:site-sync:2026-09-28', [k.text]: 'Replayed copy' });
+    expect(again.id).toBe(first.id);
+    expect(again.id).toBe(workEntityIdFromIdempotencyKey(kind, 'meeting-minutes:site-sync:2026-09-28'));
+    expect(again[k.text]).toBe(first[k.text]);
+    expect(k.count()).toBe(1);
+    // Without a key, two creates are two records — the key is what makes it once.
+    await k.create({});
+    await k.create({});
+    expect(k.count()).toBe(3);
+  });
+
+  it.each(kinds)('%s: refuses an invalid key and a vendor Source', async (kind) => {
+    const k = KINDS[kind];
+    await expect(k.create({ idempotency_key: 'spaces are not stable' })).rejects.toThrow(/idempotency_key/);
+    store.registerSource({
+      id: `hubspot.acme.${kind}`, top_tier_kind: kind, source_kind: 'connection',
+      source_label: 'HubSpot (acme)', write_capable: true, registered_at: NOW,
+    });
+    await expect(k.create({ idempotency_key: 'workflow:1', source_id: `hubspot.acme.${kind}` }))
+      .rejects.toThrow(/Recued-local/);
+    expect(k.count()).toBe(0);
+  });
+
+  it.each(kinds)('%s: never adopts an unrelated row at the key’s id', async (kind) => {
+    const k = KINDS[kind];
+    k.plant(workEntityIdFromIdempotencyKey(kind, 'workflow:collide')!);
+    await expect(k.create({ idempotency_key: 'workflow:collide' })).rejects.toThrow(/unrelated existing/);
+    expect(k.count()).toBe(1);
+  });
+
+  it.each(kinds)('%s: does not bring back a record the owner deleted', async (kind) => {
+    const k = KINDS[kind];
+    const made = await k.create({ idempotency_key: 'workflow:deleted' });
+    await k.remove(String(made.id));
+    await expect(k.create({ idempotency_key: 'workflow:deleted' })).rejects.toThrow(/tombstoned/);
+  });
+
+  it('a task’s id is unchanged by the shared helper', () => {
+    expect(workEntityIdFromIdempotencyKey('task', 'workflow:submission-1'))
+      .toBe(taskIdFromIdempotencyKey('workflow:submission-1'));
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

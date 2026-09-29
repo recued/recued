@@ -41,6 +41,7 @@ import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
 
 import { buildAskLandingDetails } from './ask-landing-held-op-details.js';
+import { holdCoversSeveralItems } from './foreach-approval-items.js';
 // ⛔ THE OPERATION ID IS IMPORTED, NOT RE-DERIVED. It selects the
 // `editable_args` allowlist, so a second copy drifting would have the card and
 // the `/ask` page resolving different allowlists for the same hold.
@@ -121,6 +122,8 @@ const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
  *    - a MULTI-MEMBER batched ask — one `checkpoint_id` covers N members, so
  *      rendering "the" args would show one member's values as though they were
  *      the whole approval. The prose already enumerates a batch's items;
+ *    - a held `foreach` step with items still to come — the same thing inside
+ *      one checkpoint: its approval covers them all, and the prose lists them;
  *    - no `checkpoint_id`, an unknown checkpoint, a missing anchor, or a run no
  *      longer `awaiting_approval`;
  *    - an operation whose allowlist is empty — nothing is declared reviewable,
@@ -165,6 +168,13 @@ export const createAskCardDetailResolver = (
       return null;
     }
     if (anchor === null) return null;
+    // ⛔ A HELD FOREACH IS SEVERAL CALLS. One approval runs every remaining item
+    // of the step (the engine's "remaining same-target aggregate"), and the
+    // prose lists them all; this block would show the ONE item the run paused
+    // on as though it were the whole approval — the multi-member batch rule
+    // above, for the same reason. Found live: Details named one recipient of a
+    // mail-out that went to everyone. A chunked gate covers its one item only.
+    if (holdCoversSeveralItems(checkpoint)) return null;
     // ⚠ THE SAME GATE THE RECEPTION LOOKUP APPLIES, kept because it is about the
     // HOLD and not about the transport: a run that is no longer awaiting
     // approval has nothing held, so its "what will happen" is already history.

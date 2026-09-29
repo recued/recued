@@ -406,6 +406,7 @@ const resolveToolOpStep = (
     input: { operation: step.op, args: step.args ?? {} },
     ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
     ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
+    ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
     ...(step.cache !== undefined ? { cache: step.cache } : {}),
     // A tool op resolves to ONE pass-through fetch, so `foreach` (the engine's
     // per-iteration knob) rides it verbatim — the op iterates exactly like a foreach
@@ -643,8 +644,8 @@ const resolveOpStep = (
   // (C.delete) `delete` is the ONLY single-step verb: a SINGLE concrete fetch KEEPING
   // the op-step id — no `__raw` split, no projection. The vendor returns 204 with no
   // body, so there is nothing to project; the op's observable output is the raw
-  // delete envelope (`{{step.<id>.result…}}`). `fail_on` rides this single step (it
-  // IS the result).
+  // delete envelope (`{{step.<id>.result…}}`). `fail_on` / `stop_when` ride this
+  // single step (it IS the result).
   if (verb === 'delete') {
     const deleteFetch: IngredientStep = {
       id: step.id,
@@ -653,6 +654,7 @@ const resolveOpStep = (
       input: { operation: opRow.operation, args: dispatchArgs },
       ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
       ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
+      ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
       ...(step.cache !== undefined ? { cache: step.cache } : {}),
     };
     return { steps: [deleteFetch], binding };
@@ -707,8 +709,8 @@ const resolveOpStep = (
       ? // clean `map` projection over the records array, KEEPING the canonical id so
         // downstream `{{step.<id>}}` reads project. The map-expression fix defers
         // `{{item.*}}` so the object template resolves per record; pure refs preserve
-        // types. `skip_when` mirrors the fetch; `fail_on` checks the projected
-        // canonical result; `cache` (the op-step's freshness intent) rides BOTH steps
+        // types. `skip_when` mirrors the fetch; `fail_on` / `stop_when` check the
+        // projected canonical result; `cache` (the op-step's freshness intent) rides BOTH steps
         // so it gates the projection's L2 step cache — the observable canonical output
         // — as well as the fetch.
         {
@@ -721,14 +723,15 @@ const resolveOpStep = (
           expression: projection,
           ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
           ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
+          ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
           ...(step.cache !== undefined ? { cache: step.cache } : {}),
         }
       : // single-object `project` over the bare response record, KEEPING the canonical
         // id so downstream `{{step.<id>.<canonical_field>}}` reads see canonical
         // fields. Uses the SAME projection template the search `map` uses (shared
         // `resolveExpression` → identical G2 `| number` coercion + nested templates +
-        // type-preservation). `skip_when` / `fail_on` / `cache` ride it exactly as the
-        // `map` projection does.
+        // type-preservation). `skip_when` / `fail_on` / `stop_when` / `cache` ride it
+        // exactly as the `map` projection does.
         {
           id: step.id,
           transform: 'project',
@@ -736,6 +739,7 @@ const resolveOpStep = (
           expression: projection,
           ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
           ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
+          ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
           ...(step.cache !== undefined ? { cache: step.cache } : {}),
         };
 

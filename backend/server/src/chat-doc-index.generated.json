@@ -13,7 +13,7 @@
     "section": "Sources for normal AI",
     "eyebrow": "Concepts",
     "url": "https://recued.com/docs/concepts/ai-models#sources-for-normal-ai",
-    "body": "| Source | What it is | Cost |\n| --- | --- | --- |\n| Free pool | Your own free-tier API keys: Groq, OpenRouter, Gemini, Cerebras, GitHub Models, Mistral | Free, up to each provider's limit |\n| BYOK slots | Your paid keys: Anthropic, OpenAI, Google Vertex, or any OpenAI-compatible endpoint, even a local Ollama or vLLM | You pay |\n\nRecued tries free sources before paid keys. Before a recipe runs, it checks\nevery AI step against what is really there. So a step with no working source\nfails before the run starts, not halfway through. One call is one bill. Recued\nnever quietly sends a paid call twice.\n\nThe two BYOK slots cover the usual split. One is a fast model for simple\nsteps. One is a quality model for hard steps. Recipes ask with a hint:\n`fast`, `quality`, or `thinking`. They never ask for a provider by name."
+    "body": "| Source | What it is | Cost |\n| --- | --- | --- |\n| Free pool | Your own free-tier API keys: Groq, OpenRouter, Gemini, Cerebras, GitHub Models, Mistral | Free, up to each provider's limit |\n| BYOK slots | Your paid keys: Anthropic, OpenAI, Google Gemini, or any OpenAI-compatible endpoint, even a local Ollama or vLLM | You pay |\n\nRecued tries free sources before paid keys. Before a recipe runs, it checks\nevery AI step against what is really there. So a step with no working source\nfails before the run starts, not halfway through. One call is one bill. Recued\nnever quietly sends a paid call twice.\n\nThe two BYOK slots cover the usual split. One is a fast model for simple\nsteps. One is a quality model for hard steps. Recipes ask with a hint:\n`fast`, `quality`, or `thinking`. They never ask for a provider by name."
   },
   {
     "id": "concepts/ai-models#a-separate-embeddings-slot",
@@ -485,7 +485,7 @@
     "section": "1. Install the server",
     "eyebrow": "Start",
     "url": "https://recued.com/docs/getting-started#1-install-the-server",
-    "body": "The normal way is one command. On Linux or macOS, open a terminal and run:\n\n```sh\ncurl -fsSL https://recued.com/install.sh | sh\n```\n\nOn Windows, open PowerShell first. Press **Start**, type **PowerShell**, and\nopen it. Then paste:\n\n```powershell\nirm https://recued.com/install.ps1 | iex\n```\n\nThe script fetches the signed binary for your computer. It checks the\nsignature. It puts `recued` on your path. And it sets the server to start\nwhen you log in. When it is done, run `recued serve` once. That prints the\npairing code you need in step 2.\n\nOther ways to install are on [Install the server](setup/install-server.md):\nbuilding from source, or downloading the binary by hand. Whatever path you\npick, use the signed file given for the current release. Do not copy an old\nversion from a guide.\n\nWhen the server is up, check its local health address:\n\n```sh\ncurl --fail http://127.0.0.1:7717/health\n```\n\nThe answer should have HTTP status 200 and contain `\"status\":\"ok\"`. The start-up\nbanner may print a different host or port. If so, use those instead. If this\ncheck fails, fix the server before you go on. Pairing uses this same address."
+    "body": "The normal way is one command. On Linux or macOS, open a terminal and run:\n\n```sh\ncurl -fsSL https://recued.com/install.sh | sh\n```\n\nOn Windows, open PowerShell first. Press **Start**, type **PowerShell**, and\nopen it. Then paste:\n\n```powershell\nirm https://recued.com/install.ps1 | iex\n```\n\nThe script fetches the signed binary for your computer. It checks the\nsignature. It puts `recued` on your path. It starts the server, and sets it\nto start again each time you log in. So when the script is done, the server\nis already running. If `recued` is not found in that same terminal, open a\nnew one.\n\nOther ways to install are on [Install the server](setup/install-server.md):\nbuilding from source, or downloading the binary by hand. Whatever path you\npick, use the signed file given for the current release. Do not copy an old\nversion from a guide.\n\nCheck its local health address:\n\n```sh\ncurl --fail http://127.0.0.1:7717/health\n```\n\nThe answer should have HTTP status 200 and contain `\"status\":\"ok\"`. If\n`recued pair` (step 2) names a different host or port, use that instead. If\nthis check fails, fix the server before you go on. Pairing uses this same\naddress."
   },
   {
     "id": "getting-started#2-pair-a-client",
@@ -493,7 +493,7 @@
     "section": "2. Pair a client",
     "eyebrow": "Start",
     "url": "https://recued.com/docs/getting-started#2-pair-a-client",
-    "body": "The first time the server starts, it prints its address and a pairing code.\nThe code works once. Open the address of the built-in webclient from that\nbanner, or use\n[app.recued.com/pair](https://app.recued.com/pair). Then:\n\n1. Type in the server address and the pairing code.\n2. Check that both sides show the same server identity.\n3. On the first pair, make or type in the 24-word recovery key. This turns on\n   encryption for the data on disk.\n4. Keep the recovery key offline, away from the server.\n\nThe pairing code only works for 15 minutes. Did the code run out? Run\n`recued pair` on the server machine. It prints a fresh code, the server's\naddresses, and the pairing link. Need a longer window? Run\n`recued pair --pair-code-ttl 24h`. Pairing gives the client a limited pass. You\ncan cancel that pass any time. Pairing does not move your data or your secret keys\nto the cloud.\n\nBrowsers do not treat plain HTTP on an address on your own network as safe. So use\n`localhost` when the browser is on the server computer. Use HTTPS when you pair\nfrom another device. See [Pairing and devices](setup/pairing-and-devices.md)\nto learn about the Browser Bridge. It also covers what the recovery key is\nfor, and how to manage devices."
+    "body": "Run `recued pair` on the server machine. It prints a pairing code, the\nserver's addresses, and the pairing link. After a `sudo` install on Linux,\nrun it with `sudo` too; the script printed the exact command. Open the link,\nor the built-in webclient's address it names, or use\n[app.recued.com/pair](https://app.recued.com/pair). Then:\n\n1. Type in the server address and the pairing code.\n2. Check that both sides show the same server identity.\n3. On the first pair, make or type in the 24-word recovery key. This turns on\n   encryption for the data on disk.\n4. Keep the recovery key offline, away from the server.\n\nThe pairing code works once, for 15 minutes. Did it run out? Run\n`recued pair` again for a fresh one. Need a longer window? Run\n`recued pair --pair-code-ttl 24h`. Pairing gives the client a limited pass. You\ncan cancel that pass any time. Pairing does not move your data or your secret keys\nto the cloud.\n\nBrowsers do not treat plain HTTP on an address on your own network as safe. So use\n`localhost` when the browser is on the server computer. Use HTTPS when you pair\nfrom another device. See [Pairing and devices](setup/pairing-and-devices.md)\nto learn about the Browser Bridge. It also covers what the recovery key is\nfor, and how to manage devices."
   },
   {
     "id": "getting-started#3-connect-a-provider",
@@ -861,7 +861,7 @@
     "section": "Variables: what gets asked, and what you tuned",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-recipes#variables-what-gets-asked-and-what-you-tuned",
-    "body": "How you write a variable says who it is for.\n\n```json\n\"variables\": {\n  \"recipient\": { \"label\": \"Send to\", \"type\": \"text\" },\n  \"days\": 3\n}\n```\n\nA variable written as an object **with a label** is a question. It is asked\nof whoever runs the recipe. It gets its own box on the run form. A variable\nwritten as a bare value is a **setting you tuned**. The run form leaves it\nalone.\n\nYou can still edit both. A tuned setting still shows up wherever tuning\nbelongs. That means the install dialog, the recipe editor, and the Schedule\nand Trigger tabs. \"Run this every night with `days: 30`\" is a setup choice.\nOnly the one-time run form stops asking about it.\n\n| Field | Meaning |\n|:---|:---|\n| `label` | **Required on the object form.** The words shown. It is also the sign that this is a question |\n| `type` | **Required.** `text`, `number`, `boolean`, `enum`, `datetime`, `url`, `secret`, and others |\n| `optional` | `true` lets the runner leave it empty. **Leave it out to require a value** |\n| `default` | Used when nothing is given |\n| `help` | One line under the box |\n| `options` | For `type: \"enum\"`. The choices. The first one is the default |"
+    "body": "How you write a variable says who it is for.\n\n```json\n\"variables\": {\n  \"recipient\": { \"label\": \"Send to\", \"type\": \"text\" },\n  \"days\": 3\n}\n```\n\nA variable written as an object **with a label** is a question. It is asked\nof whoever runs the recipe. It gets its own box on the run form. A variable\nwritten as a bare value is a **setting you tuned**. The run form leaves it\nalone.\n\nYou can still edit both. A tuned setting still shows up wherever tuning\nbelongs. That means the install dialog, the recipe editor, and the Schedule\nand Trigger tabs. \"Run this every night with `days: 30`\" is a setup choice.\nOnly the one-time run form stops asking about it.\n\n| Field | Meaning |\n|:---|:---|\n| `label` | **Required on the object form.** The words shown. It is also the sign that this is a question |\n| `type` | **Required.** `text`, `number`, `boolean`, `enum`, `datetime`, `date`, `url`, `secret`, and others |\n| `optional` | `true` lets the runner leave it empty. **Leave it out to require a value** |\n| `default` | Used when nothing is given |\n| `help` | One line under the box |\n| `options` | For `type: \"enum\"`. The choices. The first one is the default |"
   },
   {
     "id": "guides/authoring-recipes#two-rules-about-variables",
@@ -877,7 +877,15 @@
     "section": "How a step executes",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-recipes#how-a-step-executes",
-    "body": "Every step follows the same flow:\n\n```text\nskip_when? → compute → step.<id> = result → fail_on?\n```\n\n- `skip_when` is checked first, before the step runs. A skipped step stores\n  `null` and the recipe goes on.\n- Then the step computes. It is one of three things. A `transform` is a\n  small safe tool. An `ingredient` is a declared action. A `guard` stops the\n  recipe when its condition is met.\n- The result lands on `{{step.<id>}}` for later steps.\n- `fail_on` is checked after. If it matches, the recipe stops.\n\n`foreach` runs a step once for each item in an array. Inside each turn,\n`{{item.*}}` points at that item."
+    "body": "Every step follows the same flow:\n\n```text\nskip_when? → compute → step.<id> = result → fail_on? → stop_when?\n```\n\n- `skip_when` is checked first, before the step runs. A skipped step stores\n  `null` and the recipe goes on.\n- Then the step computes. It is one of three things. A `transform` is a\n  small safe tool. An `ingredient` is a declared action. A `guard` stops the\n  recipe when its condition is met.\n- The result lands on `{{step.<id>}}` for later steps.\n- `fail_on` is checked after. If it matches, the recipe stops, and the run\n  fails.\n- `stop_when` is checked last. If it matches, the recipe stops too. But this\n  time the run succeeds.\n\n`foreach` runs a step once for each item in an array. Inside each turn,\n`{{item.*}}` points at that item."
+  },
+  {
+    "id": "guides/authoring-recipes#stop-a-run-early",
+    "doc": "Authoring recipes",
+    "section": "Stop a run early",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-recipes#stop-a-run-early",
+    "body": "`fail_on` and `stop_when` both end the run at their step. They differ in how\nthe run ends:\n\n| Check | The run | Use it when |\n| --- | --- | --- |\n| `fail_on` | Fails | The data is wrong. An id is missing, a value is bad, or a page came back cut short |\n| `stop_when` | Succeeds | There is nothing more to do. No new mail came in, or the work is already done |\n\nFor example, `\"stop_when\": \"{{step.new_count}} equal 0\"` ends a run that\nfound no new mail.\n\nA stopped run still shows its output. The output is built from the steps\nthat ran before the stop. So use `stop_when` when that part is enough. No\nstep after the stop runs. That includes a summary step at the end.\n\n- A step can have both. Then `fail_on` wins. A skipped step checks neither.\n- On a `foreach` step, `stop_when` is checked once, after every item. It\n  cannot read `{{item.*}}`. To decide for each item, use `skip_when` or a\n  `filter` step.\n- `stop_when` works only in `steps`. It is refused in `prefetch_steps` and\n  `trigger_steps`.\n- The run log shows the step where the run ended early.\n- Neither check turns off an automated recipe. A stop is a success. And a\n  `fail_on` failure does not count toward the circuit breaker. That is the\n  switch that turns off a recipe that keeps failing.\n- Put one `stop_when` on the step that decides. That beats the same\n  `skip_when` on every later step. A step you add later cannot forget it."
   },
   {
     "id": "guides/authoring-recipes#values-and-conditions",
@@ -925,7 +933,7 @@
     "section": "Triggers and watchers",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers",
-    "body": "A trigger is something that starts a recipe by itself. A recipe declares\nwhich kind it uses. Pick the kind by asking what you are reacting to. It is\nnot about the recipe. The same recipe can still be run by hand. And every\ndeclared trigger installs **disarmed**. That means switched off. It stays\noff until the owner arms it, which means switches it on.\n\n| Reacting to… | Use |\n| --- | --- |\n| A record in the warehouse changed. Mail came in, an event moved, a task came due | `event_triggers` |\n| An outside system pushes to your server. Stripe, GitHub, Telegram | `webhook_triggers` |\n| Something you must keep checking. A time window, a page changing, \"N days since…\" | `auto_run` + `trigger_steps` |\n| Another recipe finished | `event_triggers` on run outcomes |\n| A calendar rhythm the user owns | Nothing. The owner arms a schedule |\n\nPrefer events over polling whenever the source is already synced. Polling\nmeans checking again and again. An event subscription costs nothing between\nevents. A poll costs a tick forever."
+    "body": "A trigger is something that starts a recipe by itself. A recipe declares\nwhich kind it uses. Pick the kind by asking what you are reacting to. It is\nnot about the recipe. The same recipe can still be run by hand. And every\ndeclared trigger installs **disarmed**. That means switched off. It stays\noff until the owner arms it, which means switches it on.\n\n| Reacting to… | Use |\n| --- | --- |\n| A record in the warehouse changed. Mail came in, an event moved, a task came due | `event_triggers` |\n| A kind of email came in. A parcel, a bill, a booking, an order, a lead | `event_triggers` on [mail facts](#mail-facts) |\n| An outside system pushes to your server. Stripe, GitHub, Telegram | `webhook_triggers` |\n| Something you must keep checking. A time window, a page changing, \"N days since…\" | `auto_run` + `trigger_steps` |\n| Another recipe finished | `event_triggers` on run outcomes |\n| A calendar rhythm the user owns | Nothing. The owner arms a schedule |\n\nPrefer events over polling whenever the source is already synced. Polling\nmeans checking again and again. An event subscription costs nothing between\nevents. A poll costs a tick forever."
   },
   {
     "id": "guides/authoring-triggers#warehouse-events",
@@ -933,7 +941,7 @@
     "section": "Warehouse events",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers#warehouse-events",
-    "body": "Subscribe with a path pattern. `*` matches one segment. `**` matches\nseveral:\n\n```json\n\"event_triggers\": [\n  { \"event\": \"data.mail.**.created\" },\n  { \"event\": \"data.calendar.**.updated\" }\n]\n```\n\nThere is more than `created` / `updated` / `deleted`. Work items also send\nlifecycle events: `due_soon`, `overdue`, `state_changed`. So a deadline\nradar is a subscription, not a poll.\n\n**The payload is an address, not the record.** It carries routing fields:\nwhich record, and a few hot fields. Before you do real work, read the full\nrecord again with the matching read operation.\n\n**Gate out first-sync noise.** An update event carries `payload.prev`. That\nis a snapshot of the hot fields from before the change. Backfills and first\nsyncs do not carry it. Two gates you will use a lot:\n\n```text\n\"skip_when\": \"{{context.event.payload.prev}} is_null\"\n\"skip_when\": \"{{context.event.payload.prev.start_at}} equal {{context.event.payload.start_at}}\"\n```\n\nThe first one skips fires the system makes up itself, like a first sync.\nThe second one skips updates that changed nothing."
+    "body": "Subscribe with a path pattern. `*` matches one segment. `**` matches\nseveral:\n\n```json\n\"event_triggers\": [\n  { \"event\": \"data.mail.**.created\" },\n  { \"event\": \"data.calendar.**.updated\" }\n]\n```\n\nThere is more than `created` / `updated` / `deleted`. Work items also send\nlifecycle events: `due_soon`, `overdue`, `state_changed`. So a deadline\nradar is a subscription, not a poll.\n\n**The payload is an address, not the record.** It carries routing fields:\nwhich record, and a few hot fields. Before you do real work, read the full\nrecord again with the matching read operation. Mail facts are an\nexception. Their event carries the values.\n\n**Gate out first-sync noise.** An update event carries `payload.prev`. That\nis a snapshot of the hot fields from before the change. Backfills and first\nsyncs do not carry it. Two gates you will use a lot:\n\n```text\n\"skip_when\": \"{{context.event.payload.prev}} is_null\"\n\"skip_when\": \"{{context.event.payload.prev.start_at}} equal {{context.event.payload.start_at}}\"\n```\n\nThe first one skips fires the system makes up itself, like a first sync.\nThe second one skips updates that changed nothing."
   },
   {
     "id": "guides/authoring-triggers#shorthand-forms-and-recipe-events",
@@ -941,7 +949,63 @@
     "section": "Shorthand forms and recipe events",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers#shorthand-forms-and-recipe-events",
-    "body": "There are short forms for common subscriptions:\n\n- CRM changes across vendors: `\"on\": \"deal.changed\"`. You can narrow it by\n  field and value.\n- Messenger messages: `\"on\": \"message.received\"`.\n- Accepted intake responses: `\"on\": \"form_response.accepted\"`. See\n  [Reception](reception.md).\n- Visitor requests: `\"on\": \"reception.request\"`.\n\nBrowser-page watches use `\"on\": \"element.changed\"` with a URL and a\nselector. They work for your own local recipes. They cannot be published.\n\nOne more family of events comes from recipes themselves.\n`run.<recipe_id>.**.completed` and `.failed` fire when a recipe finishes.\nThat chains one stage to the next without polling."
+    "body": "There are short forms for common subscriptions:\n\n- CRM changes across vendors: `\"on\": \"deal.changed\"`. You can narrow it by\n  field and value.\n- Messenger messages: `\"on\": \"message.received\"`.\n- Accepted intake responses: `\"on\": \"form_response.accepted\"`. See\n  [Reception](reception.md).\n- Visitor requests: `\"on\": \"reception.request\"`.\n- Mail facts: `\"on\": \"mail_fact.shipment\"`, or `\"on\": \"mail_fact\"` for any\n  kind of email. See [Mail facts](#mail-facts).\n\nBrowser-page watches use `\"on\": \"element.changed\"` with a URL and a\nselector. They work for your own local recipes. They cannot be published.\n\nOne more family of events comes from recipes themselves.\n`run.<recipe_id>.**.completed` and `.failed` fire when a recipe finishes.\nThat chains one stage to the next without polling."
+  },
+  {
+    "id": "guides/authoring-triggers#mail-facts",
+    "doc": "Triggers and watchers",
+    "section": "Mail facts",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#mail-facts",
+    "body": "Recued can read a kind of email into a few set values. A parcel, a bill, a\nbooking, an order, a lead. Each reading is a mail fact. You teach Recued a\nkind of email with a template. A template says which emails to read, and\nhow. You make one under **Data → Received → Mail facts**. Some kinds need\nno template. Recued reads shop markup and carrier tracking numbers by\nitself.\n\nThe facts about one parcel, order or booking make one thing. A recipe\nwatches a thing's values, not the email itself:\n\n```json\n\"event_triggers\": [\n  { \"on\": \"mail_fact.shipment\", \"fields\": [\"state\"], \"where\": { \"state\": \"delivered\" } }\n]\n```\n\n`\"on\": \"mail_fact.<kind>\"` watches one kind of email. Most recipes want\nthis. `\"on\": \"mail_fact\"` watches any kind that has the values you name.\nNeither one takes a verb. Neither one takes a `connection` either, because a\nfact is read from every mailbox."
+  },
+  {
+    "id": "guides/authoring-triggers#which-mail-fact-changes-wake-a-recipe",
+    "doc": "Triggers and watchers",
+    "section": "Which mail fact changes wake a recipe",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#which-mail-fact-changes-wake-a-recipe",
+    "body": "`fields` picks which changes wake the recipe:\n\n| `fields` | Wakes on |\n| --- | --- |\n| Left out | Each new thing, and each change to what it says |\n| `[\"state\"]` | A change to that one value |\n| The thing's identity, like `carrier` and `tracking_number` | Each new thing, once. An identity never changes |\n| `[\"last_email_at\"]` | Every email about the thing, even one that says nothing new |\n\nA new thing counts as a change to every value it has. So the example\nabove also fires for a parcel whose first email already says `delivered`."
+  },
+  {
+    "id": "guides/authoring-triggers#kinds-of-email",
+    "doc": "Triggers and watchers",
+    "section": "Kinds of email",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#kinds-of-email",
+    "body": "| Kind | Values | `state` |\n| --- | --- | --- |\n| `purchase` | `merchant`, `order_id`, `total`, `ordered_at` | ordered, paid, cancelled |\n| `shipment` | `carrier`, `tracking_number`, `order_id`, `merchant`, `expected_at`, `delivered_at` | label_created, in_transit, out_for_delivery, delivered, exception, returned |\n| `return_refund` | `merchant`, `order_id`, `return_id`, `amount` | return_requested, label_issued, received, refund_issued, refund_denied |\n| `reservation` | `kind`, `provider`, `confirmation_code`, `starts_at`, `ends_at`, `location`, `party_size`, `total` | confirmed, cancelled |\n| `bill` | `issuer`, `amount_due`, `due_at`, `invoice_number`, `period`, `account_ref`, `document` | issued, paid, overdue |\n| `statement` | `issuer`, `account_ref`, `period_start`, `period_end`, `closing_balance`, `minimum_due`, `due_at`, `document` | available |\n| `subscription` | `service`, `plan`, `amount`, `renews_at` | active, cancelled |\n| `pay_tax_document` | `issuer`, `kind`, `period_or_year`, `document` | available |\n| `lead` | `source`, `name`, `email`, `phone`, `reference` | new |\n| `order_received` | `platform`, `order_id`, `buyer_name`, `buyer_email`, `total`, `ship_by` | new, paid, cancelled |\n| `owner_request` | `tag`, `message_id` | new |"
+  },
+  {
+    "id": "guides/authoring-triggers#states-and-notices",
+    "doc": "Triggers and watchers",
+    "section": "States and notices",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#states-and-notices",
+    "body": "Every value of the kind is always there. A value nothing read is `null`.\nA thing's `state` comes from its newest email that has one. So old mail\nread late never moves a parcel back from `delivered`.\n\nSome kinds also have a `notice`. A notice is news about the thing, not a\nnew state. A booking can have `changed` or `reminder`. A bill can have\n`reminder`. A subscription can have `renewal`, `price_change`,\n`trial_ending` or `payment_failed`. A notice never changes the state. And\n`notice` holds only the newest email's notice. So a payment after a\nreminder leaves none.\n\nMoney is an amount and a currency, like\n`{ \"amount\": \"12.50\", \"currency\": \"USD\" }`. You can also make kinds of your\nown. A recipe that names one works only on the server where you made it."
+  },
+  {
+    "id": "guides/authoring-triggers#filter-a-mail-fact-trigger",
+    "doc": "Triggers and watchers",
+    "section": "Filter a mail fact trigger",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#filter-a-mail-fact-trigger",
+    "body": "`where` narrows a mail fact trigger. Its rules are strict:\n\n- It takes the kind's values, plus `complete` and `template`. It cannot\n  compare money, files, or a value that holds a time of day, like\n  `delivered_at`. Watch those with `fields` instead. A plain date works.\n- Write each value the way the fact stores it. Never empty. One space\n  between words. An id without a leading `#`, like `112-3345`. A carrier by\n  its short name, like `UPS`.\n- A `{{config.*}}` value is refused. The filter runs before the recipe\n  does, and it has no settings then. Check a setting in a step's\n  `skip_when` instead.\n- With `\"on\": \"mail_fact\"`, a kind that lacks a value never matches it.\n  A value nothing read, `null`, never matches either. So\n  `\"where\": { \"notice\": \"price_change\" }` never wakes on a purchase. A\n  purchase has no notice.\n- `where.template` names a template on your own server. It matches nothing\n  anywhere else. So leave it out of a recipe you publish.\n\nThe Kitchen checks these rules as you type, and says what to fix."
+  },
+  {
+    "id": "guides/authoring-triggers#what-a-mail-fact-event-carries",
+    "doc": "Triggers and watchers",
+    "section": "What a mail fact event carries",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#what-a-mail-fact-event-carries",
+    "body": "Most events only point at a record. A mail fact event carries the thing\nitself:\n\n| Field | What it holds |\n| --- | --- |\n| `record_id` | The thing's id. `core.mail.fact.get` reads it with all its facts |\n| `record` | Every value of the kind, plus `complete`, `missing`, `last_email_at` and `passes` |\n| `record.passes` | Who filled each value: `standard`, `rule` or `ai` |\n| `record.fact` | The fact that caused the change. It points at its email, and holds any extra `data` the template read |\n| `prev` | The thing before the change. A new thing has none |\n| `changed_fields` | What changed |\n\nThe template decides whether AI fills in values. The recipe does not. Must\nyour recipe never act on an AI value? Then check its pass in `skip_when`,\nlike `\"{{context.event.payload.record.passes.tracking_number}} equal ai\"`."
+  },
+  {
+    "id": "guides/authoring-triggers#when-a-mail-fact-starts-a-recipe",
+    "doc": "Triggers and watchers",
+    "section": "When a mail fact starts a recipe",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-triggers#when-a-mail-fact-starts-a-recipe",
+    "body": "- Only news starts a recipe. News is new mail, after the mailbox's first\n  sync. Mail found again on a restart starts nothing. Each fact starts\n  recipes once.\n- So never use the `prev is_null` gate on a mail fact trigger. A new thing\n  has no `prev`, and it is real news. The gate would drop every new parcel.\n- Reading past mail starts recipes only when you ask it to. Those runs are\n  marked as past-mail runs (`run_mode: backfill`).\n- Each email's event arrives on its own. Events are not merged.\n- A fact lasts only as long as its email. Keep what must last longer. Make\n  a booking from a reservation, or a commitment from a bill.\n- A thing's later emails wake the recipe again. So tie what the recipe\n  makes to the thing's id. Then a second run finds it and does not make\n  another."
   },
   {
     "id": "guides/authoring-triggers#inbound-webhooks",
@@ -997,7 +1061,7 @@
     "section": "Checklist",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers#checklist",
-    "body": "- Events over polling when the source is synced. Read the payload's record\n  again before use. Use the `prev is_null` gate on update subscriptions.\n- Webhooks: the profile checks the signature at the door. Steps gate on\n  body fields.\n- Watchers: the slowest interval you can live with. Repeats stopped with a\n  stamp.\n- Works on defaults, or stops and asks for setup.\n- Gates ordered cheap → costly → AI. AI never gates an action.\n- Nothing that reaches outside in the unattended path. Detect, propose,\n  notify. Act in a recipe the owner runs.\n- The description says what arms it, what fires it, and what it will never\n  do."
+    "body": "- Events over polling when the source is synced. Read the payload's record\n  again before use. Use the `prev is_null` gate on update subscriptions, but\n  never on a mail fact trigger.\n- Mail facts: one kind in `on`, unless any kind will do. `where` values\n  written as the fact stores them. No template id in a recipe you publish.\n- Webhooks: the profile checks the signature at the door. Steps gate on\n  body fields.\n- Watchers: the slowest interval you can live with. Repeats stopped with a\n  stamp.\n- Works on defaults, or stops and asks for setup.\n- Gates ordered cheap → costly → AI. AI never gates an action.\n- Nothing that reaches outside in the unattended path. Detect, propose,\n  notify. Act in a recipe the owner runs.\n- The description says what arms it, what fires it, and what it will never\n  do."
   },
   {
     "id": "guides/connect-to-recued",
@@ -1125,7 +1189,7 @@
     "section": "Related",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#related",
-    "body": "- [Grants and approvals](../concepts/grants-and-approvals.md). How your\n  server checks each granted action when it runs."
+    "body": "- [Connect Gmail and Google Calendar](../setup/connect-google.md). Which way\n  keeps working for your kind of Google account.\n- [Connect Outlook and Microsoft 365](../setup/connect-microsoft.md). Who\n  makes the sign-in app for your kind of Microsoft account.\n- [Grants and approvals](../concepts/grants-and-approvals.md). How your\n  server checks each granted action when it runs."
   },
   {
     "id": "guides/exposing-recipes-to-chat",
@@ -2069,7 +2133,7 @@
     "section": "Types",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/recipe-schema#types",
-    "body": "The field list is closed, but `type` is open. These types each get their own\nkind of box:\n\n`text` · `number` · `boolean` · `enum` (with `options`) · `datetime` · `url` ·\n`secret` · `oauth` · `file_slug` · `file_ref` · `file_ref[]`\n\nThese are allowed too, and many recipes use them. `connection` and\n`service_ref` get their own pickers. The rest show as a plain text box:\n\n`string` · `array` · `object` · `json` · `connection` · `service_ref`\n\n`string` is the most common type in shipped recipes. It works like `text`.\nAny other non-empty string installs and shows as text. So the list can grow,\nand the recipes you already published still work. That is why an unknown\n*type* is allowed but an unknown *field* is not. A type has a safe fallback.\nA field nobody reads has none."
+    "body": "The field list is closed, but `type` is open. These types each get their own\nkind of box:\n\n`text` · `number` · `boolean` · `enum` (with `options`) · `datetime` · `date` ·\n`url` · `secret` · `oauth` · `file_slug` · `file_ref` · `file_ref[]`\n\n`datetime` is one moment. The form sends it with the time zone of the person\nfilling it in, like `2026-10-01T09:30:00+02:00`. `date` is a day, like\n`2026-10-01`. It has no time and no time zone. Use it for a due date or a target\ndate.\n\nThese are allowed too, and many recipes use them. `connection` and\n`service_ref` get their own pickers. The rest show as a plain text box:\n\n`string` · `array` · `object` · `json` · `connection` · `service_ref`\n\n`string` is the most common type in shipped recipes. It works like `text`.\nAny other non-empty string installs and shows as text. So the list can grow,\nand the recipes you already published still work. That is why an unknown\n*type* is allowed but an unknown *field* is not. A type has a safe fallback.\nA field nobody reads has none."
   },
   {
     "id": "reference/recipe-schema#a-caller-may-only-pass-what-you-declared",
@@ -2277,7 +2341,7 @@
     "section": "Option 1: free-tier API keys",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/ai-setup#option-1-free-tier-api-keys",
-    "body": "An API key is a secret code that lets your server use an AI service. Add\nyour own free-tier keys from Groq, OpenRouter, Gemini, Cerebras, GitHub\nModels, and Mistral. Recued spreads calls across them. It stays inside each\nprovider's free limit. This is the usual workhorse. It gives structured\noutput. It works with no screen. And it costs nothing until a free limit\nruns out."
+    "body": "An API key is a secret code that lets your server use an AI service. Add\nyour own free-tier keys from Groq, OpenRouter, Gemini, Cerebras, GitHub\nModels, and Mistral. Recued spreads calls across them. It stays inside each\nprovider's free limit. This is the usual workhorse. It gives structured\noutput. It works with no screen. And it costs nothing until a free limit\nruns out.\n\nAdd one under **Settings → AI/Models → Providers → Free pool**. Choose its\nprotocol: most free tiers are OpenAI-compatible, with the provider's base\nURL. Then enter the model and the key. **Test connection** tries it before\nyou add it. Leave the name blank and it is named from the address, such as\n`groq`. You can edit, disable, test, or remove each one later. An edit keeps\nthe saved key unless you change the protocol or the base URL."
   },
   {
     "id": "setup/ai-setup#option-2-your-own-keys",
@@ -2285,7 +2349,7 @@
     "section": "Option 2: your own keys",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/ai-setup#option-2-your-own-keys",
-    "body": "Two slots hold paid or self-hosted models:\n\n- **Slot 1 (fast)** — the model for daily work.\n- **Slot 2 (quality)** — the model for harder questions. It is also used for\n  extended thinking.\n\nEach slot takes Anthropic, OpenAI, Google Vertex, or any OpenAI-compatible\nendpoint. That includes a local Ollama or vLLM server. Use one of those if\nyou want AI that never leaves your own machines."
+    "body": "Two slots hold paid or self-hosted models:\n\n- **Slot 1 (fast)** — the model for daily work.\n- **Slot 2 (quality)** — the model for harder questions. It is also used for\n  extended thinking.\n\nSet them up under **Settings → AI/Models → Providers**. The first-run\n**Set up Chat** form names OpenAI, Anthropic, and Gemini. For anything else,\nits **Set up slot 1 and slot 2** link opens that tab.\n\nEach slot asks for:\n\n- **Provider**: your own name for the service, such as \"Groq\". It is only a\n  label.\n- **Protocol**: how Recued talks to it. Choose OpenAI, Anthropic, Google\n  Gemini, or OpenAI-compatible. OpenAI-compatible covers Groq, OpenRouter,\n  Mistral, and a local Ollama or vLLM server. Use a local one if you want AI\n  that never leaves your own machines.\n- **Model** and **API key**. A local model that needs no key takes any word,\n  such as `none`.\n- **Base URL**: needed for OpenAI-compatible. The others can skip it.\n\nA saved key stays with the protocol and base URL it was saved for. Change\neither one and you enter the key again: Recued never sends a saved key to a\nnew address. Change only the model or the name, and the saved key is kept.\n\n**Test connection** tries the form as it is, before you save. When something\nis missing, the answer shows under the button you pressed."
   },
   {
     "id": "setup/ai-setup#optional-an-embeddings-slot",
@@ -2368,6 +2432,150 @@
     "body": "- [Install the server](install-server.md) — where the data directory lives.\n- [Pairing and devices](pairing-and-devices.md) — the recovery key this\n  flow depends on."
   },
   {
+    "id": "setup/connect-google",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Connect Gmail and Google Calendar",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google",
+    "body": "Your server can read your Gmail and your Google Calendar. Google has rules\nfor how an app gets in. The way that keeps working depends on your account."
+  },
+  {
+    "id": "setup/connect-google#pick-your-way",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Pick your way",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#pick-your-way",
+    "body": "| Your account | Mail | Calendar |\n| --- | --- | --- |\n| Google Workspace | A sign-in app set to Internal | The same app |\n| Free Gmail, and you own a web domain | A published sign-in app | The same app |\n| Free Gmail, no domain | IMAP with an app password | Not possible today |\n\nA Google Workspace account is a work or school account. An admin runs it.\n\nA sign-in app is a small setup you make in Google Cloud. It lets your server\nsign in to your Google account. Google calls it an OAuth app."
+  },
+  {
+    "id": "setup/connect-google#do-not-use-test-mode",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Do not use test mode",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#do-not-use-test-mode",
+    "body": "A new sign-in app starts in test mode. Google calls it Testing. In Testing,\nevery sign-in stops after 7 days. Your server would stop reading your mail\neach week. So never leave the app in Testing.\n\nOut of Testing, a sign-in keeps working until you remove it. Google still\nends it in two cases: nobody uses it for six months, or you change your\nGoogle password. Then you connect again."
+  },
+  {
+    "id": "setup/connect-google#mail-with-an-app-password",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Mail with an app password",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#mail-with-an-app-password",
+    "body": "This is the way for a free Gmail account with no domain. An app password is\na code of 16 characters. It lets one app read your mail. That app never sees\nyour real password.\n\n1. Turn on 2-Step Verification for your Google account.\n2. Make an app password at `myaccount.google.com/apppasswords`.\n3. In Recued, open **Connections**, then **Mail**. Choose **Connect mailbox**,\n   then **IMAP / SMTP**.\n4. Fill in the form:\n   - IMAP Host: `imap.gmail.com`\n   - IMAP Port: `993`, with Use TLS on\n   - Username: your Gmail address\n   - Password: the app password\n   - Folders: `INBOX, [Gmail]/Sent Mail`\n5. To send mail too, set SMTP Host to `smtp.gmail.com` and SMTP Port to `465`.\n\nDid you change your Google password? That ends every app password. Make a new\none. Some accounts do not get app passwords at all. You will not see them if\nyou sign in only with security keys. You will not see them with Advanced\nProtection. Many work and school accounts do not have them either.\n\nGoogle Calendar does not take app passwords. So this way works for mail only."
+  },
+  {
+    "id": "setup/connect-google#a-workspace-sign-in-app",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "A Workspace sign-in app",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#a-workspace-sign-in-app",
+    "body": "This is the way for a Google Workspace account. It covers mail and calendar.\n\n1. Open the Google Cloud Console. Make a project, or pick one.\n2. Go to **APIs & Services**, then **Library**. Turn on the Gmail API. Turn on\n   the Google Calendar API too, if you want your calendar.\n3. Open **Google Auth Platform**, then **Audience**. Choose **Internal**.\n   There is nothing to publish. An Internal app has no Testing stage, so its\n   sign-in does not stop after 7 days.\n4. Go to **Credentials**. Choose **Create credentials**, then\n   **OAuth client ID**, then **Web application**.\n5. Under **Authorized redirect URIs**, add the callback URL that Recued shows.\n   It is on the Gmail form under **Connections**.\n6. Copy the Client ID and the Client secret into that form."
+  },
+  {
+    "id": "setup/connect-google#a-published-sign-in-app",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "A published sign-in app",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#a-published-sign-in-app",
+    "body": "This is the way for a free Gmail account when you own a web domain. It covers\nmail and calendar. Google only publishes the app when its details are\ncomplete.\n\nMake the app like the Workspace one, with these changes:\n\n1. Under **Audience**, choose **External**.\n2. Open **Branding**. Fill in the app name, your support email, and the\n   developer contact. Leave the logo empty.\n3. Add a home page link and a privacy policy link. Both go on your own\n   domain. Add a terms link too, if you have one.\n4. Add your domain under **Authorized domains**. Prove you own it in Google\n   Search Console.\n5. Do not add `recued.com`. You cannot prove you own it, so Google will not\n   publish the app.\n6. Go to **Audience** and choose **Publish app**. The status becomes In\n   production.\n\nYour home page says what the app does. For example: it lets your own server\nread your own mail. Your privacy page says who uses it, and where the mail\ngoes. For example: only you use it, and your mail stays on your own computer."
+  },
+  {
+    "id": "setup/connect-google#connect-from-the-server-s-own-address",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Connect from the server's own address",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#connect-from-the-server-s-own-address",
+    "body": "A published app works only from the server's own address. Here is why. The\npage at app.recued.com sends sign-ins back through `recued.com`. Google wants\nproof that you own every domain your app uses. A LAN address sends them\nthrough `recued.com` too.\n\nSo open Recued on the server itself at `http://127.0.0.1:7717/webclient`.\nIs this address new to your browser? Then pair it once, like a new device.\nConnect your Google account there. Does your server have no screen? Make a\ntunnel from your own computer:\n\n```sh\nssh -L 7717:127.0.0.1:7717 you@your-server\n```\n\nThen open `http://127.0.0.1:7717/webclient` on your computer. You only\nconnect once. After that, the account keeps working from app.recued.com too.\n\nAt sign-in, Google shows a warning: \"Google hasn't verified this app\". Choose\n**Advanced**. Then choose **Go to** your app's name **(unsafe)**. Google says\n\"unsafe\" about every app it has not checked. This one is yours, and it only\ntalks to your own server. On the next screen, allow the access it asks for.\nUp to 100 people can use an app like this."
+  },
+  {
+    "id": "setup/connect-google#calendar-without-workspace-or-a-domain",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Calendar without Workspace or a domain",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#calendar-without-workspace-or-a-domain",
+    "body": "Google Calendar only lets apps in through a sign-in app. It does not take app\npasswords. So a free Gmail account with no domain cannot keep Google Calendar\nconnected today. Mail still works, with an app password."
+  },
+  {
+    "id": "setup/connect-google#google-s-own-mcp-servers",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Google's own MCP servers",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#google-s-own-mcp-servers",
+    "body": "Google Cloud also lists a Gmail MCP API and a Google Calendar MCP API. They\nuse the same kind of sign-in app, so the same rules apply. They are still in\nan early preview. The Gmail one can write drafts, but it cannot send mail."
+  },
+  {
+    "id": "setup/connect-google#related",
+    "doc": "Connect Gmail and Google Calendar",
+    "section": "Related",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-google#related",
+    "body": "- [Connections](../guides/connections.md). How a saved connection works.\n- [Connect Outlook and Microsoft 365](connect-microsoft.md). The same choices\n  for a Microsoft account.\n- [Use Recued on another device](lan-access.md). The addresses your server\n  answers on."
+  },
+  {
+    "id": "setup/connect-microsoft",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Connect Outlook and Microsoft 365",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft",
+    "body": "Your server can read your Outlook mail and calendar. It signs in through an\napp that you make in Microsoft Entra. Who can make that app depends on your\naccount."
+  },
+  {
+    "id": "setup/connect-microsoft#pick-your-way",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Pick your way",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#pick-your-way",
+    "body": "| Your account | Who makes the sign-in app | Who approves it |\n| --- | --- | --- |\n| Personal: Outlook.com, Hotmail or Live | You | You, when you sign in |\n| Work or school: Microsoft 365 | An admin where you work or study | That admin |\n\nA sign-in app is a small setup in Entra. Entra calls it an app registration.\n\nThere is no way in with a password. Outlook.com and Microsoft 365 no longer\nlet other mail apps sign in with one. So IMAP and SMTP cannot reach them."
+  },
+  {
+    "id": "setup/connect-microsoft#why-a-work-account-needs-an-admin",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Why a work account needs an admin",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#why-a-work-account-needs-an-admin",
+    "body": "Microsoft sets a default rule for work and school accounts. Staff may not\napprove an app that reads mail or calendars. It does not matter who made the app. Only\nan admin can approve it. One approval covers all staff. Your workplace may\nalso have its own rule.\n\nThe admin needs one of these roles:\n\n- Global Administrator\n- Privileged Role Administrator\n- Cloud Application Administrator\n- Application Administrator\n\nIs the **Grant admin consent** button greyed out for you? Then you do not\nhold one of these roles. That is your workplace's rule, not a fault in\nRecued. Send this page to someone who holds one."
+  },
+  {
+    "id": "setup/connect-microsoft#where-to-connect-from",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Where to connect from",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#where-to-connect-from",
+    "body": "Microsoft is strict about the callback address. Two of your addresses work:\n\n- app.recued.com.\n- The server's own address, `http://localhost:7717/webclient`.\n\nTwo do not:\n\n- A LAN address. Its callback names the page after a `?`. Microsoft does\n  not allow that for an app that takes personal accounts.\n- `http://127.0.0.1`. The Azure portal refuses an `http` callback at a\n  number. Use `localhost` instead. It is the same server, by name.\n\nSo connect from app.recued.com, if you use it. Or open Recued on the server\nat `http://localhost:7717/webclient`. Is this address new to your browser?\nThen pair it once, like a new device. Does your server have no screen? Make a\ntunnel from your own computer:\n\n```sh\nssh -L 7717:127.0.0.1:7717 you@your-server\n```\n\nThen open `http://localhost:7717/webclient` on your computer. You only\nconnect once. After that, the account keeps working from any address."
+  },
+  {
+    "id": "setup/connect-microsoft#make-the-app",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Make the app",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#make-the-app",
+    "body": "Whoever makes the app follows these steps. For a work account, that is the\nadmin. With your own account, you need an Entra directory first. Sign up\nfor a free Azure account, and you get one.\n\n1. Open the Azure portal. Go to **Microsoft Entra ID**, then\n   **App registrations**, then **New registration**.\n2. Under **Supported account types**, choose **Accounts in any\n   organizational directory and personal Microsoft accounts**.\n3. Under **Redirect URI**, pick **Web**. Paste the callback URL that Recued\n   shows. It is on the **Microsoft** form under **Connections**. Then choose\n   **Register**.\n4. Open **API permissions**. Choose **Add a permission**, then\n   **Microsoft Graph**, then **Delegated permissions**.\n5. Add `Mail.Read`, `offline_access` and `User.Read`. Add `Mail.Send` if\n   Recued should send mail. Add `Calendars.ReadWrite` for your calendar.\n6. Open **Certificates & secrets**. Make a new client secret. Copy its\n   **Value** right away. Azure shows it only once.\n7. Copy the **Application (client) ID** from the **Overview** page.\n\nRecued signs in through one shared address at Microsoft. So the other\naccount types fail. A personal account cannot use an app made for work\naccounts only. No one can use an app made for just one workplace.\n\nLeave out `offline_access`, and Recued cannot renew its sign-in. Syncing\nwould then stop about an hour after you connect."
+  },
+  {
+    "id": "setup/connect-microsoft#approve-it-for-all-staff",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Approve it for all staff",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#approve-it-for-all-staff",
+    "body": "This step is for a work or school account. The admin opens\n**API permissions** on the app. There they choose **Grant admin consent**.\n\nWithout it, sign-in stops at \"Need admin approval\". Some workplaces show\n\"Approval required\" instead. Send the request it offers. Then connect again\nonce an admin says yes."
+  },
+  {
+    "id": "setup/connect-microsoft#share-it-with-your-staff",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Share it with your staff",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#share-it-with-your-staff",
+    "body": "A workplace needs only one app. All staff connect with the same Client ID and\nsecret. Each person pastes them into the **Microsoft** form in Recued.\n\nThe callback is the same for all of them too. The one on app.recued.com\nnever changes. On `localhost`, Microsoft ignores the port.\n\nThe secret names the app, not a person. It opens no mailbox by itself. Each\nperson still signs in with their own account. They only reach their own mail."
+  },
+  {
+    "id": "setup/connect-microsoft#related",
+    "doc": "Connect Outlook and Microsoft 365",
+    "section": "Related",
+    "eyebrow": "Setup",
+    "url": "https://recued.com/docs/setup/connect-microsoft#related",
+    "body": "- [Connections](../guides/connections.md). How a saved connection works.\n- [Connect Gmail and Google Calendar](connect-google.md). The same choices\n  for a Google account.\n- [Pairing and devices](pairing-and-devices.md). Pair a browser with your\n  server."
+  },
+  {
     "id": "setup/install-server",
     "doc": "Install the server",
     "section": "Install the server",
@@ -2389,7 +2597,7 @@
     "section": "After the script runs",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/install-server#after-the-script-runs",
-    "body": "The script prints what to do next. A new server has to be set up once, by\npairing a client to it:\n\n1. Run `recued serve`. It prints a pairing code and the webclient link.\n2. Pair the webclient or the Browser Bridge with that code. See\n   [Pairing and devices](pairing-and-devices.md).\n3. Then stop that first server with Ctrl+C. The server starts by itself at\n   your next login or boot.\n\nLost or expired the code? Run `recued pair`. It prints a fresh code, the\nserver's addresses, and the pairing link. Need a longer window? Run\n`recued pair --pair-code-ttl 24h`.\n\nStart at login is on by default. The script also starts the server right\naway where it can. Until the first pairing is done, that background server\nrefuses to serve and simply exits. So nothing listens that nobody has set\nup. After the first pairing, it serves on its own.\n\nTwo things to know:\n\n- If you seal the key file with a passphrase, the server starts locked. It\n  waits for `recued unlock`. Sealed to the machine instead, it starts ready.\n  See \"Protecting the key file\" below.\n- On macOS, Windows, and a Linux desktop, start-at-login is set up for your\n  user. No root is needed. Headless Linux needs root for a boot unit, so\n  run the script with `sudo` there. Without root, a headless install sets up\n  no autostart, and says so, rather than writing a unit that would fail on\n  every boot."
+    "body": "The script prints what to do next. A new server has to be set up once, by\npairing a client to it.\n\nStart at login is on by default, and the script starts the server right\naway. So it is already running. To pair:\n\n1. Run `recued pair`. It prints a pairing code, the server's addresses, and\n   the pairing link.\n2. Pair the webclient or the Browser Bridge with that code. See\n   [Pairing and devices](pairing-and-devices.md).\n\nNothing can pair with the server without a code. A code lasts 15 minutes.\nRun `recued pair` again for a fresh one, or `recued pair --pair-code-ttl 24h`\nfor a longer window.\n\nIf you turned start at login off, or the script could not start the server,\nstart it yourself: run `recued serve`, or `recued` on Windows. It prints a\npairing code and the webclient link. That server runs only while its window\nstays open.\n\nThree things to know:\n\n- If you seal the key file with a passphrase, the server starts locked. It\n  waits for `recued unlock`. Sealed to the machine instead, it starts ready.\n  See \"Protecting the key file\" below.\n- On macOS, Windows, and a Linux desktop, start-at-login is set up for your\n  user. No root is needed. Headless Linux needs root for a boot unit, so\n  run the script with `sudo` there. Without root, a headless install sets up\n  no autostart, and says so, rather than writing a unit that would fail on\n  every boot.\n- On macOS, never run the script with `sudo`. The server has to run as you.\n  Run as root, it keeps its own realm, and a pairing code from your account\n  never reaches it. The script refuses `sudo` on macOS. When you cannot write\n  to `/usr/local`, it installs into `~/.local/lib/recued` and `~/.local/bin`\n  instead, and adds that folder to your PATH for new terminals."
   },
   {
     "id": "setup/install-server#script-options",
@@ -2397,7 +2605,7 @@
     "section": "Script options",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/install-server#script-options",
-    "body": "Set any of these before the command, like this:\n`RECUED_AUTOSTART=0 curl -fsSL https://recued.com/install.sh | sh`. In\nPowerShell, run `$env:RECUED_AUTOSTART=0` on its own line first.\n\n| Option | What it does |\n| --- | --- |\n| `RECUED_AUTOSTART=0` | Do not start at login. Then the server runs only while you run it. An update cannot restart it for you |\n| `RECUED_PREFIX` / `RECUED_BINDIR` | Where the program files and the `recued` command go. The defaults are `/usr/local/lib/recued` and `/usr/local/bin`. Set both to install without `sudo`. On Windows the default is `%LOCALAPPDATA%\\recued\\bin` |\n| `RECUED_CHANNEL=edge` | Follow the edge channel instead of stable |\n| `RECUED_FORCE=1` | Install again, even when you already have the released version |\n\nRun the script again at any time. It updates a server that is behind. It\nrepairs a broken install. On a server that is already current, it changes\nnothing unless you pass `RECUED_FORCE=1`. It does not restart a server that\nis running. It prints the restart command for your system instead. To\nuninstall, stop the running server first. The script prints the exact\ncommands for that too."
+    "body": "Put any of these just before `sh`, like this:\n`curl -fsSL https://recued.com/install.sh | RECUED_AUTOSTART=0 sh`. Put it\nbefore `curl` instead, and only `curl` sees it. The script then runs without\nit. In PowerShell, run `$env:RECUED_AUTOSTART=0` on its own line first.\n\n| Option | What it does |\n| --- | --- |\n| `RECUED_AUTOSTART=0` | Do not start at login. Then the server runs only while you run it. An update cannot restart it for you |\n| `RECUED_PREFIX` / `RECUED_BINDIR` | Where the program files and the `recued` command go. The defaults are `/usr/local/lib/recued` and `/usr/local/bin`. On macOS, when you cannot write those, the defaults are `~/.local/lib/recued` and `~/.local/bin`. On Linux, set both to install without `sudo`. On Windows the default is `%LOCALAPPDATA%\\recued\\bin` |\n| `RECUED_NO_MODIFY_PATH=1` | Do not add the command's folder to your shell's profile. By default, when that folder is not on your PATH, the script adds it for new terminals |\n| `RECUED_CHANNEL=edge` | Follow the edge channel instead of stable |\n| `RECUED_FORCE=1` | Install again, even when you already have the released version |\n\nRun the script again at any time. It updates a server that is behind. It\nrepairs a broken install. On a server that is already current, it changes\nnothing unless you pass `RECUED_FORCE=1`. It does not restart a server that\nis running. It prints the restart command for your system instead. To\nuninstall, stop the running server first. The script prints the exact\ncommands for that too."
   },
   {
     "id": "setup/install-server#other-ways-to-install",
@@ -2461,7 +2669,7 @@
     "section": "Confirm health",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/install-server#confirm-health",
-    "body": "The start-up banner should say the server is running. It should print a\nlocal URL. From the same machine, check the health address. It needs no\nlogin:\n\n```sh\ncurl --fail http://127.0.0.1:7717/health\n```\n\nA healthy server answers with HTTP 200 and a JSON body that contains\n`\"status\":\"ok\"`. That proves the program is taking requests. It does not\nprove a connection or a recipe works. Next, read the running server's\nstart-up log. It shows the addresses it can be reached on. It shows the\nwebclient link and the pairing code. For a start-at-login install, use\nyour system's log viewer. Or run `recued pair`. It\nprints a fresh code, the server's addresses, and the pairing link.\n\nThe code works once. It stops working after 15 minutes. Did it run out\nbefore the first pairing? Run `recued pair` for a new one. Or restart the\nserver with the same database and the same settings, and read the new code\nfrom its start-up log. A\nserver is not ready to pair if it cannot write its data directory. The same\nis true if it cannot open its port, or cannot print a pairing code. Fix that\nfirst."
+    "body": "`recued status` should say the server is running. From the same machine,\ncheck the health address. It needs no login:\n\n```sh\ncurl --fail http://127.0.0.1:7717/health\n```\n\nA healthy server answers with HTTP 200 and a JSON body that contains\n`\"status\":\"ok\"`. That proves the program is taking requests. It does not\nprove a connection or a recipe works. Next, read the running server's\nstart-up log. It shows the addresses it can be reached on. It shows the\nwebclient link and the pairing code. For a start-at-login install, use\nyour system's log viewer. Or run `recued pair`. It\nprints a fresh code, the server's addresses, and the pairing link.\n\nThe code works once. It stops working after 15 minutes. Did it run out\nbefore the first pairing? Run `recued pair` for a new one. Or restart the\nserver with the same database and the same settings, and read the new code\nfrom its start-up log. A\nserver is not ready to pair if it cannot write its data directory. The same\nis true if it cannot open its port, or cannot print a pairing code. Fix that\nfirst."
   },
   {
     "id": "setup/install-server#reachability-is-optional",

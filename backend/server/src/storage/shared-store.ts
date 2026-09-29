@@ -18,6 +18,8 @@
  *  inline entries. Blob-backed values (>64 KB) are NOT FTS-indexed — that's
  *  a documented limit. Phase B / C may revisit if needed. */
 
+import { isDeepStrictEqual } from 'node:util';
+
 import type Database from 'better-sqlite3';
 import { prefixUpperBound } from './prefix-range.js';
 import { FTS_REINDEX_PAGE, createFtsTable, indexRecord, deleteRecord as ftsDeleteRecord, deleteByPrefix as ftsDeleteByPrefix, search as ftsSearch } from '@recued/fts';
@@ -77,8 +79,37 @@ export interface SharedCompareAndSetResult {
   created: boolean;
 }
 
+/** A change to some top-level fields of one record (`SharedStore.patch`). */
+export interface SharedPatch {
+  /** Fields to write, each replacing that field's current value. */
+  set?: Readonly<Record<string, unknown>> | null;
+  /** Fields to remove. */
+  unset?: readonly string[] | null;
+  /** Apply only while each named field holds exactly this value. `null` (or
+   *  `undefined`) matches a field that is absent or null. */
+  match?: Readonly<Record<string, unknown>> | null;
+}
+
+export interface SharedPatchResult {
+  /** A record exists at the key. */
+  found: boolean;
+  /** The record now holds the patch. False when there is no record, or when a
+   *  `match` field no longer holds — and then nothing was written. */
+  applied: boolean;
+  /** The record's serialized size after the call (0 when there is none). */
+  bytes: number;
+}
+
 export interface SharedStore {
   write(key: string, value: unknown, opts: WriteOptions): Promise<{ bytes: number }>;
+  /** Change named top-level fields of one EXISTING record and leave every other
+   *  field as it is. The read, the `match` check and the write are one IMMEDIATE
+   *  transaction, so two patches of different fields both land — where two
+   *  callers that read the record and `write` it back whole keep only the later
+   *  copy. Never creates a record (absent ⇒ `found: false`, nothing written) and
+   *  never touches a revision-controlled one. Inline records only, before and
+   *  after (≤ `INLINE_CUTOFF_BYTES`), so no blob is read inside the transaction. */
+  patch(key: string, patch: SharedPatch, opts: WriteOptions): Promise<SharedPatchResult>;
   /** Atomically create or advance one revision-controlled row.
    *
    *  `expectedRevision: null` is create-if-absent and requires
@@ -260,7 +291,23 @@ export class SharedCompareAndSetConflictError extends Error {
   }
 }
 
-export type SharedRevisionControlledMutation = 'write' | 'delete' | 'delete-prefix';
+export class SharedPatchInvalidError extends Error {
+  constructor(reason: string) {
+    super(`shared_patch_invalid: ${reason}`);
+    this.name = 'SharedPatchInvalidError';
+  }
+}
+
+export class SharedPatchValueTooLargeError extends Error {
+  constructor(public readonly size: number) {
+    super(
+      `shared_patch_value_too_large: the record is ${size} bytes serialized; a patch works on records within the ${INLINE_CUTOFF_BYTES}-byte inline limit — rewrite it with shared-write`,
+    );
+    this.name = 'SharedPatchValueTooLargeError';
+  }
+}
+
+export type SharedRevisionControlledMutation = 'write' | 'patch' | 'delete' | 'delete-prefix';
 
 export class SharedCompareAndSetRequiredError extends Error {
   constructor(
@@ -288,6 +335,58 @@ export const assertValidKey = (key: string): void => {
     throw new SharedKeyInvalidError('key contains invalid characters (allowed: [A-Za-z0-9._-])');
   }
 };
+
+/** A field name that could reach an object's prototype is never a field. */
+const UNSAFE_FIELD_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
+};
+
+const patchField = (field: unknown, where: 'set' | 'unset' | 'match'): string => {
+  if (typeof field !== 'string' || field.length === 0 || UNSAFE_FIELD_NAMES.has(field)) {
+    throw new SharedPatchInvalidError(`${where} names ${JSON.stringify(field)}, which is not a field name`);
+  }
+  return field;
+};
+
+/** The patch, checked: `null` parts are absent, every name is a field, and it
+ *  changes something without both setting and removing one field. */
+const normalizePatch = (patch: SharedPatch): {
+  set: Readonly<Record<string, unknown>>;
+  unset: readonly string[];
+  match: Readonly<Record<string, unknown>>;
+} => {
+  const set = patch.set ?? {};
+  const unset = patch.unset ?? [];
+  const match = patch.match ?? {};
+  if (!isPlainRecord(set)) throw new SharedPatchInvalidError('set must be an object of fields');
+  if (!Array.isArray(unset)) throw new SharedPatchInvalidError('unset must be a list of field names');
+  if (!isPlainRecord(match)) throw new SharedPatchInvalidError('match must be an object of fields');
+  for (const field of Object.keys(set)) patchField(field, 'set');
+  for (const field of unset) patchField(field, 'unset');
+  for (const field of Object.keys(match)) patchField(field, 'match');
+  if (Object.keys(set).length === 0 && unset.length === 0) {
+    throw new SharedPatchInvalidError('a patch must set or unset at least one field');
+  }
+  const both = unset.find((field) => Object.prototype.hasOwnProperty.call(set, field));
+  if (both !== undefined) {
+    throw new SharedPatchInvalidError(`'${both}' cannot be both set and unset`);
+  }
+  return { set, unset, match };
+};
+
+/** Every `match` field holds its value; null / undefined match absent or null. */
+const matchesFields = (
+  current: Record<string, unknown>,
+  match: Readonly<Record<string, unknown>>,
+): boolean => Object.entries(match).every(([field, expected]) => {
+  const actual = Object.prototype.hasOwnProperty.call(current, field) ? current[field] : undefined;
+  if (expected === null || expected === undefined) return actual === null || actual === undefined;
+  return isDeepStrictEqual(actual, expected);
+});
 
 /** Namespace operations conventionally spell a prefix with a trailing dot
  *  (`data.shared.recipe.<bundle>.active.`). Stored keys still may not end in a
@@ -376,6 +475,17 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
 
   const compareAndSetStateStmt = db.prepare(
     `SELECT size_bytes, cas_revision FROM ${TABLE} WHERE key = ?`,
+  );
+
+  const patchStmt = db.prepare(
+    `UPDATE ${TABLE}
+        SET value_inline = @value_inline,
+            blob_hash = NULL,
+            size_bytes = @size_bytes,
+            author_id = @author_id,
+            recipe_id = @recipe_id,
+            written_at = @written_at
+      WHERE key = @key AND cas_revision IS NULL`,
   );
 
   const readStmt = db.prepare(
@@ -748,6 +858,58 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
       const result = apply.immediate();
       reportDelta(bytes - result.previousBytes);
       return { bytes, revision, created: result.created };
+    },
+
+    async patch(key, patch, options) {
+      assertValidKey(key);
+      const { set, unset, match } = normalizePatch(patch);
+      // ⛔ READ AND WRITE IN ONE IMMEDIATE TRANSACTION. That is the whole point:
+      // a caller that reads, merges in JS and writes back is exactly the
+      // read-then-write this replaces, with a window for a second writer.
+      const apply = db.transaction((): { result: SharedPatchResult; delta: number } => {
+        const row = readStmt.get(key) as
+          | { value_inline: string | null; size_bytes: number; cas_revision: number | null }
+          | undefined;
+        if (row === undefined) return { result: { found: false, applied: false, bytes: 0 }, delta: 0 };
+        if (row.cas_revision !== null) throw new SharedCompareAndSetRequiredError(key, 'patch');
+        if (row.value_inline === null) throw new SharedPatchValueTooLargeError(row.size_bytes);
+        let current: unknown;
+        try {
+          current = JSON.parse(row.value_inline);
+        } catch {
+          throw new SharedPatchInvalidError('the stored value is not JSON');
+        }
+        if (!isPlainRecord(current)) {
+          throw new SharedPatchInvalidError('the stored value is not an object of fields');
+        }
+        const unchanged = { result: { found: true, applied: false, bytes: row.size_bytes }, delta: 0 };
+        if (!matchesFields(current, match)) return unchanged;
+        const next: Record<string, unknown> = { ...current };
+        for (const field of unset) delete next[field];
+        for (const [field, value] of Object.entries(set)) {
+          Object.defineProperty(next, field, { value, enumerable: true, writable: true, configurable: true });
+        }
+        const { serialized, bytes } = serializeValue(next);
+        if (bytes > INLINE_CUTOFF_BYTES) throw new SharedPatchValueTooLargeError(bytes);
+        // Already so: nothing to write, and `written_at` keeps meaning "changed".
+        if (serialized === row.value_inline) {
+          return { result: { found: true, applied: true, bytes }, delta: 0 };
+        }
+        const written = patchStmt.run({
+          key,
+          value_inline: serialized,
+          size_bytes: bytes,
+          author_id: options.author_id,
+          recipe_id: options.recipe_id ?? null,
+          written_at: now(),
+        });
+        if (written.changes !== 1) throw new SharedCompareAndSetRequiredError(key, 'patch');
+        updateSearchIndex(key, serialized, serialized);
+        return { result: { found: true, applied: true, bytes }, delta: bytes - row.size_bytes };
+      });
+      const { result, delta } = apply.immediate();
+      reportDelta(delta);
+      return result;
     },
 
     async read(key) {

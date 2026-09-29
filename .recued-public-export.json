@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "7117fd7a16d5129577e95b273761e77a7eb53f93",
-    "tree": "a6bbdc331286207074d4933be49c9b1cbdd3c1f1",
-    "committed_at": "2026-09-26T15:30:14-07:00"
+    "commit": "5b230d8d8b7e1e2af282cb775a02fa5189798a12",
+    "tree": "7e6d39598c6f22c4011a0297ef20083cbd1d5918",
+    "committed_at": "2026-09-29T05:04:34-07:00"
   },
-  "export_manifest_sha256": "85e794b865cb82b954184e5d8626a65f25ac5f8351265c2bb484f96117525ae6",
-  "version": "26.9.26",
+  "export_manifest_sha256": "f05128cf324a2895ef0325cdeff32e49e9879290a4529bf6f24166757e6f9e12",
+  "version": "26.9.29",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -66,6 +66,7 @@
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/byte-budget-char-slice.test.ts",
       "backend/server/src/__tests__/calendar-e2e.test.ts",
+      "backend/server/src/__tests__/commitment-writes-reach-the-store.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
@@ -183,15 +184,21 @@
       "backend/server/src/__tests__/fleet-money-job-list-assignee.test.ts",
       "backend/server/src/__tests__/fleet-money-owner-override-drive.test.ts",
       "backend/server/src/__tests__/fleet-money-reactive-channel-drive.test.ts",
+      "backend/server/src/__tests__/follow-up-rows-patch.test.ts",
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
+      "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
+      "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
       "backend/server/src/__tests__/install-names-the-packs-it-needs.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
+      "backend/server/src/__tests__/installer-env-var-goes-on-sh.test.ts",
+      "backend/server/src/__tests__/installer-macos-guard-and-webclient-unpack.test.ts",
       "backend/server/src/__tests__/installer-safety-guards.test.ts",
       "backend/server/src/__tests__/installer-shell-functions.test.ts",
       "backend/server/src/__tests__/kernel-manifests.test.ts",
+      "backend/server/src/__tests__/keyed-work-entity-creates.test.ts",
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
       "backend/server/src/__tests__/list-settings-offer-their-choices.ratchet.test.ts",
       "backend/server/src/__tests__/list-settings-typed-in-the-form-are-lists.test.ts",
@@ -201,6 +208,7 @@
       "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
       "backend/server/src/__tests__/mcp-subscriptions-probe.test.ts",
       "backend/server/src/__tests__/mcp-token-standing-closure-e2e.test.ts",
+      "backend/server/src/__tests__/meeting-packs-business-workflow.test.ts",
       "backend/server/src/__tests__/month-end-closer-booking-history.test.ts",
       "backend/server/src/__tests__/month-end-closer-business-workflow.test.ts",
       "backend/server/src/__tests__/month-end-closer-past-one-page.test.ts",
@@ -247,6 +255,7 @@
       "backend/server/src/__tests__/supervisor-join.test.ts",
       "backend/server/src/__tests__/track-meeting-reschedule-patterns-live.test.ts",
       "backend/server/src/__tests__/trigger-payload-reads.test.ts",
+      "backend/server/src/__tests__/unattended-closers-patch.test.ts",
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
       "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
@@ -577,8 +586,10 @@
       "packages/recipes/src/__tests__/mail-commitment-proposal-loop.test.ts",
       "packages/recipes/src/__tests__/mail-task-proposal-loop.test.ts",
       "packages/recipes/src/__tests__/mailgun-sending-domains-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/meeting-minutes.test.ts",
       "packages/recipes/src/__tests__/meeting-outcomes-variants.test.ts",
       "packages/recipes/src/__tests__/meeting-prep-project-context.test.ts",
+      "packages/recipes/src/__tests__/meeting-secretary.test.ts",
       "packages/recipes/src/__tests__/microsoft-todo-task-closure-loop.test.ts",
       "packages/recipes/src/__tests__/monday-item-update-closure-loop.test.ts",
       "packages/recipes/src/__tests__/musicbrainz-pack-audit.test.ts",
@@ -611,6 +622,7 @@
       "packages/recipes/src/__tests__/rental-book-audit.test.ts",
       "packages/recipes/src/__tests__/sentry-linear-work-handoff-loop.test.ts",
       "packages/recipes/src/__tests__/sentry-measured-vs-extrapolated-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/shared-row-copy-ratchet.test.ts",
       "packages/recipes/src/__tests__/shopify-customer-reply-desk.test.ts",
       "packages/recipes/src/__tests__/smartsheet-row-discussion-closure-loop.test.ts",
       "packages/recipes/src/__tests__/snowflake-pack-audit.test.ts",
@@ -640,7 +652,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
       "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
     ],
-    "sha256": "85603c5c142879a88639ac245e98d880318b8a14bc49b7202881b2f634fa5dcf",
+    "sha256": "6c3892aca07d234b371b81dc5bacc2a2de86d5c62b969c51a3a712e6c9ecaea1",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -657,11 +669,11 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1089,
+    "files_changed": 1101,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1018
+        "comments_rewritten": 1030
       },
       {
         "id": "internal-design-document",
@@ -755,7 +767,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6232,
-    "sha256": "6456df6f875a24c1e92c1edd8a40d4de1c7687ccdde043919b2c40cf8b79256c"
+    "file_count": 6333,
+    "sha256": "bcece555d3e890c168240d13df9063d030164fb1a3908d52efcd1d3acf7ae78e"
   }
 }

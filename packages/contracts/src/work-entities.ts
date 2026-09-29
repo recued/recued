@@ -143,6 +143,30 @@ export const taskIdFromIdempotencyKey = (key: string): string | null =>
         .join('')}`
     : null;
 
+/** The creates that take an `idempotency_key` — the check INSIDE the write: a
+ *  repeat with the same key returns the first record, whatever any earlier read
+ *  saw, and two runs racing get one record. Same key rule for every kind. */
+export type IdempotentCreateKind = 'task' | 'note' | 'commitment' | 'project';
+
+const IDEMPOTENT_ID_PREFIX: Readonly<Record<IdempotentCreateKind, string>> = {
+  task: TASK_IDEMPOTENCY_ID_PREFIX,
+  note: 'note-idempotent-',
+  commitment: 'commitment-idempotent-',
+  project: 'project-idempotent-',
+};
+
+/** Stable local id for an idempotent create of `kind` — a task's is exactly
+ *  {@link taskIdFromIdempotencyKey}'s. */
+export const workEntityIdFromIdempotencyKey = (
+  kind: IdempotentCreateKind,
+  key: string,
+): string | null => {
+  const taskId = taskIdFromIdempotencyKey(key);
+  return taskId === null
+    ? null
+    : `${IDEMPOTENT_ID_PREFIX[kind]}${taskId.slice(TASK_IDEMPOTENCY_ID_PREFIX.length)}`;
+};
+
 /** D-179 fork (a) RESOLVED — cap on the free-form `state` string. */
 export const TASK_STATE_MAX = 100;
 
@@ -803,6 +827,9 @@ export interface TaskUpdateInput {
   parent_project_id?: string;
   blocks_task_ids?: readonly string[];
   source_extension_blob?: Record<string, unknown>;
+  /** Remove the due date. A task's `null` means "not given", so this is the
+   *  one way to say it; refused alongside a `due_at`. */
+  clear_due_at?: boolean;
 }
 
 export interface TaskDeleteInput {

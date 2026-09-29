@@ -1,7 +1,7 @@
 {
   "recipe_id": "extract-tasks-from-mail",
   "chat_exposed": true,
-  "version": 2,
+  "version": 3,
   "ttl": 60,
   "metadata": {
     "name": "Extract tasks from mail",
@@ -277,11 +277,17 @@
       }
     },
     {
+      "id": "task_key_hash",
+      "transform": "sha256",
+      "input": "mail extracted task|{{context.event.payload.slug}}|{{context.event.payload.record_id}}"
+    },
+    {
       "id": "create",
       "skip_when": "{{step.skip_create}} equal true",
       "op": "core.work-entity.task.create",
       "args": {
         "title": "{{step.extracted_title}}",
+        "idempotency_key": "mail-extracted-task:{{step.task_key_hash}}",
         "due_at": "{{step.due_at}}",
         "priority": "{{step.extracted_priority}}",
         "assigned_contact_id": "{{step.resolve_assignee.contact.email}}",

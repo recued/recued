@@ -340,6 +340,12 @@ const variableToArgProp = (
     // silently mis-scheduling.
     schema.type = 'string';
     schema.format = 'date-time';
+  } else if (hintType === 'date') {
+    // A calendar DAY (`value-hint.ts`): JSON-Schema `date` is `YYYY-MM-DD`,
+    // which is exactly the value — no time for the model to invent, and no
+    // zone for it to guess.
+    schema.type = 'string';
+    schema.format = 'date';
   } else if (hintType === 'object') {
     // Mirror the `array` case: an object-valued variable — a vendor JSON
     // body the recipe pure-refs into an object arg (Contentful `fields`,

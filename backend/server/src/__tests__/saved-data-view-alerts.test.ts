@@ -218,3 +218,17 @@ describe('alert calendars use the saved owner zone rather than the server zone',
       .toMatchObject({ due: { kind: 'range', from: Date.parse(from), before: Date.parse(before) } });
   });
 });
+
+describe('an alert reads a date-only due by its day in the alert\'s zone', () => {
+  it('does not count "due Monday" overdue on Monday evening in Pacific time', () => {
+    // Stored as Monday's UTC midnight, it is due all Monday in the owner's zone
+    // (`due-day.ts`). Read in UTC it would already be overdue by Monday 17:00.
+    const h = open();
+    task(h.tasks, 'due-monday', { due_at: Date.UTC(2026, 8, 28) });
+    const read = createSavedTaskViewReader(h.tasks);
+    const mondayEvening = Date.parse('2026-09-28T20:00:00-07:00');
+    expect(read(definition, 'America/Los_Angeles', mondayEvening)).toEqual([]);
+    const tuesdayMorning = Date.parse('2026-09-29T08:00:00-07:00');
+    expect(read(definition, 'America/Los_Angeles', tuesdayMorning).map((t) => t.id)).toEqual(['due-monday']);
+  });
+});

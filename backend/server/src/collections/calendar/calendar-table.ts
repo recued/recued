@@ -25,13 +25,16 @@
  *  exclusive like `CollectionRecord`).
  *
  *  `prior_payload` depth is exactly 1 — not a revision log. First-
- *  ever sync leaves `prior_payload` null. Every subsequent upsert
- *  rotates: `prior ← current; current ← new`. Quota accounting counts
+ *  ever sync leaves `prior_payload` null. Every subsequent upsert that
+ *  changes the event rotates: `prior ← current; current ← new`. One that
+ *  changes nothing keeps `prior` — a restart's scan lists every stored
+ *  event again (`calendarEventChanges`). Quota accounting counts
  *  both columns together; retention drops by `modified_at` regardless
  *  of prior payload size.
  */
 
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 
 import {
@@ -120,6 +123,17 @@ export interface CalendarUpsertInput {
    *  up. Defaults to `Date.now()`. */
   now?: number;
 }
+
+/** D-124 — what differs between two versions of an event, by field, each
+ *  compared as it is stored (JSON), so a field left out and one set to nothing
+ *  agree. Empty for an event listed again as it was: a restart's scan lists
+ *  every stored event again, and that is no change. */
+export const calendarEventChanges = (before: CanonicalEvent, after: CanonicalEvent): string[] => {
+  const a = JSON.parse(JSON.stringify(before)) as Record<string, unknown>;
+  const b = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()
+    .filter((key) => !isDeepStrictEqual(a[key], b[key]));
+};
 
 /** Snapshot of a calendar warehouse row. Returned from `get`, mapped
  *  from the JSON payload on demand. */
@@ -632,7 +646,12 @@ export const createCalendarTable = (
     const received_at = prior?.received_at ?? now;
 
     const record_payload = JSON.stringify(event);
-    const prior_payload = prior ? JSON.stringify(prior.event) : null;
+    // Only a change moves the event into `prior`: a restart's scan lists every
+    // stored event again, and rotating then left `prior` equal to the event —
+    // the one before its last change lost.
+    const prior_payload = prior === null
+      ? null
+      : calendarEventChanges(prior.event, event).length === 0 ? priorRow!.prior_payload : JSON.stringify(prior.event);
 
     upsertStmt.run({
       record_id,

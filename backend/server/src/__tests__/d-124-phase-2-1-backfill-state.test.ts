@@ -6,8 +6,8 @@
  *       upsert-as-update).
  *    2. `markBackfillComplete` writer — idempotent UPDATE flipping
  *       the bool to TRUE.
- *    3. `createBackfillStateLookup` helper — cache hit / miss /
- *       refresh / invalidate, draining-vs-vacuous platforms,
+ *    3. `createBackfillStateLookup` helper — reads through (a flip is
+ *       seen at once; it no longer caches), draining-vs-vacuous platforms,
  *       `data.contact` AND across mail + calendar.
  *    4. Adapter-collection wiring sites — calling
  *       `markBackfillComplete` after `provider.initialScan`/
@@ -239,44 +239,31 @@ describe('createBackfillStateLookup', () => {
     const lookup = createBackfillStateLookup({ instances });
     expect(lookup.isComplete('calendar', 'personal')).toBe(false);
     instances.markBackfillComplete('calendar', 'personal');
-    // Cache still holds the stale `false` — exercising invalidate().
-    lookup.invalidate('calendar', 'personal');
     expect(lookup.isComplete('calendar', 'personal')).toBe(true);
   });
 
-  it('caches the bool — markBackfillComplete after first read needs invalidate to pick up', () => {
-    instances.upsert({
-      platform: 'file',
-      slug: 'docs',
-      adapter_type: 'fs',
+  it('⛔ reads through — a flip is seen at once, and a mailbox enrolled again drains again', () => {
+    // It used to CACHE: the first read of a drain pinned `false`, and nothing
+    // in production ever invalidated it, so a new mailbox's triggers stayed
+    // silent until a restart. Both halves here were wrong under the cache.
+    const row = {
+      platform: 'mail' as const,
+      slug: 'work',
+      adapter_type: 'gmail',
       config: {},
-      caps: fileCaps(),
-      auth_state: 'healthy',
+      caps: mailCaps(),
+      auth_state: 'healthy' as const,
       last_synced_at: null,
-    });
+    };
+    instances.upsert(row);
     const lookup = createBackfillStateLookup({ instances });
-    expect(lookup.isComplete('file', 'docs')).toBe(false); // populates cache
-    instances.markBackfillComplete('file', 'docs');
-    expect(lookup.isComplete('file', 'docs')).toBe(false); // stale cache hit
-    lookup.invalidate('file', 'docs');
-    expect(lookup.isComplete('file', 'docs')).toBe(true);
-  });
-
-  it('refresh() bulk-rebuilds the cache from instances.list()', () => {
-    instances.upsert({
-      platform: 'file',
-      slug: 'docs',
-      adapter_type: 'fs',
-      config: {},
-      caps: fileCaps(),
-      auth_state: 'healthy',
-      last_synced_at: null,
-    });
-    const lookup = createBackfillStateLookup({ instances });
-    expect(lookup.isComplete('file', 'docs')).toBe(false);
-    instances.markBackfillComplete('file', 'docs');
-    lookup.refresh();
-    expect(lookup.isComplete('file', 'docs')).toBe(true);
+    expect(lookup.isComplete('mail', 'work')).toBe(false);
+    instances.markBackfillComplete('mail', 'work');
+    expect(lookup.isComplete('mail', 'work')).toBe(true);
+    // Deleted and enrolled again: a fresh drain, which must not fire triggers.
+    instances.delete('mail', 'work');
+    instances.upsert(row);
+    expect(lookup.isComplete('mail', 'work')).toBe(false);
   });
 
   it('returns true for unknown (platform, slug) — opt-in suppression by row presence', () => {

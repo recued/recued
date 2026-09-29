@@ -28,6 +28,7 @@ import type { PreapprovalStorage } from '../storage/preapproval-storage.js';
 
 import type { TornSagaSweepResult } from '@recued/gateway';
 import type { PermanentPassRepairBootResult } from '../seller/permanent-pass-repair.js';
+import type { WorkEntityTextDatesNoticeResult } from '../work-entity-date-repair-notice.js';
 
 export interface StartBootRecoveryAndAdaptersOptions {
   readonly lifecycle: Lifecycle | undefined;
@@ -48,6 +49,10 @@ export interface StartBootRecoveryAndAdaptersOptions {
    *  open-ended, pre-bound by the composition root. Absent ⇒ it waits for a
    *  boot that can tell the owner. */
   readonly permanentPassRepair?: () => Promise<PermanentPassRepairBootResult>;
+  /** The notice for the dates the work-entity store repaired as it opened
+   *  (`WORK_ENTITY_TEXT_DATES_REPAIR_ID`), pre-bound by the composition root.
+   *  Absent without a notifier ⇒ it waits for a boot that has one. */
+  readonly workEntityTextDatesNotice?: () => Promise<WorkEntityTextDatesNoticeResult>;
   readonly getBatch?: PreflightBootSweepDeps['getBatch'];
   readonly reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
   /** Exact peer-delivery journal recovery runs before generic dispatch-claim
@@ -273,6 +278,25 @@ export const startBootRecoveryAndAdapters = async (
       } catch (error) {
         warn(
           '[seller] D-308 pass repair failed, retrying next boot: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    // The dates the work-entity store repaired as it opened: tell the owner
+    // once. A notice that did not reach the history is retried next boot.
+    if (options.workEntityTextDatesNotice) {
+      try {
+        const notice = await options.workEntityTextDatesNotice();
+        if (notice.noticed) {
+          warn(
+            `[work-entities] ${notice.fixed} date(s) stored as text converted, `
+              + `${notice.cleared} that named no date cleared — the owner was told`,
+          );
+        }
+      } catch (error) {
+        warn(
+          '[work-entities] text-dates repair notice failed, retrying next boot: '
             + (error instanceof Error ? error.message : String(error)),
         );
       }

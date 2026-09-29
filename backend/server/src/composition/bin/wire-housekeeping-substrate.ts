@@ -636,6 +636,14 @@ export const composeHousekeepingScheduler = async (
     return { scheduler: undefined };
   }
 
+  // The owner's zone, read PER SWEEP like the policies: the setting when there
+  // is one, else the host's. A date-only due is due for the whole of its day
+  // there, and overdue once that day ends.
+  const ownerTimeZone = (): string => resolveServerTimeZone(
+    deps.serverTimeZoneStore?.read(),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
+
   // D-145 § A.7.8 — single accessor per scheduler boot. Producers read
   // effective tunables via `ctx.tunableParams.getNumber(topic, key)` /
   // `getEnum`; the accessor returns declared defaults when no override
@@ -823,6 +831,8 @@ export const composeHousekeepingScheduler = async (
           store: deps.workEntityStore,
           bus: deps.warehouseBus,
           ...(deps.enrichmentCascade ? { cascade: deps.enrichmentCascade } : {}),
+          // A date-only due is judged by its DAY in the owner's zone (`due-day.ts`).
+          timeZone: ownerTimeZone,
           // D-269 step 2 — the owner's per-kind horizon, read PER SWEEP so a
           // policy change lands on the next cycle rather than at the next
           // restart. Absent (db-less harness) ⇒ the shared 24h constant with
@@ -954,6 +964,8 @@ export const composeHousekeepingScheduler = async (
                 }),
               }
             : {}),
+          // A date-only due is judged by its DAY in the owner's zone (`due-day.ts`).
+          timeZone: ownerTimeZone,
           // ⚠ The hoisted instance — `deps.db` is in this block's own guard, so
           // it is present whenever this task registers.
           ledger: await reminderLedgerFor(db),

@@ -97,6 +97,11 @@ export interface CollectionListQuery {
   since?: number;
   /** Upper bound on `received_at` (exclusive, unix-ms). */
   until?: number;
+  /** Keyset paging in the list's own order — `received_at` newest first, then
+   *  `record_id`: only the rows after this one. Pass the last row of the page
+   *  before. A page boundary inside a burst of one `received_at` loses no
+   *  row, where a bound on the time alone repeats the burst or skips past it. */
+  before?: { readonly received_at: number; readonly record_id: string };
   /** Lower bound on `modified_at` (inclusive, unix-ms). Distinct from
    *  `since`: authors of the `file-watcher` kernel ingredient want to
    *  detect records whose underlying source was touched after a

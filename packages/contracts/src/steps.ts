@@ -10,7 +10,10 @@ export type StepType = 'transform' | 'ingredient' | 'guard' | 'unknown';
  *
  *  - `fresh`: always re-fetch. Cache is neither read nor written. Use when
  *    the step must reflect real-time state (e.g. feed path of a write action).
- *  - `acceptable` (default): use cache if within TTL. Standard behavior.
+ *  - `acceptable` (default): use cache if within TTL. Standard behavior —
+ *    except that in a recipe that WRITES, a read of the owner's own records
+ *    runs `fresh` unless it names a mode (engine `step-seed.ts`: a cached
+ *    read answered a check-then-write with an earlier run's view).
  *  - `any`: use any cached entry regardless of TTL. Enables progressive render:
  *    the sidebar can paint stale data immediately, then a background refresh
  *    re-runs expired steps and updates the UI when fresh values arrive.
@@ -315,11 +318,26 @@ export interface BaseStep {
   id: string;
   skip_when?: string | Condition;
   fail_on?: string | Condition;
+  /** End the run here, as a SUCCESS, when this holds after the step ran — the
+   *  steps after it do not run because there is nothing more to do. The
+   *  counterpart of `fail_on`, which ends the run as an error: use `fail_on` when
+   *  the input or data is wrong, `stop_when` for "no new mail", "already
+   *  processed", "the gate said no". Checked after `fail_on` (a failure wins),
+   *  never on a skipped step, and once per step — on a `foreach` step it reads
+   *  the whole result, never an `{{item.*}}`. Sequential `steps` only.
+   *
+   *  The run records which step stopped it (`ExecutionResult.stopped`,
+   *  `RunYield.stopped_at`), so "nothing to do" reads differently from a run
+   *  whose steps were all skipped. It replaces repeating one `skip_when` on every
+   *  later step — the guard the next added step forgets. */
+  stop_when?: string | Condition;
   /** D-232 § 21 — classify this guard's refusal. Honoured ONLY when `fail_on`
    *  is present and actually triggers; absent means "this was a failure", the
    *  behaviour every guard had before. See {@link StepFailureKind}. */
   fail_kind?: StepFailureKind;
-  /** Cache freshness mode for this step. Defaults to 'acceptable'.
+  /** Cache freshness mode for this step. Defaults to 'acceptable' — or to
+   *  'fresh' for a read of the owner's own records in a recipe that writes
+   *  (engine `step-seed.ts`); naming a mode keeps the author's call.
    *  Honoured by both cache tiers — the L1 ingredient cache (ingredient
    *  + prefetch steps) and the L2 step cache (every sequential step,
    *  including the content-addressable transform / guard entries).

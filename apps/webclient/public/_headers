@@ -36,7 +36,7 @@
   Referrer-Policy: strict-origin-when-cross-origin
   X-Content-Type-Options: nosniff
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
-  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Opener-Policy: same-origin-allow-popups
 
 # Notes on the block above, kept out of it so nothing is mistaken for a header:
 #
@@ -55,8 +55,29 @@
 #   referrer would leak which surface the user was on.
 # · Permissions-Policy denies capabilities no part of this app uses, so a
 #   compromised dependency cannot quietly start one.
+# · ⛔ Cross-Origin-Opener-Policy is `same-origin-allow-popups`, NOT
+#   `same-origin`. `same-origin` (2026-08-08 to 2026-09-28) cut every sign-in
+#   popup off from the app the moment it opened Google's or Microsoft's page:
+#   the callback page then had no `window.opener` to hand the code to, the
+#   popup still said "Sign-in complete", and the app saw the popup as closed.
+#   Gmail, Google Calendar and Outlook could not be connected from here at all.
+#   `same-origin-allow-popups` still keeps other sites' windows away from this
+#   app, and keeps the popups the app itself opens. The callback page drops the
+#   header entirely (rule below): a popup whose final page sends a stricter
+#   policy than its opener is moved away from the opener all the same.
 
 # Pin the manifest's type rather than letting it be inferred from the extension —
 # it is the file whose whole job is install identity.
 /manifest.webmanifest
   Content-Type: application/manifest+json
+
+# The OAuth callback page (served for /oauth-callback from oauth-callback.html)
+# must keep its link to the app that opened it — see the COOP note above. No
+# COOP here means `unsafe-none`, the one value that stays with a
+# `same-origin-allow-popups` opener. `! ` removes the header the `/*` rule set;
+# setting it again would join both values with a comma instead.
+/oauth-callback
+  ! Cross-Origin-Opener-Policy
+
+/oauth-callback.html
+  ! Cross-Origin-Opener-Policy

@@ -110,6 +110,53 @@ export const RUN_MODAL_STYLES = `
   align-items: center;
   gap: 8px;
 }
+/* D-315 §5.1 — "A mail fact" on the Trigger tab. */
+.run-modal-fact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.run-modal-fact-form > label.run-modal-copy,
+.run-modal-fact-when > label.run-modal-copy {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+}
+.run-modal-fact-when {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px;
+}
+/* A control inside its label would take the label's type. */
+.run-modal-fact-form .run-modal-select {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 400;
+}
+.run-modal-fact-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 13px;
+}
+.run-modal-fact-fields legend {
+  margin-bottom: 4px;
+  padding: 0;
+}
+.run-modal-fact-fields label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.run-modal-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 .run-modal-meta {
   margin: 0;
   font-size: 12px;
@@ -246,6 +293,10 @@ export const RUN_MODAL_STYLES = `
 }
 .run-modal-rule-row > div {
   min-width: 0;
+}
+/* A long description wraps; the row's buttons stay on one line. */
+.run-modal-rule-row > .run-modal-actions {
+  flex: 0 0 auto;
 }
 [${RUN_MODAL_OVERLAY_ATTR}] [${RUN_MODAL_RESULT_ATTR}] {
   margin-top: 4px;

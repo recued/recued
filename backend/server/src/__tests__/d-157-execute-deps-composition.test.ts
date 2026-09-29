@@ -42,6 +42,7 @@ import {
   composeExecuteDeps,
   type ComposeExecuteDepsDeps,
 } from '../composition/bin/wire-execute-deps.js';
+import { createSettledRunResults } from '../settled-run-results.js';
 import type {
   ComposeNotificationBlockDeps,
   NotificationBlockBundle,
@@ -595,6 +596,19 @@ describe('composeExecuteDeps getExecuteDeps thunk plumbing', () => {
     executeDepsRef = bundle.executeDeps;
     expect(callDeps.getExecuteDeps()).toBe(bundle.executeDeps);
     expect(bundle.notificationBlock).toBe(block);
+  });
+
+  it('forwards the held-run result store to the notification block by identity', async () => {
+    // The block's resumer keeps what an owner's page-started run answered once
+    // its approval let it finish; `execution.get` reads the same store. A copy
+    // or a dropped field here and the page never gets its result.
+    const { compose, composeNotificationBlockMock } = await importComposerWithNotificationSpy();
+    const settledRunResults = createSettledRunResults();
+
+    compose(buildDeps({ ...notificationPrereqs(), settledRunResults }));
+
+    expect(composeNotificationBlockMock).toHaveBeenCalledTimes(1);
+    expect(composeNotificationBlockMock.mock.calls[0]![0].settledRunResults).toBe(settledRunResults);
   });
 
   it('threads an authoritative standing-ruling writer that preserves sibling policy facets', async () => {

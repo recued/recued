@@ -97,4 +97,26 @@ describe('event_triggers validation wiring', () => {
       { event: 'schedule.cron', filter: { cron: '0 9 * * *' } },
     ]))).toEqual([]);
   });
+
+  // D-315 §5.1 — a mail-fact trigger watches variables, whatever kind of email
+  // has them (ruling 42). What no built-in kind has is a warning, not an
+  // error: a kind the owner makes on their server may have it.
+  it('warns, and does not refuse, a mail-fact trigger watching what no built-in kind has', () => {
+    const result = validateRecipe(withTriggers([{ on: 'mail_fact', fields: ['state'], where: { vintage: '2019' } }]));
+    expect(result.valid).toBe(true);
+    expect(result.issues.filter((issue) => issue.code === 'event_trigger_mail_fact_unknown')).toEqual([{
+      severity: 'warn',
+      code: 'event_trigger_mail_fact_unknown',
+      path: 'event_triggers[0]',
+      message: "'where.vintage': no built-in kind of email has a variable 'vintage' — only a kind made on the owner’s server can start it",
+    }]);
+    expect(validateRecipe(withTriggers([{ on: 'mail_fact', fields: ['state'], where: { state: 'delivered' } }])).issues
+      .filter((issue) => issue.path.startsWith('event_triggers'))).toEqual([]);
+    // On one kind it is checked exactly; a kind made on a server is noted.
+    expect(errorCodes(withTriggers([{ on: 'mail_fact.shipment', fields: ['state'] }]))).toEqual([]);
+    expect(validateRecipe(withTriggers([{ on: 'mail_fact.custom_wine_club' }])).issues
+      .filter((issue) => issue.code === 'event_trigger_mail_fact_unknown').map((issue) => issue.severity)).toEqual(['warn']);
+    // A key that is no part of one is an error, not ignored.
+    expect(errorCodes(withTriggers([{ on: 'mail_fact', typ: 'shipment' }]))).toEqual(['event_trigger_entry_invalid']);
+  });
 });

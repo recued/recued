@@ -128,6 +128,7 @@ const makeOptions = (
       manifests: { tag: 'manifests' },
       baseVault: { token: 'secret' },
       accountStore: { tag: 'account-store' },
+      mailFactStore: { tag: 'mail-fact-store' },
     },
     execution: {
       storage: { tag: 'storage' },
@@ -535,6 +536,8 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
           enrichmentCascade: app.enrichmentCascadeRef,
           // D-192 P4b — late-bound work-entity write executor.
           getWorkEntityWriteExecutor: expect.any(Function),
+          // D-315 §4.3 — the mail facts' AI pass stops where background work stops.
+          backgroundAiBudgetSpent: expect.any(Function),
         });
         expect(actualOptions.execution).toEqual({
           ...options.execution,

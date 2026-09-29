@@ -15,7 +15,7 @@
 
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,11 +26,17 @@ import { daemonStatus } from '../daemon.js';
  *  unused directory is what puts us on the no-pidfile branch. */
 const freshDb = () => join(mkdtempSync(join(tmpdir(), 'recued-status-')), 'r.db');
 
-const capture = async (port: number, dbPath: string = freshDb()): Promise<string> => {
+/** Linux by default, so the hint assertions below mean the same thing on every
+ *  host that runs this file; the macOS arm passes 'darwin' explicitly. */
+const capture = async (
+  port: number,
+  dbPath: string = freshDb(),
+  platform: NodeJS.Platform = 'linux',
+): Promise<string> => {
   const lines: string[] = [];
   const spy = vi.spyOn(console, 'log').mockImplementation((...a) => { lines.push(a.join(' ')); });
   try {
-    await daemonStatus({ dbPath, port });
+    await daemonStatus({ dbPath, port }, platform);
   } finally {
     spy.mockRestore();
   }
@@ -45,6 +51,12 @@ const realmHeldBy = (pid: number, bindPort: number): string => {
     join(dirname(dbPath), 'recued-server.lock'),
     JSON.stringify({ pid, boot_at: Date.now(), bind_port: bindPort }),
   );
+  return dbPath;
+};
+
+/** A pidfile left by a `recued start` whose process is gone. */
+const withStalePidfile = (dbPath: string, pid = 2_147_483_645): string => {
+  writeFileSync(join(dirname(dbPath), 'recued-server.pid'), String(pid));
   return dbPath;
 };
 
@@ -166,5 +178,65 @@ describe('daemon status distinguishes "stopped" from "not ours to stop"', () => 
     expect(out).toMatch(/^Status: stopped$/m);
     expect(out).not.toContain('already in use');
     expect(out).not.toContain('running');
+  });
+});
+
+describe('a stale pidfile does not answer for the server', () => {
+  /** ⛔ Reported 2026-09-28 from a Mac: `Status: stopped (stale pidfile for pid
+   *  58752)` while its launchd job was serving, then `running` on the next run,
+   *  because the first call had removed the file. The pidfile's process being
+   *  gone says nothing about the realm or the port. */
+  it('a stale pidfile beside a live realm holder reads as RUNNING, and the file is removed', async () => {
+    const dbPath = withStalePidfile(realmHeldBy(process.pid, 7717));
+    const out = await capture(9, dbPath);
+    expect(out).toMatch(/Status: running/);
+    expect(out).toContain(String(process.pid));
+    expect(out).toMatch(/Removed a stale pidfile: pid 2147483645/);
+    expect(out).not.toMatch(/Status: stopped/);
+    expect(existsSync(join(dirname(dbPath), 'recued-server.pid'))).toBe(false);
+  });
+
+  it('a stale pidfile beside a foreign server on the port reads as running, not ours', async () => {
+    const port = await freePort();
+    await serveHealth(port);
+    const out = await capture(port, withStalePidfile(freshDb()));
+    expect(out).toMatch(/NOT on this realm/);
+    expect(out).toMatch(/Removed a stale pidfile/);
+  });
+
+  it('a stale pidfile with nothing running still reads as stopped, naming the pid', async () => {
+    const out = await capture(await freePort(), withStalePidfile(freshDb()));
+    expect(out).toMatch(/^Status: stopped \(stale pidfile for pid 2147483645, removed\)$/m);
+  });
+});
+
+describe('the owner hints name commands this platform has', () => {
+  /** ⛔ `ss` and `systemctl` do not exist on macOS, whose autostart is the
+   *  com.recued.server LaunchAgent. */
+  it('on macOS: lsof and launchctl, never ss or systemctl', async () => {
+    const port = await freePort();
+    await serveHealth(port);
+    const out = await capture(port, freshDb(), 'darwin');
+    expect(out).toContain(`lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+    expect(out).toContain('launchctl print gui/$(id -u)/com.recued.server');
+    expect(out).not.toMatch(/\bss -ltnp\b|systemctl/);
+  });
+
+  it('on Linux: ss and systemctl, including the --user unit', async () => {
+    const port = await freePort();
+    await serveHealth(port);
+    const out = await capture(port, freshDb(), 'linux');
+    expect(out).toContain(`ss -ltnp | grep ${port}`);
+    expect(out).toContain('systemctl status recued');
+    expect(out).toContain('systemctl --user status recued');
+    expect(out).not.toContain('launchctl');
+  });
+
+  it('on Windows: netstat, and no Unix tools', async () => {
+    const port = await freePort();
+    await serveHealth(port);
+    const out = await capture(port, freshDb(), 'win32');
+    expect(out).toContain(`netstat -ano | findstr :${port}`);
+    expect(out).not.toMatch(/lsof|launchctl|systemctl|ss -ltnp/);
   });
 });

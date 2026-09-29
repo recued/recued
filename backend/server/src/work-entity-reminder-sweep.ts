@@ -53,6 +53,7 @@
  *  Spec: internal design notes D-269 REV 2 Q2/Q4 + step 4's recorded tension. */
 
 import type { Booking, Commitment, Task } from '@recued/contracts';
+import { DAY_MS, dueDayIso, dueSpan } from '@recued/contracts';
 import {
   classifyCommitmentDueStatus,
   classifyTaskDueWindow,
@@ -131,6 +132,9 @@ export interface ReminderSweepDeps {
    *  inside the quiet-hours concern. What you are told about lives in the kind
    *  policy; WHEN you may be disturbed lives here, once, for everything. */
   isQuiet?: (at: number) => boolean;
+  /** The zone a DATE-ONLY due is judged in (`due-day.ts`): owed for the whole
+   *  of its day there, overdue once that day ends. Absent ⇒ UTC. */
+  timeZone?: () => string | undefined;
   ledger: ReminderLedger;
   /** The delivery. ⛔ A NOTIFICATION, not an event — see the header. */
   notify: (message: { title: string; text: string }) => void;
@@ -177,9 +181,12 @@ const workOwedState = (
   anchor_at: number,
   now: number,
   offset_ms: number,
+  timeZone: string | undefined,
 ): ReminderState | null => {
   if (classified === 'due_soon') return 'due_soon';
-  if (classified === 'overdue' && now - anchor_at <= offset_ms) return 'overdue';
+  // Past since the anchor ENDED: a date-only due is not overdue until its day is
+  // over, so the bound runs from there, not from the day's first instant.
+  if (classified === 'overdue' && now - dueSpan(anchor_at, timeZone).end <= offset_ms) return 'overdue';
   return null;
 };
 
@@ -198,6 +205,7 @@ const reminderTitle = (c: Candidate): string => {
 
 export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult => {
   const now = deps.now?.() ?? Date.now();
+  const timeZone = deps.timeZone?.();
   const result: ReminderSweepResult = {
     bookings_visited: 0, calendar_visited: 0,
     tasks_visited: 0, commitments_visited: 0,
@@ -248,8 +256,8 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
       if (t.done || t.due_at === undefined) continue;
       result.tasks_visited += 1;
       const state = workOwedState(
-        classifyTaskDueWindow(t, now, taskPolicy.offset_ms),
-        t.due_at, now, taskPolicy.offset_ms,
+        classifyTaskDueWindow(t, now, taskPolicy.offset_ms, timeZone),
+        t.due_at, now, taskPolicy.offset_ms, timeZone,
       );
       if (state === null) continue;
       candidates.push({
@@ -268,8 +276,8 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
       if (c.promised_for_at === undefined) continue;
       result.commitments_visited += 1;
       const state = workOwedState(
-        classifyCommitmentDueStatus(c, now, commitmentPolicy.offset_ms),
-        c.promised_for_at, now, commitmentPolicy.offset_ms,
+        classifyCommitmentDueStatus(c, now, commitmentPolicy.offset_ms, timeZone),
+        c.promised_for_at, now, commitmentPolicy.offset_ms, timeZone,
       );
       if (state === null) continue;
       candidates.push({
@@ -299,7 +307,10 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
       continue;
     }
 
-    const when = new Date(c.anchor_at).toISOString();
+    // A date-only due names its DAY; its UTC-midnight instant read as a time
+    // ("…T00:00:00.000Z") was the previous evening for anyone west of UTC.
+    const when = (c.kind === 'task' || c.kind === 'commitment' ? dueDayIso(c.anchor_at) : null)
+      ?? new Date(c.anchor_at).toISOString();
     deps.notify({ title: reminderTitle(c), text: `${c.title} — ${when}` });
     deps.ledger.set(key, c.anchor_at);
     result.reminded += 1;
@@ -312,6 +323,8 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
     bookingPolicy.offset_ms, calendarPolicy.offset_ms,
     taskPolicy.offset_ms, commitmentPolicy.offset_ms,
   );
-  deps.ledger.prune(now - horizon);
+  // ⚠ Plus a day and a margin: a DATE-ONLY anchor stays owed until its day has
+  // ENDED plus the horizon, and its day is up to 25 hours long.
+  deps.ledger.prune(now - horizon - 2 * DAY_MS);
   return result;
 };

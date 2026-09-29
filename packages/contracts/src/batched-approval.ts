@@ -746,7 +746,7 @@ const canonicalKey = (value: unknown): string | undefined => {
  *  partial hoist across a partly-known set could assert a shared value
  *  over a member nobody can see. */
 export const renderBatchItemsBlock = (
-  items: ReadonlyArray<BatchedApprovalItem>,
+  items: ReadonlyArray<Pick<BatchedApprovalItem, 'summary' | 'args_preview'>>,
 ): string => {
   // A batch row always carries at least one member, so this is
   // unreachable — but every branch below indexes `items[0]`, and an
@@ -758,7 +758,7 @@ export const renderBatchItemsBlock = (
     : undefined;
 
   if (items.length === 1) {
-    const only = items[0] as BatchedApprovalItem;
+    const only = items[0] as Pick<BatchedApprovalItem, 'summary' | 'args_preview'>;
     const fields = perItem?.[0];
     return fields === undefined || fields.length === 0
       ? `  ${only.summary}`

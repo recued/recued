@@ -415,6 +415,8 @@ export const readOpenerRelayTarget = (search: URLSearchParams): string | null =>
  *     hop, no `opener_origin` (it's same-origin).
  *   - cloud `app.recued.com` PWA → byte-identical to the pre-R26.2 value:
  *       `https://app.recued.com/oauth-callback?recued_relay=opener`
+ *     …except for Microsoft (`noQueryMarker`), which gets the BARE
+ *       `https://app.recued.com/oauth-callback` (see below).
  *   - any other self-served PWA (LAN-IP / own-https; R26.2 Option A) → cloud
  *     bounce with the PWA origin riding as `opener_origin` for cross-origin
  *     relay:
@@ -440,10 +442,6 @@ export const buildOpenerRelayRedirectUri = (
     // loopback page: that page (`oauth-callback-relay.ts`) is opener-relay-only
     // and discriminates via the `frelay_` state prefix (the opener still
     // verifies the FULL state for CSRF), so the query marker is redundant there.
-    // The cloud branch below ALWAYS keeps the marker (the shared cloud callback
-    // needs it to tell the foundational flow from the signed-state vendor flow),
-    // so a Microsoft app reached via the cloud bounce (LAN-IP / own-https) is
-    // not yet supported — loopback / localhost self-host is.
     if (noQueryMarker) return host + WEBCLIENT_OAUTH_CALLBACK_PATH;
     return (
       host +
@@ -453,6 +451,17 @@ export const buildOpenerRelayRedirectUri = (
       '=' +
       OAUTH_OPENER_RELAY_VALUE
     );
+  }
+  // ⛔ Microsoft from the cloud PWA itself: an Entra app that takes personal
+  // accounts may not register a redirect URI with a query string, and the
+  // marker made app.recued.com unusable for one. The callback page selects the
+  // foundational relay by the `frelay_` state prefix alone and, with no marker,
+  // posts the code only to its OWN origin — which is exactly this opener. A
+  // LAN-IP / own-https PWA still needs `opener_origin` in the query (below),
+  // so an app that takes personal accounts cannot be reached from one; the
+  // guide sends those owners to app.recued.com or http://localhost.
+  if (noQueryMarker && openerOrigin === OAUTH_CLOUD_CALLBACK_ORIGIN) {
+    return OAUTH_CLOUD_CALLBACK_URL;
   }
   // Cloud bounce (default). A non-cloud opener (LAN-IP / own-https self-served
   // PWA) rides as opener_origin for cross-origin relay; the same-origin cloud

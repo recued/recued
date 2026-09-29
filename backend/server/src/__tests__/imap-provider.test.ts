@@ -701,6 +701,19 @@ describe('canonicalizeImap', () => {
     expect(imapMessageDirectionForMailbox('Projet secret', mailboxes)).toBe('unknown');
   });
 
+  it('names Sent and Drafts by the folders the send and draft lookups fall back to, when no folder is flagged', () => {
+    const plain = [{ path: 'INBOX' }, { path: 'Sent Items' }, { path: 'Sent' }, { path: 'Drafts' }, { path: 'Archive' }];
+    // The first candidate the server lists, as `findSentFolder` picks it.
+    expect(imapMessageDirectionForMailbox('Sent', plain)).toBe('outbound');
+    expect(imapMessageDirectionForMailbox('Sent Items', plain)).toBe('unknown');
+    expect(imapMessageDirectionForMailbox('Drafts', plain)).toBe('draft');
+    expect(imapMessageDirectionForMailbox('Archive', plain)).toBe('unknown');
+    // A flagged folder is the one: a plain "Sent" beside it is not.
+    const flagged = [...plain, { path: 'Gesendet', specialUse: '\\Sent' }];
+    expect(imapMessageDirectionForMailbox('Sent', flagged)).toBe('unknown');
+    expect(imapMessageDirectionForMailbox('Gesendet', flagged)).toBe('outbound');
+  });
+
   it('derives thread_id from References header', async () => {
     const source = makeRfc822({
       messageId: 'child@x',

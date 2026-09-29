@@ -201,3 +201,20 @@ describe('D-269 step 4 — driven: the edge, and what the card actually says', (
     expect(ctx.quiet.readLastActiveAt()).toBeNull();
   });
 });
+
+describe('the digest reads a deadline stored as a DAY by its day', () => {
+  // A deadline at UTC midnight is due for the whole of its day in the owner's
+  // zone (`due-day.ts`): at the end of a Sunday-night quiet window in Pacific
+  // time, "due Monday" is still ahead — its instant has passed, its day has not.
+  it('lists "due Monday" as still ahead on Monday morning, not as already gone', () => {
+    const monday = Date.UTC(2026, 8, 28);
+    const mondayMorning = Date.parse('2026-09-28T07:00:00-07:00');
+    const items = [{ kind: 'task' as const, id: 't', title: 'File the return', anchor_at: monday }];
+    const inPacific = buildQuietHoursDigest(items, { from: 0, to: mondayMorning }, mondayMorning, 'America/Los_Angeles');
+    expect(inPacific.still_ahead.map((i) => i.id)).toEqual(['t']);
+    expect(inPacific.already_passed).toBe(0);
+    // Once Monday is over there, it has passed.
+    const tuesday = Date.parse('2026-09-29T07:00:00-07:00');
+    expect(buildQuietHoursDigest(items, { from: 0, to: tuesday }, tuesday, 'America/Los_Angeles').already_passed).toBe(1);
+  });
+});

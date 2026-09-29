@@ -175,8 +175,13 @@ describe('composeRpcContext', () => {
         checkpointStore: storageContext.checkpointStore,
         commitStore: storageContext.commitStore,
         gatedActionStore: storageContext.gatedActionStore,
+        // The SAME store the approval resumer writes an owner page-run's
+        // result into — `execution.get` hands it to the page still "held".
+        settledRunResults: storageContext.settledRunResults,
         serverInstanceId: storageContext.serverInstanceId,
       });
+      expect(context.observabilityBundle.executionFeedDeps?.settledRunResults)
+        .toBe(storageContext.settledRunResults);
       expect(context.observabilityBundle.statusPageDeps?.realmToken).toBe(
         storageContext.pairing?.getRealmToken(),
       );

@@ -897,6 +897,192 @@ describe('renderAccountsPanel', () => {
     expect(html).toMatch(/Do NOT leave it in Testing/);
   });
 
+  /** ⛔ Only routes that keep working. An External app left in Testing loses
+   *  its sign-ins after 7 days, so the guide warns against it and never offers
+   *  it; what lasts depends on the account, and on where the page is open. */
+  describe('the Google guide: routes that keep working', () => {
+    const googleSetup = (appOrigin?: string): string => renderAccountsPanel({
+      state: base({
+        stage: 'form',
+        providerId: 'gmail',
+        values: { name: 'work' },
+        ...(appOrigin !== undefined ? { appOrigin } : {}),
+        oauthAppConfig: cfg(status({ source: null })),
+      }),
+    });
+
+    it('opens with the three kinds of account and what works for each', () => {
+      const html = googleSetup('https://app.recued.com');
+      expect(html).toContain('First, pick the way that keeps working for your account.');
+      expect(html).toContain('<strong>Google Workspace</strong>');
+      expect(html).toContain('<strong>Free Gmail, and you own a web domain:</strong>');
+      expect(html).toContain('<strong>Free Gmail, no domain:</strong> skip the app.');
+      // The no-domain route is complete enough to follow without leaving the page.
+      for (const value of ['imap.gmail.com', 'myaccount.google.com/apppasswords',
+        '[Gmail]/Sent Mail', 'smtp.gmail.com']) {
+        expect(html).toContain(value);
+      }
+      expect(html).toContain('Google Calendar has no password option');
+    });
+
+    it('never offers Testing as a way to connect', () => {
+      const html = googleSetup('https://app.recued.com');
+      expect(html).not.toMatch(/test users?/i);
+      expect(html).not.toMatch(/reconnect/i);
+      expect(html).toMatch(/Do NOT leave it in Testing/);
+    });
+
+    /** The owner went through it: "Advanced", then a link Google labels
+     *  "(unsafe)". Name the exact clicks and why the label is not a reason to stop. */
+    it('walks through the unverified-app screen by its real labels', () => {
+      const html = googleSetup('http://127.0.0.1:7717');
+      expect(html).toContain('Google hasn&rsquo;t verified this app');
+      expect(html).toContain('<strong>Advanced</strong>');
+      expect(html).toContain('<strong>Go to <em>your app&rsquo;s name</em> (unsafe)</strong>');
+      expect(html).toContain('this one is yours and talks only to your own server');
+    });
+
+    it('says what Branding needs: a verified domain of your own, not recued.com', () => {
+      const html = googleSetup('https://app.recued.com');
+      expect(html).toContain('verify it in Google Search Console');
+      expect(html).toContain('Do not add recued.com');
+      expect(html).toContain('Leave the logo empty');
+    });
+
+    /** Its callback is on recued.com (app.recued.com itself, or a LAN address
+     *  bouncing through it), and nobody but Recued can verify recued.com. */
+    it('on app.recued.com or a LAN address: this page cannot connect a published app', () => {
+      for (const origin of ['https://app.recued.com', 'http://192.168.1.20:7717']) {
+        const html = googleSetup(origin);
+        expect(html).toContain('this page cannot connect a published app');
+        expect(html).toContain('http://127.0.0.1:7717/webclient');
+        expect(html).toContain('ssh -L 7717:127.0.0.1:7717 you@your-server');
+      }
+    });
+
+    it("at the server's own address: its callback works with a published app", () => {
+      const html = googleSetup('http://127.0.0.1:7717');
+      expect(html).toContain('this page is open at the server&rsquo;s own address');
+      expect(html).not.toContain('this page cannot connect a published app');
+    });
+
+    it('carries none of the Microsoft guide', () => {
+      const html = googleSetup('https://app.recued.com');
+      expect(html).not.toContain('admin consent');
+      expect(html).not.toContain('http://localhost:7717/webclient');
+    });
+  });
+
+  describe('the Microsoft guide: who makes the app, and where to connect', () => {
+    const microsoftSetup = (appOrigin?: string): string => renderAccountsPanel({
+      state: base({
+        stage: 'form',
+        providerId: 'graph',
+        values: { name: 'office' },
+        ...(appOrigin !== undefined ? { appOrigin } : {}),
+        oauthAppConfig: cfg(status(), status({ source: null })),
+      }),
+    });
+
+    it('opens with personal against work or school, and no password way', () => {
+      const html = microsoftSetup('http://localhost:7717');
+      expect(html).toContain('Create a Microsoft OAuth app');
+      expect(html).toContain('First, check which kind of account you have.');
+      expect(html).toContain('<strong>Personal account</strong>');
+      expect(html).toContain('free Azure account');
+      expect(html).toContain('<strong>Work or school account</strong>');
+      expect(html).toContain('<strong>No password option:</strong>');
+    });
+
+    /** ⛔ The guide told EVERY account to register its own app. Since late
+     *  November 2025 Microsoft's default consent setting stops a staff member
+     *  approving Mail.* or Calendars.* for any app, whoever made it, so on a
+     *  work account the guide ended at "Need admin approval" with nothing on
+     *  screen saying why, or who could get past it. */
+    it('says a work account needs an admin, named by role, once for the organization', () => {
+      const html = microsoftSetup('http://localhost:7717');
+      expect(html).toContain('an admin must make the app and approve it');
+      for (const role of ['Global Administrator', 'Privileged Role Administrator',
+        'Cloud Application Administrator', 'Application Administrator']) {
+        expect(html).toContain(role);
+      }
+      expect(html).toContain('one app for the whole organization');
+      expect(html).toContain('<strong>Grant admin consent</strong>');
+      expect(html).toContain('Need admin approval');
+      expect(html).toContain('Approval required');
+      // A greyed-out button is the organization's policy, not Recued failing.
+      expect(html).toContain('Greyed out? You do not hold one of the roles above');
+    });
+
+    it('says what the shared secret opens: nothing without each person’s own sign-in', () => {
+      const html = microsoftSetup('http://localhost:7717');
+      expect(html).toContain('The secret names the app, not a person');
+      expect(html).toContain('without that person&rsquo;s own sign-in');
+    });
+
+    /** ⛔ It said "This page cannot connect the app" on app.recued.com too,
+     *  whose callback carried `?recued_relay=opener`. That callback is bare now
+     *  for Microsoft, so an app that takes personal accounts can register it. */
+    it('on app.recued.com: its callback works, and it is the bare cloud URL', () => {
+      const html = microsoftSetup('https://app.recued.com');
+      expect(html).toContain('This page is app.recued.com, so its callback (step 2 below) works.');
+      expect(html).not.toContain('This page cannot connect the app');
+      expect(html).toContain('<code class="accounts-oauth-redirect">https://app.recued.com/oauth-callback</code>');
+      expect(html).not.toContain('recued_relay');
+    });
+
+    /** A LAN page's callback names that page's address after a `?`, and Entra
+     *  refuses a query string for an app that takes personal accounts. */
+    it('on a LAN address: this page cannot connect the app, and says where can', () => {
+      const html = microsoftSetup('http://192.168.1.20:7717');
+      expect(html).toContain('This page cannot connect the app these steps make.');
+      expect(html).toContain('Connect from app.recued.com instead');
+      expect(html).toContain('http://localhost:7717/webclient');
+      expect(html).toContain('ssh -L 7717:127.0.0.1:7717 you@your-server');
+    });
+
+    /** The Azure portal will not take an `http` callback at 127.0.0.1. */
+    it('at 127.0.0.1: open the same server at localhost instead', () => {
+      const html = microsoftSetup('http://127.0.0.1:7717');
+      expect(html).toContain('Open this page at <code>http://localhost:7717/webclient</code> instead');
+      expect(html).toContain('or use app.recued.com');
+      expect(html).not.toContain('This page cannot connect the app');
+    });
+
+    it('at localhost: its callback works', () => {
+      const html = microsoftSetup('http://localhost:7717');
+      expect(html).toContain('This page is open at <code>localhost</code>');
+      expect(html).not.toContain('This page cannot connect the app');
+      expect(html).not.toContain('Open this page at');
+    });
+
+    /** The callback is typed on the registration form itself, so the address
+     *  has to be right before the first click in Azure. */
+    it('leads with the address, before the registration that asks for the callback', () => {
+      const html = microsoftSetup('http://192.168.1.20:7717');
+      const steps = html.slice(html.indexOf('accounts-oauth-guide-steps'));
+      expect(steps.indexOf('This page cannot connect the app')).toBeGreaterThan(-1);
+      expect(steps.indexOf('This page cannot connect the app'))
+        .toBeLessThan(steps.indexOf('New registration'));
+    });
+
+    it('carries none of the Google guide', () => {
+      const html = microsoftSetup('https://app.recued.com');
+      expect(html).not.toContain('imap.gmail.com');
+      expect(html).not.toContain('Search Console');
+      expect(html).not.toMatch(/Testing/);
+    });
+  });
+
+  it('gives Gmail\u2019s values where the IMAP form asks for them', () => {
+    const html = renderAccountsPanel({
+      state: base({ stage: 'form', providerId: 'imap', values: seedAccountFormValues(imap()) }),
+    });
+    expect(html).toContain('myaccount.google.com/apppasswords');
+    expect(html).toContain('imap.gmail.com');
+    expect(html).toContain('[Gmail]/Sent Mail');
+  });
+
   it('OAuth form, unknown config (null): preserves the legacy optional-settings path', () => {
     const html = renderAccountsPanel({
       state: base({

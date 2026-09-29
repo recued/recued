@@ -69,6 +69,7 @@ export interface ComposeRpcContextOptions {
     | 'checkpointStore'
     | 'commitStore'
     | 'gatedActionStore'
+    | 'settledRunResults'
     | 'mcpBodyVisibilityStore'
   >;
   app: Pick<
@@ -439,6 +440,7 @@ export const composeRpcContext = (
     checkpointStore: storage.checkpointStore,
     commitStore: storage.commitStore,
     gatedActionStore: storage.gatedActionStore,
+    settledRunResults: storage.settledRunResults,
     serverInstanceId: storage.serverInstanceId,
     pairing: storage.pairing,
     circuitStore,

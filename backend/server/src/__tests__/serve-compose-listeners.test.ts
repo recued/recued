@@ -263,6 +263,13 @@ const makeOptions = (
     watcherDispatcher: { tag: 'watcher-dispatcher' },
     calendarStack: undefined,
     mailStack: undefined,
+    // D-315 §5 — the fact events held since the mailboxes started, which
+    // composition opens once the triggers can hear them. ⚠ It RECORDS: an
+    // opener that no-ops cannot tell "opened" from "never opened".
+    mailFactEvents: { open: vi.fn(async () => {}) },
+    // D-124 — the new mail's events a boot scan emitted before the dispatcher
+    // subscribed: sealed as it composes, replayed once. Recording, as above.
+    bootEvents: { seal: vi.fn(), replay: vi.fn(async () => {}) },
     serviceStack: undefined,
     channelDispatchers: undefined,
     oauthClientConfigDeps: undefined,
@@ -581,6 +588,24 @@ describe('composeListeners', () => {
       error instanceof AggregateError && error.errors.includes(failure));
     expect(listenerMocks.handlerSet.close).toHaveBeenCalledTimes(1);
     expect(listenerMocks.coordinator.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the mail-fact events held since the mailboxes started, once', async () => {
+    const options = makeOptions();
+    await composeListeners(options);
+    const { open } = (options.collection as unknown as { mailFactEvents: { open: ReturnType<typeof vi.fn> } }).mailFactEvents;
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('seals the boot scan’s recorded mail events as the dispatcher composes, and replays them once, after', async () => {
+    const options = makeOptions();
+    await composeListeners(options);
+    const { seal, replay } = (options.collection as unknown as {
+      bootEvents: { seal: ReturnType<typeof vi.fn>; replay: ReturnType<typeof vi.fn> };
+    }).bootEvents;
+    expect(seal).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(seal.mock.invocationCallOrder[0]!).toBeLessThan(replay.mock.invocationCallOrder[0]!);
   });
 
   it('publishes the live bridge dispatcher after handler assembly and before listener coordination', async () => {

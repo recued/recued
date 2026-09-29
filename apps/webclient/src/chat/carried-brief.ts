@@ -42,11 +42,13 @@ export interface CarriedBriefModel {
   rows: readonly CarriedBriefRow[];
 }
 
+/** Nothing is carried — and so nothing is SHOWN. ⛔ This used to render a
+ *  heading ("Nothing carried yet") over the caveat, and the caveat's "This is
+ *  what Chat is carrying forward…" then pointed at nothing, so it read as a
+ *  caption for the conversation below it. The caveat qualifies ROWS; with no
+ *  rows there is nothing to qualify, and nothing to disclose. */
 export interface CarriedBriefEmptyModel {
   kind: 'empty';
-  heading: string;
-  caveat: string;
-  rows: readonly [];
 }
 
 export interface CarriedBriefLoadingModel {
@@ -58,8 +60,11 @@ export type CarriedBriefRenderModel =
   | CarriedBriefEmptyModel
   | CarriedBriefLoadingModel;
 
+/** Named as Settings names it ("Keep a running note"), so the two surfaces
+ *  describe one thing in one word. */
+const HEADING = "Chat's running note";
 const CAVEAT =
-  'This is what Chat is carrying forward, in its own words. It is not a '
+  "This is Chat's running note for this chat, in its own words. It is not a "
   + 'record of what you said. It can be missing things, or wrong. Your messages '
   + 'themselves are not changed.';
 
@@ -71,9 +76,11 @@ const asStrings = (v: unknown): readonly string[] =>
 /** (brief snapshot) → rows. `undefined` means the read has not landed;
  *  `null` means the server has no carry for this conversation.
  *
- *  ⛔ THE THREE STATES ARE KEPT APART DELIBERATELY. "Nothing carried yet" and
- *  "we have not asked" look identical on screen and mean opposite things —
- *  the same distinction the AI/Models usage panel keeps for the same reason. */
+ *  The three states stay apart in the model, and two of them look alike on
+ *  screen: neither `loading` nor `empty` renders anything. That is safe now
+ *  because neither CLAIMS anything — the old empty panel said "Nothing carried
+ *  yet", which was also shown with the running note switched off, where "yet"
+ *  promised a carry that would never come. */
 export const buildCarriedBriefModel = (
   brief: unknown | null | undefined,
 ): CarriedBriefRenderModel => {
@@ -81,9 +88,7 @@ export const buildCarriedBriefModel = (
   const record = brief !== null && typeof brief === 'object'
     ? (brief as Record<string, unknown>)
     : null;
-  if (record === null) {
-    return { kind: 'empty', heading: 'Nothing carried yet', caveat: CAVEAT, rows: [] };
-  }
+  if (record === null) return { kind: 'empty' };
   const rows: CarriedBriefRow[] = [];
   const intent = typeof record['intent'] === 'string' ? record['intent'].trim() : '';
   // ⚠ `intent` is the model's read of what you are working on and it DRIFTS by
@@ -102,12 +107,10 @@ export const buildCarriedBriefModel = (
   for (const t of asStrings(record['findings'])) {
     rows.push({ field: 'findings', text: t, from_owner: false });
   }
-  if (rows.length === 0) {
-    return { kind: 'empty', heading: 'Nothing carried yet', caveat: CAVEAT, rows: [] };
-  }
+  if (rows.length === 0) return { kind: 'empty' };
   return {
     kind: 'carrying',
-    heading: 'What Chat is carrying',
+    heading: HEADING,
     caveat: CAVEAT,
     rows,
   };

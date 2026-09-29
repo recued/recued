@@ -28,6 +28,8 @@ import {
   SharedCompareAndSetValidationError,
   SharedCompareAndSetValueTooLargeError,
   SharedKeyInvalidError,
+  SharedPatchInvalidError,
+  SharedPatchValueTooLargeError,
   SharedValueSerializationError,
   SubkeyWriteError,
   ValueTooLargeError,
@@ -124,6 +126,7 @@ const mapStoreError = (e: unknown): RpcError => {
   }
   if (
     e instanceof SharedCompareAndSetValidationError
+    || e instanceof SharedPatchInvalidError
     || e instanceof SharedValueSerializationError
   ) {
     return new RpcError('bad_request', e.message, 400);
@@ -142,7 +145,11 @@ const mapStoreError = (e: unknown): RpcError => {
       operation: e.operation,
     });
   }
-  if (e instanceof ValueTooLargeError || e instanceof SharedCompareAndSetValueTooLargeError) {
+  if (
+    e instanceof ValueTooLargeError
+    || e instanceof SharedCompareAndSetValueTooLargeError
+    || e instanceof SharedPatchValueTooLargeError
+  ) {
     return new RpcError('payload_too_large', e.message, 413);
   }
   if (e instanceof RpcError) return e;
@@ -281,6 +288,67 @@ export const handleSharedCompareAndSet = async (
       revision: result.revision,
       created: result.created,
       bytes_written: result.bytes,
+    };
+  } catch (e) {
+    throw mapStoreError(e);
+  }
+};
+
+// ────────────────────────────────────────────────────────────────
+// shared.patch — kernel-only (`shared-patch`); no client rpc
+// ────────────────────────────────────────────────────────────────
+
+export interface SharedPatchResponse {
+  ok: true;
+  key: string;
+  /** A record exists at the key. */
+  found: boolean;
+  /** The record now holds the patch; false ⇒ nothing was written. */
+  applied: boolean;
+  bytes_written: number;
+}
+
+/** Change named fields of one existing durable record, leaving the rest as it
+ *  is (`SharedStore.patch`). No record, or a `match` that no longer holds, is an
+ *  answer and not an error — `found` / `applied` say which. */
+export const handleSharedPatch = async (
+  deps: SharedRpcDeps,
+  args: { key?: unknown; set?: unknown; unset?: unknown; match?: unknown },
+  ctx: { instance_id?: string | null } = {},
+): Promise<SharedPatchResponse> => {
+  const raw = args as Record<string, unknown>;
+  const key = own(raw, 'key');
+  if (typeof key !== 'string') {
+    throw new RpcError('bad_request', 'key is required', 400);
+  }
+  if (!keyRoutesToDurable(key)) {
+    throw new RpcError(
+      'bad_request',
+      `shared.patch only accepts 'data.shared.*' keys`,
+      400,
+    );
+  }
+  const set = own(raw, 'set');
+  assertWriteAdmitted(deps, set ?? {});
+  const durableKey = requireDurableKey(key);
+  const author = deps.getAuthorId?.(ctx) ?? 'rpc';
+  try {
+    const result = await deps.store.patch(
+      durableKey,
+      {
+        set: set as Record<string, unknown> | null | undefined,
+        unset: own(raw, 'unset') as string[] | null | undefined,
+        match: own(raw, 'match') as Record<string, unknown> | null | undefined,
+      },
+      { author_id: author },
+    );
+    if (result.applied) await logActivity(deps, 'shared_write', key, `patch;bytes=${result.bytes}`);
+    return {
+      ok: true,
+      key,
+      found: result.found,
+      applied: result.applied,
+      bytes_written: result.applied ? result.bytes : 0,
     };
   } catch (e) {
     throw mapStoreError(e);

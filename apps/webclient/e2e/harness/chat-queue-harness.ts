@@ -12,7 +12,10 @@ const subscribe = ((kind: string, callback: (event: unknown) => void) => {
   const list = subscribers.get(kind) ?? new Set(); list.add(callback); subscribers.set(kind, list);
   return () => list.delete(callback);
 }) as BootstrapChatRouteOptions['subscribe'];
-let route = bootstrapChatRoute({ root: document.getElementById('app')!, conn, initialSessionId: 's', subscribe });
+// `?start` opens on the start view (the webclient's landing, no chat open),
+// where a first message creates its conversation.
+const opening = new URLSearchParams(location.search).has('start') ? {} : { initialSessionId: 's' };
+let route = bootstrapChatRoute({ root: document.getElementById('app')!, conn, ...opening, subscribe });
 Object.assign(window, {
   queueTestEvent: (event: { kind: string }) => { for (const callback of subscribers.get(event.kind) ?? []) callback(event); },
   queueTestRefresh: () => route.refresh(),

@@ -51,10 +51,13 @@ import type {
   WebclientConnectionStatusController,
 } from '../realtime/connection-status.js';
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
 
 export const UPDATES_PAGE_ATTR = 'data-recued-updates-page';
 export const UPDATES_PAGE_STATE_ATTR = 'data-recued-updates-page-state';
 export const UPDATES_VERSION_ATTR = 'data-recued-updates-version';
+/** The web app build this browser is running, beside the server's version. */
+export const UPDATES_WEBAPP_VERSION_ATTR = 'data-recued-updates-webapp-version';
 export const UPDATES_CHECK_BTN_ATTR = 'data-recued-updates-check';
 export const UPDATES_STATUS_ATTR = 'data-recued-updates-status';
 export const UPDATES_ERROR_ATTR = 'data-recued-updates-error';
@@ -62,12 +65,10 @@ export const UPDATES_AVAILABLE_ATTR = 'data-recued-updates-available';
 export const UPDATES_APPLY_BTN_ATTR = 'data-recued-updates-apply';
 export const UPDATES_FORCE_APPLY_BTN_ATTR = 'data-recued-updates-force-apply';
 export const UPDATES_APPLY_RESULT_ATTR = 'data-recued-updates-apply-result';
-/** Present on the available-release card when this install is OUTSIDE the staged
- *  rollout cohort, i.e. clicking Update is an early adoption. */
-export const UPDATES_ROLLOUT_NOTICE_ATTR = 'data-recued-updates-rollout-notice';
-/** On the Update button while it is ARMED but not yet confirmed for an
- *  out-of-cohort (early) install. */
-export const UPDATES_ROLLOUT_CONFIRM_ATTR = 'data-recued-updates-rollout-confirm';
+/** On the Update button once the first click has turned it into "Confirm update". */
+export const UPDATES_APPLY_CONFIRM_ATTR = 'data-recued-updates-apply-confirm';
+/** The Cancel beside "Confirm update": back to "Update to <version>", nothing sent. */
+export const UPDATES_APPLY_CANCEL_ATTR = 'data-recued-updates-apply-cancel';
 export const UPDATES_MODE_SELECT_ATTR = 'data-recued-updates-mode';
 export const UPDATES_MODE_NOTE_ATTR = 'data-recued-updates-mode-note';
 export const UPDATES_ROLLBACK_BTN_ATTR = 'data-recued-updates-rollback';
@@ -384,10 +385,10 @@ export interface UpdatesPageState {
   check: ReleaseCheckResponse | null;
   checkError: string | null;
   applying: boolean;
-  /** The owner has armed an early (out-of-cohort) install on this card. Reset by
-   *  every fresh check, so a new release has to be confirmed on its own terms
-   *  rather than inheriting consent given for the previous one. */
-  rolloutConfirmed: boolean;
+  /** The owner pressed "Update to <version>" and the button now asks "Confirm
+   *  update". Consumed by the apply it confirms, and reset by a check that finds
+   *  a different release, so consent never carries over to another version. */
+  confirmArmed: boolean;
   applyResult: UpdateApplyResponse | null;
   /** D-257 — the latest ledger phase of a run the server accepted, so the page
    *  can say something true while a multi-minute apply is in flight rather than
@@ -497,7 +498,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     check: null,
     checkError: null,
     applying: false,
-    rolloutConfirmed: false,
+    confirmArmed: false,
     applyResult: null,
     applyPhase: null,
     applyError: null,
@@ -835,6 +836,14 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const versionEl = make('p', {
     attrs: { [UPDATES_VERSION_ATTR]: '', tabindex: '-1' },
   });
+  // ⛔ THE PAGE SAID WHICH SERVER, NEVER WHICH APP. Checking whether a browser had
+  // picked up a web app deploy meant opening DevTools and reading
+  // `caches.keys()` (asked 2026-09-28). The service-worker cache name IS the
+  // build — it moves on every deploy — so show it as the web app's version.
+  const webAppVersionEl = make('p', {
+    text: `Web app ${WEBCLIENT_SHELL_CACHE_NAME.replace('webclient-shell-', '')} (this browser)`,
+    attrs: { [UPDATES_WEBAPP_VERSION_ATTR]: '' },
+  });
   const checkBtn = make('button', {
     text: 'Check for updates',
     className: 'rx-btn rx-btn-secondary',
@@ -907,6 +916,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   root.appendChild(tabProgressEl);
   root.appendChild(receiptRecoveryEl);
   root.appendChild(versionEl);
+  root.appendChild(webAppVersionEl);
   root.appendChild(checkBtn);
   root.appendChild(statusEl);
   root.appendChild(errorEl);
@@ -928,6 +938,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
    *  when the apply starts and cleared by the terminal `update.progress` event —
    *  which is the only place that knows the run is over. */
   let pendingApplyProgress: ServerUpdateTabProgress | null = null;
+  /** The release the running apply installs, so a reconnect can tell whether
+   *  it landed without a receipt (see `confirmUpdateLanded`). */
+  let applyingToVersion: string | null = null;
   /** True only between dispatch and the apply rpc reply. Progress is parked
    * before dispatch so disposal can own it; it can no longer double as this
    * ordering sentinel for a terminal that beats acceptance. */
@@ -1184,27 +1197,6 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     if (a.is_major) {
       availableEl.appendChild(make('p', { text: 'This is a major version update.' }));
     }
-    // ⛔ SAY WHEN THIS INSTALL IS AHEAD OF THE QUEUE. The spec calls an
-    // out-of-cohort manual apply "an EXPLICIT, confirmed, audited act" — and the
-    // card said nothing at all, so an owner clicking Update could not know they
-    // were taking a release the fleet had not been given yet. The percentage
-    // comes from the server; an older server omits it, and then this says the
-    // honest half rather than rendering "undefined%".
-    if (a.in_rollout_cohort === false) {
-      const notice = make('p', {
-        text: typeof a.rollout_pct === 'number'
-          ? `This release is in staged rollout (${a.rollout_pct}%) and this server is not in the `
-            + 'cohort yet. Updating now installs it early.'
-          : 'This release is in staged rollout and this server is not in the cohort yet. '
-            + 'Updating now installs it early.',
-      });
-      // The attribute goes on the PARAGRAPH, not the card: a test that asserts
-      // "quiet when in cohort" against a container's textContent passes
-      // vacuously in a fake DOM that does not aggregate text. A locator that
-      // exists or does not cannot pass for the wrong reason.
-      notice.setAttribute(UPDATES_ROLLOUT_NOTICE_ATTR, '');
-      availableEl.appendChild(notice);
-    }
     const docker = state.check?.docker;
     if (docker) {
       availableEl.appendChild(make('p', {
@@ -1230,25 +1222,26 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
-    // ⛔ AN OUT-OF-COHORT UPDATE ASKS FIRST. The card DISCLOSED the staged
-    // rollout and the ledger RECORDED the bypass, but the first ordinary click
-    // still went straight through — so "explicit, CONFIRMED, audited" was only
-    // ever two of three. The first click arms; the second installs. Same shape
-    // as the major-bump confirm directly below, which is the precedent for
-    // "this is unusual, say so twice".
-    const needsRolloutConfirm = a.in_rollout_cohort === false && !state.rolloutConfirmed;
+    // ⛔ EVERY UPDATE ASKS ONCE, IN THE SAME WORDS: Update to <version> →
+    // Confirm update → Updating…. A release this server had not been offered
+    // yet used to say "Update now — install early?" under a paragraph about
+    // staged rollout (0%) and cohorts, while any other release installed on one
+    // click. The owner, 2026-09-28: "no one built an app with that message or
+    // flow". The confirm click is still the consent the server needs for such a
+    // release (`confirm_rollout`, sent from doApply); it just is not narrated.
+    const armed = state.confirmArmed && !state.applying;
     const applyBtn = make('button', {
       text: state.applying
         ? 'Updating…'
         : readServerUpdateProgress() !== null
           ? 'Update already in progress'
-          : needsRolloutConfirm
-            ? 'Update now — install early?'
-            : 'Update now',
+          : armed
+            ? 'Confirm update'
+            : `Update to ${a.version}`,
       className: 'rx-btn rx-btn-primary',
       attrs: { type: 'button', [UPDATES_APPLY_BTN_ATTR]: '' },
     });
-    if (needsRolloutConfirm) applyBtn.setAttribute(UPDATES_ROLLOUT_CONFIRM_ATTR, '');
+    if (armed) applyBtn.setAttribute(UPDATES_APPLY_CONFIRM_ATTR, '');
     const localApplyPending = state.applying;
     const serverActionElsewhere =
       !localApplyPending && readServerUpdateProgress() !== null;
@@ -1262,16 +1255,32 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       applyBtn.setAttribute('aria-busy', 'true');
     }
     applyBtn.addEventListener('click', () => {
-      if (a.in_rollout_cohort === false && !state.rolloutConfirmed) {
-        // Arm, do not apply. Re-render so the button says what the second click
+      // "Updating…" is only aria-disabled (it keeps focus), so it still takes
+      // clicks. One of those must not arm the NEXT update while this one runs,
+      // or the button comes back as "Confirm update" instead of starting over.
+      if (state.applying) return;
+      if (!state.confirmArmed) {
+        // Ask, do not apply. Re-render so the button says what the next click
         // will do rather than silently changing meaning.
-        state.rolloutConfirmed = true;
+        state.confirmArmed = true;
         render();
         return;
       }
       void doApply(false);
     });
     availableEl.appendChild(applyBtn);
+    if (armed && !serverActionElsewhere) {
+      const cancelBtn = make('button', {
+        text: 'Cancel',
+        className: 'rx-btn',
+        attrs: { type: 'button', [UPDATES_APPLY_CANCEL_ATTR]: '' },
+      });
+      cancelBtn.addEventListener('click', () => {
+        state.confirmArmed = false;
+        render();
+      });
+      availableEl.appendChild(cancelBtn);
+    }
     // The server refuses a major bump until forced; surface an explicit confirm.
     let forceBtn: HTMLElement | null = null;
     if (state.applyResult?.status === 'major-blocked') {
@@ -2098,7 +2107,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       // A new check is a new decision: consent given for the previous
       // release must not carry over to this one.
       if (state.check?.available?.version !== res.available?.version) {
-        state.rolloutConfirmed = false;
+        state.confirmArmed = false;
       }
       state.check = res;
       const retryMarker =
@@ -2169,6 +2178,11 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     }
     const retryMarker =
       opts.credentialRotationServerUpdateContinuity?.read() ?? null;
+    // The confirm is used up by the apply it confirms: whatever this run's
+    // outcome, the next attempt starts again from "Update to <version>".
+    const ownerConfirmed = state.confirmArmed;
+    state.confirmArmed = false;
+    applyingToVersion = state.check?.available?.version ?? null;
     state.applying = true;
     state.applyError = null;
     // ⛔⛔ THE RECEIPT IS MINTED AND LATCHED BEFORE THE REQUEST LEAVES. The server
@@ -2220,9 +2234,12 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         // `release_identity` on `update-available`, so the pair is present
         // whenever it matters; an older server omits it AND ignores the flag.
         ...(reviewed === undefined ? {} : { expected_release_identity: reviewed, strict: true }),
-        // The audit half of "explicit, CONFIRMED, audited": this click is the
-        // second one, and `state.rolloutConfirmed` is what the first one set.
-        ...(state.check?.available?.in_rollout_cohort === false && state.rolloutConfirmed
+        // The audit half of "explicit, CONFIRMED, audited": the owner confirmed
+        // this update (or, for `force`, answered the major-version question
+        // after confirming it), and a release this server has not been offered
+        // yet needs that consent on the wire — a strict apply is refused
+        // without it.
+        ...(state.check?.available?.in_rollout_cohort === false && (force || ownerConfirmed)
           ? { confirm_rollout: true }
           : {}),
         // ⚠ An older server drops this and mints its own; the reply is still
@@ -2339,7 +2356,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       // the whole reason the server refused. Re-check so the card shows what is
       // actually offered, and make the owner say it again.
       if (state.applyResult.status === 'review-stale') {
-        state.rolloutConfirmed = false;
+        state.confirmArmed = false;
         void doCheck();
       }
       // An apply that proves nothing is installable reconciles the rail badge —
@@ -2550,8 +2567,47 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   const detachCredentialRetry =
     opts.credentialRotationServerUpdateContinuity?.subscribe(() => render())
     ?? (() => undefined);
+  /** ⛔ AND IF NOTHING SETTLES THE RECORD EITHER. The bootstrap's receipt check
+   *  is what normally clears it after the restart; this is the check that needs
+   *  no receipt at all. When this tab reconnects while the page still says
+   *  "Updating…", ask the server its version directly — `doCheck` stands down
+   *  while any update is on record. If it now runs the release being installed,
+   *  the update landed: retire this page's record, and the tab-record handler
+   *  ends the run and re-reads the card. */
+  const confirmUpdateLanded = async (): Promise<void> => {
+    const owned = pendingApplyProgress;
+    const target = applyingToVersion;
+    if (opts.runCheck === undefined || owned === null || target === null) return;
+    let res: ReleaseCheckResponse;
+    try {
+      res = await opts.runCheck();
+    } catch {
+      return;
+    }
+    if (disposed || !state.applying || pendingApplyProgress !== owned) return;
+    if (res.current_version !== target) return;
+    await clearServerUpdateProgress(owned);
+    if (disposed || !state.applying) return;
+    // No shared record answered for it (a page mounted without tab
+    // convergence, or a record that moved on): the version already said the
+    // update landed, so end the run here.
+    state.applying = false;
+    pendingApplyLease?.release();
+    pendingApplyLease = null;
+    pendingApplyProgress = null;
+    render();
+    void doCheck(true);
+  };
+  let lastConnectionStatus = opts.serverConnectionStatus?.status() ?? null;
   const detachServerStatus =
-    opts.serverConnectionStatus?.onStatus(() => render())
+    opts.serverConnectionStatus?.onStatus((next) => {
+      const reconnected = lastConnectionStatus !== 'connected' && next === 'connected';
+      lastConnectionStatus = next;
+      render();
+      if (reconnected && state.applying && !applyAcceptancePending) {
+        void confirmUpdateLanded();
+      }
+    })
     ?? (() => undefined);
   /** D-257 — the apply's OUTCOME. The rpc answers `applying`; the terminal emit
    *  carries the status the rpc used to return, plus the `operation_id` the
@@ -2675,8 +2731,49 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       if (state.rollbackError === ROLLBACK_OWNER_CONFLICT_COPY) {
         state.rollbackError = null;
       }
+      // ⛔⛔ THE TERMINAL THAT NEVER CAME. The final `update.progress` goes out
+      // just before the server restarts to finish the update, and it can die with
+      // the old process. The bootstrap still learns the outcome — it asks the NEW
+      // server about this run's receipt and settles the shared record — but
+      // `state.applying` is this page's own, and nothing reset it: the button said
+      // "Updating…" for 25 minutes over an update a new tab showed as done
+      // (26.9.2 → 26.9.26, reported 2026-09-28). So follow the shared record for
+      // the run this page owns. Not while the apply rpc is still unanswered: that
+      // window rewrites the record itself.
+      //
+      // ⚠ ONLY TWO MOVES COUNT: the record CLEARED, or THIS run's record moved to
+      // `awaiting_reconnect`. A changed operation id is not one — the page itself
+      // re-stamps the record with the reply's id (an older server mints its own, or
+      // none), and treating that as "another run" ended an apply that was running.
+      const owned = pendingApplyProgress;
+      const pendingOnRecord = state.applying && !applyAcceptancePending && owned !== null;
+      const ownedRunRestarting =
+        pendingOnRecord && hint.progress !== null
+        && hint.progress.phase === 'awaiting_reconnect'
+        && hint.progress.operation === owned!.operation
+        && hint.progress.operationId === owned!.operationId;
+      const ownedRunMoved = ownedRunRestarting || (pendingOnRecord && hint.progress === null);
+      if (ownedRunMoved) {
+        state.applying = false;
+        pendingApplyLease?.release();
+        pendingApplyLease = null;
+        if (ownedRunRestarting) {
+          // What the page's own terminal handler does for `restarting`: the
+          // reconnect check now owns the record.
+          state.applyResult = {
+            status: 'restarting',
+            ...(owned!.operationId === undefined ? {} : { operation_id: owned!.operationId }),
+          } as typeof state.applyResult;
+        } else {
+          // Settled: read the version, which is the one thing that says how it
+          // went.
+          pendingApplyProgress = null;
+        }
+      }
       render();
-      if (
+      if (ownedRunMoved && !ownedRunRestarting) {
+        void doCheck(true);
+      } else if (
         previousProgress?.phase === 'awaiting_reconnect'
         && hint.progress === null
       ) {

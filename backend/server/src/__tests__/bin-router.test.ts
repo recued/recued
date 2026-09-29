@@ -505,6 +505,31 @@ describe('production router', () => {
     expect(existsSync(dbPath)).toBe(false);
   });
 
+  /** ⛔ `recued version` printed the help page, and the help page never said
+   *  which version it was (reported 2026-09-28). */
+  it('prints the version for `recued version` too, opening nothing', () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'must-not-exist.db');
+
+    const flag = runBin(['--version']);
+    const word = runBin(['version', '--db', dbPath]);
+
+    expect(word.status).toBe(0);
+    expect(word.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(word.stdout.trim()).toBe(flag.stdout.trim());
+    expect(word.stderr).toBe('');
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  it('help names the version on its first line and says how to print it', () => {
+    const version = runBin(['--version']).stdout.trim();
+    const result = runBin(['--help']);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`recued ${version} — `);
+    expect(result.stdout).toContain('version, --version, -v');
+  });
+
   it('reverts a staged update before importing SQLite or the ordinary update profile', () => {
     const dir = makeTmp();
     const binDir = join(dir, 'bin');

@@ -275,6 +275,7 @@ export {
 } from './connection-schemas/index.js';
 // D-145 PA5 — form-renderer substrate (rendering + DOM read).
 export {
+  formatTimestampForInput,
   renderField,
   renderForm,
   readField,

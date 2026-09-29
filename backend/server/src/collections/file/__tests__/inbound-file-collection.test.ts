@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { createStorageGate } from '@recued/storage-gate';
-import { createWarehouseEventBus } from '@recued/warehouse-events';
+import { createWarehouseEventBus, type WarehouseEvent } from '@recued/warehouse-events';
 
 import { createBlobStore, type BlobStore } from '../../../storage/blob-store.js';
 import {
@@ -182,6 +182,46 @@ describe('data.file.received ingest', () => {
         source_id: 'drop-both',
       }),
     ).rejects.toThrow(/exactly one of bytes, storage_ref, or src_path/);
+  });
+});
+
+describe('the same bytes published again (D-124)', () => {
+  /** A collection whose events are kept, as the mail ingest publishes an
+   *  attachment: no verdict of its own. */
+  const published = () => {
+    const events: WarehouseEvent[] = [];
+    const bus = createWarehouseEventBus();
+    bus.subscribe('**', (event) => { events.push(event); });
+    const collection = createInboundFileCollection({
+      db: h.db, blobs: h.blobs, bus, slug: 'received', now: () => 1_000,
+      gate: createStorageGate({ quota: 100 * 1024 * 1024, reservePct: 10, surface: 'collection:file:received' }),
+    });
+    const attach = (bytes: Buffer, filename = 'receipt.pdf') => collection.ingest({
+      bytes, filename, mime_type: 'application/pdf', origin: 'mail_attachment', source_id: 'mail:1:part-1',
+    });
+    return { collection, events, attach };
+  };
+
+  it('keeps the scanner’s verdict for the same bytes: an attachment it flagged stays blocked after a restart', async () => {
+    const { collection, attach } = published();
+    const first = await attach(Buffer.from('%PDF-1.4 invoice'));
+    expect(first.hot_fields.scan_status).toBe('unscanned');
+    collection.setScanStatus(first.record_id, 'flagged');
+    // A restart's scan reads the email again and publishes its attachment again.
+    const again = await attach(Buffer.from('%PDF-1.4 invoice'));
+    expect(again.hot_fields.scan_status).toBe('flagged');
+    // Other bytes under the same attachment: the verdict was not about them.
+    const changed = await attach(Buffer.from('%PDF-1.4 another invoice'));
+    expect(changed.hot_fields.scan_status).toBe('unscanned');
+  });
+
+  it('emits nothing for the same bytes published again, and names what changed otherwise', async () => {
+    const { events, attach } = published();
+    await attach(Buffer.from('%PDF-1.4 invoice'));
+    await attach(Buffer.from('%PDF-1.4 invoice'));
+    expect(events.map((event) => event.event_kind)).toEqual(['created']);
+    await attach(Buffer.from('%PDF-1.4 invoice'), 'renamed.pdf');
+    expect(events.map((event) => [event.event_kind, event.changed_fields ?? null])).toEqual([['created', null], ['updated', ['filename']]]);
   });
 });
 

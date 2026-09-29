@@ -76,8 +76,18 @@ export type ValueHintType =
    *  ⚠ Distinct from a SCHEDULE's `run_at` (when the dish fires, i.e.
    *  when Recued acts). This is a time the RECIPE reasons about — an
    *  embargo, an event date, or a target's own scheduled-publish field.
-   *  A recipe can need both at once; do not merge them. */
+   *  A recipe can need both at once; do not merge them.
+   *
+   *  The webclient's widget sends it as ISO 8601 WITH the browser's offset
+   *  (`variable-widgets.ts`) — the owner's zone is known only there. */
   | 'datetime'
+  /** A calendar DAY, emitted as `YYYY-MM-DD`: no time of day and no zone, so it
+   *  means the same wherever it is read. Stored as UTC midnight — the "whole
+   *  day" convention a task's due date, a commitment's promise date and a
+   *  project's target date already use (`due-day.ts`): a work-entity write
+   *  takes the day as it is, and `date_parse` reads it the same way. Use it for
+   *  a date that names a day; `datetime` is for an instant. */
+  | 'date'
   /** A reference to one of the owner's stored Records rows, chosen from a
    *  search rather than typed. `entity` names which kind the picker searches.
    *

@@ -22,6 +22,7 @@
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
 import { readConfinedTempBytes } from '../../execution/run-scratch.js';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { MAIL_RFC_MESSAGE_ID_HOT_FIELD } from './mail-twin-resolver.js';
 import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
@@ -41,13 +42,19 @@ import {
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
   MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
 } from '@recued/contracts';
-import { isMailReconciliationId, isTempFileRef, type TempFileRef } from '@recued/contracts';
+import {
+  isMailReconciliationId,
+  isMailSendClaimDelivered,
+  isTempFileRef,
+  type TempFileRef,
+} from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 import { IngredientError } from '@recued/ingredients';
 
 import type { BlobStore } from '../../storage/blob-store.js';
 // D-207 slice 3d — the pre-dispatch claim: the general no-resend fence.
 import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
+import { mailSendClaimNeedsOwner } from '../../mail-send-outcome-ask.js';
 import type { CollectionInstanceStore } from '../instance-store.js';
 import type { CollectionRegistry } from '../registry.js';
 import {
@@ -96,6 +103,7 @@ import type {
   MailMessageDirection,
   MailSentReconciliationQuery,
   MailSentReconciliationResult,
+  MailSyncFailureKind,
   OutgoingAttachment,
   ProviderSyncEvent,
 } from './provider.js';
@@ -131,6 +139,47 @@ export interface MailInboundAttachmentDeps {
   authored_by?: string;
 }
 
+/** D-315 — an attachment the ingest materialized into `data.file`. */
+export interface MailUpsertAttachment {
+  readonly file_id: string;
+  readonly filename: string;
+  readonly mime_type: string;
+}
+
+/** D-315 — what the collection knows about one upsert, for a derivation hook
+ *  that must tell news from past mail (a mail fact triggers only on news). */
+export interface MailUpsertContext {
+  readonly slug: string;
+  readonly record_id: string;
+  /** The mailbox's own address, as the provider knows it; `''` when it does not. */
+  readonly account_email: string;
+  /** No row had this `record_id` before: the message is seen for the first
+   *  time. A restart's re-list and a flag change are not first sightings. */
+  readonly first_seen: boolean;
+  /** The mailbox's first backfill had finished when this row landed, so a
+   *  first sighting now is mail that arrived, not mail the backfill found. */
+  readonly backfill_complete: boolean;
+  /** The configured backfill window, in days. */
+  readonly backfill_days: number;
+  /** How long the mailbox keeps mail, in days: mail older than this was
+   *  pruned, so a first sighting of it is mail found again, never news. */
+  readonly retention_days?: number;
+  /** The attachments materialized for this message, in its order. One whose
+   *  ingest failed is absent (the failure is a collection error already). */
+  readonly attachments: readonly MailUpsertAttachment[];
+}
+
+/** D-315 — a row that landed for the first time, before its attachments are
+ *  fetched: what a hook needs to record that it is news, so a stop or a crash
+ *  before the upsert hook runs does not make it past mail. */
+export interface MailStoredContext {
+  readonly slug: string;
+  readonly record_id: string;
+  readonly backfill_complete: boolean;
+  readonly backfill_days: number;
+  readonly retention_days?: number;
+}
+
 export interface CreateMailCollectionOptions {
   db: Database.Database;
   blobs: BlobStore;
@@ -145,13 +194,32 @@ export interface CreateMailCollectionOptions {
   auditLog?: AuditLogStore;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
+  /** The first wait before a failed first backfill is tried again
+   *  (`MAIL_FIRST_SCAN_RETRY_MS`). Tests shorten it. */
+  firstScanRetryMs?: number;
   /** D-121 Phase 1 — derivation hook fired after a successful upsert.
    *  The contact-derive integration uses this to materialize
    *  `data.contact` rows from From/To/CC headers; left undefined the
    *  collection runs unchanged. Errors thrown by the hook are
    *  swallowed via `bumpError` so a contact write failure never
-   *  rolls back a verified mail ingest. */
-  onMessageUpserted?: (msg: CanonicalMessage) => void;
+   *  rolls back a verified mail ingest.
+   *
+   *  D-315 adds the context (`MailUpsertContext`): the mail-fact writer
+   *  reads it to decide whether a fact may trigger. */
+  onMessageUpserted?: (msg: CanonicalMessage, ctx: MailUpsertContext) => void;
+  /** D-315 — a message stored for the first time, called the moment its row
+   *  lands (before the attachments' awaits, which a stop can interrupt).
+   *  Errors are swallowed via `bumpError`. */
+  onMessageStored?: (msg: CanonicalMessage, ctx: MailStoredContext) => void;
+  /** D-315 — rows a delete path removed: a provider-side delete, the
+   *  collection's `delete`, or retention (age or storage pressure). Called
+   *  once the rows are gone; what was derived from them goes too (a mail
+   *  fact follows its email, ruling 29). Errors are swallowed via
+   *  `bumpError`, like `onMessageUpserted`. */
+  onRecordsRemoved?: (slug: string, record_ids: readonly string[]) => void;
+  /** D-315 — a row re-keyed by a provider-verified move (IMAP and Graph
+   *  mint a new id on move): the message is the same, only its id changed. */
+  onRecordRekeyed?: (slug: string, from_record_id: string, to_record_id: string) => void;
   /** D-124 Phase 2.1 — instance store reference used to flip
    *  `collection_instances.backfill_complete` to true after the
    *  provider's `initialScan` resolves successfully. Optional so
@@ -197,6 +265,11 @@ export { MAIL_SEND_ATTACHMENT_MAX_BYTES, MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING }
  *  folder a Gmail message is "in", and `folder` is a filterable hot field —
  *  the disagreement would surface as a recipe's list query intermittently
  *  missing a message depending on how it was last touched. */
+/** A failed first backfill is tried again after a minute, then twice as long
+ *  each time, up to an hour. */
+export const MAIL_FIRST_SCAN_RETRY_MS = 60_000;
+export const MAIL_FIRST_SCAN_RETRY_MAX_MS = 3_600_000;
+
 export const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string => {
   // Gmail: the first label in a deterministic priority order so
   // searches like `folder = 'INBOX'` behave predictably across
@@ -208,6 +281,21 @@ export const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []):
     if (labels.includes(p)) return p;
   }
   return labels[0] ?? '';
+};
+
+/** A message with the labels and folder its row holds now — a verified
+ *  mutation while its attachments were fetched changed them there (D-315: the
+ *  upsert hook reads them). */
+const withRowLabels = (msg: CanonicalMessage, row: CollectionRecord): CanonicalMessage => {
+  const labels = row.hot_fields.labels;
+  const folder = row.hot_fields.folder;
+  return {
+    ...msg,
+    ...(Array.isArray(labels)
+      ? { labels: labels.filter((label): label is string => typeof label === 'string') }
+      : msg.labels !== undefined ? { labels: [] } : {}),
+    folder_or_label: typeof folder === 'string' ? folder : msg.folder_or_label,
+  };
 };
 
 const normalizeMailAddress = (value: string): string => value.trim().toLowerCase();
@@ -280,6 +368,20 @@ export const mailFtsText = (record: CollectionRecord): string => {
   push(hot.to);
   push(hot.cc);
   return parts.join('\n');
+};
+
+/** D-124 — what changed between a message's stored row and the row it
+ *  becomes: its hot fields by name, and `body` and `received_at`. Nothing,
+ *  for a message listed again as it was — a restart's scan reads every stored
+ *  message again, and that is no update. */
+export const mailChangedFields = (prev: CollectionRecord, next: CollectionRecord): string[] => {
+  const keys = [...new Set([...Object.keys(prev.hot_fields), ...Object.keys(next.hot_fields)])].sort();
+  const changed = keys.filter((key) => !isDeepStrictEqual(prev.hot_fields[key], next.hot_fields[key]));
+  if ((prev.body_inline ?? null) !== (next.body_inline ?? null) || (prev.blob_hash ?? null) !== (next.blob_hash ?? null)) {
+    changed.push('body');
+  }
+  if (prev.received_at !== next.received_at) changed.push('received_at');
+  return changed;
 };
 
 /** Exported for unit testing (mirrors `mailFtsText`) — maps a
@@ -599,10 +701,15 @@ export const createMailCollection = (
     auditLog: opts.auditLog,
     now: () => nowOf(),
     config: () => ({ retentionDays: opts.config().retention_days }),
+    onPruned: (record_ids) => notifyRemoved(record_ids),
   });
 
   let state: CollectionState = 'idle';
   let lastIndexedAt = 0;
+  /** D-315 — where the row each upsert still in flight wrote lives now: a
+   *  verified move gives an email a new id while its attachments download,
+   *  and the upsert's hook reads it there. */
+  const upserting = new Map<symbol, string>();
   let localErrorCount = 0;
   let stopSync: (() => Promise<void>) | undefined;
   /** Unsubscribe for the provider's per-attempt outcome stream. */
@@ -610,6 +717,18 @@ export const createMailCollection = (
   let startInFlight: Promise<void> | null = null;
   let syncGeneration = 0;
   let closed = false;
+  /** A first backfill that failed is tried again later (see `retryFirstScan`). */
+  let scanRetry: ReturnType<typeof setTimeout> | null = null;
+  /** The provider's word on its last failed attempt: `'auth'` when the
+   *  credential was refused. */
+  let lastProviderFailure: MailSyncFailureKind | undefined;
+  let scanRetryMs = opts.firstScanRetryMs ?? MAIL_FIRST_SCAN_RETRY_MS;
+  const clearScanRetry = (): void => {
+    if (scanRetry !== null) {
+      clearTimeout(scanRetry);
+      scanRetry = null;
+    }
+  };
 
   const bumpError = (msg: string, err: unknown): void => {
     localErrorCount++;
@@ -694,9 +813,11 @@ export const createMailCollection = (
    *  so a 30 s poll loop costs at most one row write a minute. */
   const onProviderOutcome = (outcome: MailSyncOutcome): void => {
     if (outcome.ok) {
+      lastProviderFailure = undefined;
       touchSyncClock(outcome.at);
       return;
     }
+    lastProviderFailure = outcome.failure;
     // A failure is reported immediately, un-throttled: the throttle exists to
     // bound redundant SUCCESS writes, and delaying bad news is the opposite of
     // the point. `reportSyncOutcome` is idempotent on an unchanged row.
@@ -724,13 +845,15 @@ export const createMailCollection = (
     reportSyncOutcome('healthy', now);
   };
 
+  /** Returns the attachments it materialized, for the upsert hook (D-315). */
   const materializeInboundAttachments = async (
     msg: CanonicalMessage,
     mailRecordId: string,
     shouldContinue: () => boolean,
-  ): Promise<void> => {
+  ): Promise<MailUpsertAttachment[]> => {
+    const materialized: MailUpsertAttachment[] = [];
     const attachments = msg.attachments ?? [];
-    if (attachments.length === 0) return;
+    if (attachments.length === 0) return materialized;
 
     const deps = opts.inboundAttachmentDeps?.();
     if (!deps) {
@@ -738,24 +861,28 @@ export const createMailCollection = (
         `mail attachment ingest skipped for ${msg.source_id}: inbound attachment deps not wired`,
         new Error('mail_attachment_deps_not_configured'),
       );
-      return;
+      return materialized;
     }
 
     for (const [idx, part] of attachments.entries()) {
-      if (!shouldContinue()) return;
+      if (!shouldContinue()) return materialized;
       const sourcePartId = part.source_part_id || `part-${idx}`;
       try {
         const bytes = await part.fetchBytes();
-        if (!shouldContinue()) return;
+        if (!shouldContinue()) return materialized;
+        const mimeType = detectMailAttachmentMimeType(bytes, part.mime_type);
         const fileRecord = await deps.fileIngestor.ingest({
           bytes,
           filename: part.filename,
-          mime_type: detectMailAttachmentMimeType(bytes, part.mime_type),
+          mime_type: mimeType,
           origin: 'mail_attachment',
           source_id: `${mailRecordId}:${sourcePartId}`,
+          // D-124 — an old email's attachment, stored by the mailbox's first
+          // scan, is past mail's: it starts no received-file trigger.
+          ...(backfillComplete() ? {} : { in_drain: true }),
           now: nowOf(),
         });
-        if (!shouldContinue()) return;
+        if (!shouldContinue()) return materialized;
         await deps.attach(
           {
             file_id: fileRecord.record_id,
@@ -765,9 +892,29 @@ export const createMailCollection = (
           },
           deps.attachDeps,
         );
+        materialized.push({ file_id: fileRecord.record_id, filename: part.filename, mime_type: mimeType });
       } catch (err) {
         bumpError(`mail attachment ingest failed for ${msg.source_id}:${sourcePartId}`, err);
       }
+    }
+    return materialized;
+  };
+
+  /** D-315 — tell the derivation hooks which rows went. */
+  const notifyRemoved = (record_ids: readonly string[]): void => {
+    if (!opts.onRecordsRemoved || record_ids.length === 0) return;
+    try { opts.onRecordsRemoved(slug, record_ids); }
+    catch (err) { bumpError(`mail onRecordsRemoved hook failed for ${record_ids.length} record(s)`, err); }
+  };
+
+  /** Read on every first sighting rather than cached: `markBackfillComplete`
+   *  flips it once, mid-life, and a cached `false` would keep every later
+   *  message silent until a restart. */
+  const backfillComplete = (): boolean => {
+    try { return opts.instances?.get('mail', slug)?.backfill_complete === true; }
+    catch (err) {
+      bumpError('mail backfill state read failed', err);
+      return false;
     }
   };
 
@@ -793,25 +940,70 @@ export const createMailCollection = (
       // past a row this generation never committed.
       assertActive();
       const prev = table.upsert(record);
-      if (prev) emitter.updated(record.record_id, prev.hot_fields);
-      else emitter.created(record.record_id);
-      lastIndexedAt = record.modified_at;
-      // A message landing is the strongest possible proof that this mailbox is
-      // syncing, so it is the honest anchor for `last_synced_at`. Writing the
-      // clock ONLY at sync-lifecycle transitions would leave it frozen at boot
-      // time while a healthy 30 s poll loop kept working — "last synced 6 h
-      // ago" on a mailbox that is fine, which is a fresh lie in place of the
-      // old one. Throttled, because this runs once per ingested message and a
-      // 30-day backfill is thousands of them.
-      touchSyncClock();
-      await materializeInboundAttachments(msg, record.record_id, shouldContinue);
-      // The row may already be durable here; rejecting still matters because a
-      // provider that outlived stop must not persist a newer checkpoint. Replay
-      // is idempotent and will converge attachments/hooks under the next owner.
-      assertActive();
-      if (opts.onMessageUpserted) {
-        try { opts.onMessageUpserted(msg); }
-        catch (err) { bumpError(`mail onMessageUpserted hook failed for ${msg.source_id}`, err); }
+      const moving = Symbol(record.record_id);
+      upserting.set(moving, record.record_id);
+      try {
+        if (prev) {
+          // Only a change is an update, named by what changed: a restart's scan
+          // reads every stored message again, and each would otherwise wake
+          // every `updated` trigger and re-run the enrichment cascade.
+          const changed = mailChangedFields(prev, record);
+          if (changed.length > 0) emitter.updated(record.record_id, prev.hot_fields, changed);
+        } else emitter.created(record.record_id);
+        // D-315 — news is news from the moment the row lands: the upsert hook
+        // runs after the attachments' awaits, and a stop in between would make a
+        // replay see the row as old.
+        if (!prev && opts.onMessageStored) {
+          try {
+            opts.onMessageStored(msg, {
+              slug,
+              record_id: record.record_id,
+              backfill_complete: backfillComplete(),
+              backfill_days: opts.config().backfill_days,
+              retention_days: opts.config().retention_days,
+            });
+          } catch (err) { bumpError(`mail onMessageStored hook failed for ${msg.source_id}`, err); }
+        }
+        lastIndexedAt = record.modified_at;
+        // A message landing is the strongest possible proof that this mailbox is
+        // syncing, so it is the honest anchor for `last_synced_at`. Writing the
+        // clock ONLY at sync-lifecycle transitions would leave it frozen at boot
+        // time while a healthy 30 s poll loop kept working — "last synced 6 h
+        // ago" on a mailbox that is fine, which is a fresh lie in place of the
+        // old one. Throttled, because this runs once per ingested message and a
+        // 30-day backfill is thousands of them.
+        touchSyncClock();
+        const attachments = await materializeInboundAttachments(msg, record.record_id, shouldContinue);
+        // The row may already be durable here; rejecting still matters because a
+        // provider that outlived stop must not persist a newer checkpoint. Replay
+        // is idempotent and will converge attachments/hooks under the next owner.
+        assertActive();
+        // D-315 — deleted while its attachments were fetched: what the hook
+        // derives (a fact, a contact) must not outlive the row it came from.
+        // Moved, it is read where it is now: its old id is no row, and a folder
+        // no sync reads would never bring it back.
+        const recordId = upserting.get(moving) ?? record.record_id;
+        const current = table.get(recordId);
+        if (opts.onMessageUpserted && current !== null) {
+          try {
+            const firstSeen = !prev;
+            // Relabelled or filed elsewhere meanwhile (a verified mutation), it
+            // is read as its row holds it: a template may test a label.
+            opts.onMessageUpserted(withRowLabels(msg, current), {
+              slug,
+              record_id: recordId,
+              account_email: provider.accountEmail,
+              first_seen: firstSeen,
+              // Only a first sighting asks: nothing reads it otherwise.
+              backfill_complete: firstSeen ? backfillComplete() : true,
+              backfill_days: opts.config().backfill_days,
+              retention_days: opts.config().retention_days,
+              attachments,
+            });
+          } catch (err) { bumpError(`mail onMessageUpserted hook failed for ${msg.source_id}`, err); }
+        }
+      } finally {
+        upserting.delete(moving);
       }
     } catch (err) {
       bumpError(`mail ingest failed for ${msg.source_id}`, err);
@@ -835,7 +1027,10 @@ export const createMailCollection = (
     if (event.kind === 'deleted') {
       const recordId = recordIdFor(event.source_id);
       const prev = table.delete(recordId);
-      if (prev) emitter.deleted(recordId, prev.hot_fields);
+      if (prev) {
+        emitter.deleted(recordId, prev.hot_fields);
+        notifyRemoved([recordId]);
+      }
       return;
     }
     if (!event.message) {
@@ -908,15 +1103,54 @@ export const createMailCollection = (
     // of a message that still exists. Byte accounting nets to zero either
     // way; the ordering is purely about never dropping the last reference.
     table.upsert(next);
-    if (nextRecordId !== record_id) table.delete(record_id);
+    if (nextRecordId !== record_id) {
+      table.delete(record_id);
+      // An upsert still writing it follows it (D-315).
+      for (const [moving, id] of upserting) if (id === record_id) upserting.set(moving, nextRecordId);
+      if (opts.onRecordRekeyed) {
+        try { opts.onRecordRekeyed(slug, record_id, nextRecordId); }
+        catch (err) { bumpError(`mail onRecordRekeyed hook failed for ${record_id}`, err); }
+      }
+    }
 
-    emitter.updated(nextRecordId, prev.hot_fields);
+    // A mutation that changed nothing (marking a read message read) is no
+    // update. A move to a new id is: it changes the id's `message_id`.
+    const changed = mailChangedFields(prev, next);
+    if (changed.length > 0) emitter.updated(nextRecordId, prev.hot_fields, changed);
     lastIndexedAt = next.modified_at;
     return next;
   };
 
   const isCurrentGeneration = (generation: number): boolean =>
     !closed && syncGeneration === generation;
+
+  /** D-124 / D-315 §5 — a mailbox whose first backfill never finished treats
+   *  every message as found by it, so nothing it receives is new and no
+   *  trigger fires until a restart's scan succeeds. The live loop still runs;
+   *  the scan is tried again by starting over — stop, then start, so it never
+   *  runs beside the live loop — waiting twice as long each time, up to an
+   *  hour. A stop in between cancels it: the next start scans anyway. */
+  /** A refused credential is not tried again on a timer: repeated failed
+   *  sign-ins can lock an account, and signing in again starts a scan. */
+  const credentialRefused = (err: unknown): boolean =>
+    classifySyncFailure(err) === 'expired' || lastProviderFailure === 'auth';
+
+  const retryFirstScan = (generation: number): void => {
+    clearScanRetry();
+    const delay = scanRetryMs;
+    scanRetryMs = Math.min(scanRetryMs * 2, MAIL_FIRST_SCAN_RETRY_MAX_MS);
+    scanRetry = setTimeout(() => {
+      scanRetry = null;
+      if (!isCurrentGeneration(generation)) return;
+      void sync.stop()
+        .then(() => sync.start())
+        .catch((err: unknown) => {
+          bumpError('mail first backfill retry failed', err);
+          if (!closed && !backfillComplete() && !credentialRefused(err)) retryFirstScan(syncGeneration);
+        });
+    }, delay);
+    scanRetry.unref?.();
+  };
 
   /** Durable state reporting spans the whole sync lifetime, not just the start
    *  call. Generation checks make that reporting part of the owned lifecycle:
@@ -984,12 +1218,14 @@ export const createMailCollection = (
       // The provider cursor is now stable; this write is idempotent on restart.
       try { opts.instances?.markBackfillComplete('mail', slug); }
       catch (err) { bumpError('mail markBackfillComplete failed', err); }
+      scanRetryMs = opts.firstScanRetryMs ?? MAIL_FIRST_SCAN_RETRY_MS;
       await backfillRecorder.finish();
     } catch (err) {
       if (!shouldContinue()) return;
       bumpError('mail initialScan failed', err);
       await backfillRecorder.finish('failed');
       reportSyncOutcome(classifySyncFailure(err));
+      if (!backfillComplete() && !credentialRefused(err)) retryFirstScan(generation);
     }
     if (!shouldContinue()) return;
 
@@ -1028,6 +1264,7 @@ export const createMailCollection = (
     async stop() {
       // Invalidate provider callbacks before any asynchronous teardown.
       syncGeneration += 1;
+      clearScanRetry();
       state = 'disconnected';
       const activeStart = startInFlight;
       const stops: Promise<void>[] = [];
@@ -1574,10 +1811,10 @@ export const createMailCollection = (
       // nobody has yet attempted this message, and dispatching in any other is the
       // double-send this substrate exists to prevent.
       if (result === 'existing') {
-        // Provider acknowledged, or provider source truth confirmed. The message went
-        // out. Re-sending it is the one thing we must never do — so we do not, and we
-        // say so rather than lying about having sent something new.
-        if (claim.status === 'sent' || claim.status === 'reconciled') {
+        // Provider acknowledged, provider source truth confirmed, or the owner said
+        // so. The message went out. Re-sending it is the one thing we must never do —
+        // so we do not, and we say so rather than lying about having sent something new.
+        if (isMailSendClaimDelivered(claim.status)) {
           return {
             source_id: '',
             message_id: claim.provider_message_id ?? '',
@@ -1602,16 +1839,24 @@ export const createMailCollection = (
         // an unresolved attempt gets RESOLVED rather than REPEATED. A recipe that would
         // rather risk a duplicate than stall simply omits the id and keeps ordinary
         // retry semantics.
+        //
+        // The way out is the OWNER's (`mail-send-outcome-ask.ts`): for an attempt
+        // that has ended, the send dispatcher asks them "Did this email go out?".
+        const ownerQuestion = mailSendClaimNeedsOwner(claim, nowOf());
         throw new IngredientError(
           'MAIL_SEND_CLAIM_UNRESOLVED',
-          claim.status === 'ambiguous'
-            ? `mail-send: provider source truth for '${args.reconciliation_id}' is `
-              + `contradictory (${claim.ambiguity_reason ?? 'unknown'}), so re-sending could `
-              + 'duplicate a message the customer already has. This one needs a human.'
-            : `mail-send: an earlier attempt at '${args.reconciliation_id}' never reported `
-              + 'its outcome, so re-sending could duplicate a message the customer already '
-              + 'has. Reconcile it against provider source truth (core.mail.sent.reconcile) '
-              + 'first.',
+          !ownerQuestion
+            ? `An attempt to send this to ${claim.recipient} started moments ago and has `
+              + 'not finished, so Recued will not start another. Try again in a few minutes.'
+            : claim.status === 'ambiguous'
+              ? `Your Sent folder has more than one message that could be this one to `
+                + `${claim.recipient} (${claim.ambiguity_reason ?? 'unclear'}), so Recued will `
+                + 'not send it again on its own. It has asked you whether it went out — '
+                + 'answer under the bell; if it did not, the next run sends it.'
+              : `Recued could not tell whether an earlier attempt to send this to `
+                + `${claim.recipient} went out, so it will not send it again on its own. It `
+                + 'has asked you whether it went out — answer under the bell; if it did '
+                + 'not, the next run sends it.',
           { slug, reconciliation_id: args.reconciliation_id, claim_status: claim.status },
         );
       }
@@ -1650,7 +1895,25 @@ export const createMailCollection = (
       // mail did not go out — an SMTP timeout after the server accepted the message
       // is an error to us and a delivered mail to the customer. Withdrawing the claim
       // here would let a retry double-send, which is the exact thing the claim exists
-      // to prevent. It stays `claimed`, and only provider source truth may settle it.
+      // to prevent.
+      //
+      // What the attempt DID learn is recorded, though. A provider that PROVED the
+      // message never reached it (`details.not_sent` — it refused it, or the send
+      // failed before getting there) ends the claim `not_sent`, and the next attempt
+      // sends. Anything else ends it `unknown`: the send dispatcher asks the owner
+      // whether it went out, and nothing re-sends until they answer or source truth
+      // settles it.
+      if (args.reconciliation_id !== undefined && claimRevision !== null) {
+        const notSent = err instanceof IngredientError && err.details?.not_sent === true;
+        try {
+          const ended = { reconciliation_id: args.reconciliation_id, expected_revision: claimRevision, now: nowOf() };
+          if (notSent) claims.markNotSent(ended);
+          else claims.markUnknown(ended);
+        } catch (claimErr) {
+          // The send's own failure is the answer; a claim write must not mask it.
+          bumpError('mail send claim could not record how the attempt ended', claimErr);
+        }
+      }
       const code = err instanceof IngredientError ? err.code : 'UNKNOWN';
       const message = err instanceof Error ? err.message : String(err);
       await emitAudit(buildDetail(false, '', { error: { code, message } }));
@@ -1741,7 +2004,11 @@ export const createMailCollection = (
     applyVerifiedMutation,
     accountEmail: provider.accountEmail,
     upsert: (record) => { table.upsert(record); },
-    delete: (record_id) => table.delete(record_id) !== null,
+    delete: (record_id) => {
+      const removed = table.delete(record_id) !== null;
+      if (removed) notifyRemoved([record_id]);
+      return removed;
+    },
     get: (record_id) => table.get(record_id),
     list: (query: CollectionListQuery) => table.list(query),
     search: (query: CollectionSearchQuery): CollectionSearchMatch[] => table.search(query),

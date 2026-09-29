@@ -152,13 +152,14 @@ import type {
   DiagnosticResponse,
   HostnameProjection,
   RpcRequest,
+  ServerExecuteResponse,
   ServerRpcRegistry,
   UpdateOperationStatusResponse,
   WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
 import {
-  encodeBearerSubprotocol, canBindHostname } from '@recued/contracts';
+  encodeBearerSubprotocol, canBindHostname, MAIL_TEMPLATE_DRAFT_RPC_TIMEOUT_MS } from '@recued/contracts';
 import {
   bindRecordRefSearchToRecipe,
   createRecordRefSearchCaller,
@@ -456,6 +457,7 @@ import {
   type DataTaskMarkDoneCaller,
   type WorkEntitySourceListCaller,
 } from './data/bootstrap-data-route.js';
+import type { MailFactCallers } from './data/mail-facts-surface.js';
 import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
 import {
   bootstrapLogsRoute,
@@ -616,6 +618,7 @@ import {
   type ActionReceiptFollow,
   type ActionReceiptDeliveryStorage,
 } from './action-receipt-follow.js';
+import { createHeldRunFollower } from './held-run-follow.js';
 import {
   mountApprovalAttentionPopover,
   type AttentionInactiveConnectionRecoveryHint,
@@ -3200,6 +3203,15 @@ export const bootstrapWebclient = async (
       present: (toast) => notifyToasts?.push(toast),
     });
   }
+  // A run held for approval, followed to its end so the page that was told
+  // "held" shows what it did once the owner approves it anywhere. Route-
+  // independent, like the receipt follow above; the Packs and Recipes pages
+  // hand it the held results they show.
+  const heldRunFollower = createHeldRunFollower({
+    subscribe: subscriber.on,
+    getAction: (args) => rpcConn.call('execution.action.get', args),
+    getRun: (args) => rpcConn.call('execution.get', args),
+  });
 
   // 4. Reception page shell — constructed once because the `#reception`
   // route owns its broadcast-backed Settings projection.
@@ -7104,6 +7116,48 @@ export const bootstrapWebclient = async (
     switchWorkTracker.track(
       (input: typeof args) => rpcConn.call('form_response.export', input),
     )(args);
+  // D-315 §6 — Data → Received → Mail facts. The writes are tracked so a
+  // server switch waits for them.
+  const dataMailFactCallers: MailFactCallers = {
+    listFacts: (args) => rpcConn.call('mail_fact.facts.list', args),
+    listTemplates: () => rpcConn.call('mail_fact.template.list', undefined),
+    getTemplate: (args) => rpcConn.call('mail_fact.template.get', args),
+    createTemplate: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.create', input))(args),
+    updateTemplate: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.update', input))(args),
+    deleteTemplate: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.delete', input))(args),
+    getStandards: () => rpcConn.call('mail_fact.standards.get', undefined),
+    setStandards: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.standards.set', input))(args),
+    readEmail: (args) => rpcConn.call('mail_fact.email.read', args),
+    previewTemplate: (args) => rpcConn.call('mail_fact.template.preview', args),
+    // D-315 §6.1 — Draft with AI: waits longer than the server waits for the
+    // model, so an answer the owner pays for is not dropped by a screen that
+    // gave up first.
+    draftTemplate: (args) => rpcConn.call('mail_fact.template.draft', args, { timeout: MAIL_TEMPLATE_DRAFT_RPC_TIMEOUT_MS }),
+    // D-315 §4.5 — the kinds of email the owner makes.
+    listTypes: () => rpcConn.call('mail_fact.type.list', undefined),
+    createType: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.type.create', input))(args),
+    updateType: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.type.update', input))(args),
+    deleteType: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.type.delete', input))(args),
+    listSenders: (args) => rpcConn.call('mail_fact.senders.list', args),
+    emailStatus: (args) => rpcConn.call('mail_fact.email.get', args),
+    listRecipes: () => recipesListCaller(),
+    createTrigger: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('triggers.create', input))(args),
+    getBackfill: () => rpcConn.call('mail_fact.backfill.get', undefined),
+    startBackfill: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.backfill.start', input))(args),
+    cancelBackfill: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.backfill.cancel', input))(args),
+    dismissSender: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.senders.dismiss', input))(args),
+  };
   // Wire the §D.L2 drawer "Create" action seat (its shell thunk resolves here)
   // to the shared Create overlay — the same capture targets the L1 composer
   // [✎ Create] button opens, with the same local-write callers as Data. Track
@@ -10206,8 +10260,16 @@ export const bootstrapWebclient = async (
         // The pack's operations open the shared Run | Schedule modal. Owned at
         // the route so one-modal-at-a-time holds; `onRan` hands the returned
         // output back to Pack Use, where it becomes the current task result.
-        openRunModal: (entry, onRan, prefill) => {
+        openRunModal: (entry, onRanHere, prefill) => {
           if (packsRunModal !== null || packsSheetImport !== null) return;
+          // A held run's result replaces its "held" note once the owner
+          // approves it — in the tray, on another device, anywhere.
+          const onRan = onRanHere === undefined
+            ? undefined
+            : (result: ServerExecuteResponse): void => {
+                onRanHere(result);
+                heldRunFollower.follow(result, onRanHere);
+              };
           // D-292 — an import that declares its file, its check switch and its
           // columns gets the guided flow: upload → match the file's own columns →
           // a real server check → import. Re-checked here (`sheetImportFor`), not
@@ -10416,6 +10478,8 @@ export const bootstrapWebclient = async (
           // The detail view's Definition: the full body, which list rows no longer carry.
           recipeGetCaller: (args) => rpcConn.call('recipe.get', args),
           recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
+          // A held run's result replaces its "held" note once it is approved.
+          followHeldRun: heldRunFollower.follow,
           runnabilityCaller: recipesRunnabilityCaller,
           piiCaller: recipesPiiCaller,
           ...(recipesToolCatalogCaller !== undefined
@@ -10601,6 +10665,7 @@ export const bootstrapWebclient = async (
         formResponseUpdateCaller: dataFormResponseUpdateCaller,
         formResponseSetStateCaller: dataFormResponseSetStateCaller,
         formResponseExportCaller: dataFormResponseExportCaller,
+        mailFactCallers: dataMailFactCallers,
         recipeListCaller: recipesListCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         manageRescheduleLinkCaller,
@@ -10689,6 +10754,13 @@ export const bootstrapWebclient = async (
           : deepLinkSegment('data', 1) !== undefined
             ? { initialEntityId: deepLinkSegment('data', 1) }
             : {}),
+        // D-315 §6 — the third level of a tab that has one (Mail facts).
+        ...(sourceRecordAddress === null
+          && sourceRecordVerificationAddress === null
+          && dataEntityVerificationAddress === null
+          && deepLinkSegment('data', 2) !== undefined
+          ? { initialDetailId: deepLinkSegment('data', 2) }
+          : {}),
         ...(sourceRecordAddress?.returnToChat !== undefined
           ? { chatReturn: sourceRecordAddress.returnToChat }
           : {}),
@@ -10798,6 +10870,9 @@ export const bootstrapWebclient = async (
           createAutomationSchedule,
         ),
         triggersCreateCaller: switchWorkTracker.track(createAutomationTrigger),
+        // D-315 §5.1 — the "A mail fact" form's "Read by" picker.
+        mailFactTemplatesCaller: () => rpcConn.call('mail_fact.template.list', undefined),
+        mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
         fileRefSearchCaller,
         // R21 — keep the router's cached activeHash in lockstep with in-page
         // tab/detail history writes (which fire no hashchange).
@@ -11287,6 +11362,10 @@ export const bootstrapWebclient = async (
               initialServerTabId: deepLinkSegment('settings', 1),
               ...(deepLinkSegment('settings', 1) === 'setup'
                 ? { initialAiModelsView: 'chat-setup' as const }
+                : {}),
+              ...(deepLinkSegment('settings') === 'ai-models'
+                && deepLinkSegment('settings', 1) !== undefined
+                ? { initialAiModelsTab: deepLinkSegment('settings', 1) }
                 : {}),
               ...(initialSellerAddress !== null
                 ? { initialSellerAddress }
@@ -12300,6 +12379,7 @@ export const bootstrapWebclient = async (
           saveCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.save', args),
           ),
+          mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
@@ -12325,6 +12405,7 @@ export const bootstrapWebclient = async (
           webhookDisarmCaller: switchWorkTracker.track(
             (args) => rpcConn.call('recipe.webhook.disarm', args),
           ),
+          mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
@@ -13906,6 +13987,8 @@ export const bootstrapWebclient = async (
     ) return;
     actionReceiptFollow?.setConnected(true);
     void actionReceiptFollow?.reconcile();
+    // Events missed while away may have been a followed run finishing.
+    heldRunFollower.recheck();
   };
 
   const fireEventsSubscribe = async (generation: number): Promise<void> => {
@@ -14318,6 +14401,7 @@ export const bootstrapWebclient = async (
       // clear its pending auto-dismiss timers before `detachBroadcast()`
       // stops feeding the subscriber.
       if (actionReceiptFollow !== null) actionReceiptFollow.dispose();
+      heldRunFollower.dispose();
       if (notifyToasts !== null) notifyToasts.dispose();
       tokenRotation.dispose();
       rpcConn.dispose();

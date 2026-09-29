@@ -2241,11 +2241,77 @@ describe('R24 — Recipes route: run + schedule modal', () => {
 
     expect(shellHtml(rig.root)).toContain('Awaiting approval');
     expect(shellHtml(rig.root)).toContain('role="status" aria-live="polite"');
-    expect(shellHtml(rig.root)).toContain('held for approval');
+    expect(shellHtml(rig.root)).toContain('This run is waiting for approval.');
     expect(shellHtml(rig.root)).not.toContain(RECIPES_ROUTE_RESULT_SECTION_ATTR);
     expect(shellHtml(rig.root)).not.toContain('held output must not render');
 
     rig.route.dispose();
+  });
+
+  it('follows a held run: its own result replaces the note once approved, and never a result shown since', async () => {
+    const held = executeResponse({
+      success: false,
+      output: { render: [], sidebar: [] },
+      awaiting_approval: true,
+      action_ref: 'act-1',
+    });
+    const execute = vi.fn<RecipeExecuteCaller>()
+      .mockResolvedValueOnce(held)
+      .mockResolvedValueOnce(executeResponse({
+        output: { render: [{ type: 'text', data: 'a later run of my own' }], sidebar: [] },
+      }));
+    const follows: Array<{
+      held: ServerExecuteResponse;
+      deliver: (next: ServerExecuteResponse, later: { replaces: ServerExecuteResponse }) => void;
+      stop: ReturnType<typeof vi.fn>;
+    }> = [];
+    const followHeldRun = vi.fn((
+      shown: ServerExecuteResponse,
+      deliver: (next: ServerExecuteResponse, later: { replaces: ServerExecuteResponse }) => void,
+    ) => {
+      const stop = vi.fn();
+      follows.push({ held: shown, deliver, stop });
+      return stop;
+    });
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeExecuteCaller: execute,
+      followHeldRun,
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('daily-brief');
+    await rig.route.confirmRun();
+    expect(shellHtml(rig.root)).toContain('Awaiting approval');
+    // Only a held result is followed, and it is the very one on screen.
+    expect(followHeldRun).toHaveBeenCalledTimes(1);
+    expect(follows[0]!.held).toBe(held);
+
+    // Approved elsewhere; the run's own result arrives.
+    follows[0]!.deliver(
+      executeResponse({ output: { render: [{ type: 'text', data: 'minutes mailed to 3 people' }], sidebar: [] } }),
+      { replaces: held },
+    );
+    let html = shellHtml(rig.root);
+    expect(html).toContain('Run completed');
+    expect(html).toContain('minutes mailed to 3 people');
+    expect(html).not.toContain('Awaiting approval');
+
+    // A second run of the owner's own is now on screen; a stale late result for
+    // the old hold must not pull the page back.
+    rig.route.openRunModal('daily-brief');
+    await rig.route.confirmRun();
+    expect(followHeldRun).toHaveBeenCalledTimes(1);
+    follows[0]!.deliver(
+      executeResponse({ output: { render: [{ type: 'text', data: 'stale late result' }], sidebar: [] } }),
+      { replaces: held },
+    );
+    html = shellHtml(rig.root);
+    expect(html).toContain('a later run of my own');
+    expect(html).not.toContain('stale late result');
+
+    rig.route.dispose();
+    expect(follows[0]!.stop).toHaveBeenCalledTimes(1);
   });
 
   it('announces a terminated run and keeps returned output non-actionable (D-195 P3)', async () => {
@@ -2273,7 +2339,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     const html = shellHtml(rig.root);
     expect(html).toContain('Run terminated');
     expect(html).not.toContain('Awaiting approval');
-    expect(html).not.toContain('held for approval');
+    expect(html).not.toContain('waiting for approval');
     expect(html).toContain('role="status" aria-live="polite"');
     expect(html).not.toContain(RECIPES_ROUTE_RESULT_SECTION_ATTR);
     expect(html).not.toContain('Must not run');

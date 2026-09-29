@@ -19,6 +19,7 @@
 
 import type {
   EventTrigger,
+  MailFactTypeSpec,
   PreparePreapproval,
   PreapprovalResult,
   RecipeInvocation,
@@ -93,7 +94,11 @@ export type RunModalTriggersCreateCaller = (args: {
   /** Required by the `triggers.create` rpc (the wire layer always sends
    *  `publisherId ?? recipe.publisher_id`). */
   publisher_id: string;
-  pattern: string;
+  /** A bus pattern — or the shorthand below (D-315 §5.1: "A mail fact"). */
+  pattern?: string;
+  on?: string;
+  fields?: string[];
+  where?: Record<string, string | number | boolean>;
   /** Config overlay for this trigger's headless fires. The server mints
    *  a managed dish to hold it (empty ⇒ omitted; fires on recipe
    *  defaults). */
@@ -111,6 +116,38 @@ export type RunModalTriggersUpdateCaller = (args: {
 export type RunModalTriggersDeleteCaller = (args: {
   trigger_id: string;
 }) => Promise<{ ok: true }>;
+
+/** D-315 §5.1 — a template the "A mail fact" form can narrow to. */
+export interface RunModalMailFactTemplate {
+  readonly template_id: string;
+  readonly name: string;
+  readonly type: string;
+  /** Off: it reads nothing, so a trigger narrowed to it waits. */
+  readonly active?: boolean;
+}
+
+export type RunModalMailFactTemplatesCaller = () => Promise<{
+  templates: readonly RunModalMailFactTemplate[];
+}>;
+
+/** D-315 §4.5 — the kinds of email the owner made, beside the built-in ones. */
+export type RunModalMailFactTypesCaller = () => Promise<{
+  types: readonly MailFactTypeSpec[];
+}>;
+
+/** What sets the recipe off: an event pattern, or a mail fact (D-315 §5.1). */
+export type RunModalTriggerKind = 'pattern' | 'mail_fact';
+
+/** The "A mail fact" form: the kind of email (`''`: any kind that has what it
+ *  watches — rulings 42, 43), the values whose change wakes it (none = every
+ *  change), one "only when" value, and the template it was read by. */
+export interface RunModalMailFactDraft {
+  readonly type: string;
+  readonly fields: readonly string[];
+  readonly where_variable: string;
+  readonly where_value: string;
+  readonly template_id: string;
+}
 
 /** The mutable UI state for one open instance. */
 export interface RunModalState {
@@ -173,6 +210,13 @@ export interface RunModalState {
   triggers: readonly EventTrigger[] | null;
   /** The "Add trigger" bus-pattern input (server validates on create). */
   pattern_text: string;
+  /** D-315 §5.1 — which kind of trigger the Add form makes. */
+  trigger_kind: RunModalTriggerKind;
+  mail_fact: RunModalMailFactDraft;
+  /** The owner's templates, loaded when the mail-fact form opens; null until then. */
+  mail_fact_templates: readonly RunModalMailFactTemplate[] | null;
+  /** The kinds of email the owner made (§4.5); none until loaded. */
+  mail_fact_types: readonly MailFactTypeSpec[];
   /** A trigger mutation is in flight. */
   trigger_mutating: boolean;
   /** Last trigger-tab error. */
@@ -220,6 +264,12 @@ export interface WireRunModalOptions {
   triggersCreate?: RunModalTriggersCreateCaller;
   triggersUpdate?: RunModalTriggersUpdateCaller;
   triggersDelete?: RunModalTriggersDeleteCaller;
+  /** D-315 §5.1 — the owner's mail templates, for the "A mail fact" form's
+   *  "Read by" picker. Absent ⇒ no template narrowing is offered. */
+  mailFactTemplates?: RunModalMailFactTemplatesCaller;
+  /** D-315 §4.5 — the owner's kinds of email, offered with the built-in ones.
+   *  Absent ⇒ the built-in kinds only. */
+  mailFactTypes?: RunModalMailFactTypesCaller;
   /** Overrides the publisher threaded into `schedules.create`. Defaults
    *  to the recipe entry's `publisher_id` (recipes-route parity). */
   publisherId?: string;
@@ -275,6 +325,10 @@ export interface RunModalHandle {
   removeSchedule(scheduleId: string): Promise<void>;
   /** Set the "Add trigger" pattern text (mirrors the input). R21. */
   setPatternText(text: string): void;
+  /** D-315 §5.1 — switch the Add form between a pattern and a mail fact. */
+  setTriggerKind(kind: RunModalTriggerKind): void;
+  /** D-315 §5.1 — set the "A mail fact" form (merged over what it holds). */
+  setMailFact(draft: Partial<RunModalMailFactDraft>): void;
   /** Create a trigger from the pattern text. R21. */
   addTrigger(): Promise<void>;
   /** Pause / resume one trigger. R21. */

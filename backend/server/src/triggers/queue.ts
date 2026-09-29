@@ -21,13 +21,18 @@
  *    - At most TRIGGER_QUEUE_MAX_KEYS distinct keys are retained. Existing
  *      keys still coalesce at the ceiling; a new key is refused once full so
  *      an external event storm cannot grow the server heap without bound.
+ *    - D-315 — except a mail fact's event: it is one email's news about a
+ *      thing, announced once, which nothing delivers again. It is never
+ *      refused at the ceiling and never coalesced. Its producers that can
+ *      wait (a backfill that runs recipes, an AI answer) wait for `room`
+ *      first, which bounds how far the queue grows past the marks.
  *
  *  Errors raised by `processEvent` are swallowed at the queue layer.
  *  The dispatcher's existing try/catch already handles recipe failures
  *  (sets `last_error`, increments the 24h error counter); the queue's
  *  swallow is defense-in-depth against errors that escape that path. */
 
-import type { EventTrigger } from '@recued/contracts';
+import { MAIL_FACT_EVENT_PLATFORM, type EventTrigger } from '@recued/contracts';
 import type { WarehouseEvent } from '@recued/warehouse-events';
 
 /** Maximum entries per `(trigger_id, record_id)` queue.
@@ -47,6 +52,15 @@ export const TRIGGER_QUEUE_MAX_CONCURRENT_KEYS = 16;
  *  before this queue. */
 export const TRIGGER_QUEUE_MAX_KEYS = 1_024;
 
+/** A producer that can wait (a backfill that runs recipes) waits until fewer
+ *  keys than this are retained: live events keep the other half. */
+export const TRIGGER_QUEUE_PRODUCER_KEYS = TRIGGER_QUEUE_MAX_KEYS / 2;
+
+/** ...and while any key holds this many events: seventy emails about one
+ *  thing, whose recipe is slow, keep pace with it rather than pile up behind
+ *  it. A mail fact's events are never coalesced, so a key can be this deep. */
+export const TRIGGER_QUEUE_PRODUCER_DEPTH = 32;
+
 export interface TriggerDispatchQueue {
   /** Enqueue an event for processing. Starts a fresh drain if the key
    *  is idle. Same-key events serialize; diff-key events run in
@@ -61,6 +75,10 @@ export interface TriggerDispatchQueue {
   /** Resolves once every active drain settles. Tests use this as a
    *  deterministic barrier. */
   drained(): Promise<void>;
+  /** Resolves once fewer than `keys` keys are retained and no key holds
+   *  `depth` events or more: a producer that can wait (a backfill that runs
+   *  recipes) waits for room rather than build a backlog. */
+  room(keys: number, depth?: number): Promise<void>;
 }
 
 export interface TriggerDispatchQueueDeps {
@@ -121,6 +139,8 @@ export const createTriggerDispatchQueue = (
         // recipe errors internally.
       }
       queue.shift();
+      // A key one shallower may be what a producer waits for.
+      wakeRoomWaiters();
     }
   };
 
@@ -134,10 +154,25 @@ export const createTriggerDispatchQueue = (
     }
   };
 
+  const roomWaiters: { keys: number; depth: number; resolve: () => void }[] = [];
+  const hasRoom = (keys: number, depth: number): boolean => {
+    if (queues.size >= keys) return false;
+    if (depth === Number.POSITIVE_INFINITY) return true;
+    for (const queue of queues.values()) if (queue.length >= depth) return false;
+    return true;
+  };
+  const wakeRoomWaiters = (): void => {
+    for (let i = roomWaiters.length - 1; i >= 0; i -= 1) {
+      const waiter = roomWaiters[i]!;
+      if (hasRoom(waiter.keys, waiter.depth)) roomWaiters.splice(i, 1)[0]!.resolve();
+    }
+  };
+
   const startDrain = (key: string): void => {
     const task = drain(key).finally(() => {
       drains.delete(key);
       startWaiting();
+      wakeRoomWaiters();
     });
     drains.set(key, task);
   };
@@ -146,8 +181,9 @@ export const createTriggerDispatchQueue = (
     const key = queueKey(trigger.trigger_id, event.record_id);
     const existing = queues.get(key);
 
+    const mailFact = event.platform === MAIL_FACT_EVENT_PLATFORM;
     if (!existing) {
-      if (queues.size >= maxKeys) {
+      if (queues.size >= maxKeys && !mailFact) {
         droppedEvents += 1;
         try {
           deps.onOverflow?.({
@@ -166,7 +202,7 @@ export const createTriggerDispatchQueue = (
       return true;
     }
 
-    if (existing.length < TRIGGER_QUEUE_MAX_DEPTH_PER_KEY) {
+    if (mailFact || existing.length < TRIGGER_QUEUE_MAX_DEPTH_PER_KEY) {
       existing.push({ trigger, event, ...(candidate ? { candidate } : {}) });
       return true;
     }
@@ -214,5 +250,8 @@ export const createTriggerDispatchQueue = (
         await Promise.all(Array.from(drains.values()));
       }
     },
+    room: (keys, depth = Number.POSITIVE_INFINITY) => (hasRoom(keys, depth)
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => { roomWaiters.push({ keys, depth, resolve }); })),
   };
 };

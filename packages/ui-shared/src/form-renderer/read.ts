@@ -313,8 +313,9 @@ const readScalar = (
 
 /** Convert a `datetime-local` value (`YYYY-MM-DDTHH:MM`) into a
  *  TZ-explicit ISO string using the runtime's offset. The validator
- *  enforces TZ-explicit on accept, so we never return naive strings. */
-const localToIsoWithOffset = (raw: string): string => {
+ *  enforces TZ-explicit on accept, so we never return naive strings.
+ *  Also what a recipe's `datetime` variable widget sends (`variable-widgets.ts`). */
+export const localToIsoWithOffset = (raw: string): string => {
   // raw shape: YYYY-MM-DDTHH:MM[:ss]
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
     raw,

@@ -31,10 +31,12 @@ export const formatRecipeRunFacts = (
     || !isDuration(facts.duration_ms)
   ) return null;
 
-  const parts = [
-    counted(facts.steps_run, 'step'),
-    counted(facts.items_total, 'item'),
-  ];
+  const parts = [counted(facts.steps_run, 'step')];
+  // The steps above are all that ran: a `stop_when` ended the run there.
+  if (typeof facts.stopped_at === 'string' && facts.stopped_at !== '') {
+    parts.push(`ended early at ${facts.stopped_at}`);
+  }
+  parts.push(counted(facts.items_total, 'item'));
   if (isCount(facts.provider_calls) && isCount(facts.total_tokens)) {
     parts.push(
       counted(facts.provider_calls, 'provider call'),

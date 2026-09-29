@@ -87,6 +87,7 @@ const makeOptions = (
       cacheBlobs: { tag: 'cache-blobs' },
       warehouseBus: { tag: 'warehouse-bus' },
       contactStore: { tag: 'contact-store' },
+      mailFactStore: { tag: 'mail-fact-store' },
       gateRegistry: { tag: 'gate-registry' },
       accountStore: { tag: 'account-store' },
       eventBus: { tag: 'event-bus' },

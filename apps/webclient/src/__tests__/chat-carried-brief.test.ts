@@ -28,12 +28,21 @@ describe('carried-brief projection', () => {
     expect(buildCarriedBriefModel(brief()).kind).toBe('carrying');
   });
 
-  it('carries the caveat in every non-loading state', () => {
-    for (const input of [null, brief(), brief({ constraints: [], findings: [], pending: [], intent: '' })]) {
-      const m = buildCarriedBriefModel(input);
-      if (m.kind === 'loading') throw new Error('unreachable');
-      expect(m.caveat).toMatch(/in its own words/i);
-      expect(m.caveat).toMatch(/missing things, or wrong/i);
+  it('carries the caveat WITH the notes, under the name Settings uses', () => {
+    const m = buildCarriedBriefModel(brief());
+    if (m.kind !== 'carrying') throw new Error('unreachable');
+    expect(m.heading).toBe("Chat's running note");
+    expect(m.caveat).toMatch(/in its own words/i);
+    expect(m.caveat).toMatch(/missing things, or wrong/i);
+  });
+
+  /** ⛔ The empty panel printed "Nothing carried yet" over the caveat, and the
+   *  caveat — "This is what Chat is carrying forward…" — pointed at nothing, so
+   *  it read as a caption for the conversation below. Nothing carried now
+   *  means nothing shown: no heading, no caveat, no rows to lend it. */
+  it('has nothing to show when nothing is carried', () => {
+    for (const input of [null, brief({ constraints: [], findings: [], pending: [], intent: '' })]) {
+      expect(buildCarriedBriefModel(input)).toEqual({ kind: 'empty' });
     }
   });
 
@@ -50,10 +59,7 @@ describe('carried-brief projection', () => {
 
   it('a brief with only empty fields is EMPTY, not a heading over nothing', () => {
     const m = buildCarriedBriefModel(brief({ intent: '  ', constraints: [], findings: [], pending: [] }));
-    // ⚠ Narrow before reading `rows`: the loading variant has none, and vitest
-    //   would not have said so — `typecheck:tests` is the gate that does.
-    if (m.kind !== 'empty') throw new Error('expected empty');
-    expect(m.rows).toEqual([]);
+    expect(m).toEqual({ kind: 'empty' });
   });
 
   it('drops non-string junk rather than rendering it', () => {

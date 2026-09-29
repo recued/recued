@@ -39,7 +39,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // `data.mail` mutates an EXISTING message for the first time here; the prior
   // nine were reads plus the two send-side verbs, which only ever created.
   // D-261 — four individually governed durable draft operations.
-  mail: 18,
+  // D-315 — + core.mail.fact.get / .list, the mail-fact reads (18 → 20).
+  mail: 20,
   contact: 4,
   customer: 1,
   notification: 2,
@@ -79,7 +80,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // "what happened to my letter" read.
   // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
   // 25 → 26 on 2026-09-23: csv.rows, the reading twin of csv.filter.
-  storage: 26,
+  // 26 → 27 on 2026-09-28: shared.patch, the field-level update of one record.
+  storage: 27,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -242,6 +244,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.mail.email.get|mail|email-get|read',
       'core.mail.email.list|mail|email-list|read',
       'core.mail.email.search|mail|email-search|read',
+      'core.mail.fact.get|mail|mail-fact-get|read',
+      'core.mail.fact.list|mail|mail-fact-list|read',
       'core.mail.flag|mail|mail-flag|write',
       'core.mail.get|mail|mail-get|read',
       'core.mail.mark|mail|mail-mark|write',
@@ -348,6 +352,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.shared.delete-prefix|storage|shared-delete-prefix|destructive',
       'core.storage.shared.delete|storage|shared-delete|write',
       'core.storage.shared.list|storage|shared-list|read',
+      'core.storage.shared.patch|storage|shared-patch|write',
       'core.storage.shared.read|storage|shared-read|read',
       'core.storage.shared.search|storage|shared-search|read',
       'core.storage.shared.write|storage|shared-write|write',

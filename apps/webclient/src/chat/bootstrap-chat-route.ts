@@ -821,6 +821,22 @@ export const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_SESSION_STATUS_ATTR}="answered"] {
   color: var(--accent);
 }
+/* A chat whose turn is running says so the way its answer bubble does: the
+   same pulse, so "Working…" reads as busy rather than as a label.
+   ⚠ inline-block: the status line is a block, and an inline pseudo-element
+   takes no width or height — the dot animated at zero size, invisibly. */
+[${CHAT_ROUTE_SESSION_STATUS_ATTR}="working"]::before {
+  content: '';
+  display: inline-block;
+  vertical-align: middle;
+  width: 6px;
+  height: 6px;
+  margin: 0 6px 1px 0;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+  animation: recued-chat-answer-pulse 1.4s ease-in-out infinite;
+}
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
   display: block;
   font-size: 13px;
@@ -1114,6 +1130,55 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   align-items: center;
   gap: 8px;
   color: var(--muted);
+}
+/* The running note: one quiet line under the chat's title, opening to the
+   notes, their caveat and Clear. Capped and scrolling when open, so it never
+   takes the conversation's room. */
+[${CHAT_ROUTE_CARRY_ATTR}] {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--chat-radius-panel);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${CHAT_ROUTE_CARRY_ATTR}][open] {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+[${CHAT_ROUTE_CARRY_ATTR}] > summary {
+  cursor: pointer;
+  color: var(--fg);
+  font-weight: 650;
+}
+[${CHAT_ROUTE_CARRY_ATTR}] .chat-thread-carry-row {
+  margin: 6px 0 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+[${CHAT_ROUTE_CARRY_ATTR}] .chat-thread-carry-caveat {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
+[${CHAT_ROUTE_CARRY_ATTR}] .chat-thread-carry-clear {
+  margin-top: 8px;
+}
+/* The open conversation's queue and delivery status, docked above the
+   composer. It takes its room from the message list, never from the page, and
+   scrolls on its own when a long queue would crowd the messages out.
+   ⛔ The cap is in viewport units, not a percentage: the thread is a grid, and
+   a grid item's percentage resolves against its OWN row — an auto row sized to
+   this strip — so "35%" capped it at a third of itself and clipped the row. */
+[data-chat-coordination] {
+  flex: 0 0 auto;
+  max-height: min(240px, 30vh);
+  overflow-y: auto;
+  padding: 0 12px;
+}
+[data-chat-coordination]:empty {
+  display: none;
 }
 [${CHAT_ROUTE_ANSWER_WAITING_ATTR}]::before {
   content: '';
@@ -2474,7 +2539,8 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 /* §D.L1 — the [✎ Create] overlay styles live in compose/create-overlay.ts
    (extracted in shell-frame Step 5, shared with the §D.L2 drawer seat). */
 @media (prefers-reduced-motion: reduce) {
-  [${CHAT_ROUTE_ANSWER_WAITING_ATTR}]::before {
+  [${CHAT_ROUTE_ANSWER_WAITING_ATTR}]::before,
+  [${CHAT_ROUTE_SESSION_STATUS_ATTR}="working"]::before {
     animation: none;
   }
 }
@@ -3538,23 +3604,43 @@ export const bootstrapChatRoute = (
    *  carry, an object = the carry. "Nothing carried" and "we have not asked"
    *  look identical on screen and mean opposite things. */
   let carriedBriefSnapshot: unknown | null | undefined = undefined;
+  /** Whether the owner opened the running note. The route re-renders often,
+   *  and a `<details>` rebuilt closed would snap shut under their reading. */
+  let carryExpanded = false;
+  /** The newest note read. A read that lands after a newer one — a switch to
+   *  another chat, or a later reply — must not paint over it. */
+  let carriedBriefRequest = 0;
   /** ⚠ Best-effort and never blocking the thread: a carry the server will not
    *  return is a missing disclosure, not a broken conversation, so a failed read
    *  leaves the panel hidden rather than surfacing an error over the messages. */
   const loadCarriedBrief = async (sessionId: string): Promise<void> => {
-    const before = carriedBriefSnapshot;
+    const request = ++carriedBriefRequest;
+    let next: unknown | null | undefined;
     try {
       const out = await opts.conn('chat.session.brief.get', { session_id: sessionId });
-      carriedBriefSnapshot = out.brief;
-    } catch { carriedBriefSnapshot = undefined; }
-    // ⛔⛔ ONLY RE-RENDER ON A CHANGE. This read is async and lands AFTER the
-    //   thread has painted, so an unconditional `render()` repaints the route
-    //   out from under whatever the turn just focused — measured: it moved
-    //   focus off the composer textarea onto a button and turned
-    //   `d-174-p2-contracts-chat-route` red on same-session drafting. A server
-    //   with no carry (or one that cannot answer) leaves the snapshot exactly
-    //   as it was, so the common case must cost nothing at all.
-    if (carriedBriefSnapshot !== before) render();
+      next = out.brief;
+    } catch {
+      // A read that fails leaves what is shown: hidden when nothing was read
+      // yet (a session switch resets to `undefined` first), the last note
+      // otherwise. A failed refresh is not news about the note.
+      return;
+    }
+    if (disposed || request !== carriedBriefRequest) return;
+    // ⛔⛔ ONLY RE-RENDER WHEN WHAT IS DRAWN CHANGES. This read lands AFTER the
+    //   thread has painted, so a needless repaint moves focus off whatever was
+    //   just focused — measured twice: off the composer textarea
+    //   (`d-174-p2-contracts-chat-route`), and off the delivery panel a history
+    //   row had just focused (`chat-messenger-list.spec`), the latter on the
+    //   plain "not read yet" → "nothing stored" step, which draws nothing either
+    //   way. A read now follows every reply and returns a fresh object each
+    //   time, so compare the drawn panel, not the reference.
+    const drawn = (brief: unknown | null | undefined): string => {
+      const model = buildCarriedBriefModel(brief);
+      return model.kind === 'carrying' ? JSON.stringify(model) : '';
+    };
+    const changed = drawn(next) !== drawn(carriedBriefSnapshot);
+    carriedBriefSnapshot = next;
+    if (changed) renderPreservingHandoffFocus();
   };
   const clearCarriedBrief = async (): Promise<void> => {
     const sessionId = state.thread?.session?.id;
@@ -3661,6 +3747,21 @@ export const bootstrapChatRoute = (
   }, (session, snapshot) => {
     let changed = false;
     for (const turn of snapshot.turns) {
+      // ⛔ The queue acknowledges a send as QUEUED, before the turn starts, and
+      // the send opens the "Preparing your answer…" bubble only for a turn it
+      // is told is running (before D-265 the ack WAS the start). So every
+      // ordinary send showed the owner's message and then nothing at all until
+      // the answer landed, 3-5 s later. The snapshot that shows the turn
+      // running opens it instead. `beginInFlightTurn` ignores a turn already
+      // answered, so a stale snapshot cannot raise one that never resolves.
+      if (turn.status === 'running' && state.thread.session?.id === session) {
+        const thread = beginInFlightTurn(state.thread, turn.turn_id);
+        if (thread !== state.thread) {
+          state = { ...state, thread };
+          changed = true;
+        }
+        continue;
+      }
       if (turn.status !== 'withdrawn' && turn.failure_reason !== 'attachment_deleted') continue;
       rememberSettledTurn(session, turn.turn_id);
       if (turnsInFlightBySession.get(session)?.has(turn.turn_id)) changed = true;
@@ -8068,11 +8169,14 @@ export const bootstrapChatRoute = (
     heading.textContent = 'Chat';
     header.appendChild(heading);
     routeRoot.appendChild(header);
+    // ⛔ Built here, placed in the conversation's pane below — just above its
+    // composer. It sat between this header and both panes, whose height is
+    // budgeted for the header alone, so its rows pushed the pane (and Send,
+    // pinned at its foot) below the window whenever a turn was on it.
     coordinationHost = null;
     if (state.thread.session) {
       coordinationHost = doc.createElement('div');
       coordinationHost.setAttribute('data-chat-coordination', '');
-      routeRoot.appendChild(coordinationHost);
       renderCoordination();
     }
 
@@ -8701,6 +8805,7 @@ export const bootstrapChatRoute = (
           : buildComposerActions(false);
         if (actions !== null) hero.appendChild(actions);
         thread.appendChild(hero);
+        if (coordinationHost !== null) thread.appendChild(coordinationHost);
       }
     } else {
       // Docked layout — session-title header (the model picker moved into the
@@ -8714,7 +8819,14 @@ export const bootstrapChatRoute = (
       threadTitle.textContent = sessionTitle(state.thread.session);
       threadHeader.appendChild(threadTitle);
       const button = filesButton(); if (button) threadHeader.appendChild(button);
-      thread.appendChild(threadHeader);
+      // ⛔ ONE grid item for the header and the running note. The thread is a
+      //   grid whose `1fr` row is simply its SECOND child — the message list
+      //   when nothing sits between. A note placed between took that row, and
+      //   the message list fell into an `auto` row that no longer scrolled.
+      const threadTop = doc.createElement('div');
+      threadTop.className = 'chat-thread-top';
+      threadTop.appendChild(threadHeader);
+      thread.appendChild(threadTop);
 
       // ⛔⛔ WHAT THE ASSISTANT IS CARRYING, shown above the thread it steers.
       //   The brief is in the packet of every later turn and only its fold
@@ -8725,14 +8837,23 @@ export const bootstrapChatRoute = (
       //   ⚠ The projection ships its own `caveat`; rendering the rows without it
       //   would lend a wrong value the credibility of being displayed.
       const carryModel = buildCarriedBriefModel(carriedBriefSnapshot);
-      if (carryModel.kind !== 'loading') {
-        const carry = doc.createElement('section');
+      // Only when something IS carried: an empty note has nothing to disclose,
+      // and its caveat, pointing at nothing, read as a caption for the
+      // conversation below. Collapsed to one line, so it is always in view and
+      // never pushes the conversation down; the caveat opens with the notes.
+      if (carryModel.kind === 'carrying') {
+        const carry = doc.createElement('details');
         carry.className = 'chat-thread-carry';
         carry.setAttribute(CHAT_ROUTE_CARRY_ATTR, carryModel.kind);
-        const h = doc.createElement('h3');
-        h.className = 'chat-thread-carry-heading';
-        h.textContent = carryModel.heading;
-        carry.appendChild(h);
+        if (carryExpanded) carry.setAttribute('open', '');
+        carry.addEventListener('toggle', () => {
+          carryExpanded = carry.hasAttribute('open');
+        });
+        const summary = doc.createElement('summary');
+        summary.className = 'chat-thread-carry-heading';
+        const count = carryModel.rows.length;
+        summary.textContent = `${carryModel.heading} · ${count} ${count === 1 ? 'note' : 'notes'}`;
+        carry.appendChild(summary);
         for (const row of carryModel.rows) {
           const line = doc.createElement('p');
           line.className = 'chat-thread-carry-row';
@@ -8748,18 +8869,17 @@ export const bootstrapChatRoute = (
         note.className = 'chat-thread-carry-caveat';
         note.textContent = carryModel.caveat;
         carry.appendChild(note);
-        if (carryModel.kind === 'carrying') {
-          const clear = doc.createElement('button');
-          clear.className = 'rx-btn chat-thread-carry-clear';
-          clear.setAttribute(CHAT_ROUTE_CARRY_CLEAR_ATTR, '');
-          clear.textContent = 'Clear what Chat is remembering';
-          // ⚠ Coarse by design: drops the whole carry, not one bad entry. The
-          //   facts remain in the transcript, which `recall.search` reads, so
-          //   the next fold rebuilds from source.
-          clear.addEventListener('click', () => { void clearCarriedBrief(); });
-          carry.appendChild(clear);
-        }
-        thread.appendChild(carry);
+        const clear = doc.createElement('button');
+        clear.type = 'button';
+        clear.className = 'rx-btn chat-thread-carry-clear';
+        clear.setAttribute(CHAT_ROUTE_CARRY_CLEAR_ATTR, '');
+        clear.textContent = 'Clear the running note';
+        // ⚠ Coarse by design: drops the whole carry, not one bad entry. The
+        //   facts remain in the transcript, which `recall.search` reads, so
+        //   the next fold rebuilds from source.
+        clear.addEventListener('click', () => { void clearCarriedBrief(); });
+        carry.appendChild(clear);
+        threadTop.appendChild(carry);
       }
 
       const messages = doc.createElement('div');
@@ -9039,6 +9159,7 @@ export const bootstrapChatRoute = (
       // UX-review flow-09 — cold-start nudge, docked above the composer.
       if (aiNotice !== null) thread.appendChild(aiNotice);
       if (mailNotice !== null) thread.appendChild(mailNotice);
+      if (coordinationHost !== null) thread.appendChild(coordinationHost);
       // Docked — composer at the bottom; buttons collapse into its `+` menu.
       thread.appendChild(buildComposer(true));
     }
@@ -9853,6 +9974,7 @@ export const bootstrapChatRoute = (
       //   leave the previous conversation's carry on screen under a new
       //   thread — `undefined` hides the panel until this session's read lands.
       carriedBriefSnapshot = undefined;
+      carryExpanded = false;
       void loadCarriedBrief(sessionId);
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
@@ -10282,6 +10404,7 @@ export const bootstrapChatRoute = (
       //   leave the previous conversation's carry on screen under a new
       //   thread — `undefined` hides the panel until this session's read lands.
       carriedBriefSnapshot = undefined;
+      carryExpanded = false;
       void loadCarriedBrief(sessionId);
       const snapshot = await opts.conn('chat.session.get', {
         session_id: sessionId,
@@ -11329,6 +11452,13 @@ export const bootstrapChatRoute = (
             rememberSettledTurn(evt.session_id, evt.turn_id);
             if (typeof evt.session_id === 'string') {
               settleTrackedTurn(evt.session_id, evt.turn_id);
+            }
+            // The running note is folded during turns, and the panel used to
+            // read it only when a chat was opened — so it showed notes a reply
+            // had since changed, and none at all for a chat started from the
+            // landing. Read it again after each reply in the open chat.
+            if (typeof evt.session_id === 'string' && evt.session_id === state.thread.session?.id) {
+              void loadCarriedBrief(evt.session_id);
             }
             if (
               typeof evt.turn_id === 'string'

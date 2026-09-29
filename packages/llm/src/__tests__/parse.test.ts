@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { AI_RESULT_FIELDS } from '@recued/contracts';
 import { extractJSON, parseJSONObject, parseContractedOutput } from '../parse.js';
 
 describe('extractJSON', () => {
@@ -350,5 +351,28 @@ describe('parseContractedOutput — non-object JSON input', () => {
 
   it('returns null when the extractor finds no object at all', () => {
     expect(parseContractedOutput('ai-classify', 'not json and no braces')).toBeNull();
+  });
+});
+
+/** The recipe validator's `ai_result_field_unknown` rule trusts this: a contracted
+ *  result carries exactly its `AI_RESULT_FIELDS`, never a field the model added.
+ *  If a parser starts keeping another field, list it there too, or the validator
+ *  warns on every read of it. */
+describe('a contracted result carries exactly its AI_RESULT_FIELDS', () => {
+  const VALID: Record<keyof typeof AI_RESULT_FIELDS, Record<string, unknown>> = {
+    'ai-classify': { category: 'a', confidence: 0.5, reasoning: 'r' },
+    'ai-score': { score: 7, breakdown: [{ criterion: 'c', score: 7 }], reasoning: 'r' },
+    'ai-summarize': { summary: 's', key_points: ['k'] },
+    'ai-sentiment': { sentiment: 'positive', score: 0.5, signals: ['s'] },
+    'ai-generate': { content: 'c' },
+    'ai-translate': { translated: 't', source_language: 'en', confidence: 0.9 },
+    'ai-rewrite': { rewritten: 'r' },
+  };
+
+  it.each(Object.keys(VALID) as Array<keyof typeof AI_RESULT_FIELDS>)('%s', (slug) => {
+    // `confidence` is what two shipped recipes read off `ai-score` and never got.
+    const parsed = parseContractedOutput(slug, JSON.stringify({ ...VALID[slug], confidence: 0.8, extra: 'x' }));
+    expect(parsed).not.toBeNull();
+    expect(Object.keys(parsed ?? {}).sort()).toEqual([...AI_RESULT_FIELDS[slug]].sort());
   });
 });

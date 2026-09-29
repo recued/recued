@@ -18,6 +18,27 @@ import type { SpreadsheetImportDeclaration } from '../spreadsheet-import.js';
 import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
 import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
 import type {
+  MailFactEmailContent,
+  MailFactEmailRef,
+  MailFactEmailStatus,
+  MailFactRowsPage,
+  MailFactRowsQuery,
+  MailFactBackfillJob,
+  MailFactBackfillRequest,
+  MailFactBackfillState,
+  MailFactSenderDismissal,
+  MailFactSendersResult,
+  MailFactStandardsSetting,
+  MailFactTypeSpec,
+  MailTemplate,
+  MailTemplateCreateRequest,
+  MailTemplateDraftRequest,
+  MailTemplateDraftResult,
+  MailTemplatePreviewRequest,
+  MailTemplatePreviewResult,
+  MailTemplateUpdateRequest,
+} from '../mail-facts.js';
+import type {
   PreparePreapproval, PreapprovalCapabilities, PreapprovalDecisionRequest,
   PreapprovalDecisionReceipt, PreapprovalInspection, PreapprovalListRequest,
   PreapprovalResult, PreapprovalReview, PreapprovalRevokeRequest, PreapprovalSelection,
@@ -41,6 +62,7 @@ import type { PressureDetails } from '../pressure.js';
 import type { LifecycleStatus } from '../lifecycle.js';
 import type { RunAnchorStatus } from '../commits.js';
 import type { RunControlTermination } from '../execution-control.js';
+import type { Condition } from '../conditions.js';
 import type { QualityGateSwitchStatus } from '../quality-delegation.js';
 import type { TriggerTestRequest, TriggerTestResponse } from '../trigger-test.js';
 import type {
@@ -1066,6 +1088,9 @@ export interface RecipeRunFacts {
   total_tokens?: number;
   /** Wall-clock duration recorded on the same persisted run anchor. */
   duration_ms: number;
+  /** The step whose `stop_when` ended the run early, as a success. Absent when
+   *  the run went to the end (or its anchor predates the field). */
+  stopped_at?: string;
 }
 
 export interface ServerExecuteResponse {
@@ -1083,12 +1108,17 @@ export interface ServerExecuteResponse {
      *  only place above the step output where "every item was refused" is
      *  distinguishable from "every item was written". */
     foreach?: { items: number; failed: number };
+    /** On the step whose `stop_when` ended the run. */
+    stopped?: true;
   }[];
   errors: unknown[];
   duration_ms: number;
   /** A compact receipt projected from this response's exact persisted audit
    *  anchor. No receipt row or statistics store is created for this surface. */
   run_facts?: RecipeRunFacts;
+  /** A step's `stop_when` ended the run early, as a success: the steps after it
+   *  did not run. The steps up to it did, and their output is the answer. */
+  stopped?: { step_id: string; condition: string | Condition };
   /** D-157 — run paused at the approval gate. Distinct from a terminal failure. */
   awaiting_approval?: boolean;
   /** D-display-mode P4 — did this run write an audit anchor, or was it exempt?
@@ -1460,6 +1490,58 @@ export type ServerRpcRegistry = {
   /** D-300 — resolve one retired pack view: set up a replacement the same way, keep it as
    *  the owner's own view, or dismiss it. `view` is what carries the setup now. */
   'data_views.retired.resolve': RpcMethodSpec<SavedDataViewRetiredResolveRequest, { view: SavedDataView | null }>;
+  // ── D-315 mail facts: the owner's templates ─────────────────────
+  //
+  // A template decides what is read from the owner's mail (and, later, what an
+  // AI pass is shown), so the family is paired-owner only and reserved out of
+  // MCP (`mail_fact.` in MCP_RESERVED_RPC_PREFIXES). A definition the validator
+  // refuses answers `bad_request` with `details.problems`. Facts themselves are
+  // read through `core.mail.fact.get` / `.list`, under the mail grant.
+  'mail_fact.template.list': RpcMethodSpec<{ type?: string } | undefined, { templates: MailTemplate[] }>;
+  'mail_fact.template.get': RpcMethodSpec<{ template_id: string }, { template: MailTemplate | null }>;
+  'mail_fact.template.create': RpcMethodSpec<MailTemplateCreateRequest, { template: MailTemplate }>;
+  'mail_fact.template.update': RpcMethodSpec<MailTemplateUpdateRequest, { template: MailTemplate }>;
+  /** Deletes the template only: facts already read stay with their email. */
+  'mail_fact.template.delete': RpcMethodSpec<{ template_id: string }, { deleted: boolean }>;
+  /** The standards pass's per-type switches (ruling 10): every standards type,
+   *  on unless the owner switched it off. A switch applies to new mail. */
+  'mail_fact.standards.get': RpcMethodSpec<void | undefined, { standards: MailFactStandardsSetting[] }>;
+  'mail_fact.standards.set': RpcMethodSpec<MailFactStandardsSetting, MailFactStandardsSetting>;
+  /** Data → Received → Mail facts (§6.4): facts with their email, their thing
+   *  and the runs their events started, a page of emails at a time. */
+  'mail_fact.facts.list': RpcMethodSpec<MailFactRowsQuery | undefined, MailFactRowsPage>;
+  /** The mail detail view's two actions (§6): whether the email gave facts,
+   *  and whether it is a security notice, on which neither is offered (§9). */
+  'mail_fact.email.get': RpcMethodSpec<MailFactEmailRef, MailFactEmailStatus>;
+  /** The template editor (§6.1): an email's content, read again from its
+   *  provider when it can be, its values to click. Refused on a security
+   *  notice (§9). */
+  'mail_fact.email.read': RpcMethodSpec<MailFactEmailRef, MailFactEmailContent>;
+  /** Preview (§6.2): a template not yet saved, run over its source email and
+   *  the newest stored emails that meet its conditions. Stores nothing. */
+  'mail_fact.template.preview': RpcMethodSpec<MailTemplatePreviewRequest, MailTemplatePreviewResult>;
+  /** Draft with AI (§6.1): one owner-started call on the email chosen, through
+   *  the chat's privacy layer. It proposes rules; nothing is saved. */
+  'mail_fact.template.draft': RpcMethodSpec<MailTemplateDraftRequest, MailTemplateDraftResult>;
+  /** §4.5 — the kinds of email the owner made (the built-in ones are code).
+   *  They live on this server only. */
+  'mail_fact.type.list': RpcMethodSpec<void | undefined, { types: MailFactTypeSpec[] }>;
+  /** Checked on its own and against every other kind's id and name. */
+  'mail_fact.type.create': RpcMethodSpec<{ spec: MailFactTypeSpec }, { type: MailFactTypeSpec }>;
+  /** Grows only: nothing its facts, templates or triggers name may go. */
+  'mail_fact.type.update': RpcMethodSpec<{ spec: MailFactTypeSpec }, { type: MailFactTypeSpec }>;
+  /** Refused while a template reads it; its facts and things go with it. */
+  'mail_fact.type.delete': RpcMethodSpec<{ type_id: string }, { deleted: boolean }>;
+  /** Senders without a template (§6.5): whose mail, over the last 30 days,
+   *  no template and no standard read. */
+  'mail_fact.senders.list': RpcMethodSpec<{ limit?: number } | undefined, MailFactSendersResult>;
+  /** A dismissed sender stays dismissed until shown again. */
+  'mail_fact.senders.dismiss': RpcMethodSpec<MailFactSenderDismissal, MailFactSenderDismissal>;
+  /** Backfill (§6.3): a template's past mail, read by the same passes. One
+   *  job at a time; a second answers `conflict`. */
+  'mail_fact.backfill.start': RpcMethodSpec<MailFactBackfillRequest, MailFactBackfillJob>;
+  'mail_fact.backfill.get': RpcMethodSpec<void | undefined, MailFactBackfillState>;
+  'mail_fact.backfill.cancel': RpcMethodSpec<{ job_id: string }, MailFactBackfillJob>;
   // ── Cache ───────────────────────────────────────────────────────
   //
   // D-103 dropped `cache.invalidate`. TTL + LRU handle expiry; the prior
@@ -1763,7 +1845,24 @@ export type ServerRpcRegistry = {
 
   // ── Server LLM config (instance-scoped, independent of extension) ──
   /** Read the paired server's LLM config. Requires unlocked server. */
-  'server.getLLMConfig': RpcMethodSpec<void, { config: ServerLLMConfig }>;
+  'server.getLLMConfig': RpcMethodSpec<void, {
+    config: ServerLLMConfig;
+    /** What this server's slot writes keep. ABSENT on older servers, whose
+     *  slot parser drops an unknown field without an error, so a client must
+     *  not offer a field this does not name. */
+    supports?: {
+      /** `slot_1` / `slot_2` keep a free-text `provider_name` beside the
+       *  protocol in `provider`. */
+      slot_provider_name?: boolean;
+      /** A free-pool entry can be edited and tested as a draft:
+       *  `server.upsertFreePoolEntry` keeps the stored key when a draft leaves
+       *  it blank (provider and base_url unchanged), and
+       *  `server.probeLlmSource` tests a pool draft that is not saved yet.
+       *  An older server wrote a blank key as the key, and answered a new
+       *  entry's test with "no free-pool entry". */
+      pool_entry_drafts?: boolean;
+    };
+  }>;
   /** Replace the paired server's LLM config atomically. Kept for bulk /
    *  import; per-edit surfaces use the field-level rpcs below so two
    *  surfaces editing different slots don't clobber (last-write-wins). */
@@ -1821,7 +1920,12 @@ export type ServerRpcRegistry = {
   'server.getLLMUsage': RpcMethodSpec<void, ServerLlmUsageResponse>;
   /** D-174 R28 — field-level write: add or replace ONE free-pool entry
    *  (matched by `id`), via server-side read-modify-write over the pool
-   *  blob so concurrent single-entry edits don't clobber. */
+   *  blob so concurrent single-entry edits don't clobber.
+   *
+   *  `id` must not be blank: Remove and Disable address an entry by it. A
+   *  blank `api_key` keeps the stored key only for an existing entry whose
+   *  provider and base_url are unchanged, and is refused otherwise — see
+   *  `supports.pool_entry_drafts` on `server.getLLMConfig`. */
   'server.upsertFreePoolEntry': RpcMethodSpec<
     { entry: ServerLLMPoolEntry },
     { ok: true }
@@ -1894,11 +1998,11 @@ export type ServerRpcRegistry = {
         | { kind: 'pool_entry'; entry_id: string };
       /** Omit to probe what is SAVED; provide to probe an unsaved draft.
        *
-       *  ⚠ Pool rows have no editable fields in the UI (they are add/remove,
-       *  not edit), so a pool probe always omits this — but the field is not
-       *  target-specific, and gating it in the type would only move the
-       *  "which shapes are legal" question into a place the handler still has
-       *  to answer. */
+       *  A pool row's own Test omits it. The pool's add / edit form sends one,
+       *  and for an entry not saved yet (`entry_id` names none) the draft is
+       *  the whole source, key included — on a server that says
+       *  `supports.pool_entry_drafts`; an older one answers "no free-pool
+       *  entry" whatever the draft says. */
       draft?: {
         provider: string;
         model: string;
@@ -6110,7 +6214,16 @@ export type ServerRpcRegistry = {
     {
       recipe_id: string;
       publisher_id: string;
-      pattern: EventTriggerPattern;
+      /** A bus pattern — or, instead, the authoring shorthand below. */
+      pattern?: EventTriggerPattern;
+      /** D-315 §5.1 — the shorthand a recipe's `event_triggers` use (e.g.
+       *  `mail_fact`, which names no kind of email), with its `fields` and
+       *  `where`; validated and compiled as the reconciler compiles a
+       *  recipe's, to ONE pattern — checked here against every kind of email
+       *  this server has. */
+      on?: string;
+      fields?: string[];
+      where?: Record<string, string | number | boolean>;
       /** D-179 P2 — standing dish to dispatch as (replaces the retired
        *  per-row `config_patch` override). */
       dish_id?: string;
@@ -6128,6 +6241,10 @@ export type ServerRpcRegistry = {
       trigger_id: string;
       enabled?: boolean;
       pattern?: EventTriggerPattern;
+      /** D-315 §5.1 — re-point with the shorthand; not on a recipe's row. */
+      on?: string;
+      fields?: string[];
+      where?: Record<string, string | number | boolean>;
       /** D-179 P2 — re-point / detach (null clears) the dish binding. */
       dish_id?: string | null;
       /** D-179 — edit the config the trigger's headless fires use. A
@@ -7745,6 +7862,28 @@ export const SERVER_RPC_METHODS = [
   'data_views.delete',
   // D-300 — resolve a pack view an update replaced.
   'data_views.retired.resolve',
+  // D-315 — the owner's mail templates.
+  'mail_fact.template.list',
+  'mail_fact.template.get',
+  'mail_fact.template.create',
+  'mail_fact.template.update',
+  'mail_fact.template.delete',
+  'mail_fact.standards.get',
+  'mail_fact.standards.set',
+  'mail_fact.facts.list',
+  'mail_fact.email.get',
+  'mail_fact.email.read',
+  'mail_fact.template.preview',
+  'mail_fact.template.draft',
+  'mail_fact.type.list',
+  'mail_fact.type.create',
+  'mail_fact.type.update',
+  'mail_fact.type.delete',
+  'mail_fact.senders.list',
+  'mail_fact.senders.dismiss',
+  'mail_fact.backfill.start',
+  'mail_fact.backfill.get',
+  'mail_fact.backfill.cancel',
   'cache.get',
   'cache.put',
   'cache.since',

@@ -1,4 +1,4 @@
-/** The 14 condition operators used by skip_when, fail_on, guard, and filter. */
+/** The 14 condition operators used by skip_when, fail_on, stop_when, guard, and filter. */
 export type ConditionOp =
   | 'equal' | 'not_equal'
   | 'greater' | 'greater_or_equal'

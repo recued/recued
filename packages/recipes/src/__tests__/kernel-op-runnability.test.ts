@@ -61,11 +61,12 @@ describe('applyKernelOpRunnability — R1 verb-split (§10 step 8)', () => {
       expect(res.warnings[0].warning).toMatch(/acct not connected/i);
     });
 
-    it('preserves skip_when on the rewritten empty step; drops args/fail_on', () => {
+    it('preserves skip_when / stop_when on the rewritten empty step; drops args/fail_on', () => {
       const res = applyKernelOpRunnability(
         recipeWith([opStep('deals', 'core.crm.deal.search', {
           skip_when: '{{config.x}} equal true',
           fail_on: '{{step.deals}} is_empty',
+          stop_when: '{{step.deals}} is_empty',
         })]),
         NONE,
       );
@@ -74,6 +75,8 @@ describe('applyKernelOpRunnability — R1 verb-split (§10 step 8)', () => {
       const step = res.recipe.steps[0] as unknown as Record<string, unknown>;
       expect(step.skip_when).toBe('{{config.x}} equal true');
       expect('fail_on' in step).toBe(false); // dropped — empty must not trip is_empty
+      // kept — stopping on the empty stand-in is a success, the downstream-safe direction
+      expect(step.stop_when).toBe('{{step.deals}} is_empty');
       expect('args' in step).toBe(false);
     });
   });

@@ -63,14 +63,24 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
     root.setAttribute('aria-label', 'Conversation queue');
     const pending = snapshot.turns.filter((turn) => ['queued', 'running', 'cancelling', 'withdrawn'].includes(turn.status) || turn.failure_reason === 'attachment_deleted');
     const latest = snapshot.turns[snapshot.turns.length - 1]!;
-    const shown = pending.length > 0 ? pending : [latest];
+    // ⛔ A turn that simply finished is not news: its answer is in the
+    // conversation. This strip echoed it after every reply ("Completed: …",
+    // with "Run last message again" beside it), two rows the owner could not
+    // place, which also pushed Send below the window. The latest turn is shown
+    // only when it asks for something: it did not finish, or a repeated
+    // message was folded into it — D-265 runs A/A once, so running it again is
+    // the one way to get a second answer to the same words.
+    const asksForSomething = ['failed', 'cancelled', 'interrupted'].includes(latest.status)
+      || (latest.status === 'completed' && latest.duplicate_count > 0);
+    const shown = pending.length > 0 ? pending : asksForSomething ? [latest] : [];
+    if (shown.length === 0 && !errors.has(session)) return null;
     for (const turn of shown) {
       const row = doc.createElement('div');
       row.setAttribute('data-chat-queued-turn', turn.turn_id);
       row.setAttribute('data-chat-turn-status', turn.status);
       const text = doc.createElement('span');
       const labels = { queued: 'Queued', running: 'Working', cancelling: 'Stopping after the current operation',
-        completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by a restart', withdrawn: 'Withdrawn' };
+        completed: 'Already answered', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted by a restart', withdrawn: 'Withdrawn' };
       text.textContent = `${labels[turn.status]}: ${turn.message.slice(0, 160)}${turn.message.length > 160 ? '…' : ''}`;
       if (turn.failure_reason === 'attachment_deleted') text.textContent += ' — required attachment permanently deleted';
       row.appendChild(text);
@@ -120,7 +130,9 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
       root.appendChild(row);
     }
     const repeat = doc.createElement('button');
-    repeat.type = 'button'; repeat.textContent = 'Run last message again';
+    // Named for what it does to THIS turn: one that did not finish is tried
+    // again; one already answered is run a second time.
+    repeat.type = 'button'; repeat.textContent = latest.status === 'completed' ? 'Run it again' : 'Try again';
     repeat.addEventListener('click', () => {
       repeat.disabled = true;
       const submission_id = attempts.get(latest.turn_id) ?? crypto.randomUUID();
@@ -129,7 +141,9 @@ export const createChatQueueView = (conn: ChatQueueClient, changed: () => void,
         attempts.delete(latest.turn_id); errors.delete(session); return refresh(session);
       }).catch(() => { errors.set(session, 'Could not confirm the new attempt. Try again.'); changed(); });
     });
-    if (latest.status !== 'withdrawn') root.appendChild(repeat);
+    // Not while anything is pending: a second run of the message being worked
+    // on would only queue behind it.
+    if (pending.length === 0 && shown.length > 0) root.appendChild(repeat);
     if (errors.has(session)) {
       const error = doc.createElement('p'); error.setAttribute('role', 'alert');
       error.textContent = errors.get(session)!; root.appendChild(error);

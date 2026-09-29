@@ -74,6 +74,7 @@
  *  `chat_message_sent` / `chat_tool_call` set from D-137 P1.
  */
 
+import { dateFormatIssue } from './date-argument-format.js';
 import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
 import { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
 
@@ -419,10 +420,7 @@ const validateGatewaySchemaValue = (
   switch (record.type) {
     case 'string':
       if (typeof value !== 'string') return `${path} must be a string`;
-      if (record.format === 'date-time' && Number.isNaN(Date.parse(value))) {
-        return `${path} must be an ISO 8601 date-time string`;
-      }
-      return null;
+      return dateFormatIssue(record.format, value, path);
     case 'number':
       return typeof value === 'number' && Number.isFinite(value)
         ? null

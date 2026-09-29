@@ -128,8 +128,10 @@ export const applyKernelOpRunnability = (
     // continues. `skip_when` is preserved (a recipe that gated the op stays
     // consistent); `fail_on` is DROPPED (an author's `is_empty` fail guard must
     // not turn the downstream-safe empty result into a hard failure — the
-    // pre-run warning already informs the owner); `args` / `cache` / `foreach`
-    // are dropped (no IO runs).
+    // pre-run warning already informs the owner); `stop_when` is preserved (a
+    // recipe that stops on an empty read stops on this empty stand-in too — a
+    // success, which is the downstream-safe direction); `args` / `cache` /
+    // `foreach` are dropped (no IO runs).
     warnings.push(entry);
     changed = true;
     const emptyStep: TransformStep = {
@@ -137,6 +139,7 @@ export const applyKernelOpRunnability = (
       transform: 'default',
       value: isSearchVerb(step.op) ? [] : {},
       ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
+      ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
     };
     return emptyStep;
   });

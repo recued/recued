@@ -303,8 +303,9 @@ export interface RunOutcomeSummary {
 }
 
 /** `all-refused` is the run that finished clean having accomplished nothing;
- *  `partial-failure` is the same shape, smaller, and deliberately quieter. */
-export type RunYieldNoticeKind = 'all-refused' | 'partial-failure';
+ *  `partial-failure` is the same shape, smaller, and deliberately quieter;
+ *  `stopped` is a run a step's `stop_when` ended early, as it was written to. */
+export type RunYieldNoticeKind = 'all-refused' | 'partial-failure' | 'stopped';
 
 export interface RunYieldNotice {
   readonly kind: RunYieldNoticeKind;
@@ -1578,11 +1579,28 @@ export const projectRunOutcomeSummary = (
  *
  *  A zero-item run yields nothing here: recipes without a `foreach` legitimately
  *  touch no items, and flagging them would bury the real signal in noise.
+ *
+ *  A run a step's `stop_when` ended early gets a `stopped` notice naming the step:
+ *  without it, "stopped, nothing to do" is the same green row as a run whose later
+ *  steps were each skipped. Refused items outrank it — the more urgent sentence.
  */
 export const projectRunYieldNotice = (
   runYield: RunYield | undefined,
 ): RunYieldNotice | undefined => {
   if (runYield === undefined) return undefined;
+  const refusal = projectRefusalNotice(runYield);
+  if (refusal !== undefined) return refusal;
+  if (typeof runYield.stopped_at === 'string' && runYield.stopped_at !== '') {
+    return {
+      kind: 'stopped',
+      message: `This run ended early at step "${runYield.stopped_at}": its stop condition `
+        + 'held, so the steps after it had nothing to do and did not run.',
+    };
+  }
+  return undefined;
+};
+
+const projectRefusalNotice = (runYield: RunYield): RunYieldNotice | undefined => {
   const total = runYield.items_total;
   const failed = runYield.items_failed;
   if (!Number.isFinite(total) || !Number.isFinite(failed)) return undefined;

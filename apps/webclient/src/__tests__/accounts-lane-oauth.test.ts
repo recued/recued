@@ -30,6 +30,9 @@ import { createFoundationalOAuthReloadStore } from '../connections/foundational-
 
 const ORIGIN = 'https://app.recued.com';
 const REDIRECT_URI = 'https://app.recued.com/oauth-callback?recued_relay=opener';
+/** Microsoft's is bare: an Entra app that takes personal accounts may not
+ *  register a redirect URI with a query string. */
+const MICROSOFT_REDIRECT_URI = 'https://app.recued.com/oauth-callback';
 const MINTED_STATE = OAUTH_OPENER_RELAY_STATE_PREFIX + 'STATE';
 const RELOAD_NOW = 1_800_000_000_000;
 
@@ -539,7 +542,7 @@ describe('Mail lane OAuth (mountAccountsLanePanel)', () => {
       provider: 'graph',
       account_slug: 'office',
       code: 'AUTH-CODE-2',
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: MICROSOFT_REDIRECT_URI,
     });
   });
 
@@ -1440,7 +1443,7 @@ describe('Calendar lane (mountAccountsLanePanel)', () => {
       slug: 'office',
       adapter: 'graph',
       oauth_code: 'CAL-CODE-2',
-      oauth_redirect_uri: REDIRECT_URI,
+      oauth_redirect_uri: MICROSOFT_REDIRECT_URI,
     });
   });
 

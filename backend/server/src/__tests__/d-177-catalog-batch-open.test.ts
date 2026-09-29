@@ -1,6 +1,7 @@
 /** D-177 catalog batch/open handler wiring tests. */
 
 import {
+  hashForeachCheckpointSource,
   type Checkpoint,
   type ExecutionSource,
   type IngredientManifest,
@@ -514,6 +515,63 @@ describe('handleExecute D-177 catalog session-grant closures', () => {
       operation_id: CATALOG_OPERATION_ID,
       args: { recipient: 'a@b.c' },
     })).toBeUndefined();
+  });
+});
+
+describe('handleExecute — a held foreach raises its own ask, listing every call', () => {
+  /** Found live: a foreach mail-out held on its first recipient was registered
+   *  as a ONE-member batch, so the ask named that recipient alone — and the
+   *  approval then ran the whole list (the engine approves "the remaining
+   *  same-target aggregate"). A batch member is one call; this hold is several. */
+  it('does not batch a hold that covers a foreach\'s remaining items, and lists them all', async () => {
+    const people = [{ email: 'a@b.c' }, { email: 'd@e.f' }, { email: 'g@h.i' }];
+    const recipe = {
+      ...buildRecipe('catalog-foreach-cover'),
+      steps: [{
+        id: STEP_ID,
+        ingredient: CATALOG_SLUG,
+        connection: CONNECTION,
+        foreach: '{{context.people}}',
+        input: { operation: CATALOG_OPERATION_ID, args: { recipient: '{{item.email}}', note: 'x' } },
+      } as unknown as RecipeStep],
+    } as RecipeDefinition;
+    const checkpoints = checkpointStore();
+    const notes = notifier();
+    const batchApprovals = fakeBatchApprovals();
+    executeRecipeMock.mockResolvedValueOnce(pausedResult(recipe.recipe_id, catalogHold({
+      args_preview: { recipient: 'a@b.c', note: 'x' },
+      foreach_progress: {
+        step_id: STEP_ID,
+        next_index: 0,
+        source_length: people.length,
+        source_hash: hashForeachCheckpointSource(people),
+        results: [],
+      },
+    })));
+
+    await handleExecute(
+      makeDeps(recipe, {
+        auditLog: auditLog(),
+        checkpointStore: checkpoints,
+        preflightNotifier: notes,
+        sessionGrantResolver: fakeSessionGrantResolver(),
+        batchApprovals,
+      }, [buildManifest(), buildCatalogManifest()]),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'manual',
+        execution_source: chatSource,
+        context: { people },
+      },
+    );
+
+    expect(batchApprovals.registerHold).not.toHaveBeenCalled();
+    expect(notes.ask).toHaveBeenCalledTimes(1);
+    const [message] = notes.ask.mock.calls[0]!;
+    for (const email of ['a@b.c', 'd@e.f', 'g@h.i']) expect(message.text).toContain(email);
+    expect(message.text.trimEnd().endsWith('Approve all 3?')).toBe(true);
+    const [written] = [...checkpoints.written.values()];
+    expect(written?.preflight_context?.foreach_cover?.total).toBe(3);
   });
 });
 

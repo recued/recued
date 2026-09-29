@@ -63,6 +63,8 @@ import {
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailAttachmentPartFromBytes,
+  mailParsedFromName,
+  mailParsedHeaderMap,
   mailSentReconciliationAttachmentPartFromBytes,
   mimeFilenameParameter,
   type CanonicalMessage,
@@ -99,7 +101,8 @@ export interface ImapClient extends EventEmitter {
   connect(): Promise<void>;
   logout(): Promise<void>;
   close(): void;
-  mailboxOpen(path: string): Promise<MailboxObject>;
+  /** `readOnly` opens with EXAMINE: a read that must not touch `\Seen`. */
+  mailboxOpen(path: string, options?: { readOnly?: boolean }): Promise<MailboxObject>;
   search(
     query: SearchObject,
     options?: { uid?: boolean },
@@ -249,6 +252,37 @@ export const defaultSmtpTransportFactory: SmtpTransportFactory = (config) => {
     createTransport: (cfg: unknown) => unknown;
   };
   return nodemailer.createTransport(config) as SmtpTransport;
+};
+
+/** Does this SMTP failure PROVE the server never accepted the message?
+ *
+ *  Only then may the send claim start afresh (`not_sent`); anything else is an
+ *  unknown outcome, because an SMTP server that has taken the whole message may
+ *  deliver it even when the reply never reaches us.
+ *
+ *  Proof is one of:
+ *   - the server's own REFUSAL: a 4xx/5xx reply, at any stage. Acceptance is a
+ *     2xx after the message, and nodemailer only raises an error carrying a code
+ *     when the server said no;
+ *   - a stage that ends before the message is ever transmitted: DNS, TLS, sign-in
+ *     (`EDNS` / `ETLS` / `EAUTH`), the envelope (`EENVELOPE`, `EREQUIRETLS`);
+ *   - the socket never connected (`syscall` `connect` / `getaddrinfo`).
+ *
+ *  ⚠ NOT `command === 'CONN'`: nodemailer labels EVERY socket error and timeout
+ *  that way, including ones in the middle of the message. */
+export const smtpProvablyNotAccepted = (err: unknown): boolean => {
+  if (err === null || typeof err !== 'object') return false;
+  const e = err as { code?: unknown; responseCode?: unknown; syscall?: unknown };
+  if (typeof e.responseCode === 'number' && e.responseCode >= 400 && e.responseCode < 600) {
+    return true;
+  }
+  if (
+    e.code === 'EDNS' || e.code === 'ETLS' || e.code === 'EAUTH'
+    || e.code === 'EENVELOPE' || e.code === 'EREQUIRETLS'
+  ) {
+    return true;
+  }
+  return e.syscall === 'connect' || e.syscall === 'getaddrinfo';
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -557,7 +591,9 @@ const bodyTextFor = (parsed: ParsedMail): string => {
   // FTS-indexed body we want plain text; strip tags with a cheap
   // fallback. Users with HTML-only messages still get searchable
   // content.
-  if (parsed.html) return String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  // A tag ends before the next `<`: `[^>]` retried from every `<` of a broken
+  // email to its end: 500 KB of them took nine seconds.
+  if (parsed.html) return String(parsed.html).replace(/<[^<>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   return '';
 };
 
@@ -570,9 +606,10 @@ const sourceIdFor = (uid: number, folder: string): string => `${uid}@${folder}`;
 type ImapMailboxIdentity = { path: string; specialUse?: string };
 
 /** RFC 6154 special-use flags are language-neutral. `INBOX` is the one
- * RFC-reserved mailbox name and remains safe when LIST is unavailable. All
- * other unclassified/localized paths stay unknown so downstream recipes can
- * fail closed. */
+ * RFC-reserved mailbox name and remains safe when LIST is unavailable. On a
+ * server that flags no Sent or Drafts folder, the name the send and draft
+ * lookups fall back to classifies too. All other unclassified/localized paths
+ * stay unknown so downstream recipes can fail closed. */
 export const imapMessageDirectionForMailbox = (
   folder: string,
   mailboxes: readonly ImapMailboxIdentity[] = [],
@@ -585,8 +622,27 @@ export const imapMessageDirectionForMailbox = (
     case '\\sent': return 'outbound';
     case '\\drafts': return 'draft';
     case '\\inbox': return 'inbound';
-    default: return folder.toUpperCase() === 'INBOX' ? 'inbound' : 'unknown';
+    default:
+      if (folder.toUpperCase() === 'INBOX') return 'inbound';
+      // D-315 §7.4 — on a server that flags no folder, the folder the Sent and
+      // Drafts lookups fall back to (D-127, D-264) is that folder here too.
+      if (fallbackFolder(mailboxes, '\\Sent', IMAP_SENT_FOLDER_FALLBACK_CANDIDATES) === folder) return 'outbound';
+      if (fallbackFolder(mailboxes, '\\Drafts', IMAP_DRAFTS_FOLDER_FALLBACK_CANDIDATES) === folder) return 'draft';
+      return 'unknown';
   }
+};
+
+/** The folder `findSpecialUseFolder` settles on by name: none when a folder
+ *  carries the flag (that one is the folder), else the first candidate the
+ *  server lists. */
+const fallbackFolder = (
+  mailboxes: readonly ImapMailboxIdentity[],
+  specialUse: string,
+  fallbacks: readonly string[],
+): string | null => {
+  if (mailboxes.some((mailbox) => (mailbox.specialUse ?? '').toLowerCase() === specialUse.toLowerCase())) return null;
+  const known = new Set(mailboxes.map((mailbox) => mailbox.path));
+  return fallbacks.find((candidate) => known.has(candidate)) ?? null;
 };
 
 const parsedAttachmentParts = (parsed: ParsedMail): InboundMailAttachmentPart[] => {
@@ -655,6 +711,8 @@ export const canonicalizeImap = async (
       ? { reconciliation_id: reconciliationId }
       : {}),
     from: parsed.from ? firstAddress(parsed.from) : '',
+    from_name: mailParsedFromName(parsed.from),
+    headers: mailParsedHeaderMap(parsed),
     to: addressToStringList(parsed.to),
     cc: addressToStringList(parsed.cc),
     subject: parsed.subject ?? '',
@@ -1330,6 +1388,10 @@ export const createImapProvider = (
   //   EENVELOPE / 5xx responseCode             → MAIL_SEND_RECIPIENT_INVALID
   //   ESOCKET / ECONNECTION / ETIMEDOUT / EDNS → MAIL_SEND_NETWORK_FAILED
   //   anything else                            → MAIL_SEND_NETWORK_FAILED
+  //
+  // …and, separately, whether the failure PROVES the server never accepted the
+  // message (`not_sent: true`, which lets the send claim start afresh — see
+  // `smtpProvablyNotAccepted`).
   const throwSmtpError = (err: unknown): never => {
     const e = err as { code?: string; responseCode?: number; message?: string };
     const message = e?.message ?? String(err);
@@ -1338,6 +1400,7 @@ export const createImapProvider = (
       slug: opts.slug,
       smtp_code: e?.code,
       smtp_response_code: e?.responseCode,
+      ...(smtpProvablyNotAccepted(err) ? { not_sent: true } : {}),
     };
     if (e?.code === 'EAUTH') {
       throw new IngredientError(
@@ -1519,15 +1582,31 @@ export const createImapProvider = (
     const rfc822 = buildImapRfc5322(msg, { from: fromAddress, messageId, sentAt });
 
     // ── 1. SMTP submission ────────────────────────────────────
-    const transport = smtpFactory({
-      host: smtp.host,
-      port: smtp.port ?? DEFAULT_SMTP_PORT,
-      secure: smtp.secure ?? false,
-      auth: {
-        user: smtp.username ?? cfg.username,
-        pass: smtp.password ?? cfg.password,
-      },
-    });
+    // ⛔ Built inside its own catch. A transport that cannot even be built has
+    // sent nothing, and must say so: it used to throw a bare error from outside
+    // the SMTP mapping, which left the send claim `claimed` — and every retry of
+    // that exact message refused as outcome-unknown (found live: a `require` gap
+    // in the transport factory).
+    let transport: SmtpTransport;
+    try {
+      transport = smtpFactory({
+        host: smtp.host,
+        port: smtp.port ?? DEFAULT_SMTP_PORT,
+        secure: smtp.secure ?? false,
+        auth: {
+          user: smtp.username ?? cfg.username,
+          pass: smtp.password ?? cfg.password,
+        },
+      });
+    } catch (err) {
+      markError('imap SMTP transport could not be built', err);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new IngredientError(
+        'MAIL_SEND_NETWORK_FAILED',
+        `SMTP submission could not start: ${message.slice(0, 200)}`,
+        { kind: 'imap', slug: opts.slug, not_sent: true },
+      );
+    }
     const recipients = [...msg.to, ...(msg.cc ?? []), ...(msg.bcc ?? [])];
     try {
       await transport.sendMail({
@@ -1817,6 +1896,44 @@ export const createImapProvider = (
         markError(`imap ${verb} failed`, err);
       }
       throw mapped;
+    } finally {
+      try {
+        if (client.usable) await client.logout();
+        else client.close();
+      } catch {
+        try { client.close(); } catch { /* best-effort dedicated client close */ }
+      }
+    }
+  };
+
+  /** D-315 §4.4 — one message read again, whole, on a connection of its own
+   *  that EXAMINEs the folder (a read must not mark it seen). The id carries
+   *  no UIDVALIDITY, so a caller that holds the message's RFC id checks it
+   *  still matches: a renumbered mailbox hands back another message under
+   *  the same UID. `null` when the UID is no longer in the folder. */
+  const fetchMessageImpl = async (source_id: string): Promise<CanonicalMessage | null> => {
+    const { uid, folder } = parseSourceId(source_id);
+    const client = makeClient('__fetch_message__');
+    try {
+      await client.connect();
+      const direction = folders.get(folder)?.direction ?? await resolveFolderDirection(client, folder);
+      await client.mailboxOpen(folder, { readOnly: true });
+      const iter = client.fetch(
+        [uid],
+        { uid: true, flags: true, internalDate: true, source: true },
+        { uid: true },
+      );
+      for await (const message of iter) {
+        if (message.uid !== uid || !message.source) continue;
+        return await canonicalizeImap(message.source, {
+          uid,
+          folder,
+          direction,
+          flags: message.flags,
+          internalDate: message.internalDate,
+        });
+      }
+      return null;
     } finally {
       try {
         if (client.usable) await client.logout();
@@ -2132,6 +2249,7 @@ export const createImapProvider = (
       return probeDraftCapable();
     },
     accountEmail,
+    fetchMessage: fetchMessageImpl,
 
     async connect() {
       if (connected) return;

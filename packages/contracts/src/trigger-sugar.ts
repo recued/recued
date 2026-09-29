@@ -23,16 +23,31 @@
  *    on: "reception.request"            reception shorthand — verified visitor
  *                                       mutation arrivals
  *                                       (`data.reception.<kind>.request.created`)
- *    on: "form_response.accepted"       ⚠ a SUBMITTED intake response, NOT an
- *                                       approved one. D-210 WS2 moved the
- *                                       canonical log write to SUBMIT ("submit
- *                                       IS the acceptance now"), so this fires
- *                                       on UNREVIEWED visitor input. To act on
- *                                       what the owner APPROVED, watch the
- *                                       destination entity's own `created`
- *                                       event instead — that is written on the
- *                                       approve leg.
+ *    on: "form_response.accepted"       an intake response the OWNER
+ *                                       APPROVED: the row is written, and this
+ *                                       fires once, on the approve leg
+ *                                       (`form-response-promotion.ts`), never
+ *                                       at submit. Only an intake whose
+ *                                       destination is a form response, or a
+ *                                       paid direct-checkout pair, writes one;
+ *                                       an intake routed to a task, contact,
+ *                                       calendar event or note does not, so
+ *                                       watch that entity's `created` event.
+ *                                       ⚠ This said "fires at SUBMIT" from
+ *                                       2026-07-18 (D-210 WS2) until 09-27;
+ *                                       audit finding 3a had moved the write
+ *                                       back to approval on 07-21 (`2ec931cc7`).
  *                                       (`data.form_response.accepted.response.created`)
+ *    on: "mail_fact.<type>"             D-315 — a thing (a parcel, an order, a
+ *    on: "mail_fact"                    bill) that mail facts fold into was
+ *                                       created or changed: of one kind of
+ *                                       email (ruling 43), or of ANY kind
+ *                                       that has the variables it designates
+ *                                       (ruling 42), as `deal.changed` spans
+ *                                       vendors. No verb: creation counts as
+ *                                       a change of every variable read, and
+ *                                       `fields` picks which changes wake it
+ *                                       (`data.mail_fact.<type|*>.thing.*`)
  *
  *  Verbs are the canonical trigger vocabulary `created | changed | removed`
  *  (the trigger-side twin of the canonical-op verbs), mapped to the bus
@@ -45,8 +60,9 @@
  *  `fields` / `where` are DISPATCH FILTERS, not poll params (design § 3):
  *  they lower onto the materialized trigger row and the dispatcher evaluates
  *  them read-free against the event payload before enqueueing a fire. The
- *  filter is a best-effort NOISE ABSORBER, never a correctness gate: an
- *  entry whose payload path is absent PASSES (see
+ *  filter is a best-effort NOISE ABSORBER, never a correctness gate — except
+ *  on a mail fact, whose event is never a doorbell (D-315 §5.1): an entry
+ *  whose payload path is absent PASSES (see
  *  `matchesTriggerDispatchFilter`) because event fidelity is layered
  *  (webhook > reconciler > poll — design § 2) and doorbell shapes still
  *  exist (messenger/reception/adapter emits, meta-less prior rows) even
@@ -58,6 +74,30 @@
 import { CRM_ALIAS_VALUES, type ConnectionVendorEntity } from './connection-vendors.js';
 import { ELEMENT_ON_SHORTHAND } from './dom-watch-trigger.js';
 import { FORM_RESPONSE_CREATED_EVENT_PATTERN } from './form-response.js';
+import {
+  canonicalMailFactCarrier,
+  getMailFactBuiltinType,
+  isMailFactTypeId,
+  isMailFactVariableName,
+  isMailFactWord,
+  MAIL_FACT_BUILTIN_TYPES,
+  MAIL_FACT_EVENT_PLATFORM,
+  MAIL_FACT_FILTERABLE_KINDS,
+  mailFactStoredId,
+  mailFactStoredText,
+  MAIL_FACT_LAST_EMAIL_AT,
+  MAIL_FACT_NOTICE_VARIABLE,
+  MAIL_FACT_ON_PREFIX,
+  MAIL_FACT_ON_SHORTHAND,
+  MAIL_FACT_STATE_VARIABLE,
+  mailFactEventPattern,
+  mailFactFieldKeys,
+  mailFactTypeVariables,
+  mailFactWhereKeys,
+  type MailFactTypeId,
+  type MailFactTypeSpec,
+  type MailFactVariableSpec,
+} from './mail-facts.js';
 import {
   DOM_WATCH_BUS_PREFIX,
   DOM_WATCH_PLATFORM,
@@ -113,6 +153,185 @@ const FORM_RESPONSE_WHERE_KEYS: ReadonlySet<string> = new Set([
   'form_definition_id',
 ]);
 
+/** D-315 — what a trigger check may know beyond the built-in kinds of email. */
+export interface TriggerSugarOptions {
+  /** The kinds of email the owner made on THIS server (§4.5). Given, the check
+   *  knows every kind a fact here can have, so it refuses a kind, a variable or
+   *  a value no kind here has. Without it — a recipe's check, which runs where
+   *  no owner's kinds exist — it knows the built-in kinds only, and what none of
+   *  them has is a note (`recipeEventTriggerNotes`), not a refusal: a kind
+   *  made on the owner's server may have it. */
+  readonly mailFactTypes?: () => readonly MailFactTypeSpec[];
+}
+
+/** The keys a mail-fact entry takes. Any other key is refused, not ignored: an
+ *  ignored `"feilds"` or `"typ"` would leave the trigger wider than written. */
+const MAIL_FACT_ENTRY_KEYS: ReadonlySet<string> = new Set(['on', 'fields', 'where']);
+/** Keys refused with a reason of their own elsewhere in the check. */
+const ENTRY_KEYS_REFUSED_ELSEWHERE: ReadonlySet<string> = new Set(['event', 'filter', 'connection', 'url', 'selector']);
+
+const variableOf = (spec: MailFactTypeSpec, name: string): MailFactVariableSpec | undefined =>
+  mailFactTypeVariables(spec).find((variable) => variable.name === name);
+
+/** Why `value` cannot be what `variable` holds as a fact stores it, or null.
+ *  Empty and uncollapsed text are refused before, for every kind. */
+const mailFactValueProblem = (variable: MailFactVariableSpec, value: unknown): string | null => {
+  const { kind } = variable;
+  if (kind === 'number' ? typeof value !== 'number' : kind === 'boolean' ? typeof value !== 'boolean' : typeof value !== 'string') {
+    return `must be a ${kind === 'number' || kind === 'boolean' ? kind : 'string'}, as the fact stores it`;
+  }
+  if (kind === 'enum' && !(variable.values ?? []).includes(value as string)) return `must be one of ${(variable.values ?? []).join(', ')}`;
+  if (kind === 'date' && !/^\d{4}-\d{2}-\d{2}$/.test(value as string)) return 'must be a date as the fact stores it (YYYY-MM-DD)';
+  if (kind === 'id' && mailFactStoredId(value as string) !== value) {
+    return `must be written as a fact stores it: '${mailFactStoredId(value as string)}'`;
+  }
+  return null;
+};
+
+/** Why a mail-fact entry's `fields` / `where` cannot match (§5.1).
+ *   - `errors`: what no fact can match — a name that is no variable, an empty
+ *     or uncollapsed value, a state that is no word, `where.id`, `where.type`,
+ *     `where.last_email_at` — and, on a trigger naming one kind the checker
+ *     knows, anything that kind does not have.
+ *   - `unknown`: what the checker cannot find, and a kind made on a server
+ *     can have: on a trigger on ANY kind, a variable, a value or a set of them
+ *     together no known kind has; on one naming a kind the checker cannot see,
+ *     the kind. Refused by a check that knows every kind (a trigger made on
+ *     this server); a note for one that does not (a recipe's).
+ *  Both filters are STRICT: an event carries every variable of its kind and
+ *  its `changed_fields`, and the dispatch filter reads a variable its kind
+ *  lacks as no match. */
+const mailFactEntryProblems = (
+  type: string | null,
+  fields: unknown,
+  where: unknown,
+  options: TriggerSugarOptions = {},
+): { errors: string[]; unknown: string[] } => {
+  const errors: string[] = [];
+  const unknown: string[] = [];
+  const everywhere = options.mailFactTypes !== undefined;
+  const owned = options.mailFactTypes?.() ?? [];
+  const onlyYours = everywhere ? '' : ' — only a kind made on the owner’s server can start it';
+
+  // What no fact of any kind can match.
+  const variableKeys: [string, unknown][] = [];
+  if (where !== null && typeof where === 'object' && !Array.isArray(where)) {
+    for (const [key, value] of Object.entries(where)) {
+      if (key === 'id') {
+        errors.push("'where.id' does not apply to a mail fact — a thing's id is minted on the owner's server");
+      } else if (key === 'type') {
+        errors.push(`'where.type': name the kind in 'on' — '${MAIL_FACT_ON_PREFIX}shipment' — or leave it out for any kind`);
+      } else if (key === MAIL_FACT_LAST_EMAIL_AT) {
+        errors.push(`'where.${MAIL_FACT_LAST_EMAIL_AT}': a time is never matched exactly — name it in 'fields' to wake for every new email about the thing`);
+      } else if (key === 'complete') {
+        if (typeof value !== 'boolean') errors.push("'where.complete' must be true or false");
+      } else if (key === 'template') {
+        if (typeof value !== 'string' || value.trim().length === 0) errors.push("'where.template' must be a template's id");
+      } else if (!isMailFactVariableName(key)) {
+        errors.push(`'where.${key}' is not a variable — use a variable's name, 'complete' or 'template' (a fact's data is not filterable)`);
+      } else if (typeof value === 'string' && value.trim().length === 0) {
+        // An empty reading is stored as null, never as ''.
+        errors.push(`'where.${key}' must not be empty — a fact never stores an empty value`);
+      } else if (typeof value === 'string' && value !== value.replace(/\s+/g, ' ').trim()) {
+        // Found text is stored collapsed (`normalize.ts`), and no other kind has spaces.
+        errors.push(`'where.${key}' must be written as the fact stores it — no spaces at either end, and one between words`);
+      } else if (typeof value === 'string' && value !== mailFactStoredText(value)) {
+        // And canonical: a fullwidth letter, or one that shows nothing, is in no fact.
+        errors.push(`'where.${key}' must be written as a fact stores it: '${mailFactStoredText(value)}' — plain letters and digits, and nothing that does not show`);
+      } else if (key === 'carrier' && typeof value === 'string' && canonicalMailFactCarrier(value) !== value) {
+        // Every pass names one of the four carriers the same way (§7.1).
+        errors.push(`'where.carrier' must be written as a fact stores it: '${canonicalMailFactCarrier(value)}'`);
+      } else if ((key === MAIL_FACT_STATE_VARIABLE || key === MAIL_FACT_NOTICE_VARIABLE)
+        && !(typeof value === 'string' && isMailFactWord(value))) {
+        errors.push(`'where.${key}' must be a ${key} as every kind of email writes one: lower-case words joined by _ (for example out_for_delivery)`);
+      } else {
+        variableKeys.push([key, value]);
+      }
+    }
+  }
+  // Every thing has the time of its newest email; the rest must be variables.
+  const fieldNames: string[] = [];
+  if (Array.isArray(fields)) {
+    for (const field of fields) {
+      if (typeof field !== 'string' || field.length === 0 || field === MAIL_FACT_LAST_EMAIL_AT) continue;
+      if (!isMailFactVariableName(field)) {
+        errors.push(`'fields' names '${field}', which is not a variable — 'fields' lists the variables whose change wakes it`);
+      } else {
+        fieldNames.push(field);
+      }
+    }
+  }
+
+  // One kind: checked exactly, when the checker can see it.
+  if (type !== null) {
+    const spec = getMailFactBuiltinType(type) ?? owned.find((candidate) => candidate.id === type);
+    if (spec === undefined) {
+      if (everywhere) errors.push(`'${MAIL_FACT_ON_PREFIX}${type}': there is no kind of email '${type}' on this server`);
+      else unknown.push(`'${MAIL_FACT_ON_PREFIX}${type}': a kind of email made on a server exists only there — this recipe starts only where it was made`);
+      return { errors, unknown };
+    }
+    const keys = mailFactWhereKeys(spec);
+    for (const [key, value] of variableKeys) {
+      const variable = variableOf(spec, key);
+      if (variable === undefined || !keys.has(key)) {
+        errors.push(`'where.${key}' is not filterable on ${type} — use its variables (money, times, files and data are not; watch a time with 'fields'), 'complete' or 'template': ${[...keys].join(', ')}`);
+        continue;
+      }
+      const problem = mailFactValueProblem(variable, value);
+      if (problem !== null) errors.push(`'where.${key}' ${problem}`);
+    }
+    const known = mailFactFieldKeys(spec);
+    for (const field of fieldNames) {
+      if (!known.has(field)) errors.push(`'fields' names '${field}', which is not a variable of ${type} (${[...known].join(', ')})`);
+    }
+    return { errors, unknown };
+  }
+
+  // Any kind: whatever SOME kind the checker knows has.
+  const kinds: readonly MailFactTypeSpec[] = [...MAIL_FACT_BUILTIN_TYPES, ...owned];
+  const noKind = everywhere ? 'no kind of email on this server' : 'no built-in kind of email';
+  const accepted = new Map<string, ReadonlySet<string>>();
+  for (const [key, value] of variableKeys) {
+    const declaring = kinds.filter((spec) => variableOf(spec, key) !== undefined);
+    const filterable = declaring.filter((spec) => MAIL_FACT_FILTERABLE_KINDS.has(variableOf(spec, key)!.kind));
+    const matching = filterable.filter((spec) => mailFactValueProblem(variableOf(spec, key)!, value) === null);
+    if (declaring.length === 0) {
+      unknown.push(`'where.${key}': ${noKind} has a variable '${key}'${onlyYours}`);
+    } else if (filterable.length === 0) {
+      unknown.push(`'where.${key}': every kind of email that has ${key} holds money, a time, a file or data in it, which a filter cannot compare (watch it with 'fields')${onlyYours}`);
+    } else if (matching.length === 0) {
+      const enums = filterable.every((spec) => variableOf(spec, key)!.kind === 'enum');
+      unknown.push(enums
+        ? `'where.${key}': ${noKind} has the ${key} '${String(value)}'${onlyYours}`
+        : `'where.${key}' ${mailFactValueProblem(variableOf(filterable[0]!, key)!, value)!} in every ${everywhere ? '' : 'built-in '}kind of email that has it${onlyYours}`);
+    } else {
+      accepted.set(key, new Set(matching.map((spec) => spec.id)));
+    }
+  }
+  // Every `where` holds for ONE fact, so one kind must have them all.
+  let candidates: readonly MailFactTypeSpec[] = kinds;
+  if (accepted.size > 0 && accepted.size === variableKeys.length) {
+    candidates = kinds.filter((spec) => [...accepted.values()].every((ids) => ids.has(spec.id)));
+    if (candidates.length === 0) {
+      unknown.push(`'where': ${noKind} has ${[...accepted.keys()].join(' and ')} with these values together${onlyYours}`);
+      candidates = kinds;
+    }
+  }
+  // `fields`: variables whose change wakes it, of a kind the `where` can match.
+  for (const field of fieldNames) {
+    if (!candidates.some((spec) => variableOf(spec, field) !== undefined)) {
+      unknown.push(candidates === kinds
+        ? `'fields': ${noKind} has a variable '${field}'${onlyYours}`
+        : `'fields': no kind of email the 'where' matches has a variable '${field}'${onlyYours}`);
+    }
+  }
+  return { errors, unknown };
+};
+
+/** A mail-fact entry's keys that are no part of one. */
+const unknownMailFactKeys = (entry: object): string[] =>
+  Object.keys(entry).filter((key) => !MAIL_FACT_ENTRY_KEYS.has(key) && !ENTRY_KEYS_REFUSED_ELSEWHERE.has(key));
+
 const isCompilableFormResponseWhere = (where: unknown): boolean => {
   if (where === undefined) return true;
   if (where === null || typeof where !== 'object' || Array.isArray(where)) return false;
@@ -131,6 +350,7 @@ export type ParsedTriggerOn =
   | { kind: 'messenger' }
   | { kind: 'reception' }
   | { kind: 'form_response' }
+  | { kind: 'mail_fact'; type: MailFactTypeId | null }
   | { kind: 'dom' };
 
 /** Parse an `on:` string against the closed grammar. Returns null on any
@@ -141,6 +361,14 @@ export const parseTriggerOn = (on: string): ParsedTriggerOn | null => {
   if (on === RECEPTION_ON_SHORTHAND) return { kind: 'reception' };
   if (on === FORM_RESPONSE_ON_SHORTHAND) return { kind: 'form_response' };
   if (on === ELEMENT_ON_SHORTHAND) return { kind: 'dom' };
+  if (on === MAIL_FACT_ON_SHORTHAND) return { kind: 'mail_fact', type: null };
+  // `mail_fact.<type>`, checked BEFORE the positional forms: a third part must
+  // not be read as `<vendor>.<entity>.<verb>`, which compiles to a connection
+  // pattern that never fires and never errors (D-315 §5.1).
+  if (on.startsWith(MAIL_FACT_ON_PREFIX)) {
+    const type = on.slice(MAIL_FACT_ON_PREFIX.length);
+    return isMailFactTypeId(type) ? { kind: 'mail_fact', type } : null;
+  }
   const segments = on.split('.');
   if (segments.length === 2) {
     const [alias, verb] = segments as [string, string];
@@ -224,6 +452,7 @@ const platformReferencePattern = (
 export const compileTriggerSugarEntry = (
   entry: Pick<RecipeEventTrigger, 'on' | 'connection' | 'fields' | 'where' | 'url' | 'selector'>,
   vendorEntities: ReadonlyArray<Pick<ConnectionVendorEntity, 'vendor' | 'entity' | 'crm_alias'>>,
+  options: TriggerSugarOptions = {},
 ): CompiledTriggerSubscription[] | null => {
   if (typeof entry.on !== 'string') return null;
   const parsed = parseTriggerOn(entry.on);
@@ -283,6 +512,25 @@ export const compileTriggerSugarEntry = (
       // nothing, never a missing-path filter that over-fires.
       if (!isCompilableFormResponseWhere(entry.where)) return [];
       return [decorate(FORM_RESPONSE_CREATED_EVENT_PATTERN)];
+    case 'mail_fact': {
+      // Strict like the form response: a narrowing no fact can match
+      // materializes nothing, since an unvalidated recipe (an import, a legacy
+      // row) reaches the compile directly — nor does a key that is no part of
+      // one, which would leave it wider than written. What no KNOWN kind has
+      // does materialize from a recipe — a kind made later may have it — and
+      // not from a trigger made on this server, whose check knows every kind.
+      // Only what the check takes: any other key, a `fields` that is no list of
+      // names, or a value that is no literal would leave it wider than written
+      // or dead (the check refuses each with its reason).
+      if (Object.keys(entry).some((key) => !MAIL_FACT_ENTRY_KEYS.has(key))) return [];
+      if (entry.fields !== undefined && (!Array.isArray(entry.fields) || entry.fields.length === 0
+        || entry.fields.some((field) => typeof field !== 'string' || field.length === 0))) return [];
+      if (whereRecord !== undefined && Object.values(whereRecord)
+        .some((value) => !isScalar(value) || (typeof value === 'string' && value.includes('{{')))) return [];
+      const { errors, unknown } = mailFactEntryProblems(parsed.type, entry.fields, entry.where, options);
+      if (errors.length > 0 || (options.mailFactTypes !== undefined && unknown.length > 0)) return [];
+      return [decorate(mailFactEventPattern(parsed.type))];
+    }
     case 'dom': {
       // url + selector are validator-required for the dom form; guard
       // defensively. `on` parsed (it IS sugar), so a malformed entry
@@ -338,22 +586,49 @@ const resolvePath = (root: Record<string, unknown>, path: string): unknown => {
  *  closing.
  *  Over-fire-and-let-the-recipe-gate beats silent-dead; the recipe's own
  *  `skip_when` remains the correctness gate (design § 5). A PRESENT path
- *  compares strict-equal (scalar literals). */
+ *  compares strict-equal (scalar literals).
+ *
+ *  ⛔ EXCEPT A MAIL FACT (D-315 §5.1): its event is never a doorbell — the
+ *  record carries every variable of its kind (`null` when unread) and
+ *  `changed_fields` always. A path it lacks is a variable its KIND does not
+ *  have, and a fact trigger watches variables whatever kind has them, so
+ *  passing it would wake a `where: { notice: "price_change" }` for every
+ *  purchase. On a fact, a missing path is no match.
+ *
+ *  ⛔ And a new email that changed nothing but the thing's `last_email_at`
+ *  wakes only a row whose `fields` name it (ruling 44): "every change" (no
+ *  `fields`) means a change of what the thing SAYS, so a carrier's daily
+ *  "still in transit" wakes only the recipe that asked for every email.
+ *  ⚠ The dispatcher calls this for every fact event, filter or not. */
 export const matchesTriggerDispatchFilter = (
   row: TriggerDispatchFilter,
   payload: Record<string, unknown>,
 ): boolean => {
+  const strict = payload.platform === MAIL_FACT_EVENT_PLATFORM;
+  if (strict) {
+    // An UPDATE whose only change is the time. A creation always counts: it
+    // carries no `prev`, and one that read nothing lists the time alone.
+    const changed = payload.changed_fields;
+    const timeOnly = payload.prev !== undefined
+      && Array.isArray(changed) && changed.length === 1 && changed[0] === MAIL_FACT_LAST_EMAIL_AT;
+    if (timeOnly && !(row.fields ?? []).includes(MAIL_FACT_LAST_EMAIL_AT)) return false;
+  }
   if (row.fields !== undefined && row.fields.length > 0) {
     const changed = payload.changed_fields;
     if (Array.isArray(changed)) {
       const changedSet = new Set(changed.filter((c): c is string => typeof c === 'string'));
       if (!row.fields.some((f) => changedSet.has(f))) return false;
+    } else if (strict) {
+      return false;
     }
   }
   if (row.filter !== undefined) {
     for (const [path, expected] of Object.entries(row.filter)) {
       const actual = resolvePath(payload, path);
-      if (actual === undefined) continue;
+      if (actual === undefined) {
+        if (strict) return false;
+        continue;
+      }
       if (actual !== expected) return false;
     }
   }
@@ -391,7 +666,7 @@ const isValidBusPattern = (pattern: string): boolean => {
  *  resolution, so a `{{config.*}}` ref would never match (a silent dead
  *  subscription). Fail loud here instead; per-install narrowing stays in
  *  recipe-side `skip_when` until dispatch-time config resolution lands. */
-export const validateRecipeEventTriggerEntry = (entry: unknown): string[] => {
+export const validateRecipeEventTriggerEntry = (entry: unknown, options: TriggerSugarOptions = {}): string[] => {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
     return ['entry must be an object'];
   }
@@ -447,8 +722,17 @@ export const validateRecipeEventTriggerEntry = (entry: unknown): string[] => {
 
   const parsed = typeof e.on === 'string' ? parseTriggerOn(e.on) : null;
   if (parsed === null) {
+    if (typeof e.on === 'string' && e.on.startsWith(MAIL_FACT_ON_PREFIX)) {
+      const [type, ...rest] = e.on.slice(MAIL_FACT_ON_PREFIX.length).split('.');
+      problems.push(
+        rest.length > 0 && isMailFactTypeId(type)
+          ? `'${e.on}': a mail-fact trigger takes no verb — '${MAIL_FACT_ON_PREFIX}${type}' wakes on the thing's creation and on every change; narrow with 'fields' and 'where'`
+          : `'${e.on}' names no kind of email — use '${MAIL_FACT_ON_PREFIX}<kind>' with one of ${MAIL_FACT_BUILTIN_TYPES.map((t) => t.id).join(', ')} or a kind made on the server, or '${MAIL_FACT_ON_SHORTHAND}' for any kind`,
+      );
+      return problems;
+    }
     problems.push(
-      `'on' must be '<crm_alias>.<verb>', '<vendor>.<entity>.<verb>' (verbs: ${TRIGGER_SUGAR_VERBS.join(' | ')}), '${MESSENGER_ON_SHORTHAND}', '${RECEPTION_ON_SHORTHAND}', '${FORM_RESPONSE_ON_SHORTHAND}', or '${ELEMENT_ON_SHORTHAND}' (got ${JSON.stringify(e.on)})`,
+      `'on' must be '<crm_alias>.<verb>', '<vendor>.<entity>.<verb>' (verbs: ${TRIGGER_SUGAR_VERBS.join(' | ')}), '${MESSENGER_ON_SHORTHAND}', '${RECEPTION_ON_SHORTHAND}', '${FORM_RESPONSE_ON_SHORTHAND}', '${MAIL_FACT_ON_SHORTHAND}', '${MAIL_FACT_ON_PREFIX}<kind>', or '${ELEMENT_ON_SHORTHAND}' (got ${JSON.stringify(e.on)})`,
     );
     return problems;
   }
@@ -487,6 +771,8 @@ export const validateRecipeEventTriggerEntry = (entry: unknown): string[] => {
       problems.push(`'connection' does not apply to '${FORM_RESPONSE_ON_SHORTHAND}' — accepted form responses are not connection-scoped (narrow via where.form_definition_id or where.endpoint_id)`);
     } else if (parsed.kind === 'dom') {
       problems.push(`'connection' does not apply to '${ELEMENT_ON_SHORTHAND}' — a dom watch has no connection record; it binds to bridges that granted the watched origin`);
+    } else if (parsed.kind === 'mail_fact') {
+      problems.push("'connection' does not apply to a mail fact — a fact is read from every mailbox; narrow via 'where'");
     } else if (parsed.kind === 'alias') {
       // An alias form fans across EVERY vendor carrying the alias, but a
       // connection belongs to exactly one vendor — the combination mints
@@ -543,5 +829,30 @@ export const validateRecipeEventTriggerEntry = (entry: unknown): string[] => {
       }
     }
   }
+  if (parsed.kind === 'mail_fact') {
+    for (const key of unknownMailFactKeys(e)) {
+      problems.push(`'${key}' is not part of a mail-fact trigger — it takes 'on', 'fields' and 'where'`);
+    }
+    const { errors, unknown } = mailFactEntryProblems(parsed.type, e.fields, e.where, options);
+    problems.push(...errors);
+    // A check that knows every kind refuses what none has; a recipe's notes it.
+    if (options.mailFactTypes !== undefined) problems.push(...unknown);
+  }
   return problems;
+};
+
+/** What a recipe's mail-fact trigger names that no built-in kind of email has
+ *  (D-315 §5.1): a kind made on a server, or — on a trigger on any kind — a
+ *  variable, a value, or a set of them together. Not a refusal — a kind the
+ *  owner makes on their server may have it — but it starts for no one who has
+ *  not made one, so the author is told. Empty for a check that knows every
+ *  kind (`options.mailFactTypes`), which refuses these instead, and for any
+ *  other trigger. */
+export const recipeEventTriggerNotes = (entry: unknown, options: TriggerSugarOptions = {}): string[] => {
+  if (options.mailFactTypes !== undefined || entry === null || typeof entry !== 'object' || Array.isArray(entry)) return [];
+  const e = entry as Record<string, unknown>;
+  if (e.event !== undefined || typeof e.on !== 'string') return [];
+  const parsed = parseTriggerOn(e.on);
+  if (parsed?.kind !== 'mail_fact') return [];
+  return mailFactEntryProblems(parsed.type, e.fields, e.where, options).unknown;
 };

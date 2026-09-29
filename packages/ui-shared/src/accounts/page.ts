@@ -30,6 +30,8 @@
 
 import {
   buildOpenerRelayRedirectUri,
+  isLoopbackOrigin,
+  OAUTH_CLOUD_CALLBACK_ORIGIN,
   oauthAppIssuerForProvider,
   type CollectionAuthState,
   type OAuthAppConfigSnapshot,
@@ -210,13 +212,18 @@ const IMAP_PROVIDER: AccountProvider = {
       help: 'On for port 993. Off for port 143.',
     },
     { key: 'username', label: 'Username', type: 'text', placeholder: 'you@fastmail.com' },
-    { key: 'password', label: 'Password', type: 'secret', help: 'Use an app password if your provider requires one.' },
+    {
+      key: 'password',
+      label: 'Password',
+      type: 'secret',
+      help: 'Use an app password if your provider requires one. Gmail does: make one at myaccount.google.com/apppasswords after turning on 2-Step Verification (host imap.gmail.com).',
+    },
     {
       key: 'folders',
       label: 'Folders',
       type: 'string-list',
       default: 'INBOX',
-      help: 'Which folders to bring in, separated by commas. For example: INBOX, Sent.',
+      help: 'Which folders to bring in, separated by commas. For example: INBOX, Sent. Gmail keeps sent mail in [Gmail]/Sent Mail.',
     },
     {
       key: 'smtp_host',
@@ -1002,7 +1009,7 @@ const renderOAuthAppSection = (
           <summary>Change ${e(label)} sign-in app</summary>
           <div class="accounts-oauth-manage-body">
             ${inlineHint(OAUTH_ISSUER_COVERS[issuer])}
-            ${oauthAppGuide(issuer)}
+            ${oauthAppGuide(issuer, false, state.appOrigin)}
             ${callback(false)}
             ${credentials(`Replacement ${label} app credentials`)}
           </div>
@@ -1032,7 +1039,7 @@ const renderOAuthAppSection = (
           </div>
         </div>
         <p class="accounts-oauth-shared-note">${e(OAUTH_ISSUER_COVERS[issuer])}</p>
-        ${oauthAppGuide(issuer, true)}
+        ${oauthAppGuide(issuer, true, state.appOrigin)}
         ${callback(true)}
         ${credentials('3. Paste the app credentials')}
       </section>
@@ -1051,7 +1058,7 @@ const renderOAuthAppSection = (
           </p>
         </div>
       </div>
-      ${oauthAppGuide(issuer)}
+      ${oauthAppGuide(issuer, false, state.appOrigin)}
       ${callback(false)}
       ${credentials(`${label} app credentials`)}
     </section>
@@ -1573,27 +1580,98 @@ const renderOAuthFinishing = (
 /** Per-issuer, step-by-step "create your own OAuth app" guide, in a native
  *  `<details>` so it stays collapsed until the user needs it. Static text
  *  (no interpolation of untrusted input) — it references the exact redirect
- *  URI rendered above it rather than repeating the value. */
+ *  URI rendered above it rather than repeating the value.
+ *
+ *  ⛔ GOOGLE: ONLY ROUTES THAT KEEP WORKING. An External app left in Testing
+ *  gets sign-ins that expire after 7 days, so it is warned against, never
+ *  offered. What lasts depends on the account: Workspace → Internal; a free
+ *  Gmail account with a domain its owner has verified → a published app;
+ *  a free Gmail account without one → IMAP with an app password for mail, and
+ *  no Google Calendar (its CalDAV takes no password). Publishing needs Branding
+ *  on that verified domain, and every domain the OAuth client uses must be
+ *  listed too — so a page whose callback is on recued.com (app.recued.com, or a
+ *  LAN address bouncing through it) cannot connect a published app, and says so.
+ *  `appOrigin` is the page's own address; absent, the guide names both.
+ *
+ *  ⛔ MICROSOFT IS THE OTHER WAY AROUND. A personal account makes its own app
+ *  (in a directory of its own). A work or school account usually cannot: since
+ *  late November 2025 Microsoft's default consent setting stops a staff member
+ *  approving Mail.* or Calendars.* for any app, whoever made it, so the IT
+ *  admin must register it and grant admin consent. (A tenant with its own
+ *  consent policy is untouched, hence "usually".) And there is no password
+ *  fallback: Outlook.com and Microsoft 365 both refuse passwords from other
+ *  mail apps.
+ *
+ *  ⛔ AND ONLY app.recued.com AND `http://localhost` CAN CONNECT IT. An app
+ *  that takes personal accounts may not have a query string in its callback.
+ *  app.recued.com's is bare (the cloud page relays a `frelay_` state to its
+ *  own origin), but a LAN page's names its own address in the query, and the
+ *  Azure portal refuses an `http` callback at 127.0.0.1. Either callback is
+ *  the same for every owner: app.recued.com's is fixed, and Microsoft ignores
+ *  the port of a localhost one, so one registered URL serves an organization. */
 const oauthAppGuide = (
   issuer: OAuthAppIssuer,
   open = false,
+  appOrigin?: string,
 ): string => {
+  const loopback = appOrigin !== undefined && isLoopbackOrigin(appOrigin);
+  const addressStep = appOrigin === undefined
+    ? 'External only — a published app needs this form open at the server&rsquo;s own address, such as <code>http://127.0.0.1:7717/webclient</code>. From app.recued.com or a LAN address the callback is on recued.com, which you cannot verify.'
+    : loopback
+      ? 'External only — this page is open at the server&rsquo;s own address, so its callback (step 2 below) works with a published app.'
+      : '<strong>External only — this page cannot connect a published app.</strong> Its callback (step 2 below) is on recued.com, which you cannot verify. Open Recued at the server&rsquo;s own address instead: <code>http://127.0.0.1:7717/webclient</code> on the server, or through a tunnel from your computer with <code>ssh -L 7717:127.0.0.1:7717 you@your-server</code>. You connect once. After that the account keeps working here too.';
+  const localhostPage = '<code>http://localhost:7717/webclient</code>';
+  const tunnel = 'No screen on the server? Make a tunnel from your computer with <code>ssh -L 7717:127.0.0.1:7717 you@your-server</code> and open that address there.';
+  const onLocalhost = loopback && new URL(appOrigin).hostname === 'localhost';
+  const microsoftAddressStep = appOrigin === undefined
+    ? `Open this form on app.recued.com, or at the server&rsquo;s own address, ${localhostPage}. Microsoft refuses the callback of a LAN address, and an <code>http</code> one at 127.0.0.1. ${tunnel} You connect once. After that the account keeps working from any address.`
+    : appOrigin === OAUTH_CLOUD_CALLBACK_ORIGIN
+      ? 'This page is app.recued.com, so its callback (step 2 below) works.'
+      : onLocalhost
+        ? 'This page is open at <code>localhost</code>, the server&rsquo;s own address, so its callback (step 2 below) works.'
+        : loopback
+          ? `<strong>Open this page at ${localhostPage} instead</strong>, or use app.recued.com. Microsoft refuses an <code>http</code> callback at a numbered address like this one: the Azure portal will not take it. <code>localhost</code> is the same server under another name.`
+          : `<strong>This page cannot connect the app these steps make.</strong> Its callback (step 2 below) names this page&rsquo;s address after a <code>?</code>, and Microsoft refuses that for an app that takes personal accounts. Connect from app.recued.com instead, or from the server&rsquo;s own address, ${localhostPage}. ${tunnel} You connect once. After that the account keeps working here too.`;
+  const routes =
+    issuer === 'google'
+      ? `
+      <div class="accounts-oauth-guide-routes">
+        <p><strong>First, pick the way that keeps working for your account.</strong></p>
+        <ul>
+          <li><strong>Google Workspace</strong> (a work or school account): make the app below as <strong>Internal</strong>. There is nothing to publish, and its sign-in does not expire after 7 days — that only happens to an External app left in Testing.</li>
+          <li><strong>Free Gmail, and you own a web domain:</strong> make the app below as <strong>External</strong> and publish it.</li>
+          <li><strong>Free Gmail, no domain:</strong> skip the app. For mail, go back and pick <strong>IMAP / SMTP</strong>: host <code>imap.gmail.com</code>, port 993, your Gmail address, and an app password from <code>myaccount.google.com/apppasswords</code> (turn on 2-Step Verification first). Add <code>[Gmail]/Sent Mail</code> to Folders. To send, add SMTP host <code>smtp.gmail.com</code>, port 465. Google Calendar has no password option, so it needs Workspace or your own domain.</li>
+        </ul>
+      </div>`
+      : `
+      <div class="accounts-oauth-guide-routes">
+        <p><strong>First, check which kind of account you have.</strong></p>
+        <ul>
+          <li><strong>Personal account</strong> (Outlook.com, Hotmail, Live): make the app below yourself. It lives in a Microsoft Entra directory of your own. No directory yet? Sign up for a free Azure account first. You approve the app yourself when you sign in.</li>
+          <li><strong>Work or school account</strong> (Microsoft 365): an admin must make the app and approve it. Microsoft&rsquo;s default setting stops everyone else from approving an app that reads mail or calendars, whoever made it. The admin needs one of these roles: Global Administrator, Privileged Role Administrator, Cloud Application Administrator or Application Administrator. They make one app for the whole organization. Do the first step below, then send them this page and the callback URL shown in step 2 below. They send back the Client ID and secret, and everyone in the organization connects with the same two. Hold one of those roles yourself? Follow the steps below.</li>
+          <li><strong>No password option:</strong> Outlook.com and Microsoft 365 no longer let other mail apps sign in with a password, so IMAP / SMTP cannot reach them.</li>
+        </ul>
+      </div>`;
   const steps =
     issuer === 'google'
       ? [
           'Open the Google Cloud Console and create (or pick) a project.',
           'Under APIs &amp; Services → Library, enable the Gmail API (and the Google Calendar API if you will sync calendars).',
-          'Configure the OAuth consent screen. Google Workspace account: choose Internal — no verification needed, and refresh tokens are long-lived. Personal Google account: choose External.',
-          'External only — set Publishing status to <strong>In production</strong> (OAuth consent screen → Publish app). Do NOT leave it in Testing: apps in Testing status issue refresh tokens that <strong>expire after 7 days</strong>, so your mail sync would stop every week. Publishing does not require Google verification for your own use — you will see a "Google hasn&rsquo;t verified this app" screen at sign-in, where Advanced → Go to (unsafe) proceeds. Unverified apps are capped at 100 users, which is ample for a personal server.',
+          'Open Google Auth Platform → Audience. Google Workspace account: choose <strong>Internal</strong>, then skip to step 7. Free Gmail account: choose <strong>External</strong>.',
+          'External only — open <strong>Branding</strong>. Fill in the app name, your support email and the developer contact. Leave the logo empty. Add a home page link and a privacy policy link (and terms, if you have them), on a site at your own domain. Under Authorized domains, add that domain and verify it in Google Search Console. Do not add recued.com: you cannot verify it, and Google will not publish an app that lists it.',
+          'External only — go to Audience → <strong>Publish app</strong>, so its status is <strong>In production</strong>. Do NOT leave it in Testing: Google makes its sign-ins <strong>expire after 7 days</strong>, so your mail sync would stop every week. At sign-in Google shows "Google hasn&rsquo;t verified this app". Choose <strong>Advanced</strong>, then <strong>Go to <em>your app&rsquo;s name</em> (unsafe)</strong>. &ldquo;Unsafe&rdquo; is Google&rsquo;s word for any app it has not reviewed; this one is yours and talks only to your own server. Then allow the access it asks for. Unverified apps are capped at 100 users.',
+          addressStep,
           'Go to Credentials → Create credentials → OAuth client ID → Web application.',
           'Under Authorized redirect URIs, add the exact callback URL shown in step 2 below.',
           'Create it, then copy the Client ID and Client secret into step 3 below.',
         ]
       : [
-          'Open the Azure portal → Microsoft Entra ID → App registrations → New registration. Under "Supported account types" choose "Accounts in any organizational directory and personal Microsoft accounts" — Recued signs in via the /common endpoint, so a single-tenant or org-only app is rejected with "not enabled for consumers".',
+          microsoftAddressStep,
+          'Open the Azure portal → Microsoft Entra ID → App registrations → New registration. (Personal account with no directory yet: sign up for a free Azure account first.) Under "Supported account types" choose "Accounts in any organizational directory and personal Microsoft accounts". Recued signs in through Microsoft&rsquo;s shared /common address, so the other choices fail at sign-in: a personal account cannot use an organizations-only app ("not enabled for consumers"), and nobody can use a single-tenant app (AADSTS50194). An admin making the app for a work or school account picks this option too.',
           'Under "Redirect URI" pick the Web platform (NOT "Single-page application" — Web uses the client-secret flow Recued needs), paste the exact callback URL shown in step 2 below, then Register.',
           'Open API permissions → Add a permission → Microsoft Graph → Delegated permissions. Add <strong>Mail.Read</strong>, <strong>offline_access</strong> and <strong>User.Read</strong> — all three are required, and without offline_access there is no refresh token, so syncing stops about an hour after you connect. Then add <strong>Mail.Send</strong> if you want Recued to send mail, and <strong>Calendars.ReadWrite</strong> if you tick "Also connect Calendar". Entra only issues a scope the app registration lists, so a permission missing here cannot be granted at sign-in no matter what you tick on the form.',
-          'Open Certificates &amp; secrets → New client secret, then copy its Value immediately (it is shown only once).',
+          '<strong>Work or school account:</strong> on the same API permissions page, the admin chooses <strong>Grant admin consent</strong> for the organization. Greyed out? You do not hold one of the roles above; that is your organization&rsquo;s policy, not a fault in Recued, so send this page to someone who does. Without this consent, sign-in stops at "Need admin approval". Some organizations show "Approval required" instead: send the request it offers, then connect again once an admin approves. A personal account skips this step.',
+          'Open Certificates &amp; secrets → New client secret, then copy its Value immediately (it is shown only once). For a work or school account, the admin sends this Value and the Client ID to each person who connects. The secret names the app, not a person: it opens no mailbox without that person&rsquo;s own sign-in.',
           'From the Overview page copy the Application (client) ID, and paste it plus the secret Value into step 3 below.',
         ];
   const provider = OAUTH_ISSUER_LABEL[issuer];
@@ -1606,6 +1684,7 @@ const oauthAppGuide = (
         aria-label="${e(providerConsole.label)} (opens in a new tab)">
         ${e(providerConsole.label)} <span aria-hidden="true">↗</span>
       </a>
+      ${routes}
       <ol class="accounts-oauth-guide-steps">
         ${steps.map((s) => `<li>${s}</li>`).join('')}
       </ol>
@@ -2025,6 +2104,18 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-oauth-guide-steps {
   margin: 10px 0 2px; padding-left: 20px; display: grid; gap: 8px;
   color: var(--muted); font-size: 12px; line-height: 1.5;
+}
+.accounts-oauth-guide-routes {
+  margin: 10px 0 0; padding: 8px 10px; border-radius: 7px;
+  background: var(--surface-sunk); color: var(--fg); font-size: 12px; line-height: 1.5;
+}
+.accounts-oauth-guide-routes p { margin: 0 0 4px; }
+.accounts-oauth-guide-routes ul { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+.accounts-oauth-guide-steps li,
+.accounts-oauth-guide-routes li { min-width: 0; overflow-wrap: anywhere; }
+.accounts-oauth-guide code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px; overflow-wrap: anywhere;
 }
 .accounts-detail { min-width: 0; }
 .accounts-detail-title {

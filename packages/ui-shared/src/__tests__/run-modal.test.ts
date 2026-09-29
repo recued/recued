@@ -26,7 +26,12 @@ import {
 } from '@recued/contracts';
 
 import {
+  describeMailFactTrigger,
   initialRunModalState,
+  mailFactChoiceLabel,
+  mailFactCreateArgs,
+  mailFactVocabulary,
+  mailFactWhereOptions,
   parseRunConfig,
   recipeDisplayName,
   recipeSchedules,
@@ -35,6 +40,7 @@ import {
   runTargetGate,
   wireRunModal,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_FACT_ATTR,
   RUN_MODAL_FACTS_ATTR,
   RUN_MODAL_REASON_ATTR,
   RUN_MODAL_OVERLAY_ATTR,
@@ -160,12 +166,15 @@ interface FakeEl {
   hasAttribute(k: string): boolean;
   addEventListener(t: string, fn: (ev: Event) => void): void;
   removeEventListener(t: string, fn: (ev: Event) => void): void;
+  /** Deliver an event to what listens for it, as the browser would. */
+  dispatch(t: string, ev: Omit<Partial<Event>, 'target'> & { target: unknown }): void;
   appendChild(c: FakeEl): FakeEl;
   removed: boolean;
   remove(): void;
 }
 
 const makeEl = (tag: string): FakeEl => {
+  const listeners = new Map<string, Array<(ev: Event) => void>>();
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -176,8 +185,15 @@ const makeEl = (tag: string): FakeEl => {
     setAttribute: (k, v) => el.attrs.set(k, v),
     getAttribute: (k) => el.attrs.get(k) ?? null,
     hasAttribute: (k) => el.attrs.has(k),
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
+    addEventListener: (t, fn) => {
+      listeners.set(t, [...(listeners.get(t) ?? []), fn]);
+    },
+    removeEventListener: (t, fn) => {
+      listeners.set(t, (listeners.get(t) ?? []).filter((listener) => listener !== fn));
+    },
+    dispatch: (t, ev) => {
+      for (const fn of [...(listeners.get(t) ?? [])]) fn(ev as Event);
+    },
     appendChild: (c) => c,
     remove: () => {
       el.removed = true;
@@ -1112,5 +1128,328 @@ describe('run-modal wire', () => {
     expect(styles).toContain(
       '.run-modal-rule-row {\n    align-items: stretch;\n    flex-direction: column;',
     );
+  });
+});
+
+// ── D-315 §5.1 — "A mail fact" on the Trigger tab ─────────────────
+
+describe('run-modal: a mail fact trigger', () => {
+  // On one kind of email (ruling 43), or any kind that has what it watches
+  // (ruling 42): `type` ''.
+  const draft = (over: Record<string, unknown> = {}) => ({
+    type: '', fields: [] as string[], where_variable: '', where_value: '', template_id: '', ...over,
+  });
+
+  it('turns the picks into the shorthand the server compiles', () => {
+    expect(mailFactCreateArgs(draft())).toEqual({ on: 'mail_fact' });
+    expect(mailFactCreateArgs(draft({ type: 'shipment', fields: ['state', 'last_email_at'] })))
+      .toEqual({ on: 'mail_fact.shipment', fields: ['state', 'last_email_at'] });
+    expect(mailFactCreateArgs(draft({ type: 'nope' }))).toEqual({ error: 'Choose a kind of email.' });
+    // On one kind, only its own values: a shipment has no notice.
+    expect(mailFactCreateArgs(draft({ type: 'shipment', where_variable: 'notice', where_value: 'reminder' })))
+      .toEqual({ error: 'Choose what the fact must say.' });
+    expect(mailFactCreateArgs(draft({ fields: ['state'], where_variable: 'state', where_value: 'delivered', template_id: 'mtpl_1' })))
+      .toEqual({ on: 'mail_fact', fields: ['state'], where: { state: 'delivered', template: 'mtpl_1' } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'complete', where_value: 'true' }))).toEqual({
+      on: 'mail_fact', where: { complete: true },
+    });
+    expect(mailFactCreateArgs(draft({ where_variable: 'party_size', where_value: '4' })))
+      .toEqual({ on: 'mail_fact', where: { party_size: 4 } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'state' }))).toEqual({ error: 'Say which state it must be.' });
+    expect(mailFactCreateArgs(draft({ where_variable: 'complete' }))).toEqual({ error: 'Choose yes or no.' });
+    // Money is no "only when": no kind can compare it.
+    expect(mailFactCreateArgs(draft({ where_variable: 'total', where_value: '5' }))).toEqual({ error: 'Choose what the fact must say.' });
+  });
+
+  it('writes a typed value as the fact stores it: text collapsed, an id without spaces', () => {
+    expect(mailFactCreateArgs(draft({ where_variable: 'carrier', where_value: '  Royal   Mail ' })))
+      .toEqual({ on: 'mail_fact', where: { carrier: 'Royal Mail' } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'tracking_number', where_value: ' 1Z 999 AA1 ' })))
+      .toEqual({ on: 'mail_fact', where: { tracking_number: '1Z999AA1' } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'carrier', where_value: '   ' })))
+      .toEqual({ error: 'Say which carrier it must be.' });
+    expect(mailFactCreateArgs(draft({ where_variable: 'party_size', where_value: 'four' })))
+      .toEqual({ error: 'Party size must be a number.' });
+  });
+
+  it('writes a typed value canonical, as a fact stores it: a fullwidth or hidden character is the plain one (§9)', () => {
+    // Typed in fullwidth (a Japanese keyboard's default), or pasted with a zero-width space.
+    expect(mailFactCreateArgs(draft({ where_variable: 'merchant', where_value: '\uFF33\uFF48\uFF4F\uFF50\u3000\uFF21' })))
+      .toEqual({ on: 'mail_fact', where: { merchant: 'Shop A' } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'tracking_number', where_value: '\uFF11Z\u200B999 AA1' })))
+      .toEqual({ on: 'mail_fact', where: { tracking_number: '1Z999AA1' } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'party_size', where_value: '\uFF14' })))
+      .toEqual({ on: 'mail_fact', where: { party_size: 4 } });
+    expect(mailFactCreateArgs(draft({ where_variable: 'carrier', where_value: '\u200B\u2060' })))
+      .toEqual({ error: 'Say which carrier it must be.' });
+  });
+
+  it('offers each variable once, with the kinds that have it', () => {
+    const vocabulary = mailFactVocabulary();
+    const label = (name: string) => mailFactChoiceLabel(vocabulary.find((choice) => choice.name === name)!);
+    expect(vocabulary.filter((choice) => choice.name === 'order_id')).toHaveLength(1);
+    expect(label('state')).toBe('State — every kind of email');
+    expect(label('order_id')).toBe('Order id — purchase, shipment, return or refund, order received');
+    expect(label('tracking_number')).toBe('Tracking number — shipment');
+    // Every thing has the time of its newest email: watching it wakes on every email (ruling 44).
+    expect(label('last_email_at')).toBe('A new email about it, even when nothing else changed');
+    expect(mailFactWhereOptions().find((option) => option.name === 'last_email_at')).toBeUndefined();
+    // On one kind, its values alone, by name.
+    expect(mailFactVocabulary([], 'shipment').map((choice) => mailFactChoiceLabel(choice, [], 'shipment')))
+      .toEqual(expect.arrayContaining(['Tracking number', 'State', 'A new email about it, even when nothing else changed']));
+    expect(mailFactVocabulary([], 'shipment').map((choice) => choice.name)).not.toContain('notice');
+    // One "only when" per name: an enum's values from every kind that has it.
+    const kind = mailFactWhereOptions().find((option) => option.name === 'kind');
+    expect(kind?.kind).toBe('enum');
+    expect(kind?.values).toEqual(expect.arrayContaining(['lodging', 'payslip']));
+    expect(mailFactWhereOptions().find((option) => option.name === 'total')).toBeUndefined();
+  });
+
+  it('says a trigger on every email in words', () => {
+    expect(describeMailFactTrigger({ pattern: 'data.mail_fact.shipment.thing.*', fields: ['last_email_at'] }, null))
+      .toBe('a shipment read from mail, on every new email about it');
+    expect(describeMailFactTrigger({ pattern: 'data.mail_fact.shipment.thing.*', fields: ['state', 'last_email_at'] }, null))
+      .toBe('a shipment read from mail, when state changes or a new email arrives');
+  });
+
+  it('says a fact trigger in words, and nothing for another trigger', () => {
+    const row = {
+      pattern: 'data.mail_fact.*.thing.*',
+      fields: ['state'],
+      filter: { 'record.state': 'delivered', 'record.template': 'mtpl_1' },
+    };
+    expect(describeMailFactTrigger(row, [{ template_id: 'mtpl_1', name: 'UPS notices', type: 'shipment' }]))
+      .toBe('a fact read from mail, when state changes, only when state is delivered, read by “UPS notices”');
+    expect(describeMailFactTrigger({ pattern: 'data.mail_fact.*.thing.*' }, null)).toBe('a fact read from mail, on every change');
+    expect(describeMailFactTrigger({ pattern: 'data.mail.**' }, null)).toBeNull();
+    // A trigger on one kind of email fires for that kind alone, and says so.
+    expect(describeMailFactTrigger({ pattern: 'data.mail_fact.order_received.thing.*' }, null))
+      .toBe('an order received read from mail, on every change');
+    // A template that is off, or gone, is said: the trigger waits on it.
+    const narrowed = { pattern: 'data.mail_fact.*.thing.*', filter: { 'record.template': 'mtpl_1' } };
+    expect(describeMailFactTrigger(narrowed, [{ template_id: 'mtpl_1', name: 'UPS notices', type: 'shipment', active: false }]))
+      .toBe('a fact read from mail, on every change, read by “UPS notices”, which is off');
+    expect(describeMailFactTrigger(narrowed, [])).toBe('a fact read from mail, on every change, read by a template that was deleted');
+    expect(describeMailFactTrigger(narrowed, null)).toBe('a fact read from mail, on every change, read by one template');
+    // What the owner wrote is shown as written; only an enum value is a name.
+    expect(describeMailFactTrigger({
+      pattern: 'data.mail_fact.*.thing.*',
+      filter: { 'record.carrier': 'UPS', 'record.complete': false },
+    }, null)).toBe('a fact read from mail, on every change, only when carrier is “UPS”, only when a value is missing');
+  });
+
+  it('renders the form: any kind, what it watches, one more to watch, the “only when” and its value', () => {
+    const html = renderRunModal(
+      stateWith({ tab: 'trigger', triggers: [], trigger_kind: 'mail_fact', mail_fact: draft({ fields: ['state'], where_variable: 'state' }) }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    expect(html).toContain('A mail fact');
+    expect(html).toMatch(/data-recued-run-modal-fact="type"[\s\S]*?<option value="" selected>Any kind that has what it watches<\/option>/);
+    expect(html).toContain('It starts for a fact of any kind of email that has what it watches');
+    expect(html).toMatch(/data-recued-run-modal-fact="field:state" id="run-modal-fact-field-state" checked \/>\s*State — every kind of email<\/label>/);
+    expect(html).toMatch(/data-recued-run-modal-fact="field-add"[\s\S]*?<option value="tracking_number">Tracking number — shipment<\/option>/);
+    // What it already watches is not offered again.
+    expect(html).not.toMatch(/data-recued-run-modal-fact="field-add"[^]*?<option value="state">/);
+    expect(html).toMatch(/data-recued-run-modal-fact="where-value"[\s\S]*?<option value="delivered">Delivered<\/option>/);
+    // No template picker until the owner's templates are loaded.
+    expect(html).not.toContain('data-recued-run-modal-fact="template"');
+    // Every control has its own id: a choice repaints the form, and the focus
+    // goes back to the control by it.
+    const controls = [...html.matchAll(/data-recued-run-modal-fact="([^"]+)" id="([^"]+)"/g)];
+    expect(controls.map(([, control]) => control)).toEqual(['type', 'field:state', 'field-add', 'where-variable', 'where-value']);
+    expect(new Set(controls.map(([, , id]) => id)).size).toBe(controls.length);
+    expect(html.match(/data-recued-run-modal-fact="/g)).toHaveLength(controls.length);
+  });
+
+  it('renders one kind: its own values, by name, and every new email about it', () => {
+    const html = renderRunModal(
+      stateWith({ tab: 'trigger', triggers: [], trigger_kind: 'mail_fact', mail_fact: draft({ type: 'shipment' }) }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    expect(html).toMatch(/data-recued-run-modal-fact="type"[\s\S]*?<option value="shipment" selected>Shipment<\/option>/);
+    // By name alone, in the values to watch as in "only when".
+    expect(html).toMatch(/data-recued-run-modal-fact="field-add"[\s\S]*?<option value="tracking_number">Tracking number<\/option>/);
+    expect(html).toMatch(/data-recued-run-modal-fact="where-variable"[\s\S]*?<option value="tracking_number">Tracking number<\/option>/);
+    expect(html).not.toContain('— shipment');
+    expect(html).toContain('<option value="last_email_at">A new email about it, even when nothing else changed</option>');
+    expect(html).not.toContain('<option value="notice">');
+  });
+
+  it('adds a trigger from the form, with the config buffer, and lists it in words', async () => {
+    const create = vi.fn(async () => ({ trigger: triggerRow('t9') }));
+    const list = vi.fn(async () => ({
+      triggers: [{ ...triggerRow('t9'), pattern: 'data.mail_fact.*.thing.*', fields: ['state'], filter: { 'record.state': 'delivered' } }],
+    }));
+    const handle = wire({
+      recipe: recipeEntry('daily-brief', { variables: { topic: 'news' } }),
+      triggersList: list,
+      triggersCreate: create,
+      mailFactTemplates: async () => ({ templates: [{ template_id: 'mtpl_1', name: 'UPS notices', type: 'shipment' }] }),
+      initialTab: 'trigger',
+    });
+    handle.setTriggerKind('mail_fact');
+    handle.setMailFact({ fields: ['state'], where_variable: 'state', where_value: 'delivered', template_id: 'mtpl_1' });
+    handle.setConfigText('{"topic":"parcels"}');
+    await handle.addTrigger();
+    expect(create).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief',
+      publisher_id: 'recued-core',
+      on: 'mail_fact',
+      fields: ['state'],
+      where: { state: 'delivered', template: 'mtpl_1' },
+      config_overlay: { topic: 'parcels' },
+    });
+    await vi.waitFor(() => expect(handle.getState().mail_fact_templates).not.toBeNull());
+    expect(handle.getState().trigger_error).toBeNull();
+    // Every template is offered, with the kind it reads.
+    expect(renderRunModal(handle.getState(), recipeEntry(), CAPS_FULL)).toMatch(/<option value="mtpl_1"( selected)?>UPS notices \(shipment\)<\/option>/);
+  });
+
+  it('says why before sending when a value is missing', async () => {
+    const create = vi.fn();
+    const handle = wire({ recipe: recipeEntry(), triggersList: async () => ({ triggers: [] }), triggersCreate: create, initialTab: 'trigger' });
+    handle.setTriggerKind('mail_fact');
+    handle.setMailFact({ where_variable: 'state' });
+    await handle.addTrigger();
+    expect(create).not.toHaveBeenCalled();
+    expect(handle.getState().trigger_error).toBe('Say which state it must be.');
+  });
+
+  /** A control of the form, as the browser hands it to the listener. */
+  const control = (name: string, value: string): FakeEl => {
+    const el = makeEl('select');
+    el.setAttribute(RUN_MODAL_FACT_ATTR, name);
+    return Object.assign(el, { value });
+  };
+
+  it('starts over when the kind of email changes: what it watched and filtered was that kind’s (ruling 43)', async () => {
+    const handle = wire({ recipe: recipeEntry(), triggersList: async () => ({ triggers: [] }), initialTab: 'trigger' });
+    // The form is drawn once the triggers are listed.
+    await vi.waitFor(() => expect(handle.getState().triggers).toEqual([]));
+    handle.setTriggerKind('mail_fact');
+    handle.setMailFact({ fields: ['state'], where_variable: 'state', where_value: 'delivered', template_id: 'mtpl_1' });
+    const overlay = handle.element as unknown as FakeEl;
+    // The kind it has, chosen again, keeps everything.
+    overlay.dispatch('change', { target: control('type', '') });
+    expect(handle.getState().mail_fact).toEqual(draft({ fields: ['state'], where_variable: 'state', where_value: 'delivered', template_id: 'mtpl_1' }));
+    overlay.dispatch('change', { target: control('type', 'shipment') });
+    expect(handle.getState().mail_fact).toEqual(draft({ type: 'shipment' }));
+
+    // A typed value is kept as it is typed, with no repaint to take the next click.
+    handle.setMailFact({ where_variable: 'tracking_number' });
+    const painted = overlay.innerHTML;
+    expect(painted).toContain(`${RUN_MODAL_FACT_ATTR}="where-value"`);
+    overlay.dispatch('input', { target: control('where-value', '1Z 999') });
+    overlay.dispatch('change', { target: control('where-value', '1Z 999') });
+    expect(handle.getState().mail_fact.where_value).toBe('1Z 999');
+    expect(overlay.innerHTML).toBe(painted);
+  });
+
+  it('asks for a date as a date, and offers no date-time to filter on', () => {
+    const at = (where_variable: string) => renderRunModal(
+      stateWith({ tab: 'trigger', triggers: [], trigger_kind: 'mail_fact', mail_fact: draft({ type: 'shipment', where_variable }) }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    const html = at('expected_at');
+    expect(html).toMatch(/<input type="date" class="run-modal-select" data-recued-run-modal-fact="where-value"/);
+    const onlyWhen = /data-recued-run-modal-fact="where-variable"[\s\S]*?<\/select>/.exec(html)![0];
+    expect(onlyWhen).toContain('<option value="expected_at" selected>Expected at</option>');
+    // A fact stores a date-time to the second with its zone: no value typed
+    // here could meet one. It can still be watched.
+    expect(onlyWhen).not.toContain('delivered_at');
+    expect(html).toMatch(/data-recued-run-modal-fact="field-add"[\s\S]*?<option value="delivered_at">Delivered at<\/option>/);
+    expect(mailFactWhereOptions().some((option) => option.kind === 'datetime')).toBe(false);
+    // Anything else is typed as text.
+    expect(at('tracking_number')).toMatch(/<input type="text" class="run-modal-select" data-recued-run-modal-fact="where-value"/);
+  });
+
+  it('keeps the templates unknown when they could not be read, and asks again', async () => {
+    const wineBox = {
+      id: 'custom_wine_club_box' as const, name: 'Wine club box', description: '',
+      variables: [{ name: 'club', kind: 'text' as const, required: true }],
+      states: ['shipped'], notices: [], identity: [],
+    };
+    const mailFactTemplates = vi.fn()
+      .mockRejectedValueOnce(new Error('The server did not answer'))
+      .mockResolvedValue({ templates: [{ template_id: 'mtpl_1', name: 'UPS notices', type: 'shipment' }] });
+    const mailFactTypes = vi.fn()
+      .mockResolvedValueOnce({ types: [wineBox] })
+      .mockRejectedValue(new Error('The server did not answer'));
+    const handle = wire({
+      recipe: recipeEntry(),
+      triggersList: async () => ({
+        triggers: [{ ...triggerRow('t8'), pattern: 'data.mail_fact.*.thing.*', filter: { 'record.template': 'mtpl_1' } }],
+      }),
+      mailFactTemplates,
+      mailFactTypes,
+      initialTab: 'trigger',
+    });
+    await vi.waitFor(() => expect(handle.getState().triggers).toHaveLength(1));
+    await vi.waitFor(() => expect(handle.getState().mail_fact_types).toEqual([wineBox]));
+    // Not an empty list: a trigger narrowed to one is not said to wait on a deleted one.
+    expect(handle.getState().mail_fact_templates).toBeNull();
+    let html = renderRunModal(handle.getState(), recipeEntry(), CAPS_FULL);
+    expect(html).toContain('read by one template');
+    expect(html).not.toContain('a template that was deleted');
+
+    handle.setTriggerKind('mail_fact');
+    await vi.waitFor(() => expect(handle.getState().mail_fact_templates).toHaveLength(1));
+    // The kinds already known stay when their list fails.
+    expect(handle.getState().mail_fact_types).toEqual([wineBox]);
+    html = renderRunModal(handle.getState(), recipeEntry(), CAPS_FULL);
+    expect(html).toContain('read by “UPS notices”');
+  });
+});
+
+describe('run-modal: a kind of email the owner made (D-315 §4.5)', () => {
+  const wine = {
+    id: 'custom_wine_club_box' as const,
+    name: 'Wine club box',
+    description: '',
+    variables: [
+      { name: 'club', kind: 'text' as const, required: true },
+      { name: 'colour', kind: 'enum' as const, required: false, values: ['red', 'white'] },
+    ],
+    states: ['shipped', 'delivered'],
+    notices: [],
+    identity: [],
+  };
+
+  it('adds its variables to the choices, labelled with it; a trigger is on any kind that has them, or on it alone', async () => {
+    const create = vi.fn(async () => ({ trigger: triggerRow('t9') }));
+    const handle = wire({
+      recipe: recipeEntry(),
+      triggersList: async () => ({ triggers: [{ ...triggerRow('t8'), pattern: 'data.mail_fact.custom_wine_club_box.thing.*' }] }),
+      triggersCreate: create,
+      mailFactTemplates: async () => ({ templates: [] }),
+      mailFactTypes: async () => ({ types: [wine] }),
+      initialTab: 'trigger',
+    });
+    handle.setTriggerKind('mail_fact');
+    await vi.waitFor(() => expect(handle.getState().mail_fact_types).toEqual([wine]));
+    handle.setMailFact({ where_variable: 'state' });
+    const html = renderRunModal(handle.getState(), recipeEntry(), CAPS_FULL);
+    expect(html).toContain('<option value="colour">Colour — wine club box</option>');
+    expect(html).toContain('<option value="club">Club — wine club box</option>');
+    // Its states join the state's values; every kind has a state, its own included.
+    expect(html).toMatch(/data-recued-run-modal-fact="where-value"[\s\S]*?<option value="shipped">Shipped<\/option>/);
+    expect(html).toContain('<option value="state" selected>State — every kind of email</option>');
+    // A trigger on it says which kind it is on.
+    expect(html).toContain('on a wine club box read from mail, on every change');
+
+    handle.setMailFact({ where_variable: 'colour', where_value: 'red' });
+    await handle.addTrigger();
+    expect(create).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief', publisher_id: 'recued-core', on: 'mail_fact', where: { colour: 'red' },
+    });
+    // Or on that kind alone.
+    handle.setMailFact({ type: 'custom_wine_club_box', where_variable: 'colour', where_value: 'white' });
+    await handle.addTrigger();
+    expect(create).toHaveBeenLastCalledWith({
+      recipe_id: 'daily-brief', publisher_id: 'recued-core', on: 'mail_fact.custom_wine_club_box', where: { colour: 'white' },
+    });
   });
 });

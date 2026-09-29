@@ -107,6 +107,19 @@ export type ServerEvent =
       cursor: number;
     }
   | {
+      /** D-315 §6 — the owner's mail facts moved, so a Data → Received → Mail
+       *  facts view re-reads what it shows. Coarse on purpose, and needed
+       *  beside `warehouse`: a scan, a backfill and an unpaired fact write
+       *  facts with no thing event at all, and a template change writes none.
+       *    - `facts`     → an email's facts were written, removed or moved
+       *    - `templates` → a template, its health, a standards switch or a
+       *                    dismissed sender changed
+       *    - `backfill`  → a backfill of past mail moved (§6.3) */
+      kind: 'mail_fact';
+      subkind: 'facts' | 'templates' | 'backfill';
+      cursor: number;
+    }
+  | {
       kind: 'approval';
       /** `pending` = newly-requested approval; `resolved` = first-write-
        *  wins resolution recorded. Drives the Attention counter +
@@ -1364,6 +1377,7 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'execution',
   'exposure_changed',
   'housekeeping_cycle',
+  'mail_fact',
   'memory',
   'merge_candidate',
   'merge_scan_progress',

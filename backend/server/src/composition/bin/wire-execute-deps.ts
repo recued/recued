@@ -63,6 +63,7 @@ import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { McpActionStore } from '../../mcp-action-store.js';
 import type { GatedActionStore } from '../../gated-action-store.js';
+import type { SettledRunResults } from '../../settled-run-results.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import type { EventBus } from '../../events/bus.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -142,6 +143,9 @@ export interface ComposeExecuteDepsDeps {
    *  execution context; the sink does not exist when this runs. */
   readonly getRunSettledSink?: () =>
     ((settled: PreflightRunSettled) => void) | undefined;
+  /** Forwarded to the notification block: keeps what an owner's page-started
+   *  run answered once its approval let it finish, for `execution.get`. */
+  readonly settledRunResults?: SettledRunResults;
 
   /** D-210 A.8 slice 3d — forwarded verbatim to the notification block so
    *  `inline` channel asks carry the `/ask/<ask_id>` link. Pass-through only;
@@ -565,6 +569,9 @@ export const composeExecuteDeps = (
       // D-137 — pass the getter, not the sink: chat publishes it later.
       ...(deps.getRunSettledSink !== undefined
         ? { getRunSettledSink: deps.getRunSettledSink }
+        : {}),
+      ...(deps.settledRunResults !== undefined
+        ? { settledRunResults: deps.settledRunResults }
         : {}),
       ...(deps.askAnswerLink !== undefined ? { askAnswerLink: deps.askAnswerLink } : {}),
       ...(deps.beforePreflightResume

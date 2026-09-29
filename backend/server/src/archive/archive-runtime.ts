@@ -197,6 +197,18 @@ export const RESTORE_GUARD_NON_USER_TABLES: ReadonlySet<string> = new Set<string
   'preapproval_limits',
   'preapproval_workers',
   'preapproval_resource_identity',
+  // Boot-seeded 2026-09-29 by the work-entity text-dates repair: the D-308
+  // ledger. `ensureWorkEntitySchema` records `work-entity-text-dates-v1` on the
+  // first open that has not run it — a fresh install's too, with nothing fixed —
+  // so every new server carries one row. The ledger is bookkeeping ABOUT owner
+  // data (which repair ran, when, what it changed); the data it describes lives
+  // in tables that stay counted, so denylisting it removes no user-data signal.
+  // A restore swaps the whole file, so the archive's own ledger (or its absence)
+  // comes with it and the repair runs on restored rows at the next open.
+  //
+  // ⛔ THE FOURTH TIME, after `audit_usage`, `fts_content_format` and the D-261
+  // four — found by the full suite, not by the change that seeded the table.
+  'data_repairs',
   // 2. SERVER identity / config / networking / system state — populated by
   //    SETUP (identity, hostnames, TLS, exposure, operator config), never by user
   //    activity. Empty on the empty-config fresh-baseline yet non-empty on a

@@ -341,11 +341,12 @@ export interface ComputeOpenProjectionArgs {
 // ────────────────────────────────────────────────────────────────
 
 /** Step-object fields that gate/control rather than flow into the output —
- *  excluded from taint propagation. `skip_when` / `fail_on` select WHETHER
- *  the value exists, not WHAT it is; `foreach` is handled explicitly by the
- *  `item.*` arm; the rest are engine plumbing. */
+ *  excluded from taint propagation. `skip_when` / `fail_on` / `stop_when`
+ *  select WHETHER the value exists (or the run goes on), not WHAT it is;
+ *  `foreach` is handled explicitly by the `item.*` arm; the rest are engine
+ *  plumbing. */
 const STEP_CONTROL_FIELDS: ReadonlySet<string> = new Set([
-  'id', 'transform', 'guard', 'ingredient', 'op', 'skip_when', 'fail_on',
+  'id', 'transform', 'guard', 'ingredient', 'op', 'skip_when', 'fail_on', 'stop_when',
   'cache', 'foreach', 'output', 'optional', 'ingredient_version',
   'timeout_ms', 'on_timeout', 'prompt', 'pii_fields', 'connection', 'pages',
 ]);

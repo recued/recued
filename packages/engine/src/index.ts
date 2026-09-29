@@ -38,6 +38,7 @@ export type {
 } from './fire-exchange-output.js';
 export { evaluateCondition } from './condition.js';
 export { createTransformContext } from './context.js';
+export type { StepEffect } from './step-seed.js';
 export { createDryRunExecutor, generateMockData } from './dry-run.js';
 export type {
   ExecutionContext, ExecutionResult, StepLog, IngredientExecutor,

@@ -1,6 +1,6 @@
 /** Per-pair store substrate composer.
  *
- *  Materialises 19 SQLite-backed (or in-memory per-process) per-pair
+ *  Materialises 20 SQLite-backed (or in-memory per-process) per-pair
  *  store handles + 8 schema-only ensures in one boot pass. Every store
  *  here is per-pair: no cross-cloud sync (D-097 / D-168), never
  *  serialised via MCP responses, never relayed by the cloud. Three
@@ -61,6 +61,7 @@ import type {
 } from '../../storage/reception-form-store.js';
 import type { ReceptionIntakeRecipePairStore } from '../../storage/reception-intake-recipe-pair-store.js';
 import type { FormResponseStore } from '../../storage/form-response-store.js';
+import type { MailFactStore } from '../../storage/mail-fact-store.js';
 import type { IntakeFormNonceStore } from '../../ports/reception/handlers/intake-form.js';
 import type { DropBlobStore } from '../../storage/reception-drop-store.js';
 import type { DropLinkNonceStore } from '../../ports/reception/handlers/drop-link.js';
@@ -99,6 +100,8 @@ export interface PerPairStoresBundle {
   readonly intakeFormSubmissionStore: FormSubmissionStore;
   /** Accepted, immutable intake responses exposed as owner data. */
   readonly formResponseStore: FormResponseStore;
+  /** D-315 — mail templates, facts and the things they fold into. */
+  readonly mailFactStore: MailFactStore;
   readonly intakeFormNonceStore: IntakeFormNonceStore;
   // D-149 P7 drop-link.
   readonly dropBlobStore: DropBlobStore;
@@ -259,6 +262,11 @@ export const composePerPairStores = async (
     '../../storage/form-response-store.js'
   );
   const formResponseStore = createFormResponseStore(db);
+  // D-315 — mail facts: what the owner's templates read from mail, and the
+  // things (a parcel, an order, a booking) those facts fold into. Owner data,
+  // like form responses; the factory owns its idempotent schema ensure.
+  const { createMailFactStore } = await import('../../storage/mail-fact-store.js');
+  const mailFactStore = createMailFactStore(db);
   const { createInMemoryIntakeFormNonceStore } = await import(
     '../../ports/reception/handlers/intake-form.js'
   );
@@ -347,6 +355,7 @@ export const composePerPairStores = async (
     intakeRecipePairStore,
     intakeFormSubmissionStore,
     formResponseStore,
+    mailFactStore,
     intakeFormNonceStore,
     dropBlobStore,
     dropLinkNonceStore,

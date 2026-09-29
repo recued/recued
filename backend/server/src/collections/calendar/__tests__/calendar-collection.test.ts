@@ -286,6 +286,37 @@ describe('CalendarCollection — initial scan', () => {
   });
 });
 
+describe('CalendarCollection — only a change is an update (D-124)', () => {
+  it('emits nothing for an event a restart’s scan lists again as it was', async () => {
+    h = newHarness();
+    h.control.initialEvents = [
+      { event: baseEvent({ source_id: 'evt-1' }), description_bytes: 0 },
+      { event: baseEvent({ source_id: 'evt-2', summary: 'Retro' }), description_bytes: 0 },
+    ];
+    await h.collection.sync.start();
+    expect(h.events.map((e) => e.event_kind)).toEqual(['created', 'created']);
+    // A restart: the same two events, listed again.
+    await h.collection.sync.stop();
+    await h.collection.sync.start();
+    expect(h.events.map((e) => e.event_kind)).toEqual(['created', 'created']);
+  });
+
+  it('names what changed: a meeting moved while the server was down', async () => {
+    h = newHarness();
+    h.control.initialEvents = [{ event: baseEvent({ source_id: 'evt-1' }), description_bytes: 0 }];
+    await h.collection.sync.start();
+    await h.collection.sync.stop();
+    h.control.initialEvents = [{
+      event: baseEvent({ source_id: 'evt-1', start_at: 1_700_003_600_000, end_at: 1_700_004_500_000, updated_at: 1_700_000_500_000 }),
+      description_bytes: 0,
+    }];
+    h.events.length = 0;
+    await h.collection.sync.start();
+    expect(h.events.map((e) => [e.event_kind, e.changed_fields])).toEqual([['updated', ['end_at', 'start_at', 'updated_at']]]);
+    expect(h.events[0]!.prev).toMatchObject({ start_at: 1_700_000_000_000 });
+  });
+});
+
 describe('CalendarCollection — live sync', () => {
   beforeEach(() => { h = newHarness(); });
 

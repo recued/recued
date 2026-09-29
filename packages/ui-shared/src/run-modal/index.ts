@@ -19,7 +19,27 @@ export type {
   RunModalTriggersCreateCaller,
   RunModalTriggersUpdateCaller,
   RunModalTriggersDeleteCaller,
+  RunModalMailFactTemplate,
+  RunModalMailFactTemplatesCaller,
+  RunModalMailFactTypesCaller,
+  RunModalMailFactDraft,
+  RunModalTriggerKind,
 } from './types.js';
+
+export {
+  describeMailFactTrigger,
+  humanizeFactName,
+  mailFactChoiceLabel,
+  mailFactCreateArgs,
+  mailFactFieldOptions,
+  mailFactTypeOf,
+  mailFactVocabulary,
+  mailFactWhereOptions,
+  mailFactWhereValue,
+  withIndefiniteArticle,
+  type MailFactVariableChoice,
+  type MailFactWhereOption,
+} from './mail-fact-trigger.js';
 
 export {
   initialRunModalState,
@@ -37,6 +57,7 @@ export {
   RUN_MODAL_ACTION_ATTR,
   RUN_MODAL_TAB_ATTR,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_FACT_ATTR,
   RUN_MODAL_TARGET_ATTR,
   RUN_MODAL_TARGET_WARNING_ATTR,
   RUN_MODAL_CONTEXT_ATTR,

@@ -8,6 +8,7 @@ import {
 } from '../composition/bin/wire-event-triggers.js';
 import { handleExecute } from '../execute-handler.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
+import { createInstanceStore } from '../collections/instance-store.js';
 
 vi.mock('../execute-handler.js', () => ({
   handleExecute: vi.fn(),
@@ -340,5 +341,64 @@ describe('composeEventTriggers', () => {
     expect(handleExecute).toHaveBeenCalledTimes(1);
     const [, request] = vi.mocked(handleExecute).mock.calls[0]!;
     expect(request).toMatchObject({ dish_id: 'dsh_x' });
+  });
+
+  it('⛔ a new mailbox\'s triggers fire once its backfill completes — no restart', async () => {
+    // Production shape: the mail collection flips the flag through ITS OWN
+    // instance store; the trigger composition reads through another one over
+    // the same table. The lookup used to cache the drain's `false`, and
+    // nothing ever invalidated it, so these triggers stayed silent until the
+    // next boot built a fresh lookup.
+    const collectionSide = createInstanceStore({ db });
+    collectionSide.upsert({
+      platform: 'mail', slug: 'work', adapter_type: 'gmail', config: {}, caps: {} as never,
+      auth_state: 'healthy', last_synced_at: null,
+    });
+    seedTrigger(store, { pattern: 'data.mail.work.message.created' });
+    const bundle = compose()!;
+    const mailEvent = (record_id: string) => makeEvent({ platform: 'mail', slug: 'work', record_id });
+
+    handlers[0]!.handler(mailEvent('during-drain'));
+    await bundle.dispatcher.drained();
+    expect(handleExecute).not.toHaveBeenCalled();
+
+    collectionSide.markBackfillComplete('mail', 'work');
+    handlers[0]!.handler(mailEvent('after-drain'));
+    await bundle.dispatcher.drained();
+    expect(handleExecute).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handleExecute).mock.calls[0]![1]).toMatchObject({
+      context: { event: { payload: { record_id: 'after-drain' } } },
+    });
+  });
+
+  describe('D-315 §6.4 — the fire names its run, whatever became of it', () => {
+    const run = async (result: Record<string, unknown>): Promise<Record<string, unknown>[]> => {
+      const activities: Record<string, unknown>[] = [];
+      vi.mocked(handleExecute).mockImplementationOnce(async (_deps, _request, internal) => {
+        internal?.onRunMinted?.('run-9');
+        return { ...okResult, ...result } as never;
+      });
+      seedTrigger(store);
+      const bundle = compose({
+        auditLog: { logActivity: async (entry: Record<string, unknown>) => { activities.push(entry); } } as never,
+      })!;
+      handlers[0]!.handler(makeEvent());
+      await bundle.dispatcher.drained();
+      return activities.filter((a) => a.action === 'trigger_fired');
+    };
+
+    it('a clean run', async () => {
+      expect(await run({})).toMatchObject([{ target: 't-1|m1', detail: 'completed', run_id: 'run-9', recipe_id: 'r1' }]);
+    });
+
+    it('a failed run', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(await run({ success: false, errors: [{ message: 'boom', code: 'NETWORK_ERROR' }] }))
+        .toMatchObject([{ detail: 'failed', run_id: 'run-9' }]);
+    });
+
+    it('a run held for approval', async () => {
+      expect(await run({ success: false, awaiting_approval: true })).toMatchObject([{ detail: 'held', run_id: 'run-9' }]);
+    });
   });
 });

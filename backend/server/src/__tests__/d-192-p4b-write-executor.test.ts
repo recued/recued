@@ -783,6 +783,36 @@ describe('prepare', () => {
     ]);
   });
 
+  it('a declared clear pushes the removal on an update — its own argument, sent as `true`', () => {
+    // ⛔ A `null` was dropped above for every Source, so no date could ever be
+    // removed on the vendor side. `clear_args` names the argument that does it;
+    // a field without one still drops its `null`, exactly as before.
+    const declaration = taskDeclaration({ clear_args: { due_at: 'clear_due_at' } });
+    const { executor } = makeExecutor({ declaration });
+
+    const prepared = prepareUpdate(executor, { title: 'Push title', due_at: null, state: null });
+    expect(prepared.pushable).toEqual([
+      { field: 'title', remote_path: 'properties.hs_task_subject', value: 'Push title', wire_value: 'Push title' },
+      { field: 'due_at', remote_path: 'clear_due_at', value: null, wire_value: undefined, clear: true },
+    ]);
+    // A removal alone is a vendor write, not "touches no writable field".
+    expect(prepareUpdate(executor, { due_at: null }).pushable).toEqual([
+      { field: 'due_at', remote_path: 'clear_due_at', value: null, wire_value: undefined, clear: true },
+    ]);
+  });
+
+  it('a create never pushes a clear — there is nothing to remove', () => {
+    const declaration = taskDeclaration({ clear_args: { due_at: 'clear_due_at' } });
+    const { executor } = makeExecutor({ declaration });
+    const prepared = requirePrepared(executor.prepare({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'create',
+      patch: { title: 'New task', due_at: null },
+    }));
+    expect(prepared.pushable.map((entry) => entry.field)).toEqual(['title']);
+  });
+
   it('write_paths overrides the projection READ path for a read≠write vendor', () => {
     // The vendor reads due_at from its projection path but WRITES it to a
     // different flat field (the Todoist `due.date` read / `due_date` write shape).

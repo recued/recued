@@ -278,3 +278,57 @@ describe('D-269 — the release card and the per-item reminders are EXCLUSIVE', 
     expect(out).toHaveLength(0);                 // nothing left to say
   });
 });
+
+describe('a deadline stored at UTC midnight is a DAY — judged in the owner\'s zone', () => {
+  // Found live: "due Monday" (Monday's UTC midnight) read overdue on Sunday
+  // evening in Pacific time — to the sweep, the reminders and the digest alike.
+  const MONDAY = Date.UTC(2026, 8, 28);
+  const SUNDAY_EVENING = Date.parse('2026-09-27T20:00:00-07:00');
+  const TUESDAY_JUST_AFTER = Date.parse('2026-09-29T00:05:00-07:00');
+  const pacific = { timeZone: () => 'America/Los_Angeles' };
+
+  it('⛔ is due soon on the evening before, not overdue — and overdue once Monday is over there', () => {
+    const early = sink();
+    runReminderSweep(deps({
+      ...pacific, now: () => SUNDAY_EVENING, notify: early.notify,
+      listTasks: () => [task({ due_at: MONDAY })],
+    }));
+    expect(early.sent.map((m) => m.title)).toEqual(['Task due soon']);
+    // The day is named — not its UTC-midnight instant read as a time.
+    expect(early.sent[0]!.text).toBe('File the return — 2026-09-28');
+
+    const late = sink();
+    runReminderSweep(deps({
+      ...pacific, now: () => TUESDAY_JUST_AFTER, notify: late.notify,
+      listCommitments: () => [commitment({ promised_for_at: MONDAY })],
+    }));
+    expect(late.sent.map((m) => m.title)).toEqual(['Promise overdue']);
+  });
+
+  it('the due-status sweep keeps a Monday promise `due_soon` all through Monday in the owner\'s zone', () => {
+    const db = new Database(':memory:');
+    ensureWorkEntitySchema(db);
+    const store = createWorkEntityStore(db);
+    store.registerSource({
+      id: RECUED_BUILTIN_SOURCE_ID('commitment'), top_tier_kind: 'commitment', source_kind: 'builtin',
+      source_label: 'Recued', write_capable: true,
+    });
+    store.writeCommitment({
+      id: 'c-monday', direction: 'outbound', statement: 'send the deck', derivation: 'user_declared',
+      source_id: RECUED_BUILTIN_SOURCE_ID('commitment'), created_at: 1, promised_at: 1,
+      lifecycle_state: 'pending', due_status: 'not_due', expiry_policy: 'escalate_overdue',
+      state_changed_at: 1, promised_for_at: MONDAY,
+    } as never, 1);
+    const status = () => store.readCommitment('c-monday')?.due_status;
+    const sweepAt = (now: number) => runDueStatusSweep({
+      store, now: () => now, taskEmissionLedger: createTaskEmissionLedger(), ...pacific,
+    });
+
+    sweepAt(SUNDAY_EVENING);
+    expect(status()).toBe('due_soon');
+    sweepAt(Date.parse('2026-09-28T23:30:00-07:00'));
+    expect(status()).toBe('due_soon');
+    sweepAt(TUESDAY_JUST_AFTER);
+    expect(status()).toBe('overdue');
+  });
+});

@@ -28,9 +28,9 @@ import {
 } from './context-recipe.js';
 import { findRoleRestrictions } from './preflight.js';
 import { runPrefetch, PrefetchPause } from './prefetch.js';
-import { runStep, trackContextSize } from './step-runner.js';
+import { runStep, stopsRun, trackContextSize } from './step-runner.js';
 import { throwIfRunKilled } from './lane.js';
-import { analyzeSteps, type StepSeed } from './step-seed.js';
+import { analyzeSteps, readFreshStepIds, type StepSeed } from './step-seed.js';
 import { assignOwnSafe, hasOwnSafe, setNamespaceValue } from './store-safety.js';
 
 /** D-115 Phase 5 — magic step id whose numeric result (epoch ms) is
@@ -127,6 +127,9 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   // `recipe` once; the body + the budget-timer closure read this local.
   const recipe = requireRecipe(ctx);
   const piiStore = ctx.piiLedgerStore;
+  // Read fresh before a write (`step-seed.ts`) — decided once, honoured by the
+  // L2 runner below and by `StepOptions.cache` for the host's L1 cache.
+  if (ctx.stepEffect !== undefined) ctx.readFreshSteps = readFreshStepIds(recipe, ctx.stepEffect);
 
   // Optional-chain `metadata`: a malformed recipe with no `metadata` object
   // must reach `executeRecipeInner`'s validation (which emits the clean
@@ -466,6 +469,9 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   const hasRender = renderSections.length > 0;
   let allSourcesReady = false;
 
+  // Set when a step's `stop_when` held: the run ends there, as a success.
+  let stopped: ExecutionResult['stopped'];
+
   // On resume, `startIndex` points at `gated_step_id` (the step the
   // checkpoint was minted at); fresh runs start at 0. Either way the
   // loop runs over `sequentialSteps[startIndex..]`.
@@ -520,6 +526,12 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
       errors.push(log.error);
       break;
     }
+    // `stop_when` held — nothing more to do. The steps after this one do not run;
+    // the output below still renders from the ones that did.
+    if (log.stopped === true && step.stop_when !== undefined) {
+      stopped = { step_id: stepId, condition: step.stop_when };
+      break;
+    }
   }
 
   // Resolve output (final, authoritative render data)
@@ -534,6 +546,7 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   fireProgress(ctx, { type: 'focus_update', phase: 'done', step_id: null });
 
   const result = buildResult(ctx, recipe_hash, errors.length === 0, logs, errors, start, render);
+  if (stopped !== undefined) result.stopped = stopped;
 
   // D-115 Phase 5 — dynamic-interval hint. Authors opt into this path
   // by writing a step with id `next_run_at` whose result is an epoch
@@ -1421,7 +1434,9 @@ const buildCachedStepRunner = async (
     //   - `fresh`      → bypass L2 entirely: neither read nor write.
     //   - `any`        → replay a cached entry even past its TTL.
     //   - `acceptable` → (default) replay only an unexpired entry.
-    const freshness = step.cache ?? 'acceptable';
+    // A step's own `cache` wins; else a read the run makes before a write is
+    // fresh (`step-seed.ts`); else the default.
+    const freshness = step.cache ?? (ctx.readFreshSteps?.has(stepId) ? 'fresh' : 'acceptable');
 
     // `fresh` bypasses the cache before any lookup — matches L1 and the
     // `CacheFreshness` contract ("Cache is neither read nor written").
@@ -1449,9 +1464,12 @@ const buildCachedStepRunner = async (
     // cached entry regardless of TTL (progressive render — staleness is
     // acceptable, a later pass re-runs expired steps).
     if (cached && (cached.expires_at > nowMs || freshness === 'any')) {
-      return replayCachedEntry(
+      const replayed = await replayCachedEntry(
         ctx, store, cached, key, policy.seed, stepId, policy.ttlSec, nowMs, onStatus,
       );
+      // The key covers every ref of the step, `stop_when`'s included, so the
+      // condition reads the same inputs it did when this value was cached.
+      return stopsRun(step, ctx) ? { ...replayed, stopped: true } : replayed;
     }
 
     onStatus?.('miss', { step_id: stepId, key });

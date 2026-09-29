@@ -14,6 +14,7 @@ import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 import {
   resolveMailMessageDirection,
   createMailCollection,
+  type MailCollection,
   type MailCollectionConfig,
 } from '../collections/mail/mail-collection.js';
 import type {
@@ -310,6 +311,60 @@ describe('MailCollection — live sync', () => {
     await expect(h.stub.push({ kind: 'created', source_id: 'x' } as ProviderSyncEvent))
       .rejects.toThrow('missing its message payload');
     expect(h.collection.list({ platform: 'mail', slug: 'work' }).length).toBe(0);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// What an update is (D-124)
+// ────────────────────────────────────────────────────────────────
+
+describe('MailCollection — only a change is an update (D-124)', () => {
+  it('emits nothing for a message a restart’s scan lists again as it was', async () => {
+    h = newHarness({ scanMessages: [mkMessage({ source_id: 'a' }), mkMessage({ source_id: 'b', subject: 'Other' })] });
+    await h.collection.sync.start();
+    expect(h.events.map((e) => e.event_kind)).toEqual(['created', 'created']);
+    // A restart: the same two messages, listed again.
+    await h.collection.sync.stop();
+    await h.collection.sync.start();
+    expect(h.events.map((e) => e.event_kind)).toEqual(['created', 'created']);
+  });
+
+  it('names what changed: a flag, the folder with its labels, the body', async () => {
+    h = newHarness();
+    await h.collection.sync.start();
+    const read = mkMessage({ source_id: 'a', is_read: true });
+    const archived = { ...read, folder_or_label: 'Archive', labels: ['Archive'] };
+    await h.stub.push({ kind: 'created', source_id: 'a', message: mkMessage({ source_id: 'a' }) });
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: read });
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: read });
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: archived });
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: { ...archived, body_text: 'edited' } });
+    const redated = { ...archived, body_text: 'edited', received_at: 1_700_000_500_000 };
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: redated });
+    // Its last label gone: the field goes, which is a change too.
+    await h.stub.push({ kind: 'updated', source_id: 'a', message: { ...redated, labels: [] } });
+    const updates = h.events.filter((e) => e.event_kind === 'updated');
+    // The same state pushed twice is one update.
+    expect(updates.map((e) => e.changed_fields)).toEqual([['is_read'], ['folder', 'labels'], ['body'], ['received_at'], ['labels']]);
+    expect(updates[0]!.prev).toMatchObject({ is_read: false });
+  });
+
+  it('a verified mutation that changed nothing is no update; one that did, or a move, names what changed', async () => {
+    h = newHarness({ scanMessages: [mkMessage({ source_id: 'a' })] });
+    await h.collection.sync.start();
+    const mail = h.collection as MailCollection;
+    const id = h.collection.list({ platform: 'mail', slug: 'work' })[0]!.record_id;
+    const before = h.events.length;
+    // Marking an unread message unread.
+    mail.applyVerifiedMutation(id, { source_id: 'a', is_read: false, is_flagged: false, folder_or_label: 'INBOX' });
+    expect(h.events).toHaveLength(before);
+    mail.applyVerifiedMutation(id, { source_id: 'a', is_read: true, is_flagged: false, folder_or_label: 'INBOX' });
+    const moved = mail.applyVerifiedMutation(id, { source_id: 'a2', is_read: true, is_flagged: false, folder_or_label: 'Archive' });
+    const updates = h.events.slice(before);
+    expect(updates.map((e) => [e.event_kind, e.record_id, e.changed_fields])).toEqual([
+      ['updated', id, ['is_read']],
+      ['updated', moved!.record_id, ['folder', 'message_id']],
+    ]);
   });
 });
 

@@ -11,18 +11,23 @@ import { createChatStore, ensureChatSchema } from '../../../../backend/server/sr
 import { createChatOrchestrator, type ChatBroadcastEmitter } from '../../../../backend/server/src/chat-orchestrator.js';
 import { createChatMessengerBridge } from '../../../../backend/server/src/chat-messenger-bridge.js';
 import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
-import { handleChatDelivery, handleChatQueue, handleSessionCreate, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
+import { handleChatDelivery, handleChatQueue, handleClearSessionBrief, handleGetSessionBrief, handleSessionCreate, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
 
-export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = false, attachmentDelivery = false) => {
+export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = false, attachmentDelivery = false,
+  options: { holdInModel?: boolean } = {}) => {
   const db = new Database(':memory:'); ensureChatSchema(db); const store = createChatStore(db);
   store.createSession({ id: 's', title: 'Shared conversation' });
 
   const selfSignature = { server_kind: 'recued' as const, version: '1', instance_id: 'test' };
-  const raw = createChatOrchestrator({ chatStore: store, selfSignature, broadcast,
-    registry: { list: () => [], listByTier: () => [], getByName: () => null,
-      dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} } });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
+  const raw = createChatOrchestrator({ chatStore: store, selfSignature, broadcast,
+    registry: { list: () => [], listByTier: () => [], getByName: () => null,
+      dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} },
+    ...(options.holdInModel ? { executeAiCall: async () => {
+      await held;
+      return { body: { response: 'Start with the proposal due Friday.', events: [], tool_calls: [] } };
+    } } : {}) });
   const executions: string[] = [];
   let deliveries = 0;
   const dir = attachmentDelivery ? mkdtempSync(join(tmpdir(), 'chat-file-browser-')) : undefined;
@@ -48,12 +53,14 @@ export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = f
     });
   }
   const orchestrator = withQueuedChatTurns({ ...raw, runTurn: async input => {
-    executions.push(input.message); if (executions.length === 1) await held; return raw.runTurn(input);
+    executions.push(input.message); if (executions.length === 1 && !options.holdInModel) await held; return raw.runTurn(input);
   } }, { db, store, broadcast, pollMs: 20, ...(bridge ? { messengerBridge: bridge } : {}) });
   const deps = { store, orchestrator, selfSignature };
   return { executions, release, deliveryCount: () => deliveries, snapshot: () => orchestrator.turnQueue!.snapshot('s'),
     uploads, files, blobs, db,
     messages: () => store.listMessages('s'),
+    /** Store a running note, as a fold during a turn would. */
+    writeBrief: (session: string, brief: Record<string, unknown>) => store.writeSessionBrief(session, JSON.stringify(brief)),
     removeMessage: (id: string) => { db.prepare('DELETE FROM chat_messages WHERE session_id = ? AND message_id = ?').run('s', id); },
     async addConversationFile(args: { id: string; name: string; source?: string; type?: 'image' | 'document'; ts?: number; session?: string; bytes?: string | Buffer; mime_type?: string }) {
       const file = await files!.ingest({ bytes: Buffer.from(args.bytes ?? args.name), filename: args.name,
@@ -112,6 +119,8 @@ export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = f
       if (method === 'chat.delivery.retry') return handleChatDelivery(deps, 'retry', args);
       if (method === 'chat.delivery.skip') return handleChatDelivery(deps, 'skip', args);
       if (method === 'chat.turns.list') return handleChatQueue(deps, 'list', args);
+      if (method === 'chat.session.brief.get') return handleGetSessionBrief(deps as never, args as { session_id: string });
+      if (method === 'chat.session.brief.clear') return handleClearSessionBrief(deps as never, args as { session_id: string });
       if (method === 'chat.turn.withdraw') return handleChatQueue(deps, 'withdraw', args);
       if (method === 'chat.turn.cancel') return handleChatQueue(deps, 'cancel', args);
       if (method === 'chat.turn.retry') return handleChatQueue(deps, 'retry', args);

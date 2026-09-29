@@ -699,6 +699,8 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     },
     hasInFlightWork: () => busy || child?.hasInFlightWork() === true,
     inFlightWorkPrompt: () => busy ? 'You are part-way through changing a saved view. Leave anyway?' : child?.inFlightWorkPrompt() ?? null,
+    hasUnsavedChanges: () => child?.hasUnsavedChanges() === true,
+    unsavedChangesPrompt: () => child?.unsavedChangesPrompt() ?? null,
     dispose: () => {
       disposed = true; listSeq += 1; loadSeq += 1;
       child?.dispose();

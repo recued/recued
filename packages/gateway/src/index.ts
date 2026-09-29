@@ -196,6 +196,9 @@ export {
   // single-member `allow_session` arm (one payload reader, two consumers).
   readSessionGrantPayload,
   readPreflightOverrideOffer,
+  // The persisted foreach cover, read as the ask reads it — the reception
+  // inbox states the same count (one reader, two consumers).
+  readForeachCover,
   registerPreflightHandler,
   raisePreflightAsk,
   // D-210 Phase C — the passive twin, for `inbox_fanout_mode: 'notify'`.

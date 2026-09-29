@@ -490,7 +490,7 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
     expect(isMcpToolName('recued_ingredient_deal-reader-hubspot')).toBe(true);
     expect(isMcpToolName('contact.merge.list')).toBe(false);
   });
-  it('MCP_RESERVED_RPC_PREFIXES includes contact.merge. + housekeeping. + upstream_merge. + D-145 PA8 alias / identity surfaces + D-148 W3.FU exposure. + D-148 FU4 tls_domain. + D-148 A.6.5 tls. + D-148 A.11 key. + D-148 A.5.3/A.6.5 pro. + D-148 A.6.5/A.9 passport. + D-137 P5 follow-on chat.inbound_token. + D-149 P3 reception. + D-148 A.2.1/A.6.5 pair. + D-163 Slice C notifications. + D-145 PA10 follow-on packs. + D-221 Records.', () => {
+  it('MCP_RESERVED_RPC_PREFIXES includes contact.merge. + housekeeping. + upstream_merge. + D-145 PA8 alias / identity surfaces + D-148 W3.FU exposure. + D-148 FU4 tls_domain. + D-148 A.6.5 tls. + D-148 A.11 key. + D-148 A.5.3/A.6.5 pro. + D-148 A.6.5/A.9 passport. + D-137 P5 follow-on chat.inbound_token. + D-149 P3 reception. + D-148 A.2.1/A.6.5 pair. + D-163 Slice C notifications. + D-145 PA10 follow-on packs. + D-221 Records. + D-315 mail_fact.', () => {
     // D-138 P5 widens the prefix list with `upstream_merge.` so the
     // outbox rpcs stay local-UI only. D-145 PA8 § A.4.4 widens it
     // again with `contact.alias.` + `contact.identity.` so the per-pair
@@ -653,6 +653,10 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // a proposal, nor enumerate drafts across contracts. The request and the
       // decision are deliberately on opposite sides of this fence.
       'mail.drafts.',
+      // D-315 — a mail template decides what is read from the owner's mail and,
+      // later, what an AI pass is shown. Agents read facts through
+      // `core.mail.fact.*` under the mail grant; only the owner writes templates.
+      'mail_fact.',
       // LAN-URL kickstart — `network.local_urls` is a local-UI reachability
       // read (the server's own bind addresses); an MCP agent has no need to
       // enumerate them.

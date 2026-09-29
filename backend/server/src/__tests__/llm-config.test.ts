@@ -68,6 +68,16 @@ describe('LLMConfigManager — slot capability fields round-trip', () => {
     mgr.setSlot1(null);
     expect(mgr.getConfig().slot_1).toBeUndefined();
   });
+
+  it('persists provider_name, and a save without one clears it', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setSlot2({ ...slot, provider: 'openai-compatible', provider_name: 'Groq', base_url: 'https://api.groq.com/openai/v1' });
+    expect(mgr.getConfig().slot_2?.provider_name).toBe('Groq');
+    expect(mgr.getConfig().slot_2?.provider).toBe('openai-compatible');
+
+    mgr.setSlot2({ ...slot, provider: 'openai-compatible', base_url: 'https://api.groq.com/openai/v1' });
+    expect(mgr.getConfig().slot_2).not.toHaveProperty('provider_name');
+  });
 });
 
 describe('LLMConfigManager — embeddings slot (D-174 R28 Slice C)', () => {
@@ -391,6 +401,70 @@ describe('LLMConfigManager — encryption', () => {
   });
 });
 
+/** ⛔ An entry saved with a blank id could not be removed, disabled, tested
+ *  or edited: the rpcs refuse a blank id. The pool names one on read. */
+describe('LLMConfigManager — a pool entry is never nameless', () => {
+  it('names a stored blank-id entry from its address, clear of the names taken', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setPool([
+      { ...apiEntry(''), base_url: 'https://api.groq.com/openai/v1' },
+      apiEntry('groq'),
+      { ...apiEntry('  '), base_url: 'https://openrouter.ai/api/v1' },
+    ]);
+    expect(mgr.getPool().map((e) => e.id)).toEqual(['groq-2', 'groq', 'openrouter']);
+    // The same pool reads with the same names, until a write stores them.
+    expect(mgr.getConfig().free_pool?.map((e) => e.id)).toEqual(['groq-2', 'groq', 'openrouter']);
+  });
+
+  it('can remove and disable a repaired entry by its new name, and stores the names', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setPool([
+      { ...apiEntry(''), base_url: 'https://api.groq.com/openai/v1' },
+      { ...apiEntry(''), base_url: 'https://api.mistral.ai/v1' },
+    ]);
+    expect(mgr.setPoolEntryEnabled('mistral', false)).toBe(true);
+    // Stored now: a fresh manager over the same rows reads the same names.
+    expect(createLLMConfigManager(db).getPool().map((e) => [e.id, e.enabled]))
+      .toEqual([['groq', true], ['mistral', false]]);
+    expect(mgr.removePoolEntry('groq')).toBe(true);
+    expect(mgr.getPool().map((e) => e.id)).toEqual(['mistral']);
+  });
+});
+
+/** An edit that leaves the key field blank keeps the stored key — by the rule
+ *  a slot's save uses, so a key never follows its entry to a new address. */
+describe('LLMConfigManager — upsertPoolEntry keeps a key only on its own endpoint', () => {
+  it('keeps the stored key for a blank key on the same endpoint, and the entry\u2019s place', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setPool([apiEntry('a1'), apiEntry('a2')]);
+    expect(mgr.upsertPoolEntry({ ...apiEntry('a1'), api_key: '', model: 'llama-3.1-8b' }))
+      .toBe('saved');
+    const pool = mgr.getPool();
+    expect(pool.map((e) => e.id)).toEqual(['a1', 'a2']);
+    expect(pool[0]).toMatchObject({ model: 'llama-3.1-8b', api_key: 'k' });
+  });
+
+  it('refuses a blank key for a new entry or a changed endpoint, and writes nothing', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setPool([apiEntry('a1')]);
+    expect(mgr.upsertPoolEntry({ ...apiEntry('new'), api_key: '' })).toBe('key_required');
+    expect(mgr.upsertPoolEntry({
+      ...apiEntry('a1'), api_key: '', base_url: 'https://openrouter.ai/api/v1',
+    })).toBe('key_required');
+    expect(mgr.upsertPoolEntry({ ...apiEntry('a1'), api_key: '', provider: 'openai' }))
+      .toBe('key_required');
+    expect(mgr.getPool()).toEqual([apiEntry('a1')]);
+  });
+
+  it('writes a typed key, and adds a new entry at the end', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setPool([apiEntry('a1')]);
+    expect(mgr.upsertPoolEntry({ ...apiEntry('a1'), api_key: 'k2' })).toBe('saved');
+    expect(mgr.upsertPoolEntry(apiEntry('a2'))).toBe('saved');
+    expect(mgr.getPool().map((e) => [e.id, e.api_key])).toEqual([['a1', 'k2'], ['a2', 'k']]);
+  });
+});
+
 describe('LLMConfigManager — D-174 R28 field-level pool writes', () => {
   it('upsertPoolEntry appends a new entry, preserving the others', () => {
     const mgr = createLLMConfigManager(db);
@@ -404,7 +478,9 @@ describe('LLMConfigManager — D-174 R28 field-level pool writes', () => {
     mgr.setPool([apiEntry('a1'), apiEntry('a2')]);
     mgr.upsertPoolEntry({ ...apiEntry('a1'), model: 'updated-model' });
     const pool = mgr.getPool();
-    expect(pool.map((e) => e.id)).toEqual(['a2', 'a1']);
+    // In place: an edited entry keeps its place (and its row in Settings)
+    // rather than moving to the end.
+    expect(pool.map((e) => e.id)).toEqual(['a1', 'a2']);
     const a1 = pool.find((e) => e.id === 'a1');
     expect(a1?.type === 'api' && a1.model).toBe('updated-model');
   });
@@ -536,6 +612,23 @@ describe('LLMConfigManager — Slice B blank-api_key preserve', () => {
     const mgr = createLLMConfigManager(db);
     mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://a/v1', api_key: 'k1' }));
     mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://b/v1', api_key: '' }));
+    expect(mgr.getConfig().slot_1).toBeUndefined();
+  });
+
+  /** The name is a label for the owner, not where the key goes: renaming a
+   *  slot must not cost its key, and must not be what decides it either. */
+  it('a blank api_key with only the NAME changed preserves the stored key', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://a/v1', provider_name: 'Groq', api_key: 'k1' }));
+    mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://a/v1', provider_name: 'Groq (work)', api_key: '' }));
+    expect(mgr.getConfig().slot_1?.api_key).toBe('k1');
+    expect(mgr.getConfig().slot_1?.provider_name).toBe('Groq (work)');
+  });
+
+  it('a kept NAME does not carry the key to a changed base_url', () => {
+    const mgr = createLLMConfigManager(db);
+    mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://a/v1', provider_name: 'Groq', api_key: 'k1' }));
+    mgr.setSlot1(byok({ provider: 'openai-compatible', base_url: 'http://b/v1', provider_name: 'Groq', api_key: '' }));
     expect(mgr.getConfig().slot_1).toBeUndefined();
   });
 

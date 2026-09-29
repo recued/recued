@@ -15,9 +15,11 @@ import {
   compileTriggerSugarEntry,
   matchesTriggerDispatchFilter,
   parseTriggerOn,
+  recipeEventTriggerNotes,
   validateRecipeEventTriggerEntry,
   whereToDispatchFilter,
 } from '../trigger-sugar.js';
+import type { MailFactTypeSpec } from '../mail-facts.js';
 
 const REGISTRY = [
   { vendor: 'hubspot', entity: 'deal', crm_alias: 'deal' as const },
@@ -304,5 +306,344 @@ describe('validateRecipeEventTriggerEntry', () => {
       on: 'form_response.accepted',
       where: { form_definition_id: 7 },
     })).toContain("'where.form_definition_id' must be a string id for 'form_response.accepted'");
+  });
+});
+
+describe('mail facts — `mail_fact` (D-315 §5.1)', () => {
+  // A trigger watches variables, whatever kind of email has them (ruling 42).
+  const valid = (entry: unknown) => validateRecipeEventTriggerEntry(entry);
+  const notes = (entry: unknown) => recipeEventTriggerNotes(entry);
+  const ownersOnly = ' — only a kind made on the owner’s server can start it';
+
+  it('parses one kind or any kind, and never reads a third part as vendor.entity.verb', () => {
+    expect(parseTriggerOn('mail_fact')).toEqual({ kind: 'mail_fact', type: null });
+    expect(parseTriggerOn('mail_fact.shipment')).toEqual({ kind: 'mail_fact', type: 'shipment' });
+    expect(parseTriggerOn('mail_fact.custom_wine_club')).toEqual({ kind: 'mail_fact', type: 'custom_wine_club' });
+    // Today's grammar would take this as vendor `mail_fact`, entity `shipment`:
+    // a connection pattern that never fires and never errors.
+    expect(parseTriggerOn('mail_fact.shipment.changed')).toBeNull();
+    expect(parseTriggerOn('mail_fact.parcel')).toBeNull();
+    expect(parseTriggerOn('mail_fact.')).toBeNull();
+  });
+
+  it('compiles to one kind’s things, or every kind’s, with where under record.* and fields as given', () => {
+    expect(compileTriggerSugarEntry({ on: 'mail_fact' }, [])).toEqual([{ pattern: 'data.mail_fact.*.thing.*' }]);
+    expect(compileTriggerSugarEntry({ on: 'mail_fact.lead' }, [])).toEqual([{ pattern: 'data.mail_fact.lead.thing.*' }]);
+    expect(compileTriggerSugarEntry(
+      { on: 'mail_fact.shipment', fields: ['state'], where: { state: 'delivered', complete: true } },
+      [],
+    )).toEqual([{
+      pattern: 'data.mail_fact.shipment.thing.*',
+      filter: { 'record.state': 'delivered', 'record.complete': true },
+      fields: ['state'],
+    }]);
+  });
+
+  it('says what is wrong with the on value: a verb, or no such kind', () => {
+    expect(valid({ on: 'mail_fact.shipment.changed' })).toEqual([
+      "'mail_fact.shipment.changed': a mail-fact trigger takes no verb — 'mail_fact.shipment' wakes on the thing's creation and on every change; narrow with 'fields' and 'where'",
+    ]);
+    expect(valid({ on: 'mail_fact.parcel' })[0]).toContain("'mail_fact.parcel' names no kind of email — use 'mail_fact.<kind>'");
+  });
+
+  it('refuses a key that is no part of a mail-fact trigger, rather than leaving it wider than written', () => {
+    // Ignored, `typ` would have watched every kind.
+    expect(valid({ on: 'mail_fact', typ: 'shipment', fields: ['state'] })).toEqual([
+      "'typ' is not part of a mail-fact trigger — it takes 'on', 'fields' and 'where'",
+    ]);
+    expect(valid({ on: 'mail_fact.shipment', feilds: ['state'] })[0]).toContain("'feilds' is not part of a mail-fact trigger");
+    expect(compileTriggerSugarEntry({ on: 'mail_fact', typ: 'shipment' } as never, [])).toEqual([]);
+  });
+
+  it('materializes nothing for what no fact can match (an unvalidated import)', () => {
+    const entries: Parameters<typeof compileTriggerSugarEntry>[0][] = [
+      { on: 'mail_fact', where: { id: 'mthing_1' } },
+      { on: 'mail_fact', where: { type: 'shipment' } },
+      { on: 'mail_fact', where: { state: 'Delivered' } },      // a state is a lower-case word
+      { on: 'mail_fact', where: { carrier: ' UPS' } },
+      { on: 'mail_fact', where: { tracking_number: '' } },
+      { on: 'mail_fact', where: { complete: 'yes' } },
+      { on: 'mail_fact', fields: ['complete'] },               // not a variable
+      { on: 'mail_fact', fields: ['Stage'] },
+      { on: 'mail_fact', connection: 'work' },
+      { on: 'mail_fact', where: { last_email_at: 5 } },
+      // What the kind named does not have.
+      { on: 'mail_fact.shipment', where: { state: 'overdue' } },
+      { on: 'mail_fact.shipment', where: { notice: 'reminder' } },
+      { on: 'mail_fact.bill', where: { amount_due: 5 } },
+      { on: 'mail_fact.shipment', fields: ['stage'] },
+      // What the check refuses with its own reason, never left wider or dead.
+      { on: 'mail_fact.shipment', filter: { 'record.state': 'delivered' } } as never,
+      { on: 'mail_fact.shipment', url: 'x', selector: 'y' } as never,
+      { on: 'mail_fact.shipment', fields: 'state' } as never,
+      { on: 'mail_fact.shipment', fields: [] },
+      { on: 'mail_fact.shipment', where: { state: '{{config.state}}' } },
+      { on: 'mail_fact.shipment', where: { carrier: 'United Parcel Service' } },
+    ];
+    for (const entry of entries) {
+      expect(compileTriggerSugarEntry(entry, []), JSON.stringify(entry)).toEqual([]);
+    }
+  });
+
+  it('materializes what no built-in kind has from a recipe — a kind made later may have it', () => {
+    expect(compileTriggerSugarEntry({ on: 'mail_fact', fields: ['vintage'], where: { colour: 'red' } }, [])).toEqual([
+      { pattern: 'data.mail_fact.*.thing.*', filter: { 'record.colour': 'red' }, fields: ['vintage'] },
+    ]);
+  });
+
+  it('is strict at dispatch: an unread variable is null, and null never matches', () => {
+    const row = { filter: { 'record.state': 'delivered' }, fields: ['state'] };
+    const event = (state: string | null, changed: string[]) => ({
+      platform: 'mail_fact', record_id: 'mthing_1', record: { state, carrier: 'UPS' }, changed_fields: changed,
+    });
+    expect(matchesTriggerDispatchFilter(row, event('delivered', ['state']))).toBe(true);
+    expect(matchesTriggerDispatchFilter(row, event(null, ['carrier']))).toBe(false);
+    expect(matchesTriggerDispatchFilter(row, event('delivered', ['carrier']))).toBe(false);
+  });
+
+  it('is strict across kinds: a fact whose kind lacks a variable does not match it', () => {
+    // A purchase has no notice. Anywhere else a missing path passes (a
+    // doorbell event carries no record); on a fact it would wake a
+    // price-change recipe for every purchase.
+    const row = { filter: { 'record.notice': 'price_change' } };
+    const purchase = { platform: 'mail_fact', record_id: 'mthing_2', record: { merchant: 'Shop', state: 'paid' }, changed_fields: ['state'] };
+    expect(matchesTriggerDispatchFilter(row, purchase)).toBe(false);
+    expect(matchesTriggerDispatchFilter(row, { ...purchase, record: { ...purchase.record, notice: 'price_change' } })).toBe(true);
+    expect(matchesTriggerDispatchFilter(row, { ...purchase, platform: 'connection' })).toBe(true);
+    // And a fact event always says what changed: without it, a fields gate does not pass.
+    const { changed_fields: _changed, ...unsaid } = purchase;
+    expect(matchesTriggerDispatchFilter({ fields: ['state'] }, unsaid)).toBe(false);
+    expect(matchesTriggerDispatchFilter({ fields: ['state'] }, { ...unsaid, platform: 'connection' })).toBe(true);
+  });
+
+  it('accepts the spec’s examples, with nothing to note', () => {
+    for (const entry of [
+      { on: 'mail_fact' },
+      { on: 'mail_fact', fields: ['state'], where: { state: 'delivered' } },
+      { on: 'mail_fact', fields: ['carrier', 'tracking_number'] },
+      { on: 'mail_fact', fields: ['notice'], where: { notice: 'reminder' } },
+      { on: 'mail_fact', where: { complete: true, template: 'mtpl_1', due_at: '2026-10-01' } },
+    ]) {
+      expect(valid(entry), JSON.stringify(entry)).toEqual([]);
+      expect(notes(entry), JSON.stringify(entry)).toEqual([]);
+    }
+  });
+
+  it('refuses what no fact of any kind can match', () => {
+    expect(valid({ on: 'mail_fact', connection: 'work' })[0]).toContain("'connection' does not apply to a mail fact");
+    expect(valid({ on: 'mail_fact', where: { id: 'mthing_1' } })).toEqual([
+      "'where.id' does not apply to a mail fact — a thing's id is minted on the owner's server",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { type: 'shipment' } })).toEqual([
+      "'where.type': name the kind in 'on' — 'mail_fact.shipment' — or leave it out for any kind",
+    ]);
+    expect(valid({ on: 'mail_fact.shipment', where: { last_email_at: 5 } })).toEqual([
+      "'where.last_email_at': a time is never matched exactly — name it in 'fields' to wake for every new email about the thing",
+    ]);
+    expect(valid({ on: 'mail_fact', fields: ['complete'] })).toEqual([
+      "'fields' names 'complete', which is not a variable — 'fields' lists the variables whose change wakes it",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { 'Due At': '2026-10-01' } })[0]).toContain('is not a variable');
+    expect(valid({ on: 'mail_fact', where: { state: 'Delivered' } })).toEqual([
+      "'where.state' must be a state as every kind of email writes one: lower-case words joined by _ (for example out_for_delivery)",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { complete: 'yes' } })).toEqual(["'where.complete' must be true or false"]);
+    expect(valid({ on: 'mail_fact', where: { state: '{{config.state}}' } })).not.toEqual([]);
+  });
+
+  it('refuses a string value no fact can hold: empty, or text not written as it is stored', () => {
+    // An empty reading is stored as null, and found text is stored collapsed.
+    for (const where of [{ tracking_number: '' }, { carrier: ' ' }]) {
+      expect(valid({ on: 'mail_fact', where })).toEqual([
+        `'where.${Object.keys(where)[0]}' must not be empty — a fact never stores an empty value`,
+      ]);
+    }
+    expect(valid({ on: 'mail_fact', where: { template: '' } })).toEqual(["'where.template' must be a template's id"]);
+    for (const carrier of [' UPS', 'UPS ', 'Royal  Mail', 'Royal\tMail']) {
+      expect(valid({ on: 'mail_fact', where: { carrier } })).toEqual([
+        "'where.carrier' must be written as the fact stores it — no spaces at either end, and one between words",
+      ]);
+    }
+    expect(valid({ on: 'mail_fact', where: { carrier: 'Royal Mail' } })).toEqual([]);
+  });
+
+  it('compares no time, and wants an id written as facts store it', () => {
+    // A fact stores a date-time to the second: watch it with `fields` instead.
+    expect(valid({ on: 'mail_fact.shipment', where: { delivered_at: '2026-09-26' } })[0]).toMatch(/^'where\.delivered_at' is not filterable on shipment — use its variables \(money, times, files and data are not; watch a time with 'fields'\)/);
+    expect(valid({ on: 'mail_fact.shipment', fields: ['delivered_at'] })).toEqual([]);
+    expect(valid({ on: 'mail_fact.purchase', where: { order_id: '#112-3345' } })).toEqual([
+      "'where.order_id' must be written as a fact stores it: '112-3345'",
+    ]);
+    expect(valid({ on: 'mail_fact.purchase', where: { order_id: '112-3345' } })).toEqual([]);
+  });
+
+  it('wants a carrier written as facts store it', () => {
+    expect(valid({ on: 'mail_fact.shipment', where: { carrier: 'United Parcel Service' } })).toEqual([
+      "'where.carrier' must be written as a fact stores it: 'UPS'",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { carrier: 'fedex' } })).toEqual(["'where.carrier' must be written as a fact stores it: 'FedEx'"]);
+    expect(valid({ on: 'mail_fact.shipment', where: { carrier: 'UPS' } })).toEqual([]);
+    expect(valid({ on: 'mail_fact.shipment', where: { carrier: 'Royal Mail' } })).toEqual([]);
+  });
+
+  it('wants a value written as facts store text: canonical, so it can match one (§9)', () => {
+    // A fullwidth carrier is the carrier, and named as facts name it.
+    expect(valid({ on: 'mail_fact.shipment', where: { carrier: '\uFF35\uFF30\uFF33' } })).toEqual([
+      "'where.carrier' must be written as a fact stores it: 'UPS' — plain letters and digits, and nothing that does not show",
+    ]);
+    expect(valid({ on: 'mail_fact.shipment', where: { tracking_number: '1Z\u200B999AA1' } })).toEqual([
+      "'where.tracking_number' must be written as a fact stores it: '1Z999AA1' — plain letters and digits, and nothing that does not show",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { merchant: 'Shop\u00A0A' } })).toEqual([
+      "'where.merchant' must be written as the fact stores it — no spaces at either end, and one between words",
+    ]);
+    // An id written in fullwidth digits is the id facts store.
+    expect(valid({ on: 'mail_fact.purchase', where: { order_id: '\uFF11\uFF11\uFF12-3345' } })).toEqual([
+      "'where.order_id' must be written as a fact stores it: '112-3345' — plain letters and digits, and nothing that does not show",
+    ]);
+    expect(valid({ on: 'mail_fact', where: { merchant: 'Shop A' } })).toEqual([]);
+  });
+
+  it('checks a trigger on one kind against that kind exactly', () => {
+    expect(valid({ on: 'mail_fact.shipment', fields: ['state', 'carrier'], where: { state: 'delivered', carrier: 'UPS' } })).toEqual([]);
+    expect(valid({ on: 'mail_fact.shipment', where: { state: 'overdue' } })).toEqual([
+      "'where.state' must be one of label_created, in_transit, out_for_delivery, delivered, exception, returned",
+    ]);
+    // A shipment has no notice; a bill's amount is money.
+    expect(valid({ on: 'mail_fact.shipment', where: { notice: 'reminder' } })[0]).toContain("'where.notice' is not filterable on shipment");
+    expect(valid({ on: 'mail_fact.bill', where: { amount_due: 5 } })[0]).toContain("'where.amount_due' is not filterable on bill");
+    expect(valid({ on: 'mail_fact.shipment', fields: ['stage'] })[0]).toContain("'fields' names 'stage', which is not a variable of shipment");
+    expect(valid({ on: 'mail_fact.shipment', where: { expected_at: '10/01/2026' } })).toEqual([
+      "'where.expected_at' must be a date as the fact stores it (YYYY-MM-DD)",
+    ]);
+    // Exact on its kind, so nothing is left to note.
+    expect(notes({ on: 'mail_fact.shipment', fields: ['state'] })).toEqual([]);
+  });
+
+  it('wakes on every new email about the thing only for a trigger that names its time (ruling 44)', () => {
+    for (const on of ['mail_fact', 'mail_fact.shipment', 'mail_fact.bill']) {
+      expect(valid({ on, fields: ['last_email_at'] }), on).toEqual([]);
+      expect(notes({ on, fields: ['last_email_at'] }), on).toEqual([]);
+    }
+    const timeOnly = {
+      platform: 'mail_fact', record_id: 'mthing_1', record: { state: 'in_transit' }, prev: { state: 'in_transit' }, changed_fields: ['last_email_at'],
+    };
+    // "Every change" is a change of what the thing says: a repeat email is not one.
+    expect(matchesTriggerDispatchFilter({}, timeOnly)).toBe(false);
+    expect(matchesTriggerDispatchFilter({ filter: { 'record.state': 'in_transit' } }, timeOnly)).toBe(false);
+    expect(matchesTriggerDispatchFilter({ fields: ['state'] }, timeOnly)).toBe(false);
+    expect(matchesTriggerDispatchFilter({ fields: ['last_email_at'] }, timeOnly)).toBe(true);
+    expect(matchesTriggerDispatchFilter({ fields: ['last_email_at'], filter: { 'record.state': 'in_transit' } }, timeOnly)).toBe(true);
+    // A new email that also changed something is a change for everyone.
+    const withState = { ...timeOnly, changed_fields: ['state', 'last_email_at'] };
+    expect(matchesTriggerDispatchFilter({}, withState)).toBe(true);
+    expect(matchesTriggerDispatchFilter({ fields: ['state'] }, withState)).toBe(true);
+    // A creation always counts — even one that read nothing but its time (a
+    // template whose AI could not answer): it carries no `prev`.
+    const { prev: _prev, ...created } = timeOnly;
+    expect(matchesTriggerDispatchFilter({}, created)).toBe(true);
+    expect(matchesTriggerDispatchFilter({ filter: { 'record.template': 'mtpl_1' } }, { ...created, record: { template: 'mtpl_1' } })).toBe(true);
+  });
+
+  it('notes, and does not refuse, what no built-in kind has: a kind the owner makes may have it', () => {
+    const noted = (entry: Record<string, unknown>, note: string) => {
+      expect(valid({ on: 'mail_fact', ...entry }), note).toEqual([]);
+      expect(notes({ on: 'mail_fact', ...entry })).toEqual([note]);
+    };
+    noted({ where: { vintage: '2019' } }, `'where.vintage': no built-in kind of email has a variable 'vintage'${ownersOnly}`);
+    noted({ fields: ['vintage'] }, `'fields': no built-in kind of email has a variable 'vintage'${ownersOnly}`);
+    noted({ where: { state: 'uncorked' } }, `'where.state': no built-in kind of email has the state 'uncorked'${ownersOnly}`);
+    noted(
+      { where: { amount_due: 5 } },
+      `'where.amount_due': every kind of email that has amount_due holds money, a time, a file or data in it, which a filter cannot compare (watch it with 'fields')${ownersOnly}`,
+    );
+    noted(
+      { where: { expected_at: '10/01/2026' } },
+      `'where.expected_at' must be a date as the fact stores it (YYYY-MM-DD) in every built-in kind of email that has it${ownersOnly}`,
+    );
+    noted(
+      { where: { tracking_number: '1Z 999' } },
+      `'where.tracking_number' must be written as a fact stores it: '1Z999' in every built-in kind of email that has it${ownersOnly}`,
+    );
+    // Every `where` holds for one fact: a delivered shipment has no notices.
+    noted(
+      { where: { state: 'delivered', notice: 'reminder' } },
+      `'where': no built-in kind of email has state and notice with these values together${ownersOnly}`,
+    );
+    noted(
+      { fields: ['tracking_number'], where: { notice: 'reminder' } },
+      `'fields': no kind of email the 'where' matches has a variable 'tracking_number'${ownersOnly}`,
+    );
+    // Any other trigger has nothing to note.
+    expect(notes({ on: 'form_response.accepted' })).toEqual([]);
+    expect(notes({ event: 'data.mail_fact.*.thing.*' })).toEqual([]);
+  });
+});
+
+describe('a kind of email the owner made (D-315 §4.5, §5.1)', () => {
+  const wine: MailFactTypeSpec = {
+    id: 'custom_wine_club',
+    name: 'Wine club',
+    description: 'A box from the wine club.',
+    variables: [
+      { name: 'club', kind: 'text', required: true },
+      { name: 'box_id', kind: 'id', required: true },
+      { name: 'colour', kind: 'enum', required: false, values: ['red', 'white'] },
+      { name: 'price', kind: 'money', required: false },
+    ],
+    states: ['shipped', 'delivered', 'uncorked'],
+    notices: [],
+    identity: [['club', 'box_id']],
+  };
+  const onThisServer = { mailFactTypes: () => [wine] };
+
+  it('lets a trigger made on its server watch its variables, and refuses what no kind there has', () => {
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact', fields: ['state'], where: { colour: 'red' } }, onThisServer))
+      .toEqual([]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact', where: { state: 'uncorked' } }, onThisServer)).toEqual([]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact', where: { colour: 'rose' } }, onThisServer))
+      .toEqual(["'where.colour': no kind of email on this server has the colour 'rose'"]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact', where: { price: 5 } }, onThisServer))
+      .toEqual(["'where.price': every kind of email that has price holds money, a time, a file or data in it, which a filter cannot compare (watch it with 'fields')"]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact', fields: ['vintage'] }, onThisServer))
+      .toEqual(["'fields': no kind of email on this server has a variable 'vintage'"]);
+    // The check that knows every kind refuses; it has nothing left to note.
+    expect(recipeEventTriggerNotes({ on: 'mail_fact', fields: ['vintage'] }, onThisServer)).toEqual([]);
+  });
+
+  it('can be the one kind a trigger is on: exact where it exists, refused where it does not, noted in a recipe', () => {
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact.custom_wine_club', where: { colour: 'red' } }, onThisServer)).toEqual([]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact.custom_wine_club', where: { colour: 'rose' } }, onThisServer))
+      .toEqual(["'where.colour' must be one of red, white"]);
+    expect(validateRecipeEventTriggerEntry({ on: 'mail_fact.custom_beer_club' }, onThisServer))
+      .toEqual(["'mail_fact.custom_beer_club': there is no kind of email 'custom_beer_club' on this server"]);
+    expect(compileTriggerSugarEntry({ on: 'mail_fact.custom_wine_club', where: { state: 'uncorked' } }, [], onThisServer))
+      .toEqual([{ pattern: 'data.mail_fact.custom_wine_club.thing.*', filter: { 'record.state': 'uncorked' } }]);
+    // A recipe's check cannot see the owner's kinds: it notes the kind, and
+    // the recipe's row is made, for the server that has it.
+    const entry = { on: 'mail_fact.custom_wine_club', where: { colour: 'red' } };
+    expect(validateRecipeEventTriggerEntry(entry)).toEqual([]);
+    expect(recipeEventTriggerNotes(entry)).toEqual([
+      "'mail_fact.custom_wine_club': a kind of email made on a server exists only there — this recipe starts only where it was made",
+    ]);
+    expect(compileTriggerSugarEntry(entry, [])).toEqual([
+      { pattern: 'data.mail_fact.custom_wine_club.thing.*', filter: { 'record.colour': 'red' } },
+    ]);
+  });
+
+  it('compiles for its server what is there, and nothing for what no kind there has', () => {
+    expect(compileTriggerSugarEntry({ on: 'mail_fact', where: { colour: 'red' } }, [], onThisServer))
+      .toEqual([{ pattern: 'data.mail_fact.*.thing.*', filter: { 'record.colour': 'red' } }]);
+    expect(compileTriggerSugarEntry({ on: 'mail_fact', where: { colour: 'rose' } }, [], onThisServer)).toEqual([]);
+  });
+
+  it('is watched by a recipe too, which never names it: a recipe only hears it noted', () => {
+    const entry = { on: 'mail_fact', fields: ['colour'], where: { state: 'uncorked' } };
+    expect(validateRecipeEventTriggerEntry(entry)).toEqual([]);
+    expect(recipeEventTriggerNotes(entry)).toEqual([
+      "'where.state': no built-in kind of email has the state 'uncorked' — only a kind made on the owner’s server can start it",
+      "'fields': no built-in kind of email has a variable 'colour' — only a kind made on the owner’s server can start it",
+    ]);
+    expect(validateRecipeEventTriggerEntry(entry, onThisServer)).toEqual([]);
   });
 });

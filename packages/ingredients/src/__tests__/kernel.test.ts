@@ -82,6 +82,26 @@ describe('createKernelAdapter', () => {
     }))).rejects.toMatchObject({ code: 'SERVER_NOT_REACHABLE' });
   });
 
+  it('routes shared-patch with a null part as an absent one, and fails closed without a key or a dispatcher', async () => {
+    const seen: unknown[] = [];
+    const adapter = createKernelAdapter({
+      patch: async (input) => {
+        seen.push(input);
+        return { ok: true, key: input.key, found: true, applied: true, bytes_written: 1 };
+      },
+    });
+    await adapter(mkCall('shared-patch', { key: 'data.shared.row', set: { a: 1 }, unset: null, match: null }));
+    await adapter(mkCall('shared-patch', { key: 'data.shared.row', unset: ['a'], match: { b: 2 } }));
+    expect(seen).toEqual([
+      { key: 'data.shared.row', set: { a: 1 } },
+      { key: 'data.shared.row', unset: ['a'], match: { b: 2 } },
+    ]);
+    await expect(adapter(mkCall('shared-patch', { set: { a: 1 } })))
+      .rejects.toMatchObject({ code: 'BAD_INPUT' });
+    await expect(createKernelAdapter({})(mkCall('shared-patch', { key: 'data.shared.row', set: { a: 1 } })))
+      .rejects.toMatchObject({ code: 'SERVER_NOT_REACHABLE' });
+  });
+
   it('routes shared-read without canonical stamping', async () => {
     const adapter = createKernelAdapter({
       read: async () => ({ found: true, key: 'data.shared.a', value: 1 }),

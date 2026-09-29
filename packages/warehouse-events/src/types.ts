@@ -76,6 +76,18 @@ export interface WarehouseEvent {
    *  snapshot. Populated on poll- and reconciler-sourced `updated`
    *  events whose prior snapshot carried meta. */
   changed_fields?: string[];
+  /** D-315 §6.3 — set on the events a manual BACKFILL of mail that already
+   *  arrived emits, when the owner asked it to run the recipes its facts
+   *  trigger. A trigger starts those runs with `trigger_source: 'backfill'`,
+   *  the one source `deriveRunMode` stamps `run_mode: backfill`, so they stay
+   *  out of what is recent and fan out no run-outcome events. */
+  origin?: 'backfill';
+  /** D-124 — published while ANOTHER collection drained its initial backfill:
+   *  a mailbox's first scan storing an old email's attachment as a received
+   *  file. The received files never drain, so their own backfill state cannot
+   *  say so; this does. The dispatcher suppresses its fan-out as it does the
+   *  drain's own events — the bus still carries it. */
+  in_drain?: true;
 }
 
 /** Path convention: `data.{platform}.{slug}.{entity_type}.{event_kind}` —

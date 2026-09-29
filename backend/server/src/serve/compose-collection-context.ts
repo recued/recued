@@ -13,6 +13,7 @@ import {
   type CalendarStack,
 } from '../collections/calendar/compose.js';
 import type { MailStack } from '../collections/mail/compose.js';
+import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { GMAIL_TOKEN_URL } from '../collections/mail/gmail-provider.js';
 import { GRAPH_TOKEN_URL } from '../collections/mail/graph-provider.js';
 import { registerMailCollections } from '../collections/mail/compose.js';
@@ -35,6 +36,21 @@ import {
   type ConnectionNotificationBundle,
 } from '../composition/bin/wire-connection-notification.js';
 import { composeMailBoot } from '../composition/bin/wire-mail-stack.js';
+import { createMailFactAnnouncer } from '../mail-facts/announcer.js';
+import { createMailFactWriter, sweepGoneEmails, type MailFactWriter } from '../mail-facts/fact-writer.js';
+import { createHeldMailFactEvents, type HeldMailFactEvents } from '../mail-facts/held-events.js';
+import { createInstanceStore } from '../collections/instance-store.js';
+import { createBackfillStateLookup } from '../triggers/backfill-state.js';
+import { bootEventKeep, createBootEventRecorder, type BootEventRecorder } from '../triggers/boot-events.js';
+import {
+  createMailFactAiRunner,
+  MAIL_FACT_AI_MANIFEST,
+  mailFactAiCallThrough,
+  readMailFactAiEmail,
+  type MailFactAiRunner,
+} from '../mail-facts/ai-pass.js';
+import type { ExecuteChatAiCall } from '../chat-orchestrator.js';
+import { isAiPaused, isByokAllowedForBackground } from '../housekeeping/trust-store.js';
 import { composeServiceBoot } from '../composition/bin/wire-service-stack.js';
 import {
   composeSupervisionStack,
@@ -48,10 +64,12 @@ import type { OAuthClientConfigDeps } from '../oauth-client-config-handler.js';
 import { createOAuthAppConfigStore } from '../oauth-app-config-store.js';
 import type { OAuthAppConfigHandlerDeps } from '../oauth-app-config-handler.js';
 import type { OAuthProviderConfig } from '../collections/mail/oauth.js';
-import { oauthAppIssuerForProvider } from '@recued/contracts';
-import type { IngredientManifest } from '@recued/contracts';
+import { oauthAppIssuerForProvider, resolveServerTimeZone } from '@recued/contracts';
+import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
+import type { IngredientManifest, MailFactEmailRef } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
+import type { MailFactStore } from '../storage/mail-fact-store.js';
 import type { CascadeEngine } from '../storage/enrichment-cascade.js';
 import type { BlobStore } from '../storage/index.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
@@ -90,6 +108,9 @@ export interface ComposeCollectionContextOptions {
   cacheBlobs: BlobStore | undefined;
   warehouseBus: WarehouseEventBus;
   contactStore: ContactStore | undefined;
+  /** D-315 — mail facts. Undefined on a dbless boot: mail is then not read
+   *  for facts, and nothing else changes. */
+  mailFactStore: MailFactStore | undefined;
   gateRegistry: GateRegistry | undefined;
   accountStore: ServerAccountStore | undefined;
   eventBus: EventBus;
@@ -112,6 +133,12 @@ export interface ComposeCollectionContextOptions {
    *  `MAIL_SEND_ATTACHMENT_UNRESOLVABLE`. Read lazily; undefined ⇒ a remote ref 501s
    *  (the pre-byte-fetch posture). */
   getRemoteFileReadDeps?: () => RemoteFileReadDeps | undefined;
+  /** D-315 §4.3 — one model call through the chat's privacy layer. Absent ⇒
+   *  the mail facts' AI pass cannot call a model, and says so on each fact. */
+  privateAiCall?: ExecuteChatAiCall;
+  /** D-315 §4.3 — the owner's daily token budget has reached the point where
+   *  background work stops. Absent ⇒ never. */
+  backgroundAiBudgetSpent?: () => boolean;
 }
 
 export interface CollectionContext extends ConnectionNotificationBundle {
@@ -138,6 +165,26 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   uploadStagingRegistry: UploadStagingRegistry | undefined;
   calendarStack: CalendarStack | undefined;
   mailStack: MailStack | undefined;
+  /** D-315 — the one mail-fact writer: the ingest's, and a backfill's (§6.3).
+   *  Undefined on a dbless boot. */
+  mailFactWriter: MailFactWriter | undefined;
+  /** D-315 §4.3 — the trigger queue's room, bound once the trigger dispatcher
+   *  is composed (after this context): an AI answer that may start recipes
+   *  waits for it. Unbound, nothing waits. */
+  mailFactTriggerRoom: { current?: () => Promise<void> };
+  /** D-315 §6.3 — resolves once no AI call holding news waits on an email,
+   *  with the events its answers told: a backfill that runs recipes waits
+   *  for it before the next email. With no AI pass, at once. */
+  mailFactAiSettled: (email: MailFactEmailRef) => Promise<number>;
+  /** D-315 §5 — the fact writer's events, held until the trigger dispatcher
+   *  subscribes: the mailboxes start, and a restart's scan reads the mail that
+   *  came meanwhile, before it does. Opened by the listeners' composition. */
+  mailFactEvents: HeldMailFactEvents;
+  /** D-124 — what the collections' boot scans find reaches the bus before the
+   *  trigger dispatcher subscribes: the events a trigger would have been told
+   *  of (`BOOT_EVENT_KINDS`), recorded for it. Sealed and replayed by the
+   *  listeners' composition. */
+  bootEvents: BootEventRecorder;
   serviceStack: ServiceStack | undefined;
   /** Supervision feature — cli-daemon keep-alive stack. Undefined on a db-less
    *  boot. Its cli executor is late-bound at the collection/execution
@@ -166,6 +213,7 @@ export const composeCollectionContext = (
     cacheBlobs,
     warehouseBus,
     contactStore,
+    mailFactStore,
     gateRegistry,
     accountStore,
     eventBus,
@@ -176,6 +224,8 @@ export const composeCollectionContext = (
     enrichmentCascade,
     annotationDeps,
     getRemoteFileReadDeps,
+    privateAiCall,
+    backgroundAiBudgetSpent,
   } = options;
 
   // Vault-lock predicate for the mail/calendar poll loops — LOCKED (or
@@ -344,12 +394,50 @@ export const composeCollectionContext = (
       resolveOAuthProviderConfig(adapter, adapter === 'gcal' ? GCAL_TOKEN_URL : GRAPH_CAL_TOKEN_URL),
   });
 
+  // D-315 — the fact writer: the mail ingest reads every upsert through it and
+  // a backfill re-reads past mail through it (§6.3). It emits on the bus the
+  // mail rows do, and tells the Mail facts screens, at most once a second,
+  // that facts or a template's health moved.
+  // The AI pass (§4.3) is built once the mailboxes exist, below; the writer
+  // starts it after a commit that queued a call.
+  let mailFactAi: MailFactAiRunner | undefined;
+  const mailFactTriggerRoom: { current?: () => Promise<void> } = {};
+  const mailFactLogger = { warn: (message: string, detail?: unknown) => console.log(`[mail-facts] ${message}`, detail ?? '') };
+  // A fact announces once: its events wait until a trigger can hear them.
+  const mailFactEvents = createHeldMailFactEvents((event) => warehouseBus.emit(event), mailFactLogger);
+  // D-124 — the collections start, and their boot scans read what came while
+  // the server was down, before the trigger dispatcher subscribes: what a
+  // trigger would have been told of is recorded for the dispatcher, kept as
+  // the dispatcher itself would take it — a first scan finds what was already
+  // there, which fires nothing (Phase 2.2).
+  const bootBackfillState = db !== undefined ? createBackfillStateLookup({ instances: createInstanceStore({ db }) }) : undefined;
+  const bootEvents = createBootEventRecorder({
+    bus: warehouseBus,
+    pattern: '**',
+    keep: bootEventKeep(bootBackfillState),
+    logger: { warn: (message, detail) => console.warn(`[event-triggers] ${message}`, detail ?? '') },
+  });
+  const mailFactWriter: MailFactWriter | undefined = mailFactStore
+    ? createMailFactWriter({
+        store: mailFactStore,
+        emit: mailFactEvents.emit,
+        now: () => Date.now(),
+        logger: mailFactLogger,
+        onChanged: createMailFactAnnouncer((subkind) => {
+          eventBus.emit({ kind: 'mail_fact', subkind });
+        }).announce,
+        onAiQueued: () => mailFactAi?.kick(),
+      })
+    : undefined;
+
   const mailStack = composeMailBoot({
     db,
     cacheBlobs,
     warehouseBus,
     ...(auditLog ? { auditLog } : {}),
     ...(contactStore ? { contactStore } : {}),
+    // D-315 — every upsert is read for mail facts, through the one writer.
+    ...(mailFactWriter ? { mailFactWriter } : {}),
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
@@ -391,6 +479,39 @@ export const composeCollectionContext = (
           }
         : undefined,
   });
+
+  // D-315 §4.3 — the AI pass: queued, one call at a time, through the chat's
+  // privacy layer, reading the stored copy of each email. What a restart left
+  // queued is read once the mailboxes are live (`startCollectionAdapters`):
+  // kicked any sooner, it would find no mailbox and settle every job as gone.
+  if (db && mailFactStore && mailFactWriter && cacheBlobs) {
+    const flag = (read: () => boolean): boolean => {
+      try {
+        return read();
+      } catch {
+        return false; // no housekeeping config yet: not paused, no background BYOK
+      }
+    };
+    mailFactAi = createMailFactAiRunner({
+      store: mailFactStore,
+      writer: mailFactWriter,
+      readEmail: readMailFactAiEmail({
+        blobs: cacheBlobs,
+        mailboxes: () => collectionRegistry.list()
+          .filter((collection): collection is MailCollection => collection.platform === 'mail'),
+      }),
+      call: mailFactAiCallThrough(privateAiCall, MAIL_FACT_AI_MANIFEST),
+      isPaused: () => flag(() => isAiPaused(db, Date.now())),
+      byokAllowed: () => flag(() => isByokAllowedForBackground(db)),
+      ...(backgroundAiBudgetSpent !== undefined ? { budgetSpent: () => flag(backgroundAiBudgetSpent) } : {}),
+      // A job whose mailbox is not live yet waits for it.
+      mailboxLive: (slug) => collectionRegistry.get('mail', slug) !== undefined,
+      // An answer that may start recipes waits for room in the trigger queue.
+      triggerRoom: () => mailFactTriggerRoom.current?.() ?? Promise.resolve(),
+      now: () => Date.now(),
+      logger: mailFactLogger,
+    });
+  }
 
   const serviceStack = composeServiceBoot({
     db,
@@ -456,10 +577,16 @@ export const composeCollectionContext = (
     collectionRegistry,
   });
 
+  // The owner's zone, for judging a date-only deadline by its day.
+  const serverZoneStore = db ? createServerTimeZoneStore(db) : undefined;
   const workEntityDispatchers = workEntityStore
     ? createWorkEntityDispatchers({
         store: workEntityStore,
         resolver: createWorkEntityResolver(workEntityStore),
+        timeZone: () => resolveServerTimeZone(
+          serverZoneStore?.read(),
+          Intl.DateTimeFormat().resolvedOptions().timeZone,
+        ),
         bus: warehouseBus,
         ...(enrichmentCascade ? { cascade: enrichmentCascade } : {}),
         ...(options.getWorkEntityWriteExecutor
@@ -496,6 +623,18 @@ export const composeCollectionContext = (
     if (mailStack) {
       await mailStack.startAll();
       registerMailCollections(mailStack, collectionRegistry);
+      // D-315 §4.3 — now the mailboxes are live: resume the AI calls a
+      // restart left queued.
+      mailFactAi?.kick();
+      // D-315 §5.3 — and drop the facts of emails a live mailbox no longer
+      // holds: a delete or move hook that failed is never run again.
+      if (mailFactWriter) {
+        void sweepGoneEmails(
+          mailFactWriter,
+          collectionRegistry.list().filter((collection): collection is MailCollection => collection.platform === 'mail'),
+          mailFactLogger,
+        );
+      }
     }
 
     // R21.1 parity — keep the mail/calendar poll loops in step with the vault
@@ -541,6 +680,11 @@ export const composeCollectionContext = (
     uploadStagingRegistry,
     calendarStack,
     mailStack,
+    mailFactWriter,
+    mailFactTriggerRoom,
+    mailFactAiSettled: (email: MailFactEmailRef) => mailFactAi?.untilSettled(email) ?? Promise.resolve(0),
+    mailFactEvents,
+    bootEvents,
     serviceStack,
     supervisionStack,
     webhookWatcherQueue,

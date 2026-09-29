@@ -57,7 +57,10 @@ const KNOWN_SUBCOMMANDS = new Set([
 const args = process.argv.slice(2);
 const positionals = parsePositionals(args);
 const subcommand = positionals[0];
-const versionRequested = getFlag(args, 'version') || getFlag(args, 'v');
+// `recued version` as well as `--version` / `-v`: the owner reached for the
+// word first and got the help page, which never mentioned the version at all
+// (reported 2026-09-28). Same cheap path, so it opens nothing.
+const versionRequested = getFlag(args, 'version') || getFlag(args, 'v') || subcommand === 'version';
 const helpRequested = getFlag(args, 'help') || getFlag(args, 'h');
 const unknownSubcommand = subcommand !== undefined && !KNOWN_SUBCOMMANDS.has(subcommand);
 const mcpRequested = getFlag(args, 'mcp');
@@ -88,7 +91,7 @@ bootTrace.mark('cli-parsed');
 const showHelp = async (): Promise<void> => {
   bootTrace.markImport('./commands/help.js');
   const { cmdHelp } = await import('./commands/help.js');
-  cmdHelp();
+  cmdHelp(SERVER_VERSION);
 };
 
 const stripServeSubcommand = (inputArgs: string[]): string[] => {

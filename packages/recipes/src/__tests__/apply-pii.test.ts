@@ -415,6 +415,23 @@ describe('applyAutoPiiProtection', () => {
     expect(residualOutcomes(result)).toEqual(['self_referential_fail_on']);
   });
 
+  it('records self_referential_stop_when — stop_when is checked before the restore too', () => {
+    const recipe = recipeWith([
+      source(),
+      aiPrompt(
+        { 'llm.prompt': '{{step.profile}}' },
+        { stop_when: '{{step.ai.answer}} is_empty' },
+      ),
+    ]);
+
+    const result = applyAutoPiiProtection(recipe, classifierFrom({
+      'profile-source': { email: ['email'] },
+    }));
+
+    expect(result.changed).toBe(false);
+    expect(residualOutcomes(result)).toEqual(['self_referential_stop_when']);
+  });
+
   it('records content_only for content findings that cannot seed an identifier ledger', () => {
     const recipe = recipeWith([
       source('message', 'message-source'),

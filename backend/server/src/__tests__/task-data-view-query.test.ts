@@ -118,3 +118,59 @@ describe('task Data queries through the real RPC handler, resolver and SQLite st
     await expect(list({ booking_lifecycle_states: ['confirmed'] })).rejects.toMatchObject({ code: 'bad_request' });
   });
 });
+
+describe('a due at UTC midnight is a DAY to the Tasks filter', () => {
+  // Found live: "due Monday" (stored as Monday's UTC midnight) was listed
+  // overdue on Sunday evening in Pacific time. The filter's bounds stay
+  // instants on the wire; the server reads a day-due against their local DATES.
+  const MONDAY = Date.UTC(2026, 8, 28);
+  const SUNDAY_EVENING = Date.parse('2026-09-27T20:00:00-07:00'); // Monday in UTC already
+  const inPacific = (): WorkEntityCrudRpcDeps => ({ ...deps, timeZone: () => 'America/Los_Angeles' });
+  const listIn = (d: WorkEntityCrudRpcDeps, due: TaskListFilter['due']) =>
+    handleWorkEntityList(d, { kind: 'task', task_filter: { completion: 'all', sort: 'default', due } });
+
+  it('⛔ is not overdue on the evening before — and is overdue once its day is over', async () => {
+    write('due-monday', { due_at: MONDAY });
+    write('timed-past', { due_at: SUNDAY_EVENING - 60_000 + 1 });
+    const overdue = async (now: number) =>
+      (await listIn(inPacific(), { kind: 'overdue', before: now })).entities.map((row) => row.id).sort();
+    expect(await overdue(SUNDAY_EVENING)).toEqual(['timed-past']);
+    expect(await overdue(Date.parse('2026-09-28T23:59:00-07:00'))).toEqual(['timed-past']);
+    expect(await overdue(Date.parse('2026-09-29T00:01:00-07:00'))).toEqual(['due-monday', 'timed-past']);
+  });
+
+  it('is "today" for the whole of its day, not from the evening before', async () => {
+    write('due-monday', { due_at: MONDAY });
+    write('timed-monday-noon', { due_at: Date.parse('2026-09-28T12:00:00-07:00') + 1 });
+    const today = async (from: string, before: string) =>
+      (await listIn(inPacific(), { kind: 'range', from: Date.parse(from), before: Date.parse(before) }))
+        .entities.map((row) => row.id).sort();
+    // Sunday (Pacific): nothing due Monday belongs here.
+    expect(await today('2026-09-27T00:00:00-07:00', '2026-09-28T00:00:00-07:00')).toEqual([]);
+    // Monday (Pacific): the day-due and the timed one.
+    expect(await today('2026-09-28T00:00:00-07:00', '2026-09-29T00:00:00-07:00'))
+      .toEqual(['due-monday', 'timed-monday-noon']);
+  });
+
+  it('⛔ the Today view\'s "since forever" range keeps every day-due (found live)', async () => {
+    // Today asks for everything due before the end of its window, from the
+    // earliest Date. That bound's local day came back in the year 271822, and
+    // Today listed no task due as a day — yesterday's, today's or tomorrow's.
+    write('due-sunday', { due_at: MONDAY - 86_400_000 });
+    write('due-monday', { due_at: MONDAY });
+    write('due-tuesday', { due_at: MONDAY + 86_400_000 });
+    write('timed-monday', { due_at: Date.parse('2026-09-28T15:30:00-07:00') });
+    const upToOct5 = await listIn(inPacific(), {
+      kind: 'range', from: -8.64e15, before: Date.parse('2026-10-05T00:00:00-07:00'),
+    });
+    expect(upToOct5.entities.map((row) => row.id).sort())
+      .toEqual(['due-monday', 'due-sunday', 'due-tuesday', 'timed-monday']);
+  });
+
+  it('without a zone the day is read in UTC — where it was always stored', async () => {
+    write('due-monday', { due_at: MONDAY });
+    expect((await listIn(deps, { kind: 'overdue', before: MONDAY + 1 })).entities).toEqual([]);
+    expect((await listIn(deps, { kind: 'overdue', before: MONDAY + 86_400_000 })).entities.map((r) => r.id))
+      .toEqual(['due-monday']);
+  });
+});

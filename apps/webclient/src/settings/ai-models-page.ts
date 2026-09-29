@@ -7,7 +7,9 @@
 
 import { totalRecord } from '@recued/contracts';
 import type { ServerLlmUsageResponse } from '@recued/contracts';
-import { resolveFreePoolDataUse, freePoolDataUseNotice } from '@recued/contracts';
+import {
+  resolveFreePoolDataUse, freePoolDataUseNotice, suggestFreePoolEntryId,
+} from '@recued/contracts';
 import {
   CHAT_CATALOG_DELIVERY_MODES,
   CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE,
@@ -93,6 +95,9 @@ export const AI_MODELS_SLOT_CLEAR_CANCEL_ATTR =
 export const AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR =
   'data-recued-ai-models-slot-clear-confirm';
 export const AI_MODELS_SLOT_FIELD_ATTR = 'data-recued-ai-models-slot-field';
+/** An error under the button that caused it: a slot save (`<slot>:save`) or a
+ *  Test that never reached the provider (`<result key>:test`). */
+export const AI_MODELS_FORM_ERROR_ATTR = 'data-recued-ai-models-form-error';
 /** Test connection — one real request against the slot, reported in the form.
  *  Nothing else in the save path leaves the process, so this is the only place
  *  a wrong key / model / base_url can be caught at the moment it is typed. */
@@ -112,14 +117,22 @@ export const AI_MODELS_TRANSCRIPTION_FIELD_ATTR =
   'data-recued-ai-models-transcription-field';
 /** D-262 follow-on — today's spend, rendered beside the cap that governs it. */
 export const AI_MODELS_USAGE_ATTR = 'data-recued-ai-models-usage';
-/** Per-source model context-window input. Values are `slot_1`, `slot_2`, or
- *  `free_pool:new` for the API-entry creation form. */
+/** Per-source model context-window input. Values are `slot_1`, `slot_2`,
+ *  `free_pool:new` for the pool form adding an entry, or `free_pool:<id>`
+ *  while it edits one. */
 export const AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR =
   'data-recued-ai-models-context-window-input';
 export const AI_MODELS_POOL_TOGGLE_ATTR = 'data-recued-ai-models-pool-toggle';
 export const AI_MODELS_POOL_ADD_ATTR = 'data-recued-ai-models-pool-add';
 export const AI_MODELS_POOL_ADD_FIELD_ATTR =
   'data-recued-ai-models-pool-add-field';
+/** A free-pool row's Edit (value: the entry's id). */
+export const AI_MODELS_POOL_EDIT_ATTR = 'data-recued-ai-models-pool-edit';
+/** The pool form's Save while it edits an entry (value: the entry's id). */
+export const AI_MODELS_POOL_SAVE_ATTR = 'data-recued-ai-models-pool-save';
+/** The pool form's Cancel while it edits an entry (value: the entry's id). */
+export const AI_MODELS_POOL_CANCEL_EDIT_ATTR =
+  'data-recued-ai-models-pool-cancel-edit';
 export const AI_MODELS_BUDGET_SAVE_ATTR = 'data-recued-ai-models-budget-save';
 export const AI_MODELS_BUDGET_INPUT_ATTR = 'data-recued-ai-models-budget-input';
 export const AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR =
@@ -180,6 +193,10 @@ export const AI_MODELS_CHAT_SETUP_STATUS_ATTR =
   'data-recued-ai-models-chat-setup-status';
 export const AI_MODELS_CHAT_SETUP_ERROR_ATTR =
   'data-recued-ai-models-chat-setup-error';
+/** The quick setup's pointer to slot 1 and slot 2, for a provider it does not
+ *  name or for two models. */
+export const AI_MODELS_CHAT_SETUP_SLOTS_LINK_ATTR =
+  'data-recued-ai-models-chat-setup-slots-link';
 export const AI_MODELS_CHAT_SETUP_ADVANCED_ATTR =
   'data-recued-ai-models-chat-setup-advanced';
 
@@ -219,6 +236,8 @@ const CLEARABLE_SLOT_DISPLAY_NAME: Record<ClearableSlotKey, string> = {
 
 interface ByokSlotDraft {
   provider: string;
+  /** The provider's NAME ("Groq"); `provider` is the protocol. */
+  providerName: string;
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -243,11 +262,41 @@ interface EmbeddingsSlotDraft {
 }
 
 interface PoolFocusTarget {
-  attr: typeof AI_MODELS_POOL_REMOVE_ATTR | typeof AI_MODELS_POOL_ADD_ATTR;
+  attr:
+    | typeof AI_MODELS_POOL_REMOVE_ATTR
+    | typeof AI_MODELS_POOL_ADD_ATTR
+    | typeof AI_MODELS_POOL_EDIT_ATTR;
   value: string;
 }
 
 export type AiModelsInitialView = 'manage' | 'chat-setup';
+
+/** The PROTOCOL a BYOK slot speaks, stored in its `provider` field and kept by
+ *  the server to the adapters it has (`@recued/llm` `LLMProvider`).
+ *
+ *  ⛔ Settings labelled this field "Provider" and took free text, so an owner
+ *  who typed "groq" was refused at save with the adapter list, and there was
+ *  nowhere to say which service a slot is. The protocol is a choice now, and
+ *  the service's own name is `provider_name`. */
+const SLOT_PROTOCOLS: ReadonlyArray<{ id: string; label: string; short: string }> = [
+  { id: 'openai', label: 'OpenAI', short: 'OpenAI' },
+  {
+    id: 'openai-compatible',
+    label: 'OpenAI-compatible (Groq, OpenRouter, Mistral, Ollama…)',
+    short: 'OpenAI-compatible',
+  },
+  { id: 'anthropic', label: 'Anthropic', short: 'Anthropic' },
+  { id: 'google', label: 'Google Gemini', short: 'Google Gemini' },
+];
+
+const slotProtocolShortLabel = (id: string): string =>
+  SLOT_PROTOCOLS.find((protocol) => protocol.id === id)?.short ?? id;
+
+/** Said when a blank key would not reach the endpoint: the saved key is bound
+ *  to the protocol and base URL it was saved with, and is never sent to a new
+ *  one (the server drops it on save, and declines it on test). */
+export const SLOT_KEY_NOT_CARRIED_COPY =
+  'You changed where this key goes, so enter it again. A saved key is never sent to a new address.';
 
 type ChatSetupProvider =
   | 'openai'
@@ -281,7 +330,10 @@ const CHAT_SETUP_PROVIDERS: ReadonlyArray<{
   },
   {
     id: 'openai-compatible',
-    label: 'An address that works like OpenAI’s',
+    // Named by what it covers: "an address that works like OpenAI's" read as
+    // "not for me" to an owner on Groq or OpenRouter, which is exactly who it
+    // is for.
+    label: 'Another provider (OpenAI-compatible: Groq, OpenRouter, Mistral…)',
     suggestedModel: '',
     keyPlaceholder: 'API key',
   },
@@ -318,6 +370,9 @@ export type ChatDefaultModelPrefSetCaller = (args: {
 
 export type AiModelsLlmConfigGetCaller = () => Promise<{
   config: LlmConfigRecord;
+  /** Absent on older servers, whose slot parser drops a field it does not
+   *  know — so a name typed against one would be accepted and silently lost. */
+  supports?: { slot_provider_name?: boolean; pool_entry_drafts?: boolean };
 }>;
 
 /** D-174 R28 — field-level write callers. Each edits ONE slot / pool
@@ -420,6 +475,10 @@ export interface MountAiModelsPageOptions {
   /** Full settings manager by default. `chat-setup` is the focused first-run
    * journey reached from Chat's no-model affordances. */
   initialView?: AiModelsInitialView;
+  /** The tab the manager opens on, from `#settings/ai-models/<tab>`. Unknown
+   *  values fall back to Preference. The quick setup links here with
+   *  `providers`, where slot 1 and slot 2 are. */
+  initialTab?: string | null;
   /** Called only after the slot write AND default-source write have both been
    * confirmed. The shell uses it to return to Chat with a starter draft. */
   onChatSetupComplete?: () => void;
@@ -485,6 +544,9 @@ export interface AiModelsPageMount {
   setModelPreference(sourceId: ChatModelSourceId): Promise<void>;
   saveByokSlot(slotKey: LlmSlotKey, patch: {
     provider: string;
+    /** The provider's name. Present = set it (blank clears it); absent = leave
+     *  the stored one alone, which is what a server too old to keep it needs. */
+    provider_name?: string;
     model: string;
     api_key?: string;
     base_url?: string;
@@ -534,6 +596,17 @@ export interface AiModelsPageMount {
     enabled?: boolean;
     /** Provider/model context-window capacity. Omitted unless supplied as a
      *  positive safe integer; there is no guessed provider default. */
+    context_window_tokens?: number;
+  }): Promise<void>;
+  /** Replace one free-pool entry's protocol, model, address, key and size,
+   *  keeping everything else it has (enabled, speed, caps). A blank or absent
+   *  `api_key` keeps the saved key — which the server does only while the
+   *  protocol and base URL are unchanged (`supports.pool_entry_drafts`). */
+  saveFreePoolEntry(id: string, patch: {
+    provider: string;
+    model: string;
+    api_key?: string;
+    base_url?: string;
     context_window_tokens?: number;
   }): Promise<void>;
   setFreePoolEntryEnabled(id: string, enabled: boolean): Promise<void>;
@@ -904,6 +977,70 @@ const appendInput = (
   return input;
 };
 
+const appendSelect = (
+  doc: Document,
+  parent: HTMLElement,
+  label: string,
+  value: string,
+  options: ReadonlyArray<{ value: string; label: string }>,
+  attrs: ReadonlyArray<readonly [string, string]> = [],
+): HTMLSelectElement => {
+  const wrap = doc.createElement('label');
+  wrap.className = 'ai-models-field';
+  appendText(doc, wrap, label);
+  const select = doc.createElement('select') as HTMLSelectElement;
+  for (const entry of options) {
+    const option = doc.createElement('option') as HTMLOptionElement;
+    option.value = entry.value;
+    option.textContent = entry.label;
+    select.appendChild(option);
+  }
+  for (const [k, v] of attrs) select.setAttribute(k, v);
+  select.value = value;
+  wrap.appendChild(select);
+  parent.appendChild(wrap);
+  return select;
+};
+
+/** What stops a BYOK slot's or a free-pool entry's draft from working, in the
+ *  words the form shows, or null. Checked before Save and before Test so the
+ *  answer lands under the button that asked, without a round trip. The server
+ *  still decides; this says what it would say, earlier and next to the
+ *  fields. */
+const sourceDraftProblem = (
+  saved: LlmSlotRecord | null | undefined,
+  draft: { protocol: string; model: string; baseUrl: string; apiKey: string },
+): string | null => {
+  if (!SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.protocol)) {
+    return 'Choose a protocol.';
+  }
+  if (draft.model.trim().length === 0) return 'Enter a model.';
+  const baseUrl = draft.baseUrl.trim();
+  // Where the key goes: the protocol and the base URL, as the server's key
+  // guard reads them (`writeSlot` in the server's llm-config).
+  const endpointUnchanged = saved !== null && saved !== undefined
+    && draft.protocol === asString(saved.provider)
+    && baseUrl === asString(saved.base_url);
+  // Without an address OpenAI-compatible calls OpenAI, so a Groq key typed
+  // here would go to OpenAI. A slot the server already holds that way keeps
+  // working as it did; only a change to it is stopped.
+  if (draft.protocol === 'openai-compatible' && baseUrl.length === 0 && !endpointUnchanged) {
+    return 'OpenAI-compatible needs a base URL, such as https://api.groq.com/openai/v1.';
+  }
+  if (baseUrl.length > 0 && !isChatSetupEndpointUrl(baseUrl)) {
+    return 'Enter the full base URL, starting with https:// (or http:// for a local model).';
+  }
+  if (draft.apiKey.trim().length > 0) return null;
+  if (saved === null || saved === undefined || saved.has_key !== true) {
+    return 'Enter the API key. A local model that needs none takes any word, such as "none".';
+  }
+  // ⛔ The saved key is bound to the protocol and base URL it was saved with.
+  // A blank field keeps it only while both are unchanged; otherwise the server
+  // drops it on save and declines it on test, and without this the owner saw
+  // "no API key is stored" for a key they had just used.
+  return endpointUnchanged ? null : SLOT_KEY_NOT_CARRIED_COPY;
+};
+
 const markControl = (el: HTMLElement, id: string): void => {
   el.setAttribute(AI_MODELS_CONTROL_ATTR, id);
 };
@@ -922,7 +1059,8 @@ export const mountAiModelsPage = (
   const chatSetupMode = opts.initialView === 'chat-setup';
   let state: AiModelsPageState = 'loading';
   // Mount-local active sub-view (the Preference / Providers / Usage tab).
-  let aiTab: AiModelsTab = 'preference';
+  const initialTab = opts.initialTab ?? null;
+  let aiTab: AiModelsTab = isAiModelsTab(initialTab) ? initialTab : 'preference';
   // The raw global-default snapshot (a `source_id`); the rendered
   // `modelPreference` is DERIVED from it + the LLM config (the picker options
   // are the configured sources), recomputed whenever either changes.
@@ -930,6 +1068,9 @@ export const mountAiModelsPage = (
     | { source_id: ChatModelSourceId | null; updated_at: number }
     | null = null;
   let llmConfig: LlmConfigRecord | null = null;
+  /** Whether this server keeps a slot's `provider_name`. The field is shown
+   *  only when it does: an older server would accept the name and lose it. */
+  let slotProviderNameSupported = false;
   let modelPreference: ChatModelDefaultRenderModel = buildChatModelDefaultModel(
     modelPrefSnapshot,
     llmConfig,
@@ -964,6 +1105,21 @@ export const mountAiModelsPage = (
   // it is single-flight per slot and never fires on its own.
   let slotProbePendingKey: string | null = null;
   const slotProbeResults = new Map<string, ServerLlmProbeResult>();
+  /** A Test that never reached the provider — the form was incomplete, or the
+   *  rpc itself failed — keyed like `slotProbeResults` and shown under that
+   *  Test button. It used to go to the page banner at the top, far from the
+   *  button that caused it and styled as plain text. */
+  const probeLocalErrors = new Map<string, string>();
+  /** A slot save that failed, shown under that slot's buttons for the same
+   *  reason. Keyed like `probeLocalErrors`. */
+  const saveErrors = new Map<string, string>();
+  /** A press on Save or Test answers for the card: the answer to the press
+   *  before it goes. Kept, it sat above the new one — "needs a base URL" over
+   *  a base URL the owner had just filled in. */
+  const clearSourceAnswers = (key: string): void => {
+    probeLocalErrors.delete(key);
+    saveErrors.delete(key);
+  };
   let embeddingsSlotDraft: EmbeddingsSlotDraft | null = null;
   let transcriptionSlotDraft: EmbeddingsSlotDraft | null = null;
   let transcriptionLanguageDraft: string | null = null;
@@ -991,7 +1147,19 @@ export const mountAiModelsPage = (
     });
   };
   const poolTogglePendingTargets = new Map<string, boolean>();
-  let freePoolAddPending = false;
+  /** The pool form's add or save is in flight. One form, so one flag. */
+  let freePoolFormPending = false;
+  /** Whether this server edits and tests pool drafts (see
+   *  `supports.pool_entry_drafts`). An older one wrote a blank key AS the key,
+   *  so Edit is not offered to it. */
+  let poolDraftsSupported = false;
+  /** The entry the pool form is editing, with a draft of its own: the add
+   *  draft stays as it was, so Cancel brings back whatever was being added. */
+  let freePoolEdit: { id: string; draft: FreePoolAddDraft } | null = null;
+  /** Edit moves focus into the form it opened, once. */
+  let freePoolEditNeedsFocus = false;
+  /** The pool form's answers key (Save and Test), like a slot's key. */
+  const POOL_FORM_KEY = 'free_pool:form';
   let poolRemoveDialogId: string | null = null;
   let poolRemovePending = false;
   let poolRemoveNeedsInitialFocus = false;
@@ -1164,7 +1332,7 @@ export const mountAiModelsPage = (
     && (
       promptMutationPending.size > 0
       || poolTogglePendingTargets.size > 0
-      || freePoolAddPending
+      || freePoolFormPending
       || poolRemovePending
       || slotClearPendingKey !== null
       || budgetSavePending
@@ -1217,6 +1385,7 @@ export const mountAiModelsPage = (
     ) return;
     byokSlotSavePendingKey = slotKey;
     actionError = null;
+    saveErrors.delete(slotKey);
     render();
     try {
       await api.saveByokSlot(slotKey, patch);
@@ -1226,7 +1395,7 @@ export const mountAiModelsPage = (
     } catch (err) {
       if (disposed) return;
       byokSlotSavePendingKey = null;
-      actionError = stringifyError(err);
+      saveErrors.set(slotKey, stringifyError(err));
       render();
     }
   };
@@ -1596,6 +1765,16 @@ export const mountAiModelsPage = (
     parent.appendChild(legend);
   };
 
+  /** An error under the control that caused it, styled as one. */
+  const appendFormError = (parent: HTMLElement, key: string, text: string): void => {
+    const box = doc.createElement('div');
+    box.className = 'ai-models-form-error';
+    box.setAttribute(AI_MODELS_FORM_ERROR_ATTR, key);
+    box.setAttribute('role', 'alert');
+    box.textContent = text;
+    parent.appendChild(box);
+  };
+
   const renderSlot = (parent: HTMLElement, slotKey: LlmSlotKey): void => {
     const slot = getSlot(llmConfig, slotKey);
     const savingThis = byokSlotSavePendingKey === slotKey;
@@ -1603,6 +1782,7 @@ export const mountAiModelsPage = (
     const budgetRaw = slot?.daily_budget_tokens;
     const draft = byokSlotDrafts.get(slotKey) ?? {
       provider: asString(slot?.provider),
+      providerName: asString(slot?.provider_name),
       model: asString(slot?.model),
       baseUrl: asString(slot?.base_url),
       apiKey: '',
@@ -1618,22 +1798,52 @@ export const mountAiModelsPage = (
     card.setAttribute(AI_MODELS_CONTROL_ATTR, slotKey);
     appendHeading(doc, card, 'h4', title);
     renderUsageLine(card, slotKey);
+    const savedProtocol = asString(slot?.provider);
+    const savedName = asString(slot?.provider_name);
+    const savedSource = savedName.length > 0
+      ? `${savedName} (${slotProtocolShortLabel(savedProtocol)})`
+      : (savedProtocol.length > 0 ? slotProtocolShortLabel(savedProtocol) : 'provider?');
     appendText(
       doc,
       card,
       slot
-        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        ? ` ${savedSource} / ${asString(slot.model) || 'model?'}`
         : ' Not set up.',
     );
-    const provider = appendInput(doc, card, 'Provider', draft.provider, [
-      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
-      ['aria-label', `${title} provider`],
-    ]);
+    // The provider's NAME is free text and display only; it is offered only
+    // when this server keeps it (an older one would accept and drop it).
+    const providerName = slotProviderNameSupported
+      ? appendInput(doc, card, 'Provider', draft.providerName, [
+        ['placeholder', 'Groq, OpenRouter, my Ollama…'],
+        ['maxlength', '64'],
+        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider-name')],
+        ['aria-label', `${title} provider name`],
+      ])
+      : null;
+    // The PROTOCOL is a choice: it picks the adapter, so free text here was
+    // refused at save for anything but the four ids the server speaks.
+    const provider = appendSelect(
+      doc,
+      card,
+      'Protocol',
+      draft.provider,
+      [
+        ...(SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.provider)
+          ? []
+          : [{ value: '', label: 'Choose a protocol' }]),
+        ...SLOT_PROTOCOLS.map((protocol) => ({ value: protocol.id, label: protocol.label })),
+      ],
+      [
+        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
+        ['aria-label', `${title} protocol`],
+      ],
+    );
     const model = appendInput(doc, card, 'Model', draft.model, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('model')],
       ['aria-label', `${title} model`],
     ]);
     const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+      ['placeholder', 'Needed for OpenAI-compatible'],
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('base-url')],
       ['aria-label', `${title} base URL`],
     ]);
@@ -1687,6 +1897,7 @@ export const mountAiModelsPage = (
     const syncDraft = (): void => {
       byokSlotDrafts.set(slotKey, {
         provider: provider.value,
+        providerName: providerName?.value ?? draft.providerName,
         model: model.value,
         baseUrl: baseUrl.value,
         apiKey: apiKey.value,
@@ -1695,7 +1906,7 @@ export const mountAiModelsPage = (
       });
     };
     for (const input of [
-      provider,
+      ...(providerName !== null ? [providerName] : []),
       model,
       baseUrl,
       apiKey,
@@ -1705,15 +1916,32 @@ export const mountAiModelsPage = (
       input.addEventListener('input', syncDraft);
       if (savingThis || clearingThis) input.readOnly = true;
     }
+    provider.addEventListener('change', syncDraft);
+    if (savingThis || clearingThis) provider.disabled = true;
+    const draftProblem = (): string | null => sourceDraftProblem(slot, {
+      protocol: provider.value,
+      model: model.value,
+      baseUrl: baseUrl.value,
+      apiKey: apiKey.value,
+    });
     const save = appendButton(
       doc,
       card,
       savingThis ? 'Saving slot…' : 'Save slot',
       () => {
+        if (byokSlotSavePendingKey !== null || slotClearPendingKey !== null) return;
+        clearSourceAnswers(slotKey);
+        const problem = draftProblem();
+        if (problem !== null) {
+          saveErrors.set(slotKey, problem);
+          render();
+          return;
+        }
         const budgetNum = Number(budget.value);
         const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
         void submitByokSlotSave(slotKey, {
           provider: provider.value,
+          ...(providerName !== null ? { provider_name: providerName.value } : {}),
           model: model.value,
           ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
           base_url: baseUrl.value,
@@ -1775,9 +2003,18 @@ export const mountAiModelsPage = (
         // Blank = "use the stored key". The client never HAD the stored key to
         // send, so the server resolves it — see the caller doc.
         ...(apiKey.value.length > 0 ? { api_key: apiKey.value } : {}),
-        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+        // Trimmed as Save trims it, so the server's key guard compares the
+        // address the slot would be saved with.
+        ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value.trim() } : {}),
       }),
+      draftProblem,
     );
+    // Under ALL the slot's buttons, where the owner is looking after a click —
+    // not in the page banner at the top, which is where this used to go.
+    const saveError = saveErrors.get(slotKey);
+    if (saveError !== undefined) {
+      appendFormError(card, `${slotKey}:save`, saveError);
+    }
     // Instant-apply per-source catalog-mode control (distinct from the
     // Save-gated slot fields above), placed after the buttons so it reads
     // as its own control.
@@ -1790,8 +2027,10 @@ export const mountAiModelsPage = (
    *  ⚠ Never throws to the caller. A failed connection is the RESULT the owner
    *  asked for — routing it to the page's `actionError` banner would file it
    *  next to "couldn't save your settings", which is a different kind of
-   *  problem with a different fix. Only a transport failure (the rpc itself
-   *  could not be made) belongs in the banner. */
+   *  problem with a different fix. A transport failure (the rpc itself could
+   *  not be made) is said under the Test button as well: the owner is looking
+   *  there after the click, and the banner sat at the top of the section,
+   *  unstyled, where it read as part of the page. */
   const submitSlotProbe = async (
     resultKey: string,
     target: AiModelsProbeTarget,
@@ -1806,6 +2045,7 @@ export const mountAiModelsPage = (
     slotProbePendingKey = resultKey;
     actionError = null;
     slotProbeResults.delete(resultKey);
+    probeLocalErrors.delete(resultKey);
     render();
     try {
       const result = await opts.runProbeLlmSource({
@@ -1818,7 +2058,7 @@ export const mountAiModelsPage = (
       slotProbeResults.set(resultKey, result);
     } catch (err) {
       if (disposed) return;
-      actionError = stringifyError(err);
+      probeLocalErrors.set(resultKey, stringifyError(err));
     } finally {
       if (!disposed) {
         slotProbePendingKey = null;
@@ -2362,13 +2602,17 @@ export const mountAiModelsPage = (
     parent: HTMLElement,
     resultKey: string,
     label: string,
-    target: AiModelsProbeTarget,
+    /** A function when the target is only known at the click: a new pool
+     *  entry's name comes from fields the owner is still filling. */
+    target: AiModelsProbeTarget | (() => AiModelsProbeTarget),
     readDraft?: () => {
       provider: string;
       model: string;
       api_key?: string;
       base_url?: string;
     },
+    /** What would stop the draft working, checked before anything is sent. */
+    validate?: () => string | null,
   ): void => {
     if (!opts.runProbeLlmSource) return;
     const probing = slotProbePendingKey === resultKey;
@@ -2378,7 +2622,19 @@ export const mountAiModelsPage = (
       probing ? 'Testing…' : 'Test connection',
       () => {
         if (slotProbePendingKey !== null) return;
-        void submitSlotProbe(resultKey, target, readDraft?.());
+        clearSourceAnswers(resultKey);
+        const problem = validate?.() ?? null;
+        if (problem !== null) {
+          probeLocalErrors.set(resultKey, problem);
+          slotProbeResults.delete(resultKey);
+          render();
+          return;
+        }
+        void submitSlotProbe(
+          resultKey,
+          typeof target === 'function' ? target() : target,
+          readDraft?.(),
+        );
       },
       [
         [AI_MODELS_SLOT_TEST_ATTR, resultKey],
@@ -2389,6 +2645,8 @@ export const mountAiModelsPage = (
       test.setAttribute('aria-disabled', 'true');
       if (probing) test.setAttribute('aria-busy', 'true');
     }
+    const localError = probeLocalErrors.get(resultKey);
+    if (localError !== undefined) appendFormError(parent, `${resultKey}:test`, localError);
     const probeResult = slotProbeResults.get(resultKey);
     if (probeResult === undefined) return;
     const box = doc.createElement('div');
@@ -2573,21 +2831,70 @@ export const mountAiModelsPage = (
   const submitFreePoolAdd = async (
     entry: Parameters<AiModelsPageMount['addFreePoolApiEntry']>[0],
   ): Promise<void> => {
-    if (disposed || freePoolAddPending) return;
-    freePoolAddPending = true;
+    if (disposed || freePoolFormPending) return;
+    freePoolFormPending = true;
     actionError = null;
+    saveErrors.delete(POOL_FORM_KEY);
     render();
     try {
       await api.addFreePoolApiEntry(entry);
       if (disposed) return;
-      freePoolAddPending = false;
+      freePoolFormPending = false;
+      // The form is empty again; its last Test described what was added.
+      slotProbeResults.delete(POOL_FORM_KEY);
       render();
     } catch (err) {
       if (disposed) return;
-      freePoolAddPending = false;
-      actionError = stringifyError(err);
+      freePoolFormPending = false;
+      // Under the form's buttons, where the owner is looking.
+      saveErrors.set(POOL_FORM_KEY, stringifyError(err));
       render();
     }
+  };
+
+  const submitFreePoolEdit = async (
+    id: string,
+    patch: Parameters<AiModelsPageMount['saveFreePoolEntry']>[1],
+  ): Promise<void> => {
+    if (disposed || freePoolFormPending) return;
+    freePoolFormPending = true;
+    actionError = null;
+    saveErrors.delete(POOL_FORM_KEY);
+    render();
+    try {
+      await api.saveFreePoolEntry(id, patch);
+      if (disposed) return;
+      freePoolFormPending = false;
+      freePoolEdit = null;
+      slotProbeResults.delete(POOL_FORM_KEY);
+      poolFocusAfterRender = { attr: AI_MODELS_POOL_EDIT_ATTR, value: id };
+      render();
+    } catch (err) {
+      if (disposed) return;
+      freePoolFormPending = false;
+      saveErrors.set(POOL_FORM_KEY, stringifyError(err));
+      render();
+    }
+  };
+
+  const openFreePoolEdit = (entry: FreePoolEntryRecord): void => {
+    const id = asString(entry.id);
+    if (freePoolFormPending || poolTogglePendingTargets.has(id)) return;
+    freePoolEdit = {
+      id,
+      draft: {
+        id,
+        provider: asString(entry.provider),
+        model: asString(entry.model),
+        apiKey: '',
+        baseUrl: asString(entry.base_url),
+        contextWindow: asPositiveSafeInteger(entry.context_window_tokens)?.toString() ?? '',
+      },
+    };
+    clearSourceAnswers(POOL_FORM_KEY);
+    slotProbeResults.delete(POOL_FORM_KEY);
+    freePoolEditNeedsFocus = true;
+    render();
   };
 
   const renderFreePool = (parent: HTMLElement): void => {
@@ -2607,6 +2914,10 @@ export const mountAiModelsPage = (
     if (entries.length === 0) {
       appendText(doc, section, ' No free ones set up.');
     }
+    // An entry being edited that has gone (removed elsewhere) ends the edit.
+    if (freePoolEdit !== null && !entries.some((entry) => asString(entry.id) === freePoolEdit?.id)) {
+      freePoolEdit = null;
+    }
     for (const entry of entries) {
       const id = asString(entry.id);
       const togglePending = poolTogglePendingTargets.has(id);
@@ -2615,10 +2926,11 @@ export const mountAiModelsPage = (
       const row = doc.createElement('div');
       row.className = 'ai-models-pool-row';
       row.setAttribute(AI_MODELS_CONTROL_ATTR, `free_pool:${id}`);
+      const protocol = asString(entry.provider);
       appendText(
         doc,
         row,
-        `${id || 'entry'}: ${asString(entry.provider) || asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
+        `${id || 'entry'}: ${protocol.length > 0 ? slotProtocolShortLabel(protocol) : asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
       );
       // D-262 follow-on — a pool entry's `daily_cap_tokens` is enforced by the
       // match resolver; until now nothing showed the number it enforced on.
@@ -2642,7 +2954,29 @@ export const mountAiModelsPage = (
         note.textContent = dataUse;
         row.appendChild(note);
       }
-      if (id.length > 0) {
+      if (id.length === 0) {
+        // Only an older server sends one; a current one names it on read.
+        // Without this line the row simply had no buttons, and said nothing.
+        const note = doc.createElement('p');
+        note.className = 'ai-models-pool-unnamed';
+        note.textContent =
+          'Saved without a name, so it cannot be changed here. '
+          + 'After a server update it has one, and can be edited or removed.';
+        row.appendChild(note);
+      } else {
+        const editingThis = freePoolEdit?.id === id;
+        const edit = poolDraftsSupported
+          ? appendButton(
+            doc,
+            row,
+            editingThis ? 'Editing below' : 'Edit',
+            () => openFreePoolEdit(entry),
+            [
+              [AI_MODELS_POOL_EDIT_ATTR, id],
+              ['aria-label', `Edit free-pool entry ${id}`],
+            ],
+          )
+          : null;
         const toggle = appendButton(
           doc,
           row,
@@ -2669,8 +3003,8 @@ export const mountAiModelsPage = (
           [[AI_MODELS_POOL_REMOVE_ATTR, id]],
         );
         remove.setAttribute('aria-label', `Remove free-pool entry ${id}`);
-        // No draft: a pool row has no editable fields (add/remove, not edit),
-        // so there is nothing to probe but what is already stored.
+        // No draft: this is the SAVED entry's Test. The form below tests a
+        // draft, before it is added or saved.
         renderProbeControls(
           row,
           `pool:${id}`,
@@ -2682,57 +3016,99 @@ export const mountAiModelsPage = (
           toggle.setAttribute('aria-busy', 'true');
           remove.setAttribute('aria-disabled', 'true');
         }
+        if (edit !== null && (togglePending || freePoolFormPending || editingThis)) {
+          edit.setAttribute('aria-disabled', 'true');
+        }
       }
       section.appendChild(row);
     }
-    const add = doc.createElement('div');
-    add.className = 'ai-models-add-pool';
-    const id = appendInput(doc, add, 'ID', freePoolAddDraft.id, [
-      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'id'],
-      ['aria-label', 'New free-pool entry ID'],
-    ]);
-    const provider = appendInput(
+    renderFreePoolForm(section, entries);
+    parent.appendChild(section);
+    renderPoolRemoveDialog(parent);
+  };
+
+  /** One form for adding an entry and for editing one. */
+  const renderFreePoolForm = (
+    section: HTMLElement,
+    entries: ReadonlyArray<FreePoolEntryRecord>,
+  ): void => {
+    const editing = freePoolEdit;
+    const draft = editing?.draft ?? freePoolAddDraft;
+    const saved = editing === null
+      ? undefined
+      : entries.find((entry) => asString(entry.id) === editing.id);
+    const takenIds = new Set(
+      entries.map((entry) => asString(entry.id)).filter((id) => id.length > 0),
+    );
+    const labelOf = editing === null ? 'New free-pool entry' : `Free-pool entry ${editing.id}`;
+    const form = doc.createElement('div');
+    form.className = 'ai-models-add-pool';
+    appendHeading(doc, form, 'h4', editing === null ? 'Add a free one' : `Edit ${editing.id}`);
+    // The name is the entry's id, fixed once it is added: Edit, Disable and
+    // Remove all address the entry by it.
+    const name = editing === null
+      ? appendInput(doc, form, 'Name', draft.id, [
+        [AI_MODELS_POOL_ADD_FIELD_ATTR, 'id'],
+        ['aria-label', 'New free-pool entry name'],
+        ['placeholder', 'Optional: named from the address, like groq'],
+        ['maxlength', '64'],
+      ])
+      : null;
+    const provider = appendSelect(
       doc,
-      add,
-      'Provider',
-      freePoolAddDraft.provider,
+      form,
+      'Protocol',
+      draft.provider,
+      [
+        ...(SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.provider)
+          ? []
+          : [{ value: '', label: 'Choose a protocol' }]),
+        ...SLOT_PROTOCOLS.map((protocol) => ({ value: protocol.id, label: protocol.label })),
+      ],
       [
         [AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'],
-        ['aria-label', 'New free-pool entry provider'],
+        ['aria-label', `${labelOf} protocol`],
       ],
     );
-    const model = appendInput(doc, add, 'Model', freePoolAddDraft.model, [
+    const model = appendInput(doc, form, 'Model', draft.model, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'model'],
-      ['aria-label', 'New free-pool entry model'],
+      ['aria-label', `${labelOf} model`],
     ]);
-    const key = appendInput(doc, add, 'API key', freePoolAddDraft.apiKey, [
+    const key = appendInput(doc, form, 'API key', draft.apiKey, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key'],
-      ['aria-label', 'New free-pool entry API key'],
+      ['aria-label', `${labelOf} API key`],
+      ['placeholder', editing === null ? 'Required' : 'Leave empty to keep the key you have'],
     ]);
     key.type = 'password';
-    const baseUrl = appendInput(doc, add, 'Base URL', freePoolAddDraft.baseUrl, [
+    const baseUrl = appendInput(doc, form, 'Base URL', draft.baseUrl, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'base-url'],
-      ['aria-label', 'New free-pool entry base URL'],
+      ['aria-label', `${labelOf} base URL`],
+      ['placeholder', 'Needed for OpenAI-compatible'],
     ]);
     const contextWindow = appendInput(
       doc,
-      add,
+      form,
       'How much it can hold at once',
-      freePoolAddDraft.contextWindow,
+      draft.contextWindow,
       [
-        [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, 'free_pool:new'],
+        [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, editing === null ? 'free_pool:new' : `free_pool:${editing.id}`],
         [AI_MODELS_POOL_ADD_FIELD_ATTR, 'context-window'],
         ['placeholder', 'e.g. 128000'],
         ['inputmode', 'numeric'],
         ['min', '1'],
         ['step', '1'],
-        ['aria-label', 'How much the new free one can hold at once'],
+        [
+          'aria-label',
+          editing === null
+            ? 'How much the new free one can hold at once'
+            : `How much free-pool entry ${editing.id} can hold at once`,
+        ],
       ],
     );
     contextWindow.type = 'number';
-    const syncAddDraft = (): void => {
-      Object.assign(freePoolAddDraft, {
-        id: id.value,
+    const syncDraft = (): void => {
+      Object.assign(draft, {
+        id: name?.value ?? draft.id,
         provider: provider.value,
         model: model.value,
         apiKey: key.value,
@@ -2740,18 +3116,56 @@ export const mountAiModelsPage = (
         contextWindow: contextWindow.value,
       });
     };
-    for (const input of [id, provider, model, key, baseUrl, contextWindow]) {
-      input.addEventListener('input', syncAddDraft);
-      if (freePoolAddPending) input.readOnly = true;
+    for (const input of [...(name !== null ? [name] : []), model, key, baseUrl, contextWindow]) {
+      input.addEventListener('input', syncDraft);
+      if (freePoolFormPending) input.readOnly = true;
     }
-    const addEntry = appendButton(
+    provider.addEventListener('change', syncDraft);
+    if (freePoolFormPending) provider.disabled = true;
+    // The id a new entry gets: the owner's, or one named from its address.
+    const entryId = (): string => {
+      if (editing !== null) return editing.id;
+      const typed = (name?.value ?? '').trim();
+      if (typed.length > 0) return typed;
+      const address = baseUrl.value.trim();
+      return suggestFreePoolEntryId(
+        { provider: provider.value, ...(address.length > 0 ? { base_url: address } : {}) },
+        takenIds,
+      );
+    };
+    const formProblem = (): string | null => {
+      if (editing === null) {
+        const typed = (name?.value ?? '').trim();
+        // An add is not an edit: the server replaces an entry with the same
+        // id, key and all.
+        if (typed.length > 0 && takenIds.has(typed)) {
+          return `There is already an entry named ${typed}. Choose another name.`;
+        }
+      }
+      return sourceDraftProblem(saved, {
+        protocol: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: key.value,
+      });
+    };
+    const submit = appendButton(
       doc,
-      add,
-      freePoolAddPending ? 'Adding entry…' : 'Add API entry',
+      form,
+      editing === null
+        ? (freePoolFormPending ? 'Adding entry…' : 'Add API entry')
+        : (freePoolFormPending ? 'Saving entry…' : 'Save entry'),
       () => {
+        if (freePoolFormPending) return;
+        clearSourceAnswers(POOL_FORM_KEY);
+        const problem = formProblem();
+        if (problem !== null) {
+          saveErrors.set(POOL_FORM_KEY, problem);
+          render();
+          return;
+        }
         const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
-        void submitFreePoolAdd({
-          id: id.value,
+        const fields = {
           provider: provider.value,
           model: model.value,
           api_key: key.value,
@@ -2759,20 +3173,68 @@ export const mountAiModelsPage = (
           ...(contextWindowTokens !== undefined
             ? { context_window_tokens: contextWindowTokens }
             : {}),
-        });
+        };
+        if (editing === null) {
+          void submitFreePoolAdd({ id: entryId(), ...fields });
+        } else {
+          void submitFreePoolEdit(editing.id, fields);
+        }
       },
-      [
-        [AI_MODELS_POOL_ADD_ATTR, ''],
-        ['aria-label', 'Add free-pool API entry'],
-      ],
+      editing === null
+        ? [
+          [AI_MODELS_POOL_ADD_ATTR, ''],
+          ['aria-label', 'Add free-pool API entry'],
+        ]
+        : [
+          [AI_MODELS_POOL_SAVE_ATTR, editing.id],
+          ['aria-label', `Save free-pool entry ${editing.id}`],
+        ],
     );
-    if (freePoolAddPending) {
-      addEntry.setAttribute('aria-disabled', 'true');
-      addEntry.setAttribute('aria-busy', 'true');
+    if (freePoolFormPending) {
+      submit.setAttribute('aria-disabled', 'true');
+      submit.setAttribute('aria-busy', 'true');
     }
-    section.appendChild(add);
-    parent.appendChild(section);
-    renderPoolRemoveDialog(parent);
+    if (editing !== null) {
+      const cancel = appendButton(
+        doc,
+        form,
+        'Cancel',
+        () => {
+          if (freePoolFormPending) return;
+          freePoolEdit = null;
+          clearSourceAnswers(POOL_FORM_KEY);
+          slotProbeResults.delete(POOL_FORM_KEY);
+          poolFocusAfterRender = { attr: AI_MODELS_POOL_EDIT_ATTR, value: editing.id };
+          render();
+        },
+        [
+          [AI_MODELS_POOL_CANCEL_EDIT_ATTR, editing.id],
+          ['aria-label', `Stop editing free-pool entry ${editing.id}`],
+        ],
+      );
+      if (freePoolFormPending) cancel.setAttribute('aria-disabled', 'true');
+    }
+    // Tests the form as it is, before it is added or saved. Only a server that
+    // tests pool drafts is asked: an older one answered a new entry with "no
+    // free-pool entry" whatever the draft said.
+    if (poolDraftsSupported) {
+      renderProbeControls(
+        form,
+        POOL_FORM_KEY,
+        editing === null ? 'new free-pool entry' : `free-pool entry ${editing.id}`,
+        () => ({ kind: 'pool_entry', entry_id: entryId() }),
+        () => ({
+          provider: provider.value,
+          model: model.value,
+          ...(key.value.length > 0 ? { api_key: key.value } : {}),
+          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value.trim() } : {}),
+        }),
+        formProblem,
+      );
+    }
+    const saveError = saveErrors.get(POOL_FORM_KEY);
+    if (saveError !== undefined) appendFormError(form, `${POOL_FORM_KEY}:save`, saveError);
+    section.appendChild(form);
   };
 
   const renderAiPolicy = (parent: HTMLElement): void => {
@@ -3535,6 +3997,20 @@ export const mountAiModelsPage = (
     providerSelect.disabled = chatSetupSubmitting;
     providerLabel.appendChild(providerSelect);
     section.appendChild(providerLabel);
+    // The slots are where a provider gets a name, a protocol and a budget,
+    // and where a second model goes. This form used to reach them only
+    // through a generic "Advanced settings" that opened on another tab.
+    const slotsPointer = doc.createElement('p');
+    slotsPointer.className = 'ai-models-chat-setup-helper';
+    appendText(doc, slotsPointer, 'Another provider, or two models? ');
+    appendLink(
+      doc,
+      slotsPointer,
+      'Set up slot 1 and slot 2',
+      serializeShellRoute('settings', 'ai-models', 'providers'),
+      [[AI_MODELS_CHAT_SETUP_SLOTS_LINK_ATTR, '']],
+    );
+    section.appendChild(slotsPointer);
 
     const modelInput = appendInput(
       doc,
@@ -3697,6 +4173,9 @@ export const mountAiModelsPage = (
     AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
     AI_MODELS_POOL_ADD_FIELD_ATTR,
     AI_MODELS_POOL_ADD_ATTR,
+    AI_MODELS_POOL_EDIT_ATTR,
+    AI_MODELS_POOL_SAVE_ATTR,
+    AI_MODELS_POOL_CANCEL_EDIT_ATTR,
     AI_MODELS_POOL_TOGGLE_ATTR,
     AI_MODELS_POOL_REMOVE_ATTR,
     AI_MODELS_POOL_REMOVE_CANCEL_ATTR,
@@ -3960,6 +4439,16 @@ export const mountAiModelsPage = (
       poolRemoveNeedsConfirmFocus = false;
       focusRestored = focusRenderedPoolRemoveConfirm();
     }
+    // Before the owned-focus restore: the Edit that was pressed is still on
+    // the page, and would otherwise keep focus away from the form it opened.
+    if (!focusRestored && freePoolEditNeedsFocus) {
+      freePoolEditNeedsFocus = false;
+      focusRestored = restoreOwnedFocus({
+        attr: AI_MODELS_POOL_ADD_FIELD_ATTR,
+        value: 'provider',
+        selection: null,
+      });
+    }
     if (!focusRestored) focusRestored = restoreOwnedFocus(ownedFocus);
     const slotClearFocusKey = slotClearFocusAfterRender;
     slotClearFocusAfterRender = null;
@@ -4048,6 +4537,8 @@ export const mountAiModelsPage = (
         opts.runGetLLMConfig()
           .then((snapshot) => {
             llmConfig = cloneConfig(snapshot.config);
+            slotProviderNameSupported = snapshot.supports?.slot_provider_name === true;
+            poolDraftsSupported = snapshot.supports?.pool_entry_drafts === true;
           })
           .catch((err) => {
             loadErrors.push(`LLM config: ${stringifyError(err)}`);
@@ -4164,6 +4655,13 @@ export const mountAiModelsPage = (
         speed: patch.speed ?? (slotKey === 'slot_1' ? 'fast' : 'thinking'),
         supports_json: patch.supports_json ?? asBoolean(current.supports_json, true),
       };
+      // `carry` brought the stored name along; a patch that names the field
+      // decides it, so clearing the field in the form clears the name.
+      if (patch.provider_name !== undefined) {
+        const name = patch.provider_name.trim();
+        if (name.length > 0) nextSlot.provider_name = name;
+        else delete nextSlot.provider_name;
+      }
       if (patch.base_url !== undefined) {
         if (patch.base_url.trim().length > 0) {
           nextSlot.base_url = patch.base_url.trim();
@@ -4379,8 +4877,19 @@ export const mountAiModelsPage = (
       if (!opts.runUpsertFreePoolEntry) {
         throw new Error('AI / Models: server.upsertFreePoolEntry caller is not wired');
       }
+      // ⛔ Never a blank id: nothing can change an entry saved with one.
+      const typedId = entry.id.trim();
+      const id = typedId.length > 0
+        ? typedId
+        : suggestFreePoolEntryId(
+          {
+            provider: entry.provider,
+            ...(entry.base_url !== undefined ? { base_url: entry.base_url } : {}),
+          },
+          new Set(getPoolEntries(llmConfig).map((row) => asString(row.id))),
+        );
       const record: FreePoolEntryRecord = {
-        id: entry.id,
+        id,
         type: 'api',
         provider: entry.provider,
         model: entry.model,
@@ -4402,10 +4911,69 @@ export const mountAiModelsPage = (
       const localEntry: FreePoolEntryRecord = { ...record, has_key: true };
       delete localEntry.api_key;
       const next = cloneConfig(llmConfig);
-      const pool = getPoolEntries(next).filter((row) => asString(row.id) !== entry.id);
+      const pool = getPoolEntries(next).filter((row) => asString(row.id) !== id);
       pool.push(localEntry);
       next.free_pool = pool;
       resetFreePoolAddDraft();
+      commitLocal(next);
+    },
+    saveFreePoolEntry: async (id, patch) => {
+      if (!opts.runUpsertFreePoolEntry) {
+        throw new Error('AI / Models: server.upsertFreePoolEntry caller is not wired');
+      }
+      const current = getPoolEntries(llmConfig).find((row) => asString(row.id) === id);
+      if (current === undefined) throw new Error(`There is no free-pool entry named ${id}.`);
+      // The redacted row carries `has_key`, never `api_key`; neither goes back.
+      const carry: FreePoolEntryRecord = { ...current };
+      delete carry.has_key;
+      delete carry.api_key;
+      const record: FreePoolEntryRecord = {
+        ...carry,
+        id,
+        type: 'api',
+        provider: patch.provider.trim(),
+        model: patch.model.trim(),
+        // Blank => '' => the server keeps the stored key (same endpoint only).
+        api_key:
+          patch.api_key !== undefined && patch.api_key.trim().length > 0
+            ? patch.api_key
+            : '',
+        speed: asString(current.speed) || 'fast',
+        supports_json: asBoolean(current.supports_json, true),
+        enabled: current.enabled !== false,
+      };
+      if (patch.base_url !== undefined && patch.base_url.trim().length > 0) {
+        record.base_url = patch.base_url.trim();
+      } else {
+        delete record.base_url;
+      }
+      const contextWindowTokens = asPositiveSafeInteger(patch.context_window_tokens);
+      if (contextWindowTokens !== undefined) {
+        record.context_window_tokens = contextWindowTokens;
+      } else if (
+        asString(current.provider) !== record.provider
+        || asString(current.model) !== record.model
+        || asString(current.base_url) !== asString(record.base_url)
+      ) {
+        // As a slot's: a size belongs to the model and endpoint it was given
+        // for, and is not carried onto another.
+        delete record.context_window_tokens;
+      }
+      await opts.runUpsertFreePoolEntry({ entry: record });
+      const keyProvided = asString(record.api_key).length > 0;
+      const sameContext = asString(current.provider) === record.provider
+        && asString(current.base_url) === asString(record.base_url);
+      const localEntry: FreePoolEntryRecord = {
+        ...record,
+        has_key: keyProvided || (current.has_key === true && sameContext),
+      };
+      delete localEntry.api_key;
+      const next = cloneConfig(llmConfig);
+      // In place: an edited entry keeps its row, as it keeps its place on the
+      // server.
+      next.free_pool = getPoolEntries(next).map((row) =>
+        asString(row.id) === id ? localEntry : row,
+      );
       commitLocal(next);
     },
     setFreePoolEntryEnabled: async (id, enabled) => {
@@ -4744,6 +5312,14 @@ export const AI_MODELS_PAGE_STYLES = `
 [${AI_MODELS_PAGE_ATTR}] h4 {
   margin: 0 0 8px;
 }
+[${AI_MODELS_PAGE_ATTR}] .ai-models-add-pool h4 {
+  margin-top: 16px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-pool-unnamed {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
 [${AI_MODELS_PAGE_ATTR}] button {
   margin: 8px 8px 0 0;
 }
@@ -4805,6 +5381,18 @@ export const AI_MODELS_PAGE_STYLES = `
 }
 [${AI_MODELS_PAGE_ATTR}] .ai-models-probe[data-probe-ok='false'] {
   border-left-color: var(--danger);
+}
+/* An error under the button that caused it, and the page banner: both were
+   plain text, which read as a note rather than a failure. */
+[${AI_MODELS_PAGE_ATTR}] .ai-models-form-error,
+[${AI_MODELS_PAGE_ATTR}] [${AI_MODELS_ACTION_ERROR_ATTR}] {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 6px;
+  color: var(--danger);
+  font-size: 13px;
 }
 [${AI_MODELS_PAGE_ATTR}] .ai-models-probe-verdict {
   margin: 0;

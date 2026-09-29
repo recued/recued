@@ -171,7 +171,7 @@ export const deriveRecipeTargeting = (input: unknown): RecipeTargeting => {
     // conditions is gating, not consumption.
     const material: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(step)) {
-      if (key !== 'skip_when' && key !== 'fail_on') material[key] = value;
+      if (key !== 'skip_when' && key !== 'fail_on' && key !== 'stop_when') material[key] = value;
     }
     contextRootsIn(material, contextRoots);
 

@@ -1,9 +1,10 @@
-/** D-127 / D-121 — mail stack boot composer.
+/** D-127 / D-121 / D-315 — mail stack boot composer.
  *
  *  Wraps `composeMailStack` from the mail package with the bin.ts-level
  *  dep wiring: per-collection storage gate factory, optional contact-
- *  derivation observer (D-121 Phase 1), shared OAuth account store for
- *  gmail + graph token persistence, and a per-stack logger.
+ *  derivation observer (D-121 Phase 1), optional mail-fact writer
+ *  (D-315), shared OAuth account store for gmail + graph token
+ *  persistence, and a per-stack logger.
  *
  *  Mirrors the calendar boot composer's shape — same `db && cacheBlobs`
  *  gating, same conditional spreads, same defensive `getGate` throw.
@@ -18,6 +19,8 @@ import type { AuditLogStore } from '@recued/storage';
 import type { ServerAccountStore } from '../../account-store.js';
 import type { GateRegistry } from '../../storage-gates.js';
 import type { ContactStore } from '../../storage/contact-store.js';
+import type { MailFactWriter } from '../../mail-facts/fact-writer.js';
+import { createMailFactIngest } from '../../mail-facts/mail-ingest.js';
 import type { FileReadDeps } from '../../collections/file/file-read-handler.js';
 import type { MailInboundAttachmentDeps } from '../../collections/mail/mail-collection.js';
 import type { OAuthProviderConfig } from '../../collections/mail/oauth.js';
@@ -25,6 +28,7 @@ import { deriveContactsFromMail } from '../../warehouse/contact-derive.js';
 import {
   composeMailStack,
   type MailStack,
+  type MailStackStorageDeps,
 } from '../../collections/mail/compose.js';
 import type { BlobStore } from '../../storage/index.js';
 
@@ -52,6 +56,11 @@ export interface ComposeMailStackBootDeps {
    *  Dbless harnesses + tests without a contact store omit this and
    *  the observer never registers. */
   contactStore?: ContactStore;
+  /** D-315 — optional. When wired, every upsert is read for mail facts through
+   *  this writer, and a deleted, pruned or moved message takes its facts along.
+   *  The sender's relationships come from `contactStore` when both are wired.
+   *  The composition owns the one writer: a backfill writes through it too. */
+  mailFactWriter?: MailFactWriter;
   /** Per-collection storage gate factory. The composer wraps it into
    *  the `getGate` callback the underlying stack expects, registering
    *  one gate per `(platform='mail', slug)` with a 512 MB quota
@@ -84,6 +93,23 @@ export interface ComposeMailStackBootDeps {
   isVaultUnlocked?: () => boolean;
 }
 
+type UpsertHook = NonNullable<MailStackStorageDeps['onMessageUpserted']>;
+
+/** Run every hook, each on its own: a contact write that throws must not keep
+ *  the message from being read for facts, nor the other way round. The first
+ *  error is rethrown once all have run, so the collection still records it. */
+const runEachUpsertHook = (hooks: readonly UpsertHook[]): UpsertHook => (msg, ctx) => {
+  let first: { error: unknown } | undefined;
+  for (const hook of hooks) {
+    try {
+      hook(msg, ctx);
+    } catch (error) {
+      first ??= { error };
+    }
+  }
+  if (first !== undefined) throw first.error;
+};
+
 export const composeMailBoot = (
   deps: ComposeMailStackBootDeps,
 ): MailStack | undefined => {
@@ -93,6 +119,7 @@ export const composeMailBoot = (
     warehouseBus,
     auditLog,
     contactStore,
+    mailFactWriter,
     gateRegistry,
     accountStore,
     resolveOAuthConfig,
@@ -104,6 +131,34 @@ export const composeMailBoot = (
 
   if (!db || !cacheBlobs) return undefined;
 
+  // D-315 — every upsert is read for facts through the composition's writer.
+  const factIngest = mailFactWriter
+    ? createMailFactIngest({
+        writer: mailFactWriter,
+        now: () => Date.now(),
+        ...(contactStore
+          ? { relationshipsOf: (address: string) => contactStore.get(address)?.network_domain ?? [] }
+          : {}),
+      })
+    : undefined;
+
+  // Contacts first: a new sender's contact row exists before its mail is read.
+  const upsertHooks: UpsertHook[] = [];
+  if (contactStore) {
+    upsertHooks.push((msg) => {
+      // D-121 Phase 1 — derive contacts from From/To/CC.
+      // Errors swallowed inside the collection's try/catch so
+      // a bad row never rolls back ingest.
+      const obs = deriveContactsFromMail(msg);
+      if (obs.length > 0) contactStore.observeBatch(obs);
+    });
+  }
+  if (factIngest) {
+    upsertHooks.push((msg, ctx) => {
+      factIngest.onMessageUpserted(msg, ctx);
+    });
+  }
+
   return composeMailStack(
     db,
     {
@@ -112,15 +167,14 @@ export const composeMailBoot = (
       ...(auditLog ? { auditLog } : {}),
       ...(fileReadDeps ? { fileReadDeps } : {}),
       ...(inboundAttachmentDeps ? { inboundAttachmentDeps } : {}),
-      ...(contactStore
+      ...(upsertHooks.length > 0 ? { onMessageUpserted: runEachUpsertHook(upsertHooks) } : {}),
+      ...(factIngest
         ? {
-            onMessageUpserted: (msg) => {
-              // D-121 Phase 1 — derive contacts from From/To/CC.
-              // Errors swallowed inside the collection's try/catch so
-              // a bad row never rolls back ingest.
-              const obs = deriveContactsFromMail(msg);
-              if (obs.length > 0) contactStore.observeBatch(obs);
-            },
+            onMessageStored: (msg, ctx) => factIngest.onMessageStored(msg, ctx),
+            onRecordsRemoved: (slug: string, recordIds: readonly string[]) =>
+              factIngest.onRecordsRemoved(slug, recordIds),
+            onRecordRekeyed: (slug: string, from: string, to: string) =>
+              factIngest.onRecordRekeyed(slug, from, to),
           }
         : {}),
       getGate: (slug: string) => {

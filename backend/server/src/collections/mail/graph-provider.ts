@@ -59,6 +59,7 @@ import {
   evaluateMailSentReconciliationCandidates,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   mailAttachmentPartFromBytes,
+  mailHeaderMap,
   mailSentReconciliationAttachmentPartFromBytes,
   normalizeMailAttachmentMimeType,
   sanitizeMailAttachmentFilename,
@@ -225,8 +226,10 @@ const addressList = (recipients: GraphRecipient[] | undefined): string[] => {
   return out;
 };
 
+/** A tag ends before the next `<`: `[^>]` retried from every `<` of a broken
+ *  email to its end: 500 KB of them took nine seconds. */
 const stripHtml = (html: string): string =>
-  html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  html.replace(/<[^<>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
 const extractBodyText = (body: GraphMessagePayload['body']): { text: string; html?: string } => {
   if (!body || !body.content) return { text: '' };
@@ -273,6 +276,13 @@ export const canonicalizeGraph = (
       ? { reconciliation_id: reconciliationId }
       : {}),
     from,
+    from_name: msg.from?.emailAddress?.name?.trim() ?? '',
+    headers: mailHeaderMap(
+      (msg.internetMessageHeaders ?? []).flatMap((header): [string, string][] =>
+        typeof header.name === 'string' && typeof header.value === 'string'
+          ? [[header.name, header.value]]
+          : []),
+    ),
     to,
     cc,
     subject: msg.subject ?? '',
@@ -568,6 +578,47 @@ export const createGraphProvider = (
     };
   };
 
+  /** D-315 §4.4, §7.4 — the direction of a message read again on its own.
+   *  Graph names a message's folder by an opaque id; live sync knows the
+   *  folder it reads, and a message read alone says nothing else. So the
+   *  well-known folders' ids are asked for once and kept, and a message in one
+   *  of them has that folder's direction, as live sync gives it: the Sent copy
+   *  a backfill reads again stays sent, and is left out as it was at ingest.
+   *  A lookup that failed is asked again next time. */
+  let wellKnownFolders: Map<string, MailMessageDirection> | null = null;
+  const directionOfFolder = async (folderId: string): Promise<MailMessageDirection> => {
+    if (folderId.length === 0) return 'unknown';
+    if (wellKnownFolders === null) {
+      const found = new Map<string, MailMessageDirection>();
+      let complete = true;
+      for (const name of ['inbox', 'sentitems', 'outbox', 'drafts'] as const) {
+        const folder = await getWithRetry<{ id?: string }>(`${GRAPH_API_BASE}/me/mailFolders/${name}?$select=id`);
+        if (folder !== null && typeof folder.id === 'string') found.set(folder.id, graphMessageDirectionForFolder(name));
+        else complete = false;
+      }
+      if (!complete) return found.get(folderId) ?? 'unknown';
+      wellKnownFolders = found;
+    }
+    return wellKnownFolders.get(folderId) ?? 'unknown';
+  };
+
+  /** D-315 §4.4 — one message read again, whole, its attachments listed.
+   *  Graph gives a moved message a new id, so a 404 is `null`; any other
+   *  failure throws. Its direction comes from its folder (above). */
+  const fetchMessage = async (id: string): Promise<CanonicalMessage | null> => {
+    let failureStatus: number | undefined;
+    const msg = await getWithRetry<GraphMessagePayload>(
+      `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(id)}`
+        + `?$select=${encodeURIComponent(GRAPH_MESSAGE_SELECT)}`,
+      { onFailureStatus: (status) => { failureStatus = status; } },
+    );
+    if (msg === null) {
+      if (failureStatus !== undefined) throw new Error(`graph message ${id} read failed (${failureStatus})`);
+      return null;
+    }
+    return canonicalizeGraph(msg, await fetchGraphAttachmentParts(msg), await directionOfFolder(msg.parentFolderId ?? ''));
+  };
+
   const fetchGraphAttachmentParts = async (
     msg: GraphMessagePayload,
   ): Promise<InboundMailAttachmentPart[]> => {
@@ -830,7 +881,14 @@ export const createGraphProvider = (
   //   4xx other → MAIL_SEND_RECIPIENT_INVALID
   //   5xx        → MAIL_SEND_NETWORK_FAILED
   const throwSendError = (status: number, text: string): never => {
-    const detail = { kind: 'graph' as const, slug: opts.slug, status };
+    const detail = {
+      kind: 'graph' as const,
+      slug: opts.slug,
+      status,
+      // A 4xx is Graph REFUSING the request: nothing was sent, so the send
+      // claim may start afresh. A 5xx proves nothing either way.
+      ...(status >= 400 && status < 500 ? { not_sent: true } : {}),
+    };
     if (status === 401 || status === 403) {
       markError(`graph send auth ${status}`, text);
       throw new IngredientError(
@@ -992,7 +1050,24 @@ export const createGraphProvider = (
 
   const sendImpl = async (msg: OutgoingMessage): Promise<SentMessageMeta> => {
     const sentAt = nowOf();
-    const draft = await createGraphDraft(msg);
+    // Step 1 only makes a DRAFT. Whatever goes wrong here — a refusal, a 5xx, a
+    // dropped connection — nothing has been sent, so the send claim may start
+    // afresh (`not_sent`).
+    let draft: GraphCreatedDraft & { id: string };
+    try {
+      draft = await createGraphDraft(msg);
+    } catch (err) {
+      if (err instanceof IngredientError) {
+        err.details = { ...err.details, not_sent: true };
+        throw err;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new IngredientError(
+        'MAIL_SEND_NETWORK_FAILED',
+        `Graph send could not start: ${message.slice(0, 200)}`,
+        { kind: 'graph', slug: opts.slug, not_sent: true },
+      );
+    }
 
     // Step 2 — send the draft. 202 Accepted with empty body on success.
     const sendRes = await postWithRetry(
@@ -1461,6 +1536,7 @@ export const createGraphProvider = (
     draftCapable: mutationCapable,
     ...(mutationCapable ? { saveDraft: saveDraftImpl } : {}),
     accountEmail,
+    fetchMessage,
 
     async connect() {
       try {

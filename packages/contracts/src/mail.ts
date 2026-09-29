@@ -179,7 +179,11 @@ export type MailSentReconciliationResult =
  *  `ambiguous`). A `not_found` leaves it exactly where it was, and a claim that has
  *  not been positively reconciled is one a machine must not re-send. Re-sending is an
  *  OWNER decision, made with the claim in front of them. This is D-200's invariant
- *  verbatim, and it is the one that was actually earning its keep. */
+ *  verbatim, and it is the one that was actually earning its keep.
+ *
+ *  Two ways back to a fresh attempt, neither of them a guess: `not_sent`, written
+ *  by the send itself on proof the provider never received the message, and
+ *  `released`, the owner's answer to "Did this email go out?". */
 export const MAIL_SEND_CLAIM_STATUSES = [
   /** Durably recorded; the provider call is NOT known to have completed. A crash
    *  between the claim and the send lands here — which is the whole point. */
@@ -192,6 +196,30 @@ export const MAIL_SEND_CLAIM_STATUSES = [
    *  mismatch). An OWNER decision — never an automatic resend. Terminal to the
    *  machine; repeated ambiguity does not churn the revision. */
   'ambiguous',
+  /** The attempt provably never reached the provider: the provider REFUSED it
+   *  (an SMTP 4xx/5xx reply, an HTTP 4xx), or the send failed before the message
+   *  could get there — the transport could not be built, the address did not
+   *  resolve, the connection or the sign-in failed. Set ONLY from that proof, by
+   *  the send itself; a lookup's absence (`not_found`) can never set it. So it is
+   *  not a send, and the next attempt claims the id afresh.
+   *
+   *  ⛔ Found live: a send whose transport could not even be built stayed
+   *  `claimed`, so every retry of that exact message was refused as
+   *  outcome-unknown — forever, with nothing on screen to resolve it. */
+  'not_sent',
+  /** The attempt ENDED without learning whether the provider accepted the
+   *  message — a timeout or a dropped connection mid-send. Unlike `claimed` it is
+   *  not in flight, so the owner is asked "Did this email go out?"; nothing is
+   *  re-sent until they answer, or a reconcile proves it. */
+  'unknown',
+  /** The OWNER, asked whether an unresolved attempt went out, said it did not.
+   *  Their decision, made with the claim in front of them — the one thing the
+   *  header above reserves for a human. The next attempt claims the id afresh. */
+  'released',
+  /** The OWNER, asked, said it went out. A retry returns `already_sent`, as for
+   *  a provider acknowledgement. Weaker than `reconciled` (source truth), so a
+   *  reconcile may still move it. */
+  'confirmed',
 ] as const;
 
 export type MailSendClaimStatus = (typeof MAIL_SEND_CLAIM_STATUSES)[number];
@@ -210,6 +238,29 @@ export const MAIL_SEND_CLAIM_SETTLED_STATUSES = [
 
 export const isMailSendClaimSettled = (status: MailSendClaimStatus): boolean =>
   (MAIL_SEND_CLAIM_SETTLED_STATUSES as readonly string[]).includes(status);
+
+/** A retry of the same message returns `already_sent`: it went out, as far as
+ *  the provider (`sent`), its source truth (`reconciled`) or the owner
+ *  (`confirmed`) knows. */
+export const MAIL_SEND_CLAIM_DELIVERED_STATUSES = [
+  'sent',
+  'reconciled',
+  'confirmed',
+] as const satisfies readonly MailSendClaimStatus[];
+
+export const isMailSendClaimDelivered = (status: MailSendClaimStatus): boolean =>
+  (MAIL_SEND_CLAIM_DELIVERED_STATUSES as readonly string[]).includes(status);
+
+/** The next attempt claims the id afresh: nothing went out, on proof
+ *  (`not_sent`) or on the owner's word (`released`). Every OTHER status refuses a
+ *  second dispatch — which is the fence. */
+export const MAIL_SEND_CLAIM_RECLAIMABLE_STATUSES = [
+  'not_sent',
+  'released',
+] as const satisfies readonly MailSendClaimStatus[];
+
+export const isMailSendClaimReclaimable = (status: MailSendClaimStatus): boolean =>
+  (MAIL_SEND_CLAIM_RECLAIMABLE_STATUSES as readonly string[]).includes(status);
 
 export interface MailSendClaim {
   /** PK. The caller-pinned header token already carried through the message by

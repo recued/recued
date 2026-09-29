@@ -128,6 +128,13 @@ describe('applyFieldToStep', () => {
     expect((result[0] as unknown as Record<string, unknown>).skip_when).toBe('{{x}} is_null');
   });
 
+  it('sets and strips stop_when the same way — a condition field, not a param', () => {
+    const set = applyFieldToStep(steps, 's1', 'stop_when', '{{x}} is_empty');
+    expect((set[0] as unknown as Record<string, unknown>).stop_when).toBe('{{x}} is_empty');
+    const cleared = applyFieldToStep(set, 's1', 'stop_when', undefined);
+    expect('stop_when' in (cleared[0] as object)).toBe(false);
+  });
+
   it('merges input:* under the step.input object instead of overwriting it', () => {
     const withInput = [
       { id: 's1', ingredient: 'reader', input: { existing: 'keep' } } as unknown as RecipeStep,

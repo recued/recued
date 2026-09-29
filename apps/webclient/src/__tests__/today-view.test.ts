@@ -305,3 +305,35 @@ describe('D-267 follow-on — a slow source may not erase the ones that answered
     expect(html).not.toContain('Still reading your sources');
   });
 });
+
+describe('Today — a due stored at UTC midnight is a DAY here', () => {
+  // Found live: "due Monday" (Monday's UTC midnight) was listed overdue on
+  // Sunday evening in Pacific time, and printed as "Sep 27 · 5:00 PM". A day-due
+  // belongs to its day in THIS browser's calendar, all day, and is overdue only
+  // once that day is over. Built from local dates, so it holds in any zone.
+  const evening = new Date(2026, 8, 8, 21).getTime();
+  const dayOf = (offsetDays: number): number => {
+    const d = new Date(2026, 8, 8 + offsetDays);
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  };
+
+  it('is today all day, overdue only from the next day, and upcoming before its day', async () => {
+    const snapshot = await loadToday(readers([
+      task('due-today', dayOf(0)), task('due-yesterday', dayOf(-1)), task('due-in-two-days', dayOf(2)),
+      commitment('promised-today', dayOf(0)),
+    ]), evening);
+    const group = (title: string) => snapshot.items.find((item) => item.title === title)?.group;
+    expect(group('due-today')).toBe('today');
+    expect(group('promised-today')).toBe('today');
+    expect(group('due-yesterday')).toBe('overdue');
+    expect(group('due-in-two-days')).toBe('next');
+    expect(snapshot.items.find((item) => item.title === 'due-today')?.allDay).toBe(true);
+  });
+
+  it('prints the day, all day — not the previous evening', async () => {
+    const snapshot = await loadToday(readers([task('due-today', dayOf(0))]), evening);
+    const html = renderToday(snapshot, false, 'data-today-action');
+    const dayLabel = new Date(2026, 8, 8).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    expect(html).toContain(`${dayLabel} · All day`);
+  });
+});

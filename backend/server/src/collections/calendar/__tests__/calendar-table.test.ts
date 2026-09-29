@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 
 import type { CanonicalEvent } from '@recued/contracts';
 import {
+  calendarEventChanges,
   CALENDAR_INLINE_CUTOFF_BYTES,
   CalendarTableError,
   createCalendarTable,
@@ -131,6 +132,20 @@ describe('getByRecordId (D-198 — the collection.get read path)', () => {
   });
 });
 
+describe('what changed between two versions of an event (D-124)', () => {
+  it('names each field that differs, and none for the same event — a field left out and one set to nothing agree', () => {
+    const stored = JSON.parse(JSON.stringify(baseEvent({
+      attendees: [{ email: 'a@example.com', response_status: 'accepted' }],
+    }))) as CanonicalEvent;
+    const listed = baseEvent({
+      recurring_event_id: undefined,
+      attendees: [{ email: 'a@example.com', display_name: undefined, response_status: 'accepted' }],
+    });
+    expect(calendarEventChanges(stored, listed)).toEqual([]);
+    expect(calendarEventChanges(stored, { ...listed, summary: 'Moved', start_at: listed.start_at + 60_000 })).toEqual(['start_at', 'summary']);
+  });
+});
+
 describe('upsert + prior_payload rotation', () => {
   it('first insert returns null and stamps received_at at now', () => {
     const prior = table.upsert(makeInput(baseEvent()));
@@ -158,6 +173,18 @@ describe('upsert + prior_payload rotation', () => {
     expect(snap?.event.summary).toBe('Second version');
     expect(snap?.prior?.summary).toBe('First version');
     expect(snap?.modified_at).toBe(1_700_000_100_000);
+  });
+
+  it('an upsert that changes nothing keeps prior: a restart’s scan lists every event again', () => {
+    const v1 = baseEvent({ summary: 'v1', updated_at: 1 });
+    const v2 = baseEvent({ summary: 'v2', updated_at: 2 });
+    table.upsert(makeInput(v1));
+    table.upsert(makeInput(v2));
+    // Listed again as it was: v1 is still the event before its last change.
+    table.upsert(makeInput(v2));
+    const snap = table.get('gcal-evt-1');
+    expect(snap?.event.summary).toBe('v2');
+    expect(snap?.prior?.summary).toBe('v1');
   });
 
   it('prior_payload depth is exactly 1 — three-way overwrite keeps only the most recent previous', () => {

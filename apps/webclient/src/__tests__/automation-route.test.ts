@@ -1683,3 +1683,72 @@ describe('Automation route — remove pre-approval', () => {
     expect(rig.host.innerHTML).not.toContain('Remove pre-approval');
   });
 });
+
+describe('Automation route — a trigger on facts read from mail (D-315)', () => {
+  const wine = {
+    id: 'custom_wine_club_box' as const,
+    name: 'Wine club box',
+    description: '',
+    variables: [{ name: 'club', kind: 'text' as const, required: true }],
+    states: ['shipped'],
+    notices: [],
+    identity: [],
+  };
+  const factTriggers = async () => ({
+    triggers: [
+      trigger({
+        pattern: 'data.mail_fact.*.thing.*',
+        fields: ['state'],
+        filter: { 'record.state': 'delivered', 'record.template': 'mtpl_1' },
+      }),
+      trigger({ trigger_id: 't-2', pattern: 'data.mail_fact.custom_wine_club_box.thing.*' }),
+    ],
+  });
+
+  it('says it in words in the list and the detail, naming its template and the owner’s kind', async () => {
+    const mailFactTemplatesCaller = vi.fn(async () => ({
+      templates: [{ template_id: 'mtpl_1', name: 'UPS notices', type: 'shipment' }],
+    }));
+    const rig = mountRoute({
+      initialSection: 'triggers',
+      triggersListCaller: factTriggers,
+      mailFactTemplatesCaller,
+      mailFactTypesCaller: async () => ({ types: [wine] }),
+    });
+    await rig.route.whenLoaded();
+    await vi.waitFor(() => expect(rig.host.innerHTML).toContain('read by “UPS notices”'));
+    const html = rig.host.innerHTML;
+    expect(html).toContain('on a fact read from mail, when state changes, only when state is delivered, read by “UPS notices”');
+    expect(html).toContain('on a wine club box read from mail, on every change');
+    // Not the pattern and the compiled filter it was said as before.
+    expect(html).not.toContain('<code>data.mail_fact');
+    expect(html).not.toContain('record.template = mtpl_1');
+    expect(html).not.toContain('when state changes</span>');
+
+    clickAction(rig.host, 'detail:event_trigger', 't-1');
+    const detail = rig.host.innerHTML;
+    expect(detail).toContain('<dt>Starts on</dt><dd>a fact read from mail, when state changes, only when state is delivered, read by “UPS notices”</dd>');
+    expect(detail).not.toContain('<dt>Pattern</dt>');
+    expect(detail).not.toContain('<dt>Fields</dt>');
+  });
+
+  it('reads no templates for triggers that are not on facts', async () => {
+    const mailFactTemplatesCaller = vi.fn(async () => ({ templates: [] }));
+    const rig = mountRoute({ initialSection: 'triggers', mailFactTemplatesCaller });
+    await rig.route.whenLoaded();
+    expect(mailFactTemplatesCaller).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).toContain('on <code>data.mail.**</code>');
+  });
+
+  it('says “one template”, never a deleted one, when the templates could not be read', async () => {
+    const rig = mountRoute({
+      initialSection: 'triggers',
+      triggersListCaller: factTriggers,
+      mailFactTemplatesCaller: vi.fn(async () => { throw new Error('The server did not answer'); }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(rig.host.innerHTML).toContain('only when state is delivered, read by one template');
+    expect(rig.host.innerHTML).not.toContain('deleted');
+  });
+});

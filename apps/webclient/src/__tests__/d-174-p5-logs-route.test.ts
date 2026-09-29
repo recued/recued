@@ -2567,6 +2567,18 @@ describe('D-237 P2 residual — the all-refused run is visible to a reader', () 
       expect(projectRunYieldNotice(y(2, 5))).toBeUndefined();
       expect(projectRunYieldNotice(y(-1, -1))).toBeUndefined();
     });
+
+    it('names the step a stop_when ended the run at, so it does not read as an ordinary run', () => {
+      const notice = projectRunYieldNotice({ ...y(0, 0), stopped_at: 'no_new_mail' });
+      expect(notice?.kind).toBe('stopped');
+      expect(notice?.message).toContain('"no_new_mail"');
+      // Absent or null: the run went to the end (or predates the field).
+      expect(projectRunYieldNotice({ ...y(0, 0), stopped_at: null })).toBeUndefined();
+    });
+
+    it('lets refused items outrank a stop — the more urgent sentence wins', () => {
+      expect(projectRunYieldNotice({ ...y(4, 4), stopped_at: 'done' })?.kind).toBe('all-refused');
+    });
   });
 
   it('does not touch the tone of a run that already failed', () => {

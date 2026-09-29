@@ -24,6 +24,7 @@ import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
+import { IngredientError } from '@recued/ingredients';
 
 const RID = 'ord:paid-doc:sub_1:delivery';
 
@@ -94,8 +95,10 @@ describe('D-207 slice 3d — the claim is written BEFORE the provider is called'
 
     // NON-VACUITY: the claim genuinely exists, and it is not settled — so a machine
     // must not re-send from it, and a reconciler still has something to ask about.
+    // `unknown`, not `claimed`: the attempt has ENDED (so the owner may be asked),
+    // it just never learned how.
     expect(claim).not.toBeNull();
-    expect(claim?.status).toBe('claimed');
+    expect(claim?.status).toBe('unknown');
     expect(claim?.recipient).toBe('customer@example.com');
     expect(claim?.subject).toBe('Your research brief');
     expect(claim?.provider_message_id).toBeNull();
@@ -161,20 +164,73 @@ describe('D-207 slice 3d — 🔴 THE DOUBLE-SEND: a pre-existing claim NEVER di
 
   /** The genuinely unknown case. We tried; we never learned the outcome. Re-sending
    *  might double-send (the timeout may have been an ACCEPTED message); not re-sending
-   *  might never send. Neither is safe to GUESS — so we refuse and name the op that
-   *  can actually answer it. */
-  it('⛔ REFUSES to retry an unresolved `claimed` — it points at reconcile instead of guessing', async () => {
+   *  might never send. Neither is safe to GUESS — so we refuse, and the owner is the
+   *  one asked (`mail-send-outcome-ask.ts`). */
+  it('⛔ REFUSES to retry an `unknown` outcome — and says the owner has been asked', async () => {
     const failing = vi.fn(async () => {
       throw new Error('smtp timeout');
     });
     await expect(mailWith(failing).send(args() as never)).rejects.toThrow(/smtp timeout/);
-    expect(createMailSendClaimStore(db).get(RID)?.status).toBe('claimed');
+    expect(createMailSendClaimStore(db).get(RID)?.status).toBe('unknown');
 
     const retry = okSend();
-    await expect(mailWith(retry).send(args() as never)).rejects.toMatchObject({
-      code: 'MAIL_SEND_CLAIM_UNRESOLVED',
-    });
+    const refused = await mailWith(retry).send(args() as never).then(
+      () => { throw new Error('expected a refusal'); },
+      (err: unknown) => err as { code?: string; message?: string },
+    );
+    expect(refused.code).toBe('MAIL_SEND_CLAIM_UNRESOLVED');
+    expect(refused.message).toContain('customer@example.com');
+    expect(refused.message).toContain('asked you whether it went out');
     expect(retry).not.toHaveBeenCalled();
+  });
+
+  /** A claim still `claimed` and fresh is an attempt IN FLIGHT (or one that crashed
+   *  moments ago). Nobody should be asked about it yet — and the refusal must not
+   *  pretend they were. */
+  it('a retry that meets an attempt still in flight says so, and claims no question was asked', async () => {
+    const claims = createMailSendClaimStore(db);
+    claims.claim({
+      reconciliation_id: RID,
+      sender_slug: 'inbox',
+      recipient: 'customer@example.com',
+      subject: 'Your research brief',
+      proof_kind: 'envelope',
+      now: Date.now(),
+    });
+
+    const retry = okSend();
+    const refused = await mailWith(retry).send(args() as never).then(
+      () => { throw new Error('expected a refusal'); },
+      (err: unknown) => err as { code?: string; message?: string },
+    );
+    expect(refused.code).toBe('MAIL_SEND_CLAIM_UNRESOLVED');
+    expect(refused.message).toContain('started moments ago');
+    expect(refused.message).not.toContain('asked you');
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 FOUND LIVE: a send that never got off the machine (the transport could not
+   *  even be built) left its claim unresolved, and every retry of that exact message
+   *  was refused — forever. A provider that PROVES the message never reached it
+   *  (`details.not_sent`) ends the claim `not_sent`, and the retry simply sends. */
+  it('a send the provider PROVES never left ends `not_sent` — and the retry sends it', async () => {
+    const neverLeft = vi.fn(async () => {
+      throw new IngredientError('MAIL_SEND_NETWORK_FAILED', 'SMTP submission could not start: require is not defined', {
+        kind: 'imap', slug: 'inbox', not_sent: true,
+      });
+    });
+    await expect(mailWith(neverLeft).send(args() as never)).rejects.toMatchObject({
+      code: 'MAIL_SEND_NETWORK_FAILED',
+    });
+    expect(createMailSendClaimStore(db).get(RID)?.status).toBe('not_sent');
+
+    const retry = okSend();
+    const result = await mailWith(retry).send(args() as never);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(result.already_sent).toBeUndefined();
+    const claim = createMailSendClaimStore(db).get(RID);
+    expect(claim?.status).toBe('sent');
+    expect(claim?.provider_message_id).toBe('<abc@mail>');
   });
 
   it('⛔ REFUSES to retry an `ambiguous` claim — that one needs a human, not a reconcile', async () => {

@@ -74,6 +74,7 @@ import {
   isTaskIdempotencyKey,
   RECUED_BUILTIN_SOURCE_ID,
   taskIdFromIdempotencyKey,
+  workEntityIdFromIdempotencyKey,
   WORK_ENTITY_BUS_ENTITY_TYPE,
   WORK_ENTITY_BUS_PLATFORM,
   type Booking,
@@ -97,6 +98,8 @@ import type { WarehouseEventBus, WarehouseEventKind } from '@recued/warehouse-ev
 import type { CascadeEngine } from './storage/enrichment-cascade.js';
 import {
   WorkEntityValidationError,
+  ZONELESS_DATE_TIME,
+  unambiguousDateMs,
   type BookingWriteInput,
   type CommitmentWriteInput,
   type NoteWriteInput,
@@ -536,6 +539,9 @@ const readWorkEntityInput = (
 export interface WorkEntityIngredientDeps {
   store: WorkEntityStore;
   resolver: WorkEntityResolver;
+  /** The owner's zone, for judging a DATE-ONLY deadline by its day when an
+   *  update moves it (`due-day.ts`). Absent ⇒ UTC. */
+  timeZone?: () => string | undefined;
   /** D-192 P4b — the declaration-driven write executor, late-bound (it
    *  needs the gateway fetch deps, composed after the dispatchers).
    *  Absent / null → connection-Sources refuse writes with
@@ -1235,6 +1241,130 @@ const applyCreateStamp = (
 // task-* dispatchers
 // ────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────
+// Idempotent creates — note / commitment / project
+// ────────────────────────────────────────────────────────────────
+
+/** Where an idempotent create stamps its key, per kind (a task's is
+ *  `recued_task_idempotency_key`). */
+const IDEMPOTENCY_MARK = {
+  note: 'recued_note_idempotency_key',
+  commitment: 'recued_commitment_idempotency_key',
+  project: 'recued_project_idempotency_key',
+} as const;
+
+/** The check INSIDE the write, for a note / commitment / project create — the
+ *  contract a task's already has (`taskCreate`): a valid key lands on one
+ *  stable Recued-local id, and a repeat returns the record it made, whatever
+ *  any earlier read saw — two runs racing get one record. A key cannot route to
+ *  a vendor Source. Null when the caller sent no key. */
+const idempotentCreateKey = (
+  kind: keyof typeof IDEMPOTENCY_MARK,
+  raw: unknown,
+  sourceId: string | null | undefined,
+): { key: string; id: string } | null => {
+  if (raw == null) return null;
+  const id = isTaskIdempotencyKey(raw) ? workEntityIdFromIdempotencyKey(kind, raw) : null;
+  if (id === null) {
+    throw new WorkEntityValidationError(
+      'idempotency_key must be a non-empty namespaced ASCII key within the size cap',
+      'idempotency_key',
+    );
+  }
+  if (sourceId != null && sourceId !== RECUED_BUILTIN_SOURCE_ID(kind)) {
+    throw new WorkEntityValidationError(
+      `idempotent ${kind} creation is Recued-local and cannot target a vendor Source`,
+      'source_id',
+    );
+  }
+  return { key: raw as string, id };
+};
+
+/** A repeat create found a row at the key's id: it is returned only when it is
+ *  this key's live, Recued-local record. A deleted one is refused, not revived —
+ *  an automation must not bring back what the owner removed — and an unrelated
+ *  one is never adopted or overwritten. */
+const verifyIdempotentReuse = (
+  kind: keyof typeof IDEMPOTENCY_MARK,
+  existing: {
+    deleted_at?: number;
+    sync_state: string;
+    source_id: string;
+    source_extension_blob?: Record<string, unknown>;
+  },
+  key: string,
+): void => {
+  if (existing.deleted_at !== undefined || existing.sync_state !== 'live') {
+    throw new WorkEntityValidationError(
+      `idempotency_key resolved to a non-live or tombstoned ${kind}`,
+      'idempotency_key',
+    );
+  }
+  if (
+    existing.source_id !== RECUED_BUILTIN_SOURCE_ID(kind)
+    || existing.source_extension_blob?.[IDEMPOTENCY_MARK[kind]] !== key
+  ) {
+    throw new WorkEntityValidationError(
+      `idempotency_key resolved to an unrelated existing ${kind}`,
+      'idempotency_key',
+    );
+  }
+};
+
+// ────────────────────────────────────────────────────────────────
+// Date inputs — one conversion for every work-entity date a caller sends
+// ────────────────────────────────────────────────────────────────
+
+/** A date a caller sent for `field`, as the epoch ms the store keeps.
+ *
+ *  ⛔ THE STORE KEEPS NUMBERS ONLY. A date kept as text reads as `NaN` to every
+ *  sweep — a commitment promised as text never came due, never reminded, never
+ *  escalated. Text that names exactly one instant is converted here
+ *  (`unambiguousDateMs`: epoch-ms digits, a real `YYYY-MM-DD` day as UTC
+ *  midnight, an ISO date-time WITH its zone). A date-time with NO zone is
+ *  refused, not guessed: it is a different instant in every zone and the server
+ *  cannot know whose clock it was (the webclient sends the owner's offset with
+ *  one). `null` stays the caller's — an update clears a date with it; a blank
+ *  string is no value at all. */
+const dateInputMs = (field: string, value: unknown): number | null | undefined => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'number') {
+    if (Number.isFinite(value)) return value;
+    throw new WorkEntityValidationError(`${field} must be a finite number`, field);
+  }
+  if (typeof value !== 'string') {
+    throw new WorkEntityValidationError(`${field} must be a date, got ${typeof value}`, field);
+  }
+  const text = value.trim();
+  if (text === '') return undefined;
+  const ms = unambiguousDateMs(text);
+  if (ms !== null) return ms;
+  if (ZONELESS_DATE_TIME.test(text)) {
+    throw new WorkEntityValidationError(
+      `${field} '${text}' has no time zone — send a date (YYYY-MM-DD), epoch ms, or a time with its offset`,
+      field,
+    );
+  }
+  throw new WorkEntityValidationError(`${field} '${text.slice(0, 40)}' is not a date`, field);
+};
+
+/** `input` with each named date converted by `dateInputMs`; the same object
+ *  when nothing needed converting. */
+const withDateInputs = <T extends object>(input: T, fields: readonly string[]): T => {
+  let out: Record<string, unknown> | undefined;
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(input, field)) continue;
+    const raw = (input as Record<string, unknown>)[field];
+    const ms = dateInputMs(field, raw);
+    if (ms === raw) continue;
+    out ??= { ...(input as Record<string, unknown>) };
+    if (ms === undefined) delete out[field];
+    else out[field] = ms;
+  }
+  return (out ?? input) as T;
+};
+
 const taskCreate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     title: string;
@@ -1257,6 +1387,7 @@ const taskCreate = (deps: WorkEntityIngredientDeps) =>
      *  (`{ project: 'Roadmap' }`); a granted no-match plans the container create. */
     container_names?: Record<string, string>;
   } & WorkEntityCreateOrigin): Promise<{ task: Task }> => {
+    input = withDateInputs(input, ['due_at', 'completed_at']);
     const rawIdempotencyKey = input.idempotency_key as unknown;
     if (rawIdempotencyKey != null && !isTaskIdempotencyKey(rawIdempotencyKey)) {
       throw new WorkEntityValidationError(
@@ -1448,7 +1579,19 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     parent_project_id?: string;
     blocks_task_ids?: readonly string[];
     source_extension_blob?: Record<string, unknown>;
+    /** Remove the due date. `due_at: null` cannot say it — for a task, `null`
+     *  means "not given" (see the patch-or-preserve note below). */
+    clear_due_at?: boolean;
   }): Promise<{ task: Task }> => {
+    input = withDateInputs(input, ['due_at', 'completed_at']);
+    const clearDue = input.clear_due_at === true;
+    if (clearDue && input.due_at != null) {
+      throw new WorkEntityValidationError('send due_at or clear_due_at, not both', 'clear_due_at');
+    }
+    // ⛔ What a Source is told about the due date. `null` is a Source's "remove"
+    // (`clear_args`), so a task's own `null` — "not given" — must never reach
+    // one: a recipe's unset input would remove a partner's deadline.
+    const dueForSource = clearDue ? null : (input.due_at ?? undefined);
     const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
     if (readThrough !== null) {
       const projected = await dispatchReadThroughVendorWrite(
@@ -1459,7 +1602,7 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
         {
           title: input.title,
           body: input.body,
-          due_at: input.due_at,
+          due_at: dueForSource,
           priority: input.priority,
           state: input.state,
           progress: input.progress,
@@ -1499,7 +1642,7 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
       ? await prepareVendorWrite(deps, sourceReg, 'task', 'update', {
           title: input.title,
           body: input.body,
-          due_at: input.due_at,
+          due_at: dueForSource,
           priority: input.priority,
           state: input.state,
           progress: input.progress,
@@ -1527,8 +1670,11 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     // field. `false` / `0` / `""` stay valid values.
     if (input.body != null) writeInput.body = input.body;
     else if (existing.body !== undefined) writeInput.body = existing.body;
-    if (input.due_at != null) writeInput.due_at = input.due_at;
-    else if (existing.due_at !== undefined) writeInput.due_at = existing.due_at;
+    // A cleared due date is left out of the rewritten row, which removes it.
+    if (!clearDue) {
+      if (input.due_at != null) writeInput.due_at = input.due_at;
+      else if (existing.due_at !== undefined) writeInput.due_at = existing.due_at;
+    }
     if (input.priority != null) writeInput.priority = input.priority;
     else if (existing.priority !== undefined) writeInput.priority = existing.priority;
     // D-179 fork (a) — `state` / `progress` patch-or-preserve (the posture the
@@ -1645,6 +1791,7 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
 
 const taskMarkDone = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string; done?: boolean; completed_at?: number }): Promise<{ task: Task }> => {
+    input = withDateInputs(input, ['completed_at']);
     const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
     if (readThrough !== null) {
       const done = input.done !== false;
@@ -1769,6 +1916,8 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     body: string;
     title?: string;
+    /** Create-or-reuse on one stable local id (`idempotentCreateKey`). */
+    idempotency_key?: string;
     related_contact_ids?: readonly string[];
     related_calendar_event_ids?: readonly string[];
     related_mail_thread_ids?: readonly string[];
@@ -1784,7 +1933,13 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
     if (typeof input.body !== 'string' || input.body.length === 0) {
       throw new WorkEntityValidationError('body is required', 'body');
     }
-    const source = resolveCreateSource(deps, 'note', input.source_id, input);
+    const idempotent = idempotentCreateKey('note', input.idempotency_key, input.source_id);
+    const source = resolveCreateSource(
+      deps,
+      'note',
+      idempotent === null ? input.source_id : RECUED_BUILTIN_SOURCE_ID('note'),
+      input,
+    );
     const route = await prepareVendorWrite(deps, source, 'note', 'create', {
       title: input.title,
       body: input.body,
@@ -1835,6 +1990,7 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
       source_id: source.id,
       body: input.body,
     };
+    if (idempotent !== null) writeInput.id = idempotent.id;
     if (input.title !== undefined) writeInput.title = input.title;
     if (input.related_contact_ids !== undefined) writeInput.related_contact_ids = input.related_contact_ids;
     if (input.related_calendar_event_ids !== undefined) writeInput.related_calendar_event_ids = input.related_calendar_event_ids;
@@ -1844,6 +2000,19 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
     if (vendor !== null && vendor.ok && vendor.operation === 'create') {
       writeInput.source_record_id = vendor.source_record_id;
       applyCreateStamp(writeInput, vendor.stamp);
+    }
+    if (idempotent !== null) {
+      writeInput.source_extension_blob = {
+        ...(writeInput.source_extension_blob ?? {}),
+        [IDEMPOTENCY_MARK.note]: idempotent.key,
+      };
+      const ensured = deps.store.ensureNote(writeInput as NoteWriteInput & { id: string }, deps.now?.());
+      if (!ensured.created) {
+        verifyIdempotentReuse('note', ensured.note, idempotent.key);
+        return { note: ensured.note };
+      }
+      emitWorkEntityEvent(deps, 'note', 'created', tagWorkEntity('note', ensured.note));
+      return { note: ensured.note };
     }
     const note = deps.store.writeNote(writeInput, deps.now?.());
     emitWorkEntityEvent(deps, 'note', 'created', tagWorkEntity('note', note));
@@ -2004,6 +2173,8 @@ const commitmentCreate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     direction: import('@recued/contracts').CommitmentDirection;
     statement: string;
+    /** Create-or-reuse on one stable local id (`idempotentCreateKey`). */
+    idempotency_key?: string;
     derivation: import('@recued/contracts').CommitmentDerivation;
     promised_at?: number;
     promised_for_at?: number;
@@ -2019,7 +2190,14 @@ const commitmentCreate = (deps: WorkEntityIngredientDeps) =>
     source_extension_blob?: Record<string, unknown>;
     evidence_blob?: readonly import('@recued/contracts').CommitmentEvidenceEntry[];
   } & WorkEntityCreateOrigin): Promise<{ commitment: Commitment }> => {
-    const source = resolveCreateSource(deps, 'commitment', input.source_id, input);
+    input = withDateInputs(input, ['promised_at', 'promised_for_at']);
+    const idempotent = idempotentCreateKey('commitment', input.idempotency_key, input.source_id);
+    const source = resolveCreateSource(
+      deps,
+      'commitment',
+      idempotent === null ? input.source_id : RECUED_BUILTIN_SOURCE_ID('commitment'),
+      input,
+    );
     // D-192 F1 — invariant 1 pinned at mint, BOTH directions: an
     // `evidence_captured` commitment must bind evidence (no evidence,
     // no commitment), and evidence only rides `evidence_captured`
@@ -2049,6 +2227,7 @@ const commitmentCreate = (deps: WorkEntityIngredientDeps) =>
       statement: input.statement,
       derivation: input.derivation,
     };
+    if (idempotent !== null) writeInput.id = idempotent.id;
     // `!= null` treats both `null` and `undefined` as "absent" — recipes
     // routinely surface `null` when an optional step is skipped (e.g.
     // `skip_when` collapsed a monetary-value or due-date branch). The
@@ -2077,6 +2256,22 @@ const commitmentCreate = (deps: WorkEntityIngredientDeps) =>
     // D-192 F1 — evidence snapshots ride create-only (the store
     // validates shape + cap; updates can never touch the lane).
     if (input.evidence_blob != null) writeInput.evidence_blob = input.evidence_blob;
+    if (idempotent !== null) {
+      writeInput.source_extension_blob = {
+        ...(writeInput.source_extension_blob ?? {}),
+        [IDEMPOTENCY_MARK.commitment]: idempotent.key,
+      };
+      const ensured = deps.store.ensureCommitment(
+        writeInput as CommitmentWriteInput & { id: string },
+        deps.now?.(),
+      );
+      if (!ensured.created) {
+        verifyIdempotentReuse('commitment', ensured.commitment, idempotent.key);
+        return { commitment: ensured.commitment };
+      }
+      emitWorkEntityEvent(deps, 'commitment', 'created', tagWorkEntity('commitment', ensured.commitment));
+      return { commitment: ensured.commitment };
+    }
     const commitment = deps.store.writeCommitment(writeInput, deps.now?.());
     emitWorkEntityEvent(deps, 'commitment', 'created', tagWorkEntity('commitment', commitment));
     return { commitment };
@@ -2095,6 +2290,7 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
     blocks_project_ids?: readonly string[];
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ commitment: Commitment }> => {
+    input = withDateInputs(input, ['promised_for_at']);
     const localId = resolveWorkEntityInputId(deps, 'commitment', input.id);
     const existing = deps.store.readCommitment(localId);
     if (!existing) throw new WorkEntityNotFoundError('commitment', input.id);
@@ -2129,6 +2325,8 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
       const classified = classifyCommitmentDueStatus(
         { promised_for_at: nextPromisedForAt, due_status: existing.due_status },
         now,
+        undefined,
+        deps.timeZone?.(),
       );
       if (classified !== existing.due_status) {
         nextDueStatus = classified;
@@ -2384,6 +2582,7 @@ const bookingCreate = (deps: WorkEntityIngredientDeps) =>
     source_id?: string;
     source_extension_blob?: Record<string, unknown>;
   } & WorkEntityCreateOrigin): Promise<{ booking: Booking }> => {
+    input = withDateInputs(input, ['slot_start_at', 'slot_end_at']);
     const source = resolveCreateSource(deps, 'booking', input.source_id, input);
     const writeInput: BookingWriteInput = {
       source_id: source.id,
@@ -2419,6 +2618,7 @@ const bookingUpdate = (deps: WorkEntityIngredientDeps) =>
     counterparty_contact_id?: string;
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ booking: Booking }> => {
+    input = withDateInputs(input, ['slot_start_at', 'slot_end_at']);
     const localId = resolveWorkEntityInputId(deps, 'booking', input.id);
     const existing = deps.store.readBooking(localId);
     if (!existing) throw new WorkEntityNotFoundError('booking', input.id);
@@ -2523,6 +2723,8 @@ const bookingDelete = (deps: WorkEntityIngredientDeps) =>
 const projectCreate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     title: string;
+    /** Create-or-reuse on one stable local id (`idempotentCreateKey`). */
+    idempotency_key?: string;
     description?: string;
     state?: import('@recued/contracts').ProjectState;
     target_completion_at?: number;
@@ -2533,7 +2735,14 @@ const projectCreate = (deps: WorkEntityIngredientDeps) =>
     /** D-192 6c.2c — caller-named vendor containers by dependency ref. */
     container_names?: Record<string, string>;
   } & WorkEntityCreateOrigin): Promise<{ project: Project }> => {
-    const source = resolveCreateSource(deps, 'project', input.source_id, input);
+    input = withDateInputs(input, ['target_completion_at']);
+    const idempotent = idempotentCreateKey('project', input.idempotency_key, input.source_id);
+    const source = resolveCreateSource(
+      deps,
+      'project',
+      idempotent === null ? input.source_id : RECUED_BUILTIN_SOURCE_ID('project'),
+      input,
+    );
     const route = await prepareVendorWrite(deps, source, 'project', 'create', {
       title: input.title,
       description: input.description,
@@ -2584,6 +2793,7 @@ const projectCreate = (deps: WorkEntityIngredientDeps) =>
       source_id: source.id,
       title: input.title,
     };
+    if (idempotent !== null) writeInput.id = idempotent.id;
     if (input.description !== undefined) writeInput.description = input.description;
     if (input.state !== undefined) writeInput.state = input.state;
     if (input.target_completion_at !== undefined) writeInput.target_completion_at = input.target_completion_at;
@@ -2599,6 +2809,19 @@ const projectCreate = (deps: WorkEntityIngredientDeps) =>
     if (vendor !== null && vendor.ok && vendor.operation === 'create') {
       writeInput.source_record_id = vendor.source_record_id;
       applyCreateStamp(writeInput, vendor.stamp);
+    }
+    if (idempotent !== null) {
+      writeInput.source_extension_blob = {
+        ...(writeInput.source_extension_blob ?? {}),
+        [IDEMPOTENCY_MARK.project]: idempotent.key,
+      };
+      const ensured = deps.store.ensureProject(writeInput as ProjectWriteInput & { id: string }, deps.now?.());
+      if (!ensured.created) {
+        verifyIdempotentReuse('project', ensured.project, idempotent.key);
+        return { project: ensured.project };
+      }
+      emitWorkEntityEvent(deps, 'project', 'created', tagWorkEntity('project', ensured.project));
+      return { project: ensured.project };
     }
     const project = deps.store.writeProject(writeInput, deps.now?.());
     emitWorkEntityEvent(deps, 'project', 'created', tagWorkEntity('project', project));
@@ -2616,6 +2839,7 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
     parent_project_id?: string;
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ project: Project }> => {
+    input = withDateInputs(input, ['target_completion_at']);
     const readThrough = resolveReadThroughWriteTarget(deps, 'project', input.id);
     if (readThrough !== null) {
       const projected = await dispatchReadThroughVendorWrite(

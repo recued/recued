@@ -37,6 +37,12 @@ import type {
   PreflightOverrideOffer,
 } from '@recued/contracts';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
+import {
+  rememberOwnerPageRun,
+  type SettledRunResults,
+} from '../../settled-run-results.js';
+import { registerMailSendOutcomeHandler } from '../../mail-send-outcome-ask.js';
+import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
 import { createBatchAskStore } from '@recued/storage';
 import type { ActivityAction, ActivityEntry, AuditLogStore, CheckpointStore } from '@recued/storage';
 import {
@@ -110,6 +116,10 @@ export interface ComposeNotificationBlockDeps {
   /** D-137 — late-bound chat sink for a run that settled after its turn.
    *  Absent ⇒ late results are not recallable, the behaviour before this. */
   readonly getRunSettledSink?: () => ((settled: PreflightRunSettled) => void) | undefined;
+  /** What an owner's page-started run answered once its approval let it
+   *  finish, for `execution.get` to hand the page still showing "held".
+   *  Absent ⇒ that page keeps its note, the behaviour before this. */
+  readonly settledRunResults?: SettledRunResults;
   /** D-210 A.8 slice 3d — builds `/ask/<ask_id>` for `inline` channel asks.
    *  Resolved once in `compose-execution-context` (the only place the public
    *  base URL is in scope) and shared with the email channel. Absent on a
@@ -676,7 +686,10 @@ export const composeNotificationBlock = (
     // D-137 — resolved AT SETTLE TIME, not at construction: chat is composed
     // in the app context and this resumer in the execution context, so the
     // sink does not exist yet when this runs.
-    onRunSettled: (settled) => { deps.getRunSettledSink?.()?.(settled); },
+    onRunSettled: (settled) => {
+      rememberOwnerPageRun(deps.settledRunResults, settled);
+      deps.getRunSettledSink?.()?.(settled);
+    },
     ...(deps.mcpActionStore !== undefined
       ? { mcpActionStore: deps.mcpActionStore }
       : {}),
@@ -766,6 +779,10 @@ export const composeNotificationBlock = (
   // next call (a manual retry, carrying its own token) claims the decision at the
   // ceiling. That makes this the one ask leaf with no re-run dispatcher.
   registerPeerAdmissionHandler(block, createPeerAdmissionStore(db));
+  // "Did this email go out?" — the owner's answer settles an unresolved send
+  // claim (`confirmed` / `released`). Like admission it dispatches nothing: the
+  // next run of the recipe sends, or reports it already went.
+  registerMailSendOutcomeHandler(block, () => createMailSendClaimStore(db));
   // D-234 § 234.4 — THE RETURN LEG. Unlike the admission handler above, this one
   // DOES dispatch: an answer is DATA, not authority, so carrying it back needs no
   // re-presentation of anyone's identity — we call the peer under OUR connection,

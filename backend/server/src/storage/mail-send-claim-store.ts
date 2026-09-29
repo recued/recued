@@ -18,10 +18,18 @@
  *  "Absent from the Sent folder" is not "not sent". The provider may not have indexed
  *  it, the scan window can miss it, IMAP lags. A resend on `not_found` double-sends a
  *  customer their document, and no completeness proof exists at this layer that could
- *  make it safe. So a claim only ever moves FORWARD, and this store has no `delete`
- *  and no path back to an unclaimed state. Re-sending is an OWNER decision taken with
- *  the claim in front of them — which is D-200's invariant verbatim, and one of the
- *  1,990 steps that was genuinely earning its keep.
+ *  make it safe. So a claim only ever moves FORWARD, and this store has no `delete`.
+ *  Re-sending is an OWNER decision taken with the claim in front of them — which is
+ *  D-200's invariant verbatim, and one of the 1,990 steps that was genuinely earning
+ *  its keep.
+ *
+ *  ## The two ways to a fresh attempt — and neither is a guess
+ *
+ *  `not_sent` (`markNotSent`): the SEND itself learned the provider never received
+ *  the message — it refused it, or the send failed before reaching it. That is proof,
+ *  not absence. `released` (`decideByOwner`): the owner, asked "Did this email go
+ *  out?", said no. From either, the next `claim` of the same message starts a fresh
+ *  attempt at a new revision; from every other status it stays `existing`.
  *
  *  ## The fence is the absent field
  *
@@ -35,6 +43,7 @@ import type Database from 'better-sqlite3';
 import {
   MAIL_SEND_CLAIM_STATUSES,
   isMailReconciliationId,
+  isMailSendClaimReclaimable,
   isMailSendClaimSettled,
   isMailSendClaimStatus,
   type MailSendClaim,
@@ -194,8 +203,35 @@ export interface MailSendClaimStore {
   /** Idempotent on `reconciliation_id`: a retry of the SAME send re-reads its claim
    *  and says so (`existing`), so the caller can refuse to dispatch twice. A reused id
    *  describing a DIFFERENT message is a loud conflict, never a silent rebind — that
-   *  would let one send's proof stand in for another's. */
+   *  would let one send's proof stand in for another's.
+   *
+   *  A claim nothing went out on (`not_sent`, `released`) is claimed AFRESH: the
+   *  result is `created`, at the next revision, with the window opening now. */
   claim(input: MailSendClaimInput): MailSendClaimResult;
+  /** The send learned the provider never received the message. Moves `claimed`
+   *  only; any other status is returned unchanged. */
+  markNotSent(input: {
+    readonly reconciliation_id: string;
+    readonly expected_revision: number;
+    readonly now: number;
+  }): MailSendClaim;
+  /** The attempt ended without learning whether the message went out. Moves
+   *  `claimed` only; any other status is returned unchanged. */
+  markUnknown(input: {
+    readonly reconciliation_id: string;
+    readonly expected_revision: number;
+    readonly now: number;
+  }): MailSendClaim;
+  /** The owner's answer to "Did this email go out?". Moves `claimed`, `unknown`
+   *  or `ambiguous` only — to `confirmed` or `released`; a claim the provider has
+   *  since acknowledged or proven is returned unchanged, because that is better
+   *  evidence than anyone's memory. */
+  decideByOwner(input: {
+    readonly reconciliation_id: string;
+    readonly expected_revision: number;
+    readonly went_out: boolean;
+    readonly now: number;
+  }): MailSendClaim;
   get(reconciliation_id: string): MailSendClaim | null;
   /** The provider acknowledged. Still not PROOF — an ack can be lost, which is why
    *  `sent` is not settled and is still reconcilable. */
@@ -290,6 +326,27 @@ export const createMailSendClaimStore = (db: Database.Database): MailSendClaimSt
     return claim;
   };
 
+  /** How an attempt that was dispatched ended, when it did not end `sent`. */
+  const endAttempt = (
+    input: { reconciliation_id: string; expected_revision: number; now: number },
+    status: Extract<MailSendClaimStatus, 'not_sent' | 'unknown'>,
+  ): MailSendClaim => {
+    const claim = requireClaim(input.reconciliation_id, input.expected_revision);
+    if (claim.status !== 'claimed') return claim;
+    db.prepare(
+      `UPDATE ${MAIL_SEND_CLAIMS_TABLE}
+          SET status = @status, revision = @revision, updated_at = @now
+        WHERE reconciliation_id = @reconciliation_id AND revision = @expected_revision`,
+    ).run({
+      reconciliation_id: input.reconciliation_id,
+      status,
+      revision: claim.revision + 1,
+      now: input.now,
+      expected_revision: input.expected_revision,
+    });
+    return toClaim(readRow(input.reconciliation_id) as ClaimRow);
+  };
+
   return {
     claim(input) {
       if (!isMailReconciliationId(input.reconciliation_id)) {
@@ -318,7 +375,33 @@ export const createMailSendClaimStore = (db: Database.Database): MailSendClaimSt
             `send claim '${input.reconciliation_id}' already describes a different message`,
           );
         }
-        return { result: 'existing', claim };
+        if (!isMailSendClaimReclaimable(claim.status)) return { result: 'existing', claim };
+        // Nothing went out on the last attempt — on proof, or on the owner's word.
+        // A fresh attempt: `claimed` again, the window opening NOW (the earlier
+        // attempt cannot have produced a message to find), provider facts cleared.
+        const changed = db.prepare(
+          `UPDATE ${MAIL_SEND_CLAIMS_TABLE}
+              SET status = 'claimed', sent_after = @now,
+                  attachment_size_bytes = @attachment_size_bytes,
+                  attachment_filename = @attachment_filename,
+                  attachment_mime_type = @attachment_mime_type,
+                  provider_message_id = NULL, sent_at = NULL, ambiguity_reason = NULL,
+                  revision = @revision, updated_at = @now
+            WHERE reconciliation_id = @reconciliation_id AND revision = @expected_revision`,
+        ).run({
+          reconciliation_id: input.reconciliation_id,
+          now: input.now,
+          attachment_size_bytes: input.attachment_size_bytes ?? null,
+          attachment_filename: input.attachment_filename ?? null,
+          attachment_mime_type: input.attachment_mime_type ?? null,
+          revision: claim.revision + 1,
+          expected_revision: claim.revision,
+        }).changes;
+        // A concurrent attempt re-claimed it first: that one is the send.
+        if (changed !== 1) {
+          return { result: 'existing', claim: toClaim(readRow(input.reconciliation_id) as ClaimRow) };
+        }
+        return { result: 'created', claim: toClaim(readRow(input.reconciliation_id) as ClaimRow) };
       }
 
       const row: ClaimRow = {
@@ -391,6 +474,35 @@ export const createMailSendClaimStore = (db: Database.Database): MailSendClaimSt
           WHERE reconciliation_id = @reconciliation_id AND revision = @expected_revision`,
       ).run(next);
 
+      return toClaim(readRow(input.reconciliation_id) as ClaimRow);
+    },
+
+    markNotSent(input) {
+      return endAttempt(input, 'not_sent');
+    },
+
+    markUnknown(input) {
+      return endAttempt(input, 'unknown');
+    },
+
+    decideByOwner(input) {
+      const claim = requireClaim(input.reconciliation_id, input.expected_revision);
+      if (
+        claim.status !== 'claimed'
+        && claim.status !== 'unknown'
+        && claim.status !== 'ambiguous'
+      ) return claim;
+      db.prepare(
+        `UPDATE ${MAIL_SEND_CLAIMS_TABLE}
+            SET status = @status, revision = @revision, updated_at = @now
+          WHERE reconciliation_id = @reconciliation_id AND revision = @expected_revision`,
+      ).run({
+        reconciliation_id: input.reconciliation_id,
+        status: (input.went_out ? 'confirmed' : 'released') satisfies MailSendClaimStatus,
+        revision: claim.revision + 1,
+        now: input.now,
+        expected_revision: input.expected_revision,
+      });
       return toClaim(readRow(input.reconciliation_id) as ClaimRow);
     },
 

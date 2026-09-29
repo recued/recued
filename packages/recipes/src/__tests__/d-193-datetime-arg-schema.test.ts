@@ -38,3 +38,22 @@ describe('D-193 datetime variable → stable date-time arg schema', () => {
     expect((schema.required as string[] | undefined) ?? []).not.toContain('run_at');
   });
 });
+
+describe('a `date` variable → a JSON-Schema `date` string', () => {
+  // A calendar DAY: `YYYY-MM-DD` is the whole value, so the model has no time
+  // to invent and no zone to guess — the two ways a `date-time` goes wrong for
+  // a target or due date.
+  it('projects as { type: string, format: date }, and never as date-time', () => {
+    const recipe = {
+      recipe_id: 'initialize-federated-project',
+      variables: {
+        target_completion_at: { label: 'Target completion', type: 'date', optional: true },
+      },
+    } as unknown as RecipeDefinition;
+
+    const schema = deriveTier2ArgSchema(recipe);
+    expect(props(recipe).target_completion_at).toEqual({ type: 'string', format: 'date', description: 'Target completion' });
+    expect((schema.required as string[] | undefined) ?? []).not.toContain('target_completion_at');
+  });
+});
+

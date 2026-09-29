@@ -1,8 +1,16 @@
-/** Top-level `--help` / unknown-subcommand help text. */
+/** Top-level `--help` / unknown-subcommand help text.
+ *
+ *  ⛔ It never said which version this is, or how to ask: an owner comparing
+ *  the installed CLI with the running server had nowhere to look (reported
+ *  2026-09-28). The version rides the first line, and `version` is listed. */
 
-export function cmdHelp(): void {
+export function cmdHelp(version: string): void {
   console.log(`
-  recued — your personal warehouse + 24/7 recipe runner
+  recued ${version} — your personal warehouse + 24/7 recipe runner
+
+  About:
+    version, --version, -v              Print the version
+    help, --help, -h                    Show this help
 
   Daemon (background):
     start                               Start the server in the background

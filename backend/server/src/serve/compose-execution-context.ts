@@ -39,6 +39,10 @@ import {
 } from '../seller/permanent-pass-repair.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { createDataRepairLedger } from '../storage/data-repair-ledger.js';
+import {
+  noticeWorkEntityTextDatesRepairAtBoot,
+  type WorkEntityTextDatesNoticeResult,
+} from '../work-entity-date-repair-notice.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -154,12 +158,15 @@ export interface ComposeExecutionContextOptions {
     | 'checkpointStore'
     | 'mcpActionStore'
     | 'gatedActionStore'
+    | 'settledRunResults'
     | 'fileStack'
     | 'workEntityStoreRef'
     // Accepted intake responses are promoted in the shared preflight-resume
     // funnel before any optional downstream reception workflow continues.
     | 'intakeFormSubmissionStoreRef'
     | 'formResponseStoreRef'
+    // D-315 — mail facts, read by recipes through `mail-fact-get` / `-list`.
+    | 'mailFactStoreRef'
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path
     // R1 pre-pass binds pack-composition CRM/acct vendors (`liveVendorRegistry`).
     | 'localManifestStore'
@@ -256,6 +263,9 @@ export interface ExecutionContext {
    *  open-ended, for boot recovery. Absent when a store it writes, or the
    *  notifier it must tell the owner through, is not present. */
   permanentPassRepair?: () => Promise<PermanentPassRepairBootResult>;
+  /** The owner's notice for the dates the work-entity store repaired as it
+   *  opened. Absent without the notifier and audit log it reports through. */
+  workEntityTextDatesNotice?: () => Promise<WorkEntityTextDatesNoticeResult>;
   /** Narrow LIVE batch-membership read — see `ExecuteDepsBundle.getBatch`. The
    *  `/ask` landing gates its detail rendering on the CURRENT member count. */
   getBatch:
@@ -431,6 +441,7 @@ export const composeExecutionContext = async (
     serviceStack: collection.serviceStack,
     sharedStore: app.sharedStoreRef,
     formResponseStore: storage.formResponseStoreRef,
+    mailFactStore: storage.mailFactStoreRef,
     // D-210 Phase C (§4b) — the resolved-pointer write-back on approve-resume.
     ...(storage.intakeFormSubmissionStoreRef
       ? { intakeFormSubmissionStore: storage.intakeFormSubmissionStoreRef }
@@ -693,6 +704,9 @@ export const composeExecutionContext = async (
     // D-137 — the late-bound chat sink for a run that settles after its turn.
     // Read through the refs bag, so it resolves whenever chat published it.
     getRunSettledSink: () => lateBound.getRunSettledSink(),
+    // The page that started a held run reads its result from here once the
+    // approval lets it finish (`execution.get`).
+    settledRunResults: storage.settledRunResults,
     // D-210 A.8 slice 3d — the SAME resolved link the email channel got above,
     // deliberately not re-resolved: one public-base-URL decision, so a
     // deployment can never end up with a link on one surface and not the other.
@@ -927,6 +941,20 @@ export const composeExecutionContext = async (
               env.RECUED_PUBLIC_BASE_URL,
               storage.hostnameRegistryStore,
             ),
+          });
+        })(),
+      }
+      : {}),
+    ...(executeDepsBundle.notificationBlock && storage.auditLog
+      ? {
+        workEntityTextDatesNotice: (() => {
+          const notifier = executeDepsBundle.notificationBlock;
+          const auditLog = storage.auditLog;
+          return () => noticeWorkEntityTextDatesRepairAtBoot({
+            ledger: createDataRepairLedger(storage.db),
+            auditLog,
+            notifier,
+            now: () => Date.now(),
           });
         })(),
       }

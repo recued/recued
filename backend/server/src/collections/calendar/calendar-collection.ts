@@ -61,6 +61,7 @@ import type {
 } from '../types.js';
 import {
   CALENDAR_INLINE_CUTOFF_BYTES,
+  calendarEventChanges,
   createCalendarTable,
   type CalendarCollectionTable,
   type CalendarListQuery,
@@ -277,8 +278,13 @@ export const createCalendarCollection = (
       now: nowOf(),
     });
     const recordId = `cal:${slug}:${payload.event.source_id}`;
-    if (prev) emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>);
-    else emitter.created(recordId);
+    if (prev) {
+      // Only a change is an update, named by what changed: a restart's scan
+      // lists every stored event again, and each would otherwise wake every
+      // `updated` trigger.
+      const changed = calendarEventChanges(prev.event, payload.event);
+      if (changed.length > 0) emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
+    } else emitter.created(recordId);
     lastIndexedAt = nowOf();
     // If stop raced the synchronous commit, reject anyway: replaying this
     // idempotent upsert is safe, while allowing the retired provider generation

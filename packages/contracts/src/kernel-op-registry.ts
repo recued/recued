@@ -325,6 +325,12 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.mail.get', 'mail', 'mail-get', 'read', 'mail'),
   op('core.mail.body-read', 'mail', 'mail-body-read', 'read', 'mail'),
   op('core.mail.thread-read', 'mail', 'mail-thread-reader', 'read', 'mail'),
+  /** D-315 — mail facts: what the owner's templates read from mail, and the
+   *  things (a parcel, an order, a bill) they fold into. `mail-` backing slugs,
+   *  so the dispatch scope is `data.mail`: a fact is derived from mail, and
+   *  reading one needs the same access as reading the mail (§5). */
+  op('core.mail.fact.get', 'mail', 'mail-fact-get', 'read', 'mail'),
+  op('core.mail.fact.list', 'mail', 'mail-fact-list', 'read', 'mail'),
   op('core.mail.send', 'mail', 'mail-send', 'write', 'mail'),
   /** D-210 §7 — notify a booking's visitor server-side. A sibling outbound send to
    *  `mail-send`, but the recipient (the visitor's SEALED email) is resolved by the
@@ -685,6 +691,10 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // ── storage — the generic KV / blob surface (data.shared + data.file).
   op('core.storage.shared.write', 'storage', 'shared-write', 'write', 'shared'),
   op('core.storage.shared.compare-and-set', 'storage', 'shared-compare-and-set', 'write', 'shared'),
+  // Field-level update: change some fields of one existing record, atomically,
+  // leaving the rest — what a read-then-`write` of the whole record was doing,
+  // minus the window in which a second writer's change is overwritten.
+  op('core.storage.shared.patch', 'storage', 'shared-patch', 'write', 'shared'),
   op('core.storage.shared.read', 'storage', 'shared-read', 'read', 'shared'),
   // D-232 § 23 — the asker's own question. `output.exchange` returns a ref, and
   // until this op the ref addressed nothing a RECIPE could query: the audit

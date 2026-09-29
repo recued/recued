@@ -452,6 +452,9 @@ export interface BootstrapSettingsRouteOptions {
   /** Optional intent-specific view within AI / Models. The normal settings
    * route stays on `manage`; Chat links to the focused `chat-setup` journey. */
   initialAiModelsView?: AiModelsInitialView | null;
+  /** The AI / Models tab to open on, from `#settings/ai-models/<tab>` (the
+   *  quick setup's "Set up slot 1 and slot 2" link sends `providers`). */
+  initialAiModelsTab?: string | null;
   /** Fired after focused Chat setup has confirmed both required writes. */
   onChatSetupComplete?: () => void;
   /** Exact Chat deep link used by focused setup's return controls. */
@@ -1792,6 +1795,10 @@ export const bootstrapSettingsRoute = (
       ...(opts.initialAiModelsView !== undefined
         && opts.initialAiModelsView !== null
         ? { initialView: opts.initialAiModelsView }
+        : {}),
+      ...(opts.initialAiModelsTab !== undefined
+        && opts.initialAiModelsTab !== null
+        ? { initialTab: opts.initialAiModelsTab }
         : {}),
       ...(opts.onChatSetupComplete !== undefined
         ? { onChatSetupComplete: opts.onChatSetupComplete }

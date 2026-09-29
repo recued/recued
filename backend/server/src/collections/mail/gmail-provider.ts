@@ -57,6 +57,8 @@ import {
 } from '../../provider-pagination-guard.js';
 import {
   mailAttachmentPartFromBytes,
+  mailParsedFromName,
+  mailParsedHeaderMap,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
@@ -191,7 +193,9 @@ const firstAddress = (v: AddressObject | AddressObject[] | undefined): string =>
 
 const bodyTextFor = (parsed: ParsedMail): string => {
   if (parsed.text && parsed.text.length > 0) return parsed.text;
-  if (parsed.html) return String(parsed.html).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  // A tag ends before the next `<`: `[^>]` retried from every `<` of a broken
+  // email to its end: 500 KB of them took nine seconds.
+  if (parsed.html) return String(parsed.html).replace(/<[^<>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   return '';
 };
 
@@ -333,6 +337,8 @@ export const canonicalizeGmail = async (
       ? { reconciliation_id: reconciliationId }
       : {}),
     from: parsed.from ? firstAddress(parsed.from) : '',
+    from_name: mailParsedFromName(parsed.from),
+    headers: mailParsedHeaderMap(parsed),
     to: addressToStringList(parsed.to),
     cc: addressToStringList(parsed.cc),
     subject: parsed.subject ?? '',
@@ -668,6 +674,14 @@ export const createGmailProvider = (
       throw new Error(`gmail message ${id} read failed (${failureStatus})`);
     }
     return message;
+  };
+
+  /** D-315 §4.4 — one message read again, whole (`format=raw`), its
+   *  attachments listed. `null` when Gmail no longer has it. */
+  const fetchMessage = async (id: string): Promise<CanonicalMessage | null> => {
+    const raw = await fetchMessageRaw(encodeURIComponent(id));
+    if (raw === null) return null;
+    return hydrateGmailAttachments(await canonicalizeGmail(raw));
   };
 
   const fetchMessageFull = async (id: string): Promise<GmailMessageFullPayload | null> => {
@@ -1098,7 +1112,14 @@ export const createGmailProvider = (
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      const detail = { kind: 'gmail' as const, slug: opts.slug, status: res.status };
+      const detail = {
+        kind: 'gmail' as const,
+        slug: opts.slug,
+        status: res.status,
+        // A 4xx is Gmail REFUSING the request: nothing was sent, so the send
+        // claim may start afresh. A 5xx proves nothing either way.
+        ...(res.status >= 400 && res.status < 500 ? { not_sent: true } : {}),
+      };
       if (res.status === 401 || res.status === 403) {
         markError(`gmail send auth ${res.status}`, text);
         throw new IngredientError(
@@ -1565,6 +1586,7 @@ export const createGmailProvider = (
     },
 
     lookupSentByReconciliationId,
+    fetchMessage,
 
     ...(sendCapable ? { send: sendImpl } : {}),
     // D-239 — attached as a group, mirroring `mutationCapable`. A partial

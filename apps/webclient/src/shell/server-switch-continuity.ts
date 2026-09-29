@@ -36,7 +36,7 @@ const SAFE_FIRST_SEGMENTS: Readonly<
   connections: new Set(['mail', 'calendar', 'file', 'others', 'webhooks']),
   data: new Set([
     'contact', 'task', 'note', 'commitment', 'project', 'booking',
-    'form_response', 'webhook', 'mail', 'calendar', 'crm', 'files',
+    'form_response', 'mail_fact', 'webhook', 'mail', 'calendar', 'crm', 'files',
     'annotation', 'link', 'shared', 'memory',
   ]),
   automation: new Set(['auto-run', 'triggers', 'schedules', 'dishes']),
@@ -196,6 +196,7 @@ const SAFE_SUBVIEW_LABELS: Readonly<Record<string, string>> = {
   project: 'Projects',
   booking: 'Bookings',
   form_response: 'Form responses',
+  mail_fact: 'Mail facts',
   webhook: 'Webhooks',
   crm: 'CRM',
   files: 'Files',

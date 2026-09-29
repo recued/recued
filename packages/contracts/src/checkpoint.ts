@@ -66,7 +66,23 @@ export interface PreflightApprovedTarget {
  * The original ask normally persists its own payload; this checkpoint copy
  * keeps the same affordance and clamp warning when boot recovery must re-raise
  * an ask after notification delivery failed. */
+/** A held `foreach` step: the calls ONE approval covers — the held item and
+ *  every remaining one that targets the same operation and account (the
+ *  engine's "remaining same-target aggregate"). Display only: persisted so a
+ *  re-raised ask after a restart still says it, never validated strictly —
+ *  a malformed one renders as a single-call ask, it never loses the hold. */
+export interface PreflightForeachCover {
+  /** How many calls. With `items` it is exact; without, an upper bound. */
+  readonly total: number;
+  readonly items?: ReadonlyArray<{
+    readonly summary: string;
+    readonly args_preview: Record<string, unknown>;
+  }>;
+}
+
 export interface PreflightCheckpointContext {
+  /** See {@link PreflightForeachCover}. Absent on every single-call hold. */
+  foreach_cover?: PreflightForeachCover;
   tool_slug?: string;
   connection_name?: string;
   risk_tier?: string;

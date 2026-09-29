@@ -2777,7 +2777,9 @@ export const renderRecipeResultPanel = (
     : resultTerminated(result)
       ? '<p class="recipes-detail-note">The run stopped before producing renderable output.</p>'
       : resultAwaitingApproval(result)
-        ? '<p class="recipes-detail-note">This run is held for approval. No result output is rendered until the owner reruns or reviews the workflow.</p>'
+        // The page follows the run (`held-run-follow.ts`): once the hold is
+        // answered, the run's own result — or that it was declined — replaces this.
+        ? '<p class="recipes-detail-note">This run is waiting for approval. Once it is approved, its result shows here.</p>'
         : sections.length > 0
           ? sections.map((section) => renderRecipeResultSection(
               section,

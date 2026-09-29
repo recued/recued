@@ -329,7 +329,85 @@ export interface CanonicalMessage {
   /** Inbound attachment parts. Each part fetches bytes server-side for
    *  later CAS ingest; providers never upload bytes to a cloud service. */
   attachments?: InboundMailAttachmentPart[];
+  /** D-315 — the sender's display name (`"UPS" <pkginfo@ups.com>` → `UPS`),
+   *  empty or absent when the message gives none. ⚠ IN MEMORY ONLY: never
+   *  stored on the row. The ingest hands it to its derivation hooks, where a
+   *  mail-fact template's sender condition and `from_name` rules read it. */
+  from_name?: string;
+  /** D-315 — header name (lower case) → its first value, for the mail-fact
+   *  templates that read a header. In memory only, like `from_name`. */
+  headers?: Readonly<Record<string, string>>;
 }
+
+/** A parsed address list in mailparser's shape — structural, so this module
+ *  stays free of the parser the adapters use. */
+interface ParsedAddressListLike {
+  readonly value: readonly { readonly name?: string }[];
+}
+
+/** D-315 — the display name of a parsed `From`, empty when there is none. */
+export const mailParsedFromName = (
+  from: ParsedAddressListLike | readonly ParsedAddressListLike[] | undefined,
+): string => {
+  if (from === undefined) return '';
+  const first = 'value' in from ? from : from[0];
+  return first?.value[0]?.name?.trim() ?? '';
+};
+
+const ENCODED_WORD = /=\?([^?\s]+)\?([BbQq])\?([^?\s]*)\?=/g;
+/** Whitespace between two adjacent encoded words is not part of the text. */
+const BETWEEN_ENCODED_WORDS = /(=\?[^?\s]+\?[BbQq]\?[^?\s]*\?=)\s+(?==\?[^?\s]+\?[BbQq]\?[^?\s]*\?=)/g;
+
+/** D-315 — decode RFC 2047 encoded words (`=?UTF-8?Q?f=C3=BCr?=` → `für`).
+ *  mailparser decodes only the headers it knows (Subject, the address lists),
+ *  and Graph returns header values as sent, so a template reading a custom
+ *  header would otherwise see the encoding. A word in a charset this runtime
+ *  cannot decode stays as sent. */
+export const decodeMailHeaderWords = (value: string): string =>
+  value.replace(BETWEEN_ENCODED_WORDS, '$1').replace(
+    ENCODED_WORD,
+    (word, charset: string, encoding: string, text: string) => {
+      try {
+        const bytes = encoding.toUpperCase() === 'B'
+          ? Buffer.from(text, 'base64')
+          : Buffer.from(
+              text
+                .replace(/_/g, ' ')
+                .replace(/=([0-9A-Fa-f]{2})/g, (_hex, hex: string) => String.fromCharCode(parseInt(hex, 16))),
+              'latin1',
+            );
+        // `charset*language` (RFC 2231) names the charset before the star.
+        return new TextDecoder(charset.split('*')[0]!.toLowerCase()).decode(bytes);
+      } catch {
+        return word;
+      }
+    },
+  );
+
+/** D-315 — header name → first value, from `[name, value]` pairs. Names are
+ *  lower-cased and values unfolded and decoded (`decodeMailHeaderWords`). The
+ *  map has NO PROTOTYPE, so a header named `constructor` or `__proto__` is
+ *  data a template can read, never an inherited member. */
+export const mailHeaderMap = (
+  entries: Iterable<readonly [string, string]>,
+): Readonly<Record<string, string>> => {
+  const out = Object.create(null) as Record<string, string>;
+  for (const [name, value] of entries) {
+    const key = name.trim().toLowerCase();
+    if (key === '' || key in out) continue;
+    out[key] = decodeMailHeaderWords(value.replace(/\r?\n[ \t]+/g, ' ')).trim();
+  }
+  return out;
+};
+
+/** D-315 — the header map of a mailparser-parsed message, from its raw header
+ *  lines: every header as sent, one decoding for all of them. */
+export const mailParsedHeaderMap = (parsed: {
+  readonly headerLines: readonly { readonly key: string; readonly line: string }[];
+}): Readonly<Record<string, string>> =>
+  mailHeaderMap(
+    parsed.headerLines.map(({ key, line }): [string, string] => [key, line.slice(line.indexOf(':') + 1)]),
+  );
 
 /** D-200 source-truth reconciliation deliberately scans a bounded historical
  * Sent window. A complete scan may prove one exact accepted message; an
@@ -914,6 +992,14 @@ export interface MailProvider {
   lookupSentByReconciliationId?(
     query: MailSentReconciliationQuery,
   ): Promise<MailSentReconciliationResult>;
+
+  /** D-315 §4.4 — one message read again from the provider, whole: its HTML,
+   *  headers and sender name, which the stored row does not keep. A template's
+   *  preview and a backfill read mail that already arrived through it.
+   *  `null` when the provider no longer has that message (moved or deleted).
+   *  Its `attachments` are listed, not materialized. Optional: a provider
+   *  without it leaves those readers to the stored copy. */
+  fetchMessage?(source_id: string): Promise<CanonicalMessage | null>;
 
   // ── D-239 write-back: mutating a message that already exists ──────
   //

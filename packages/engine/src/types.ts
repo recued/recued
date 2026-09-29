@@ -1,6 +1,7 @@
 import type { PeerAskSpec } from '@recued/contracts';
 import type {
   Actor,
+  Condition,
   ContractSnapshot,
   ExecutionSource,
   RecipeDefinition,
@@ -33,10 +34,12 @@ import type {
   ResolvedOutputSection,
   RecordsExecutionBinding,
   RecordsExecutionCall,
+  RecipeStep,
 } from '@recued/contracts';
 import type { ValidationIssue } from '@recued/recipes';
 import type { ContextRecipeSnapshotResult } from './context-recipe.js';
 import type { SharedResolvers } from './shared-prefetch.js';
+import type { StepEffect } from './step-seed.js';
 
 /** Pluggable function that executes ingredient calls (HTTP, DOM, LLM, MCP).
  *  `stepOutput` is the optional per-step output mapping that extends the
@@ -796,6 +799,15 @@ export interface ExecutionContext {
    *  no-op). The `truncated` array carries step ids dropped during
    *  size-cap reduction so the host can surface a warning. */
   onContextRecipeSnapshot?: (result: ContextRecipeSnapshotResult) => void;
+  /** Read fresh before a write (`step-seed.ts`): the host's word on what each
+   *  step does to the owner's records. When set, a recipe with any `write` step
+   *  reads every `own_read` step fresh through BOTH cache tiers (the L2 step
+   *  cache and the host's L1 ingredient cache, via `StepOptions.cache`) unless
+   *  the step names its own `cache`. Absent ⇒ caching as before. */
+  stepEffect?: (step: RecipeStep) => StepEffect;
+  /** Engine-internal — the step ids `stepEffect` made fresh for this run,
+   *  computed once at `executeRecipe` start. */
+  readFreshSteps?: ReadonlySet<string>;
   stepCache?: {
     store: import('@recued/cache').CacheStore;
     /** Per-slug policy resolver. Typical wiring: a thunk over
@@ -941,6 +953,9 @@ export interface StepLog {
    *  when the bound connection record is missing. Omitted for
    *  non-skipped steps. */
   skip_reason?: string;
+  /** Present on the step whose `stop_when` held: the run ends after it, as a
+   *  success. */
+  stopped?: true;
   result: unknown;
   error: RecipeError | null;
   duration_ms: number;
@@ -1022,6 +1037,13 @@ export interface ExecutionResult {
    *  counter. Only ever set on reactive runs — trigger_steps never
    *  run on manual / cron recipes. */
   trigger_skipped?: boolean;
+  /** The step whose `stop_when` ended the run early. The run is a SUCCESS —
+   *  there was nothing more to do, so the steps after it did not run — and it
+   *  is terminal like any finished one: the output renders from the steps that
+   *  ran, and an `output.exchange` still fires (D-232 § 19 — a reply is owed).
+   *  Unlike `trigger_skipped`, work DID happen: the steps up to this one ran and
+   *  their results are the answer. Absent when the run went to the end. */
+  stopped?: { step_id: string; condition: string | Condition };
   /** D-232 § 19.3 — the receipt for an exchange this run FIRED. Present iff the
    *  run declared `output.exchange` and the fire succeeded (or was durably
    *  queued behind an owner's card, which is an acceptance too — the answer is

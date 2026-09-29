@@ -65,6 +65,17 @@ describe('enumerateTransformParams', () => {
     expect(names).not.toContain('transform');
     expect(enumerateTransformParams(ingredientStep)).toEqual([]);
   });
+
+  it('never lists a condition field as a param — stop_when included', () => {
+    const conditioned = {
+      ...(transformStep as unknown as Record<string, unknown>),
+      skip_when: '{{a}} is_null', fail_on: '{{b}} is_null', stop_when: '{{c}} is_empty',
+    } as unknown as RecipeStep;
+    const names = enumerateTransformParams(conditioned).map((p) => p.name);
+    expect(names).not.toContain('skip_when');
+    expect(names).not.toContain('fail_on');
+    expect(names).not.toContain('stop_when');
+  });
 });
 
 describe('enumerateIngredientInputs / enumerateOpArgs', () => {

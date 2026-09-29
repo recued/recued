@@ -208,6 +208,20 @@ describe('delete', () => {
 });
 
 describe('list — filtering + pagination', () => {
+  it('pages by date and id after a row: a burst of one date is neither repeated nor skipped', () => {
+    const own = createCollectionTable({ db, platform: 'mail', slug: 'burst' });
+    const at = 1_700_000_000_000;
+    for (const id of ['r1', 'r2', 'r3', 'r4']) own.upsert(makeRecord({ record_id: id, received_at: at }));
+    own.upsert(makeRecord({ record_id: 'older', received_at: at - 1 }));
+    const first = own.list({ platform: 'mail', slug: 'burst', limit: 2 });
+    expect(first.map((r) => r.record_id)).toEqual(['r4', 'r3']);
+    const last = first[first.length - 1]!;
+    const second = own.list({ platform: 'mail', slug: 'burst', limit: 2, before: { received_at: last.received_at, record_id: last.record_id } });
+    expect(second.map((r) => r.record_id)).toEqual(['r2', 'r1']);
+    const third = own.list({ platform: 'mail', slug: 'burst', limit: 2, before: { received_at: at, record_id: 'r1' } });
+    expect(third.map((r) => r.record_id)).toEqual(['older']);
+  });
+
   beforeEach(() => {
     // Seed 6 records spanning two threads over three days.
     const base = 1_700_000_000_000;
@@ -521,6 +535,7 @@ describe('pruneOlderThan', () => {
     expect(result.pruned_count).toBe(2);
     expect(result.bytes_freed).toBe(75);
     expect(result.blob_hashes_freed).toEqual(['h-old-1']);
+    expect([...result.record_ids].sort()).toEqual(['old1', 'old2']);
     expect(table.get('old1')).toBeNull();
     expect(table.get('old2')).toBeNull();
     expect(table.get('keep1')).not.toBeNull();
@@ -528,7 +543,7 @@ describe('pruneOlderThan', () => {
 
   it('returns a zero summary when nothing matches', () => {
     const result = table.pruneOlderThan(0);
-    expect(result).toEqual({ pruned_count: 0, bytes_freed: 0, blob_hashes_freed: [] });
+    expect(result).toEqual({ pruned_count: 0, bytes_freed: 0, blob_hashes_freed: [], record_ids: [] });
   });
 
   it('drops FTS rows for the pruned records', () => {

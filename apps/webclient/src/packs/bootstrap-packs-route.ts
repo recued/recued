@@ -311,7 +311,12 @@ export interface BootstrapPacksRouteOptions {
    *  rather than in the panel so one-modal-at-a-time holds for the route. */
   openRunModal?: (
     entry: import('@recued/contracts').ServerRecipeListEntry,
-    onRan?: (result: import('@recued/contracts').ServerExecuteResponse) => void,
+    /** `later` rides a result that arrives after the modal closed — a held run
+     *  the owner has since approved — naming the result it replaces. */
+    onRan?: (
+      result: import('@recued/contracts').ServerExecuteResponse,
+      later?: import('../held-run-follow.js').LaterRunResult,
+    ) => void,
     /** A row action's `config` / `context`, so "Open" on a row opens the target
      *  recipe already filled with that row's id. */
     prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },

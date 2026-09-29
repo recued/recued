@@ -39,9 +39,14 @@ import {
   type CheckpointStore,
 } from '@recued/storage';
 
+import type { PendingAsk } from '@recued/notification';
+
+import { createAskLandingEditApproval } from '../ask-landing-edit-approval.js';
+import { createAskLandingDetailResolver } from '../ask-landing-held-op-details.js';
 import {
   defaultIsReceptionOriginAnchor,
   defaultResolveInboxSource,
+  findReceptionHoldItem,
   handleReceptionInboxApprove,
   handleReceptionInboxList,
   handleReceptionInboxReject,
@@ -1188,5 +1193,161 @@ describe('defaultResolveInboxSource (N.1)', () => {
   it('omits the attachment for a non-file held op (no file_id)', () => {
     const anchor = mkAnchor();
     expect(defaultResolveInboxSource({ anchor, checkpoint: mkCheckpoint() })!.attachment).toBeUndefined();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// A held LOOP item — one approval runs every remaining item
+// ────────────────────────────────────────────────────────────────
+
+/** The run paused at item `next_index` of a `source_length`-item foreach
+ *  over the gated step. Approving runs that item and every one after it, and
+ *  the engine applies an approve-time edit to each of them (a corrected
+ *  recipient on the held item sends every item there) — so no edits. */
+const loopProgress = (
+  next_index: number,
+  source_length: number,
+): NonNullable<Checkpoint['foreach_progress']> => ({
+  step_id: 'materialize',
+  next_index,
+  source_length,
+  source_hash: 'a'.repeat(64),
+  results: Array.from({ length: next_index }, () => ({ ok: true })),
+});
+
+const PREFLIGHT_ASK: PendingAsk = {
+  ask_id: 'ask-1',
+  message: { title: 'Approve', text: 'Approve?' },
+  options: [
+    { id: 'approve', label: 'Approve' },
+    { id: 'deny', label: 'Deny' },
+  ],
+  handler_kind: 'gateway.preflight',
+  handler_payload: { checkpoint_id: 'cp-1' },
+  fanout_channels: ['email'],
+  status: 'open',
+  created_at: NOW,
+};
+
+describe('a held loop item — one approval runs every remaining item', () => {
+  it('offers no edit fields while items remain after the held one', async () => {
+    const h = makeHarness();
+    await seedHeld(h, {}, { foreach_progress: loopProgress(0, 3) });
+    const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]!.arg_schema.fields).toEqual([]);
+    // What it runs is still there to read.
+    expect(res.items[0]!.args).toMatchObject({ title: 'Coffee chat', calendar_id: 'cal-a' });
+    // …and how many it runs. Nothing listed them, so the items left in the
+    // loop are all it can claim: an upper bound.
+    expect(res.items[0]!.approval_covers).toEqual({ count: 3, exact: false });
+  });
+
+  it('states the count the hold ask states — exact when the gate listed the calls', async () => {
+    const listed = (to: string) => ({ summary: `to: ${to}`, args_preview: { to } });
+    const cases: Array<[NonNullable<Checkpoint['preflight_context']>, unknown]> = [
+      // Four left in the loop, two of them on another account: two are this approval's.
+      [{ foreach_cover: { total: 2, items: [listed('dana'), listed('eli')] } }, { count: 2, exact: true }],
+      // The gate could not list them: its count is a bound, and says so.
+      [{ foreach_cover: { total: 4 } }, { count: 4, exact: false }],
+      // Unreadable — read as the ask reads it, so the loop's own count stands.
+      [{ foreach_cover: { total: 'many' } as never }, { count: 4, exact: false }],
+    ];
+    for (const [preflight_context, expected] of cases) {
+      const h = makeHarness();
+      await seedHeld(h, {}, { foreach_progress: loopProgress(0, 4), preflight_context });
+      const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+      expect(res.items[0]!.approval_covers).toEqual(expected);
+    }
+  });
+
+  it('refuses an edit — nothing is written and nothing is released', async () => {
+    const h = makeHarness();
+    await seedHeld(h, {}, { foreach_progress: loopProgress(0, 3) });
+    await expect(
+      handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1', edits: { calendar_id: 'cal-b' } }, ADMIN),
+    ).rejects.toMatchObject({ code: 'edit_not_allowed' });
+    expect((await h.checkpointStore.get('cp-1'))!.arg_overrides).toBeUndefined();
+    expect(h.submitAnswer).not.toHaveBeenCalled();
+  });
+
+  it('still approves as it stands', async () => {
+    const h = makeHarness();
+    await seedHeld(h, {}, { foreach_progress: loopProgress(0, 3) });
+    const res = await handleReceptionInboxApprove(h.deps, { hold_id: 'cp-1' }, ADMIN);
+    expect(res.released).toBe(true);
+    expect(h.submitAnswer).toHaveBeenCalledWith('ask-1', 'approve');
+  });
+
+  it('keeps the fields and states no count when the approval runs one item', async () => {
+    // The last item of a loop, a chunked gate, or no loop at all: the
+    // approval — and an edit — reaches that one item only.
+    const oneItemHolds: Array<Partial<Checkpoint>> = [
+      { foreach_progress: loopProgress(2, 3) },
+      {
+        foreach_progress: loopProgress(0, 3),
+        preflight_context: { egress_bound: { requests: 1, total_bytes: 1024 } },
+      },
+    ];
+    for (const overrides of [...oneItemHolds, {}]) {
+      const h = makeHarness();
+      await seedHeld(h, {}, overrides);
+      const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+      expect(res.items[0]!.arg_schema).toEqual(allowlistSchema);
+      expect(res.items[0]).not.toHaveProperty('approval_covers');
+    }
+  });
+
+  it('a form response held in a loop offers none either', async () => {
+    const resolveFormResponseEdit = vi.fn(async () => ({
+      values: { project: 'Original sealed answer' },
+      visitor_email: 'visitor@example.test',
+    }));
+    const h = makeHarness({ topTierKind: 'form_response', resolveFormResponseEdit });
+    await seedHeld(h, {}, { foreach_progress: loopProgress(0, 3) });
+    const res = await handleReceptionInboxList(h.deps, undefined, ADMIN);
+    expect(res.items[0]!.arg_schema.fields).toEqual([]);
+    expect(res.items[0]!.args).not.toHaveProperty('form_response_values');
+  });
+
+  it('the /ask page shows no fields for it and refuses an edit sent anyway', async () => {
+    const askPage = (h: Harness) => {
+      const findHoldItem = (hold_id: string) => findReceptionHoldItem(h.deps, hold_id);
+      const approve = vi.fn(async ({ hold_id, edits, ask_id }: {
+        hold_id: string;
+        edits: Record<string, unknown>;
+        ask_id: string;
+      }) => handleReceptionInboxApprove(h.deps, { hold_id, edits }, { ask_landing: { ask_id } }));
+      return {
+        approve,
+        resolveDetails: createAskLandingDetailResolver({ findHoldItem, editable: true, timeZone: 'UTC' }),
+        submitEdited: createAskLandingEditApproval({ findHoldItem, approve, timeZone: 'UTC' }),
+      };
+    };
+
+    // The same hold without the loop renders its editable rows…
+    const plain = makeHarness();
+    await seedHeld(plain);
+    const plainPage = askPage(plain);
+    expect((await plainPage.resolveDetails(PREFLIGHT_ASK))!.details.map((d) => d.label)).toEqual([
+      'Start',
+      'Calendar',
+    ]);
+
+    // …held at item 1 of 3 it renders none, and a posted edit is refused
+    // before anything is written or released.
+    const loop = makeHarness();
+    await seedHeld(loop, {}, { foreach_progress: loopProgress(0, 3) });
+    const loopPage = askPage(loop);
+    expect(await loopPage.resolveDetails(PREFLIGHT_ASK)).toBeNull();
+    const out = await loopPage.submitEdited({
+      ask: PREFLIGHT_ASK,
+      option: 'approve',
+      rawEdits: { calendar_id: 'cal-b' },
+    });
+    expect(out.ok).toBe(false);
+    expect(loopPage.approve).not.toHaveBeenCalled();
+    expect((await loop.checkpointStore.get('cp-1'))!.arg_overrides).toBeUndefined();
+    expect(loop.submitAnswer).not.toHaveBeenCalled();
   });
 });

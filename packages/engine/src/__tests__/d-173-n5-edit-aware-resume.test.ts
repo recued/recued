@@ -745,3 +745,55 @@ describe('D-157 N.5 (args-aware) — Boundary preserved on the catalog-op path',
     expect((executorCalls[0].input as { polluted?: unknown }).polluted).toBeUndefined();
   });
 });
+
+describe('D-173 N.5 — an edit on a held foreach item', () => {
+  // ⛔ WHY THE INBOX OFFERS NO EDITS ON SUCH A HOLD (`holdCoversSeveralItems`,
+  // backend/server/src/foreach-approval-items.ts). One approval runs every
+  // remaining item, and the merge keys on the step id, which every item of the
+  // loop shares — so an edit meant for the held item lands on all of them.
+  // If this ever narrows to the held item alone, edits can be offered there.
+  const people = [
+    { to: 'dana@example.test' },
+    { to: 'eli@example.test' },
+    { to: 'fay@example.test' },
+  ];
+  const loopSteps = (): RecipeStep[] =>
+    asSteps([{ id: 'send', foreach: '{{config.people}}', ingredient: 'send-op', input: '{{item}}' }]);
+  const loopStores = (): NamespaceStores => ({ ...baseStores(), config: { people } });
+
+  const resumeWith = async (argOverrides?: Record<string, unknown>): Promise<unknown[]> => {
+    const paused = await executeRecipe({
+      recipe: makeRecipe(loopSteps()),
+      stores: loopStores(),
+      ingredientExecutor: async () => {
+        throw new PreflightRequiredSignal();
+      },
+    });
+    const held = paused.awaiting_approval!;
+    expect(held.foreach_progress).toMatchObject({ next_index: 0, source_length: 3 });
+    const captures: Captured[] = [];
+    await executeRecipe({
+      recipe: makeRecipe(loopSteps()),
+      stores: { ...loopStores(), step: { ...held.step_state } },
+      ingredientExecutor: makeRecordingExec(captures, { gateMaterialize: false }),
+      resumeFrom: {
+        gated_step_id: 'send',
+        ...(held.foreach_progress !== undefined ? { foreach_progress: held.foreach_progress } : {}),
+        ...(argOverrides !== undefined ? { arg_overrides: argOverrides } : {}),
+      },
+    });
+    return captures.map((c) => (c.input as { to: string }).to);
+  };
+
+  it('one approval runs every remaining item, each with its own values', async () => {
+    expect(await resumeWith()).toEqual(people.map((p) => p.to));
+  });
+
+  it('a corrected recipient on the held item reaches every remaining item', async () => {
+    expect(await resumeWith({ to: 'dana.corrected@example.test' })).toEqual([
+      'dana.corrected@example.test',
+      'dana.corrected@example.test',
+      'dana.corrected@example.test',
+    ]);
+  });
+});

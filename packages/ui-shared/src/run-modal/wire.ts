@@ -44,7 +44,9 @@ import {
   type ConfigEditorOverlayHandle,
 } from '../config-editor-overlay.js';
 
+import { mailFactCreateArgs } from './mail-fact-trigger.js';
 import {
+  EMPTY_MAIL_FACT_DRAFT,
   initialRunModalState,
   parseRunConfig,
   recipeSchedules,
@@ -55,6 +57,7 @@ import {
   renderRunModal,
   RUN_MODAL_ACTION_ATTR,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_FACT_ATTR,
   RUN_MODAL_PATTERN_ATTR,
   RUN_MODAL_PRESET_ATTR,
   RUN_MODAL_MISSED_POLICY_ATTR,
@@ -609,10 +612,28 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   };
 
   // ── R21 Trigger tab — mirrors the schedule half verbatim ──
+  /** D-315 §5.1 — the owner's templates, once: the "A mail fact" form's
+   *  "Read by" picker, and the names a fact trigger's row gives. */
+  const loadMailFactTemplates = async (): Promise<void> => {
+    if (opts.mailFactTemplates === undefined || state.mail_fact_templates !== null) return;
+    // §4.5 — the owner's kinds of email come with them. A list that failed is
+    // not an empty one: the templates stay unknown (a trigger narrowed to one
+    // reads "read by one template", never "a template that was deleted") and
+    // are asked for again next time; the kinds stay as they were.
+    const [templates, types] = await Promise.all([
+      opts.mailFactTemplates().then((result) => result.templates, () => null),
+      opts.mailFactTypes?.().then((result) => result.types, () => null) ?? Promise.resolve(null),
+    ]);
+    if (destroyed) return;
+    state = { ...state, mail_fact_templates: templates, mail_fact_types: types ?? state.mail_fact_types };
+    paint(captureFocusIdentity());
+  };
+
   const loadTriggers = async (
     restoreFocus?: RunModalFocusIdentity | null,
   ): Promise<void> => {
     if (opts.triggersList === undefined) return;
+    void loadMailFactTemplates();
     try {
       const { triggers } = await opts.triggersList();
       if (destroyed) return;
@@ -664,10 +685,18 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     const create = opts.triggersCreate;
     if (create === undefined) return triggerNotWired();
     const addFocus = captureFocusIdentity();
+    // D-315 §5.1 — "A mail fact" sends the shorthand; the server validates it
+    // as it validates a recipe's, and a refusal comes back with its reason.
+    const shorthand = state.trigger_kind === 'mail_fact' ? mailFactCreateArgs(state.mail_fact, state.mail_fact_types) : null;
+    if (shorthand !== null && 'error' in shorthand) {
+      state = { ...state, trigger_error: shorthand.error };
+      paint(addFocus);
+      return Promise.resolve();
+    }
     const pattern = state.pattern_text.trim();
     // An empty pattern never creates a row (the rendered Add is disabled;
     // this guards the imperative path).
-    if (pattern.length === 0) return Promise.resolve();
+    if (shorthand === null && pattern.length === 0) return Promise.resolve();
     let overlay: Record<string, unknown>;
     try {
       overlay = parseRunConfig(state.config_text);
@@ -680,7 +709,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       create({
         recipe_id: opts.recipe.recipe_id,
         publisher_id: opts.publisherId ?? opts.recipe.publisher_id,
-        pattern,
+        ...(shorthand !== null ? shorthand : { pattern }),
         ...(Object.keys(overlay).length > 0 ? { config_overlay: overlay } : {}),
       }),
     );
@@ -816,6 +845,17 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       void addTrigger();
       return;
     }
+    if (action === 'trigger-kind:pattern' || action === 'trigger-kind:mail_fact') {
+      const kindFocus = captureFocusIdentity();
+      state = {
+        ...state,
+        trigger_kind: action === 'trigger-kind:mail_fact' ? 'mail_fact' : 'pattern',
+        trigger_error: null,
+      };
+      paint(kindFocus);
+      if (state.trigger_kind === 'mail_fact') void loadMailFactTemplates();
+      return;
+    }
     const ruleId = actor.getAttribute(RUN_MODAL_RULE_ID_ATTR) ?? '';
     if (action === 'config-schedule') {
       openRowConfigEditor('schedule', ruleId);
@@ -901,6 +941,39 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         schedule_error: null,
       };
       overlay.querySelector?.(`[${RUN_MODAL_SCHEDULE_ERROR_ATTR}]`)?.remove();
+      return;
+    }
+    // D-315 §5.1 — the "A mail fact" form. A new kind, a value added to watch
+    // or a new "only when" changes the controls, so those repaint; the rest
+    // are kept in place (an unticked value stays shown until then, to tick
+    // again). What was watched and filtered belongs to the kind it was for.
+    if (target.hasAttribute(RUN_MODAL_FACT_ATTR)) {
+      const control = target.getAttribute(RUN_MODAL_FACT_ATTR) ?? '';
+      const value = target.value ?? '';
+      const draft = state.mail_fact;
+      if (control === 'type') {
+        if (value === draft.type) return;
+        state = { ...state, mail_fact: { ...EMPTY_MAIL_FACT_DRAFT, type: value }, trigger_error: null };
+        paint(captureFocusIdentity());
+      } else if (control === 'field-add') {
+        if (value === '' || draft.fields.includes(value)) return;
+        state = { ...state, mail_fact: { ...draft, fields: [...draft.fields, value] }, trigger_error: null };
+        paint(captureFocusIdentity());
+      } else if (control === 'where-variable') {
+        if (value === draft.where_variable) return;
+        state = { ...state, mail_fact: { ...draft, where_variable: value, where_value: '' }, trigger_error: null };
+        paint(captureFocusIdentity());
+      } else if (control === 'where-value') {
+        state = { ...state, mail_fact: { ...draft, where_value: value }, trigger_error: null };
+      } else if (control === 'template') {
+        state = { ...state, mail_fact: { ...draft, template_id: value } };
+      } else if (control.startsWith('field:')) {
+        const name = control.slice('field:'.length);
+        const on = (target as unknown as { checked?: boolean }).checked === true;
+        const fields = draft.fields.filter((field) => field !== name);
+        state = { ...state, mail_fact: { ...draft, fields: on ? [...fields, name] : fields } };
+      }
+      overlay.querySelector?.(`[${RUN_MODAL_TRIGGER_ERROR_ATTR}]`)?.remove();
       return;
     }
     // Trigger pattern (R21) — in place (caret preserved); the Add button's
@@ -1173,6 +1246,15 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     setNewMissedPolicy,
     removeSchedule,
     setPatternText,
+    setTriggerKind: (kind) => {
+      state = { ...state, trigger_kind: kind, trigger_error: null };
+      paint(captureFocusIdentity());
+      if (kind === 'mail_fact') void loadMailFactTemplates();
+    },
+    setMailFact: (draft) => {
+      state = { ...state, mail_fact: { ...state.mail_fact, ...draft }, trigger_error: null };
+      paint(captureFocusIdentity());
+    },
     addTrigger,
     toggleTrigger,
     removeTrigger,

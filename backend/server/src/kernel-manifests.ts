@@ -970,7 +970,7 @@ const MANIFESTS = [
   {
     "slug": "commitment-create",
     "name": "Create commitment",
-    "description": "Create a commitment on the chosen Source. lifecycle_state defaults to 'pending'; due_status is derived from promised_for_at (no_deadline / not_due) at create time. expiry_policy defaults to 'escalate_overdue' so monetary + counterparty commitments escalate at the deadline instead of silently expiring (§ A.1.3 invariant). Returns the canonical commitment record.",
+    "description": "Create a commitment on the chosen Source. lifecycle_state defaults to 'pending'; due_status is derived from promised_for_at (no_deadline / not_due) at create time. expiry_policy defaults to 'escalate_overdue' so monetary + counterparty commitments escalate at the deadline instead of silently expiring (§ A.1.3 invariant). Returns the canonical commitment record. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -985,6 +985,7 @@ const MANIFESTS = [
     "input": {
       "direction": null,
       "statement": null,
+      "idempotency_key": null,
       "derivation": null,
       "promised_at": null,
       "promised_for_at": null,
@@ -1010,7 +1011,7 @@ const MANIFESTS = [
   {
     "slug": "commitment-propose",
     "name": "Propose commitment",
-    "description": "Create a commitment through the review-then-approve PROPOSAL surface (D-192 F1). Same input + mint effect as commitment-create, but the slug rides the commitment-proposal approval LIFT (op-risk-admission.ts): the dispatch HOLDS at the D-157 gate for EVERY actor — including unattended system fires — and the commitment mints only when the owner approves (optionally editing statement / deadline / direction / counterparty in the D-173 inbox first). The commitment-evidence capture producer is the primary caller; a recipe may also propose-for-review deliberately.",
+    "description": "Create a commitment through the review-then-approve PROPOSAL surface (D-192 F1). Same input + mint effect as commitment-create, but the slug rides the commitment-proposal approval LIFT (op-risk-admission.ts): the dispatch HOLDS at the D-157 gate for EVERY actor — including unattended system fires — and the commitment mints only when the owner approves (optionally editing statement / deadline / direction / counterparty in the D-173 inbox first). The commitment-evidence capture producer is the primary caller; a recipe may also propose-for-review deliberately. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -1026,6 +1027,7 @@ const MANIFESTS = [
     "input": {
       "direction": null,
       "statement": null,
+      "idempotency_key": null,
       "derivation": null,
       "promised_at": null,
       "promised_for_at": null,
@@ -3472,6 +3474,58 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "mail-fact-get",
+    "name": "Mail Fact Get",
+    "description": "Fetches one mail-fact thing (a parcel, an order, a bill) with the facts it folds, or one fact with its thing, by id — a thing id such as the record_id of a mail_fact trigger event, or a fact id. Returns { thing, facts }: the thing's variables (null when no fact read one), complete and missing, and each fact with its variables, data and the email it came from (email.slug + email.record_id, for mail-get). An unknown id returns { thing: null, facts: [] }. Reading a fact needs the same access as reading mail.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "mail",
+      "mail-fact",
+      "warehouse",
+      "read"
+    ],
+    "input": {
+      "id": null
+    },
+    "output": {
+      "thing": "thing",
+      "facts": "facts"
+    }
+  },
+  {
+    "slug": "mail-fact-list",
+    "name": "Mail Fact List",
+    "description": "Lists mail-fact things (default) or the facts they fold, newest first. Filters, all optional: of ('things' | 'facts'), type (purchase, shipment, return_refund, reservation, bill, statement, subscription, pay_tax_document, lead, order_received, owner_request), state (things only), identity (things only, with type: the identity variables' values, e.g. { carrier, tracking_number } — matched as the fact stores them, so spacing and case do not matter), since (ms; things updated / facts whose email is dated on or after), limit (1-500, default 100). A malformed filter is refused, never dropped. Returns { records }.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "mail",
+      "mail-fact",
+      "warehouse",
+      "list"
+    ],
+    "input": {
+      "of": null,
+      "type": null,
+      "state": null,
+      "identity": null,
+      "since": null,
+      "limit": null
+    },
+    "output": {
+      "records": "records"
+    }
+  },
+  {
     "slug": "mail-sent-reconcile",
     "name": "Reconcile one outbound send against provider source truth",
     "description": "Answers exactly one question: did the message you claimed at this reconciliation_id actually leave the building? It takes the reconciliation_id and NOTHING else. Core reads the claim mail-send durably wrote BEFORE it dispatched, derives the whole provider query from that row — recipient, subject, time window, and the attachment byte-proof — and asks the provider's Sent source truth. You cannot supply the recipient, the sender, the subject, the window, the provider evidence, the ambiguity reason, or the outcome: a caller who could author those could forge a match, and a forged match marks a document DELIVERED that was never sent. The claim settles on the provider's verdict, never on a status you name. ⛔ NOTHING HERE AUTHORIZES A RESEND, INCLUDING not_found. Absent from the Sent folder is not the same as not sent — the provider may not have indexed it, the window can miss it, IMAP lags — so not_found and unavailable change nothing at all, and the claim stays exactly where a machine must not re-send it from. Only matched settles it (reconciled, pinning the provider message id), and contradictory evidence settles it ambiguous for a human. A settled claim never moves again, so repeated calls do not churn it. Re-sending an unresolved claim is a decision for the owner, not for a retry.",
@@ -3645,7 +3699,7 @@ const MANIFESTS = [
   {
     "slug": "note-create",
     "name": "Create note",
-    "description": "Create a note on the chosen Source. Default Source is the Recued built-in local Source; pass source_id explicitly to write anywhere else. last_user_action_at is stamped to now. Returns the canonical note record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
+    "description": "Create a note on the chosen Source. Default Source is the Recued built-in local Source; pass source_id explicitly to write anywhere else. last_user_action_at is stamped to now. Returns the canonical note record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3659,6 +3713,7 @@ const MANIFESTS = [
     ],
     "input": {
       "body": null,
+      "idempotency_key": null,
       "title": null,
       "related_contact_ids": null,
       "related_calendar_event_ids": null,
@@ -3872,7 +3927,7 @@ const MANIFESTS = [
   {
     "slug": "project-create",
     "name": "Create project",
-    "description": "Create a project on the chosen Source. state defaults to 'active'; last_activity_at is stamped to now. parent_project_id is depth-checked (PROJECT_HIERARCHY_MAX_DEPTH = 3) and cycle-checked. Returns the canonical project record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `workspace` on Asana / `team` on Linear) to that container's name, `{ workspace: 'Acme' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated.",
+    "description": "Create a project on the chosen Source. state defaults to 'active'; last_activity_at is stamped to now. parent_project_id is depth-checked (PROJECT_HIERARCHY_MAX_DEPTH = 3) and cycle-checked. Returns the canonical project record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `workspace` on Asana / `team` on Linear) to that container's name, `{ workspace: 'Acme' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3886,6 +3941,7 @@ const MANIFESTS = [
     ],
     "input": {
       "title": null,
+      "idempotency_key": null,
       "description": null,
       "state": null,
       "target_completion_at": null,
@@ -4097,7 +4153,7 @@ const MANIFESTS = [
   {
     "slug": "shared-compare-and-set",
     "name": "Compare and set a shared record",
-    "description": "Atomically create or advance one revision-controlled data.shared.* record. NOTE (2026-09-15 census): zero recipe consumers, and that is the CORRECT number rather than a packaging failure — this is a RECONCILER primitive waiting for a workload, not a marker primitive. Of 2313 recipes, 169 write data.shared and 112 have the LIST+WRITE seen-mark shape, which cannot use this: a conflict FAILS the step and this ingredient never retries, so losing a benign race would fail the run, while a mark wants idempotent conflict-tolerant writes with no revision bookkeeping — shared-write already gives that. Only 6 recipes have the READ-then-WRITE shape this exists for, five of them one reconcile family, and NONE of the six is auto_run or trigger-driven, so none has a concurrent writer to protect against. TRIPWIRE: the day a reactive or auto_run recipe does read-modify-write on one data.shared record, this stops being unused and starts being required. expected_revision null means create-if-absent and requires value.revision 0. A numeric expectation requires an existing row at that revision and value.revision exactly one higher. Values are inline-only and must serialize to at most 64 KiB, so a stale conflict never strands a pre-transaction blob. Conflicts fail the step with a typed conflict so a later reconciler can re-read source truth; this ingredient never spins or retries in-run.",
+    "description": "Atomically create or advance one revision-controlled data.shared.* record. NOTE (2026-09-15 census): zero recipe consumers, and that is the CORRECT number rather than a packaging failure — this is a RECONCILER primitive waiting for a workload, not a marker primitive. Of 2313 recipes, 169 write data.shared and 112 have the LIST+WRITE seen-mark shape, which cannot use this: a conflict FAILS the step and this ingredient never retries, so losing a benign race would fail the run, while a mark wants idempotent conflict-tolerant writes with no revision bookkeeping — shared-write already gives that. Only 6 recipes have the READ-then-WRITE shape this exists for, five of them one reconcile family, and NONE of the six is auto_run or trigger-driven, so none has a concurrent writer to protect against. Its TRIPWIRE — a reactive recipe doing read-modify-write on one data.shared record — was already crossed when it was set: the outbound follow-up watchers rewrote a thread's whole row from a list (found 2026-09-28). That was answered with shared-patch, which changes only the fields a writer names in one transaction; this stays for a writer whose decision rests on the whole record's revision. expected_revision null means create-if-absent and requires value.revision 0. A numeric expectation requires an existing row at that revision and value.revision exactly one higher. Values are inline-only and must serialize to at most 64 KiB, so a stale conflict never strands a pre-transaction blob. Conflicts fail the step with a typed conflict so a later reconciler can re-read source truth; this ingredient never spins or retries in-run.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -4119,6 +4175,35 @@ const MANIFESTS = [
       "key": "key",
       "revision": "revision",
       "created": "created",
+      "bytes_written": "bytes_written"
+    }
+  },
+  {
+    "slug": "shared-patch",
+    "name": "Patch a shared record",
+    "description": "Change named top-level fields of one existing data.shared.* record atomically, leaving every other field as it is. set replaces each field it names and unset removes each field it names; the read and the write are one transaction, so two writers changing different fields of one record both keep their change, where reading the record and writing it back whole with shared-write keeps only the later copy. Optional match applies the patch only while each named field still holds that value (null matches an absent or null field) — for a change that is only right if the record has not moved on. Never creates a record: an absent key answers found:false and writes nothing, and a match that no longer holds answers applied:false and writes nothing; neither fails the step. The stored value must be an object and the record inline (at most 64 KiB, before and after); a revision-controlled key rejects with a typed conflict and must advance through shared-compare-and-set.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "tags": [
+      "kernel",
+      "shared",
+      "patch",
+      "concurrency"
+    ],
+    "input": {
+      "key": null,
+      "set": null,
+      "unset": null,
+      "match": null
+    },
+    "output": {
+      "ok": "ok",
+      "key": "key",
+      "found": "found",
+      "applied": "applied",
       "bytes_written": "bytes_written"
     }
   },
@@ -4299,7 +4384,7 @@ const MANIFESTS = [
   {
     "slug": "shared-write",
     "name": "Write to shared store",
-    "description": "Persist a value under a shared.* (cache tier, LRU+TTL) or data.shared.* (durable SQLite plus content-addressed blobs) key. The kernel routes by key prefix — cache keys go through the ext's local cache + peer broadcast; durable keys rpc to the paired recued-server. Returns bytes_written on success. A revision-controlled durable key rejects with a typed conflict and must advance through shared-compare-and-set.",
+    "description": "Persist a value under a shared.* (cache tier, LRU+TTL) or data.shared.* (durable SQLite plus content-addressed blobs) key. The kernel routes by key prefix — cache keys go through the ext's local cache + peer broadcast; durable keys rpc to the paired recued-server. Returns bytes_written on success. A revision-controlled durable key rejects with a typed conflict and must advance through shared-compare-and-set. To change some fields of an existing record, use shared-patch: reading the record and writing it back whole overwrites whatever another writer changed in between.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -4423,7 +4508,7 @@ const MANIFESTS = [
   {
     "slug": "task-update",
     "name": "Update task",
-    "description": "Patch named fields on an existing task. Source identity is inherited from the row — updating across Sources is not supported (pin a default through Settings to switch Sources). Returns the post-update canonical task record.",
+    "description": "Patch named fields on an existing task. Source identity is inherited from the row — updating across Sources is not supported (pin a default through Settings to switch Sources). `clear_due_at: true` removes the due date; a null `due_at` leaves it as it is. Returns the post-update canonical task record.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -4448,7 +4533,8 @@ const MANIFESTS = [
       "linked_mail_thread_id": null,
       "parent_project_id": null,
       "blocks_task_ids": null,
-      "source_extension_blob": null
+      "source_extension_blob": null,
+      "clear_due_at": null
     },
     "writes": {
       "collection": "task",

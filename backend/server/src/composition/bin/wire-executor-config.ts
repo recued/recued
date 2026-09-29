@@ -34,6 +34,7 @@ import {
   deriveExchangeStatus,
 } from '@recued/contracts';
 import { createMailSendClaimStore } from '../../storage/mail-send-claim-store.js';
+import { raiseMailSendOutcomeAsk } from '../../mail-send-outcome-ask.js';
 import type { MailSentReconciliationResult } from '../../collections/mail/provider.js';
 import type {
   ConnectionApiHandlerDeps,
@@ -96,6 +97,7 @@ import type { SellerClaimStore } from '../../storage/seller-claim-store.js';
 import { type SellerStore } from '../../storage/seller-store.js';
 import type { SellerOrderStore } from '../../storage/seller-order-store.js';
 import type { FormResponseStore } from '../../storage/form-response-store.js';
+import type { MailFactStore } from '../../storage/mail-fact-store.js';
 import type { FormSubmissionStore } from '../../storage/reception-form-store.js';
 import type { ScopedWebhookEventReader } from '../../webhook-recipe-consumer.js';
 import { makeConnectionRuntimeBaseIssueSink } from '../../connection-runtime-base-issue.js';
@@ -241,6 +243,11 @@ export interface ComposeExecutorConfigDeps {
   formResponseStore:
     | Pick<FormResponseStore, 'findById' | 'list' | 'setLifecycleState'>
     | undefined;
+  /** D-315 — mail facts, read by recipes through `mail-fact-get` /
+   *  `mail-fact-list` (dispatch scope `data.mail`). Undefined in runtimes
+   *  without the store, leaving both dispatchers absent so the adapter fails
+   *  closed with SERVER_NOT_REACHABLE. */
+  mailFactStore: MailFactStore | undefined;
   /** D-210 Phase C (§4b) — the intake submission store, for the
    *  RESOLVED-POINTER WRITE-BACK on the approve-resume leg.
    *
@@ -856,6 +863,10 @@ export const composeExecutorConfig = async (
                 { key, expected_revision, value },
               );
             },
+            patch: async ({ key, set, unset, match }) => {
+              const { handleSharedPatch } = await import('../../shared-handler.js');
+              return handleSharedPatch({ store: deps.sharedStore! }, { key, set, unset, match });
+            },
             read: async ({ key }) => {
               const { handleSharedRead } = await import('../../shared-handler.js');
               return handleSharedRead({ store: deps.sharedStore! }, { key });
@@ -1325,6 +1336,19 @@ export const composeExecutorConfig = async (
             },
           }
         : {}),
+      // D-315 — mail facts and the things they fold into.
+      ...(deps.mailFactStore
+        ? {
+            mailFactGet: async ({ id }) => {
+              const { readMailFact } = await import('../../mail-facts/mail-fact-reads.js');
+              return readMailFact(deps.mailFactStore!, id);
+            },
+            mailFactList: async (query) => {
+              const { listMailFacts } = await import('../../mail-facts/mail-fact-reads.js');
+              return { records: listMailFacts(deps.mailFactStore!, query) };
+            },
+          }
+        : {}),
       // mail-get is a thin warehouse read — wired whenever the
       // collection registry is present.
       mailGet: async (input) => {
@@ -1683,7 +1707,28 @@ export const composeExecutorConfig = async (
       // from a kernel `mail-send` step or an external rpc client.
       mailSend: async (input) => {
         const { handleCollectionMailSend } = await import('../../collections/collection-handler.js');
-        return handleCollectionMailSend({ registry: deps.collectionRegistry }, input);
+        try {
+          return await handleCollectionMailSend({ registry: deps.collectionRegistry }, input);
+        } catch (err) {
+          // A fenced send that ended without an outcome — this attempt, or an
+          // earlier one a retry just ran into — is the OWNER's to settle: ask them
+          // "Did this email go out?" (once per claim; it waits under the bell).
+          // Best-effort: the failure below stands either way.
+          const reconciliation_id = (input as { reconciliation_id?: unknown }).reconciliation_id;
+          if (typeof reconciliation_id === 'string' && deps.db) {
+            try {
+              await raiseMailSendOutcomeAsk({
+                notifier: deps.getExecuteDeps?.()?.preflightNotifier,
+                claims: createMailSendClaimStore(deps.db),
+                reconciliation_id,
+                now: Date.now(),
+              });
+            } catch {
+              /* the refusal still reaches the run; the next retry asks again */
+            }
+          }
+          throw err;
+        }
       },
       // D-210 §7 — notify a booking's visitor server-side. Wired only when the
       // link store + booking store + booking-PII key are ALL present (the

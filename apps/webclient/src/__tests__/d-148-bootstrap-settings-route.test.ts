@@ -53,6 +53,7 @@ import {
 import {
   AI_MODELS_CHAT_SETUP_ATTR,
   AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+  AI_MODELS_TAB_ATTR,
 } from '../settings/ai-models-page.js';
 import {
   UPDATES_PAGE_STYLES,
@@ -390,6 +391,37 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
     const section = findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'ai-models')!;
     expect(section.children[0]?.textContent).toBe('Set up Chat');
     expect(findByAttr(section, AI_MODELS_CHAT_SETUP_ATTR)).not.toBeNull();
+    route.dispose();
+  });
+
+  /** `#settings/ai-models/providers` — where Set up Chat sends a provider it
+   *  does not name. Without the tab the page opened on Preference, a tab away
+   *  from the slots the link promised. */
+  it('opens AI / Models on the tab its deep link names', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'ai-models',
+      initialAiModelsTab: 'providers',
+      aiModelsDefaultModelPrefGetCaller: async () => ({
+        source_id: null,
+        updated_at: 0,
+      }),
+      aiModelsGetLLMConfigCaller: async () => ({ config: {} }),
+      aiModelsSetLLMSlotCaller: async () => ({ ok: true }),
+      aiModelsDefaultModelPrefSetCaller: async ({ source_id }) => ({
+        source_id,
+        updated_at: 1,
+      }),
+    });
+    await route.aiModelsPage()!.whenLoaded();
+
+    const section = findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'ai-models')!;
+    expect(findByAttrValue(section, AI_MODELS_TAB_ATTR, 'providers')
+      ?.getAttribute('aria-selected')).toBe('true');
     route.dispose();
   });
 
@@ -2391,6 +2423,9 @@ describe('D-257 — the async apply outcome reaches the Updates page', () => {
     const btn = findByAttr(host, UPDATES_APPLY_BTN_ATTR);
     if (btn) {
       btn.click();
+      await Promise.resolve();
+      // An update asks once: this click is the "Confirm update".
+      findByAttr(host, UPDATES_APPLY_BTN_ATTR)?.click();
       await Promise.resolve();
       await Promise.resolve();
       // Still pending: `applying` is not a terminal status, so the run owns the

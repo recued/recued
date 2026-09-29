@@ -40,7 +40,9 @@ export const createSavedTaskViewReader = (store: WorkEntityStore): SavedTaskView
     for (let offset = 0; ; offset += 1000) {
       const page = store.listTasks({
         ...(definition.source_id === null ? {} : { source_id: definition.source_id }),
-        search: definition.query, task_filter, excluded_source_ids: [...excluded], limit: 1000, offset,
+        // The alert's own calendar zone reads a date-only due's day too
+        // (`due-day.ts`), as it already reads the filter's days.
+        search: definition.query, task_filter, time_zone, excluded_source_ids: [...excluded], limit: 1000, offset,
       });
       matches.push(...page.map(task => ({ id: task.id, title: task.title })));
       if (page.length < 1000) return matches;

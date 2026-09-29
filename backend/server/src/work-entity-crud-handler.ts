@@ -74,6 +74,9 @@ type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 export interface WorkEntityCrudRpcDeps {
   /** Read path for `list` count + (via the resolver below) the rows. */
   store: WorkEntityStore;
+  /** The owner's zone: a DATE-ONLY due's day is read in it by the Tasks
+   *  filter (overdue once that day is over). Absent ⇒ UTC. */
+  timeZone?: () => string;
   /** Validity-filtered polymorphic reads (the recipe-side read path). */
   resolver: WorkEntityResolver;
   /** Event-emitting write path — the SAME dispatcher instance the
@@ -370,7 +373,11 @@ export const handleWorkEntityList = async (
   if (args.sync_states !== undefined) filters.sync_states = args.sync_states;
   if (args.include_deleted !== undefined) filters.include_deleted = args.include_deleted;
   if (args.search !== undefined) filters.search = args.search;
-  if (args.task_filter !== undefined) filters.task_filter = args.task_filter;
+  if (args.task_filter !== undefined) {
+    filters.task_filter = args.task_filter;
+    const zone = deps.timeZone?.();
+    if (zone !== undefined) filters.time_zone = zone;
+  }
   if (kind === 'booking' && args.booking_lifecycle_states !== undefined) {
     filters.booking_lifecycle_states = args.booking_lifecycle_states;
   }

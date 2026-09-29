@@ -67,6 +67,7 @@ import type {
 import type { AuditExportRpcDeps } from '../../audit-export-handler.js';
 import type { ExecutionFeedRpcDeps } from '../../execution-feed-handler.js';
 import type { GatedActionStore } from '../../gated-action-store.js';
+import type { SettledRunResults } from '../../settled-run-results.js';
 import type { EventBus } from '../../events/bus.js';
 import type { PairingManager } from '../../pairing.js';
 import type { RecipeListHandlerDeps } from '../../recipe-list-handler.js';
@@ -102,6 +103,9 @@ export interface ComposeObservabilityRpcDepsInput {
   commitStore: CommitStore | undefined;
   /** Operation-scoped approval outcome receipts. */
   gatedActionStore?: GatedActionStore;
+  /** What an owner's page-started run answered once its approval let it
+   *  finish; `execution.get` hands it to the page still showing "held". */
+  settledRunResults?: SettledRunResults;
   /** Pair-instance id. Surfaces in the audit-export envelope's
    *  `instance_id` field + optionally the status page header. Always
    *  defined in bin.ts (initialised to `'server'` then overwritten on
@@ -167,6 +171,7 @@ export const composeObservabilityRpcDeps = (
     checkpointStore,
     commitStore,
     gatedActionStore,
+    settledRunResults,
     serverInstanceId,
     pairing,
     circuitStore,
@@ -218,6 +223,7 @@ export const composeObservabilityRpcDeps = (
           commitStore,
           serverInstanceId,
           ...(gatedActionStore !== undefined ? { gatedActionStore } : {}),
+          ...(settledRunResults !== undefined ? { settledRunResults } : {}),
         }
       : undefined;
 

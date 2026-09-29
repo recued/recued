@@ -106,6 +106,9 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   // the bus without re-fetching the passport.
   'exposure_changed',
   'housekeeping_cycle',
+  // D-315 §6 — the owner's mail facts moved; Data → Received → Mail facts
+  // re-reads what it shows.
+  'mail_fact',
   'memory',
   'merge_candidate',
   'merge_scan_progress',

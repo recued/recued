@@ -10,10 +10,14 @@
  *  happy path proves nothing about them.
  */
 
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
-import type { ExecutionSource } from '@recued/contracts';
+import { RECUED_BUILTIN_SOURCE_ID, type ExecutionSource } from '@recued/contracts';
 import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
 import type { ChatToolHandlerDeps } from '../chat-tool-handlers.js';
+import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-entity-store.js';
+import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
+import { createWorkEntityResolver } from '../work-entity-resolver.js';
 
 const ownerSource: ExecutionSource = {
   channel: 'chat',
@@ -169,3 +173,89 @@ describe('work.create — the owner over MESSENGER is the owner', () => {
     });
   });
 });
+
+describe('work.create — every field goes where its kind keeps it, on the real store', () => {
+  // ⛔ A create dispatcher ignores what it does not have. A project's `body` and
+  // date were dropped behind `created: true`, and a commitment could not be
+  // created at all: every call failed "unknown direction 'undefined'".
+  const realStore = () => {
+    const db = new Database(':memory:');
+    ensureWorkEntitySchema(db);
+    const store = createWorkEntityStore(db);
+    for (const kind of ['task', 'note', 'project', 'commitment'] as const) {
+      store.registerSource({
+        id: RECUED_BUILTIN_SOURCE_ID(kind), top_tier_kind: kind, source_kind: 'builtin',
+        source_label: `Recued built-in (${kind})`, write_capable: true, registered_at: 1,
+      });
+    }
+    const resolver = createWorkEntityResolver(store);
+    const dispatchers = createWorkEntityDispatchers({ store, resolver, now: () => 1_000 });
+    const handlers = buildChatTier1Handlers({
+      getWorkEntityCrudDeps: () => ({ store, resolver, dispatchers }),
+      getOpAdmissionGate: () => ({ isFrozenByPause: () => false, isOpGranted: () => true }),
+    } as unknown as ChatToolHandlerDeps);
+    return { store, create: handlers['work.create']! };
+  };
+  const created = (res: unknown) => res as { ok: boolean; result: { id: string; fields: string[] } };
+
+  it('a project keeps its body as its description, and its target as a day', async () => {
+    const { store, create } = realStore();
+    const res = created(await create({
+      kind: 'project', title: 'Launch', body: 'Ship the pilot', target_completion_at: '2026-11-30',
+    }, ctx()));
+    expect(res.ok).toBe(true);
+    expect(res.result.fields).toEqual(['title', 'body', 'target_completion_at']);
+    expect(store.readProject(res.result.id)).toMatchObject({
+      title: 'Launch', description: 'Ship the pilot', target_completion_at: Date.UTC(2026, 10, 30),
+    });
+  });
+
+  it('⛔ a commitment can be created: who promised, what, for when, to whom', async () => {
+    const { store, create } = realStore();
+    const res = created(await create({
+      kind: 'commitment', title: 'Send Anna the signed quote', direction: 'outbound',
+      promised_for_at: '2026-10-02', counterparty_email: ' Anna@Example.com ',
+    }, ctx()));
+    expect(res.ok).toBe(true);
+    expect(res.result.fields).toEqual(['title', 'promised_for_at', 'counterparty_email', 'direction']);
+    expect(store.readCommitment(res.result.id)).toMatchObject({
+      statement: 'Send Anna the signed quote', direction: 'outbound', derivation: 'user_declared',
+      promised_for_at: Date.UTC(2026, 9, 2), counterparty_contact_id: 'anna@example.com',
+    });
+    const timed = created(await create({
+      kind: 'commitment', title: 'Anna sends the brief', direction: 'inbound',
+      promised_for_at: '2026-10-02T15:00:00+02:00',
+    }, ctx()));
+    expect(store.readCommitment(timed.result.id)?.promised_for_at).toBe(Date.parse('2026-10-02T13:00:00Z'));
+  });
+
+  it('a task and a note are created as before', async () => {
+    const { store, create } = realStore();
+    const task = created(await create({ kind: 'task', title: 'Call the dentist', due_at: Date.UTC(2026, 9, 5) }, ctx()));
+    expect(store.readTask(task.result.id)).toMatchObject({ title: 'Call the dentist', due_at: Date.UTC(2026, 9, 5) });
+    const note = created(await create({ kind: 'note', body: 'Acme moved to net-60' }, ctx()));
+    expect(store.readNote(note.result.id)).toMatchObject({ body: 'Acme moved to net-60' });
+  });
+
+  it.each([
+    ['a commitment with no direction', { kind: 'commitment', title: 'Send it' }, /requires `direction` for a commitment/u],
+    ['a direction that is not one', { kind: 'commitment', title: 'Send it', direction: 'mine' }, /requires `direction` for a commitment/u],
+    ['a commitment\'s body', { kind: 'commitment', title: 'Send it', direction: 'outbound', body: 'x' }, /a commitment has no `body`/u],
+    ['a task deadline on a project', { kind: 'project', title: 'Launch', due_at: 99_000 }, /task only — a project's date is `target_completion_at`/u],
+    ['a due date on a note', { kind: 'note', body: 'x', due_at: 99_000 }, /task only — a note has no date/u],
+    ['a project target on a task', { kind: 'task', title: 'x', target_completion_at: '2026-10-30' }, /project only — a task's date is `due_at`/u],
+    ['a target that is a time', { kind: 'project', title: 'Launch', target_completion_at: '2026-10-30T09:00' }, /YYYY-MM-DD/u],
+    ['a promise time with no zone', { kind: 'commitment', title: 'x', direction: 'outbound', promised_for_at: '2026-10-02T15:00' }, /with its offset/u],
+    ['a name where an email belongs', { kind: 'commitment', title: 'x', direction: 'outbound', counterparty_email: 'Anna' }, /never a name/u],
+    ['a direction on a task', { kind: 'task', title: 'x', direction: 'outbound' }, /commitment only/u],
+  ])('refuses %s, and creates nothing', async (_label, args, detail) => {
+    const { store, create } = realStore();
+    const res = await create(args, ctx());
+    expect(res.ok).toBe(false);
+    expect((res as { detail: string }).detail).toMatch(detail);
+    for (const kind of ['task', 'note', 'project', 'commitment'] as const) {
+      expect(store.countByKind(kind)).toBe(0);
+    }
+  });
+});
+

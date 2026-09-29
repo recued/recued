@@ -30,6 +30,7 @@ import {
   OPS,
   parseOpId,
   PAID_DOCUMENT_DIRECT_CHECKOUT_CONFIGURATION_METADATA_KEY,
+  recipeEventTriggerNotes,
   resolvePaidDocumentDirectCheckoutClaimConfiguration,
   validateRecipeEventTriggerEntry,
   validateRecipeWebhookTriggers,
@@ -398,7 +399,10 @@ export const validateAutoRun = (r: Record<string, unknown>, add: AddFn): void =>
  *  it is live server state, not a validity question.
  *
  *    - `event_triggers_shape` — field present but not an array.
- *    - `event_trigger_entry_invalid` — one issue per entry problem. */
+ *    - `event_trigger_entry_invalid` — one issue per entry problem.
+ *    - `event_trigger_mail_fact_unknown` (warn) — D-315: a mail-fact trigger
+ *      watches something no built-in kind of email has. A kind the owner
+ *      makes may have it, so it is not refused; it starts for no one else. */
 export const validateEventTriggers = (r: Record<string, unknown>, add: AddFn): void => {
   if (r.event_triggers === undefined) return;
   if (!Array.isArray(r.event_triggers)) {
@@ -409,6 +413,9 @@ export const validateEventTriggers = (r: Record<string, unknown>, add: AddFn): v
   for (let i = 0; i < r.event_triggers.length; i++) {
     for (const problem of validateRecipeEventTriggerEntry(r.event_triggers[i])) {
       add('error', 'event_trigger_entry_invalid', `event_triggers[${i}]`, problem);
+    }
+    for (const note of recipeEventTriggerNotes(r.event_triggers[i])) {
+      add('warn', 'event_trigger_mail_fact_unknown', `event_triggers[${i}]`, note);
     }
   }
 };
@@ -916,6 +923,35 @@ const validateFailKind = (
   }
 };
 
+/** `stop_when` ends the run, as a success, after a SEQUENTIAL step. Refused
+ *  where it would silently do nothing: on a prefetch step (the parallel phase
+ *  has no "after") and on a trigger step (its `should_run` already decides).
+ *  And refused when it reads `{{item.*}}`: it is one decision about the whole
+ *  step, checked once a `foreach` has finished, when no item is bound. */
+const validateStopWhen = (
+  s: Record<string, unknown>,
+  path: string,
+  list: 'trigger_steps' | 'prefetch_steps' | 'steps',
+  add: AddFn,
+): void => {
+  if (s.stop_when === undefined) return;
+  if (list !== 'steps') {
+    add('error', 'stop_when_not_sequential', `${path}.stop_when`,
+      `stop_when works only on a step in steps. ${list === 'prefetch_steps'
+        ? 'Prefetch steps run side by side, so there is no "after" to stop.'
+        : 'A trigger step already decides whether the run goes on, with should_run.'} `
+      + 'Put stop_when on the first step in steps that reads this result.');
+    return;
+  }
+  validateConditionField(s.stop_when, `${path}.stop_when`, add);
+  const text = typeof s.stop_when === 'string' ? s.stop_when : JSON.stringify(s.stop_when);
+  if (/\{\{\s*item(?:\.|\s*\}\})/.test(text)) {
+    add('error', 'stop_when_item_ref', `${path}.stop_when`,
+      'stop_when is one decision about the whole step, made after a foreach has finished, '
+      + 'so no {{item.*}} is bound when it runs. For a per-item decision use skip_when or a filter step.');
+  }
+};
+
 const isWatchOp = (op: unknown): boolean => {
   if (typeof op !== 'string') return false;
   const parsed = parseOpId(op);
@@ -1011,6 +1047,7 @@ export const validateTriggerSteps = (
       validateConditionField(s.fail_on, `${path}.fail_on`, add);
     }
     validateFailKind(s, path, add);
+    validateStopWhen(s, path, 'trigger_steps', add);
     if ('guard' in s && s.guard !== undefined) {
       validateConditionField(s.guard, `${path}.guard`, add);
     }
@@ -1292,6 +1329,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         continue;
       }
       validateStepId(s.id, path, declared, add);
+      validateStopWhen(s, path, 'prefetch_steps', add);
       // A `defaults` step DECLARES each of its field names as a step id — the
       // runtime publishes them into `stores.step` (step-runner), so a ref to one
       // resolves. Without this the validator raises `undeclared_step_ref` for
@@ -1391,6 +1429,7 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         validateConditionField(s.fail_on, `${path}.fail_on`, add);
       }
       validateFailKind(s, path, add);
+      validateStopWhen(s, path, 'steps', add);
       if ('guard' in s && s.guard !== undefined) {
         validateConditionField(s.guard, `${path}.guard`, add);
       }

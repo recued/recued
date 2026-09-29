@@ -309,10 +309,59 @@ const noteAutostartUnitStillArmed = (): void => {
   }
 };
 
+/** Where to look for whatever holds `port` (and, when a recued server is
+ *  answering, for the autostart job) — on THIS platform.
+ *
+ *  ⛔ These were Linux-only (`ss -ltnp`, `systemctl status recued`) on every
+ *  host, so a Mac owner whose launchd job held the port was sent to two commands
+ *  macOS does not have (reported 2026-09-28). The Mac's autostart is the
+ *  `com.recued.server` LaunchAgent the installer writes. */
+export const findOwnerHint = (
+  port: number,
+  platform: NodeJS.Platform,
+  withAutostart: boolean,
+): string[] => {
+  if (platform === 'darwin') {
+    return [
+      `  Find the owner:  lsof -nP -iTCP:${port} -sTCP:LISTEN`,
+      ...(withAutostart
+        ? ['                   launchctl print gui/$(id -u)/com.recued.server   (the autostart job, if armed)']
+        : []),
+    ];
+  }
+  if (platform === 'win32') {
+    return [`  Find the owner:  netstat -ano | findstr :${port}`];
+  }
+  return [
+    `  Find the owner:  ss -ltnp | grep ${port}   (or: lsof -i :${port})`,
+    ...(withAutostart
+      ? ['                   systemctl status recued   (or systemctl --user status recued: the autostart unit, if armed)']
+      : []),
+  ];
+};
+
 /** Show the running state. */
-export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
+export const daemonStatus = async (
+  opts: DaemonOptions,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> => {
   const { pidFile, logFile } = resolvePaths(opts.dbPath);
-  const pid = readPid(pidFile);
+  const pidFromFile = readPid(pidFile);
+  // ⛔ A STALE PIDFILE IS NOT A STOPPED SERVER. Its process is gone, which says
+  // nothing about the realm or the port: an autostart unit may be serving right
+  // now. This branch used to print `Status: stopped (stale pidfile …)` and
+  // return, so an owner whose launchd job held the port read "stopped", then
+  // "running" on the very next run, because this call had removed the file
+  // (reported 2026-09-28). Clear it, then answer the way the no-pidfile path
+  // does — from the realm lock, then the port.
+  const stalePid = pidFromFile && !isAlive(pidFromFile) ? pidFromFile : null;
+  if (stalePid !== null) {
+    try { unlinkSync(pidFile); } catch {}
+  }
+  const pid = stalePid === null ? pidFromFile : null;
+  const staleNote = stalePid !== null
+    ? `  Removed a stale pidfile: pid ${stalePid} (from an earlier \`recued start\`) is gone.`
+    : null;
 
   // Auto-disabled circuit rows live in SQLite and are read directly
   // — same answer whether the daemon is up or down (a restart
@@ -348,6 +397,7 @@ export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
     const holder = liveServerHolding(opts.dbPath);
     if (holder) {
       console.log(`Status: running — started by \`recued serve\` (pid ${holder.pid}, port ${holder.bind_port}).`);
+      if (staleNote) console.log(staleNote);
       console.log('  No pidfile: `recued start` did not launch it — a foreground `recued serve`');
       console.log('  or an autostart unit did. That is the normal shape, not a fault.');
       // ⚠ THIS USED TO SAY `recued stop` COULD NOT HELP, WHICH WAS TRUE AND IS
@@ -366,26 +416,22 @@ export const daemonStatus = async (opts: DaemonOptions): Promise<void> => {
     const answering = await pingHealth(opts.port);
     if (answering) {
       console.log('Status: running — but NOT on this realm.');
+      if (staleNote) console.log(staleNote);
       console.log(`  A recued server is answering /health on port ${opts.port}, and nothing`);
       console.log('  holds this realm\'s instance lock — so it is serving a DIFFERENT database.');
       console.log('  `recued stop` cannot stop it: it manages this realm only.');
-      console.log(`  Find the owner:  ss -ltnp | grep ${opts.port}   (or: lsof -i :${opts.port})`);
-      console.log('                   systemctl status recued   (the autostart unit, if armed)');
+      for (const line of findOwnerHint(opts.port, platform, true)) console.log(line);
     } else if (await portInUse(opts.port)) {
       console.log(`Status: stopped — but port ${opts.port} is already in use.`);
+      if (staleNote) console.log(staleNote);
       console.log('  Whatever holds it does not answer /health, so it is probably not a');
       console.log('  recued server. `recued serve` will fail with EADDRINUSE until it is freed.');
-      console.log(`  Find the owner:  ss -ltnp | grep ${opts.port}   (or: lsof -i :${opts.port})`);
+      for (const line of findOwnerHint(opts.port, platform, false)) console.log(line);
+    } else if (stalePid !== null) {
+      console.log(`Status: stopped (stale pidfile for pid ${stalePid}, removed)`);
     } else {
       console.log('Status: stopped');
     }
-    if (autoDisabledBlock) console.log(autoDisabledBlock);
-    return;
-  }
-
-  if (!isAlive(pid)) {
-    console.log(`Status: stopped (stale pidfile for pid ${pid})`);
-    try { unlinkSync(pidFile); } catch {}
     if (autoDisabledBlock) console.log(autoDisabledBlock);
     return;
   }

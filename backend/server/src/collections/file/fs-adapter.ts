@@ -72,6 +72,9 @@ export interface FsWatcher {
   /** Cancels debounce timers and closes the fs.watch handle.
    *  Idempotent. */
   stop(): Promise<void>;
+  /** Directories the initial walk could not read — the root among them when
+   *  it is gone. A walk with any is not a full list of what is on disk. */
+  walkErrors(): number;
 }
 
 /** Raised when realtime was promised by the capability probe but the live
@@ -168,6 +171,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
 
   let started = false;
   let stopped = false;
+  let walkErrorCount = 0;
   let watcher: FSWatcher | undefined;
   let watcherErrorListener: ((error: Error) => void) | undefined;
   let attaching = false;
@@ -238,6 +242,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch (err) {
+      walkErrorCount += 1;
       log('warn', `scanDir failed for ${dir}`, { err });
       return;
     }
@@ -308,6 +313,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
         throw new FsWatchUnavailableError(root, err);
       }
     },
+    walkErrors: () => walkErrorCount,
     async stop() {
       if (stopped) return;
       stopped = true;

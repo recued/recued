@@ -203,6 +203,7 @@ import {
   registerVisibleInteractionItemIds,
 } from '../../chat-recall-search-tool.js';
 import type { ChatDispatchContext } from '../../chat-tool-handlers.js';
+import { createPrivateAiCall } from '../../private-ai-call.js';
 import {
   broadcastEmitterFromBus,
   createChatOrchestrator,
@@ -375,6 +376,12 @@ export interface ChatOrchestratorBundle {
    *  candidate index; slice D threads `candidates()` into the gateway's
    *  scoped-grant match context. */
   forwardedSenderIndex: SessionForwardedSenderIndex;
+  /** D-315 §4.3 — one model call through the chat's privacy layer, for work
+   *  held to the chat's standard outside a chat turn (ruling 30): the whole
+   *  packet aliased as a turn's is — a tool result against the whole
+   *  warehouse's contacts — on a ledger of its own; no call when aliasing
+   *  fails; the answer mapped back. The mail facts' AI pass and Draft with AI. */
+  readonly privateAiCall: ExecuteChatAiCall;
 }
 
 /** Compose the chat substrate. Synchronous — no I/O at compose time;
@@ -1194,6 +1201,13 @@ export const composeChatOrchestrator = (
       ...(captured ? { usage: tokenUsageToReport(captured) } : {}),
     };
   };
+  // D-167 (recall path) — the whole-warehouse contact index the egress aliases
+  // a tool result against. Shared by the chat turn and `privateAiCall`.
+  const contactKnownValueIndex = createContactKnownValueIndexBuilder(
+    getContactStore,
+    getCrmRecordMirror ?? (() => undefined),
+    () => liveVendorRegistry(getExecuteDeps()?.localManifestStore),
+  );
   const voiceTranscription = llmConfig
     ? {
         readFile: async (record_id: string) => {
@@ -1588,12 +1602,14 @@ export const composeChatOrchestrator = (
     // registry, never the frozen `CONNECTION_VENDOR_ENTITIES`, but the housekeeping
     // reconciler still writes its `crm_record_mirror` rows — so seeding off the static
     // array would leave those scopes unenumerated and egress those people raw.
-    getContactKnownValueIndex: createContactKnownValueIndexBuilder(
-      getContactStore,
-      getCrmRecordMirror ?? (() => undefined),
-      () => liveVendorRegistry(getExecuteDeps()?.localManifestStore),
-    ),
+    getContactKnownValueIndex: contactKnownValueIndex,
   }), sessionBusy);
+
+  const privateAiCall = createPrivateAiCall({
+    execute: executeChatAiCall,
+    resolver: fieldPrivacyResolver,
+    getContactKnownValueIndex: contactKnownValueIndex,
+  });
 
   const messengerBridge = createChatMessengerBridge({ db, store: chatStore, getKey: chatKeyProvider, broadcast });
   const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
@@ -2191,5 +2207,6 @@ export const composeChatOrchestrator = (
     executionCaseArgumentStore: executionCases.argumentStore,
     executionCaseSourcePruner: executionCases.compiler,
     forwardedSenderIndex,
+    privateAiCall,
   };
 };

@@ -32,6 +32,7 @@ import type {
   DishLastRun,
   DishRunRow,
   EventTrigger,
+  MailFactTypeSpec,
   ServerRecipeListEntry,
   ServerSchedule,
   ServerMissedRunReport,
@@ -341,6 +342,11 @@ export interface BootstrapAutomationRouteOptions {
   schedulesCreateCaller?: RunModal.RunModalSchedulesCreateCaller;
   /** `triggers.create` — the modal's Add-trigger. */
   triggersCreateCaller?: RunModal.RunModalTriggersCreateCaller;
+  /** D-315 §5.1 — the owner's mail templates, for the modal's "A mail fact"
+   *  "Read by" picker. Absent ⇒ no template narrowing is offered. */
+  mailFactTemplatesCaller?: RunModal.RunModalMailFactTemplatesCaller;
+  /** D-315 §4.5 — the owner's kinds of email, offered beside the built-in ones. */
+  mailFactTypesCaller?: RunModal.RunModalMailFactTypesCaller;
   /** D-200 — owner-file inventory for `file_ref` config fields. */
   fileRefSearchCaller?: RefPicker.RefPickerSearchCaller;
   /** R21 — `#automation/<section>` deep-link: which of the three
@@ -1147,6 +1153,14 @@ export const bootstrapAutomationRoute = (
   let missedRunsBusy = false;
   let missedRunsError: string | null = null;
   let triggers: ReadonlyArray<EventTrigger> = [];
+  /** D-315 §5.1 — a trigger on facts read from mail is said in words, which
+   *  name the template it is narrowed to and the owner's kinds of email.
+   *  Read with the triggers whenever one of them is on facts. Unknown (null)
+   *  until read, or when the read failed: a narrowing then reads "read by one
+   *  template", never "a template that was deleted". */
+  let mailFactTemplates: readonly RunModal.RunModalMailFactTemplate[] | null = null;
+  let mailFactTypes: readonly MailFactTypeSpec[] = [];
+  let mailFactNamesSeq = 0;
   let watches: ReadonlyArray<WatchStatusEntry> = [];
   let autoRun: ReadonlyArray<AutoRunStatusEntry> = [];
   // D-215 slice 3 — the dish aggregate + its last-outcome map. `lastRuns`
@@ -1664,6 +1678,12 @@ export const bootstrapAutomationRoute = (
       ...(opts.triggersCreateCaller !== undefined
         ? { triggersCreate: opts.triggersCreateCaller }
         : {}),
+      ...(opts.mailFactTemplatesCaller !== undefined
+        ? { mailFactTemplates: opts.mailFactTemplatesCaller }
+        : {}),
+      ...(opts.mailFactTypesCaller !== undefined
+        ? { mailFactTypes: opts.mailFactTypesCaller }
+        : {}),
       ...(opts.fileRefSearchCaller !== undefined
         ? { fileRefSearch: opts.fileRefSearchCaller }
         : {}),
@@ -2079,6 +2099,9 @@ export const bootstrapAutomationRoute = (
           ? 'tripped'
           : 'off';
       const fromRecipe = t.origin === 'recipe';
+      // D-315 — a trigger on facts read from mail says what it watches in
+      // words: its kind, values, "only when" and template.
+      const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
       return renderRow({
         section: 'event_trigger',
         rule_id: t.trigger_id,
@@ -2086,7 +2109,9 @@ export const bootstrapAutomationRoute = (
         titleHref: recipeHref(t.recipe_id),
         armed,
         stateLabel: t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused',
-        detail: `<span>on <code>${e(t.pattern)}</code></span>`,
+        detail: fact !== null
+          ? `<span>on ${e(fact)}</span>`
+          : `<span>on <code>${e(t.pattern)}</code></span>`,
         meta: [
           `last fired ${formatDateTime(t.last_fired_at)}`,
           // G6 — declarative rows are reconciler-managed: badge the
@@ -2096,8 +2121,8 @@ export const bootstrapAutomationRoute = (
           ...(fromRecipe ? ['from recipe'] : []),
           // Authoring sugar — surface the compiled dispatch filter so
           // governance reads WHAT narrows a row, not just its pattern.
-          ...(t.fields && t.fields.length > 0 ? [`when ${t.fields.join(' / ')} changes`] : []),
-          ...(t.filter && Object.keys(t.filter).length > 0
+          ...(fact === null && t.fields && t.fields.length > 0 ? [`when ${t.fields.join(' / ')} changes`] : []),
+          ...(fact === null && t.filter && Object.keys(t.filter).length > 0
             ? [Object.entries(t.filter).map(([k, v]) => `${k} = ${String(v)}`).join(', ')]
             : []),
         ],
@@ -2669,14 +2694,17 @@ export const bootstrapAutomationRoute = (
       const t = triggers.find((x) => x.trigger_id === detailId);
       if (t !== undefined) {
         const armed = t.enabled ? 'on' : t.last_error ? 'tripped' : 'off';
+        const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
         body = `
           ${heading(`<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`)}
           ${facts([
-            ['Pattern', `<code>${e(t.pattern)}</code>`],
+            fact !== null
+              ? ['Starts on', e(fact)]
+              : ['Pattern', `<code>${e(t.pattern)}</code>`],
             ['State', e(t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused')],
             ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
             ['Last fired', e(formatDateTime(t.last_fired_at))],
-            ...(t.fields && t.fields.length > 0
+            ...(fact === null && t.fields && t.fields.length > 0
               ? [['Fields', e(t.fields.join(' / '))] as [string, string]]
               : []),
           ])}
@@ -3071,6 +3099,26 @@ export const bootstrapAutomationRoute = (
     revealActiveSubnav();
   };
 
+  /** The templates and kinds a fact trigger's words name, read again with
+   *  every triggers list that has one: a template renamed, switched off or
+   *  deleted since reads as it now is. */
+  const loadMailFactNames = (): void => {
+    const templatesCaller = opts.mailFactTemplatesCaller;
+    if (templatesCaller === undefined) return;
+    if (!triggers.some((t) => RunModal.describeMailFactTrigger(t, null) !== null)) return;
+    const seq = ++mailFactNamesSeq;
+    void Promise.all([
+      templatesCaller().then((result) => result.templates, () => null),
+      opts.mailFactTypesCaller?.().then((result) => result.types, () => null) ?? Promise.resolve(null),
+    ]).then(([templates, types]) => {
+      if (disposed || seq !== mailFactNamesSeq) return;
+      // A failed read keeps what was known: the words stay as they were.
+      if (templates !== null) mailFactTemplates = templates;
+      if (types !== null) mailFactTypes = types;
+      if (templates !== null || types !== null) render();
+    });
+  };
+
   const loadAll = async (): Promise<void> => {
     const seq = ++loadSeq;
     loading = true;
@@ -3146,6 +3194,7 @@ export const bootstrapAutomationRoute = (
     }
     if (triggersResult.status === 'fulfilled') {
       triggers = triggersResult.value.triggers;
+      loadMailFactNames();
     } else {
       next.triggers = messageForError(triggersResult.reason);
     }

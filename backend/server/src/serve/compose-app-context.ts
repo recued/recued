@@ -80,7 +80,7 @@ import {
   type UserMemoryStore,
 } from '../user-memory-store.js';
 import { createAnnotationStore, type AnnotationStore } from '../storage/annotation-store.js';
-import type { ChatOrchestrator } from '../chat-orchestrator.js';
+import type { ChatOrchestrator, ExecuteChatAiCall } from '../chat-orchestrator.js';
 import type { SessionForwardedSenderIndex } from '../chat-forwarded-sender-index.js';
 import type { ChatRpcDeps } from '../chat-handler.js';
 import type {
@@ -341,6 +341,9 @@ export interface AppContext extends LlmSubstrate {
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
   chatDeps: ChatRpcDeps | undefined;
+  /** D-315 §4.3 — one model call through the chat's privacy layer, for the
+   *  mail facts' AI pass and Draft with AI. Undefined without the chat substrate. */
+  privateAiCall: ExecuteChatAiCall | undefined;
   executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
   /** D-219 slice 9c — boot hand-off for the owner-facing execution-case offer.
    *  The notification block is composed in the EXECUTION context, after this
@@ -1656,6 +1659,7 @@ export const composeAppContext = (
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,
     chatOrchestratorRef: chatBundle?.orchestrator,
     chatDeps: chatBundle?.chatDeps,
+    privateAiCall: chatBundle?.privateAiCall,
     executionCaseLifecycle: chatBundle?.executionCaseLifecycle,
     publishExecutionCaseOfferNotifier:
       chatBundle?.publishExecutionCaseOfferNotifier,

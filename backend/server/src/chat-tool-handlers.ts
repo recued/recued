@@ -35,6 +35,8 @@
  *  identical to the legacy `not_implemented` behaviour. */
 
 import {
+  calendarDayMs,
+  COMMITMENT_DIRECTION_SET,
   isReadableCollection,
   OP_ENTITY_COLLECTION,
   TIER1_CLASSIFICATIONS,
@@ -97,6 +99,8 @@ import type {
   AuditLogStore,
   Collection as StorageCollection,
 } from '@recued/storage';
+import { recipeDateArgumentIssue } from './date-argument-format.js';
+import { unambiguousDateMs } from './storage/work-entity-store.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { EnrichmentStore } from './storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from './storage/crm-record-mirror-store.js';
@@ -3328,6 +3332,11 @@ export const createChatTier2Dispatch =
         return executionError(errMessage(error));
       }
     }
+    // A date setting gets a date. The arg schema advertises `format: date` /
+    // `date-time`, and until this only the contracted gateway checked it — the
+    // owner's own chat handed the recipe whatever the model wrote.
+    const dateIssue = recipeDateArgumentIssue(recipe, args);
+    if (dateIssue !== null) return invalidArgs(dateIssue);
     // D-137 Trio #D Codex P1 fold — channel-aware trigger_source so
     // Tier 2 recipes invoked over MCP wire trip the same engine gates
     // as legacy `recued_runRecipe` would (the legacy path explicitly
@@ -3493,32 +3502,106 @@ const createWorkUpdateHandler =
       return invalidArgs('work.update requires the id of the row to change');
     }
 
+    // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED. A dispatcher
+    // ignores a field it does not have, and this tool reported each such field as
+    // changed: a project's `body` (it keeps a `description`), a commitment's
+    // `title` (its words are its `statement`), a date on the wrong kind, a note's
+    // or a commitment's `state`. Nothing changed; the model was told it had.
+    // `patch` is in the dispatcher's words, `changed` in the tool's.
     const patch: Record<string, unknown> = {};
+    const changed: string[] = [];
+    const put = (argName: string, field: string, value: unknown): void => {
+      patch[field] = value;
+      changed.push(argName);
+    };
+    const noPlace = (field: string, hint = ''): ChatDispatchResult =>
+      invalidArgs(`work.update: a ${kind} has no \`${field}\`${hint}`);
+    const wrongDate = (field: string, owner: WorkCreateKind): ChatDispatchResult =>
+      wrongKindDate('work.update', field, owner, kind);
+
     if (typeof args.title === 'string' && args.title.trim().length > 0) {
-      patch.title = args.title.trim();
+      put('title', kind === 'commitment' ? 'statement' : 'title', args.title.trim());
     }
-    if (typeof args.body === 'string') patch.body = args.body;
-    if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
-      patch.due_at = args.due_at;
+    if (typeof args.body === 'string') {
+      if (kind === 'commitment') return noPlace('body', ' — what was promised is its `title`');
+      put('body', kind === 'project' ? 'description' : 'body', args.body);
     }
     if (typeof args.state === 'string' && args.state.trim().length > 0) {
-      patch.state = args.state.trim();
+      if (kind === 'note' || kind === 'commitment') return noPlace('state');
+      put('state', 'state', args.state.trim());
+    }
+    if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
+      if (kind !== 'task') return wrongDate('due_at', 'task');
+      put('due_at', 'due_at', args.due_at);
+    }
+    if (args.clear_due_at === true) {
+      if (kind !== 'task') return wrongDate('clear_due_at', 'task');
+      if (patch.due_at !== undefined) {
+        return invalidArgs('work.update: send a new `due_at` or `clear_due_at`, not both');
+      }
+      // A task's `null` means "not given", so its removal is a flag.
+      put('clear_due_at', 'clear_due_at', true);
+    }
+    // A project's target is a DAY, so it is asked for as one — no time for the
+    // model to invent, no zone to guess — and stored as its UTC midnight, the
+    // due-day convention. A project's `null` removes it.
+    if (args.target_completion_at !== undefined) {
+      if (kind !== 'project') return wrongDate('target_completion_at', 'project');
+      const day = typeof args.target_completion_at === 'string'
+        ? calendarDayMs(args.target_completion_at.trim())
+        : null;
+      if (day === null) {
+        return invalidArgs('work.update: `target_completion_at` must be a date as YYYY-MM-DD');
+      }
+      put('target_completion_at', 'target_completion_at', day);
+    }
+    if (args.clear_target_completion_at === true) {
+      if (kind !== 'project') return wrongDate('clear_target_completion_at', 'project');
+      if (patch.target_completion_at !== undefined) {
+        return invalidArgs(
+          'work.update: send a new `target_completion_at` or `clear_target_completion_at`, not both',
+        );
+      }
+      put('clear_target_completion_at', 'target_completion_at', null);
+    }
+    // A promise is for a day ("by Friday") or, now and then, an exact time — so
+    // either, but never a time without its zone, which names no instant.
+    if (args.promised_for_at !== undefined) {
+      if (kind !== 'commitment') return wrongDate('promised_for_at', 'commitment');
+      const when = typeof args.promised_for_at === 'string'
+        ? unambiguousDateMs(args.promised_for_at)
+        : null;
+      if (when === null) {
+        return invalidArgs(
+          'work.update: `promised_for_at` must be a date as YYYY-MM-DD, or a time with its offset',
+        );
+      }
+      put('promised_for_at', 'promised_for_at', when);
+    }
+    if (args.clear_promised_for_at === true) {
+      if (kind !== 'commitment') return wrongDate('clear_promised_for_at', 'commitment');
+      if (patch.promised_for_at !== undefined) {
+        return invalidArgs('work.update: send a new `promised_for_at` or `clear_promised_for_at`, not both');
+      }
+      // A commitment's `null` removes its date.
+      put('clear_promised_for_at', 'promised_for_at', null);
     }
     const marksDone = typeof args.done === 'boolean';
 
     if (marksDone && kind !== 'task') {
       return invalidArgs('work.update: `done` applies to a task only');
     }
-    if (marksDone && Object.keys(patch).length > 0) {
+    if (marksDone && changed.length > 0) {
       return invalidArgs(
         'work.update: send `done` on its own — a completion and a field edit are separate changes',
       );
     }
     // Same reasoning as `calendar.update`: an empty change would pass the
     // owner's approval card, dispatch, alter nothing and report success.
-    if (!marksDone && Object.keys(patch).length === 0) {
+    if (!marksDone && changed.length === 0) {
       return invalidArgs(
-        'work.update: send at least one field to change (done / title / body / due_at / state)',
+        'work.update: send at least one field to change (done / title / body / state / due_at / clear_due_at / '
+          + 'target_completion_at / clear_target_completion_at / promised_for_at / clear_promised_for_at)',
       );
     }
 
@@ -3550,7 +3633,7 @@ const createWorkUpdateHandler =
       );
       return {
         ok: true,
-        result: { updated: true, kind, id, fields: Object.keys(patch) },
+        result: { updated: true, kind, id, fields: changed },
       };
     } catch (e) {
       return executionError(
@@ -3721,6 +3804,20 @@ const createCalendarUpdateHandler =
 const WORK_CREATE_KINDS = ['task', 'note', 'commitment', 'project'] as const;
 type WorkCreateKind = (typeof WORK_CREATE_KINDS)[number];
 
+/** Each kind's one date — named when a date is sent to the wrong kind. */
+const WORK_DATE_FIELD: Readonly<Record<WorkCreateKind, string | undefined>> = {
+  task: 'due_at', project: 'target_completion_at', commitment: 'promised_for_at', note: undefined,
+};
+const wrongKindDate = (tool: string, field: string, owner: WorkCreateKind, kind: WorkCreateKind) =>
+  invalidArgs(
+    `${tool}: \`${field}\` applies to a ${owner} only`
+    + (WORK_DATE_FIELD[kind] !== undefined
+      ? ` — a ${kind}'s date is \`${WORK_DATE_FIELD[kind]}\``
+      : ` — a ${kind} has no date`),
+  );
+/** A canonical email — the key a contact is kept under. A name is not one. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+
 const isWorkCreateKind = (v: unknown): v is WorkCreateKind =>
   typeof v === 'string' && (WORK_CREATE_KINDS as readonly string[]).includes(v);
 
@@ -3772,19 +3869,84 @@ const createWorkCreateHandler =
       };
     }
 
-    const due = typeof args.due_at === 'number' && Number.isFinite(args.due_at)
-      ? args.due_at
-      : undefined;
+    // ⛔ EVERY FIELD GOES WHERE ITS KIND KEEPS IT, OR IS REFUSED — as in
+    // `work.update`. A create dispatcher ignores what it does not have: a
+    // project's `body` and date were dropped behind `created: true`, and a
+    // commitment could not be created at all (no direction, no derivation, its
+    // words not in `statement`). `input` is in the dispatcher's words, `fields`
+    // in the tool's.
+    const input: Record<string, unknown> = { kind };
+    const fields: string[] = [];
+    const put = (argName: string, field: string, value: unknown): void => {
+      input[field] = value;
+      fields.push(argName);
+    };
+    if (title.length > 0) put('title', kind === 'commitment' ? 'statement' : 'title', title);
+    if (body.length > 0) {
+      if (kind === 'commitment') {
+        return invalidArgs('work.create: a commitment has no `body` — what was promised is its `title`');
+      }
+      put('body', kind === 'project' ? 'description' : 'body', body);
+    }
+    if (typeof args.due_at === 'number' && Number.isFinite(args.due_at)) {
+      if (kind !== 'task') return wrongKindDate('work.create', 'due_at', 'task', kind);
+      put('due_at', 'due_at', args.due_at);
+    }
+    // A project's target is a DAY — asked for as one, stored as its UTC midnight.
+    if (args.target_completion_at !== undefined) {
+      if (kind !== 'project') return wrongKindDate('work.create', 'target_completion_at', 'project', kind);
+      const day = typeof args.target_completion_at === 'string'
+        ? calendarDayMs(args.target_completion_at.trim())
+        : null;
+      if (day === null) {
+        return invalidArgs('work.create: `target_completion_at` must be a date as YYYY-MM-DD');
+      }
+      put('target_completion_at', 'target_completion_at', day);
+    }
+    // A promise is for a day or an exact time — never a time without its zone.
+    if (args.promised_for_at !== undefined) {
+      if (kind !== 'commitment') return wrongKindDate('work.create', 'promised_for_at', 'commitment', kind);
+      const when = typeof args.promised_for_at === 'string' ? unambiguousDateMs(args.promised_for_at) : null;
+      if (when === null) {
+        return invalidArgs(
+          'work.create: `promised_for_at` must be a date as YYYY-MM-DD, or a time with its offset',
+        );
+      }
+      put('promised_for_at', 'promised_for_at', when);
+    }
+    if (args.counterparty_email !== undefined) {
+      if (kind !== 'commitment') {
+        return invalidArgs('work.create: `counterparty_email` applies to a commitment only');
+      }
+      const email = typeof args.counterparty_email === 'string'
+        ? args.counterparty_email.trim().toLowerCase()
+        : '';
+      if (!EMAIL_SHAPE.test(email)) {
+        return invalidArgs('work.create: `counterparty_email` must be an email address — never a name');
+      }
+      put('counterparty_email', 'counterparty_contact_id', email);
+    }
+    if (args.direction !== undefined && kind !== 'commitment') {
+      return invalidArgs('work.create: `direction` applies to a commitment only');
+    }
+    if (kind === 'commitment') {
+      // A commitment is WHO promised WHAT. `direction` has no default: a guess
+      // would file the user's own promise as one owed to them, or the reverse.
+      if (typeof args.direction !== 'string' || !COMMITMENT_DIRECTION_SET.has(args.direction as never)) {
+        return invalidArgs(
+          'work.create requires `direction` for a commitment: `outbound` (the user promised it), '
+            + '`inbound` (someone promised it to the user) or `internal`',
+        );
+      }
+      put('direction', 'direction', args.direction);
+      // The user said so: every commitment made here is theirs to have declared.
+      input.derivation = 'user_declared';
+    }
 
     try {
       const res = await handleWorkEntityUpsert(
         crud,
-        {
-          kind,
-          ...(title.length > 0 ? { title } : {}),
-          ...(body.length > 0 ? { body } : {}),
-          ...(due !== undefined ? { due_at: due } : {}),
-        } as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
+        input as unknown as Parameters<typeof handleWorkEntityUpsert>[1],
         ctx.execution_source,
       );
       const entity = res.entity as { id?: string; _kind?: string } | undefined;
@@ -3794,6 +3956,7 @@ const createWorkCreateHandler =
           created: true,
           kind,
           ...(entity?.id !== undefined ? { id: entity.id } : {}),
+          fields,
         },
       };
     } catch (e) {

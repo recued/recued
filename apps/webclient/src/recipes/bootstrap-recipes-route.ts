@@ -113,6 +113,7 @@ import {
 } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import type { HeldRunFollower } from '../held-run-follow.js';
 import { bindRecordRefSearchToRecipe } from '../record-ref-search.js';
 import {
   autoRunStateOf,
@@ -597,6 +598,10 @@ export interface BootstrapRecipesRouteOptions {
    *  list row, which carries no steps. */
   recipeGetCaller?: RecipesGetCaller;
   recipeExecuteCaller?: RecipeExecuteCaller;
+  /** Follows a result shown "held for approval" to the run's end, so the
+   *  recipe's own result replaces the note once the owner approves it
+   *  anywhere. Absent ⇒ the note stays, as before. */
+  followHeldRun?: HeldRunFollower['follow'];
   /** D-200 — paired-client authenticated preview/download for exact file
    * artifact result cards. Absent keeps metadata visible and controls disabled. */
   fileReadCaller?: RecipeFileReadCaller;
@@ -2570,6 +2575,8 @@ export const bootstrapRecipesRoute = (
   );
 
   let disposed = false;
+  /** Stops for the held runs this route is following. */
+  const heldRunStops: Array<() => void> = [];
   /** The full body behind each opened detail's Definition, with the list hash it was read
    *  for: a recipe changed since is read again. */
   const definitionBodies = new Map<string, { hash: string; view: RecipeDefinitionView }>();
@@ -3966,6 +3973,21 @@ export const bootstrapRecipesRoute = (
         render();
       }
     };
+    /** Show it, and if it is held for approval, follow the run: once the owner
+     *  approves it — in the tray, on another device — its own result replaces
+     *  the note, as long as the note is still what this route shows. */
+    const showRunResultAndFollow = (result: ServerExecuteResponse): void => {
+      showRunResult(result);
+      if (
+        opts.followHeldRun === undefined
+        || disposed
+        || result.awaiting_approval !== true
+      ) return;
+      heldRunStops.push(opts.followHeldRun(result, (next, later) => {
+        if (disposed || resultPanel?.result !== later.replaces) return;
+        showRunResult(next);
+      }));
+    };
     // D-292 — a declared spreadsheet import gets the guided flow on Run:
     // upload → match the file's own columns → a real server check → import. The
     // declaration is re-checked here (`sheetImportFor`), not trusted from
@@ -4000,7 +4022,7 @@ export const bootstrapRecipesRoute = (
           childSheetImport = null;
           returnFocusToRunButton();
         },
-        onRan: showRunResult,
+        onRan: showRunResultAndFollow,
       });
       return;
     }
@@ -4044,7 +4066,7 @@ export const bootstrapRecipesRoute = (
         runModalRecipeId = null;
         returnFocusToRunButton();
       },
-      onRan: showRunResult,
+      onRan: showRunResultAndFollow,
     });
     if (prefill?.config !== undefined) {
       let configText = '{}';
@@ -5095,6 +5117,7 @@ export const bootstrapRecipesRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      for (const stopFollowing of heldRunStops.splice(0)) stopFollowing();
       // Tear down an open shared Run modal — it portals to body (outside
       // `routeRoot`), so removing the route root below won't reach it.
       closeRunModal();

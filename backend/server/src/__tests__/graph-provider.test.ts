@@ -778,3 +778,46 @@ describe('canonicalizeGraph', () => {
     expect(m.body_text).toBe('');
   });
 });
+
+describe('GraphProvider — a message read again on its own (D-315 §4.4, §7.4)', () => {
+  const message = (id: string, parentFolderId: string) => ({
+    id,
+    parentFolderId,
+    subject: 'Your parcel',
+    from: { emailAddress: { address: 'me@contoso.com' } },
+    toRecipients: [{ emailAddress: { address: 'buyer@shop.example' } }],
+    receivedDateTime: '2026-09-20T10:00:00Z',
+    body: { contentType: 'text', content: 'Tracking Number: 1Z999AA10123456784' },
+    hasAttachments: false,
+  });
+  const folder = (name: string, id: string): Route => ({
+    match: (url) => url === `https://graph.microsoft.com/v1.0/me/mailFolders/${name}?$select=id`,
+    response: { status: 200, body: { id } },
+  });
+  const byId = (id: string, parent: string): Route => ({
+    match: (url) => url.startsWith(`https://graph.microsoft.com/v1.0/me/messages/${id}?`),
+    response: { status: 200, body: message(id, parent) },
+  });
+
+  it('keeps the direction its folder gives it, as live sync does, asking the folders once', async () => {
+    h = newHarness({
+      routes: [
+        folder('inbox', 'F-IN'), folder('sentitems', 'F-SENT'), folder('outbox', 'F-OUT'), folder('drafts', 'F-DRAFT'),
+        byId('m-sent', 'F-SENT'), byId('m-in', 'F-IN'), byId('m-other', 'F-ARCHIVE'),
+      ],
+    });
+    await h.provider.connect();
+    expect((await h.provider.fetchMessage!('m-sent'))?.direction).toBe('outbound');
+    expect((await h.provider.fetchMessage!('m-in'))?.direction).toBe('inbound');
+    expect((await h.provider.fetchMessage!('m-other'))?.direction).toBe('unknown');
+    expect(h.calls.filter((url) => url.includes('/me/mailFolders/')).length).toBe(4);
+  });
+
+  it('asks again when a folder could not be looked up, and says unknown meanwhile', async () => {
+    h = newHarness({ routes: [folder('inbox', 'F-IN'), folder('outbox', 'F-OUT'), folder('drafts', 'F-DRAFT'), byId('m-sent', 'F-SENT')] });
+    await h.provider.connect();
+    expect((await h.provider.fetchMessage!('m-sent'))?.direction).toBe('unknown');
+    await h.provider.fetchMessage!('m-sent');
+    expect(h.calls.filter((url) => url.includes('/me/mailFolders/sentitems')).length).toBe(2);
+  });
+});

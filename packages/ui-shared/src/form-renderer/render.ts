@@ -13,6 +13,7 @@
  */
 
 import {
+  dueDayIso,
   evaluateShowIf,
   type DiscriminatedUnionVariant,
   type FormDefinition,
@@ -823,22 +824,31 @@ const stringValue = (v: unknown): string => {
   return String(v);
 };
 
-/** Truncate / reshape a stored timestamp value into the
- *  `YYYY-MM-DDTHH:MM` form a `datetime-local` input expects. */
-const formatTimestampForInput = (v: unknown): string => {
+/** A stored timestamp as the `YYYY-MM-DDTHH:MM` a `datetime-local` input
+ *  shows — in THIS browser's time, because that is how `read.ts` reads the
+ *  input back. It used to write UTC digits in and read local digits out, so
+ *  every save of an untouched field moved it by the offset.
+ *
+ *  ⛔ A value at UTC midnight names a DAY (`due-day.ts`) and shows as that day
+ *  at midnight — not as the previous evening, which is where its instant falls
+ *  west of UTC. A string without a zone is shown as written. Exported so a host
+ *  can tell an untouched field from an edited one by comparing the two as
+ *  shown. */
+export const formatTimestampForInput = (v: unknown): string => {
   if (v === undefined || v === null || v === '') return '';
   if (typeof v === 'number') {
     if (!Number.isFinite(v) || v < 0) return '';
-    const date = new Date(v);
-    return formatDateForInput(date);
+    const day = dueDayIso(v);
+    return day !== null ? `${day}T00:00` : formatDateForInput(new Date(v));
   }
   if (typeof v !== 'string') return '';
-  // Trim a Z / offset suffix; strip seconds / ms.
-  const stripped = v.replace(/[zZ]$/, '').replace(/[+-]\d{2}:?\d{2}$/, '');
+  // A zoned string names an instant: show it as the number it is.
+  if (/(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(v)) {
+    const ms = Date.parse(v);
+    return Number.isFinite(ms) ? formatTimestampForInput(ms) : '';
+  }
   // Match `YYYY-MM-DDTHH:MM(:SS(.fff)?)?`
-  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2}(?:\.\d+)?)?$/.exec(
-    stripped,
-  );
+  const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2}(?:\.\d+)?)?$/.exec(v);
   if (!m) return '';
   return `${m[1]}T${m[2]}`;
 };
@@ -846,5 +856,5 @@ const formatTimestampForInput = (v: unknown): string => {
 const formatDateForInput = (d: Date): string => {
   if (Number.isNaN(d.getTime())) return '';
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };

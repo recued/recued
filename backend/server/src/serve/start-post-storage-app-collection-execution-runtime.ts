@@ -318,6 +318,7 @@ export const startPostBaseStorageVaultRuntime = async (
       manifests: storageContext.manifests,
       baseVault,
       accountStore: storageContext.accountStore,
+      mailFactStore: storageContext.mailFactStoreRef,
     },
     execution: {
       storage: storageContext,
@@ -482,6 +483,10 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       // `file:remote:*` id through the shared bundle (lazy; undefined until the
       // file-source wiring runs).
       getRemoteFileReadDeps: app.getRemoteFileReadDeps,
+      // D-315 §4.3 — the mail facts' AI pass calls through the chat's privacy layer,
+      // and stops where background work stops on the owner's daily budget.
+      privateAiCall: app.privateAiCall,
+      backgroundAiBudgetSpent: () => app.llmManager?.isScheduleCutoff() ?? false,
     },
     execution: {
       ...options.execution,

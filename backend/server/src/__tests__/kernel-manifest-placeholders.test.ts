@@ -26,8 +26,10 @@ import {
 } from '../annotation-handler.js';
 import { handleCalendarList } from '../collections/calendar/calendar-dispatcher.js';
 import { createCalendarTable } from '../collections/calendar/calendar-table.js';
+import { handleSharedPatch, handleSharedRead, handleSharedWrite } from '../shared-handler.js';
 import { createAnnotationStore, type AnnotationStore } from '../storage/annotation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
+import { createSharedStore } from '../storage/shared-store.js';
 import { createWorkEntityStore, ensureWorkEntitySchema, type WorkEntityStore } from '../storage/work-entity-store.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
@@ -233,3 +235,25 @@ describe('where a null is the caller\'s own, it keeps its meaning', () => {
   });
 });
 
+describe('shared-patch: a part the step leaves out is absent, not null', () => {
+  it('a patch that only removes, and one that only sets, both reach the store as themselves', async () => {
+    const shared = createSharedStore({ db, blobs: createBlobStore(join(dir, 'shared-blobs')) });
+    const run = createIngredientExecutor({
+      manifestLoader: async (slug) => KERNEL_MANIFESTS.find((m) => m.slug === slug) ?? null,
+      kernelAdapter: createKernelAdapter({
+        patch: (input) => handleSharedPatch({ store: shared }, input),
+      } as KernelDispatchers),
+      adapterRegistry: {} as never,
+    });
+    const key = 'data.shared.row.1';
+    await handleSharedWrite({ store: shared }, { key, value: { status: 'open', task_id: 't-1' } });
+    // The manifest declares `set` / `unset` / `match` as null placeholders; a
+    // patch naming one part must reach the store with the others absent, or an
+    // unset-only patch is refused as "set must be an object".
+    expect(await run('shared-patch', { key, unset: ['task_id'] }, undefined, undefined, undefined))
+      .toMatchObject({ found: true, applied: true });
+    expect(await run('shared-patch', { key, set: { status: 'closed' } }, undefined, undefined, undefined))
+      .toMatchObject({ applied: true });
+    expect((await handleSharedRead({ store: shared }, { key })).value).toEqual({ status: 'closed' });
+  });
+});

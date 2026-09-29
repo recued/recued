@@ -163,6 +163,9 @@ export const startPostAppCollectionExecutionRuntime = async (
         ...(execution.permanentPassRepair !== undefined
           ? { permanentPassRepair: execution.permanentPassRepair }
           : {}),
+        ...(execution.workEntityTextDatesNotice !== undefined
+          ? { workEntityTextDatesNotice: execution.workEntityTextDatesNotice }
+          : {}),
         collection,
       },
       preListener: {

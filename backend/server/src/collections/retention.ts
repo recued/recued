@@ -12,6 +12,9 @@
  *     mail). File adapter leaves this unwired because files default
  *     to `retention_days: 0` (the user owns the filesystem; we'd
  *     rather stop syncing than delete their records).
+ *     ⚠ NOT TRUE FOR MAIL (verified 2026-09-26, D-315): the mail
+ *     collection wires no tick. Only (2) and (3) below reach it, so a
+ *     mailbox keeps mail past its retention until one of them runs.
  *  2. Pressure-driven reclaim — the Phase B cascade orchestrator
  *     calls `run()` inline on a collection whose gate flips to
  *     `pressure_managed`. Same pruner, no separate size-based pass:
@@ -57,6 +60,9 @@ export interface RetentionPrunable {
     pruned_count: number;
     bytes_freed: number;
     blob_hashes_freed: string[];
+    /** The rows removed. Optional: the calendar table does not report them,
+     *  and nothing derived hangs off its rows yet. */
+    record_ids?: readonly string[];
   };
 }
 
@@ -72,6 +78,11 @@ export interface CollectionRetentionDeps {
   auditLog?: AuditLogStore;
   /** Injectable clock — defaults to `Date.now`. */
   now?: () => number;
+  /** D-315 — told which rows a prune removed, once it has committed, so what
+   *  was derived from them goes too (a mail fact follows its email, ruling
+   *  29). A hook that throws never fails the prune: the rows are already gone,
+   *  and reporting the prune as failed would invite a caller to retry it. */
+  onPruned?: (record_ids: readonly string[]) => void;
 }
 
 export interface CollectionRetention {
@@ -116,8 +127,12 @@ export const createCollectionRetention = (
     }
 
     const cutoff = started - retentionDays * MS_PER_DAY;
-    const { pruned_count, bytes_freed, blob_hashes_freed } =
+    const { pruned_count, bytes_freed, blob_hashes_freed, record_ids } =
       deps.table.pruneOlderThan(cutoff);
+    if (deps.onPruned && record_ids !== undefined && record_ids.length > 0) {
+      try { deps.onPruned(record_ids); }
+      catch { /* the prune has committed; the hook reports its own failure */ }
+    }
 
     // Audit only when actual work happened — a pruner that fires
     // every hour with nothing to do would flood the activity log

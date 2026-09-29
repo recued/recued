@@ -15,6 +15,15 @@ describe('recipe Run facts receipt', () => {
     );
   });
 
+  it('says where a stop_when ended the run, right after the steps that ran', () => {
+    expect(formatRecipeRunFacts({
+      steps_run: 3,
+      items_total: 0,
+      duration_ms: 1_200,
+      stopped_at: 'no_new_mail',
+    })).toBe('3 steps · ended early at no_new_mail · 0 items · 1.2 seconds');
+  });
+
   it('pluralizes and rounds sub-second duration without losing the receipt', () => {
     expect(formatRecipeRunFacts({
       steps_run: 1,

@@ -1,16 +1,19 @@
-/** Promote an owner-approved D-200 paid intake submission into canonical
- * `form_response`, and verify the held provenance of every other one.
+/** Promote an owner-approved intake submission into canonical `form_response`
+ * (the ONLY place that row is written), and verify the held provenance of
+ * every submission that reaches approval.
  *
- * ⚠ D-210 WS2 CHANGED WHAT THIS WRITES. The canonical log is no longer minted
- * at approval for ordinary intakes — it is written at SUBMIT, by the intake
- * handler, where the plaintext is still live and no decrypt is needed
- * (`handlers/intake-form.ts`). So an UNPAIRED submission arrives here already
- * logged: this hook still verifies its held provenance against the submission
- * row (a mismatch must not resume the materialize op) and then returns without
- * writing or decrypting anything.
+ * ⚠ THE WRITE IS HERE, AT APPROVAL, FOR EVERY INTAKE. D-210 WS2 had moved it
+ * for ordinary intakes to SUBMIT (the visitor POST, `handlers/intake-form.ts`),
+ * and this header said so until 2026-09-27. Audit finding 3a moved it back
+ * (`2ec931cc7`, 2026-07-21): a row written at submit existed, readable by the
+ * owner's AI, before the owner had seen the submission — see the note above
+ * `isFormResponseDestination` below. An unpaired submission is written only
+ * when its destination is a form response; one routed to a task, contact,
+ * calendar event or note has its provenance verified (a mismatch must not
+ * resume the materialize op) and writes no row.
  *
- * What survives is the one case submit CANNOT write: a D-200 direct-checkout
- * pair. Its `form_response` is the paid deliverable, so it must not exist
+ * A D-200 direct-checkout pair is written whatever its destination. Its
+ * `form_response` is the paid deliverable, so it must not exist
  * before payment is provider-verified — the exact immutable v4 row/pair must
  * still be verified paid, and the durable approval answer cannot predate that
  * verification. The check runs both before PII access and after its async

@@ -550,12 +550,13 @@ describe('resolveConnectionAgnosticRecipe', () => {
     expect(bindings.map((binding) => binding.operation)).toEqual(['deal.search', 'deal.search']);
   });
 
-  it('carries skip_when and cache to both generated steps, and fail_on only to the projection', () => {
+  it('carries skip_when and cache to both generated steps, and fail_on / stop_when only to the projection', () => {
     const { recipe } = resolveConnectionAgnosticRecipe(
       testRecipe([
         opStep({
           skip_when: '{{config.enabled}} equal false',
           fail_on: '{{step.deals}} empty',
+          stop_when: '{{step.deals}} is_empty',
           cache: 'any',
         }),
       ]),
@@ -568,10 +569,13 @@ describe('resolveConnectionAgnosticRecipe', () => {
       cache: 'any',
     });
     expect('fail_on' in recipe.steps[0]).toBe(false);
+    // Stopping on the raw fetch would decide before the canonical records exist.
+    expect('stop_when' in recipe.steps[0]).toBe(false);
     expect(recipe.steps[1]).toMatchObject({
       id: 'deals',
       skip_when: '{{config.enabled}} equal false',
       fail_on: '{{step.deals}} empty',
+      stop_when: '{{step.deals}} is_empty',
       cache: 'any',
     });
   });
@@ -664,7 +668,7 @@ describe('resolveConnectionAgnosticRecipe', () => {
     ]);
   });
 
-  it('§5 a tool op-step carries skip_when / fail_on / cache onto its single fetch', () => {
+  it('§5 a tool op-step carries skip_when / fail_on / stop_when / cache onto its single fetch', () => {
     const ctx = hubspotCtx({
       catalog_slug: 'exa-catalog',
       operation_families: [operationRow('web.search', 'post')],
@@ -675,6 +679,7 @@ describe('resolveConnectionAgnosticRecipe', () => {
       args: {},
       skip_when: '{{config.skip}} equal true',
       fail_on: '{{step.news}} is_null',
+      stop_when: '{{step.news}} is_empty',
       cache: 'fresh',
     });
     const resolved = resolveConnectionAgnosticRecipe(testRecipe([step]), ctx);
@@ -686,6 +691,7 @@ describe('resolveConnectionAgnosticRecipe', () => {
         input: { operation: 'web.search', args: {} },
         skip_when: '{{config.skip}} equal true',
         fail_on: '{{step.news}} is_null',
+        stop_when: '{{step.news}} is_empty',
         cache: 'fresh',
       },
     ]);

@@ -144,7 +144,6 @@ import {
   recipeOutputSections,
   WIRE_AUTHORITY_ARG_PATHS,
   type HandlerSlice,
-  type RecipeRunFacts,
   type RiskTier,
   type ServerExecuteResponse,
   type ServerRpcRegistry,
@@ -197,6 +196,8 @@ import {
   stampExecuteResponseAuditRun,
   stampExecuteResponseStandingDish,
 } from './types.js';
+import { recipeRunFactsFromAuditEntry } from './recipe-run-facts.js';
+import { foreachApprovalCover } from './foreach-approval-items.js';
 import type { McpActionStore } from './mcp-action-store.js';
 import {
   gatedActionHandoffFromResult,
@@ -255,6 +256,7 @@ import {
 import type { RecipeStore } from './recipe-store.js';
 import type { FileReadFn, ServerExecutorConfig } from './server-executor.js';
 import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, createServerExecutor, extractFileRecordId, mergeVault } from './server-executor.js';
+import { createStepEffect } from './step-effect.js';
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
 import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
@@ -3329,6 +3331,8 @@ const handleExecuteInner = async (
   // never on the public `ExecuteRequest` — so a wire-facing dispatcher
   // cannot smuggle a `run_id` that collides with an existing anchor.
   const run_id = internal.run_id ?? newRunId();
+  // D-315 §6.4 — the event-trigger runtime links the fire to this run.
+  try { internal.onRunMinted?.(run_id); } catch { /* observability only */ }
   // D-179 P1 — the run's dish attribution. A standing dish keeps its
   // long-life id; a dishless (manual / legacy-dispatch) run derives an
   // ephemeral id from the run id — attribution-only, never persisted.
@@ -5470,6 +5474,9 @@ const handleExecuteInner = async (
         return null;
       },
       stepCache,
+      // Read fresh before a write (engine `step-seed.ts`): in a recipe that
+      // writes, reads of the owner's own records skip both cache tiers.
+      stepEffect: createStepEffect((slug) => deps.executorConfig.manifests.get(slug)),
       sharedResolvers,
       ...(linkSink ? { linkSink } : {}),
       ...(deps.enrichmentStore
@@ -6488,7 +6495,37 @@ const handleExecuteInner = async (
         );
       } else {
         try {
+          // A held `foreach` step: ONE approval covers every remaining item that
+          // targets the same operation and account, so the ask must say how many
+          // and list them — it used to show only the item it paused on.
+          const foreachCover = awaitingApproval.foreach_progress !== undefined
+            ? foreachApprovalCover({
+                recipe,
+                gated_step_id,
+                ...(awaitingApproval.execution_phase !== undefined
+                  ? { execution_phase: awaitingApproval.execution_phase }
+                  : {}),
+                progress: awaitingApproval.foreach_progress,
+                held: {
+                  ...(awaitingApproval.args_preview !== undefined
+                    ? { args_preview: awaitingApproval.args_preview }
+                    : {}),
+                  ...(awaitingApproval.connection_name !== undefined
+                    ? { connection_name: awaitingApproval.connection_name }
+                    : {}),
+                  ...(awaitingApproval.operation_id !== undefined
+                    ? { operation_id: awaitingApproval.operation_id }
+                    : {}),
+                  ...(awaitingApproval.egress_bound !== undefined
+                    ? { egress_bound: awaitingApproval.egress_bound }
+                    : {}),
+                },
+                stores,
+                manifest: (slug) => deps.executorConfig.manifests.get(slug) ?? undefined,
+              })
+            : undefined;
           const preflightContext = {
+            ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
             ...(awaitingApproval.tool_slug !== undefined
               ? { tool_slug: awaitingApproval.tool_slug }
               : {}),
@@ -6787,6 +6824,9 @@ const handleExecuteInner = async (
                 let batchAskId: string | undefined;
                 if (
                   deps.batchApprovals !== undefined
+                  // A batch member is ONE call; a hold that covers a foreach's
+                  // remaining items raises its own ask, which lists them all.
+                  && foreachCover === undefined
                   && runIdentity !== undefined
                   && executionSource !== undefined
                   && awaitingApproval.ingredient_slug !== undefined
@@ -6923,6 +6963,7 @@ const handleExecuteInner = async (
                     ...(openPreview !== undefined
                       ? { open_projection_preview: openPreview }
                       : {}),
+                    ...(foreachCover !== undefined ? { foreach_cover: foreachCover } : {}),
                   };
                   const { ask_id } = await raisePreflightAsk(
                     preflightNotifier,
@@ -8011,11 +8052,13 @@ const handleExecuteInner = async (
         duration_ms: s.duration_ms,
         error: s.error,
         ...(s.foreach === undefined ? {} : { foreach: s.foreach }),
+        ...(s.stopped === true ? { stopped: true as const } : {}),
       })),
       errors: pauseFailureError ? [pauseFailureError] : result.errors,
       duration_ms: result.duration_ms,
       ...(result.degraded && result.degraded.length > 0 ? { degraded: result.degraded } : {}),
       ...(result.trigger_skipped ? { trigger_skipped: true } : {}),
+      ...(result.stopped !== undefined ? { stopped: result.stopped } : {}),
       ...(result.next_run_at !== undefined ? { next_run_at: result.next_run_at } : {}),
       // D-157 — surface the durable pause as a first-class marker so callers
       // (esp. the chat tool-loop) can tell the model the action is queued for
@@ -8409,27 +8452,6 @@ const buildRpcExecuteRequest = (
   // surface today is the local owner driving their own client.
   execution_source: buildRpcUserExecutionSource(client),
 });
-
-/** Project the small owner-facing receipt from the row that actually landed in
- *  the audit log. `total_usage` is intentionally optional on AuditEntry: an
- *  absent report can mean no AI call or telemetry eviction, so never invent a
- *  zero-cost claim. */
-const recipeRunFactsFromAuditEntry = (
-  entry: AuditEntry,
-): RecipeRunFacts | undefined => {
-  if (entry.run_yield === undefined) return undefined;
-  return {
-    steps_run: entry.run_yield.steps_run,
-    items_total: entry.run_yield.items_total,
-    ...(entry.total_usage !== undefined
-      ? {
-          provider_calls: entry.total_usage.provider_calls ?? 1,
-          total_tokens: entry.total_usage.total_tokens,
-        }
-      : {}),
-    duration_ms: entry.duration_ms,
-  };
-};
 
 const withRecipeRunFacts = async (
   response: ExecuteResponse,

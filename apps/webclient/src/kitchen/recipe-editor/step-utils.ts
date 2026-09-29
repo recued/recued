@@ -90,7 +90,7 @@ export const applyFieldToStep = <T extends { id: string }>(
   list.map((s) => {
     if (s.id !== stepId) return s;
     const next = { ...s } as Record<string, unknown>;
-    if (field === 'skip_when' || field === 'fail_on') {
+    if (field === 'skip_when' || field === 'fail_on' || field === 'stop_when') {
       if (value === undefined) {
         delete next[field];
       } else {

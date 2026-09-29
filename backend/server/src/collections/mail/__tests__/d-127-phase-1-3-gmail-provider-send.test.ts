@@ -384,6 +384,8 @@ describe('D-127 P1.3 — send() error taxonomy', () => {
       expect((err as IngredientError).code).toBe('MAIL_SEND_RECIPIENT_INVALID');
       expect((err as IngredientError).details).toMatchObject({
         kind: 'gmail', status: 400,
+        // Gmail REFUSED it: nothing was sent, so a fenced send may try again.
+        not_sent: true,
       });
     }
   });
@@ -402,6 +404,8 @@ describe('D-127 P1.3 — send() error taxonomy', () => {
     } catch (err) {
       expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
       expect((err as IngredientError).details).toMatchObject({ status: 503 });
+      // A 5xx proves nothing either way.
+      expect((err as IngredientError).details?.not_sent).toBeUndefined();
     }
   });
 

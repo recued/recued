@@ -13,6 +13,8 @@ import {
   SharedCompareAndSetValidationError,
   SharedCompareAndSetValueTooLargeError,
   SharedKeyInvalidError,
+  SharedPatchInvalidError,
+  SharedPatchValueTooLargeError,
   SubkeyWriteError,
   ValueTooLargeError,
   COMPARE_AND_SET_MAX_VALUE_BYTES,
@@ -458,5 +460,125 @@ describe('createSharedStore', () => {
     await store.write('a', 'one', { author_id: 'x' });
     await store.write('b', 'two', { author_id: 'x' });
     expect(store.totalBytes()).toBeGreaterThan(0);
+  });
+});
+
+describe('patch — change some fields of one record, leave the rest', () => {
+  const ROW = 'follow-up.active.thread-1';
+  const seed = { status: 'watching_customer_response', order_id: 'ord-1', task_id: 'task-1' };
+
+  it('changes the fields it names and leaves every other field as it was', async () => {
+    const { store } = mkStore();
+    await store.write(ROW, seed, { author_id: 'seed' });
+    const out = await store.patch(ROW, { set: { status: 'response_needs_owner', reply_id: 'r-1' }, unset: ['task_id'] }, { author_id: 'w' });
+    expect(out).toMatchObject({ found: true, applied: true });
+    expect((await store.read(ROW))?.value).toEqual({ status: 'response_needs_owner', order_id: 'ord-1', reply_id: 'r-1' });
+  });
+
+  it('⛔ two writers of different fields both keep their change — where read-then-write keeps one', async () => {
+    const { store } = mkStore();
+    // The control: each writer read the row, then wrote back its whole copy.
+    await store.write(ROW, seed, { author_id: 'seed' });
+    const readByA = (await store.read(ROW))!.value as Record<string, unknown>;
+    const readByB = (await store.read(ROW))!.value as Record<string, unknown>;
+    await store.write(ROW, { ...readByA, status: 'response_needs_owner' }, { author_id: 'a' });
+    await store.write(ROW, { ...readByB, task_id: 'task-2' }, { author_id: 'b' });
+    expect((await store.read(ROW))?.value).toMatchObject({ status: 'watching_customer_response', task_id: 'task-2' });
+
+    // The same two changes as patches.
+    await store.write(ROW, seed, { author_id: 'seed' });
+    await store.patch(ROW, { set: { status: 'response_needs_owner' } }, { author_id: 'a' });
+    await store.patch(ROW, { set: { task_id: 'task-2' } }, { author_id: 'b' });
+    expect((await store.read(ROW))?.value).toEqual({ ...seed, status: 'response_needs_owner', task_id: 'task-2' });
+  });
+
+  it('two patches racing across SQLite connections both land', async () => {
+    const { store } = mkStore();
+    await store.write(ROW, seed, { author_id: 'seed' });
+    const db2 = new Database(join(dir, 'test.db'));
+    const store2 = createSharedStore({ db: db2, blobs: createBlobStore(join(dir, 'blobs')) });
+    try {
+      await Promise.all([
+        store.patch(ROW, { set: { status: 'response_needs_owner' } }, { author_id: 'a' }),
+        store2.patch(ROW, { set: { task_id: 'task-2' } }, { author_id: 'b' }),
+      ]);
+      expect((await store.read(ROW))?.value).toEqual({ ...seed, status: 'response_needs_owner', task_id: 'task-2' });
+    } finally {
+      db2.close();
+    }
+  });
+
+  it('an absent record is an answer, not a write', async () => {
+    const { store } = mkStore();
+    expect(await store.patch(ROW, { set: { status: 'x' } }, { author_id: 'a' })).toEqual({ found: false, applied: false, bytes: 0 });
+    expect(await store.read(ROW)).toBeNull();
+  });
+
+  it('match applies while its fields hold, and answers applied:false once the record moved on', async () => {
+    const { store } = mkStore();
+    await store.write(ROW, { ...seed, reply_id: 'r-1' }, { author_id: 'seed' });
+    expect(await store.patch(ROW, { set: { task_id: 'task-9' }, match: { reply_id: 'r-2' } }, { author_id: 'a' }))
+      .toMatchObject({ found: true, applied: false });
+    expect((await store.read(ROW))?.value).toMatchObject({ task_id: 'task-1' });
+    expect(await store.patch(ROW, { set: { task_id: 'task-9' }, match: { reply_id: 'r-1' } }, { author_id: 'a' }))
+      .toMatchObject({ found: true, applied: true });
+    expect((await store.read(ROW))?.value).toMatchObject({ task_id: 'task-9' });
+    // null (or undefined) matches a field that is absent or null.
+    expect(await store.patch(ROW, { set: { order_id: 'ord-2' }, match: { never_set: null } }, { author_id: 'a' }))
+      .toMatchObject({ applied: true });
+    expect(await store.patch(ROW, { set: { order_id: 'ord-3' }, match: { never_set: undefined } }, { author_id: 'a' }))
+      .toMatchObject({ applied: true });
+    expect(await store.patch(ROW, { set: { order_id: 'ord-4' }, match: { reply_id: null } }, { author_id: 'a' }))
+      .toMatchObject({ applied: false });
+    expect((await store.read(ROW))?.value).toMatchObject({ order_id: 'ord-3' });
+  });
+
+  it('refuses what it cannot patch, and changes nothing', async () => {
+    const { store } = mkStore();
+    await store.compareAndSet('state.cas', null, { revision: 0 }, { author_id: 'a' });
+    await expect(store.patch('state.cas', { set: { x: 1 } }, { author_id: 'a' }))
+      .rejects.toBeInstanceOf(SharedCompareAndSetRequiredError);
+    await store.write('state.list', ['not', 'fields'], { author_id: 'a' });
+    await expect(store.patch('state.list', { set: { x: 1 } }, { author_id: 'a' }))
+      .rejects.toBeInstanceOf(SharedPatchInvalidError);
+    await store.write('state.blob', { text: 'x'.repeat(INLINE_CUTOFF_BYTES + 1) }, { author_id: 'a' });
+    await expect(store.patch('state.blob', { set: { x: 1 } }, { author_id: 'a' }))
+      .rejects.toBeInstanceOf(SharedPatchValueTooLargeError);
+    await store.write(ROW, seed, { author_id: 'seed' });
+    await expect(store.patch(ROW, { set: { text: 'x'.repeat(INLINE_CUTOFF_BYTES) } }, { author_id: 'a' }))
+      .rejects.toBeInstanceOf(SharedPatchValueTooLargeError);
+    expect((await store.read(ROW))?.value).toEqual(seed);
+  });
+
+  it('refuses a patch that is not one', async () => {
+    const { store } = mkStore();
+    await store.write(ROW, seed, { author_id: 'seed' });
+    const bad = async (patch: Record<string, unknown>) =>
+      expect(store.patch(ROW, patch as never, { author_id: 'a' })).rejects.toBeInstanceOf(SharedPatchInvalidError);
+    await bad({});
+    await bad({ set: {}, unset: [] });
+    await bad({ set: { status: 'x' }, unset: ['status'] });
+    await bad({ set: ['status'] });
+    await bad({ unset: 'status' });
+    await bad({ set: { status: 'x' }, match: ['status'] });
+    await bad({ unset: [''] });
+    await bad({ set: JSON.parse('{"__proto__": {"polluted": true}}') });
+    await bad({ unset: ['constructor'] });
+    expect((await store.read(ROW))?.value).toEqual(seed);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('keeps search and the byte total in step, and a patch that changes nothing writes nothing', async () => {
+    const blobs = createBlobStore(join(dir, 'blobs'));
+    let reported = 0;
+    const store = createSharedStore({ db, blobs, onBytesChanged: (delta) => { reported += delta; } });
+    await store.write(ROW, seed, { author_id: 'seed' });
+    await store.patch(ROW, { set: { note: 'escalated to finance' } }, { author_id: 'a' });
+    expect((await store.search('follow-up.*', 'finance')).map((hit) => hit.key)).toEqual([ROW]);
+    expect(reported).toBe(store.totalBytes());
+    const before = (await store.read(ROW))!.written_at;
+    expect(await store.patch(ROW, { set: { note: 'escalated to finance' } }, { author_id: 'a' }))
+      .toMatchObject({ applied: true });
+    expect((await store.read(ROW))!.written_at).toBe(before);
   });
 });

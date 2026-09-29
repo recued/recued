@@ -1,7 +1,7 @@
 {
   "recipe_id": "extract-commitments-from-mail",
   "chat_exposed": true,
-  "version": 2,
+  "version": 3,
   "ttl": 60,
   "metadata": {
     "name": "Extract commitments from mail",
@@ -303,12 +303,18 @@
       }
     },
     {
+      "id": "commitment_key_hash",
+      "transform": "sha256",
+      "input": "mail extracted commitment|{{context.event.payload.slug}}|{{context.event.payload.record_id}}"
+    },
+    {
       "id": "create",
       "skip_when": "{{step.skip_create}} equal true",
       "op": "core.work-entity.commitment.create",
       "args": {
         "direction": "{{step.extracted_direction}}",
         "statement": "{{step.extracted_statement}}",
+        "idempotency_key": "mail-extracted-commitment:{{step.commitment_key_hash}}",
         "derivation": "mail_extracted",
         "promised_for_at": "{{step.promised_for_at}}",
         "expiry_policy": "escalate_overdue",

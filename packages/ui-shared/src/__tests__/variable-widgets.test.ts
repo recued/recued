@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   FILE_REF_VARIABLE_ATTR,
+  dateInputValue,
+  datetimeInputValue,
   fileRefVariablePickerId,
   toWidgetShape,
   renderVariableWidget,
@@ -390,5 +392,90 @@ describe('a list setting (`type: \'array\'`) is a list, not the text in its box'
     expect(validateWidgetValue(required, [])).toBe('Required');
     expect(validateWidgetValue(required, undefined)).toBe('Required');
     expect(validateWidgetValue(required, ' ')).toBe('Required');
+  });
+});
+
+describe('a `datetime` setting leaves as an instant; a `date` setting is a day', () => {
+  // ⛔⛔ THE ZONE IS ONLY KNOWN HERE. The control holds a zone-less wall clock,
+  // and the server reads a zone-less time in ITS zone — or, for a record's date,
+  // not at all: the store kept `2026-10-01T09:30` as text, and a promise dated
+  // that way never came due. Every expectation below is computed from this
+  // machine's own clock, so the file holds in any zone the suite runs in.
+  const wall = new Date(2026, 9, 1, 9, 30); // 1 Oct 2026, 09:30 here
+  const control = (varType: string, value: string) =>
+    fakeEl({ dataset: { varKey: 'when', varType }, value });
+
+  it('⛔ reads a datetime back WITH this browser\'s offset, naming the same instant', () => {
+    const sent = readWidgetValue(control('datetime', '2026-10-01T09:30'));
+    expect(sent).toMatch(/^2026-10-01T09:30:00[+-]\d{2}:\d{2}$/u);
+    expect(Date.parse(String(sent))).toBe(wall.getTime());
+  });
+
+  it('takes the offset of THAT day, not of today (daylight saving)', () => {
+    const winter = readWidgetValue(control('datetime', '2026-01-15T12:00'));
+    const summer = readWidgetValue(control('datetime', '2026-07-15T12:00'));
+    expect(Date.parse(String(winter))).toBe(new Date(2026, 0, 15, 12, 0).getTime());
+    expect(Date.parse(String(summer))).toBe(new Date(2026, 6, 15, 12, 0).getTime());
+  });
+
+  it('an empty datetime is still empty, so an optional one stays unset', () => {
+    expect(readWidgetValue(control('datetime', ''))).toBe('');
+  });
+
+  it('shows a saved instant as this browser\'s wall clock, whichever form it was saved in', () => {
+    expect(datetimeInputValue(wall.getTime())).toBe('2026-10-01T09:30');
+    expect(datetimeInputValue(readWidgetValue(control('datetime', '2026-10-01T09:30'))))
+      .toBe('2026-10-01T09:30');
+    expect(datetimeInputValue(new Date(wall).toISOString())).toBe('2026-10-01T09:30');
+  });
+
+  it('shows a wall clock saved before instants were sent as it was typed', () => {
+    expect(datetimeInputValue('2026-10-01T09:30')).toBe('2026-10-01T09:30');
+    expect(datetimeInputValue('2026-10-01T09:30:45')).toBe('2026-10-01T09:30');
+  });
+
+  it('shows nothing, rather than a value the control refuses, for anything else', () => {
+    expect(datetimeInputValue(undefined)).toBe('');
+    expect(datetimeInputValue('')).toBe('');
+    expect(datetimeInputValue('next tuesday')).toBe('');
+    expect(datetimeInputValue(Number.NaN)).toBe('');
+  });
+
+  it('renders the saved datetime inside the picker', () => {
+    const html = renderVariableWidget({ ...toWidgetShape('when', { label: 'When', type: 'datetime' }), value: wall.getTime() });
+    expect(html).toContain('type="datetime-local"');
+    expect(html).toContain('value="2026-10-01T09:30"');
+  });
+
+  const day = toWidgetShape('target', { label: 'Target', type: 'date' } as Parameters<typeof toWidgetShape>[1]);
+
+  it('maps the `date` hint to a date picker', () => {
+    expect(day.type).toBe('date');
+    const html = renderVariableWidget({ ...day, value: '2026-10-01' });
+    expect(html).toContain('type="date"');
+    expect(html).toContain('value="2026-10-01"');
+  });
+
+  it('reads a date back as the day, with no time and no zone', () => {
+    expect(readWidgetValue(control('date', '2026-10-01'))).toBe('2026-10-01');
+  });
+
+  it('shows the day of what was saved — a day, a time as written, or a stored day', () => {
+    expect(dateInputValue('2026-10-01')).toBe('2026-10-01');
+    // The date it was written on, not the UTC one (that is 2 Oct).
+    expect(dateInputValue('2026-10-01T23:30:00-05:00')).toBe('2026-10-01');
+    // A day is stored as midnight UTC.
+    expect(dateInputValue(Date.UTC(2026, 9, 1))).toBe('2026-10-01');
+    expect(dateInputValue('soon')).toBe('');
+    expect(dateInputValue(undefined)).toBe('');
+  });
+
+  it('⛔ a required one left empty is Required — for both types', () => {
+    // A widget type missing from `validateWidgetValue`'s list falls past every
+    // branch and returns null — "no complaint".
+    expect(validateWidgetValue({ ...day, optional: false }, '')).toBe('Required');
+    expect(validateWidgetValue({ ...day, optional: false }, '2026-10-01')).toBeNull();
+    const when = toWidgetShape('when', { label: 'When', type: 'datetime' });
+    expect(validateWidgetValue({ ...when, optional: false }, '')).toBe('Required');
   });
 });

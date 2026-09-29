@@ -986,6 +986,16 @@ export interface WorkEntitySourceDeclaration {
    *  graphql `variables` object; for a REST op it is the (possibly
    *  nested) request-body path. Keys must be ⊆ `writable_fields`. */
   write_paths?: Record<string, string>;
+  /** How to REMOVE a writable date — keyed by field, the op argument that,
+   *  sent as `true`, clears it on the vendor side. A `null` in an update patch
+   *  is otherwise dropped before the write (`prepareForPosture`): a Source that
+   *  declares none cannot clear a field, and a clear sent alongside other
+   *  changes goes nowhere. The federated peer Source clears a project's target
+   *  and a task's due date this way (`clear_target_completion_at`,
+   *  `clear_due_at`), because its closed request schema types each argument
+   *  once and a date argument cannot also be `null`. Keys must be writable date
+   *  fields (`WORK_ENTITY_DATE_CANONICAL_FIELDS`). */
+  clear_args?: Record<string, string>;
   /** Canonical/preview fields the VENDOR requires on a create (e.g.
    *  HubSpot task create rejects without `hs_timestamp` → `due_at`).
    *  The write executor's `prepare` config-refuses a create missing one

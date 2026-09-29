@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   FORM_RESPONSE_ON_SHORTHAND,
   type LocalRecipeWebhookStatus,
+  type MailFactTypeSpec,
   type RecipeDefinition,
 } from '@recued/contracts';
 
@@ -38,8 +39,10 @@ import {
   RECIPE_EDITOR_STATUS_ATTR,
   RECIPE_EDITOR_TRIGGER_ADD_ATTR,
   RECIPE_EDITOR_TRIGGER_ADD_EVENT_ATTR,
+  RECIPE_EDITOR_TRIGGER_ADD_FACT_TYPE_ATTR,
   RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR,
   RECIPE_EDITOR_TRIGGER_EVENT_ATTR,
+  RECIPE_EDITOR_TRIGGER_FACT_ATTR,
   RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR,
   RECIPE_EDITOR_TRIGGER_REMOVE_ATTR,
   RECIPE_EDITOR_TRIGGER_ROW_ATTR,
@@ -264,6 +267,7 @@ interface MountOptions {
   validateCaller?: BootstrapValidate;
   saveCaller?: BootstrapSave;
   webhookControl?: RecipeWebhookControl;
+  mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
 }
 type BootstrapValidate = (args: {
   recipe: RecipeDefinition;
@@ -283,6 +287,7 @@ const mount = (options: MountOptions = {}) => {
     validateCaller: options.validateCaller ?? okValidate,
     saveCaller: options.saveCaller ?? okSave,
     ...(options.webhookControl ? { webhookControl: options.webhookControl } : {}),
+    ...(options.mailFactTypesCaller ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
     ...(options.initialRecipe !== undefined
       ? { initialRecipe: options.initialRecipe }
       : {}),
@@ -475,6 +480,53 @@ describe('recipe-editor step inspector route', () => {
     expect((route.getRecipe().steps[0] as { skip_when?: string }).skip_when).toBe(
       '{{step.x}} equal done',
     );
+  });
+
+  it('a stop_when condition round-trips through the builder, labelled "Stop when"', () => {
+    const initialRecipe: RecipeDefinition = {
+      recipe_id: 'r1',
+      version: 1,
+      ttl: 300,
+      metadata: { name: 'R1', description: '', author: '', supported_platforms: [] },
+      variables: {},
+      prefetch_steps: [],
+      steps: [{ id: 'gate', transform: 'count', input: '{{step.x}}' } as never],
+      output: { render: [] },
+    };
+    const { root, route } = mount({ initialRecipe });
+
+    const reveal = findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'gate:stop_when')!;
+    expect(reveal.textContent).toBe('+ Stop when');
+    expect(reveal.getAttribute('aria-label')).toBe('Add Stop when condition for step gate');
+    reveal.click();
+
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'stop_when'), '{{step.gate}}');
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'stop_when_op'), 'equal');
+    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'stop_when_value'), '0');
+
+    const saved = route.getRecipe().steps[0] as Record<string, unknown>;
+    expect(saved.stop_when).toBe('{{step.gate}} equal 0');
+    // A control field, not a parameter the count transform receives.
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'param:stop_when')).toBeUndefined();
+  });
+
+  it('offers "+ Stop when" on a step in steps only — never on a prefetch step', () => {
+    const initialRecipe: RecipeDefinition = {
+      recipe_id: 'r1',
+      version: 1,
+      ttl: 300,
+      metadata: { name: 'R1', description: '', author: '', supported_platforms: [] },
+      variables: {},
+      prefetch_steps: [{ id: 'pre', ingredient: 'deal-reader', input: {} } as never],
+      steps: [{ id: 'gate', guard: '{{step.x}}' } as never],
+      output: { render: [] },
+    };
+    const { root } = mount({ initialRecipe });
+
+    expect(findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'gate:stop_when')).toBeDefined();
+    expect(findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'pre:stop_when')).toBeUndefined();
+    // The other two conditions are still offered on the prefetch step.
+    expect(findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'pre:skip_when')).toBeDefined();
   });
 
   it('a set skip_when renders its builder without a reveal step', () => {
@@ -1922,6 +1974,184 @@ describe('recipe-editor step inspector route', () => {
 
     findByAttrValue(root, RECIPE_EDITOR_TRIGGER_REMOVE_ATTR, '0')?.click();
     expect('event_triggers' in route.getRecipe()).toBe(false);
+  });
+
+  // ──────────────────────────────────────────────────────────────
+  // D-315 §5.1 — "A mail fact"
+  // ──────────────────────────────────────────────────────────────
+
+  const fact = (root: FakeElement, part: string) => findByAttrValue(root, RECIPE_EDITOR_TRIGGER_FACT_ATTR, part);
+  const setChecked = (box: FakeElement | undefined, checked: boolean): void => {
+    if (box === undefined) throw new Error('missing checkbox');
+    box.checked = checked;
+    box.dispatch('change');
+  };
+
+  it('adds a mail fact trigger on any kind, and narrows it as the recipe declares it', () => {
+    const { doc, root, route } = mount();
+
+    setValue(findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR), 'A mail fact');
+    const add = findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR)!;
+    add.focus();
+    add.click();
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact' }]);
+    expect(textOf(findByAttrValue(root, RECIPE_EDITOR_TRIGGER_ROW_ATTR, '0')!)).toContain('A mail fact');
+    expect(doc.activeElement).toBe(fact(root, '0:type'));
+    expect(fact(root, '0:type')?.value).toBe('');
+
+    setValue(fact(root, '0:field-add'), 'notice');
+    setValue(fact(root, '0:field-add'), 'issuer');
+    // In the order they were chosen; one chosen is not offered again.
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', fields: ['notice', 'issuer'] }]);
+    expect(textOf(fact(root, '0:field-add')!)).not.toContain('Notice —');
+    expect(textOf(findByAttrValue(root, RECIPE_EDITOR_TRIGGER_ROW_ATTR, '0')!)).toContain('Issuer — bill, statement, payslip or tax form');
+    setChecked(fact(root, '0:field:issuer'), false);
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', fields: ['notice'] }]);
+
+    const where = fact(root, '0:where')!;
+    where.focus();
+    setValue(where, 'notice');
+    // A closed kind starts at its first value — of the kinds that have it —
+    // and focus survives the repaint.
+    expect(route.getRecipe().event_triggers).toEqual([
+      { on: 'mail_fact', fields: ['notice'], where: { notice: 'changed' } },
+    ]);
+    expect(doc.activeElement).toBe(fact(root, '0:where'));
+    setValue(fact(root, '0:where'), 'state');
+    setValue(fact(root, '0:value'), 'overdue');
+    expect(route.getRecipe().event_triggers).toEqual([
+      { on: 'mail_fact', fields: ['notice'], where: { state: 'overdue' } },
+    ]);
+    expect(fact(root, '0:problems')?.textContent).toBe('');
+    expect(fact(root, '0:notes')?.textContent).toBe('');
+    expect(route.hasUnsavedChanges()).toBe(true);
+
+    setValue(fact(root, '0:where'), '');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', fields: ['notice'] }]);
+    expect(fact(root, '0:value')).toBeUndefined();
+  });
+
+  it('writes a typed value as the fact stores it, and names one that could never match', () => {
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [{ on: 'mail_fact' }];
+    const { root, route } = mount({ initialRecipe: recipe });
+
+    setValue(fact(root, '0:where'), 'tracking_number');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', where: { tracking_number: '' } }]);
+    expect(fact(root, '0:problems')?.textContent).toContain('must not be empty');
+
+    setValue(fact(root, '0:value'), ' 1Z 999 AA1 ');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', where: { tracking_number: '1Z999AA1' } }]);
+    expect(fact(root, '0:problems')?.textContent).toBe('');
+
+    setValue(fact(root, '0:where'), 'complete');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', where: { complete: true } }]);
+    setValue(fact(root, '0:value'), 'false');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', where: { complete: false } }]);
+  });
+
+  it('writes an id as a fact stores it, without the # or the stop around it', () => {
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [{ on: 'mail_fact' }];
+    const { root, route } = mount({ initialRecipe: recipe });
+    setValue(fact(root, '0:where'), 'order_id');
+    setValue(fact(root, '0:value'), '#112-3345.');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', where: { order_id: '112-3345' } }]);
+    expect(fact(root, '0:problems')?.textContent).toBe('');
+    // A date is asked for as one.
+    setValue(fact(root, '0:type'), 'shipment');
+    setValue(fact(root, '0:where'), 'expected_at');
+    expect(fact(root, '0:value')?.type).toBe('date');
+  });
+
+  it('calls a kind of email missing only once this server’s kinds are read', async () => {
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [{ on: 'mail_fact.custom_wine_club_box' }];
+    let fail: (error: Error) => void = () => {};
+    const reading = mount({
+      initialRecipe: recipe,
+      mailFactTypesCaller: () => new Promise((_resolve, reject) => { fail = reject; }),
+    });
+    const kind = (root: FakeElement) => textOf(fact(root, '0:type')!);
+    // While they are read, it may well be one of the owner's.
+    expect(kind(reading.root)).toContain('custom_wine_club_box (reading your kinds of email…)');
+    expect(kind(reading.root)).not.toContain('not on this server');
+    // Nor when they could not be read.
+    fail(new Error('The server did not answer'));
+    await vi.waitFor(() => expect(kind(reading.root)).toContain('custom_wine_club_box (your kinds of email could not be read)'));
+    expect(kind(reading.root)).not.toContain('not on this server');
+    expect(reading.route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact.custom_wine_club_box' }]);
+
+    // Read, and not among them: now it is missing.
+    const read = mount({ initialRecipe: recipe, mailFactTypesCaller: async () => ({ types: [] }) });
+    await vi.waitFor(() => expect(kind(read.root)).toContain('custom_wine_club_box (not on this server)'));
+  });
+
+  it('adds one on a kind of email, whose values alone it offers — and a kind change drops what belonged to the old one', () => {
+    const { root, route } = mount();
+    setValue(findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR), 'A mail fact');
+    setValue(findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_FACT_TYPE_ATTR), 'bill');
+    findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR)!.click();
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact.bill' }]);
+    expect(fact(root, '0:type')?.value).toBe('bill');
+    expect(textOf(fact(root, '0:field-add')!)).toContain('Amount due');
+    expect(textOf(fact(root, '0:field-add')!)).not.toContain('Tracking number');
+    expect(textOf(fact(root, '0:field-add')!)).toContain('A new email about it, even when nothing else changed');
+    setValue(fact(root, '0:field-add'), 'last_email_at');
+    setValue(fact(root, '0:where'), 'notice');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact.bill', fields: ['last_email_at'], where: { notice: 'reminder' } }]);
+    expect(fact(root, '0:problems')?.textContent).toBe('');
+
+    setValue(fact(root, '0:type'), 'shipment');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact.shipment' }]);
+    setValue(fact(root, '0:type'), '');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact' }]);
+  });
+
+  it('keeps what it does not edit: a template and a second filter', () => {
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [
+      { on: 'mail_fact', where: { state: 'delivered', template: 'mtpl_1', carrier: 'UPS' } },
+      { on: 'mail_fact', typ: 'shipment' } as never,
+    ];
+    const { root, route } = mount({ initialRecipe: recipe });
+
+    expect(fact(root, '0:where')?.value).toBe('state');
+    const row = textOf(findByAttrValue(root, RECIPE_EDITOR_TRIGGER_ROW_ATTR, '0')!);
+    expect(row).toContain('Other filters');
+    expect(row).toContain('"template":"mtpl_1"');
+    expect(row).toContain('the other filters shown still apply');
+    setValue(fact(root, '0:value'), 'in_transit');
+    expect(route.getRecipe().event_triggers?.[0]).toEqual({
+      on: 'mail_fact', where: { state: 'in_transit', template: 'mtpl_1', carrier: 'UPS' },
+    });
+    // A key that is no part of one is named, not ignored.
+    expect(fact(root, '1:problems')?.textContent).toContain("'typ' is not part of a mail-fact trigger");
+  });
+
+  it('offers the variables of the kinds the owner made, and notes what no built-in kind has', async () => {
+    const wine: MailFactTypeSpec = {
+      id: 'custom_wine_club_box', name: 'Wine club box', description: '',
+      variables: [{ name: 'club', kind: 'text', required: true }, { name: 'colour', kind: 'enum', required: false, values: ['red', 'white'] }],
+      states: ['shipped'], notices: [], identity: [['club']],
+    };
+    let answer: (value: { types: readonly MailFactTypeSpec[] }) => void = () => {};
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [{ on: 'mail_fact', fields: ['colour'] }];
+    const { root, route } = mount({ initialRecipe: recipe, mailFactTypesCaller: () => new Promise((resolve) => { answer = resolve; }) });
+
+    // A recipe may watch it before the kinds load, or on a server with none:
+    // it is noted, not refused — a kind made there may have it.
+    expect(fact(root, '0:problems')?.textContent).toBe('');
+    expect(fact(root, '0:notes')?.textContent)
+      .toBe("'fields': no built-in kind of email has a variable 'colour' — only a kind made on the owner’s server can start it");
+    expect(textOf(fact(root, '0:field-add')!)).not.toContain('Club —');
+
+    answer({ types: [wine] });
+    await vi.waitFor(() => expect(textOf(fact(root, '0:field-add')!)).toContain('Club — wine club box'));
+    expect(textOf(findByAttrValue(root, RECIPE_EDITOR_TRIGGER_ROW_ATTR, '0')!)).toContain('Colour — wine club box');
+    setValue(fact(root, '0:where'), 'colour');
+    expect(route.getRecipe().event_triggers).toEqual([{ on: 'mail_fact', fields: ['colour'], where: { colour: 'red' } }]);
   });
 });
 

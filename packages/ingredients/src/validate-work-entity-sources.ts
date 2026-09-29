@@ -1085,6 +1085,54 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
       }
     }
 
+    // ── clear_args ──
+    // How a writable DATE is removed: the op argument sent as `true`. Only a
+    // date may be cleared (a title or state has no empty value), and the arg
+    // must be the clear's alone — one a field is also written through would
+    // receive `true` where the vendor expects that field's value.
+    const clearArgs = d.clear_args;
+    if (clearArgs !== undefined) {
+      if (!isObjectRecord(clearArgs)) {
+        add('error', 'WORK_ENTITY_SOURCES_WRITABLE_INVALID', `${p}.clear_args`,
+          'clear_args must be an object keyed by writable date field');
+      } else {
+        const writableSet = new Set(
+          Array.isArray(writable) ? writable.filter(isNonEmptyString) : [],
+        );
+        const dateFields = WORK_ENTITY_DATE_CANONICAL_FIELDS as readonly string[];
+        // Where each writable field is written — the executor's own order: a
+        // declared write path, else the canonical lane, else the preview field.
+        const lanes = isObjectRecord(projection) && isObjectRecord(projection.canonical)
+          ? projection.canonical
+          : {};
+        const previews = isObjectRecord(projection) && isObjectRecord(projection.preview)
+          ? projection.preview
+          : {};
+        const writeKeys = new Set([...writableSet].map((field) => {
+          const written = isObjectRecord(writePaths) ? writePaths[field] : undefined;
+          if (isNonEmptyString(written)) return written;
+          if (isNonEmptyString(lanes[field])) return lanes[field];
+          const preview = previews[field];
+          return isObjectRecord(preview) && isNonEmptyString(preview.field) ? preview.field : field;
+        }));
+        const seen = new Set<string>();
+        for (const [field, arg] of Object.entries(clearArgs)) {
+          const cp = `${p}.clear_args.${field}`;
+          if (!writableSet.has(field) || !dateFields.includes(field)) {
+            add('error', 'WORK_ENTITY_SOURCES_WRITABLE_INVALID', cp,
+              `clear_args may only name a writable date field (${dateFields.join(', ')}) — '${field}' is not one`);
+          } else if (!isNonEmptyString(arg)) {
+            add('error', 'WORK_ENTITY_SOURCES_WRITABLE_INVALID', cp,
+              'clear_args value must be a non-empty op argument name');
+          } else if (writeKeys.has(arg) || seen.has(arg)) {
+            add('error', 'WORK_ENTITY_SOURCES_WRITABLE_INVALID', cp,
+              `clear arg '${arg}' is also written by another field — a clear needs an argument of its own`);
+          }
+          if (isNonEmptyString(arg)) seen.add(arg);
+        }
+      }
+    }
+
     // ── create_required_fields ──
     const createRequired = d.create_required_fields;
     if (createRequired !== undefined) {

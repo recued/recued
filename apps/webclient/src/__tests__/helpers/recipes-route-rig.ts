@@ -360,6 +360,7 @@ export const mountRoute = (overrides: {
   packRecipeRefsCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packRecipeRefsCaller'];
   packsListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packsListCaller'];
   subscribe?: Parameters<typeof bootstrapRecipesRoute>[0]['subscribe'];
+  followHeldRun?: Parameters<typeof bootstrapRecipesRoute>[0]['followHeldRun'];
   initialRecipeId?: string;
   confirm?: (message?: string) => boolean;
   clipboardWrite?: (value: string) => Promise<void>;
@@ -421,6 +422,7 @@ export const mountRoute = (overrides: {
     ...(overrides.recipeGetCaller !== undefined ? { recipeGetCaller: overrides.recipeGetCaller } : {}),
     toolCatalogCaller,
     recipeExecuteCaller,
+    ...(overrides.followHeldRun !== undefined ? { followHeldRun: overrides.followHeldRun } : {}),
     ...(overrides.fileReadCaller !== undefined
       ? { fileReadCaller: overrides.fileReadCaller }
       : {}),

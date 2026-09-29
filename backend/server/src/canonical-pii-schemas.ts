@@ -60,6 +60,8 @@ import {
   type EntityFieldPrivacy,
   type EntityPrivacyTag,
   type EntitySchemaIngredientInput,
+  MAIL_FACT_PERSON_VARIABLES,
+  MAIL_FACT_PII_ENTITY,
   type IngredientManifest,
 } from '@recued/contracts';
 
@@ -337,6 +339,13 @@ export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
       // are NOT PII and stay untagged). Mirrors `deal`.
       entity_id: 'account',
       fields: [{ path: 'owner', kind: 'email' }],
+    },
+    {
+      // D-315 §9 — a mail fact's reading, as the AI pass sends it: the people a
+      // template read (a lead's name, email and phone; a buyer's). Known values,
+      // so the email's own copies of them are aliased too.
+      entity_id: MAIL_FACT_PII_ENTITY,
+      fields: Object.entries(MAIL_FACT_PERSON_VARIABLES).map(([path, kind]) => ({ path, kind })),
     },
   ] satisfies EntityPrivacyTag[]);
 

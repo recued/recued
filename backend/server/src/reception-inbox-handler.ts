@@ -65,6 +65,7 @@ import {
   COMMITMENT_EVIDENCE_CAPTURE_EVENT_KIND,
   COMMITMENT_EVIDENCE_PROPOSAL_RECIPE_ID,
 } from './commitment-evidence-capture.js';
+import { holdApprovalCovers } from './foreach-approval-items.js';
 
 // ────────────────────────────────────────────────────────────────
 // The held-op summary the query recovers from one awaiting hold
@@ -854,10 +855,18 @@ const projectInboxItem = async (
   allowOffer?: { ttl_ms: number; max_uses: number },
 ): Promise<InboxItem> => {
   const operation_id = heldOperationId(anchor, checkpoint);
+  // ⛔ A HELD LOOP ITEM TAKES NO EDITS. Approving it runs every remaining item
+  // of the step, and an edit would be applied to each of them: correcting the
+  // held item's recipient sends every item to that one address — while the
+  // fields, showing the held item's values, make it look like an edit to that
+  // item alone. Offering none keeps approve and reject; the item says how many
+  // it runs (`approval_covers`), and the ask lists them all.
+  const approval_covers = holdApprovalCovers(checkpoint);
+  const coversSeveralItems = approval_covers !== undefined;
   // A store-only acceptance has no materialized title/body/destination to
   // edit. The shared intake operation exposes those fields for entity targets,
   // so suppress them here rather than accepting edits that cannot take effect.
-  let arg_schema = resolved.top_tier_kind === 'form_response'
+  let arg_schema = resolved.top_tier_kind === 'form_response' || coversSeveralItems
     ? { fields: [] }
     : deps.resolveArgEditSchema(
         operation_id,
@@ -867,6 +876,7 @@ const projectInboxItem = async (
   let itemArgs = resolved.args;
   if (
     resolved.top_tier_kind === 'form_response'
+    && !coversSeveralItems
     && deps.resolveFormResponseEdit !== undefined
   ) {
     try {
@@ -947,6 +957,7 @@ const projectInboxItem = async (
     proposed_action: resolved.proposed_action,
     ...(calendar_overlap !== undefined ? { calendar_overlap } : {}),
     ...(booking_history !== undefined ? { booking_history } : {}),
+    ...(approval_covers !== undefined ? { approval_covers } : {}),
     status: itemStatusFromScan(resolved.attachment),
   };
 };

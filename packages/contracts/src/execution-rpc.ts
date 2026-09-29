@@ -22,6 +22,7 @@ import type { RecipeError } from './errors.js';
 import type { RunMode } from './memory.js';
 import type { ProvenanceAttribution } from './provenance-attribution.js';
 import type { TokenUsageReport } from './token-usage-report.js';
+import type { ServerExecuteResponse } from './rpc/server-registry.js';
 
 /** Run-level policy outcome. `blocked` is forward-compatible for the
  *  Tier-2 per-call commit-log read; Tier-1 never emits it because the
@@ -179,6 +180,14 @@ export interface RunYield {
    *  therefore a real answer and `undefined` means only "row written
    *  before D-276". The cost of the honest form is 24 bytes a row. */
   skipped_step_ids?: readonly string[];
+  /** The step whose `stop_when` ended the run early, as a success — the steps
+   *  after it did not run and are in neither count above. This is what tells
+   *  "stopped: nothing to do" from a run whose later steps were each skipped.
+   *
+   *  ⛔ ABSENT IS NOT "DID NOT STOP", for the reason on `skipped_step_ids`:
+   *  `null` is recorded-and-ran-to-the-end, `undefined` is a row written before
+   *  this field existed. Emitted as `null` on every run for that reason. */
+  stopped_at?: string | null;
 }
 
 /** D-237 P2 — derive the run yield from the per-step logs.
@@ -189,6 +198,7 @@ export const deriveRunYield = (
   steps: ReadonlyArray<{
     id?: string;
     skipped?: boolean;
+    stopped?: boolean;
     foreach?: { items: number; failed: number };
   }>,
 ): RunYield => {
@@ -197,7 +207,9 @@ export const deriveRunYield = (
   let items_total = 0;
   let items_failed = 0;
   const skipped_step_ids: string[] = [];
+  let stopped_at: string | null = null;
   for (const s of steps) {
+    if (s.stopped === true && typeof s.id === 'string' && s.id !== '') stopped_at = s.id;
     if (s.skipped === true) {
       steps_skipped += 1;
       // ⚠ An id-less step still counts in `steps_skipped` but cannot be
@@ -215,7 +227,7 @@ export const deriveRunYield = (
       items_failed += f.failed;
     }
   }
-  return { steps_run, steps_skipped, items_total, items_failed, skipped_step_ids };
+  return { steps_run, steps_skipped, items_total, items_failed, skipped_step_ids, stopped_at };
 };
 
 /** True iff the yield PROVES the run produced nothing — every `foreach` item it
@@ -341,4 +353,12 @@ export interface RunDetail {
 
 export interface ExecutionGetResponse {
   run: RunDetail;
+  /** A run the owner started from a page that stopped at an approval, and has
+   *  since finished: what `execute` would have answered had it not been held.
+   *  The page that got "held" reads it here to show the recipe's own result.
+   *
+   *  ⚠ Kept in the server's memory for a while after the run settles — absent
+   *  once that lapses, after a restart, for a denied run (its record says why),
+   *  for any run that never paused, and from a server older than the field. */
+  result?: ServerExecuteResponse;
 }

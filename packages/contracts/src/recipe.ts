@@ -43,9 +43,17 @@ export const ALLOW_UPGRADE_VARIABLE = 'allow_llm_upgrade';
  *  Also `on: "<vendor>.<entity>.<verb>"` (single vendor — what compiled
  *  workflow recipes mint), `on: "message.received"` (messenger),
  *  `on: "reception.request"` (visitor mutation), and
- *  `on: "form_response.accepted"` (⚠ a SUBMITTED intake response — NOT an
- *  approved one; D-210 WS2 moved the log write to submit. See `trigger-sugar.ts`.). Verbs:
- *  created | changed | removed.
+ *  `on: "form_response.accepted"` (an intake response the owner APPROVED —
+ *  written and fired on the approve leg, never at submit. See `trigger-sugar.ts`.), and
+ *  `on: "mail_fact.<kind>"` / `on: "mail_fact"` (D-315 — a thing mail facts
+ *  fold into was created or changed: of one kind of email, the usual form,
+ *  checked exactly against that kind (ruling 43), or of ANY kind that has the
+ *  variables it designates (ruling 42). No verb: creation counts as a change
+ *  of every variable read, and `fields` picks which changes wake it
+ *  (`last_email_at` = every new email about the thing). An entry takes only
+ *  `on`, `fields` and `where`; `where` takes variables, `complete` and
+ *  `template`, and is STRICT: a variable the fact's kind lacks, or a `null`,
+ *  never matches. See `trigger-sugar.ts`). Verbs: created | changed | removed.
  *
  *  DOM watch sugar — `on: "element.changed"` + `url` + `selector`:
  *    { "on": "element.changed",
@@ -73,8 +81,8 @@ export interface RecipeEventTrigger {
   /** SUGAR form — literal connection narrowing: the platform-reference
    *  connection segment, or the messenger vendor (D-163 I-4: the
    *  notification row name IS the vendor). Literal only — config refs
-   *  cannot resolve at dispatch time. Not valid for `reception.request` or
-   *  `form_response.accepted`. */
+   *  cannot resolve at dispatch time. Not valid for `reception.request`,
+   *  `form_response.accepted`, `mail_fact` or `mail_fact.<kind>`. */
   connection?: string;
   /** SUGAR form — canonical field keys; fire only when the event's
    *  `changed_fields` intersects. Entity-change forms only. */

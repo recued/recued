@@ -44,6 +44,7 @@ import type { AnnotationStore } from '../storage/annotation-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createScheduleStore } from '../schedule-store.js';
+import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { createKernelAdapter } from '@recued/ingredients';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,6 +57,7 @@ import type { EnrichmentStore } from '../storage/enrichment-store.js';
 import type { SharedStore } from '../storage/shared-store.js';
 import type { BlobStore } from '../storage/blob-store.js';
 import type { FormResponseStore } from '../storage/form-response-store.js';
+import { createMailFactStore } from '../storage/mail-fact-store.js';
 import type { createWatcherDispatcher } from '../watchers/index.js';
 import type { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import type {
@@ -391,6 +393,7 @@ const buildDeps = (
   serviceStack: undefined,
   sharedStore: undefined,
   formResponseStore: undefined,
+  mailFactStore: undefined,
   contactStore: undefined,
   annotationDeps: undefined,
   db: undefined,
@@ -1102,6 +1105,19 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
     );
   });
 
+  it('gates the mail-fact read dispatchers on the store (D-315)', async () => {
+    expectAbsent(kernelOf((await composeWith()).config), ['mailFactGet', 'mailFactList']);
+    const db = new BetterSqlite3(':memory:');
+    try {
+      const kernel = kernelOf((await composeWith({ mailFactStore: createMailFactStore(db) })).config);
+      expectPresentFunctions(kernel, ['mailFactGet', 'mailFactList']);
+      await expect(kernel.mailFactGet?.({ id: 'mthing_x' })).resolves.toEqual({ thing: null, facts: [] });
+      await expect(kernel.mailFactList?.({ of: 'things' })).resolves.toEqual({ records: [] });
+    } finally {
+      db.close();
+    }
+  });
+
   it('uses the same canonical store to complete a store-only reception approval', async () => {
     const record = {
       submission_id: 'submission-1',
@@ -1538,6 +1554,47 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
       { dispatchers: deps.notificationChannelDispatchers },
       { channels: ['slack'], text: 'Heads up' },
     );
+  });
+
+  it('a fenced send that ends without an outcome asks the owner "Did this email go out?"', async () => {
+    // The refusal/uncertain failure alone left the owner nothing on screen; the
+    // dispatcher is where a recipe's send meets the late-bound notification block.
+    const { compose, mocks } = await importComposerWithKernelMocks();
+    const db = makeDb();
+    const claims = createMailSendClaimStore(db);
+    const { claim } = claims.claim({
+      reconciliation_id: 'meeting-secretary.abc', sender_slug: 'work',
+      recipient: 'ada@example.test', subject: 'Minutes', proof_kind: 'envelope', now: NOW,
+    });
+    claims.markUnknown({ reconciliation_id: 'meeting-secretary.abc', expected_revision: claim.revision, now: NOW + 1 });
+    const notifier = {
+      ask: vi.fn(async () => ({ ask_id: 'ask-1' })),
+      listUnresolvedAsks: vi.fn(async () => []),
+    };
+    mocks.handleCollectionMailSend.mockRejectedValueOnce(new Error('smtp timeout'));
+    const kernel = kernelOf(await compose(buildDeps({
+      db,
+      getExecuteDeps: () => ({ preflightNotifier: notifier }),
+    })));
+
+    await expect(kernel.mailSend?.({
+      instance: 'work', to: ['ada@example.test'], subject: 'Minutes', body_text: 'Hi',
+      reconciliation_id: 'meeting-secretary.abc',
+    } as never)).rejects.toThrow('smtp timeout');
+
+    expect(notifier.ask).toHaveBeenCalledTimes(1);
+    expect(notifier.ask).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Did this email go out?' }),
+      expect.any(Array),
+      { kind: 'mail.send_outcome', payload: { reconciliation_id: 'meeting-secretary.abc', revision: 1 } },
+    );
+
+    // A send without the fence has nothing to ask about.
+    mocks.handleCollectionMailSend.mockRejectedValueOnce(new Error('smtp timeout'));
+    await expect(kernel.mailSend?.({
+      instance: 'work', to: ['ada@example.test'], subject: 'Minutes', body_text: 'Hi',
+    } as never)).rejects.toThrow('smtp timeout');
+    expect(notifier.ask).toHaveBeenCalledTimes(1);
   });
 
   it('forwards the registry and blob store to handleMailBodyRead when cacheBlobs is present', async () => {

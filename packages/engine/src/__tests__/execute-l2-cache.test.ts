@@ -170,6 +170,55 @@ describe('executeRecipe — L2 cache on all-pure recipe', () => {
 // Cacheable ingredient — second run avoids the upstream call
 // ────────────────────────────────────────────────────────────────
 
+describe('executeRecipe — L2 cache and the clock', () => {
+  // "now" is the time THIS run reads it — what makes a `joined_at` true on every
+  // run. The key holds the word "now", not a time, so a cached `date_add` replayed
+  // the first run's timestamp for 24 h (live, 2026-09-28: two participants added
+  // 10 s apart got a `joined_at` 12 min old).
+  const runTwice = async (steps: RecipeStep[]) => {
+    const recipe = mkRecipe({ steps, output: { sidebar: [] } });
+    const store = createInMemoryStore();
+    const statuses: string[] = [];
+    const mkCtx = (): ExecutionContext => ({
+      recipe,
+      stores: emptyStores(),
+      ingredientExecutor: vi.fn<IngredientExecutor>(),
+      stepCache: { store, ingredientPolicy: () => null, onStatus: (s) => statuses.push(s) },
+    });
+    const first = Date.UTC(2026, 8, 29, 2, 13, 7, 880);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(first);
+      const r1 = await executeRecipe(mkCtx());
+      statuses.length = 0;
+      vi.setSystemTime(first + 60_000);
+      const r2 = await executeRecipe(mkCtx());
+      const read = (r: typeof r1, id: string) => r.steps.find((step) => step.id === id)?.result;
+      return { r1, r2, read, secondRun: [...statuses], later: first + 60_000 };
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it('a date_add over "now" reads the clock on every run, and what it feeds follows', async () => {
+    const { r1, r2, read, later } = await runTwice([
+      { id: 'stamp', transform: 'date_add', date: 'now', amount: 0, unit: 'seconds' } as never,
+      { id: 'line', transform: 'template', template: 'joined {{step.stamp}}' } as never,
+    ]);
+    expect(r1.success && r2.success).toBe(true);
+    expect(read(r2, 'stamp')).toBe(new Date(later).toISOString());
+    expect(read(r2, 'line')).toBe(`joined ${new Date(later).toISOString()}`);
+  });
+
+  it('a date step fed a fixed time still replays — only the clock is excluded', async () => {
+    const { r2, read, secondRun } = await runTwice([
+      { id: 'parsed', transform: 'date_parse', input: '2026-09-28T12:00:00Z' } as never,
+    ]);
+    expect(read(r2, 'parsed')).toBe(Date.UTC(2026, 8, 28, 12));
+    expect(secondRun).toContain('hit');
+  });
+});
+
 describe('executeRecipe — L2 cache on ingredient step', () => {
   it('cacheable ingredient hits on second run (no upstream call)', async () => {
     const recipe = mkRecipe({

@@ -105,7 +105,7 @@ export const detectStepFieldType = (
 /** Reserved param names on a transform step that are NOT user-facing params —
  *  the discriminator / control fields (BaseStep + TransformStep). */
 const TRANSFORM_RESERVED_KEYS = new Set([
-  'id', 'transform', 'skip_when', 'fail_on', 'cache',
+  'id', 'transform', 'skip_when', 'fail_on', 'stop_when', 'cache',
 ]);
 
 /** Walk a transform step and return [name, value, ParamDef?] for every

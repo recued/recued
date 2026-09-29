@@ -1282,3 +1282,35 @@ describe('reception inbox panel — broadcast subscription parity', () => {
     }
   });
 });
+
+describe('reception inbox panel — an approval that runs several items', () => {
+  // Held at one item of a loop: the server sends no fields (an edit would be
+  // applied to every item) and says how many items the approval runs.
+  const coveredItem = (): InboxItem => ({
+    ...item({ hold_id: 'hold-1', arg_schema: { fields: [] } }),
+    approval_covers: { count: 3, exact: true },
+  });
+  const texts = (root: FakeEl, className: string): string[] =>
+    allNodes(root)
+      .filter((node) => node.className === className)
+      .map((node) => node.textContent);
+
+  it('says so on the row and in the detail, and why nothing can be changed', async () => {
+    const { root } = setup({ items: [coveredItem()] });
+    await flush();
+    expect(texts(root, 'reception-inbox-row-covers')).toEqual(['One approval covers all 3 items']);
+    expect(texts(root, 'reception-inbox-detail-covers')).toEqual(['One approval covers all 3 items']);
+    expect(texts(root, 'reception-inbox-muted')).toContain(
+      "This can't be changed here: a change would apply to every item.",
+    );
+    expect(findButton(root, 'Approve')).toBeDefined();
+  });
+
+  it('an item that runs alone says neither', async () => {
+    const { root } = setup({ items: [item({ hold_id: 'hold-1', arg_schema: { fields: [] } })] });
+    await flush();
+    expect(texts(root, 'reception-inbox-row-covers')).toEqual([]);
+    expect(texts(root, 'reception-inbox-detail-covers')).toEqual([]);
+    expect(texts(root, 'reception-inbox-muted')).toContain('There is nothing to change here.');
+  });
+});

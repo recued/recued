@@ -1,6 +1,6 @@
 import { openFilePreview, type FilePreviewCallers } from '../files/file-preview.js';
 import { openFileChatPicker, type FileChatCallers } from '../chat/existing-file-picker.js';
-import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug } from './cloud-file-explorer.js';
+import { cloudFileInstance, cloudFileRecord, cloudFileSourceId, cloudFileSourceSlug, SAVED_FILES_SLUG, savedFilesInstance } from './cloud-file-explorer.js';
 import type { CloudFileSource } from '@recued/contracts';
 /** D-174 P5 - top-level Data route.
  *
@@ -119,7 +119,7 @@ import {
   sameSavedDataViewDefinition, DEFAULT_TASK_VIEW_FILTERS, parseTaskViewFilters,
   resolveTaskListFilter, RECORDS_MAX_PREDICATES,
 } from '@recued/contracts';
-import { rankSearchable } from '@recued/contracts';
+import { rankSearchable, timedDueMs } from '@recued/contracts';
 import {
   getContactSourceDeclaration,
   CONTACT_SOURCE_ID_DERIVED,
@@ -169,6 +169,7 @@ import {
   initialMergeReviewDialogState,
   isEtaEligible,
   pickFreshestMetaSnapshot,
+  formatTimestampForInput,
   readFormValues,
   remainingMillis,
   renderEntityDetailPanel,
@@ -208,6 +209,15 @@ import {
   type SourceRecordDataTab,
 } from '../shell/route.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import {
+  createMailFactsSurface,
+  MAIL_FACTS_ACTION_PREFIX,
+  MAIL_FACTS_FIELD_ATTR,
+  MAIL_FACTS_FILTER_ATTR,
+  MAIL_FACTS_STYLES,
+  type MailFactCallers,
+} from './mail-facts-surface.js';
+import type { MailFactEmailStatus } from '@recued/contracts';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
@@ -484,6 +494,10 @@ const DEFAULT_LIMIT = 100;
 
 export type DataOwnItTabId = 'contact' | WorkEntityKind;
 export type DataReceivedTabId = 'form_response';
+/** D-315 §6 — Data → Received → Mail facts. Its own tab type, like `webhook`:
+ *  a member of `DATA_RECEIVED_TABS` would be sent to the form-response
+ *  renderer (`isReceivedTab`). It renders through `mail-facts-surface.ts`. */
+export type DataMailFactTabId = 'mail_fact';
 export type MirrorDataKind = 'mail' | 'calendar' | 'crm' | 'files';
 /** `webhook` (inbound HTTP deliveries) browses via the collection explorer like
  *  mail/calendar/files, but clusters under "Received" (inbound data) beside
@@ -500,6 +514,7 @@ export type DataSingleCollectionTabId = DataProvenanceTabId | 'shared';
 export type DataTabId =
   | DataOwnItTabId
   | DataReceivedTabId
+  | DataMailFactTabId
   | MirrorDataKind
   | 'webhook'
   | 'records'
@@ -549,6 +564,7 @@ const DATA_SEARCH_TABS: readonly DataTabId[] = ['search'];
 const DATA_TABS: readonly DataTabId[] = [
   ...DATA_OWN_IT_TABS,
   ...DATA_RECEIVED_TABS,
+  'mail_fact',
   'webhook',
   ...DATA_MIRROR_TABS,
   ...DATA_PROVENANCE_TABS,
@@ -566,7 +582,7 @@ const DATA_TABS: readonly DataTabId[] = [
  *
  *  Webhook stays here as a vendor-source working surface; unlike Reception's
  *  human-visitor ledger, it does not belong in immutable Reception Records. */
-const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'webhook'];
+const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'mail_fact', 'webhook'];
 
 export type WorkEntitySourceListCaller = () => Promise<{
   sources: ReadonlyArray<SourceRegistration>;
@@ -901,6 +917,9 @@ export interface BootstrapDataRouteOptions {
   /** Browser download injection; tests and non-browser hosts can capture the
    * bounded export without relying on Blob/ObjectURL globals. */
   formResponseDownload?: (file: FormResponseExportRpcResponse) => void;
+  /** D-315 §6 — Data → Received → Mail facts: every rpc the tab calls. An
+   *  absent caller hides what needs it. */
+  mailFactCallers?: MailFactCallers;
   /** Owner-only installed recipe discovery + manual execution for explicitly
    *  continuing one already accepted response. Both must be present for the
    *  detail affordance to render. */
@@ -999,6 +1018,9 @@ export interface BootstrapDataRouteOptions {
    * locator a multi-account Data tab cannot safely choose an instance. */
   initialCollectionSlug?: string;
   initialEntityId?: string;
+  /** The address's third segment (`#data/<tab>/<entity>/<detail>`), for a tab
+   *  with a third level: Mail facts is `#data/mail_fact/<view>/<detail>`. */
+  initialDetailId?: string;
   /** Originating assistant answer for citation drill-down continuity. */
   chatReturn?: ChatAnswerAddress;
   /** Exact run outcome that asked the owner to verify this item. The nested
@@ -1179,6 +1201,10 @@ export interface DataRoute {
   hasInFlightWork(): boolean;
   /** Contextual shell leave copy for an owned Records operation. */
   inFlightWorkPrompt(): string | null;
+  /** D-315 — a mail-fact template or kind of email being edited has changes
+   *  not saved: the shell asks before the page is left or reloaded. */
+  hasUnsavedChanges(): boolean;
+  unsavedChangesPrompt(): string | null;
   refresh(): void;
   whenLoaded(): Promise<void>;
   selectTab(tab: DataTabId): Promise<void>;
@@ -2295,6 +2321,8 @@ const tabLabel = (tab: DataTabId): string => {
       return 'Bookings';
     case 'form_response':
       return 'Form responses';
+    case 'mail_fact':
+      return 'Mail facts';
     case 'mail':
       return 'Mail';
     case 'calendar':
@@ -2337,6 +2365,41 @@ const nonEmptyString = (value: unknown): string | undefined =>
 const numberValue = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
+/** A form timestamp as epoch ms.
+ *
+ *  ⛔ FOUND LIVE: the dialog reads a date-time field back as an ISO STRING (with
+ *  this browser's offset) and this took numbers only, so every save dropped
+ *  the due date — an edit kept the old one, a new task got none — and the
+ *  dialog closed as if it had worked.
+ *
+ *  An UNTOUCHED field keeps its stored value exactly: the input shows minutes,
+ *  and a whole-day due as its day at midnight, so reading the display back
+ *  would drop seconds and turn a day into this zone's midnight. For a DUE
+ *  (`due`), a date picked at midnight means that whole day (`due-day.ts`: stored
+ *  as its UTC midnight), and any other time is kept off 00:00 UTC so it cannot
+ *  read as a day. */
+const timestampValue = (
+  value: unknown,
+  original: unknown,
+  due: boolean,
+): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return undefined;
+  if (
+    typeof original === 'number' && Number.isFinite(original)
+    && formatTimestampForInput(original) === formatTimestampForInput(value)
+  ) return original;
+  if (!due) return ms;
+  const shown = formatTimestampForInput(value);
+  if (shown.endsWith('T00:00')) {
+    const [year, month, day] = shown.slice(0, 10).split('-').map(Number) as [number, number, number];
+    return Date.UTC(year, month - 1, day);
+  }
+  return timedDueMs(ms);
+};
+
 const booleanValue = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
@@ -2355,6 +2418,15 @@ const setIfDefined = (
   value: unknown,
 ): void => {
   if (value !== undefined && value !== null) target[key] = value;
+};
+
+/** `setIfDefined` that keeps a `null` — the value that removes a date. */
+const setIfPresent = (
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void => {
+  if (value !== undefined) target[key] = value;
 };
 
 const sourceExtensionSchema = (
@@ -2502,12 +2574,28 @@ const projectWorkEntityUpsert = (
   kind: WorkEntityKind,
   state: WorkEntityPageState,
   definition: FormDefinition,
+  /** The values the edit dialog opened with — what an untouched date-time
+   *  field keeps. Absent for a create. */
+  original: Readonly<Record<string, unknown>> = {},
 ): WorkEntityUpsertRpcRequest => {
   if (state.dialog === null) {
     throw new Error('No item is open.');
   }
   const values = state.dialog.values;
+  const when = (field: string, due = false): number | undefined =>
+    timestampValue(values[field], original[field], due);
   const update = state.dialog.mode === 'edit';
+  /** A due-style date on an edit, where emptying the field REMOVES the date
+   *  (`null`; a task says it with `clear_due_at`).
+   *  ⛔ It used to be dropped like any blank, so the saved date came back: the
+   *  owner cleared it, pressed Save, and nothing changed. On another server's
+   *  record the peer Source sends the removal as its clear flag. */
+  const dueOrCleared = (field: string): number | null | undefined => {
+    const cleared = update
+      && (values[field] === '' || values[field] === null)
+      && typeof original[field] === 'number';
+    return cleared ? null : when(field, true);
+  };
   const out: Record<string, unknown> = { kind };
   if (update) {
     out.id = state.dialog.entity_id;
@@ -2519,11 +2607,13 @@ const projectWorkEntityUpsert = (
     case 'task':
       setIfDefined(out, 'title', nonEmptyString(values.title));
       setIfDefined(out, 'body', nonEmptyString(values.body));
-      setIfDefined(out, 'due_at', numberValue(values.due_at));
+      // A task's `null` means "not given", so removing its due date is a flag.
+      if (dueOrCleared('due_at') === null) out.clear_due_at = true;
+      else setIfDefined(out, 'due_at', dueOrCleared('due_at'));
       setIfDefined(out, 'priority', nonEmptyString(values.priority));
       if (!update) {
         setIfDefined(out, 'done', booleanValue(values.done));
-        setIfDefined(out, 'completed_at', numberValue(values.completed_at));
+        setIfDefined(out, 'completed_at', when('completed_at'));
       }
       setIfDefined(out, 'assigned_contact_id', nonEmptyString(values.assigned_contact));
       setIfDefined(out, 'parent_calendar_event_id', nonEmptyString(values.parent_calendar_event));
@@ -2543,10 +2633,10 @@ const projectWorkEntityUpsert = (
       if (!update) {
         setIfDefined(out, 'direction', nonEmptyString(values.direction));
         setIfDefined(out, 'derivation', nonEmptyString(values.derivation));
-        setIfDefined(out, 'promised_at', numberValue(values.promised_at));
+        setIfDefined(out, 'promised_at', when('promised_at'));
       }
       setIfDefined(out, 'statement', nonEmptyString(values.statement));
-      setIfDefined(out, 'promised_for_at', numberValue(values.promised_for_at));
+      setIfPresent(out, 'promised_for_at', dueOrCleared('promised_for_at'));
       setIfDefined(out, 'expiry_policy', nonEmptyString(values.expiry_policy));
       setIfDefined(out, 'derivation_confidence', numberValue(values.derivation_confidence));
       maybeAddMonetaryValue(out, values);
@@ -2560,7 +2650,7 @@ const projectWorkEntityUpsert = (
       setIfDefined(out, 'title', nonEmptyString(values.title));
       setIfDefined(out, 'description', nonEmptyString(values.description));
       setIfDefined(out, 'state', nonEmptyString(values.state));
-      setIfDefined(out, 'target_completion_at', numberValue(values.target_completion_at));
+      setIfPresent(out, 'target_completion_at', dueOrCleared('target_completion_at'));
       setIfDefined(out, 'related_contact_ids', stringArrayValue(values.related_contacts));
       setIfDefined(out, 'parent_project_id', nonEmptyString(values.parent_project));
       break;
@@ -2580,8 +2670,8 @@ const projectWorkEntityUpsert = (
     case 'booking':
       setIfDefined(out, 'title', nonEmptyString(values.title));
       setIfDefined(out, 'lifecycle_state', nonEmptyString(values.lifecycle_state));
-      setIfDefined(out, 'slot_start_at', numberValue(values.slot_start_at));
-      setIfDefined(out, 'slot_end_at', numberValue(values.slot_end_at));
+      setIfDefined(out, 'slot_start_at', when('slot_start_at'));
+      setIfDefined(out, 'slot_end_at', when('slot_end_at'));
       maybeAddMonetaryValue(out, values);
       setIfDefined(out, 'counterparty_contact_id', nonEmptyString(values.counterparty_contact));
       break;
@@ -4936,6 +5026,8 @@ export const bootstrapDataRoute = (
       UNIVERSAL_SEARCH_STYLES,
       // D-221 — full-ref, schema-driven pack Records owner explorer.
       RECORDS_EXPLORER_STYLES,
+      // D-315 §6 — Data → Received → Mail facts.
+      MAIL_FACTS_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -5020,6 +5112,38 @@ export const bootstrapDataRoute = (
     opts.initialTab !== undefined && isDataTab(opts.initialTab)
       ? opts.initialTab
       : 'contact';
+  // D-315 §6 — Data → Received → Mail facts keeps its own state; the route
+  // renders it in the tab panel, loads it, and forwards its actions.
+  const mailFacts = createMailFactsSurface({
+    callers: opts.mailFactCallers ?? {},
+    actionAttr: DATA_ROUTE_ACTION_ATTR,
+    render: () => render(),
+    onAddressChange: () => syncDataHash(),
+  });
+  if (activeTab === 'mail_fact' && opts.initialEntityId !== undefined) {
+    mailFacts.openAddress([opts.initialEntityId, ...(opts.initialDetailId !== undefined ? [opts.initialDetailId] : [])]);
+  }
+  /** D-315 §6 — the mail detail's two actions need to know whether the email
+   *  gave facts and whether it is a security notice (on which neither is
+   *  offered, §9). Read once per email shown, whichever way it was opened. */
+  let mailFactEmailStatus: { key: string; status: MailFactEmailStatus | null; stale?: true } | null = null;
+  const mailFactStatusFor = (slug: string, record_id: string): MailFactEmailStatus | null => {
+    const key = `${slug}\u0000${record_id}`;
+    if (mailFactEmailStatus?.key === key && mailFactEmailStatus.stale !== true) return mailFactEmailStatus.status;
+    // Read again after a mail_fact broadcast: what is shown stays until the
+    // new answer lands, so the actions do not blink out meanwhile.
+    const shown = mailFactEmailStatus?.key === key ? mailFactEmailStatus.status : null;
+    mailFactEmailStatus = { key, status: shown };
+    const caller = opts.mailFactCallers?.emailStatus;
+    if (caller !== undefined) {
+      void caller({ slug, record_id }).then((status) => {
+        if (disposed || mailFactEmailStatus?.key !== key) return;
+        mailFactEmailStatus = { key, status };
+        render();
+      }, () => { /* no action is offered */ });
+    }
+    return shown;
+  };
   // Identifies the tab represented by the current DOM. State changes before a
   // repaint, so comparing this with `activeTab` prevents a focused source chip
   // from one collection from claiming a same-named chip on another tab.
@@ -5894,7 +6018,18 @@ export const bootstrapDataRoute = (
       ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-use-in-chat">${remoteChatFile ? 'Import and use in Chat' : 'Use in Chat'}</button>` : '';
     const previewControl = tab === 'files' && detail?.record != null && opts.filePreviewCallers
       ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-preview">Preview file</button>` : '';
-    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat;
+    // D-315 §6 — an email's two mail-fact actions; none on a security notice.
+    const mailStatus = collectionName === 'mail' && detail?.record != null && explorerSelectedSlug !== null
+      ? mailFactStatusFor(explorerSelectedSlug, detail.record_id)
+      : null;
+    const mailFactControls = mailStatus === null || mailStatus.security_notice
+      ? ''
+      : `${opts.mailFactCallers?.readEmail !== undefined && opts.mailFactCallers.createTemplate !== undefined
+          ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="mail-fact-make-template">Make a template from this email</button>`
+          : ''}${mailStatus.fact_count > 0 && opts.mailFactCallers?.listFacts !== undefined
+          ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="mail-fact-show-email">Facts from this email (${mailStatus.fact_count})</button>`
+          : ''}`;
+    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       instances: explorerInstances,
@@ -6077,6 +6212,10 @@ export const bootstrapDataRoute = (
     // captures the live owner again, so moving to another control while a read
     // is pending cancels the restoration naturally.
     const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    // D-315 — Mail facts keys each focusable control; restored after the repaint.
+    const focusedMailFactsKey = renderedActiveTab === 'mail_fact'
+      ? mailFacts.captureFocus(activeElement)
+      : null;
     const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
       ? null
       : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
@@ -6668,6 +6807,8 @@ export const bootstrapDataRoute = (
                 : {}),
               actionAttr: DATA_ROUTE_ACTION_ATTR,
             }, (opts.now ?? Date.now)())
+        : activeTab === 'mail_fact'
+          ? mailFacts.render()
         : activeTab === 'records'
           ? renderRecordsExplorer(recordsState)
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
@@ -7417,6 +7558,9 @@ export const bootstrapDataRoute = (
         pendingLoadedFormResponseIds = [];
       }
     }
+    if (activeLens === 'data' && activeTab === 'mail_fact') {
+      mailFacts.restoreFocus(routeRoot, focusedMailFactsKey);
+    }
     // Attach live pickers to any `data.contact` ref shells the work-entity
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
@@ -7865,6 +8009,13 @@ export const bootstrapDataRoute = (
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
       explorerRecords = [];
+      // A server with no database registers no saved-files collection: that is
+      // nothing saved yet, not a failure to show.
+      if (slug === SAVED_FILES_SLUG && (err as { code?: unknown } | null)?.code === 'COLLECTION_NOT_FOUND') {
+        explorerError = undefined;
+        explorerErrorRetryable = false;
+        return;
+      }
       explorerError = humanizeRpcError(err);
       explorerErrorRetryable = true;
     }
@@ -8094,6 +8245,10 @@ export const bootstrapDataRoute = (
         instances = (await caller()).instances;
       }
       if (disposed || seq !== explorerSeq) return;
+      // The files saved in Recued first, whatever else is connected.
+      if (tab === 'files' && opts.collectionListCaller !== undefined) {
+        instances = [savedFilesInstance, ...instances.filter((i) => i.slug !== SAVED_FILES_SLUG)];
+      }
       explorerInstances = instances.filter((i) => i.platform === platform);
       const preferredSlug = requestedSlug ?? previouslySelectedSlug;
       const verificationRecordId =
@@ -8126,7 +8281,11 @@ export const bootstrapDataRoute = (
               ? null
               : explorerInstances.length === 1
                 ? explorerInstances[0]!.slug
-                : null;
+                // The Files tab always lists the saved files; beside exactly
+                // one connected source, that source still opens as it did.
+                : tab === 'files' && explorerInstances.filter((i) => i.slug !== SAVED_FILES_SLUG).length === 1
+                  ? explorerInstances.find((i) => i.slug !== SAVED_FILES_SLUG)!.slug
+                  : null;
       }
       explorerRecords = [];
       if (requestedSlug !== null && explorerSelectedSlug === null) {
@@ -9319,6 +9478,9 @@ export const bootstrapDataRoute = (
       await runUniversalSearch();
     } else if (activeTab === 'records') {
       await loadRecords();
+    } else if (activeTab === 'mail_fact') {
+      // The tab holds its own loading and error state.
+      await mailFacts.refresh(silent);
     } else if (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) {
       // D-198 Slice 5 — the explorer owns its own async guard (`explorerSeq`) +
       // error state; the outer generation guard below still gates the paint.
@@ -9629,6 +9791,16 @@ export const bootstrapDataRoute = (
    *  `hierarchicalAddressFromHash` throw the instant the parser re-pointed
    *  `#data/view/...`, which is the same way the D-290 Today rewrite broke its
    *  own route. */
+  /** D-315 §6 — Mail facts has a third level: `#data/mail_fact/<view>` (a
+   *  view is a sideways move, so switching one replaces the entry), then a
+   *  detail inside a view (a deeper place, so opening one pushes). */
+  const mailFactLevels = () => {
+    const [view, detail] = mailFacts.addressSegments();
+    return [
+      ...(view !== undefined ? [hierarchicalLevel(`data-mail-fact-view:${view}`, view)] : []),
+      ...(detail !== undefined ? [hierarchicalLevel(`data-detail:${detail}`, detail)] : []),
+    ];
+  };
   const dataAddress = (
     hash: string,
     deepLinkEntity: string | undefined,
@@ -9639,7 +9811,9 @@ export const bootstrapDataRoute = (
       ? [hierarchicalLevel('data-lens:memory', 'memory')]
       : [
           hierarchicalLevel(`data-tab:${activeTab}`, activeTab),
-          ...(deepLinkEntity === undefined
+          ...(activeTab === 'mail_fact' && parseShellRoute(hash).surface === 'data'
+            ? mailFactLevels()
+            : deepLinkEntity === undefined
             ? []
             : [hierarchicalLevel(
                 `data-detail:${deepLinkEntity}`,
@@ -9659,6 +9833,8 @@ export const bootstrapDataRoute = (
         ? serializeShellRoute('views', opts.savedView.id)
         : activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
+        : activeTab === 'mail_fact'
+        ? serializeShellRoute('data', activeTab, ...mailFacts.addressSegments())
         : serializeShellRoute('data', activeTab, initialDataEntity),
       initialDataEntity,
     ),
@@ -9684,6 +9860,8 @@ export const bootstrapDataRoute = (
     const hash =
       activeLens === 'memory'
         ? serializeShellRoute('data', 'memory')
+        : activeTab === 'mail_fact'
+          ? serializeShellRoute('data', activeTab, ...mailFacts.addressSegments())
         : exactSourceRecordTab !== null
           && explorerSelectedSlug !== null
           && explorerDetail !== null
@@ -10930,6 +11108,8 @@ export const bootstrapDataRoute = (
     focusWorkEntityDialog();
   };
 
+  /** The values the open EDIT dialog started from. */
+  let workEntityDialogOriginal: Readonly<Record<string, unknown>> = {};
   const openEditWorkEntityDialog = async (
     kind: WorkEntityKind,
     id: string,
@@ -10988,6 +11168,8 @@ export const bootstrapDataRoute = (
       entity,
       getCanonicalSchema(kind),
     );
+    // What an untouched date-time field keeps on save (`timestampValue`).
+    workEntityDialogOriginal = { ...(workEntityState.dialog?.values ?? {}) };
     const extensionValues = sourceExtensionValuesFromEntity(
       activeWorkEntityDefinition(),
       entity,
@@ -11301,6 +11483,7 @@ export const bootstrapDataRoute = (
         workEntityState.kind,
         workEntityState,
         definition,
+        workEntityState.dialog.mode === 'edit' ? workEntityDialogOriginal : {},
       );
     } catch (err) {
       workEntityState = setDialogSubmitErrorTransition(
@@ -13273,6 +13456,23 @@ export const bootstrapDataRoute = (
       target.getAttribute(DATA_ROUTE_ACTION_ATTR)
       ?? target.getAttribute(SHARED_ACTION_ATTR)
       ?? '';
+    if (action.startsWith(MAIL_FACTS_ACTION_PREFIX)) {
+      if (activeLens === 'data' && activeTab === 'mail_fact') mailFacts.handleAction(action, target);
+      return;
+    }
+    // D-315 §6 — from an email in Data → Mail to Data → Received → Mail facts.
+    if (action === 'mail-fact-make-template' || action === 'mail-fact-show-email') {
+      const slug = explorerSelectedSlug;
+      const detail = explorerDetail;
+      if (slug === null || detail === null || activeTab !== 'mail') return;
+      const email = { slug, record_id: detail.record_id };
+      const subject = detail.record?.hot_fields.subject;
+      // The tab's intent first, so the tab opens on it.
+      if (action === 'mail-fact-make-template') void mailFacts.makeTemplateFrom(email);
+      else void mailFacts.showEmail(email, typeof subject === 'string' ? subject : undefined);
+      void selectTab('mail_fact');
+      return;
+    }
     if (memoryDeletingId !== null && action.startsWith('memory-')) {
       focusMemoryDeleteConfirm(memoryDeletingId);
       return;
@@ -14098,6 +14298,10 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    // D-315 — the Mail facts editor's text fields keep their draft without a repaint.
+    if (activeTab === 'mail_fact' && typeof target.getAttribute === 'function'
+      && target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null
+      && mailFacts.handleInput(target as HTMLElement)) return;
     if (typeof target.getAttribute === 'function' && target.getAttribute('data-action') === 'records-filter-value'
       && changeRecordsViewDraft(target as HTMLInputElement)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
@@ -14278,6 +14482,9 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (activeTab === 'mail_fact'
+      && (target.getAttribute(MAIL_FACTS_FILTER_ATTR) !== null || target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null)
+      && mailFacts.handleChange(target)) return;
     if (changeRecordsViewDraft(target)) return;
     if (workEntityState.dialog !== null && !workEntityState.dialog.submitting && !workEntityDiscardGuardOpen
       && target.closest?.('.work-entity-dialog-form') != null) {
@@ -14592,6 +14799,8 @@ export const bootstrapDataRoute = (
           || (doc.activeElement as HTMLElement | null)?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'file-cloud-query')))) return;
     // Broadcasts must not replace a page walk or an editor the owner is using.
     // Refresh results explicitly starts a fresh read; idle first pages stay live.
+    // D-315 — the same for Mail facts: a later page, or a load under way.
+    if (activeLens === 'data' && activeTab === 'mail_fact' && mailFacts.isBusy()) return;
     if (activeLens === 'data' && activeTab === 'records'
       && (recordsState.loading || recordsState.page > 1 || recordsViewHasDraft(recordsState)
         || recordsState.detail !== null || recordsState.purgePending || recordsState.outboxOpen
@@ -14620,6 +14829,18 @@ export const bootstrapDataRoute = (
     liveUnsubscribers.push(
       opts.subscribe('warehouse', scheduleLiveRefresh),
       opts.subscribe('memory', scheduleLiveRefresh),
+      // D-315 §6 — facts written or removed (a scan, a backfill and an unpaired
+      // fact write no thing event, so `warehouse` alone misses them), or a
+      // template changed. Only the Mail facts tab re-reads for it.
+      opts.subscribe('mail_fact', () => {
+        // The open email's facts may have changed (a template or a backfill
+        // read it): its actions are read again.
+        if (mailFactEmailStatus !== null) {
+          mailFactEmailStatus = { ...mailFactEmailStatus, stale: true };
+          if (activeLens === 'data' && activeTab !== 'mail_fact') render();
+        }
+        if (activeLens === 'data' && activeTab === 'mail_fact') scheduleLiveRefresh();
+      }),
       // D-205 #2b — the FIRST listeners these two broadcast kinds have ever had.
       // Both are already in WEBCLIENT_DEFAULT_SUBSCRIPTIONS, so the server has
       // been fanning them to this client all along and nothing was reading them.
@@ -14702,7 +14923,9 @@ export const bootstrapDataRoute = (
     || hasRecordsInFlightWork()
     || formResponseRunModal?.getState().executing === true
     || formResponseRunModal?.getState().mutating === true
-    || formResponseRunModal?.getState().trigger_mutating === true;
+    || formResponseRunModal?.getState().trigger_mutating === true
+    // D-315 — a template, a kind of email or a switch saving.
+    || mailFacts.hasInFlightWork();
 
   return {
     currentView,
@@ -14728,6 +14951,10 @@ export const bootstrapDataRoute = (
     timeline: () => timeline,
     getLoadErrors: () => errors,
     hasInFlightWork: hasDataInFlightWork,
+    hasUnsavedChanges: () => mailFacts.hasUnsavedChanges(),
+    unsavedChangesPrompt: () => (mailFacts.hasUnsavedChanges()
+      ? 'Leave Data? Your changes to a mail-fact template or kind of email are not saved.'
+      : null),
     inFlightWorkPrompt: () => hasRecordsInFlightWork()
       ? 'Something is still happening in Records. Leave Data anyway?'
       : hasDataInFlightWork()

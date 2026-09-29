@@ -15,7 +15,7 @@ import {
   type ServerSchedule,
 } from '@recued/contracts';
 
-import type { RunModalState, RunModalTab } from './types.js';
+import type { RunModalMailFactDraft, RunModalState, RunModalTab } from './types.js';
 
 /** Display name for a recipe row — its metadata name, else its id. */
 export const recipeDisplayName = (entry: ServerRecipeListEntry): string =>
@@ -87,6 +87,15 @@ export const recipeTriggers = (
   recipe_id: string,
 ): EventTrigger[] => triggers.filter((t) => t.recipe_id === recipe_id);
 
+/** D-315 §5.1 — the "A mail fact" form, fresh: any kind, every change. */
+export const EMPTY_MAIL_FACT_DRAFT: RunModalMailFactDraft = {
+  type: '',
+  fields: [],
+  where_variable: '',
+  where_value: '',
+  template_id: '',
+};
+
 /** The initial state for one open instance. */
 export const initialRunModalState = (
   initialTab: RunModalTab,
@@ -108,6 +117,10 @@ export const initialRunModalState = (
   schedule_error: null,
   triggers: null,
   pattern_text: '',
+  trigger_kind: 'pattern',
+  mail_fact: EMPTY_MAIL_FACT_DRAFT,
+  mail_fact_templates: null,
+  mail_fact_types: [],
   trigger_mutating: false,
   trigger_error: null,
 });

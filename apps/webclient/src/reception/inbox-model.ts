@@ -126,6 +126,9 @@ export interface ReceptionInboxRowModel {
    *  NEVER render "0 others" for unknown: silence and zero mean opposite things
    *  here, and the owner acts on the difference. */
   overlap_label: string | null;
+  /** How many items one approval runs, when it is more than one ("One approval
+   *  covers all 3 items"). `null` ⇒ it runs this item alone. */
+  covers_label: string | null;
   /** Owner-only prior completed/no-show history. */
   booking_history: InboxItem['booking_history'] | null;
   proposed_action: string;
@@ -239,6 +242,18 @@ export const computeReceptionInboxOverlapLabel = (
   return `${body} — ${unreadable_calendars} ${cal} could not be read`;
 };
 
+/** The held item is one of a loop's items, and approving it runs the rest too.
+ *  An inexact count is an upper bound, so it says "up to" — the same count and
+ *  wording as the hold's ask. A count that could not be one renders nothing. */
+export const computeReceptionInboxCoversLabel = (
+  covers: InboxItem['approval_covers'],
+): string | null => {
+  if (covers === undefined || !Number.isInteger(covers.count) || covers.count < 2) return null;
+  return covers.exact
+    ? `One approval covers all ${covers.count} items`
+    : `One approval covers up to ${covers.count} items`;
+};
+
 export const formatReceptionInboxFileSize = (bytes: number): string => {
   if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown size';
   if (bytes < 1024) return `${bytes} B`;
@@ -301,6 +316,7 @@ export const buildReceptionInboxRowModel = (
       ? computeReceptionInboxWhenLabel(item.preview.when, now)
       : null,
   overlap_label: computeReceptionInboxOverlapLabel(item.calendar_overlap),
+  covers_label: computeReceptionInboxCoversLabel(item.approval_covers),
   booking_history: item.booking_history ?? null,
   proposed_action: item.proposed_action,
   status: item.status,

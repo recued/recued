@@ -13,12 +13,18 @@
 import { randomUUID } from 'node:crypto';
 import { isValidPattern } from '@recued/warehouse-events';
 import {
+  compileTriggerSugarEntry,
   DISH_ID_PREFIX,
   RpcError,
+  validateRecipeEventTriggerEntry,
+  type CompiledTriggerSubscription,
   type Dish,
   type EventTrigger,
   type HandlerSlice,
+  type MailFactTypeSpec,
+  type RecipeEventTrigger,
   type ServerRpcRegistry,
+  type TriggerSugarOptions,
 } from '@recued/contracts';
 import type { WsClient } from '../ws-server.js';
 import type { EventBus } from '../events/bus.js';
@@ -67,6 +73,11 @@ export interface TriggersRpcDeps {
    *  as the declarative reconciler's managed-dish dissolution) so a
    *  re-minted dish never inherits a dead instance's state. Optional. */
   dishContextStore?: Pick<DishContextStore, 'clear'>;
+  /** D-315 §5.1 — the kinds of email the owner made on this server. A row made
+   *  here is checked against every kind a fact here can have, so what no kind
+   *  has is refused while the owner is there to fix it; a recipe's own trigger
+   *  is only told (a kind made later may have it). */
+  mailFactTypes?: () => readonly MailFactTypeSpec[];
   /** Override the clock (tests). */
   now?: () => number;
   /** Override the id generator (tests). */
@@ -96,6 +107,39 @@ const requirePatternValid = (pattern: string): void => {
       400,
     );
   }
+};
+
+/** D-315 §5.1 — a trigger made from the authoring shorthand (`on`, with
+ *  `fields` and `where`) is validated and compiled exactly as a recipe's
+ *  declared trigger is, so Automation's and Kitchen's "A mail fact" row make
+ *  the row the reconciler would, strict filters included. It must compile to
+ *  ONE subscription: a CRM alias fans out per vendor, which only a recipe's
+ *  reconcile can keep in step. `null` when no `on` was given. */
+const compileShorthand = (args: {
+  on?: unknown;
+  fields?: unknown;
+  where?: unknown;
+}, options: TriggerSugarOptions): CompiledTriggerSubscription | null => {
+  if (args.on === undefined) {
+    if (args.fields !== undefined || args.where !== undefined) {
+      throw new RpcError('bad_request', 'fields and where narrow an `on` — give one', 400);
+    }
+    return null;
+  }
+  const entry = {
+    on: args.on,
+    ...(args.fields !== undefined ? { fields: args.fields } : {}),
+    ...(args.where !== undefined ? { where: args.where } : {}),
+  };
+  const problems = validateRecipeEventTriggerEntry(entry, options);
+  if (problems.length > 0) {
+    throw new RpcError('bad_request', `The trigger cannot be made: ${problems[0]}`, 400, undefined, { problems });
+  }
+  const compiled = compileTriggerSugarEntry(entry as RecipeEventTrigger, [], options);
+  if (compiled === null || compiled.length !== 1) {
+    throw new RpcError('bad_request', `'${String(args.on)}' does not name one event on its own — give a pattern`, 400);
+  }
+  return compiled[0]!;
 };
 
 const requireNonEmptyString = (v: unknown, field: string): string => {
@@ -183,6 +227,9 @@ export const handleTriggersCreate = async (
     recipe_id?: unknown;
     publisher_id?: unknown;
     pattern?: unknown;
+    on?: unknown;
+    fields?: unknown;
+    where?: unknown;
     dish_id?: unknown;
     config_overlay?: unknown;
     watch_interval_ms?: unknown;
@@ -191,7 +238,11 @@ export const handleTriggersCreate = async (
 ): Promise<{ trigger: EventTrigger }> => {
   const recipe_id = requireNonEmptyString(args.recipe_id, 'recipe_id');
   const publisher_id = requireNonEmptyString(args.publisher_id, 'publisher_id');
-  const pattern = requireNonEmptyString(args.pattern, 'pattern');
+  const shorthand = compileShorthand(args, deps.mailFactTypes !== undefined ? { mailFactTypes: deps.mailFactTypes } : {});
+  if (shorthand !== null && args.pattern !== undefined) {
+    throw new RpcError('bad_request', 'give `on` or `pattern`, not both', 400);
+  }
+  const pattern = shorthand?.pattern ?? requireNonEmptyString(args.pattern, 'pattern');
   requirePatternValid(pattern);
   const dish_id = args.dish_id === undefined ? null : requireDishId(args.dish_id);
   const overlay = optionalOverlay(args.config_overlay);
@@ -239,6 +290,8 @@ export const handleTriggersCreate = async (
     dish_id: boundDishId,
     watch_interval_ms,
     created_at: now,
+    ...(shorthand?.filter !== undefined ? { filter: shorthand.filter } : {}),
+    ...(shorthand?.fields !== undefined ? { fields: shorthand.fields } : {}),
   });
   deps.dispatcher?.rebuild();
   deps.onRulesChanged?.();
@@ -250,12 +303,32 @@ export const handleTriggersCreate = async (
 // triggers.update
 // ────────────────────────────────────────────────────────────────
 
+/** D-315 §5.1 — rows the owner made on this server that can never fire again,
+ *  because the template or kind of email they are narrowed to was deleted, are
+ *  switched off as the owner would switch them off (their dish follows). A
+ *  recipe's own rows are its recipe's to change. */
+export const switchOffUserTriggers = async (
+  deps: TriggersRpcDeps,
+  match: (trigger: EventTrigger) => boolean,
+): Promise<number> => {
+  let switched = 0;
+  for (const trigger of deps.store.list()) {
+    if (trigger.origin !== 'user' || !match(trigger)) continue;
+    await handleTriggersUpdate(deps, { trigger_id: trigger.trigger_id, enabled: false });
+    switched += 1;
+  }
+  return switched;
+};
+
 export const handleTriggersUpdate = async (
   deps: TriggersRpcDeps,
   args: {
     trigger_id?: unknown;
     enabled?: unknown;
     pattern?: unknown;
+    on?: unknown;
+    fields?: unknown;
+    where?: unknown;
     dish_id?: unknown;
     config_overlay?: unknown;
     watch_interval_ms?: unknown;
@@ -268,12 +341,29 @@ export const handleTriggersUpdate = async (
     pattern?: string;
     dish_id?: string | null;
     watch_interval_ms?: number | null;
+    filter?: Record<string, unknown> | null;
+    fields?: string[] | null;
   } = {};
   if (args.enabled !== undefined) patch.enabled = args.enabled === true;
-  if (args.pattern !== undefined) {
-    const p = requireNonEmptyString(args.pattern, 'pattern');
+  const shorthand = compileShorthand(args, deps.mailFactTypes !== undefined ? { mailFactTypes: deps.mailFactTypes } : {});
+  if (shorthand !== null || args.pattern !== undefined) {
+    if (shorthand !== null && args.pattern !== undefined) {
+      throw new RpcError('bad_request', 'give `on` or `pattern`, not both', 400);
+    }
+    const existing = deps.store.get(trigger_id);
+    // What a recipe declared, its recipe narrows: a reconcile would put it back.
+    if (shorthand !== null && existing?.origin === 'recipe') {
+      throw new RpcError('bad_request', 'This trigger comes from its recipe — change it in the recipe', 400);
+    }
+    const p = shorthand?.pattern ?? requireNonEmptyString(args.pattern, 'pattern');
     requirePatternValid(p);
     patch.pattern = p;
+    // On the owner's own row, a filter compiled for the old pattern never
+    // carries over. A recipe's row keeps the reconciler's, as it always has.
+    if (shorthand !== null || existing?.origin !== 'recipe') {
+      patch.filter = shorthand?.filter ?? null;
+      patch.fields = shorthand?.fields ?? null;
+    }
   }
   if (args.dish_id !== undefined) {
     patch.dish_id = requireDishId(args.dish_id);

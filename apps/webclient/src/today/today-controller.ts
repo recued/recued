@@ -19,6 +19,7 @@
  *  tab strip, a standalone route has only this view to worry about.
  */
 import type { WorkEntity } from '@recued/contracts';
+import { timedDueMs } from '@recued/contracts';
 import {
   loadToday, replaceTodayTask, writableTodayTask,
   type TodaySnapshot, type TodayTaskEdit,
@@ -173,12 +174,20 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       || host.isDisposed() || !host.isActive()) return;
     if (current.action === 'complete'
       ? !host.callers.taskMarkDoneCaller : !host.callers.workEntityUpsertCaller) return;
-    const due = new Date(current.value).getTime();
+    const picked = new Date(current.value).getTime();
     if (current.action === 'reschedule' && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(current.value)
-      || !Number.isFinite(due) || toDatetimeLocal(due) !== current.value)) {
+      || !Number.isFinite(picked) || toDatetimeLocal(picked) !== current.value)) {
       edit = { ...current, error: 'Pick a valid due date and time in your local time zone.' };
       host.render(); host.focusTask(dueSelector); return;
     }
+    // A task due on a whole DAY, moved to another day at midnight, stays a whole
+    // day (`due-day.ts`) — its UTC-midnight encoding, not this zone's midnight,
+    // which would make it overdue from the day's first minute. Any other pick is
+    // a time; `timedDueMs` keeps one that lands on 00:00 UTC from reading as a day.
+    const [year, month, day] = current.value.slice(0, 10).split('-').map(Number) as [number, number, number];
+    const due = current.allDay === true && current.value.endsWith('T00:00')
+      ? Date.UTC(year, month - 1, day)
+      : timedDueMs(picked);
     const mine = ++sequence;
     edit = { ...current, busy: true, error: null };
     host.render();
@@ -252,7 +261,9 @@ export const createTodayController = (host: TodayControllerHost): TodayControlle
       sequence += 1;
       notice = null;
       edit = { key: item.key, id: item.taskId, title: item.title, action,
-        value: toDatetimeLocal(item.when), busy: false, error: null };
+        value: toDatetimeLocal(item.when),
+        ...(item.allDay === true ? { allDay: true } : {}),
+        busy: false, error: null };
       if (action === 'complete') void submit();
       else { host.render(); host.focusTask(dueSelector); }
     },

@@ -22,7 +22,7 @@ import {
   type FormField,
 } from '@recued/contracts';
 
-import { renderField, renderForm } from '../form-renderer/render.js';
+import { formatTimestampForInput, renderField, renderForm } from '../form-renderer/render.js';
 
 const baseField = (
   over: Partial<FormField> & Pick<FormField, 'type'>,
@@ -158,13 +158,39 @@ describe('D-145 PA5 — typed-input renderers', () => {
     expect(html).toContain('data-form-type="date"');
   });
 
-  it('timestamp → input type=datetime-local', () => {
+  it('timestamp → input type=datetime-local, shown in this browser\'s time', () => {
+    // ⛔ LOCAL, because `read.ts` reads the input back as local time. This used
+    // to show the UTC digits, so a save of an untouched field moved it by the
+    // offset (and the Data dialog then dropped the value altogether).
+    const instant = Date.parse('2026-05-09T12:00:00Z');
+    const d = new Date(instant);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const local = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    for (const when of ['2026-05-09T12:00:00Z', instant]) {
+      const html = renderField(baseField({ type: 'timestamp', name: 'when' }), { values: { when } });
+      expect(html).toContain('type="datetime-local"');
+      expect(html).toContain(`value="${local}"`);
+    }
+    // A zone-less string is shown as written.
+    expect(renderField(baseField({ type: 'timestamp', name: 'when' }), { values: { when: '2026-05-09T12:00' } }))
+      .toContain('value="2026-05-09T12:00"');
+  });
+
+  it('timestamp at UTC midnight is a whole DAY, shown as that day at midnight', () => {
     const html = renderField(
-      baseField({ type: 'timestamp', name: 'when' }),
-      { values: { when: '2026-05-09T12:00:00Z' } },
+      baseField({ type: 'timestamp', name: 'due' }),
+      { values: { due: Date.UTC(2026, 8, 28) } },
     );
-    expect(html).toContain('type="datetime-local"');
-    expect(html).toContain('value="2026-05-09T12:00"');
+    expect(html).toContain('value="2026-09-28T00:00"');
+  });
+
+  it('a timestamp shown here reads back as the same instant (the round trip)', () => {
+    const instant = Date.parse('2026-05-09T12:34:00Z');
+    const shown = formatTimestampForInput(instant);
+    const [datePart, timePart] = shown.split('T') as [string, string];
+    const [y, m, day] = datePart.split('-').map(Number) as [number, number, number];
+    const [h, min] = timePart.split(':').map(Number) as [number, number];
+    expect(new Date(y, m - 1, day, h, min).getTime()).toBe(instant);
   });
 
   it('enum → <select> with options + first option preselected', () => {

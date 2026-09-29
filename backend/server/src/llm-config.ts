@@ -22,7 +22,7 @@ import {
 } from '@recued/llm';
 import {
   checkBudgetStatus, DEFAULT_BUDGET_THRESHOLDS,
-  isChatCatalogDeliveryMode, isChatModelSourceId,
+  isChatCatalogDeliveryMode, isChatModelSourceId, suggestFreePoolEntryId,
   type BudgetThresholds, type BudgetStatus,
   type ChatCatalogDeliveryMode, type ChatModelSourceId,
 } from '@recued/contracts';
@@ -125,8 +125,14 @@ export interface LLMConfigManager {
   getPool(): FreePoolEntry[];
   /** D-174 R28 — add or replace ONE pool entry (matched by `id`) via a
    *  synchronous read-modify-write over the blob, so a single-entry edit
-   *  never clobbers the other entries (vs `setPool` which replaces all). */
-  upsertPoolEntry(entry: FreePoolEntry): void;
+   *  never clobbers the other entries (vs `setPool` which replaces all). A
+   *  replaced entry keeps its place in the pool.
+   *
+   *  A blank `api_key` keeps the stored key, by the rule a slot's save uses:
+   *  only for an existing entry whose `provider` and `base_url` are unchanged.
+   *  Otherwise nothing is written and the answer is `key_required` — a
+   *  keyless entry is one no call can use. */
+  upsertPoolEntry(entry: FreePoolEntry): 'saved' | 'key_required';
   /** D-174 R28 — remove ONE pool entry by `id`. Returns whether an entry
    *  matched (false = no-op). */
   removePoolEntry(id: string): boolean;
@@ -384,6 +390,8 @@ export const createLLMConfigManager = (
       api_key: apiKey,
       base_url: get(`${prefix}.base_url`),
     };
+    const providerName = get(`${prefix}.provider_name`);
+    if (providerName !== undefined && providerName.length > 0) slot.provider_name = providerName;
     const maxOutputTokens = get(`${prefix}.max_output_tokens`);
     if (maxOutputTokens !== undefined) {
       const parsed = Number(maxOutputTokens);
@@ -430,6 +438,7 @@ export const createLLMConfigManager = (
   const writeSlot = (prefix: string, slot: LLMSlot | null): void => {
     const keys = [
       'provider',
+      'provider_name',
       'model',
       'api_key',
       'base_url',
@@ -465,6 +474,10 @@ export const createLLMConfigManager = (
     const prevProvider = get(`${prefix}.provider`);
     const prevBaseUrl = get(`${prefix}.base_url`);
     set(`${prefix}.provider`, slot.provider);
+    // The name is a label, not credential context: it is written or cleared
+    // here and plays no part in the key guard below.
+    if (slot.provider_name) set(`${prefix}.provider_name`, slot.provider_name);
+    else del(`${prefix}.provider_name`);
     set(`${prefix}.model`, slot.model);
     // D-174 R28 Slice B — a blank api_key PRESERVES the existing stored key,
     // but ONLY when the credential context (provider + base_url) is unchanged.
@@ -521,11 +534,33 @@ export const createLLMConfigManager = (
     }).immediate();
   };
 
+  /** ⛔ The pool once took an entry with a BLANK id, and nothing could then
+   *  remove, disable, test or edit it: the rpcs refuse a blank id and Settings
+   *  drew no buttons for one. Each is named on read the way Settings names a
+   *  new entry the owner left unnamed (`suggestFreePoolEntryId`), so the same
+   *  pool always reads with the same names, and the next pool write stores
+   *  them. */
+  const nameUnnamedPoolEntries = (entries: FreePoolEntry[]): FreePoolEntry[] => {
+    const named = (entry: FreePoolEntry): boolean =>
+      typeof entry.id === 'string' && entry.id.trim().length > 0;
+    if (entries.every(named)) return entries;
+    const taken = new Set(entries.filter(named).map((entry) => entry.id));
+    return entries.map((entry) => {
+      if (named(entry)) return entry;
+      const id = suggestFreePoolEntryId(
+        { provider: entry.provider, ...(entry.base_url !== undefined ? { base_url: entry.base_url } : {}) },
+        taken,
+      );
+      taken.add(id);
+      return { ...entry, id };
+    });
+  };
+
   const parsePoolBlob = (raw: string | undefined): FreePoolEntry[] => {
     if (!raw) return [];
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed)) return parsed as FreePoolEntry[];
+      if (Array.isArray(parsed)) return nameUnnamedPoolEntries(parsed as FreePoolEntry[]);
     } catch {
       /* malformed persisted pool — treat as empty */
     }
@@ -798,9 +833,30 @@ export const createLLMConfigManager = (
     // `readPoolStrict` (not `getPool`) so a locked server fails loud (423)
     // instead of treating the unreadable pool as empty and no-op'ing.
     upsertPoolEntry(entry) {
-      const next = readPoolStrict().filter((e) => e.id !== entry.id);
-      next.push(entry);
+      const pool = readPoolStrict();
+      const prev = pool.find((e) => e.id === entry.id);
+      let stored = entry;
+      if (entry.api_key.length === 0) {
+        // The same credential context `writeSlot` guards: a key never follows
+        // its entry to another protocol or address.
+        const sameContext = prev !== undefined
+          && prev.provider === entry.provider
+          && (prev.base_url || undefined) === (entry.base_url || undefined);
+        if (prev === undefined || !sameContext || !prev.api_key) return 'key_required';
+        stored = { ...entry, api_key: prev.api_key };
+      }
+      const next: FreePoolEntry[] = [];
+      let placed = false;
+      for (const e of pool) {
+        if (e.id !== entry.id) next.push(e);
+        else if (!placed) {
+          next.push(stored);
+          placed = true;
+        }
+      }
+      if (!placed) next.push(stored);
       this.setPool(next);
+      return 'saved';
     },
     removePoolEntry(id) {
       const pool = readPoolStrict();

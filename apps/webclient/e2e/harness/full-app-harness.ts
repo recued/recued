@@ -2111,7 +2111,11 @@ const buildFakeTransport = (
                 messages: [],
               }
             : rpc.method === 'server.getLLMConfig'
-              ? { config: { ...llmConfig } }
+              // A current server: it keeps a slot's provider_name.
+              ? {
+                  config: { ...llmConfig },
+                  supports: { slot_provider_name: true, pool_entry_drafts: true },
+                }
               : rpc.method === 'chat.default_model_pref.get'
                 ? { source_id: defaultSourceId, updated_at: FIXED_NOW }
                 : rpc.method === 'prefs.get'
@@ -5809,6 +5813,17 @@ const buildFakeTransport = (
             ];
           }
           if (error === undefined) result = { ok: true };
+        }
+        if (rpc.method === 'server.probeLlmSource') {
+          // Test connection answers as a working endpoint would. Which source
+          // and draft it was asked about is pinned by the page's unit tests.
+          result = {
+            ok: true,
+            diagnosis: 'ok',
+            accepts_system_role: true,
+            supports_json: true,
+            elapsed_ms: 120,
+          };
         }
         if (rpc.method === 'server.setFreePoolEntryEnabled') {
           const args = rpc.args as { id?: unknown; enabled?: unknown };

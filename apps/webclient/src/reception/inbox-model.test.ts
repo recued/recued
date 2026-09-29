@@ -9,6 +9,7 @@ import type {
 
 import {
   buildReceptionInboxApproveDispatch,
+  computeReceptionInboxCoversLabel,
   computeReceptionInboxOverlapLabel,
   buildReceptionInboxDetailModel,
   buildReceptionInboxFieldModel,
@@ -425,5 +426,46 @@ describe('computeReceptionInboxOverlapLabel — D-173 D7', () => {
         overlap({ count: 0, calendars_read: 0, unreadable_calendars: 1 }),
       ),
     ).toBe('At least 0 other bookings then — 1 calendar could not be read');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// One approval that runs the rest of a loop
+// ────────────────────────────────────────────────────────────────
+
+/** The held item is one of a loop's items, and approving it runs the rest too.
+ *  The count is what the owner is saying yes to, so it may never overstate its
+ *  certainty: a bound says "up to", as the hold's ask does. */
+describe('computeReceptionInboxCoversLabel — a held loop item', () => {
+  it('says how many items one approval runs', () => {
+    expect(computeReceptionInboxCoversLabel({ count: 3, exact: true })).toBe(
+      'One approval covers all 3 items',
+    );
+  });
+
+  it('an upper bound says "up to" — never a bare total', () => {
+    expect(computeReceptionInboxCoversLabel({ count: 3, exact: false })).toBe(
+      'One approval covers up to 3 items',
+    );
+  });
+
+  it('renders nothing for one item, or for a count that cannot be one', () => {
+    expect(computeReceptionInboxCoversLabel(undefined)).toBeNull();
+    expect(computeReceptionInboxCoversLabel({ count: 1, exact: true })).toBeNull();
+    expect(computeReceptionInboxCoversLabel({ count: 2.5, exact: true })).toBeNull();
+  });
+
+  it('rides the row, which the list and the detail both render', () => {
+    const covered: InboxItem = { ...item(), approval_covers: { count: 4, exact: true } };
+    const model = buildReceptionInboxModel({
+      items: [covered],
+      view: 'open',
+      selected_hold_id: 'hold-1',
+      now: NOW,
+    });
+    expect(model.groups[0]!.rows[0]!.covers_label).toBe('One approval covers all 4 items');
+    expect(model.selected!.item.covers_label).toBe('One approval covers all 4 items');
+    const single = buildReceptionInboxModel({ items: [item()], view: 'open', now: NOW });
+    expect(single.groups[0]!.rows[0]!.covers_label).toBeNull();
   });
 });

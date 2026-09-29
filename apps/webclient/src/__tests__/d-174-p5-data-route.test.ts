@@ -11,6 +11,7 @@ import type {
   ContactSourceHealth,
   FormResponse,
   FormResponseListItem,
+  MailFactRow,
   RecipeDefinition,
   ServerExecuteResponse,
   ServerRecipeListEntry,
@@ -21,6 +22,8 @@ import type {
 } from '@recued/contracts';
 import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
 import { bootstrapSavedDataRoute } from '../data/saved-data-route.js';
+import { MAIL_FACTS_FILTER_ATTR } from '../data/mail-facts-surface.js';
+import { MAIL_FACTS_FIELD_ATTR } from '../data/mail-fact-templates.js';
 import { reconcileRecoveryContext } from '../shell/recovery-return-reconciliation.js';
 import {
   SEARCH_INPUT_ATTR,
@@ -621,6 +624,8 @@ const mountRoute = (overrides: {
   openCreateOverlay?: () => void;
   initialCollectionSlug?: string;
   initialEntityId?: string;
+  initialDetailId?: string;
+  mailFactCallers?: BootstrapDataRouteOptions['mailFactCallers'];
   chatReturn?: BootstrapDataRouteOptions['chatReturn'];
   logsReturn?: BootstrapDataRouteOptions['logsReturn'];
   verificationRelationship?:
@@ -877,6 +882,12 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.initialEntityId !== undefined
       ? { initialEntityId: overrides.initialEntityId }
+      : {}),
+    ...(overrides.initialDetailId !== undefined
+      ? { initialDetailId: overrides.initialDetailId }
+      : {}),
+    ...(overrides.mailFactCallers !== undefined
+      ? { mailFactCallers: overrides.mailFactCallers }
       : {}),
     ...(overrides.chatReturn !== undefined
       ? { chatReturn: overrides.chatReturn }
@@ -1140,6 +1151,56 @@ describe('saved Data view hydration', () => {
       expect(rig.route.currentView()).toEqual({ tab: 'mail', collection_slug: 'changed' });
       expect(rig.route.getRecoveryContextFreshness()).toBe('unavailable');
     }
+    rig.route.dispose();
+  });
+});
+
+describe('Data → Files lists the files saved in Recued', () => {
+  // ⛔ Seen live 2026-09-27: an upload said "Uploaded ✓", then the tab said
+  // "Nothing connected for file yet" — `file/received` has no instance row.
+  const savedFile = { record_id: 'file:abc', source_id: 'up-1', received_at: 1, modified_at: 1, size_bytes: 12,
+    hot_fields: { filename: 'minutes.md', mime_type: 'text/markdown' } };
+  const folder = { platform: 'file' as const, slug: 'docs', adapter_type: 'fs',
+    caps: { read: 'yes', write: 'no', delete: 'no', watch: 'poll', mirror: 'disabled', auth: 'none', path_style: 'posix' } as const,
+    auth_state: 'healthy' as const, last_synced_at: null };
+
+  it('shows them with nothing connected', async () => {
+    const list = vi.fn<NonNullable<BootstrapDataRouteOptions['collectionListCaller']>>(async (args) =>
+      (args.slug === 'received' ? { records: [savedFile] } : { records: [] }));
+    const rig = mountRoute({ initialTab: 'files', collectionListInstancesCaller: async () => ({ instances: [] }), collectionListCaller: list });
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).not.toContain('Nothing connected for file yet');
+    // The only source, so it opens straight on its files.
+    expect(html).toContain('minutes.md');
+    expect(list).toHaveBeenCalledWith({ platform: 'file', slug: 'received', limit: 100 });
+    rig.route.dispose();
+  });
+
+  it('lists them beside a connected folder, which still opens first', async () => {
+    const list = vi.fn<NonNullable<BootstrapDataRouteOptions['collectionListCaller']>>(async (args) =>
+      (args.slug === 'received' ? { records: [savedFile] } : { records: [] }));
+    const rig = mountRoute({ initialTab: 'files', collectionListInstancesCaller: async () => ({ instances: [folder] }), collectionListCaller: list });
+    await rig.route.whenLoaded();
+    // One connected source opens as it always did…
+    expect(list).toHaveBeenLastCalledWith({ platform: 'file', slug: 'docs', limit: 100 });
+    // …and the saved files are one choice away.
+    expect(rig.root.children[0]!.innerHTML).toContain('Saved files');
+    emitClick(rig.root.children[0]!, COLLECTION_SELECT_INSTANCE_ACTION, { [COLLECTION_INSTANCE_SLUG_ATTR]: 'received' });
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ platform: 'file', slug: 'received', limit: 100 }));
+    await vi.waitFor(() => expect(rig.root.children[0]!.innerHTML).toContain('minutes.md'));
+    rig.route.dispose();
+  });
+
+  it('reads a server with no saved-files collection as nothing saved, not as a failure', async () => {
+    const list = vi.fn<NonNullable<BootstrapDataRouteOptions['collectionListCaller']>>(async () => {
+      throw Object.assign(new Error('collection not found'), { code: 'COLLECTION_NOT_FOUND' });
+    });
+    const rig = mountRoute({ initialTab: 'files', collectionListInstancesCaller: async () => ({ instances: [] }), collectionListCaller: list });
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).not.toContain('collection not found');
+    expect(html).not.toContain('Nothing connected for file yet');
     rig.route.dispose();
   });
 });
@@ -2626,6 +2687,123 @@ describe('D-174 P5 Data route', () => {
     );
 
     rig.route.dispose();
+  });
+
+  describe('the due date the dialog reads back (found live: it was dropped)', () => {
+    // The dialog reads a date-time field back as an ISO STRING with this
+    // browser's offset; the upsert took numbers only, so every save dropped
+    // the due date — an edit kept the old one, a new task got none. These pass
+    // the strings the dialog produces.
+    const minute = (ms: number) => new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+    const editTaskWithDue = async (due_at: number) => {
+      const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(async () => ({
+        entity: taskEntity({ due_at }),
+      }));
+      const rig = mountRoute({ workEntityGetCaller });
+      await rig.route.whenLoaded();
+      await rig.route.selectTab('task');
+      await rig.route.openEditWorkEntityDialog('task', 'task-1');
+      return rig;
+    };
+    const savedDue = (rig: Awaited<ReturnType<typeof editTaskWithDue>>) =>
+      (vi.mocked(rig.workEntityUpsertCaller).mock.calls.at(-1)?.[0] as { due_at?: unknown } | undefined)
+        ?.due_at;
+
+    it('a changed due date is sent', async () => {
+      const rig = await editTaskWithDue(Date.parse('2026-10-02T17:30:15.000Z'));
+      const picked = '2026-10-05T09:15:00.000Z';
+      rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: picked });
+      await rig.route.confirmWorkEntityDialog();
+      expect(savedDue(rig)).toBe(Date.parse(picked));
+      rig.route.dispose();
+    });
+
+    it('an untouched due date keeps its stored value exactly — seconds and all', async () => {
+      const original = Date.parse('2026-10-02T17:30:15.000Z');
+      const rig = await editTaskWithDue(original);
+      // What the dialog reads back for the untouched field: the same minute.
+      rig.route.setWorkEntityDialogValues({
+        ...rig.route.workEntityState().dialog!.values, title: 'Call Sam today', due_at: minute(original),
+      });
+      await rig.route.confirmWorkEntityDialog();
+      expect(savedDue(rig)).toBe(original);
+      rig.route.dispose();
+    });
+
+    it('an untouched whole-DAY due stays a day, not this zone\'s midnight', async () => {
+      const day = Date.UTC(2026, 9, 2);
+      const rig = await editTaskWithDue(day);
+      // Shown as that day at midnight here; read back as local midnight.
+      const shownBack = new Date(2026, 9, 2, 0, 0).toISOString();
+      rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: shownBack });
+      await rig.route.confirmWorkEntityDialog();
+      expect(savedDue(rig)).toBe(day);
+      rig.route.dispose();
+    });
+
+    it('a date picked at midnight means that whole day', async () => {
+      const rig = await editTaskWithDue(Date.parse('2026-10-02T17:30:15.000Z'));
+      rig.route.setWorkEntityDialogValues({
+        ...rig.route.workEntityState().dialog!.values, due_at: new Date(2026, 9, 6, 0, 0).toISOString(),
+      });
+      await rig.route.confirmWorkEntityDialog();
+      expect(savedDue(rig)).toBe(Date.UTC(2026, 9, 6));
+      rig.route.dispose();
+    });
+
+    it('⛔ an emptied due date is REMOVED — it used to come back after Save', async () => {
+      const rig = await editTaskWithDue(Date.parse('2026-10-02T17:30:15.000Z'));
+      rig.route.setWorkEntityDialogValues({ ...rig.route.workEntityState().dialog!.values, due_at: '' });
+      await rig.route.confirmWorkEntityDialog();
+      const sent = vi.mocked(rig.workEntityUpsertCaller).mock.calls.at(-1)?.[0] as unknown as Record<string, unknown>;
+      // A task's `null` means "not given", so its removal is a flag.
+      expect(sent).toMatchObject({ kind: 'task', id: 'task-1', clear_due_at: true });
+      expect('due_at' in sent).toBe(false);
+      rig.route.dispose();
+    });
+
+    it('an emptied project target is sent as null — a project\'s "remove"', async () => {
+      const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(async () => ({
+        entity: {
+          _kind: 'project', id: 'project-1', title: 'Launch', state: 'active',
+          target_completion_at: Date.UTC(2026, 9, 30), source_id: 'recued.project',
+          last_seen_at: 1, sync_state: 'live', conflict_policy: 'recued_wins',
+          created_at: 1, updated_at: 2, related_contact_ids: [],
+        } as unknown as WorkEntity,
+      }));
+      const rig = mountRoute({ workEntityGetCaller });
+      await rig.route.whenLoaded();
+      await rig.route.selectTab('project');
+      await rig.route.openEditWorkEntityDialog('project', 'project-1');
+      rig.route.setWorkEntityDialogValues({
+        ...rig.route.workEntityState().dialog!.values, target_completion_at: '',
+      });
+      await rig.route.confirmWorkEntityDialog();
+      expect(vi.mocked(rig.workEntityUpsertCaller).mock.calls.at(-1)?.[0])
+        .toMatchObject({ kind: 'project', id: 'project-1', target_completion_at: null });
+      rig.route.dispose();
+    });
+
+    it('a new task keeps the due date it was given', async () => {
+      const rig = mountRoute({
+        sourceListCaller: vi.fn<WorkEntitySourceListCaller>(async () => ({
+          sources: WORK_ENTITY_KINDS.map(sourceRegistration),
+          defaults_by_kind: { task: 'recued.task' },
+        })),
+      });
+      await rig.route.whenLoaded();
+      await rig.route.selectTab('task');
+      rig.route.openCreateWorkEntityDialog();
+      const picked = '2026-10-07T14:45:00.000Z';
+      rig.route.setWorkEntityDialogValues({
+        ...(rig.route.workEntityState().dialog?.values ?? {}), title: 'File the return', due_at: picked,
+      });
+      await rig.route.confirmWorkEntityDialog();
+      expect(rig.workEntityUpsertCaller).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'task', title: 'File the return', due_at: Date.parse(picked),
+      }));
+      rig.route.dispose();
+    });
   });
 
   it('sends booking search and lifecycle filters to the server before pagination', async () => {
@@ -5531,6 +5709,7 @@ describe('R18 — Data live-update (warehouse / memory broadcasts)', () => {
     // broadcast kinds have ever had (both were already in
     // WEBCLIENT_DEFAULT_SUBSCRIPTIONS, fanned to this client and read by nobody).
     expect([...listeners.keys()].sort()).toEqual([
+      'mail_fact',
       'memory',
       'merge_candidate',
       'merge_scan_progress',
@@ -7588,6 +7767,308 @@ describe('D-267 — the built-in local calendar names itself once', () => {
     // while ownership is per-INSTANCE: this one needs no credential and lives
     // on the owner's server. The tab cannot express that; the chip can.
     expect(html).toContain('On this server');
+    rig.route.dispose();
+  });
+});
+
+describe('D-315 — Data → Received → Mail facts', () => {
+  const factRow = (fact_id = 'mfact_1'): MailFactRow => ({
+    fact: {
+      fact_id,
+      type: 'shipment',
+      template_id: null,
+      email: { slug: 'work', record_id: `mail:${fact_id}` },
+      email_at: 1_000,
+      position: 0,
+      identity_keys: ['UPS|1Z1'],
+      thing_id: 'mthing_1',
+      variables: { carrier: 'UPS', tracking_number: '1Z1', state: 'delivered' },
+      passes: { carrier: 'standard', tracking_number: 'standard' },
+      data: null,
+      missing: [],
+      refused: [],
+      complete: true,
+      source_hash: 'h',
+      revision: 1,
+      created_at: 1,
+    },
+    email: { slug: 'work', record_id: `mail:${fact_id}`, from: 'pkginfo@ups.com', subject: 'Your parcel', at: 1_000 },
+    thing: null,
+    of_email: { index: 1, count: 1 },
+    runs: [],
+  });
+  const templates = async () => ({ templates: [] });
+
+  it('sits in the Received cluster, after Form responses and before Webhook deliveries', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const form = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="form_response"`);
+    const facts = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="mail_fact"`);
+    const webhook = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
+    expect(form).toBeGreaterThan(-1);
+    expect(form).toBeLessThan(facts);
+    expect(facts).toBeLessThan(webhook);
+    expect(html).toMatch(/data-data-tab="mail_fact"[\s\S]*?>Mail facts<\/button>/);
+    rig.route.dispose();
+  });
+
+  it('lists facts through its caller and addresses its view as a third level', async () => {
+    const calls: string[] = [];
+    const list = vi.fn(async () => ({ rows: [factRow()] }));
+    const rig = mountRoute({
+      mailFactCallers: { listFacts: list, listTemplates: templates },
+      replaceState: (_d, _u, url) => { calls.push(`replace ${String(url)}`); },
+      pushState: (_d, _u, url) => { calls.push(`push ${String(url)}`); },
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('mail_fact');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(list).toHaveBeenCalledWith({ limit: 50 });
+    expect(html).toContain('data-recued-mail-fact-row="mfact_1"');
+    expect(html).toContain('Your parcel');
+    // Another tab to this one is a sideways move: the entry is replaced.
+    expect(calls.at(-1)).toBe('replace #data/mail_fact/facts');
+    rig.route.dispose();
+  });
+
+  it('opens from its address', async () => {
+    const list = vi.fn(async () => ({ rows: [factRow()] }));
+    const rig = mountRoute({
+      initialTab: 'mail_fact',
+      initialEntityId: 'facts',
+      mailFactCallers: { listFacts: list, listTemplates: templates },
+    });
+    await rig.route.whenLoaded();
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('data-recued-mail-facts="facts"');
+    rig.route.dispose();
+  });
+
+  it('re-reads on a mail_fact broadcast, and only on its own tab', async () => {
+    const { subscribe, listeners } = makeSubscribe();
+    const list = vi.fn(async () => ({ rows: [factRow()] }));
+    const rig = mountRoute({ subscribe, liveRefreshDebounceMs: 0, mailFactCallers: { listFacts: list, listTemplates: templates } });
+    await rig.route.whenLoaded();
+    const broadcast = () => listeners.get('mail_fact')!({ kind: 'mail_fact', subkind: 'facts', cursor: 1 });
+    broadcast();
+    await rig.route.whenLoaded();
+    expect(list).not.toHaveBeenCalled();
+    await rig.route.selectTab('mail_fact');
+    expect(list).toHaveBeenCalledTimes(1);
+    broadcast();
+    await rig.route.whenLoaded();
+    expect(list).toHaveBeenCalledTimes(2);
+    rig.route.dispose();
+  });
+
+  it('forwards its filters and its load-more to the tab', async () => {
+    const cursor = { email_at: 1_000, slug: 'work', record_id: 'mail:mfact_1' };
+    const list = vi.fn(async (query: { before?: unknown }) =>
+      query.before === undefined ? { rows: [factRow()], next_cursor: cursor } : { rows: [factRow('mfact_2')] });
+    const rig = mountRoute({ mailFactCallers: { listFacts: list, listTemplates: templates } });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('mail_fact');
+    emitChange(rig.root.children[0]!, {
+      value: 'bill',
+      getAttribute: (k) => (k === MAIL_FACTS_FILTER_ATTR ? 'type' : null),
+    });
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ limit: 50, type: 'bill' }));
+    // Load more waits for the filtered page: until it lands the button is disabled.
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '')
+      .toMatch(/data-recued-mail-facts-focus="load-more"\s*>/));
+    emitClick(rig.root.children[0]!, 'mail-facts-load-more');
+    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith({ limit: 50, type: 'bill', before: cursor }));
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('data-recued-mail-fact-row="mfact_2"'));
+    rig.route.dispose();
+  });
+});
+
+describe('D-315 — an email’s mail-fact actions in Data → Mail (§6)', () => {
+  const mailRecord = (record_id: string) => ({
+    record_id,
+    received_at: 1,
+    modified_at: 1,
+    hot_fields: { from: 'pkginfo@ups.com', subject: 'UPS Update: Delivered' },
+    size_bytes: 0,
+    source_id: record_id,
+  });
+
+  const mountMail = (
+    status: { fact_count: number; security_notice: boolean },
+    extra: {
+      emailStatus?: () => Promise<{ fact_count: number; security_notice: boolean }>;
+      createTemplate?: () => Promise<unknown>;
+      subscribe?: BootstrapDataRouteOptions['subscribe'];
+    } = {},
+  ) => {
+    const readEmail = vi.fn(async () => ({
+      email: { slug: 'gmail', record_id: 'msg-1', from: 'pkginfo@ups.com', subject: 'UPS Update: Delivered', at: 1 },
+      from_name: 'UPS',
+      body_text: 'Tracking Number: 1Z999AA10123456784',
+      labels: [],
+      attachments: [],
+      read: 'provider' as const,
+    }));
+    const listFacts = vi.fn(async () => ({ rows: [] }));
+    const emailStatus = vi.fn(extra.emailStatus ?? (async () => status));
+    const rig = mountRoute({
+      ...(extra.subscribe !== undefined ? { subscribe: extra.subscribe, liveRefreshDebounceMs: 0 } : {}),
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [
+          { slug: 'gmail', platform: 'mail', adapter_type: 'gmail', caps: {}, auth_state: 'ok', last_synced_at: null },
+        ],
+      })) as never,
+      collectionListCaller: vi.fn(async () => ({ records: [mailRecord('msg-1')] })) as never,
+      collectionGetCaller: vi.fn(async () => ({ record: mailRecord('msg-1') })) as never,
+      mailFactCallers: {
+        emailStatus,
+        readEmail,
+        listFacts,
+        listTemplates: async () => ({ templates: [] }),
+        createTemplate: (extra.createTemplate ?? vi.fn()) as never,
+      },
+    });
+    return { rig, readEmail, listFacts, emailStatus };
+  };
+
+  const openEmail = async (rig: ReturnType<typeof mountRoute>) => {
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('mail');
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: 'msg-1' });
+  };
+
+  it('offers both on an email that gave facts, and opens its facts', async () => {
+    const { rig, listFacts, emailStatus } = mountMail({ fact_count: 2, security_notice: false });
+    await openEmail(rig);
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('Facts from this email (2)'));
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Make a template from this email');
+    expect(emailStatus).toHaveBeenCalledTimes(1);
+    emitClick(rig.root.children[0]!, 'mail-fact-show-email');
+    await vi.waitFor(() => expect(listFacts).toHaveBeenCalledWith({
+      limit: 50,
+      email: { slug: 'gmail', record_id: 'msg-1' },
+    }));
+    expect(rig.route.activeTab()).toBe('mail_fact');
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain('Facts from one email: <strong>UPS Update: Delivered</strong>'));
+    rig.route.dispose();
+  });
+
+  it('makes a template from the email', async () => {
+    const { rig, readEmail } = mountMail({ fact_count: 0, security_notice: false });
+    await openEmail(rig);
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('Make a template from this email'));
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain('Facts from this email');
+    emitClick(rig.root.children[0]!, 'mail-fact-make-template');
+    await vi.waitFor(() => expect(readEmail).toHaveBeenCalledWith({ slug: 'gmail', record_id: 'msg-1' }));
+    expect(rig.route.activeTab()).toBe('mail_fact');
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('New template'));
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('1Z999AA10123456784');
+    rig.route.dispose();
+  });
+
+  it('reads the email’s actions again after a mail_fact broadcast, and keeps them shown meanwhile', async () => {
+    const { subscribe, listeners } = makeSubscribe();
+    let answer: ((value: { fact_count: number; security_notice: boolean }) => void) | null = null;
+    const statuses = [
+      async () => ({ fact_count: 0, security_notice: false }),
+      () => new Promise<{ fact_count: number; security_notice: boolean }>((resolve) => { answer = resolve; }),
+    ];
+    let calls = 0;
+    const { rig, emailStatus } = mountMail({ fact_count: 0, security_notice: false }, {
+      subscribe,
+      emailStatus: () => statuses[Math.min(calls++, 1)]!(),
+    });
+    await openEmail(rig);
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('Make a template from this email'));
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain('Facts from this email');
+    expect(emailStatus).toHaveBeenCalledTimes(1);
+
+    // A template read it meanwhile: the broadcast says facts changed.
+    listeners.get('mail_fact')!({ kind: 'mail_fact', subkind: 'facts', cursor: 2 });
+    await vi.waitFor(() => expect(emailStatus).toHaveBeenCalledTimes(2));
+    // Until the answer lands, the actions it had stay.
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Make a template from this email');
+    answer!({ fact_count: 3, security_notice: false });
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('Facts from this email (3)'));
+    rig.route.dispose();
+  });
+
+  it('asks before Data is left with a template’s changes, and counts its save as work under way', async () => {
+    let saved: () => void = () => {};
+    const createTemplate = vi.fn(() => new Promise((resolve) => { saved = () => resolve({ template: {} }); }));
+    const { rig } = mountMail({ fact_count: 0, security_notice: false }, { createTemplate });
+    await openEmail(rig);
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('Make a template from this email'));
+    emitClick(rig.root.children[0]!, 'mail-fact-make-template');
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('New template'));
+    // The email has loaded, and with it the sender's condition: a save sent
+    // before then would be followed by a change the editor keeps open for.
+    await vi.waitFor(() => expect(rig.root.children[0]?.innerHTML ?? '').toContain('pkginfo@ups.com'));
+    expect(rig.route.hasUnsavedChanges()).toBe(false);
+    expect(rig.route.unsavedChangesPrompt()).toBeNull();
+
+    emitInput(rig.root.children[0]!, {
+      value: 'My parcels',
+      hasAttribute: (k) => k === MAIL_FACTS_FIELD_ATTR,
+      getAttribute: (k) => (k === MAIL_FACTS_FIELD_ATTR ? 'ed:name' : null),
+    });
+    expect(rig.route.hasUnsavedChanges()).toBe(true);
+    expect(rig.route.unsavedChangesPrompt())
+      .toBe('Leave Data? Your changes to a mail-fact template or kind of email are not saved.');
+    expect(rig.route.hasInFlightWork()).toBe(false);
+
+    emitClick(rig.root.children[0]!, 'mail-facts-ed-save');
+    expect(createTemplate).toHaveBeenCalledTimes(1);
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    saved();
+    await vi.waitFor(() => expect(rig.route.hasInFlightWork()).toBe(false));
+    expect(rig.route.hasUnsavedChanges()).toBe(false);
+    rig.route.dispose();
+  });
+
+  it('tells the shell of a template’s changes through the saved-view frame as well', async () => {
+    const root = makeFakeEl('div');
+    const route = bootstrapSavedDataRoute({
+      root: root as unknown as HTMLElement, document: makeFakeDocument() as unknown as Document,
+      initialTab: 'mail_fact', initialEntityId: 'templates', initialDetailId: 'new',
+      contactListCaller: vi.fn(async () => ({ contacts: [], total: 0 })),
+      mailFactCallers: { listTemplates: async () => ({ templates: [] }) },
+      savedViews: {
+        list: async () => ({ views: [] }), get: async () => ({ view: null }),
+        create: async () => { throw new Error('Unexpected write'); },
+        update: async () => { throw new Error('Unexpected write'); },
+        rename: async () => { throw new Error('Unexpected write'); },
+        delete: async () => { throw new Error('Unexpected write'); },
+      },
+    } as never);
+    await route.whenLoaded();
+    expect(route.hasUnsavedChanges()).toBe(false);
+    const walk = (node: FakeEl): FakeEl[] => [node, ...node.children.flatMap(walk)];
+    // The frame's own tools listen for input too (a saved view's name): the
+    // Data route's host is the other one.
+    const host = walk(root).find((node) => (node.listeners.get('input') ?? []).length > 0
+      && !node.hasAttribute('data-saved-data-views'))!;
+    emitInput(host, {
+      value: 'My parcels',
+      hasAttribute: (k) => k === MAIL_FACTS_FIELD_ATTR,
+      getAttribute: (k) => (k === MAIL_FACTS_FIELD_ATTR ? 'ed:name' : null),
+    });
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.unsavedChangesPrompt())
+      .toBe('Leave Data? Your changes to a mail-fact template or kind of email are not saved.');
+    route.dispose();
+  });
+
+  it('offers neither on a security notice (§9)', async () => {
+    const { rig, emailStatus } = mountMail({ fact_count: 1, security_notice: true });
+    await openEmail(rig);
+    await vi.waitFor(() => expect(emailStatus).toHaveBeenCalled());
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).not.toContain('Make a template from this email');
+    expect(html).not.toContain('Facts from this email');
     rig.route.dispose();
   });
 });

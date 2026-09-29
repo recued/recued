@@ -22362,7 +22362,7 @@ test('Settings Updates retains focus and ownership through a deferred apply', as
 
   const apply = page.locator(`[${UPDATES_APPLY}]`);
   const html = page.locator('html');
-  await expect(apply).toHaveText('Update now');
+  await expect(apply).toHaveText('Update to 26.8.1');
   await page.evaluate(() => {
     document.documentElement.setAttribute('data-audit-confirm-count', '0');
     window.confirm = (message?: string): boolean => {
@@ -22375,6 +22375,10 @@ test('Settings Updates retains focus and ownership through a deferred apply', as
   });
 
   await apply.focus();
+  // Every update asks once: Update to <version> → Confirm update → Updating….
+  await page.keyboard.press('Enter');
+  await expect(apply).toHaveText('Confirm update');
+  await expect(apply).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(apply).toHaveText('Updating…');
   await expect(apply).not.toHaveAttribute('disabled');
@@ -22394,7 +22398,8 @@ test('Settings Updates retains focus and ownership through a deferred apply', as
   );
   await expect(page).toHaveURL(/#settings\/updates$/);
 
-  await expect(apply).toHaveText('Update now');
+  // The confirm was used up by that apply, so the next attempt asks again.
+  await expect(apply).toHaveText('Update to 26.8.1');
   await expect(apply).not.toHaveAttribute('aria-disabled');
   await expect(apply).not.toHaveAttribute('aria-busy');
   await expect(apply).toBeFocused();
@@ -23472,12 +23477,20 @@ test('Settings AI Models provider controls expose their owning source', async ({
   await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
 
   for (const name of [
-    'Slot 1: fast provider',
-    'Slot 2: better, slower thinking provider',
+    'Slot 1: fast provider name',
+    'Slot 2: better, slower thinking provider name',
     'Embeddings slot provider',
-    'New free-pool entry provider',
+    'New free-pool entry name',
   ]) {
     await expect(page.getByRole('textbox', { name, exact: true })).toHaveCount(1);
+  }
+  // A protocol is a choice; a provider's name is the owner's word for it.
+  for (const name of [
+    'Slot 1: fast protocol',
+    'Slot 2: better, slower thinking protocol',
+    'New free-pool entry protocol',
+  ]) {
+    await expect(page.getByRole('combobox', { name, exact: true })).toHaveCount(1);
   }
   for (const name of [
     'Save Slot 1: fast',
@@ -23486,6 +23499,7 @@ test('Settings AI Models provider controls expose their owning source', async ({
     'Clear Slot 2: better, slower thinking',
     'Save Embeddings slot',
     'Clear Embeddings slot',
+    'Edit free-pool entry groq',
     'Disable free-pool entry groq',
     'Remove free-pool entry groq',
     'Add free-pool API entry',
@@ -24245,6 +24259,88 @@ test('Settings AI Models failed Clear slot stays owned and retryable', async ({ 
   await expect(clear).toBeFocused();
 });
 
+test('Set up Chat sends a provider it does not name to slot 1 and slot 2', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai=empty`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models/setup/start'));
+
+  const setup = page.locator(`[${CHAT_SETUP}]`);
+  const link = setup.getByRole('link', { name: 'Set up slot 1 and slot 2' });
+  await expect(link).toBeVisible();
+  await link.click();
+
+  await expect(page).toHaveURL(/#settings\/ai-models\/providers$/);
+  await expect(page.locator(`[${AI_MODELS_TAB}="providers"]`))
+    .toHaveAttribute('aria-selected', 'true');
+  const slot = page.locator('[data-recued-ai-models-control="slot_1"]');
+  await expect(slot.getByRole('textbox', { name: 'Slot 1: fast provider name' })).toBeVisible();
+  await expect(slot.getByRole('combobox', { name: 'Slot 1: fast protocol' })).toBeVisible();
+});
+
+test('Settings AI Models slot mistakes are said under the button that was pressed', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai=two`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models/providers'));
+
+  // slot_2 is saved as Anthropic with a key. A new protocol is a new address,
+  // so a blank key field there is not the saved key.
+  const slot = page.locator('[data-recued-ai-models-control="slot_2"]');
+  await slot.getByRole('textbox', { name: 'Slot 2: better, slower thinking provider name' })
+    .fill('Groq');
+  await slot.getByRole('combobox', { name: 'Slot 2: better, slower thinking protocol' })
+    .selectOption('openai-compatible');
+  const test = slot.locator('[data-recued-ai-models-slot-test="slot_2"]');
+  await test.click();
+  const testError = slot.locator('[data-recued-ai-models-form-error="slot_2:test"]');
+  await expect(testError).toHaveText(
+    'OpenAI-compatible needs a base URL, such as https://api.groq.com/openai/v1.',
+  );
+
+  await slot.getByRole('textbox', { name: 'Slot 2: better, slower thinking base URL' })
+    .fill('https://api.groq.com/openai/v1');
+  const save = slot.locator('[data-recued-ai-models-slot-save="slot_2"]');
+  await save.click();
+  const saveError = slot.locator('[data-recued-ai-models-form-error="slot_2:save"]');
+  await expect(saveError).toHaveText(
+    'You changed where this key goes, so enter it again. A saved key is never sent to a new address.',
+  );
+  // The answer to the latest press only: the base URL is filled in now.
+  await expect(testError).toHaveCount(0);
+  await expect(saveError).toHaveAttribute('role', 'alert');
+  // Below the buttons, in the danger colour, and nothing in the page banner.
+  const [saveBox, errorBox] = await Promise.all([save.boundingBox(), saveError.boundingBox()]);
+  expect(errorBox!.y).toBeGreaterThan(saveBox!.y + saveBox!.height - 0.5);
+  const [errorColor, dangerColor, textColor] = await saveError.evaluate((el) => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--danger)';
+    el.appendChild(probe);
+    const colors = [
+      getComputedStyle(el).color,
+      getComputedStyle(probe).color,
+      getComputedStyle(document.body).color,
+    ];
+    probe.remove();
+    return colors;
+  });
+  expect(errorColor).toBe(dangerColor);
+  // Not vacuous: an undefined token would make both the inherited text colour.
+  expect(errorColor).not.toBe(textColor);
+  await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot'))).toBe(0);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.probeLlmSource'))).toBe(0);
+  await page.screenshot({ path: `${ARTIFACTS}/full-app-ai-slot-inline-errors.png`, fullPage: true });
+
+  // With the key for the new address the save goes, carrying the name.
+  await slot.getByRole('textbox', { name: 'Slot 2: better, slower thinking API key' })
+    .fill('gsk-e2e-only');
+  await save.click();
+  await expect(saveError).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot')),
+  ).toBe(1);
+  await expect(slot).toContainText('Groq (OpenAI-compatible) / claude-sonnet-test');
+});
+
 test('Settings AI Models slot save failures return to the exact draft', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?ai_slot_save_response=fail-slow`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -24262,8 +24358,10 @@ test('Settings AI Models slot save failures return to the exact draft', async ({
   await expect(save).toHaveText('Saving slot…');
   await expect(save).toBeFocused();
 
-  await expect(page.locator('[data-recued-ai-models-action-error]'))
+  // Under the slot's own buttons, where the owner is looking after the click.
+  await expect(slot.locator('[data-recued-ai-models-form-error="slot_1:save"]'))
     .toHaveText('Model slot save unavailable.');
+  await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
   await expect(model).toHaveValue('retry-model-id');
   await expect(model).not.toHaveAttribute('readonly');
   await expect(save).toHaveText('Save slot');
@@ -24300,6 +24398,9 @@ test('Settings AI Models pool actions preserve drafts and action focus', async (
   await draftId.fill('draft-entry');
   await draftModel.fill('draft-model');
   await draftKey.fill('draft-secret');
+  // The default protocol is OpenAI-compatible, which needs its address.
+  await add.locator('[data-recued-ai-models-pool-add-field="base-url"]')
+    .fill('https://api.groq.com/openai/v1');
 
   const toggle = pool.locator(
     '[data-recued-ai-models-pool-toggle="groq"]',
@@ -24368,6 +24469,57 @@ test('Settings AI Models pool actions preserve drafts and action focus', async (
   await expect(addEntry).not.toHaveAttribute('aria-disabled');
   await expect(addEntry).not.toHaveAttribute('aria-busy');
   await expect(addEntry).toBeFocused();
+});
+
+test('Settings AI Models pool entries are named, tested, and edited in place', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_pool=entry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models/providers'));
+
+  const pool = page.locator('[data-recued-ai-models-control="free_pool"]');
+  const form = pool.locator('.ai-models-add-pool');
+  // Left unnamed, it is named from its address, clear of the "groq" there.
+  await form.getByRole('combobox', { name: 'New free-pool entry protocol', exact: true })
+    .selectOption('openai-compatible');
+  await form.getByRole('textbox', { name: 'New free-pool entry base URL', exact: true })
+    .fill('https://api.groq.com/openai/v1');
+  await form.getByRole('textbox', { name: 'New free-pool entry model', exact: true })
+    .fill('llama-3.1-8b-instant');
+  await form.locator('[data-recued-ai-models-pool-add-field="api-key"]').fill('gsk-e2e-only');
+  // Tested before it is added.
+  await form.getByRole('button', { name: 'Test the new free-pool entry connection', exact: true })
+    .click();
+  await expect(form.locator('[data-recued-ai-models-slot-test-result="free_pool:form"]'))
+    .toHaveAttribute('data-probe-ok', 'true');
+  await form.getByRole('button', { name: 'Add free-pool API entry', exact: true }).click();
+
+  const added = pool.locator('[data-recued-ai-models-control="free_pool:groq-2"]');
+  await expect(added).toContainText('groq-2: OpenAI-compatible / llama-3.1-8b-instant (enabled)');
+  for (const name of [
+    'Edit free-pool entry groq-2',
+    'Disable free-pool entry groq-2',
+    'Remove free-pool entry groq-2',
+    'Test the free-pool entry groq-2 connection',
+  ]) {
+    await expect(added.getByRole('button', { name, exact: true })).toHaveCount(1);
+  }
+
+  // Edit opens the form on the entry, focus with it, and saves in place.
+  await added.getByRole('button', { name: 'Edit free-pool entry groq-2', exact: true }).click();
+  await expect(form.getByRole('heading', { name: 'Edit groq-2' })).toBeVisible();
+  await expect(form.getByRole('combobox', { name: 'Free-pool entry groq-2 protocol', exact: true }))
+    .toBeFocused();
+  await form.getByRole('textbox', { name: 'Free-pool entry groq-2 model', exact: true })
+    .fill('llama-3.3-70b-versatile');
+  await page.screenshot({ path: `${ARTIFACTS}/full-app-ai-pool-edit.png`, fullPage: true });
+  await form.getByRole('button', { name: 'Save free-pool entry groq-2', exact: true }).click();
+
+  await expect(added).toContainText('groq-2: OpenAI-compatible / llama-3.3-70b-versatile (enabled)');
+  await expect(added.getByRole('button', { name: 'Edit free-pool entry groq-2', exact: true }))
+    .toBeFocused();
+  await expect(form.getByRole('heading', { name: 'Add a free one' })).toBeVisible();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('server.upsertFreePoolEntry')))
+    .toBe(2);
 });
 
 test('Settings AI Models pool removal keeps the destructive command owned', async ({ page }) => {
@@ -24518,14 +24670,18 @@ test('Settings AI Models pool Add failures preserve the exact secret draft', asy
   await id.fill('retry-entry');
   await model.fill('retry-model');
   await key.fill('retry-secret');
+  await add.locator('[data-recued-ai-models-pool-add-field="base-url"]')
+    .fill('https://api.groq.com/openai/v1');
   const submit = add.locator('[data-recued-ai-models-pool-add]');
   await submit.focus();
   await page.keyboard.press('Enter');
   await expect(submit).toHaveText('Adding entry…');
   await expect(submit).toBeFocused();
 
-  await expect(page.locator('[data-recued-ai-models-action-error]'))
+  // Under the form's own buttons, not in the page banner.
+  await expect(add.locator('[data-recued-ai-models-form-error="free_pool:form:save"]'))
     .toHaveText('Free-pool entry save unavailable.');
+  await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
   await expect(id).toHaveValue('retry-entry');
   await expect(model).toHaveValue('retry-model');
   await expect(key).toHaveValue('retry-secret');

@@ -7,6 +7,96 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.29 — 2026-09-29
+
+A large release. Recued can now learn to read a kind of email — a parcel, a
+bill, a booking, an order, a lead — and a workflow can wait for what it reads.
+Two new packs keep a meeting's loop going from its minutes. Fixes found while
+driving the product live cover approvals, mail sends and due dates. And a date on
+a task, promise, project or booking is now always stored as a date: dates that
+had been stored as text are repaired once, when the server first starts, and a
+date can now be removed, on your server and on a partner's. New tables hold the
+mail facts; you can go back to 26.9.26, which leaves them unread.
+
+### Added
+
+- **Mail facts: Recued reads your email for facts, and a workflow waits for
+  them.** Eleven built-in kinds — a purchase, shipment, return or refund,
+  reservation, bill, statement, subscription, payslip or tax form, lead, order
+  received, and a request you mail to your own server — plus kinds you make. The
+  emails about one parcel, order or booking fold into one thing with a state.
+  You teach Recued a sender's emails with a template made from an example email:
+  click a value and it becomes a rule. Some emails need no template: schema.org
+  markup and carrier tracking numbers are read as they are. An optional AI pass
+  fills only the values a template allows, and hides your data from the model
+  the way the chat does; Draft with AI proposes a template's rules, which then
+  run without a model. A workflow subscribes with
+  `{ "on": "mail_fact.<kind>", "fields": [...], "where": {...} }` and runs when a
+  thing is created or a value it watches changes. It all lives under Data →
+  Received → Mail facts; a template can read past mail; and Automation and
+  Kitchen offer "A mail fact" as a trigger. A security notice is skipped before
+  any template reads it, and reading a fact needs the same access as reading
+  the mail.
+- **Meeting Minutes.** Minutes you write become tasks in your federated projects
+  and brief the next meeting. No model and no calendar.
+- **Meeting Secretary.** One person keeps a meeting's loop from a minutes file:
+  tasks proposed by AI, the minutes mailed, the next meeting prepared from the
+  last minutes and progress, and the briefing mailed. The mails say when the
+  meeting is in your own words and never invent a time. The briefing is written
+  the way you ask, in the meeting's language, and keeps to a length you set.
+- **A date can be removed.** Emptying a date in the edit dialog now removes it;
+  it used to come back after Save. A task's due date is removed with
+  `clear_due_at`. On a partner's server, removing a project's target date or a
+  task's due date works too.
+- **`stop_when`** lets a step end a run as a success when there is nothing more
+  to do.
+- **`core.storage.shared.patch`** changes named fields of a stored record in one
+  step. The follow-up workflows use it, so two of them no longer overwrite each
+  other's fields.
+
+### Changed
+
+- **A date is always stored as a date.** A task's, promise's, project's or
+  booking's date given as text is converted when it names exactly one moment —
+  a day, or a time with its time zone — and refused otherwise. Dates that had
+  been stored as text are repaired once, when the server first starts, and you
+  are told. A promise dated that way never came due.
+- **Date settings.** A date-and-time setting is sent with your browser's time
+  zone, and a new date setting asks for a day. Chat and MCP check a workflow's
+  date values before it runs.
+- **Chat's work tools put each field where its kind keeps it**: a project's
+  description and target date, a promise's words and date. Creating a promise
+  from chat used to fail every time.
+- **A due set as a day is judged by its day**, in your time zone: Today, the
+  Tasks filter, reminders and alerts no longer call it overdue the evening
+  before.
+- **A workflow that writes reads your records fresh**, and "now" is read on
+  every run. A cached answer no longer decides a write.
+- **Versions:** 75 recipes and 46 packs changed since they were last listed go
+  up one, so an update offers the change.
+
+### Fixed
+
+- A partner could never change a date on your projects or tasks. Now they can.
+- A federated task moved to a done state is done.
+- Data → Files lists the files saved in Recued.
+- A held run's result replaces its "held for approval" note once you approve it.
+- A mail send that never left can be sent again, and one whose outcome is
+  unknown asks you "Did this email go out?".
+- An approval that covers a loop lists every call it runs. A held loop item can
+  no longer be edited, since one edit reached every remaining item.
+- The Cal.com meeting-outcomes packs store the promises a meeting produces;
+  every one had been refused.
+- A new mailbox's triggers work without a restart, and a restart no longer wakes
+  triggers for mail, calendar events and files that did not change.
+- Signing in to Gmail, Google Calendar and Outlook works from app.recued.com
+  again, and Microsoft sign-in works with your own app.
+- A Mac install needs no sudo. The installer is read in full before it runs, and
+  the steps it prints work as printed. `recued status` answers correctly past a
+  stale pidfile, and `recued version` prints the version.
+- Chat shows when a turn is working, and Updates never hangs on a finished
+  update.
+
 ## 26.9.26 — 2026-09-26
 
 A smaller release. Installing a pack now tells you, before you choose anything,

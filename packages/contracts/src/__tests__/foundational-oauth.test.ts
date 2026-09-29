@@ -213,13 +213,29 @@ describe('buildOpenerRelayRedirectUri', () => {
     }
   });
 
-  it('cloud branch KEEPS the marker even with noQueryMarker (cloud callback needs it)', () => {
-    // The shared cloud callback needs the marker to tell the foundational flow
-    // from the signed-state vendor flow, so the cloud bounce keeps it regardless
-    // (Microsoft via the cloud bounce is a separate, not-yet-supported case).
-    expect(buildOpenerRelayRedirectUri(OAUTH_CLOUD_CALLBACK_ORIGIN, true)).toBe(
+  /** ⛔ It used to keep the marker, and an Entra app that takes personal
+   *  accounts may not register a query string, so app.recued.com could not
+   *  connect one. The callback page relays a `frelay_` state to its own
+   *  origin without the marker, and on app.recued.com that is the opener. */
+  it('cloud PWA + noQueryMarker (Microsoft) → the BARE cloud callback', () => {
+    const uri = buildOpenerRelayRedirectUri(OAUTH_CLOUD_CALLBACK_ORIGIN, true);
+    expect(uri).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    expect(uri.includes('?')).toBe(false);
+    // Google still gets the marker from the same page.
+    expect(buildOpenerRelayRedirectUri(OAUTH_CLOUD_CALLBACK_ORIGIN)).toBe(
       'https://app.recued.com/oauth-callback?recued_relay=opener',
     );
+  });
+
+  it('a LAN / own-https PWA + noQueryMarker still needs the marker and opener_origin', () => {
+    // Its code must reach a cross-origin opener, which only a registered
+    // opener_origin can name; an app that takes personal accounts cannot
+    // register it, and the guide says so.
+    for (const origin of ['http://192.168.1.50', 'https://my.server.example']) {
+      const params = new URL(buildOpenerRelayRedirectUri(origin, true)).searchParams;
+      expect(params.get(OAUTH_OPENER_RELAY_PARAM)).toBe(OAUTH_OPENER_RELAY_VALUE);
+      expect(params.get(OAUTH_OPENER_ORIGIN_PARAM)).toBe(origin);
+    }
   });
 
   it('LAN-IP / own-https self-served PWAs still bounce through the cloud (Option A)', () => {

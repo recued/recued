@@ -65,6 +65,8 @@ import {
   projectGatedActionReceipt,
   type GatedActionStore,
 } from './gated-action-store.js';
+import { recipeRunFactsFromAuditEntry } from './recipe-run-facts.js';
+import type { SettledRunResults } from './settled-run-results.js';
 
 export interface ExecutionFeedRpcDeps {
   db: Database.Database;
@@ -73,6 +75,9 @@ export interface ExecutionFeedRpcDeps {
   commitStore: CommitStore;
   serverInstanceId: string;
   gatedActionStore?: GatedActionStore;
+  /** What an owner's page-started run answered once its approval let it
+   *  finish. Absent ⇒ `execution.get` never carries a `result`. */
+  settledRunResults?: SettledRunResults;
 }
 
 interface ValidatedExecutionListQuery {
@@ -603,7 +608,15 @@ export const handleExecutionGet = async (
       per_call_trace: projectGatewayTrace(commits),
     },
   };
-  return { run: detail };
+  // A held run the owner started from a page, now finished: what `execute`
+  // would have answered, with the same receipt line under it.
+  const settled = deps.settledRunResults?.get(runId);
+  if (settled === undefined) return { run: detail };
+  const runFacts = recipeRunFactsFromAuditEntry(entry);
+  return {
+    run: detail,
+    result: runFacts === undefined ? settled : { ...settled, run_facts: runFacts },
+  };
 };
 
 const GATED_ACTION_STATUS_SET: ReadonlySet<string> = new Set(

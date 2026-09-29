@@ -377,6 +377,8 @@ describe('D-127 P1.4 — send() error taxonomy', () => {
       expect((err as IngredientError).code).toBe('MAIL_SEND_RECIPIENT_INVALID');
       expect((err as IngredientError).details).toMatchObject({
         kind: 'graph', status: 400,
+        // Only a draft was attempted: nothing was sent.
+        not_sent: true,
       });
     }
   });
@@ -400,7 +402,20 @@ describe('D-127 P1.4 — send() error taxonomy', () => {
     } catch (err) {
       expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
       expect((err as IngredientError).details).toMatchObject({ status: 503 });
+      // The draft existed and the send step failed with a 5xx: unknown.
+      expect((err as IngredientError).details?.not_sent).toBeUndefined();
     }
+  });
+
+  it('a create-draft step that fails any way at all sent nothing (`not_sent`)', async () => {
+    const provider = newSender({}, (async () => {
+      throw new TypeError('fetch failed');
+    }) as never);
+    assertSendCapable(provider);
+    const err = await provider.send(minimalMsg).then(() => null, (caught: unknown) => caught);
+    expect(err).toBeInstanceOf(IngredientError);
+    expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
+    expect((err as IngredientError).details).toMatchObject({ kind: 'graph', not_sent: true });
   });
 
   it('201 with malformed create-draft response (no id) → MAIL_SEND_NETWORK_FAILED', async () => {

@@ -25,6 +25,7 @@ import {
   AI_MODELS_CHAT_SETUP_KEY_ATTR,
   AI_MODELS_CHAT_SETUP_MODEL_ATTR,
   AI_MODELS_CHAT_SETUP_PROVIDER_ATTR,
+  AI_MODELS_CHAT_SETUP_SLOTS_LINK_ATTR,
   AI_MODELS_CHAT_SETUP_SOURCE_ATTR,
   AI_MODELS_CHAT_SETUP_STATUS_ATTR,
   AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
@@ -32,11 +33,15 @@ import {
   AI_MODELS_CONTROL_ATTR,
   AI_MODELS_EMBEDDINGS_FIELD_ATTR,
   AI_MODELS_FAIL_LOUD_ATTR,
+  AI_MODELS_FORM_ERROR_ATTR,
   AI_MODELS_MODEL_PREF_BUTTON_ATTR,
   AI_MODELS_PAUSE_BUTTON_ATTR,
   AI_MODELS_PENDING_CONTROL_ATTR,
   AI_MODELS_POOL_ADD_ATTR,
   AI_MODELS_POOL_ADD_FIELD_ATTR,
+  AI_MODELS_POOL_CANCEL_EDIT_ATTR,
+  AI_MODELS_POOL_EDIT_ATTR,
+  AI_MODELS_POOL_SAVE_ATTR,
   AI_MODELS_POOL_REMOVE_CANCEL_ATTR,
   AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
   AI_MODELS_POOL_REMOVE_DIALOG_ATTR,
@@ -64,6 +69,7 @@ import {
   AI_MODELS_TAB_ATTR,
   AI_MODELS_TAB_PANEL_ATTR,
   AI_MODELS_PAGE_STYLES,
+  SLOT_KEY_NOT_CARRIED_COPY,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
 
@@ -213,6 +219,19 @@ const changeSelect = (
   for (const fn of el.listeners.get('change') ?? []) fn({});
 };
 
+/** Type into the input matching attr=value + fire its input listeners. */
+const typeByAttrValue = (
+  root: FakeElement,
+  attr: string,
+  value: string,
+  text: string,
+): void => {
+  const el = findByAttrValue(root, attr, value);
+  if (!el) throw new Error(`no input with ${attr}="${value}"`);
+  el.value = text;
+  for (const fn of el.listeners.get('input') ?? []) fn({});
+};
+
 const inputByAttr = (
   root: FakeElement,
   attr: string,
@@ -222,6 +241,22 @@ const inputByAttr = (
   if (!el) throw new Error(`no input with ${attr}`);
   el.value = value;
   for (const fn of el.listeners.get('input') ?? []) fn({});
+};
+
+/** The free-pool rows' ids, in the order they render. */
+const getPoolRowIds = (root: FakeElement): string[] => {
+  const out: string[] = [];
+  const walk = (el: FakeElement): void => {
+    const control = el.getAttribute(AI_MODELS_CONTROL_ATTR);
+    if (
+      el.className === 'ai-models-pool-row'
+      && control !== null
+      && control.startsWith('free_pool:')
+    ) out.push(control.slice('free_pool:'.length));
+    for (const child of el.children) walk(child);
+  };
+  walk(root);
+  return out;
 };
 
 /** True if any node in the tree has textContent containing `needle`. */
@@ -422,7 +457,7 @@ describe('D-174 D14 — AI / Models initial load', () => {
       findByAttrValue(host, attr, value)?.getAttribute('aria-label') ?? null;
 
     expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider'))
-      .toBe('Slot 1: fast provider');
+      .toBe('Slot 1: fast protocol');
     expect(named(AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:model'))
       .toBe('Slot 2: better, slower thinking model');
     expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'slot_1'))
@@ -448,7 +483,7 @@ describe('D-174 D14 — AI / Models initial load', () => {
     expect(named(AI_MODELS_POOL_REMOVE_ATTR, 'groq'))
       .toBe('Remove free-pool entry groq');
     expect(named(AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'))
-      .toBe('New free-pool entry provider');
+      .toBe('New free-pool entry protocol');
     expect(named(AI_MODELS_POOL_ADD_ATTR, ''))
       .toBe('Add free-pool API entry');
     mount.dispose();
@@ -706,7 +741,7 @@ describe('Set up Chat — focused first-run journey', () => {
     mount.dispose();
   });
 
-  it('requires and saves the the address for an An address that works like OpenAI’s', async () => {
+  it('requires and saves the address for another, OpenAI-compatible provider', async () => {
     const { host, mount, opts } = mountFixture({
       initialView: 'chat-setup',
       runGetDefaultModelPref: vi.fn(async () => ({
@@ -1321,6 +1356,9 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();
 
+    // OpenAI-compatible needs an address (see the refusal test below), so the
+    // owner who empties it is going back to OpenAI itself.
+    changeSelect(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider', 'openai');
     const baseUrl = findByAttrValue(
       host,
       AI_MODELS_SLOT_FIELD_ATTR,
@@ -1340,6 +1378,7 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     await flush();
     const written = vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot;
     expect(written).not.toHaveProperty('base_url');
+    expect(written!.provider).toBe('openai');
     mount.dispose();
   });
 
@@ -1534,6 +1573,8 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
       ['id', 'openrouter'],
       ['model', 'free-model'],
       ['api-key', 'secret'],
+      // The default protocol is OpenAI-compatible, which needs its address.
+      ['base-url', 'https://openrouter.ai/api/v1'],
     ];
     for (const [field, value] of values) {
       const input = findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field)!;
@@ -1582,33 +1623,38 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     mount.dispose();
   });
 
-  it('surfaces a failed write as an action-error banner (no unhandled rejection)', async () => {
-    const { host, mount } = mountFixture({
+  it('surfaces a failed write under the slot buttons, not in the page banner (no unhandled rejection)', async () => {
+    const { host, mount, opts } = mountFixture({
       runSetLLMSlot: vi.fn(async () => {
         throw new Error('boom');
       }),
     });
     await mount.whenLoaded();
     expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
-    const failedDraft = findByAttrValue(
-      host,
-      AI_MODELS_SLOT_FIELD_ATTR,
-      'slot_2:model',
-    )!;
-    failedDraft.value = 'retry-this-model';
-    for (const listener of failedDraft.listeners.get('input') ?? []) listener({});
+    changeSelect(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:provider', 'anthropic');
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:model', 'retry-this-model');
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:api-key', 'sk-ant-retry');
     // Click "Save slot" on slot_2 → the dedicated save owner catches the
-    // rejected rpc and renders the banner without losing the retry draft.
+    // rejected rpc and says so under the slot's own buttons, where the owner
+    // is looking, without losing the retry draft.
     clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
     await flush();
-    const banner = findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR);
-    expect(banner).not.toBeNull();
-    expect(banner!.textContent.length).toBeGreaterThan(0);
+    expect(opts.runSetLLMSlot).toHaveBeenCalledTimes(1);
+    const slot2Card = findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'slot_2')!;
+    const error = findByAttrValue(slot2Card, AI_MODELS_FORM_ERROR_ATTR, 'slot_2:save');
+    expect(error?.textContent).toContain('boom');
+    expect(error?.getAttribute('role')).toBe('alert');
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
     expect(findByAttrValue(
       host,
       AI_MODELS_SLOT_FIELD_ATTR,
       'slot_2:model',
     )?.value).toBe('retry-this-model');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_2:provider',
+    )?.value).toBe('anthropic');
     mount.dispose();
   });
 
@@ -3239,6 +3285,598 @@ describe('Test connection', () => {
     const { host, mount } = mountFixture({ runProbeLlmSource: undefined });
     await mount.whenLoaded();
     expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1')).toBeNull();
+    mount.dispose();
+  });
+});
+
+/** A BYOK slot's PROTOCOL picks the adapter, from the four the server speaks;
+ *  its NAME is the owner's word for the service. What would stop a draft
+ *  working is said under the button that was pressed, before anything is sent,
+ *  and a saved key is never sent to an address it was not saved for. */
+describe('BYOK slots — protocol, provider name, and errors under the buttons', () => {
+  const probeOk = {
+    ok: true,
+    diagnosis: 'ok' as const,
+    accepts_system_role: true,
+    supports_json: true,
+    elapsed_ms: 240,
+  };
+  const namedSlot1 = () => ({
+    ...llmConfig(),
+    slot_1: { ...llmConfig().slot_1, provider_name: 'My Ollama' },
+  });
+  /** What a server that keeps `provider_name` answers. */
+  const withNames = (config: Record<string, unknown>) =>
+    vi.fn(async () => ({ config, supports: { slot_provider_name: true } }));
+  const card = (host: FakeElement, slotKey: string): FakeElement =>
+    findByAttrValue(host, AI_MODELS_CONTROL_ATTR, slotKey)!;
+  const formError = (host: FakeElement, slotKey: string, button: 'save' | 'test'): string | null =>
+    findByAttrValue(card(host, slotKey), AI_MODELS_FORM_ERROR_ATTR, `${slotKey}:${button}`)
+      ?.textContent ?? null;
+
+  it('offers the protocol as a choice of the four the server speaks', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const saved = findByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider')!;
+    expect(saved.tagName).toBe('SELECT');
+    expect(saved.children.map((option) => option.value))
+      .toEqual(['openai', 'openai-compatible', 'anthropic', 'google']);
+    expect(saved.value).toBe('openai-compatible');
+    // An empty slot starts on a placeholder: nothing is chosen for the owner.
+    const empty = findByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:provider')!;
+    expect(empty.children[0]?.value).toBe('');
+    expect(empty.children[0]?.textContent).toBe('Choose a protocol');
+    expect(empty.value).toBe('');
+    mount.dispose();
+  });
+
+  /** ⚠ An older server's slot parser drops a field it does not know, without
+   *  an error — so a name typed against it would look saved and be gone. */
+  it('asks for the provider name only when the server keeps it', async () => {
+    const older = mountFixture();
+    await older.mount.whenLoaded();
+    expect(findByAttrValue(older.host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider-name'))
+      .toBeNull();
+    clickByAttrValue(older.host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    expect(vi.mocked(older.opts.runSetLLMSlot).mock.calls.at(-1)![0].slot)
+      .not.toHaveProperty('provider_name');
+    older.mount.dispose();
+
+    const current = mountFixture({ runGetLLMConfig: withNames(namedSlot1()) });
+    await current.mount.whenLoaded();
+    const name = findByAttrValue(
+      current.host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_1:provider-name',
+    )!;
+    expect(name.value).toBe('My Ollama');
+    expect(name.getAttribute('aria-label')).toBe('Slot 1: fast provider name');
+    // The card names the service, then how it is spoken to.
+    expect(hasText(card(current.host, 'slot_1'), 'My Ollama (OpenAI-compatible) / local-model'))
+      .toBe(true);
+    current.mount.dispose();
+  });
+
+  it('saves the name beside the protocol, keeps the key, and an emptied name clears it', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: withNames(namedSlot1()) });
+    await mount.whenLoaded();
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider-name', '  Home Ollama  ');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    const named = vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot!;
+    expect(named.provider_name).toBe('Home Ollama');
+    expect(named.provider).toBe('openai-compatible');
+    // A name is not where the key goes: the blank field keeps the saved key
+    // (the server reads '' as "keep"), and nothing asks for it again.
+    expect(named.api_key).toBe('');
+    expect(formError(host, 'slot_1', 'save')).toBeNull();
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider-name', '');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    expect(vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot)
+      .not.toHaveProperty('provider_name');
+    mount.dispose();
+  });
+
+  it('says what is missing under the button that was pressed, and sends nothing', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount, opts } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    expect(formError(host, 'slot_2', 'save')).toBe('Choose a protocol.');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_2');
+    expect(formError(host, 'slot_2', 'test')).toBe('Choose a protocol.');
+
+    changeSelect(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:provider', 'openai-compatible');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    expect(formError(host, 'slot_2', 'save')).toBe('Enter a model.');
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:model', 'llama-3.3-70b-versatile');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    // Without an address OpenAI-compatible calls OpenAI — with a Groq key.
+    expect(formError(host, 'slot_2', 'save'))
+      .toBe('OpenAI-compatible needs a base URL, such as https://api.groq.com/openai/v1.');
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:base-url', 'api.groq.com/openai/v1');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    expect(formError(host, 'slot_2', 'save'))
+      .toBe('Enter the full base URL, starting with https:// (or http:// for a local model).');
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:base-url', 'https://api.groq.com/openai/v1');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    expect(formError(host, 'slot_2', 'save')).toMatch(/^Enter the API key\./);
+
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+    // Styled as an error and announced, and none of it in the page banner.
+    const box = findByAttrValue(card(host, 'slot_2'), AI_MODELS_FORM_ERROR_ATTR, 'slot_2:save')!;
+    expect(box.className).toBe('ai-models-form-error');
+    expect(box.getAttribute('role')).toBe('alert');
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+
+    // A complete draft saves, and the answer under the button goes with it.
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_2:api-key', 'gsk-test');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(opts.runSetLLMSlot).mock.calls[0]![0].slot).toEqual(expect.objectContaining({
+      provider: 'openai-compatible',
+      model: 'llama-3.3-70b-versatile',
+      base_url: 'https://api.groq.com/openai/v1',
+      api_key: 'gsk-test',
+    }));
+    expect(formError(host, 'slot_2', 'save')).toBeNull();
+    mount.dispose();
+  });
+
+  /** ⛔ The saved key is bound to the protocol and base URL it was saved with.
+   *  The server drops it on a save that changes either and declines it on a
+   *  test, so a blank key field there reached the owner as "No API key is
+   *  stored" — for a key they had just used. */
+  it('asks for the key again when the protocol or the address changes, and sends nothing', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount, opts } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    changeSelect(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider', 'openai');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'test')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'save')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+
+    // The same protocol at a different address: the same answer.
+    changeSelect(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:provider', 'openai-compatible');
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:base-url', 'https://api.groq.com/openai/v1');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'test')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    // The key for the new address clears the way, and the answer goes.
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:api-key', 'gsk-new');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    expect(runProbeLlmSource).toHaveBeenCalledWith(expect.objectContaining({
+      draft: {
+        provider: 'openai-compatible',
+        model: 'local-model',
+        api_key: 'gsk-new',
+        base_url: 'https://api.groq.com/openai/v1',
+      },
+    }));
+    expect(formError(host, 'slot_1', 'test')).toBeNull();
+    mount.dispose();
+  });
+
+  /** The owner's case: saved, then changed the model with the key left blank.
+   *  That is not a new address, so the saved key is used — the server resolves
+   *  it, since the browser never had it. */
+  it('tests and saves a model change with the saved key', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount, opts } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:model', 'qwen3:8b');
+    // Trailing space: Save trims the address, so Test sends it trimmed too
+    // and the server's key guard sees the address the slot has.
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:base-url', 'http://127.0.0.1:11434/v1 ');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    expect(runProbeLlmSource).toHaveBeenCalledWith(expect.objectContaining({
+      draft: {
+        provider: 'openai-compatible',
+        model: 'qwen3:8b',
+        base_url: 'http://127.0.0.1:11434/v1',
+      },
+    }));
+    expect(formError(host, 'slot_1', 'test')).toBeNull();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    expect(vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot).toEqual(expect.objectContaining({
+      provider: 'openai-compatible',
+      model: 'qwen3:8b',
+      api_key: '',
+      base_url: 'http://127.0.0.1:11434/v1',
+    }));
+    mount.dispose();
+  });
+
+  /** A slot the server already holds as OpenAI-compatible with no address
+   *  calls OpenAI, and has been. Refusing its next model change would strand a
+   *  working slot; only a CHANGE to that shape is stopped. */
+  it('keeps a saved OpenAI-compatible slot with no address working', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          slot_1: { provider: 'openai-compatible', model: 'gpt-4o-mini', has_key: true },
+        },
+      })),
+    });
+    await mount.whenLoaded();
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:model', 'gpt-4.1-mini');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    expect(formError(host, 'slot_1', 'save')).toBeNull();
+    expect(vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot).toEqual(expect.objectContaining({
+      provider: 'openai-compatible',
+      model: 'gpt-4.1-mini',
+    }));
+    mount.dispose();
+  });
+
+  /** Seen in a real browser: "needs a base URL" stayed above the next
+   *  answer after the owner had filled the base URL in. */
+  it('shows the answer to the latest press only', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:base-url', '');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'test')).toMatch(/^OpenAI-compatible needs a base URL/);
+
+    typeByAttrValue(host, AI_MODELS_SLOT_FIELD_ATTR, 'slot_1:base-url', 'https://api.groq.com/openai/v1');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'save')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+    expect(formError(host, 'slot_1', 'test')).toBeNull();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    expect(formError(host, 'slot_1', 'test')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+    expect(formError(host, 'slot_1', 'save')).toBeNull();
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('puts a Test that could not be sent under the Test button, not the page banner', async () => {
+    const { host, mount } = mountFixture({
+      runProbeLlmSource: vi.fn(async () => {
+        throw new Error('connection to the server closed');
+      }),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    expect(formError(host, 'slot_1', 'test')).toContain('connection to the server closed');
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('styles an error under a button with the danger colour', () => {
+    const rule = AI_MODELS_PAGE_STYLES.slice(AI_MODELS_PAGE_STYLES.indexOf('.ai-models-form-error'));
+    expect(rule.slice(0, rule.indexOf('}'))).toContain('var(--danger');
+  });
+});
+
+describe('Set up Chat — the way to slot 1 and slot 2', () => {
+  /** The quick form names three providers. Anything else (Groq, OpenRouter,
+   *  a local model, or two models) is set up in the slots, and this form used
+   *  to reach them only through a generic "Advanced settings". */
+  it('links a provider it does not name to the Providers tab', async () => {
+    const { host, mount } = mountFixture({
+      initialView: 'chat-setup',
+      runGetDefaultModelPref: vi.fn(async () => ({ source_id: null, updated_at: 0 })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+    });
+    await mount.whenLoaded();
+
+    const link = findByAttr(host, AI_MODELS_CHAT_SETUP_SLOTS_LINK_ATTR)!;
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe('#settings/ai-models/providers');
+    expect(link.textContent).toBe('Set up slot 1 and slot 2');
+    mount.dispose();
+  });
+
+  it('opens on the tab the address names, and on Preference for any other', async () => {
+    const providers = mountFixture({ initialTab: 'providers' });
+    await providers.mount.whenLoaded();
+    expect(findByAttrValue(providers.host, AI_MODELS_TAB_ATTR, 'providers')
+      ?.getAttribute('aria-selected')).toBe('true');
+    providers.mount.dispose();
+
+    const unknown = mountFixture({ initialTab: 'slots' });
+    await unknown.mount.whenLoaded();
+    expect(findByAttrValue(unknown.host, AI_MODELS_TAB_ATTR, 'preference')
+      ?.getAttribute('aria-selected')).toBe('true');
+    unknown.mount.dispose();
+  });
+});
+
+/** The free pool: an entry the owner does not name is named from its address,
+ *  every saved entry can be edited, disabled, removed and tested, and the form
+ *  tests a draft before it is added or saved. */
+describe('Free pool — names, Edit, and Test before adding', () => {
+  const probeOk = {
+    ok: true,
+    diagnosis: 'ok' as const,
+    accepts_system_role: true,
+    supports_json: true,
+    elapsed_ms: 180,
+  };
+  const groq = {
+    id: 'groq',
+    type: 'api',
+    provider: 'openai-compatible',
+    model: 'llama-free',
+    base_url: 'https://api.groq.com/openai/v1',
+    has_key: true,
+    speed: 'fast',
+    supports_json: true,
+    enabled: false,
+    daily_cap_tokens: 50_000,
+  };
+  const mistral = {
+    id: 'mistral',
+    type: 'api',
+    provider: 'openai-compatible',
+    model: 'mistral-small',
+    base_url: 'https://api.mistral.ai/v1',
+    has_key: true,
+    speed: 'fast',
+    supports_json: true,
+    enabled: true,
+  };
+  /** What a server that edits and tests pool drafts answers. */
+  const currentServer = (pool: ReadonlyArray<Record<string, unknown>> = [groq, mistral]) =>
+    vi.fn(async () => ({
+      config: { ...llmConfig(), free_pool: pool },
+      supports: { slot_provider_name: true, pool_entry_drafts: true },
+    }));
+  const type = (host: FakeElement, field: string, text: string): void =>
+    typeByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field, text);
+  const formError = (host: FakeElement, button: 'save' | 'test'): string | null =>
+    findByAttrValue(host, AI_MODELS_FORM_ERROR_ATTR, `free_pool:form:${button}`)?.textContent ?? null;
+  const lastEntry = (opts: { runUpsertFreePoolEntry?: unknown }) =>
+    (vi.mocked(opts.runUpsertFreePoolEntry as (args: { entry: Record<string, unknown> }) => unknown)
+      .mock.calls.at(-1)![0]).entry;
+
+  it('names an entry the owner leaves unnamed from its address, clear of the names taken', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+
+    type(host, 'base-url', 'https://api.groq.com/openai/v1');
+    type(host, 'model', 'llama-3.1-8b-instant');
+    type(host, 'api-key', 'gsk-second');
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    await flush();
+    // "groq" is taken, so the second Groq key is groq-2 — not a blank id, and
+    // not a silent replacement of the first.
+    expect(lastEntry(opts)).toEqual(expect.objectContaining({
+      id: 'groq-2',
+      provider: 'openai-compatible',
+      base_url: 'https://api.groq.com/openai/v1',
+      api_key: 'gsk-second',
+    }));
+    expect(findByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq-2')).not.toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq-2')).not.toBeNull();
+    mount.dispose();
+  });
+
+  /** The page's own add names a blank id too, whatever calls it: the form
+   *  does, but a blank id must not reach the server from any caller. */
+  it('never sends a blank id, whoever adds the entry', async () => {
+    const { mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+    await mount.addFreePoolApiEntry({
+      id: '  ',
+      provider: 'openai-compatible',
+      model: 'mistral-large',
+      api_key: 'mk',
+      base_url: 'https://api.mistral.ai/v1',
+    });
+    expect(lastEntry(opts).id).toBe('mistral-2');
+    mount.dispose();
+  });
+
+  it('refuses a name already taken, under the Add button, and sends nothing', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+
+    type(host, 'id', 'groq');
+    type(host, 'base-url', 'https://api.groq.com/openai/v1');
+    type(host, 'model', 'llama-3.1-8b-instant');
+    type(host, 'api-key', 'gsk-second');
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    expect(formError(host, 'save')).toBe('There is already an entry named groq. Choose another name.');
+    expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('says a failed add under the form, not in the page banner, and keeps the draft', async () => {
+    const { host, mount } = mountFixture({
+      runGetLLMConfig: currentServer(),
+      runUpsertFreePoolEntry: vi.fn(async () => {
+        throw new Error('pool write refused');
+      }),
+    });
+    await mount.whenLoaded();
+
+    type(host, 'id', 'openrouter');
+    type(host, 'base-url', 'https://openrouter.ai/api/v1');
+    type(host, 'model', 'free-model');
+    type(host, 'api-key', 'or-key');
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    await flush();
+    expect(formError(host, 'save')).toContain('pool write refused');
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key')?.value).toBe('or-key');
+    mount.dispose();
+  });
+
+  /** ⛔ An older server wrote a blank key AS the key: an Edit that left the
+   *  key field empty would have left the entry keyless. */
+  it('offers Edit only to a server that keeps the key on a blank-key save', async () => {
+    const older = mountFixture();
+    await older.mount.whenLoaded();
+    expect(findByAttrValue(older.host, AI_MODELS_POOL_EDIT_ATTR, 'groq')).toBeNull();
+    older.mount.dispose();
+
+    const current = mountFixture({ runGetLLMConfig: currentServer() });
+    await current.mount.whenLoaded();
+    expect(findByAttrValue(current.host, AI_MODELS_POOL_EDIT_ATTR, 'groq')
+      ?.getAttribute('aria-label')).toBe('Edit free-pool entry groq');
+    current.mount.dispose();
+  });
+
+  it('edits an entry in place, keeping its key and everything the form does not show', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+    // Something half-added first: an edit must not cost it.
+    type(host, 'model', 'half-added-model');
+
+    clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    // The entry's name is fixed; the form shows what it has, and no key.
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'id')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider')?.value)
+      .toBe('openai-compatible');
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe('llama-free');
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'base-url')?.value)
+      .toBe('https://api.groq.com/openai/v1');
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key')?.value).toBe('');
+
+    type(host, 'model', 'llama-3.3-70b-versatile');
+    clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+    await flush();
+    const written = lastEntry(opts);
+    expect(written).toEqual({
+      id: 'groq',
+      type: 'api',
+      provider: 'openai-compatible',
+      model: 'llama-3.3-70b-versatile',
+      base_url: 'https://api.groq.com/openai/v1',
+      // Blank: the server keeps the stored key, the endpoint being the same.
+      api_key: '',
+      speed: 'fast',
+      supports_json: true,
+      enabled: false,
+      daily_cap_tokens: 50_000,
+    });
+    // The row keeps its place and shows the change; the add draft is back.
+    const rows = getPoolRowIds(host);
+    expect(rows).toEqual(['groq', 'mistral']);
+    expect(hasText(findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'free_pool:groq')!, 'llama-3.3-70b-versatile'))
+      .toBe(true);
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe('half-added-model');
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '')).not.toBeNull();
+    mount.dispose();
+  });
+
+  it('asks for the key again when an edit changes the address, and sends nothing', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    type(host, 'base-url', 'https://openrouter.ai/api/v1');
+    clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+    expect(formError(host, 'save')).toBe(SLOT_KEY_NOT_CARRIED_COPY);
+    expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+
+    type(host, 'api-key', 'or-key');
+    clickByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq');
+    await flush();
+    expect(lastEntry(opts)).toEqual(expect.objectContaining({
+      id: 'groq',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key: 'or-key',
+    }));
+    mount.dispose();
+  });
+
+  it('Cancel ends an edit without a write and brings the add draft back', async () => {
+    const { host, mount, opts } = mountFixture({ runGetLLMConfig: currentServer() });
+    await mount.whenLoaded();
+    type(host, 'model', 'half-added-model');
+
+    clickByAttrValue(host, AI_MODELS_POOL_EDIT_ATTR, 'groq');
+    type(host, 'model', 'never-saved');
+    clickByAttrValue(host, AI_MODELS_POOL_CANCEL_EDIT_ATTR, 'groq');
+    expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+    expect(findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, 'model')?.value).toBe('half-added-model');
+    expect(findByAttrValue(host, AI_MODELS_POOL_SAVE_ATTR, 'groq')).toBeNull();
+    mount.dispose();
+  });
+
+  it('tests a new entry before it is added, by the name it will get', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount, opts } = mountFixture({
+      runGetLLMConfig: currentServer(),
+      runProbeLlmSource,
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'free_pool:form');
+    expect(formError(host, 'test')).toBe('Enter a model.');
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+
+    type(host, 'base-url', 'https://api.groq.com/openai/v1');
+    type(host, 'model', 'llama-3.1-8b-instant');
+    type(host, 'api-key', 'gsk-second');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'free_pool:form');
+    await flush();
+    expect(runProbeLlmSource).toHaveBeenCalledWith({
+      target: { kind: 'pool_entry', entry_id: 'groq-2' },
+      draft: {
+        provider: 'openai-compatible',
+        model: 'llama-3.1-8b-instant',
+        api_key: 'gsk-second',
+        base_url: 'https://api.groq.com/openai/v1',
+      },
+    });
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'free_pool:form')
+      ?.getAttribute('data-probe-ok')).toBe('true');
+    expect(opts.runUpsertFreePoolEntry).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  /** ⛔ An older server answers any unsaved entry "no free-pool entry",
+   *  whatever the draft — a Test that could only ever fail. */
+  it('offers no draft Test to a server that cannot run one, and keeps each row’s own', async () => {
+    const { host, mount } = mountFixture({ runProbeLlmSource: vi.fn(async () => probeOk) });
+    await mount.whenLoaded();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'free_pool:form')).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'pool:groq')).not.toBeNull();
+    mount.dispose();
+  });
+
+  /** An older server still sends a blank id (a current one names it on
+   *  read). The row used to have no buttons and say nothing. */
+  it('says why an unnamed entry has no buttons', async () => {
+    const { host, mount } = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({
+        config: { ...llmConfig(), free_pool: [{ ...groq, id: '' }] },
+      })),
+    });
+    await mount.whenLoaded();
+    const row = findByAttrValue(host, AI_MODELS_CONTROL_ATTR, 'free_pool:')!;
+    expect(hasText(row, 'Saved without a name, so it cannot be changed here.')).toBe(true);
+    expect(findByAttr(row, AI_MODELS_POOL_REMOVE_ATTR)).toBeNull();
     mount.dispose();
   });
 });

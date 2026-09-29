@@ -322,12 +322,17 @@ export interface WorkEntityVendorWritePrepared {
    *  exists, else the canonical value verbatim. The conflict compare
    *  runs at the WIRE's fidelity for transformed fields (both sides
    *  pushed through the inverse — see `compareVendorState`) and
-   *  canonically otherwise. */
+   *  canonically otherwise.
+   *
+   *  A CLEAR (`clear: true`) removes a date on an update: `value` is `null`,
+   *  `remote_path` is the declared `clear_args` argument, which is sent as
+   *  `true`, and `wire_value` is what the vendor holds once it lands — nothing. */
   pushable: ReadonlyArray<{
     field: string;
     remote_path: string;
     value: unknown;
     wire_value: unknown;
+    clear?: true;
   }>;
   /** Resolved per-phase ops. `read` present for update/complete/delete
    *  (mandatory targeted preflight/verification); `write` present for
@@ -681,6 +686,19 @@ type CompareVerdict =
 
 const scalarEq = (a: unknown, b: unknown): boolean => a === b;
 
+/** What one pushed entry sends: a clear its argument as `true`, anything
+ *  else its wire value. */
+const pushedWireValue = (
+  entry: { readonly wire_value: unknown; readonly clear?: true },
+): unknown => (entry.clear === true ? true : entry.wire_value);
+
+/** Does the vendor hold what this entry pushed? A clear has landed when the
+ *  field holds nothing — absent or `null`, whichever the projection gives. */
+const holdsPushed = (
+  vendorVal: unknown,
+  entry: { readonly wire_value: unknown; readonly clear?: true },
+): boolean => (entry.clear === true ? vendorVal == null : scalarEq(vendorVal, entry.wire_value));
+
 /** D-192 — one canonical value at the fidelity the VENDOR can actually express
  *  it. A field with a declared `write_transforms` inverse is compared on the
  *  WIRE: a `date`-typed vendor field cannot carry sub-day precision, so two ms
@@ -744,13 +762,14 @@ const unlandedPushedFields = (
 ): string[] => {
   const { declaration } = prepared;
   const unlanded: string[] = [];
-  for (const { field, wire_value } of prepared.pushable) {
+  for (const entry of prepared.pushable) {
+    const { field } = entry;
     const vendorVal = atWireFidelity(
       declaration,
       field,
       projectedFieldValue(projected, declaration, field),
     );
-    if (scalarEq(vendorVal, wire_value)) continue; // landed exactly
+    if (holdsPushed(vendorVal, entry)) continue; // landed exactly
     const priorVal = atWireFidelity(
       declaration,
       field,
@@ -792,13 +811,14 @@ const unlandedReadThroughPushedFields = (
 ): string[] => {
   const { declaration } = prepared;
   const unlanded: string[] = [];
-  for (const { field, wire_value } of prepared.pushable) {
+  for (const entry of prepared.pushable) {
+    const { field } = entry;
     const afterValue = atWireFidelity(
       declaration,
       field,
       projectedFieldValue(after, declaration, field),
     );
-    if (scalarEq(afterValue, wire_value)) continue;
+    if (holdsPushed(afterValue, entry)) continue;
     const beforeValue = atWireFidelity(
       declaration,
       field,
@@ -870,7 +890,8 @@ const compareVendorState = (
     return { verdict: 'unchanged' };
   }
   const conflicting: string[] = [];
-  for (const { field, wire_value } of prepared.pushable) {
+  for (const entry of prepared.pushable) {
+    const { field } = entry;
     // Fields with a declared inverse transform compare at WIRE
     // fidelity: a `date`-typed vendor field cannot express sub-day
     // differences, so two ms instants on the same UTC calendar date
@@ -888,7 +909,7 @@ const compareVendorState = (
     );
     const baseVal = atWireFidelity(declaration, field, priorFieldValue(prior, declaration, field));
     if (scalarEq(vendorVal, baseVal)) continue; // vendor did not move this field
-    if (scalarEq(vendorVal, wire_value)) continue; // vendor already holds the patch value — agreement
+    if (holdsPushed(vendorVal, entry)) continue; // vendor already holds the patch value — agreement
     conflicting.push(field);
   }
   return { verdict: 'changed', conflicting, projected: projected.upsert };
@@ -1487,9 +1508,23 @@ export const createWorkEntitySourceWriteExecutor = (
       remote_path: string;
       value: unknown;
       wire_value: unknown;
+      clear?: true;
     }> = [];
     for (const [field, value] of Object.entries(patch)) {
-      if (value === undefined || value === null) continue;
+      if (value === undefined) continue;
+      // ⛔ A `null` REMOVES the value — pushed only on an update, and only
+      // through a declared clear argument (`clear_args`). A Source that declares
+      // none still drops it here, as it always has: its vendor call has no way
+      // to say "none".
+      if (value === null) {
+        const clearArg = operation === 'update' && writable.has(field)
+          ? declaration.clear_args?.[field]
+          : undefined;
+        if (clearArg !== undefined) {
+          pushable.push({ field, remote_path: clearArg, value: null, wire_value: undefined, clear: true });
+        }
+        continue;
+      }
       if (!writable.has(field)) continue;
       // The vendor WRITE target: the declared `write_paths` override when the
       // read shape ≠ write shape (Todoist `due.date` read / `due_date` write,
@@ -1902,7 +1937,7 @@ export const createWorkEntitySourceWriteExecutor = (
     const composed = composeWireArgs(
       [
         ...prepared.pushable.map(
-          (p) => [pushableWireKey(transport, p.remote_path), p.wire_value] as const,
+          (p) => [pushableWireKey(transport, p.remote_path), pushedWireValue(p)] as const,
         ),
         ...Object.entries(createOpArgs),
       ],
@@ -2216,7 +2251,7 @@ export const createWorkEntitySourceWriteExecutor = (
     const binding = prepared.writeOp.binding!;
     const entries: Array<readonly [string, unknown]> = [
       ...prepared.pushable.map(
-        (p) => [pushableWireKey(transport, p.remote_path), p.wire_value] as const,
+        (p) => [pushableWireKey(transport, p.remote_path), pushedWireValue(p)] as const,
       ),
       // Container scoping (MS To Do `list_id`) rides flat alongside the id_arg + the
       // narrow body patch — a REST path token the composer keeps top-level.
@@ -2332,7 +2367,7 @@ export const createWorkEntitySourceWriteExecutor = (
     const composed = composeWireArgs(
       [
         ...prepared.pushable.map(
-          (p) => [pushableWireKey(transport, p.remote_path), p.wire_value] as const,
+          (p) => [pushableWireKey(transport, p.remote_path), pushedWireValue(p)] as const,
         ),
         ...Object.entries(prepared.createOpArgs ?? {}),
       ],
@@ -2631,7 +2666,7 @@ export const createWorkEntitySourceWriteExecutor = (
     const transport = prepared.writeOp.transport;
     const entries: Array<readonly [string, unknown]> = [
       ...prepared.pushable.map(
-        (field) => [pushableWireKey(transport, field.remote_path), field.wire_value] as const,
+        (field) => [pushableWireKey(transport, field.remote_path), pushedWireValue(field)] as const,
       ),
       ...Object.entries(prepared.writeOp.configArgs ?? {}),
       [binding.id_arg, source_record_id] as const,

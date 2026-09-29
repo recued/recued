@@ -219,16 +219,128 @@ describe('D-207 slice 3d — ⛔ NOTHING authorizes a resend, including not_foun
     expect(acked.provider_message_id).toBe('<abc@mail>');
   });
 
-  it('⛔ the store has no way to DELETE a claim or return it to unclaimed', () => {
+  it('⛔ the store has no way to DELETE a claim — and only two doors to a fresh attempt', () => {
     // The fence is the absent method. A claim that could be withdrawn is a claim that
-    // authorizes a resend, which is the one thing this substrate must never do.
+    // authorizes a resend, which is the one thing this substrate must never do. The
+    // two ways back to a fresh attempt are named, and neither takes a lookup result:
+    // `markNotSent` (the send's own proof) and `decideByOwner` (the owner's answer).
     expect(Object.keys(claims).sort()).toEqual([
       'claim',
+      'decideByOwner',
       'get',
       'listByStatus',
+      'markNotSent',
       'markSent',
+      'markUnknown',
       'settle',
     ]);
+  });
+
+  it('⛔ a `not_found` reconcile never opens a fresh attempt', () => {
+    const claim = claimed();
+    const unknown = claims.markUnknown({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 1 });
+    const after = claims.settle({
+      reconciliation_id: RID,
+      expected_revision: unknown.revision,
+      result: { status: 'not_found', scanned_candidates: 4 },
+      now: NOW + 2,
+    });
+    expect(after.status).toBe('unknown');
+    expect(claims.claim({
+      reconciliation_id: RID, sender_slug: 'inbox', recipient: 'customer@example.com',
+      subject: 'Your research brief', proof_kind: 'envelope', now: NOW + 3,
+    }).result).toBe('existing');
+  });
+});
+
+describe('the ways an attempt ends, and what a retry then does', () => {
+  const retry = (now: number) => claims.claim({
+    reconciliation_id: RID,
+    sender_slug: 'inbox',
+    recipient: 'customer@example.com',
+    subject: 'Your research brief',
+    proof_kind: 'envelope',
+    now,
+  });
+
+  it('`not_sent` (the send proved nothing left): the next attempt starts afresh', () => {
+    const claim = claimed();
+    const ended = claims.markNotSent({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 10 });
+    expect(ended.status).toBe('not_sent');
+
+    const again = retry(NOW + 60_000);
+    expect(again.result).toBe('created');
+    expect(again.claim.status).toBe('claimed');
+    expect(again.claim.revision).toBe(ended.revision + 1);
+    // The window reopens: the failed attempt produced no message to find.
+    expect(again.claim.sent_after).toBe(NOW + 60_000);
+    expect(again.claim.created_at).toBe(NOW);
+  });
+
+  it('`unknown` (the attempt ended, outcome never learned): a retry is refused', () => {
+    const claim = claimed();
+    expect(claims.markUnknown({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 10 }).status)
+      .toBe('unknown');
+    expect(retry(NOW + 20).result).toBe('existing');
+  });
+
+  it('the owner says it did NOT go out (`released`): the next attempt starts afresh', () => {
+    const claim = claimed();
+    const unknown = claims.markUnknown({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 10 });
+    const released = claims.decideByOwner({
+      reconciliation_id: RID, expected_revision: unknown.revision, went_out: false, now: NOW + 20,
+    });
+    expect(released.status).toBe('released');
+    expect(retry(NOW + 30)).toMatchObject({ result: 'created', claim: { status: 'claimed' } });
+  });
+
+  it('the owner says it DID go out (`confirmed`): a retry stays `existing`', () => {
+    const claim = claimed();
+    const unknown = claims.markUnknown({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 10 });
+    expect(claims.decideByOwner({
+      reconciliation_id: RID, expected_revision: unknown.revision, went_out: true, now: NOW + 20,
+    }).status).toBe('confirmed');
+    expect(retry(NOW + 30)).toMatchObject({ result: 'existing', claim: { status: 'confirmed' } });
+  });
+
+  it('an ambiguous claim is the owner\'s to decide too', () => {
+    const claim = claimed();
+    const ambiguous = claims.settle({
+      reconciliation_id: RID,
+      expected_revision: claim.revision,
+      result: { status: 'ambiguous', reason: 'duplicate_header', scanned_candidates: 2 },
+      now: NOW + 10,
+    });
+    expect(claims.decideByOwner({
+      reconciliation_id: RID, expected_revision: ambiguous.revision, went_out: false, now: NOW + 20,
+    }).status).toBe('released');
+  });
+
+  it('⛔ nobody\'s word moves a claim the provider acknowledged or proved', () => {
+    const claim = claimed();
+    const sent = claims.markSent({
+      reconciliation_id: RID, expected_revision: claim.revision,
+      provider_message_id: '<abc@mail>', sent_at: NOW + 500, now: NOW + 500,
+    });
+    expect(claims.decideByOwner({
+      reconciliation_id: RID, expected_revision: sent.revision, went_out: false, now: NOW + 600,
+    }).status).toBe('sent');
+    expect(claims.markNotSent({ reconciliation_id: RID, expected_revision: sent.revision, now: NOW + 700 }).status)
+      .toBe('sent');
+    expect(retry(NOW + 800).result).toBe('existing');
+  });
+
+  it('⛔ a fresh attempt still refuses a DIFFERENT message under the same id', () => {
+    const claim = claimed();
+    claims.markNotSent({ reconciliation_id: RID, expected_revision: claim.revision, now: NOW + 10 });
+    expect(() => claims.claim({
+      reconciliation_id: RID,
+      sender_slug: 'inbox',
+      recipient: 'someone-else@example.com',
+      subject: 'Your research brief',
+      proof_kind: 'envelope',
+      now: NOW + 20,
+    })).toThrow(MailSendClaimConflictError);
   });
 });
 

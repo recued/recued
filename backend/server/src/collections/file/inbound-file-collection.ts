@@ -26,7 +26,7 @@ import {
   createCollectionTable,
   type CollectionTable,
 } from '../table.js';
-import { createCollectionEmitter } from '../events.js';
+import { changedHotFields, createCollectionEmitter } from '../events.js';
 import {
   createCollectionRetention,
   type CollectionRetention,
@@ -105,6 +105,10 @@ export interface InboundFileIngestInput {
   cloud_capture?: FileCloudCapture;
   scan_status?: FileScanStatus;
   now?: number;
+  /** D-124 — published while its source drained its initial backfill (a
+   *  mailbox's first scan): its event starts no trigger, as the drain's own
+   *  events start none. */
+  in_drain?: boolean;
 }
 
 /** Bytes must already be in CAS. Synchronous publication can join a receipt transaction. */
@@ -474,6 +478,12 @@ export const createInboundFileCollection = (
     const record_id = inboundFileRecordId(input.origin, input.source_id);
     const prior = table.get(record_id);
     const stamp = input.now ?? nowOf();
+    // The same bytes published again — a restart's scan re-reads every stored
+    // email's attachments — keep the scanner's verdict: it was about these
+    // bytes, and one it flagged must stay blocked. New bytes have none yet.
+    const keptVerdict = prior !== null && prior.hot_fields.content_hash === content_hash
+      ? prior.hot_fields.scan_status as FileScanStatus | undefined
+      : undefined;
     const record: DataFileRecord = {
       record_id,
       received_at: prior?.received_at ?? stamp,
@@ -484,7 +494,7 @@ export const createInboundFileCollection = (
         size: size_bytes,
         content_hash,
         origin: input.origin,
-        scan_status: input.scan_status ?? 'unscanned',
+        scan_status: input.scan_status ?? keptVerdict ?? 'unscanned',
         media_class: mediaClassForMimeType(input.mime_type),
         ...(input.cloud_capture ? { cloud_capture: input.cloud_capture } : {}),
       },
@@ -508,8 +518,11 @@ export const createInboundFileCollection = (
     }
     if (publication.written) {
       gate.setUsed(totalBytes());
-      if (publication.previous) emitter.updated(record_id, publication.previous.hot_fields);
-      else emitter.created(record_id);
+      if (publication.previous) {
+        // Only a change is an update, named by what changed.
+        const changed = changedHotFields(publication.previous.hot_fields, table.get(record_id)?.hot_fields ?? {});
+        if (changed.length > 0) emitter.updated(record_id, publication.previous.hot_fields, changed, { in_drain: input.in_drain === true });
+      } else emitter.created(record_id, { in_drain: input.in_drain === true });
       lastIndexedAt = stamp;
     }
     return result;

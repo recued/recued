@@ -182,6 +182,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
     expect([...OP_STEP_PASSTHROUGH_KNOBS]).toEqual([
       'skip_when',
       'fail_on',
+      'stop_when',
       'fail_kind',
       'cache',
       'foreach',
@@ -200,6 +201,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
       args: { channels: '{{config.channels}}', title: 'hi' },
       skip_when: '{{step.x}} is_null',
       fail_on: '{{step.y}} equal true',
+      stop_when: '{{step.notify}} is_null',
       fail_kind: 'policy',
       cache: 'fresh',
       foreach: '{{step.rows}}',
@@ -214,6 +216,7 @@ describe('OP_STEP_PASSTHROUGH_KNOBS — total knob carry (round-12 T2 Q1)', () =
       ingredient: 'core-notification-send',
       skip_when: '{{step.x}} is_null',
       fail_on: '{{step.y}} equal true',
+      stop_when: '{{step.notify}} is_null',
       fail_kind: 'policy',
       cache: 'fresh',
       foreach: '{{step.rows}}',

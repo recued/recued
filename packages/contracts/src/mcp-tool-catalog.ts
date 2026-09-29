@@ -77,6 +77,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   'chat.deliveries.', 'chat.delivery.', 'chat.messenger.',
   // Private owner-authored Data navigation, never an agent capability.
   'data_views.',
+  // D-315 — a mail template decides what is read from the owner's mail and,
+  // later, what an AI pass is shown. Only the owner writes one; an agent reads
+  // facts through `core.mail.fact.*` under the mail grant.
+  'mail_fact.',
   // The paired owner's retained-file chooser; agents use governed file tools.
   'data.file.attachments.',
   // D-261 decisions require a trusted owner response; the model only gets

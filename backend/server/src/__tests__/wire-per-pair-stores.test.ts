@@ -22,6 +22,7 @@ const perPairStoreMocks = vi.hoisted(() => {
     intakeRecipePairStore: { kind: 'intakeRecipePairStore' },
     intakeFormSubmissionStore: { kind: 'intakeFormSubmissionStore' },
     formResponseStore: { kind: 'formResponseStore' },
+    mailFactStore: { kind: 'mailFactStore' },
     intakeFormNonceStore: { kind: 'intakeFormNonceStore' },
     dropBlobStore: { kind: 'dropBlobStore' },
     dropLinkNonceStore: { kind: 'dropLinkNonceStore' },
@@ -93,6 +94,7 @@ const perPairStoreMocks = vi.hoisted(() => {
       'createFormResponseStore',
       stores.formResponseStore,
     ),
+    createMailFactStore: factory('createMailFactStore', stores.mailFactStore),
     createInMemoryIntakeFormNonceStore: factory(
       'createInMemoryIntakeFormNonceStore',
       stores.intakeFormNonceStore,
@@ -206,6 +208,10 @@ vi.mock('../storage/form-response-store.js', () => ({
   createFormResponseStore: perPairStoreMocks.createFormResponseStore,
 }));
 
+vi.mock('../storage/mail-fact-store.js', () => ({
+  createMailFactStore: perPairStoreMocks.createMailFactStore,
+}));
+
 vi.mock('../ports/reception/handlers/intake-form.js', () => ({
   createInMemoryIntakeFormNonceStore:
     perPairStoreMocks.createInMemoryIntakeFormNonceStore,
@@ -274,6 +280,7 @@ const expectedCallOrder = [
   'createReceptionIntakeRecipePairStore',
   'createReceptionFormSubmissionStore',
   'createFormResponseStore',
+  'createMailFactStore',
   'createInMemoryIntakeFormNonceStore',
   'createReceptionDropBlobStore',
   'createInMemoryDropLinkNonceStore',
@@ -305,6 +312,7 @@ const dbStoreFactories = [
   perPairStoreMocks.createReceptionIntakeRecipePairStore,
   perPairStoreMocks.createReceptionFormSubmissionStore,
   perPairStoreMocks.createFormResponseStore,
+  perPairStoreMocks.createMailFactStore,
   perPairStoreMocks.createReceptionDropBlobStore,
   perPairStoreMocks.createReceptionApprovalIntentStore,
   perPairStoreMocks.createReceptionStatusProjectionStore,
@@ -341,6 +349,7 @@ const dynamicMocks = [
   perPairStoreMocks.createReceptionIntakeRecipePairStore,
   perPairStoreMocks.createReceptionFormSubmissionStore,
   perPairStoreMocks.createFormResponseStore,
+  perPairStoreMocks.createMailFactStore,
   perPairStoreMocks.createInMemoryIntakeFormNonceStore,
   perPairStoreMocks.createReceptionDropBlobStore,
   perPairStoreMocks.createInMemoryDropLinkNonceStore,
@@ -375,6 +384,7 @@ const bundleFieldCases = [
     perPairStoreMocks.stores.intakeFormSubmissionStore,
   ],
   ['formResponseStore', perPairStoreMocks.stores.formResponseStore],
+  ['mailFactStore', perPairStoreMocks.stores.mailFactStore],
   ['intakeFormNonceStore', perPairStoreMocks.stores.intakeFormNonceStore],
   ['dropBlobStore', perPairStoreMocks.stores.dropBlobStore],
   ['dropLinkNonceStore', perPairStoreMocks.stores.dropLinkNonceStore],

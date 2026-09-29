@@ -58,7 +58,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
-    "version": 5,
+    "version": 6,
     "bundled": true,
     "recipes": [],
     "contents": [
@@ -89,13 +89,13 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "extract-commitments-from-mail",
-        "version": 2,
+        "version": 3,
         "visible": true
       },
       {
         "type": "recipe",
         "slug": "extract-tasks-from-mail",
-        "version": 2,
+        "version": 3,
         "visible": true
       },
       {
@@ -718,7 +718,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "extract-commitments-from-mail": {
     "recipe_id": "extract-commitments-from-mail",
     "chat_exposed": true,
-    "version": 2,
+    "version": 3,
     "ttl": 60,
     "metadata": {
       "name": "Extract commitments from mail",
@@ -1020,12 +1020,18 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         }
       },
       {
+        "id": "commitment_key_hash",
+        "transform": "sha256",
+        "input": "mail extracted commitment|{{context.event.payload.slug}}|{{context.event.payload.record_id}}"
+      },
+      {
         "id": "create",
         "skip_when": "{{step.skip_create}} equal true",
         "op": "core.work-entity.commitment.create",
         "args": {
           "direction": "{{step.extracted_direction}}",
           "statement": "{{step.extracted_statement}}",
+          "idempotency_key": "mail-extracted-commitment:{{step.commitment_key_hash}}",
           "derivation": "mail_extracted",
           "promised_for_at": "{{step.promised_for_at}}",
           "expiry_policy": "escalate_overdue",
@@ -1097,7 +1103,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "extract-tasks-from-mail": {
     "recipe_id": "extract-tasks-from-mail",
     "chat_exposed": true,
-    "version": 2,
+    "version": 3,
     "ttl": 60,
     "metadata": {
       "name": "Extract tasks from mail",
@@ -1373,11 +1379,17 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         }
       },
       {
+        "id": "task_key_hash",
+        "transform": "sha256",
+        "input": "mail extracted task|{{context.event.payload.slug}}|{{context.event.payload.record_id}}"
+      },
+      {
         "id": "create",
         "skip_when": "{{step.skip_create}} equal true",
         "op": "core.work-entity.task.create",
         "args": {
           "title": "{{step.extracted_title}}",
+          "idempotency_key": "mail-extracted-task:{{step.task_key_hash}}",
           "due_at": "{{step.due_at}}",
           "priority": "{{step.extracted_priority}}",
           "assigned_contact_id": "{{step.resolve_assignee.contact.email}}",

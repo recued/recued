@@ -8,6 +8,7 @@
  */
 
 import type {
+  Condition,
   ContainerPickDetail,
   CreatePlanDetail,
   ForeachCheckpointProgress,
@@ -157,6 +158,12 @@ export interface InternalExecuteOverrides {
    *  the paused anchor's `run_id` so the resumed run transitions the
    *  same execution-request anchor in place. */
   run_id?: string;
+  /** D-315 §6.4 — told the run's id as soon as it exists (minted, or the
+   *  `run_id` override), before anything can fail. The event-trigger runtime
+   *  uses it so the dispatcher's `trigger_fired` entry can name the run for
+   *  EVERY outcome — a failed or held run included, not only a clean one.
+   *  ⚠ Not a way to CHOOSE the id: passing `run_id` means "resume". */
+  onRunMinted?: (run_id: string) => void;
   /** Stable receipt for the checkpointed gated STEP being resumed. It is not
    * the run id (a run can gate more than once) and not an ask id (one ask can
    * cover many steps and be re-rendered). Populated only by the host resumer. */
@@ -337,6 +344,8 @@ export interface ExecuteResponse {
   steps: {
     id: string; type: string; skipped: boolean; duration_ms: number; error: unknown;
     foreach?: { items: number; failed: number };
+    /** On the step whose `stop_when` ended the run. */
+    stopped?: true;
   }[];
   errors: unknown[];
   duration_ms: number;
@@ -348,6 +357,10 @@ export interface ExecuteResponse {
    *  Silent-skip: no audit entry, scheduler counter unchanged. Only
    *  ever set on `trigger_source: 'auto_run'` runs. */
   trigger_skipped?: boolean;
+  /** A step's `stop_when` ended the run early, as a success: the steps after
+   *  it did not run. Unlike `trigger_skipped`, the steps up to it DID run, and
+   *  their output is the answer. */
+  stopped?: { step_id: string; condition: string | Condition };
   /** D-115 Phase 5 — dynamic-interval hint (epoch ms) the recipe's
    *  `next_run_at` step computed. Scheduler's `markFinished` uses it
    *  when `auto_run.dynamic` is true. */

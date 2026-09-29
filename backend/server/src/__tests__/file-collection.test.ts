@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, type FSWatcher } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, unlinkSync, type FSWatcher } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -315,6 +315,89 @@ describe('createFileCollection — initial scan', () => {
 // ────────────────────────────────────────────────────────────────
 // MIME sniffing
 // ────────────────────────────────────────────────────────────────
+
+describe('createFileCollection — a restart’s walk (D-124)', () => {
+  let h: Harness;
+  beforeEach(() => { h = newHarness(); });
+  afterEach(() => { h.close(); });
+
+  const folder = (h: Harness) => createFileCollection({
+    db: h.db, blobs: h.blobs, gate: h.gate, bus: h.bus, slug: 'work',
+    config: () => ({ path: h.root, ignore: [], max_body_bytes: DEFAULT_MAX, retention_days: 0, quota_bytes: BIG_QUOTA }),
+  });
+  const kinds = (h: Harness) => h.events.map((event) => [event.event_kind, event.changed_fields ?? null]);
+
+  it('emits nothing for a file it lists again as it was, and names what changed in one that did', async () => {
+    writeFileSync(join(h.root, 'a.txt'), 'a');
+    writeFileSync(join(h.root, 'b.txt'), 'b');
+    let collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    h.events.length = 0;
+    // A restart, nothing changed.
+    collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    expect(kinds(h)).toEqual([]);
+    // A restart after a.txt was rewritten while the server was down.
+    writeFileSync(join(h.root, 'a.txt'), 'a, and more');
+    collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    expect(kinds(h)).toEqual([['updated', ['mtime', 'size', 'body']]]);
+  });
+
+  it('takes out a file removed while the server was down, as a live remove would', async () => {
+    writeFileSync(join(h.root, 'a.txt'), 'a');
+    writeFileSync(join(h.root, 'b.txt'), 'b');
+    let collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    h.events.length = 0;
+    unlinkSync(join(h.root, 'a.txt'));
+    collection = folder(h);
+    await collection.sync.start();
+    expect(h.events.map((event) => [event.event_kind, event.prev?.path])).toEqual([['deleted', 'a.txt']]);
+    expect(collection.list({ platform: 'file', slug: 'work' }).map((r) => r.hot_fields.path)).toEqual(['b.txt']);
+    await collection.close();
+  });
+
+  it('takes out nothing when the walk could not read a folder inside: its files may all be there', async () => {
+    mkdirSync(join(h.root, 'sub'), { recursive: true });
+    writeFileSync(join(h.root, 'sub', 'inside.txt'), 'inside');
+    writeFileSync(join(h.root, 'top.txt'), 'top');
+    let collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    h.events.length = 0;
+    // The folder inside cannot be read now; the one outside can.
+    chmodSync(join(h.root, 'sub'), 0o000);
+    try {
+      collection = folder(h);
+      await collection.sync.start();
+      expect(h.events.filter((event) => event.event_kind === 'deleted')).toEqual([]);
+      expect(collection.list({ platform: 'file', slug: 'work' }).map((r) => r.hot_fields.path).sort()).toEqual(['sub/inside.txt', 'top.txt']);
+      await collection.close();
+    } finally {
+      chmodSync(join(h.root, 'sub'), 0o755);
+    }
+  });
+
+  it('takes out nothing when the walk could not read the folder: the files may all be there', async () => {
+    writeFileSync(join(h.root, 'a.txt'), 'a');
+    let collection = folder(h);
+    await collection.sync.start();
+    await collection.close();
+    h.events.length = 0;
+    // The folder is gone from where it was (an unplugged drive, a moved folder).
+    rmSync(h.root, { recursive: true, force: true });
+    collection = folder(h);
+    await collection.sync.start().catch(() => undefined);
+    expect(h.events).toEqual([]);
+    expect(collection.list({ platform: 'file', slug: 'work' }).map((r) => r.hot_fields.path)).toEqual(['a.txt']);
+    await collection.close();
+  });
+});
 
 describe('MIME sniffing + hot fields', () => {
   let h: Harness;

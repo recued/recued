@@ -292,6 +292,54 @@ describe('D-196 llm_gateway shared-turn carriers', () => {
     expect(String(aiInputs[1]?.['llm.prompt'])).toContain(expectedDetail);
   });
 
+  // A `date` recipe variable projects as JSON-Schema `format: 'date'` — a
+  // calendar day. ⚠ `Date.parse('2026-02-30')` is 2 March, so a check that only
+  // parsed would pass a day that does not exist and store the wrong one.
+  it.each([
+    ['a day that does not exist', '2026-02-30', false],
+    ['a time where a day belongs', '2026-10-01T09:00', false],
+    ['a day', '2026-10-01', true],
+  ])('a `date` argument: %s', async (_label, due, dispatched) => {
+    const recipe = 'seller/set-target-date';
+    const entry: ToolEntry = {
+      ...readEntry(recipe, 2),
+      arg_schema: {
+        type: 'object',
+        properties: { due: { type: 'string', format: 'date' } },
+        additionalProperties: false,
+      },
+    };
+    const aiInputs: Record<string, unknown>[] = [];
+    let aiRound = 0;
+    const executeAiCall: ExecuteChatAiCall = vi.fn(async (_manifest, input) => {
+      aiInputs.push(input);
+      return {
+        body: aiRound++ === 0
+          ? { response: '', events: [], tool_calls: [{ tool: recipe, args: { due } }] }
+          : { response: 'done', events: [], tool_calls: [] },
+      };
+    });
+    const h = createHarness({ entries: [entry], executeAiCall });
+
+    await h.orchestrator.runLlmGatewayTurn!({
+      session_id: 'gateway-date-arg',
+      user_id: 'customer-token',
+      contract_id: 'customer-contract',
+      content: { chat_tail: [], user_message: 'set the target date' },
+      allowed_tool_names: [recipe],
+      resolve_contract_snapshot: vi.fn(async () => SNAPSHOT),
+      execute_ai_call: executeAiCall,
+      model_layer: 'byok',
+    });
+
+    if (dispatched) {
+      expect(h.localDispatch).toHaveBeenCalledTimes(1);
+    } else {
+      expect(h.localDispatch).not.toHaveBeenCalled();
+      expect(String(aiInputs[1]?.['llm.prompt'])).toContain('args.due must be a date as YYYY-MM-DD');
+    }
+  });
+
   it('omits a Tier-2 recipe whose schema declares a server-owned carrier', async () => {
     const recipe = 'seller/unsafe-context';
     const unsafeEntry: ToolEntry = {

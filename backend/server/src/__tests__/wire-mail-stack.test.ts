@@ -24,12 +24,15 @@ vi.mock('../warehouse/contact-derive.js', () => ({
   deriveContactsFromMail: mailMocks.deriveContactsFromMail,
 }));
 
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { ServerAccountStore } from '../account-store.js';
 import type { GateRegistry } from '../storage-gates.js';
 import type { ContactStore } from '../storage/contact-store.js';
 import type { CanonicalMessage } from '../collections/mail/provider.js';
+import type { MailUpsertContext } from '../collections/mail/mail-collection.js';
+import { createMailFactStore, type MailFactStore } from '../storage/mail-fact-store.js';
+import { createMailFactWriter } from '../mail-facts/fact-writer.js';
 import type {
   ComposeMailStackOptions,
   MailAdapterBundle,
@@ -139,9 +142,13 @@ const makeAccountStore = (
   totalBytes: vi.fn(async () => 0),
 });
 
-const makeContactStore = (): TestContactStore =>
+const makeContactStore = (
+  networkDomains: Record<string, string[]> = {},
+): TestContactStore =>
   ({
     observeBatch: vi.fn(() => 0),
+    get: vi.fn((email: string) =>
+      email in networkDomains ? { network_domain: networkDomains[email] } : null),
   }) as unknown as TestContactStore;
 
 const buildDeps = (
@@ -174,6 +181,17 @@ const message = (): CanonicalMessage => ({
   has_attachments: false,
   received_at: 1_700_000_000_000,
   body_text: 'Hello',
+});
+
+const upsertCtx = (over: Partial<MailUpsertContext> = {}): MailUpsertContext => ({
+  slug: 'work',
+  record_id: 'mail:1',
+  account_email: 'me@owner.example',
+  first_seen: true,
+  backfill_complete: true,
+  backfill_days: 30,
+  attachments: [],
+  ...over,
 });
 
 describe('composeMailBoot', () => {
@@ -297,7 +315,7 @@ describe('composeMailBoot', () => {
     composeMailBoot(buildDeps({ contactStore }));
     const [, storage] = lastComposeCall();
     const msg = message();
-    storage.onMessageUpserted?.(msg);
+    storage.onMessageUpserted?.(msg, upsertCtx());
 
     expect(deriveContactsFromMail).toHaveBeenCalledTimes(1);
     expect(deriveContactsFromMail).toHaveBeenCalledWith(msg);
@@ -311,7 +329,7 @@ describe('composeMailBoot', () => {
 
     composeMailBoot(buildDeps({ contactStore }));
     const [, storage] = lastComposeCall();
-    storage.onMessageUpserted?.(message());
+    storage.onMessageUpserted?.(message(), upsertCtx());
 
     expect(contactStore.observeBatch).not.toHaveBeenCalled();
   });
@@ -407,5 +425,154 @@ describe('composeMailBoot', () => {
 
     expect(errorSpy).toHaveBeenCalledWith('[mail-stack] boom', { x: 1 });
     expect(logSpy).toHaveBeenCalledWith('[mail-stack] hi', '');
+  });
+});
+
+describe('composeMailBoot — mail facts (D-315)', () => {
+  let factDb: Database.Database | undefined;
+  afterEach(() => {
+    factDb?.close();
+    factDb = undefined;
+  });
+
+  /** The composition's writer over a store, emitting on `bus`. */
+  const writerOver = (store: MailFactStore, bus: ComposeMailStackBootDeps['warehouseBus']) =>
+    createMailFactWriter({ store, emit: (event) => bus.emit(event), now: () => Date.now() });
+
+  const factStore = (): MailFactStore => {
+    factDb = new Database(':memory:');
+    const store = createMailFactStore(factDb);
+    store.createTemplate({
+      definition: {
+        name: 'UPS',
+        type: 'shipment',
+        entrance: {
+          conditions: [{ field: 'from', op: 'domain_is', value: 'ups.com' }],
+          variables: ['tracking_number'],
+        },
+        rules: [
+          { target: { variable: 'carrier' }, source: 'from_name', find: { kind: 'constant', value: 'UPS' } },
+          {
+            target: { variable: 'tracking_number' },
+            source: 'body',
+            find: { kind: 'after_label', label: 'Tracking Number:' },
+          },
+        ],
+        html: false,
+        ai: { enabled: false },
+      },
+      origin: { kind: 'owner' },
+    });
+    return store;
+  };
+
+  const upsMessage = (over: Partial<CanonicalMessage> = {}): CanonicalMessage => ({
+    ...message(),
+    from: 'pkginfo@ups.com',
+    from_name: 'UPS',
+    subject: 'UPS Update: On the way',
+    body_text: 'Tracking Number: 1Z0000000000000001\n',
+    received_at: Date.now(),
+    ...over,
+  });
+
+  it('wires no fact hooks without a fact store', () => {
+    composeMailBoot(buildDeps());
+    const [, storage] = lastComposeCall();
+    expect(Object.hasOwn(storage, 'onRecordsRemoved')).toBe(false);
+    expect(Object.hasOwn(storage, 'onRecordRekeyed')).toBe(false);
+  });
+
+  it('reads a new message for facts and emits the thing on the warehouse bus', () => {
+    const mailFactStore = factStore();
+    const bus = warehouseBus();
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus }));
+    const [, storage] = lastComposeCall();
+
+    storage.onMessageUpserted?.(upsMessage(), upsertCtx());
+
+    expect(mailFactStore.listFacts()).toHaveLength(1);
+    expect(vi.mocked(bus.emit)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(bus.emit).mock.calls[0]?.[0]).toMatchObject({
+      platform: 'mail_fact',
+      slug: 'shipment',
+      event_kind: 'created',
+    });
+  });
+
+  it('stores past mail silently: a first backfill, or a date outside the window', () => {
+    const mailFactStore = factStore();
+    const bus = warehouseBus();
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, bus), warehouseBus: bus }));
+    const [, storage] = lastComposeCall();
+
+    storage.onMessageUpserted?.(upsMessage(), upsertCtx({ record_id: 'mail:1', backfill_complete: false }));
+    storage.onMessageUpserted?.(
+      upsMessage({ body_text: 'Tracking Number: 1Z0000000000000002\n', received_at: Date.now() - 90 * 86_400_000 }),
+      upsertCtx({ record_id: 'mail:2' }),
+    );
+
+    expect(mailFactStore.listFacts()).toHaveLength(2);
+    expect(vi.mocked(bus.emit)).not.toHaveBeenCalled();
+  });
+
+  it('skips mail Recued itself sent, and drafts', () => {
+    const mailFactStore = factStore();
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()) }));
+    const [, storage] = lastComposeCall();
+
+    storage.onMessageUpserted?.(upsMessage({ reconciliation_id: 'rcd_0123456789abcdef' }), upsertCtx());
+    storage.onMessageUpserted?.(upsMessage({ direction: 'draft' }), upsertCtx({ record_id: 'mail:2' }));
+
+    expect(mailFactStore.listFacts()).toEqual([]);
+  });
+
+  it('takes a message’s facts along when it is removed or moved', () => {
+    const mailFactStore = factStore();
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()) }));
+    const [, storage] = lastComposeCall();
+    storage.onMessageUpserted?.(upsMessage(), upsertCtx({ record_id: 'mail:1' }));
+
+    storage.onRecordRekeyed?.('work', 'mail:1', 'mail:9');
+    expect(mailFactStore.factsForEmail({ slug: 'work', record_id: 'mail:9' })).toHaveLength(1);
+
+    storage.onRecordsRemoved?.('work', ['mail:9']);
+    expect(mailFactStore.listFacts()).toEqual([]);
+    expect(mailFactStore.listThings()).toEqual([]);
+  });
+
+  it('reads the sender’s relationships from the contact store', () => {
+    const mailFactStore = factStore();
+    mailFactStore.createTemplate({
+      definition: {
+        name: 'Work requests',
+        type: 'owner_request',
+        entrance: { conditions: [{ field: 'relationship', op: 'is', value: 'work' }], variables: [] },
+        rules: [],
+        html: false,
+        ai: { enabled: false },
+      },
+      origin: { kind: 'owner' },
+    });
+    const contactStore = makeContactStore({ 'pkginfo@ups.com': ['work'] });
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()), contactStore }));
+    const [, storage] = lastComposeCall();
+
+    storage.onMessageUpserted?.(upsMessage(), upsertCtx());
+
+    expect(mailFactStore.listFacts().map((fact) => fact.type).sort()).toEqual(['owner_request', 'shipment']);
+  });
+
+  it('still reads a message for facts when the contact hook throws, then reports the error', () => {
+    const mailFactStore = factStore();
+    const contactStore = makeContactStore();
+    vi.mocked(deriveContactsFromMail).mockImplementationOnce(() => {
+      throw new Error('contact store locked');
+    });
+    composeMailBoot(buildDeps({ mailFactWriter: writerOver(mailFactStore, warehouseBus()), contactStore }));
+    const [, storage] = lastComposeCall();
+
+    expect(() => storage.onMessageUpserted?.(upsMessage(), upsertCtx())).toThrow('contact store locked');
+    expect(mailFactStore.listFacts()).toHaveLength(1);
   });
 });

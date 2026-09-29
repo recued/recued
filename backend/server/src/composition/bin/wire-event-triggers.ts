@@ -41,7 +41,7 @@
 import type Database from 'better-sqlite3';
 import { deriveRunYield, runYieldIsTotalRefusal } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
-import type { WarehouseEventBus } from '@recued/warehouse-events';
+import type { WarehouseEvent, WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { LocalManifestStore } from '../../ingredient-authoring/local-manifest-store.js';
 import { liveVendorRegistry } from '../../recipe-runnability-handler.js';
@@ -49,6 +49,7 @@ import { createInstanceStore } from '../../collections/instance-store.js';
 import type { EventBus } from '../../events/bus.js';
 import { emitAutomationRule, emitReactiveFire } from '../../events/emit-sites.js';
 import { handleExecute, type ExecuteHandlerDeps } from '../../execute-handler.js';
+import type { ExecuteResponse, InternalExecuteOverrides } from '../../types.js';
 import type { TriggersRpcDeps } from '../../triggers/handler.js';
 import { createBackfillStateLookup } from '../../triggers/backfill-state.js';
 import { reconcileDeclarativeTriggers } from '../../triggers/declarative-reconciler.js';
@@ -56,6 +57,7 @@ import {
   createEventTriggerDispatcher,
   type EventTriggerDispatcher,
   type EventTriggerDispatcherDeps,
+  type TriggerRunOutcome,
 } from '../../triggers/dispatcher.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../../triggers/store.js';
 
@@ -87,6 +89,11 @@ export interface ComposeEventTriggersInput {
   /** D-268 — deliver one owner notice about a failed fire. Absent ⇒ failures
    *  reach the trigger row and nobody else. */
   onAutomationFailure?: EventTriggerDispatcherDeps['onAutomationFailure'];
+  /** D-315 §6.4 — told of every fire the dispatcher records. */
+  onFired?: EventTriggerDispatcherDeps['onFired'];
+  /** D-315 §5.1 — the kinds of email the owner made on this server, which
+   *  the rows `triggers.create` / `update` make are checked against. */
+  mailFactTypes?: TriggersRpcDeps['mailFactTypes'];
 }
 
 export interface EventTriggersBundle {
@@ -107,14 +114,26 @@ export interface EventTriggersBundle {
   /** D-296 — the vendor registry the reconcile compiles sugar against, so the
    *  pack install preview compiles the SAME declarations. */
   getVendorEntities: () => ReturnType<typeof liveVendorRegistry>;
+  /** D-315 §6.4 — a reviewed trigger's sealed event the pre-approval recovery
+   *  clock runs itself: the run is kept on the dispatcher's books, as a fire
+   *  it queued is. */
+  settleRecovered: SettleRecoveredTrigger;
 }
+
+/** Run a reviewed trigger's sealed event outside the queue, on the
+ *  dispatcher's books. `run` is the reviewed execution; null = it did not run. */
+export type SettleRecoveredTrigger = (
+  trigger_id: string,
+  event: WarehouseEvent,
+  run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted'>) => Promise<ExecuteResponse | null>,
+) => Promise<void>;
 
 export const composeEventTriggers = (
   input: ComposeEventTriggersInput,
 ): EventTriggersBundle | undefined => {
   const {
     db, warehouseBus, executeDeps, auditLog, eventBus, localManifestStore, isVaultUnlocked,
-    onAutomationFailure,
+    onAutomationFailure, onFired,
   } = input;
   if (!db) return undefined;
 
@@ -123,12 +142,52 @@ export const composeEventTriggers = (
     instances: createInstanceStore({ db }),
   });
 
+  /** What an executed fire came to, for the dispatcher's books: a failure is
+   *  thrown with its code and run, as the dispatcher reads it. */
+  const outcomeOf = (
+    recipe_id: string,
+    result: ExecuteResponse | null,
+    run_id: string | undefined,
+  ): TriggerRunOutcome => {
+    if (!result) return { skipped: true };
+    emitReactiveFire(eventBus, recipe_id);
+    const ran = run_id !== undefined ? { run_id } : {};
+    // A trigger-gate skip is a successful evaluation, not a
+    // failure — only real execution errors feed the dispatcher's
+    // 24h error cap.
+    if (!result.success && !result.trigger_skipped && !result.awaiting_approval && !result.awaiting_peer) {
+      const first = result.errors[0] as { message?: string; code?: string } | undefined;
+      // ⛔⛔ D-268 — THE CODE HAS TO SURVIVE THE THROW. This raised a bare
+      // `new Error(message)`, which was harmless while the only consumer
+      // COUNTED failures — and became a live defect the moment the count
+      // depended on the KIND. An unclassified failure stops at the first
+      // occurrence (fail closed), so discarding the code here would disarm
+      // every trigger on its first transient network blip. The code is the
+      // whole difference between "wait, it may pass" and "waiting buys
+      // nothing".
+      const error = new Error(first?.message ?? 'execution failed') as Error & { code?: string; run_id?: string };
+      if (typeof first?.code === 'string') error.code = first.code;
+      if (run_id !== undefined) error.run_id = run_id;
+      throw error;
+    }
+    // D-268 — the success-shaped failure: a `foreach` is continue-on-error,
+    // so a run whose every item was refused arrives here reporting success.
+    // REPORTED, never thrown — the run did complete, and throwing would make
+    // the dispatcher write a `last_error` for a run that had none.
+    if (result.success && runYieldIsTotalRefusal(deriveRunYield(result.steps))) {
+      return { total_refusal: true, ...ran };
+    }
+    if (result.awaiting_approval || result.awaiting_peer) return { held: true, ...ran };
+    if (result.trigger_skipped) return { declined: true, ...ran };
+    return ran;
+  };
+
   const dispatcher = createEventTriggerDispatcher({
     bus: warehouseBus,
     store,
     getPreapprovalDriver: () => executeDeps.preapprovalDriver,
     runtime: {
-      runRecipe: async ({ recipe_id, context, dish_id, trigger_id, candidate }) => {
+      runRecipe: async ({ recipe_id, context, dish_id, trigger_id, candidate, origin }) => {
         const driver = executeDeps.preapprovalDriver;
         // A queued legacy event cannot acquire a newly composed/accepted
         // reviewed execution. Live rows are reread even without the driver.
@@ -159,7 +218,8 @@ export const composeEventTriggers = (
           event?.topic?.join('.') ?? event?.kind ?? 'event_trigger';
         const request: Parameters<typeof handleExecute>[1] = {
           recipe_id,
-          trigger_source: 'event_trigger',
+          // D-315 §6.3 — a backfill's fire is stamped `run_mode: backfill`.
+          trigger_source: origin === 'backfill' ? 'backfill' : 'event_trigger',
           execution_source: {
             channel: 'reactive',
             actor: 'system',
@@ -176,33 +236,14 @@ export const composeEventTriggers = (
           // `config_patch` shallow merge.
           ...(dish_id !== null ? { dish_id } : {}),
         };
-        const result = driver ? await driver.executeTrigger(request, candidate!) : await handleExecute(executeDeps, request);
-        if (!result) return { skipped: true };
-        emitReactiveFire(eventBus, recipe_id);
-        // A trigger-gate skip is a successful evaluation, not a
-        // failure — only real execution errors feed the dispatcher's
-        // 24h error cap.
-        if (!result.success && !result.trigger_skipped && !result.awaiting_approval && !result.awaiting_peer) {
-          const first = result.errors[0] as { message?: string; code?: string } | undefined;
-          // ⛔⛔ D-268 — THE CODE HAS TO SURVIVE THE THROW. This raised a bare
-          // `new Error(message)`, which was harmless while the only consumer
-          // COUNTED failures — and became a live defect the moment the count
-          // depended on the KIND. An unclassified failure stops at the first
-          // occurrence (fail closed), so discarding the code here would disarm
-          // every trigger on its first transient network blip. The code is the
-          // whole difference between "wait, it may pass" and "waiting buys
-          // nothing".
-          const error = new Error(first?.message ?? 'execution failed') as Error & { code?: string };
-          if (typeof first?.code === 'string') error.code = first.code;
-          throw error;
-        }
-        // D-268 — the success-shaped failure: a `foreach` is continue-on-error,
-        // so a run whose every item was refused arrives here reporting success.
-        // REPORTED, never thrown — the run did complete, and throwing would make
-        // the dispatcher write a `last_error` for a run that had none.
-        if (result.success && runYieldIsTotalRefusal(deriveRunYield(result.steps))) {
-          return { total_refusal: true };
-        }
+        // D-315 §6.4 — learn the run's id the moment it exists, so the
+        // dispatcher's `trigger_fired` names the run whatever becomes of it.
+        let run_id: string | undefined;
+        const observe = { onRunMinted: (id: string) => { run_id = id; } };
+        const result = driver
+          ? await driver.executeTrigger(request, candidate!, observe)
+          : await handleExecute(executeDeps, request, observe);
+        return outcomeOf(recipe_id, result, run_id);
       },
     },
     ...(auditLog ? { auditLog } : {}),
@@ -210,6 +251,7 @@ export const composeEventTriggers = (
     backfillState,
     ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
     ...(onAutomationFailure ? { onAutomationFailure } : {}),
+    ...(onFired ? { onFired } : {}),
   });
   // G6 — materialize installed recipes' declarative `event_triggers`
   // into store rows BEFORE the first rebuild, so boot subscribes them
@@ -265,9 +307,15 @@ export const composeEventTriggers = (
       ...(executeDeps.dishContextStore
         ? { dishContextStore: executeDeps.dishContextStore }
         : {}),
+      ...(input.mailFactTypes ? { mailFactTypes: input.mailFactTypes } : {}),
     },
     dispatcher,
     store,
     reconcile,
+    settleRecovered: (trigger_id, event, run) => dispatcher.settleFire(trigger_id, event, async (trigger) => {
+      let run_id: string | undefined;
+      const result = await run({ onRunMinted: (id) => { run_id = id; } });
+      return trigger === null ? undefined : outcomeOf(trigger.recipe_id, result, run_id);
+    }),
   };
 };

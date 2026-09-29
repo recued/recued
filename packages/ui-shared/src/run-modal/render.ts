@@ -13,6 +13,7 @@ import {
   CRON_PRESETS,
   describeCron,
   DEFAULT_MISSED_SCHEDULE_POLICY,
+  MAIL_FACT_BUILTIN_TYPES,
   MISSED_SCHEDULE_POLICIES,
   MISSED_SCHEDULE_POLICY_COPY,
   type MissedSchedulePolicy,
@@ -29,6 +30,14 @@ import {
   toWidgetShape,
 } from '../variable-widgets.js';
 
+import {
+  describeMailFactTrigger,
+  humanizeFactName,
+  mailFactChoiceLabel,
+  mailFactTypeOf,
+  mailFactVocabulary,
+  mailFactWhereOptions,
+} from './mail-fact-trigger.js';
 import { parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
 import type { RunModalState, RunModalTab } from './types.js';
 
@@ -62,6 +71,12 @@ export const RUN_MODAL_NEW_MISSED_POLICY_ATTR =
   'data-recued-run-modal-new-missed-policy';
 export const RUN_MODAL_PATTERN_ATTR = 'data-recued-run-modal-pattern';
 export const RUN_MODAL_TRIGGER_ERROR_ATTR = 'data-recued-run-modal-trigger-error';
+/** D-315 §5.1 — a control of the "A mail fact" form: `type`, `field:<name>`,
+ *  `where-variable`, `where-value`, `template`. */
+export const RUN_MODAL_FACT_ATTR = 'data-recued-run-modal-fact';
+/** Each "A mail fact" control's id: a choice repaints the form, and the focus
+ *  returns to the control by its id — keyboard owners keep their place. */
+export const factControlId = (control: string): string => `run-modal-fact-${control.replace(/[^a-z0-9_-]/gi, '-')}`;
 
 /** What's wired — drives the "not available" degradations. */
 export interface RunModalCaps {
@@ -513,12 +528,13 @@ const renderTriggerTab = (
     : '';
   const rows = state.triggers
     .map((t) => {
+      const fact = describeMailFactTrigger(t, state.mail_fact_templates, state.mail_fact_types);
       const actionName = (action: string): string =>
-        e(`${action} trigger ${t.pattern} (${t.trigger_id})`);
+        e(`${action} trigger ${fact ?? t.pattern} (${t.trigger_id})`);
       return `
   <li class="run-modal-rule-row">
     <div>
-      <div>on <code>${e(t.pattern)}</code>${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}</div>
+      <div>${fact !== null ? `on ${e(fact)}` : `on <code>${e(t.pattern)}</code>`}${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}</div>
       <div class="run-modal-meta">last fired ${
         t.last_fired_at !== null ? e(new Date(t.last_fired_at).toLocaleString()) : 'never'
       }${t.last_error ? ` · ${e(t.last_error)}` : ''}</div>
@@ -550,10 +566,13 @@ const renderTriggerTab = (
   const error = state.trigger_error !== null
     ? `<div ${RUN_MODAL_TRIGGER_ERROR_ATTR} role="alert" class="run-modal-target-warning">${e(state.trigger_error)}</div>`
     : '';
-  return `
-      ${error}
-      ${list}
-      ${configSection}
+  const kindButton = (kind: 'pattern' | 'mail_fact', label: string): string => `
+        <button type="button" class="run-modal-button"
+          ${RUN_MODAL_ACTION_ATTR}="trigger-kind:${kind}"
+          aria-pressed="${state.trigger_kind === kind ? 'true' : 'false'}">${label}</button>`;
+  const form = state.trigger_kind === 'mail_fact'
+    ? renderMailFactForm(state, busyAttrs)
+    : `
       <label class="run-modal-copy" for="run-modal-pattern">Fire when warehouse data matching this pattern changes</label>
       <div class="run-modal-actions">
         <input id="run-modal-pattern" type="text" class="run-modal-select"
@@ -565,6 +584,108 @@ const renderTriggerTab = (
             : busyAttrs}>
           Add trigger
         </button>
+      </div>`;
+  return `
+      ${error}
+      ${list}
+      ${configSection}
+      <div class="run-modal-actions" role="group" aria-label="What sets it off">
+        ${kindButton('pattern', 'An event pattern')}
+        ${kindButton('mail_fact', 'A mail fact')}
+      </div>
+      ${form}`;
+};
+
+const option = (value: string, label: string, selected: boolean): string =>
+  `<option value="${e(value)}"${selected ? ' selected' : ''}>${e(label)}</option>`;
+
+/** D-315 §5.1 — "A mail fact": the kind of email (or any kind), the values
+ *  whose change wakes it (none: every change), one "only when", and the
+ *  template. On any kind, each value is labelled with the kinds that have it,
+ *  and a fact of any of them starts it (ruling 42); on one kind, only its own
+ *  values are offered (ruling 43). */
+const renderMailFactForm = (state: RunModalState, busyAttrs: string): string => {
+  const draft = state.mail_fact;
+  const owned = state.mail_fact_types;
+  const type = draft.type === '' ? null : draft.type;
+  const spec = type === null ? undefined : mailFactTypeOf(type, owned);
+  const vocabulary = mailFactVocabulary(owned, type);
+  const labelOf = (name: string): string => {
+    const choice = vocabulary.find((candidate) => candidate.name === name);
+    return choice === undefined ? humanizeFactName(name) : mailFactChoiceLabel(choice, owned, type);
+  };
+  const whereOptions = mailFactWhereOptions(owned, type);
+  const chosen = whereOptions.find((candidate) => candidate.name === draft.where_variable);
+  const valueControl = chosen === undefined
+    ? ''
+    : `<label class="run-modal-copy">Must be
+        ${chosen.values !== undefined
+          ? `<select class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="where-value" id="${factControlId('where-value')}">
+          ${option('', 'choose…', draft.where_value === '')}
+          ${chosen.values.map((value) => option(value,
+            chosen.kind === 'complete' || chosen.kind === 'boolean' ? (value === 'true' ? 'Yes' : 'No') : humanizeFactName(value),
+            value === draft.where_value)).join('')}
+        </select>`
+          : `<input type="${chosen.kind === 'date' ? 'date' : 'text'}" class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="where-value" id="${factControlId('where-value')}"
+          value="${e(draft.where_value)}" />`}
+      </label>`;
+  const addable = vocabulary.filter((choice) => !draft.fields.includes(choice.name));
+  const templates = (state.mail_fact_templates ?? []).filter((template) => type === null || template.type === type);
+  return `
+      <div class="run-modal-fact-form">
+        <label class="run-modal-copy">Kind of email
+          <select class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="type" id="${factControlId('type')}">
+            ${option('', 'Any kind that has what it watches', type === null)}
+            ${MAIL_FACT_BUILTIN_TYPES.map((kind) => option(kind.id, kind.name, kind.id === type)).join('')}
+            ${owned.length > 0
+              ? `<optgroup label="Kinds you made">${owned.map((kind) => option(kind.id, kind.name, kind.id === type)).join('')}</optgroup>`
+              : ''}
+          </select>
+        </label>
+        <p class="run-modal-meta">${spec !== undefined
+          ? e(spec.description)
+          : 'It starts for a fact of any kind of email that has what it watches, including a kind you make later.'}</p>
+        <fieldset class="run-modal-fact-fields">
+          <legend class="run-modal-copy">Wake when one of these changes — none chosen: on every change</legend>
+          ${draft.fields.map((name) => `
+            <label><input type="checkbox" ${RUN_MODAL_FACT_ATTR}="field:${e(name)}" id="${factControlId(`field-${name}`)}" checked />
+              ${e(labelOf(name))}</label>`).join('')}
+        </fieldset>
+        <label class="run-modal-copy">${draft.fields.length > 0 ? 'Also watch' : 'Watch'}
+          <select class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="field-add" id="${factControlId('field-add')}">
+            ${option('', 'choose a value…', true)}
+            ${addable.map((choice) => option(choice.name, mailFactChoiceLabel(choice, owned, type), false)).join('')}
+          </select>
+        </label>
+        <div class="run-modal-fact-when">
+          <label class="run-modal-copy">Only when
+            <select class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="where-variable" id="${factControlId('where-variable')}">
+              ${option('', 'Always', draft.where_variable === '')}
+              ${whereOptions.map((candidate) => option(candidate.name,
+                candidate.kind === 'complete' ? 'Every required value was read' : labelOf(candidate.name),
+                candidate.name === draft.where_variable)).join('')}
+            </select>
+          </label>
+          ${valueControl}
+        </div>
+        ${state.mail_fact_templates !== null && templates.length > 0
+          ? `<label class="run-modal-copy">Read by
+              <select class="run-modal-select" ${RUN_MODAL_FACT_ATTR}="template" id="${factControlId('template')}">
+                ${option('', 'any template, or the standard markup', draft.template_id === '')}
+                ${templates.map((template) => option(
+                  template.template_id,
+                  type !== null
+                    ? `${template.name}${template.active === false ? ' (off)' : ''}`
+                    : `${template.name} (${(mailFactTypeOf(template.type, owned)?.name ?? humanizeFactName(template.type)).toLowerCase()}${template.active === false ? ', off' : ''})`,
+                  template.template_id === draft.template_id,
+                )).join('')}
+              </select>
+            </label>`
+          : ''}
+        <div class="run-modal-actions">
+          <button type="button" class="run-modal-button run-modal-button--primary"
+            ${RUN_MODAL_ACTION_ATTR}="add-trigger"${busyAttrs}>Add trigger</button>
+        </div>
       </div>`;
 };
 

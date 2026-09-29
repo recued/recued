@@ -1,10 +1,23 @@
 /** D-124 Phase 2.1 — backfill-state lookup helper.
  *
- *  Phase 2.2 (suppression at dispatcher) will gate trigger fan-out on
- *  `isAdapterBackfillComplete(platform, slug)`. This module owns the
- *  read-side: an in-memory cache populated at dispatcher init,
- *  refreshed by instance-lifecycle rpcs, with a SQLite fallback on
- *  cache miss.
+ *  Phase 2.2 (suppression at dispatcher) gates trigger fan-out on
+ *  `isComplete(platform, slug)`. This module owns the read-side, and it
+ *  READS THROUGH: every call reads the instance row.
+ *
+ *  ⛔⛔ IT USED TO CACHE, AND THE CACHE SILENCED MAIL TRIGGERS UNTIL A RESTART.
+ *  The first check of a new mailbox's drain cached `false`; the adapter then
+ *  flipped the row with `markBackfillComplete`, and nothing told the cache —
+ *  `invalidate` / `refresh` were written for "instance-lifecycle rpcs" and
+ *  never had a caller. So every `data.mail.<slug>.*` trigger stayed
+ *  suppressed until the next boot built a fresh lookup (same for calendar
+ *  and file). The same staleness ran the other way: a mailbox deleted and
+ *  enrolled again restarts its drain at `false`, and a cached `true` let
+ *  that drain's past mail fire every trigger. The tests passed because they
+ *  called `invalidate` by hand — standing in for wiring production lacked.
+ *
+ *  🔑 A read is ~0.9 µs (measured, `instances.get`, 2026-09-26): a
+ *  5,000-message backfill with five matching triggers costs ~22 ms. There
+ *  was nothing worth caching, so there is nothing to invalidate.
  *
  *  Per-platform rules (per spec table):
  *
@@ -45,8 +58,7 @@ const CONTACT_FEEDERS: ReadonlySet<CollectionPlatform> = new Set<
 >(['mail', 'calendar']);
 
 export interface BackfillStateLookup {
-  /** Synchronous read — cache hit returns immediately, miss falls
-   *  through to a SQLite read on `instances`. Returns `true` when:
+  /** Synchronous read of the instance row, every call. Returns `true` when:
    *
    *    - the row exists with `backfill_complete = true`,
    *    - the row exists for `webhook` / `service` (vacuous-true),
@@ -67,42 +79,16 @@ export interface BackfillStateLookup {
    *  adapters, not a global allow-list. Phase 2.2 callers can layer
    *  stricter checks on top if needed. */
   isComplete(platform: string, slug: string): boolean;
-  /** Force a re-read of every row from SQLite. Called by
-   *  instance-lifecycle rpcs (enroll / delete / resync) that mutate
-   *  `collection_instances` outside the helper's view, and by tests. */
-  refresh(): void;
-  /** Mark a single `(platform, slug)` pair stale so the next
-   *  `isComplete` call falls through to SQLite. Cheaper than a full
-   *  `refresh()` for the common single-instance mutation case. Safe to
-   *  call from rpc handlers after `instances.upsert` /
-   *  `instances.markBackfillComplete` resolves. */
-  invalidate(platform: string, slug: string): void;
 }
 
 export interface CreateBackfillStateLookupOptions {
   instances: CollectionInstanceStore;
 }
 
-const cacheKey = (platform: string, slug: string): string =>
-  `${platform}:${slug}`;
-
 export const createBackfillStateLookup = (
   opts: CreateBackfillStateLookupOptions,
 ): BackfillStateLookup => {
   const { instances } = opts;
-
-  // Cache: `${platform}:${slug}` → backfill_complete bool. Populated
-  // lazily — first `isComplete` call for a key reads from SQLite,
-  // subsequent calls hit the cache until invalidated. `refresh()`
-  // bulk-populates from a single `instances.list()` walk.
-  const cache = new Map<string, boolean>();
-
-  const readRow = (
-    platform: string,
-    slug: string,
-  ): CollectionInstanceRecord | null => {
-    return instances.get(platform as CollectionPlatform, slug);
-  };
 
   const computeForRow = (row: CollectionInstanceRecord): boolean => {
     if (!DRAINING_PLATFORMS.has(row.platform)) {
@@ -119,57 +105,26 @@ export const createBackfillStateLookup = (
     // across every feeder's bool. We list per-platform rather than
     // pulling the full table so the working set stays bounded by
     // mail+calendar instance count.
-    let everyFeederComplete = true;
-    let anyFeederExists = false;
     for (const platform of CONTACT_FEEDERS) {
       for (const row of instances.list(platform)) {
-        anyFeederExists = true;
-        if (!row.backfill_complete) {
-          everyFeederComplete = false;
-          // Don't break — refresh() side of the call still wants
-          // populated cache entries for every observed row.
-          cache.set(cacheKey(row.platform, row.slug), false);
-        } else {
-          cache.set(cacheKey(row.platform, row.slug), true);
-        }
+        if (!row.backfill_complete) return false;
       }
     }
-    if (!anyFeederExists) return true;
-    return everyFeederComplete;
+    return true;
   };
 
   return {
     isComplete(platform, slug) {
-      if (platform === 'contact') {
-        // Always recompute — feeder churn (a fresh mail enroll
-        // mid-flight) is the common case and caching the AND would
-        // require invalidation on every feeder mutation. Cheap walk.
-        return computeContact();
-      }
-      const key = cacheKey(platform, slug);
-      const cached = cache.get(key);
-      if (cached !== undefined) return cached;
-      const row = readRow(platform, slug);
-      if (!row) {
-        // Unknown (platform, slug) — return true so events flow
-        // through. Phase 2.2's suppression gate is opt-in by row
-        // presence; an event for a row we never tracked means a test
-        // fixture or a non-collection-platform emit (recipe-internal
-        // synthesis, fixture data). Don't suppress.
-        return true;
-      }
-      const complete = computeForRow(row);
-      cache.set(key, complete);
-      return complete;
-    },
-    refresh() {
-      cache.clear();
-      for (const row of instances.list()) {
-        cache.set(cacheKey(row.platform, row.slug), computeForRow(row));
-      }
-    },
-    invalidate(platform, slug) {
-      cache.delete(cacheKey(platform, slug));
+      // `contact` is derived from every mail / calendar feeder.
+      if (platform === 'contact') return computeContact();
+      const row = instances.get(platform as CollectionPlatform, slug);
+      // Unknown (platform, slug) — return true so events flow through.
+      // The suppression gate is opt-in by row presence; an event for a
+      // row we never tracked means a test fixture or a
+      // non-collection-platform emit (recipe-internal synthesis, a
+      // mail fact, fixture data). Don't suppress.
+      if (!row) return true;
+      return computeForRow(row);
     },
   };
 };

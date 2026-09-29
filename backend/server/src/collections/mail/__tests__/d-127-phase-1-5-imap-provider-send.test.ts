@@ -21,6 +21,7 @@ import { IngredientError } from '@recued/ingredients';
 import {
   buildImapRfc5322,
   createImapProvider,
+  smtpProvablyNotAccepted,
   generateImapMessageId,
   IMAP_SENT_FOLDER_FALLBACK_CANDIDATES,
   findSentFolder,
@@ -483,5 +484,73 @@ describe('D-127 P1.5 — SMTP error mapping', () => {
     } catch (err) {
       expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
     }
+  });
+});
+
+describe('which SMTP failures PROVE the message never left (`not_sent`)', () => {
+  const smtpErr = (fields: Record<string, unknown>): Error =>
+    Object.assign(new Error(String(fields.message ?? 'smtp failed')), fields);
+
+  it.each([
+    ['a 4xx reply (the server deferred it)', { code: 'EENVELOPE', responseCode: 451, command: 'RCPT TO' }],
+    ['a 5xx reply after the message (the server refused it)', { code: 'EMESSAGE', responseCode: 554, command: 'DATA' }],
+    ['a failed sign-in', { code: 'EAUTH', command: 'AUTH PLAIN' }],
+    ['an unresolvable host', { code: 'EDNS', command: 'CONN' }],
+    ['a TLS handshake failure', { code: 'ETLS', command: 'CONN' }],
+    ['an envelope refused before sending', { code: 'EENVELOPE', command: 'API' }],
+    ['a refused connection', { code: 'ESOCKET', command: 'CONN', syscall: 'connect', message: 'connect ECONNREFUSED 127.0.0.1:587' }],
+  ])('proves it: %s', (_label, fields) => {
+    expect(smtpProvablyNotAccepted(smtpErr(fields))).toBe(true);
+  });
+
+  it.each([
+    // ⚠ nodemailer labels EVERY socket error and timeout `CONN`, including one in
+    // the middle of the message — so the label proves nothing.
+    ['a socket timeout, labelled CONN', { code: 'ETIMEDOUT', command: 'CONN', message: 'Timeout' }],
+    ['a connection dropped mid-session', { code: 'ECONNECTION', command: 'CONN', message: 'Connection closed unexpectedly' }],
+    ['a socket reset', { code: 'ESOCKET', command: 'CONN', message: 'read ECONNRESET', syscall: 'read' }],
+    ['a positive code left in the buffer', { code: 'ECONNECTION', command: 'CONN', responseCode: 250 }],
+    ['a plain error', { message: 'generic boom' }],
+  ])('does not prove it: %s', (_label, fields) => {
+    expect(smtpProvablyNotAccepted(smtpErr(fields))).toBe(false);
+  });
+
+  it('a refusal carries `not_sent` on the send error', async () => {
+    const h = newHarness({}, {
+      smtpThrowOn: smtpErr({ code: 'EAUTH', responseCode: 535, message: 'Authentication failed' }),
+    });
+    await h.provider.connect();
+    assertSendCapable(h.provider);
+    const err = await h.provider.send(minimalMsg).then(() => null, (caught: unknown) => caught);
+    expect((err as IngredientError).details).toMatchObject({ not_sent: true });
+  });
+
+  it('an uncertain failure does not', async () => {
+    const h = newHarness({}, { smtpThrowOn: smtpErr({ code: 'ETIMEDOUT', command: 'CONN' }) });
+    await h.provider.connect();
+    assertSendCapable(h.provider);
+    const err = await h.provider.send(minimalMsg).then(() => null, (caught: unknown) => caught);
+    expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
+    expect((err as IngredientError).details?.not_sent).toBeUndefined();
+  });
+
+  /** 🔴 FOUND LIVE: the transport factory threw (a `require` gap) from OUTSIDE the
+   *  SMTP error mapping, so the send claim was left unresolved and every retry was
+   *  refused. Nothing can have left when there was no transport to send it. */
+  it('a transport that cannot be built sent nothing — and says so', async () => {
+    const provider = createImapProvider({
+      slug: 'work',
+      config: () => baseConfig(),
+      clientFactory: () => new FakeImapClient(),
+      smtpFactory: () => { throw new ReferenceError('require is not defined'); },
+      messageIdUuid: () => 'fixed-uuid-1234',
+    });
+    await provider.connect();
+    assertSendCapable(provider);
+    const err = await provider.send(minimalMsg).then(() => null, (caught: unknown) => caught);
+    expect(err).toBeInstanceOf(IngredientError);
+    expect((err as IngredientError).code).toBe('MAIL_SEND_NETWORK_FAILED');
+    expect((err as IngredientError).message).toContain('require is not defined');
+    expect((err as IngredientError).details).toMatchObject({ kind: 'imap', slug: 'work', not_sent: true });
   });
 });

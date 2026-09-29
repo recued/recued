@@ -109,6 +109,30 @@ describe('age-based prune', () => {
   });
 });
 
+describe('onPruned (D-315: a mail fact follows its email)', () => {
+  const withHook = (onPruned: (ids: readonly string[]) => void): CollectionRetention =>
+    createCollectionRetention({ table, platform: 'mail', slug: 'work', config: () => cfg, now: () => NOW, onPruned });
+
+  it('is told which rows went, and only when some did', async () => {
+    const calls: (readonly string[])[] = [];
+    const pruner = withHook((ids) => calls.push(ids));
+    table.upsert(mkRecord({ record_id: 'old', received_at: NOW - 10 * MS_PER_DAY }));
+    table.upsert(mkRecord({ record_id: 'new', received_at: NOW }));
+    await pruner.run();
+    await pruner.run();
+    expect(calls).toEqual([['old']]);
+  });
+
+  it('never fails the prune when it throws — the rows are already gone', async () => {
+    const pruner = withHook(() => {
+      throw new Error('fact store locked');
+    });
+    table.upsert(mkRecord({ record_id: 'old', received_at: NOW - 10 * MS_PER_DAY }));
+    await expect(pruner.run()).resolves.toMatchObject({ pruned_count: 1 });
+    expect(table.get('old')).toBeNull();
+  });
+});
+
 describe('retention disabled (retentionDays = 0)', () => {
   it('skips pruning and reports the reason', async () => {
     cfg = { retentionDays: 0 };

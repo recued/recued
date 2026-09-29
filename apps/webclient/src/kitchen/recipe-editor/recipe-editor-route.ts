@@ -11,13 +11,18 @@ import type {
   RecipeStep,
   Condition,
   ConditionOp,
+  MailFactTypeSpec,
   VariableDefault,
   WebhookIngressBindingSelection,
   WebhookIngressView,
 } from '@recued/contracts';
 import {
   FORM_RESPONSE_ON_SHORTHAND,
+  MAIL_FACT_BUILTIN_TYPES,
+  mailFactOn,
   parseCondition,
+  parseTriggerOn,
+  recipeEventTriggerNotes,
   UNARY_OPS,
   validateRecipeEventTriggerEntry,
   WEBHOOK_PROFILE_REGISTRY,
@@ -29,6 +34,7 @@ import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.j
 import type { RecipeSimulationResult } from '@recued/contracts';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { RunModal } from '@recued/ui-shared';
 
 import {
   applyFieldToStep,
@@ -80,8 +86,8 @@ export const RECIPE_EDITOR_REMOVE_ATTR = 'data-recued-recipe-editor-remove';
 /** Per-step "move up" / "move down" reorder buttons — value is the step id. */
 export const RECIPE_EDITOR_MOVE_UP_ATTR = 'data-recued-recipe-editor-move-up';
 export const RECIPE_EDITOR_MOVE_DOWN_ATTR = 'data-recued-recipe-editor-move-down';
-/** The "+ Skip when" / "+ Fail on" reveal buttons on a step card with no
- *  condition set — value is `<step_id>:<field>`. */
+/** The "+ Skip when" / "+ Fail on" / "+ Stop when" reveal buttons on a step
+ *  card with no condition set — value is `<step_id>:<field>`. */
 export const RECIPE_EDITOR_COND_ADD_ATTR = 'data-recued-recipe-editor-cond-add';
 /** The Steps-header Collapse-all / Expand-all toggle. */
 export const RECIPE_EDITOR_COLLAPSE_ALL_ATTR =
@@ -123,6 +129,10 @@ export const RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR =
   'data-recued-recipe-editor-trigger-form-id';
 /** Editable raw warehouse-bus pattern on a custom trigger. */
 export const RECIPE_EDITOR_TRIGGER_EVENT_ATTR = 'data-recued-recipe-editor-trigger-event';
+/** A mail-fact trigger's controls (D-315 §5.1) — value is `<index>:type`,
+ *  `<index>:field:<name>`, `<index>:where`, `<index>:value` or
+ *  `<index>:problems`. */
+export const RECIPE_EDITOR_TRIGGER_FACT_ATTR = 'data-recued-recipe-editor-trigger-fact';
 /** Per-row remove control — value is its array index. */
 export const RECIPE_EDITOR_TRIGGER_REMOVE_ATTR = 'data-recued-recipe-editor-trigger-remove';
 /** New-trigger kind picker. */
@@ -131,6 +141,9 @@ export const RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR =
 /** New custom-trigger event pattern input. */
 export const RECIPE_EDITOR_TRIGGER_ADD_EVENT_ATTR =
   'data-recued-recipe-editor-trigger-add-event';
+/** New mail-fact trigger's kind of email (`''`: any kind). */
+export const RECIPE_EDITOR_TRIGGER_ADD_FACT_TYPE_ATTR =
+  'data-recued-recipe-editor-trigger-add-fact-type';
 /** Add-trigger action. */
 export const RECIPE_EDITOR_TRIGGER_ADD_ATTR = 'data-recued-recipe-editor-trigger-add';
 /** Accepted-response event → full-record reader bridge (`missing` /
@@ -215,6 +228,10 @@ export interface BootstrapRecipeEditorRouteOptions {
   /** Present only on the owner Kitchen surface. MCP authoring deliberately has
    * no equivalent arm authority. */
   webhookControl?: RecipeWebhookControl;
+  /** D-315 §5.1 — the kinds of email the owner made on this server, so a
+   *  mail-fact trigger can watch their variables too. Without it the pickers
+   *  offer the built-in kinds' alone. */
+  mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
   initialRecipe?: RecipeDefinition;
   /** A caller-provided draft that has never been persisted. New-recipe entry
    *  points set this so the shell leave guard protects the seeded work even
@@ -250,8 +267,8 @@ interface RecipeEditorState {
   /** Step ids whose cards render collapsed (summary only). Survives rerenders;
    *  a fresh (added) step is never in here, so it opens for editing. */
   collapsed: Set<string>;
-  /** `<step_id>:<field>` keys whose empty skip_when / fail_on builder is
-   *  force-shown (the user clicked "+ Skip when" / "+ Fail on"). A set field
+  /** `<step_id>:<field>` keys whose empty skip_when / fail_on / stop_when
+   *  builder is force-shown (the user clicked its "+" button). A set field
    *  always shows its builder without needing an entry here. */
   openConditions: Set<string>;
   /** Bumped by every edit. A save captures the epoch at dispatch; if edits
@@ -300,8 +317,45 @@ const TRANSFORM_NAMES: readonly string[] = Object.keys(TRANSFORM_SCHEMAS).sort()
  *  ValueHint field accepted by design; see value-hint.ts CONTRACT_GAP). */
 const CONNECTION_KINDS = ['api', 'mcp', 'notification'] as const;
 
-const ADD_TRIGGER_KINDS = ['A form answer you accepted', 'Your own event pattern'] as const;
+const ADD_TRIGGER_KINDS = ['A form answer you accepted', 'A mail fact', 'Your own event pattern'] as const;
 type AddTriggerKind = (typeof ADD_TRIGGER_KINDS)[number];
+
+/** D-315 §5.1 — a mail-fact trigger, on one kind of email (ruling 43) or on
+ *  any kind that has what it watches (ruling 42): the kind it names, or null. */
+const mailFactTriggerType = (trigger: RecipeEventTrigger): string | null | undefined => {
+  if (trigger.event !== undefined || typeof trigger.on !== 'string') return undefined;
+  const parsed = parseTriggerOn(trigger.on);
+  return parsed?.kind === 'mail_fact' ? parsed.type : undefined;
+};
+const isMailFactTrigger = (trigger: RecipeEventTrigger): boolean => mailFactTriggerType(trigger) !== undefined;
+
+/** Whether the owner's kinds of email are known: until they are, a kind the
+ *  recipe names that is not built in may well be one of them. */
+type OwnedMailFactKinds = 'loading' | 'loaded' | 'unread';
+
+/** The kinds a mail-fact trigger may be on: any, the built-in ones, the
+ *  owner's — and one not among them, kept as the recipe names it. It is "not
+ *  on this server" only once the server's kinds have been read. */
+const mailFactKindOptions = (
+  owned: readonly MailFactTypeSpec[],
+  current: string | null,
+  known: OwnedMailFactKinds,
+): { value: string; label: string }[] => {
+  const options = [
+    { value: '', label: 'Any kind that has what it watches' },
+    ...MAIL_FACT_BUILTIN_TYPES.map((kind) => ({ value: kind.id, label: kind.name })),
+    ...owned.map((kind) => ({ value: kind.id, label: `${kind.name} (you made it)` })),
+  ];
+  if (current !== null && !options.some((option) => option.value === current)) {
+    options.push({
+      value: current,
+      label: known === 'loaded' ? `${current} (not on this server)`
+        : known === 'loading' ? `${current} (reading your kinds of email…)`
+        : `${current} (your kinds of email could not be read)`,
+    });
+  }
+  return options;
+};
 
 /** Build a `type:'connection'` recipe variable. `type` / `connection_kind` are
  *  unlisted ValueHint fields (the structural validator accepts them by design),
@@ -323,7 +377,15 @@ const KIND_PILL_LABEL: Record<StepKind, string> = {
 
 /** The gated per-step condition fields — the one list every consumer (builder
  *  render, reveal buttons, rename carry-over, removal pruning) shares. */
-const CONDITION_FIELDS = ['skip_when', 'fail_on'] as const;
+const CONDITION_FIELDS = ['skip_when', 'fail_on', 'stop_when'] as const;
+type ConditionField = (typeof CONDITION_FIELDS)[number];
+
+/** How each condition field reads on a step card. */
+const CONDITION_LABELS: Record<ConditionField, string> = {
+  skip_when: 'Skip when',
+  fail_on: 'Fail on',
+  stop_when: 'Stop when',
+};
 
 /** Fill the optional list fields the editor reads as if they were required.
  *  ⛔ Only ADDS empty lists — never changes a value the recipe actually
@@ -822,6 +884,22 @@ export const RECIPE_EDITOR_STYLES = `
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
 }
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-fact-fields {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 16px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-fact-fields legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-trigger-bridge {
   display: flex;
   flex-wrap: wrap;
@@ -1235,6 +1313,28 @@ const makeSelect = (
   return select;
 };
 
+/** A select whose options show a label apart from their value. */
+const makeLabelledSelect = (
+  doc: Document,
+  value: string,
+  options: readonly { value: string; label: string }[],
+  fieldKey: string,
+  onChange: (next: string) => void,
+): HTMLSelectElement => {
+  const select = doc.createElement('select');
+  select.setAttribute(RECIPE_EDITOR_FIELD_ATTR, fieldKey);
+  for (const option of options) {
+    const el = doc.createElement('option');
+    el.value = option.value;
+    el.textContent = option.label;
+    if (option.value === value) el.selected = true;
+    select.appendChild(el);
+  }
+  select.value = value;
+  select.addEventListener('change', () => onChange(select.value));
+  return select;
+};
+
 const addField = (
   doc: Document,
   grid: HTMLElement,
@@ -1386,6 +1486,10 @@ export const bootstrapRecipeEditorRoute = (
     ]) ?? [],
   );
   let persistedRecipeId = state.recipe.recipe_id;
+  /** D-315 §5.1 — the owner's kinds of email, once loaded: their variables
+   *  join the mail-fact pickers. */
+  let ownedMailFactKinds: readonly MailFactTypeSpec[] = [];
+  let ownedMailFactKindsKnown: OwnedMailFactKinds = options.mailFactTypesCaller === undefined ? 'unread' : 'loading';
   let webhookStatus = options.webhookControl?.initialStatus;
   let webhookBusy = false;
   let webhookError: string | null = null;
@@ -1919,11 +2023,11 @@ export const bootstrapRecipeEditorRoute = (
       const step = state.recipe[key]?.[Number(match[2] ?? match[3])];
       const suffix = match[4] ?? 'id';
       let field = suffix === 'id' ? 'step_id' : suffix;
-      if (/^(skip_when|fail_on)([.\[]|$)/.test(suffix)) field = suffix.split(/[.\[]/)[0]!;
+      if (/^(skip_when|fail_on|stop_when)([.\[]|$)/.test(suffix)) field = suffix.split(/[.\[]/)[0]!;
       else if (suffix.startsWith('args.')) field = `arg:${suffix.slice(5).split(/[.\[]/)[0]}`;
       else if (suffix.startsWith('input.')) field = `input:${suffix.slice(6).split(/[.\[]/)[0]}`;
       else if (step && detectStepKind(step as RecipeStep) === 'transform'
-        && !['step_id', 'skip_when', 'fail_on'].includes(field)) field = `param:${suffix.split(/[.\[]/)[0]}`;
+        && !['step_id', 'skip_when', 'fail_on', 'stop_when'].includes(field)) field = `param:${suffix.split(/[.\[]/)[0]}`;
       return { stepId: step?.id, field };
     }
     if (/^output([.\[]|$)/.test(normalized)) return { field: 'output' };
@@ -2160,12 +2264,12 @@ export const bootstrapRecipeEditorRoute = (
   const renderConditionField = (
     step: RecipeStep,
     listKey: 'trigger_steps' | 'prefetch_steps' | 'steps',
-    field: 'skip_when' | 'fail_on',
+    field: ConditionField,
     grid: HTMLElement,
   ): void => {
     const raw = (step as Record<string, unknown>)[field];
     const current = conditionFieldString(raw);
-    const conditionLabel = field === 'skip_when' ? 'Skip when' : 'Fail on';
+    const conditionLabel = CONDITION_LABELS[field];
 
     if (isObjectCondition(raw)) {
       stepValue(grid, step, listKey, conditionLabel, field, raw, { type: 'object' });
@@ -2787,9 +2891,10 @@ export const bootstrapRecipeEditorRoute = (
     body.appendChild(grid);
 
     // Conditions — every kind (incl. op-steps, which extend BaseStep) carries
-    // skip_when / fail_on, but most steps set neither. Render a builder only
-    // for a field with a value (or one the user revealed); the rest stay
-    // behind "+ Skip when" / "+ Fail on" so an unconditioned card stays short.
+    // skip_when / fail_on / stop_when, but most steps set none. Render a builder
+    // only for a field with a value (or one the user revealed); the rest stay
+    // behind "+ Skip when" / "+ Fail on" / "+ Stop when" so an unconditioned
+    // card stays short.
     const condControls = doc.createElement('div');
     condControls.className = 'recipe-editor-cond-controls';
     const condLabel = doc.createElement('span');
@@ -2806,10 +2911,13 @@ export const bootstrapRecipeEditorRoute = (
       if (conditionFieldString(value) !== '' || revealed) {
         renderConditionField(step, listKey, field, condGrid);
         builtAny = true;
-      } else {
+      } else if (field !== 'stop_when' || listKey === 'steps') {
+        // `stop_when` works on a step in `steps` only (the validator refuses it on
+        // prefetch and trigger steps), so it is not OFFERED there. One already
+        // set still shows above, where the refusal can be seen and fixed.
         const reveal = makeButton(
           doc,
-          field === 'skip_when' ? '+ Skip when' : '+ Fail on',
+          `+ ${CONDITION_LABELS[field]}`,
           'secondary',
           'xs',
           () => {
@@ -2822,7 +2930,7 @@ export const bootstrapRecipeEditorRoute = (
         reveal.setAttribute(RECIPE_EDITOR_COND_ADD_ATTR, `${step.id}:${field}`);
         reveal.setAttribute(
           'aria-label',
-          `Add ${field === 'skip_when' ? 'Skip when' : 'Fail on'} condition for step ${step.id}`,
+          `Add ${CONDITION_LABELS[field]} condition for step ${step.id}`,
         );
         condControls.appendChild(reveal);
       }
@@ -3633,6 +3741,206 @@ export const bootstrapRecipeEditorRoute = (
     host2.appendChild(section);
   };
 
+    /** D-315 §5.1 — "A mail fact": the values whose change wakes it, one "only
+   *  when" and its value, checked as they change by the check the recipe is
+   *  validated with, with what no built-in kind has named as a note. It names
+   *  no kind of email: each value is labelled with the kinds that have it,
+   *  the owner's included. No template picker: a recipe names its template
+   *  through its template variable (§5.2) — an id from this server would match
+   *  nothing on another. */
+  const renderMailFactTrigger = (
+    fields: HTMLElement,
+    body: HTMLElement,
+    index: number,
+    trigger: RecipeEventTrigger,
+  ): HTMLElement => {
+    const part = (name: string): string => `${index}:${name}`;
+    let current = trigger;
+    const problems = doc.createElement('span');
+    problems.className = 'recipe-editor-field-error';
+    problems.setAttribute('role', 'status');
+    problems.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('problems'));
+    const notes = doc.createElement('span');
+    notes.className = 'recipe-editor-hint';
+    notes.setAttribute('role', 'status');
+    notes.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('notes'));
+    const showProblems = (): void => {
+      problems.textContent = validateRecipeEventTriggerEntry(current).join(' ');
+      notes.textContent = recipeEventTriggerNotes(current).join(' ');
+    };
+    /** A value edit: no other control depends on it. */
+    const patch = (next: RecipeEventTrigger): void => {
+      current = next;
+      patchEventTrigger(index, next);
+      showProblems();
+    };
+    /** A choice that changes which controls the row shows. */
+    const replace = (next: RecipeEventTrigger): void => {
+      const triggers = [...(state.recipe.event_triggers ?? [])];
+      triggers[index] = next;
+      mutateAndRerender({ ...state.recipe, event_triggers: triggers });
+    };
+    const withWhere = (where: Record<string, string | number | boolean>): RecipeEventTrigger => {
+      const next = { ...current };
+      if (Object.keys(where).length > 0) next.where = where;
+      else delete next.where;
+      return next;
+    };
+    const type = mailFactTriggerType(current) ?? null;
+    const kindSelect = makeLabelledSelect(
+      doc,
+      type ?? '',
+      mailFactKindOptions(ownedMailFactKinds, type, ownedMailFactKindsKnown),
+      `event_trigger_fact_type:${index}`,
+      (value) => {
+        // What was watched and filtered belongs to the kind it was for.
+        const next: RecipeEventTrigger = { ...current, on: mailFactOn(value === '' ? null : value) };
+        delete next.fields;
+        delete next.where;
+        replace(next);
+      },
+    );
+    kindSelect.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('type'));
+    addField(doc, fields, 'Kind of email', kindSelect);
+    const vocabulary = RunModal.mailFactVocabulary(ownedMailFactKinds, type);
+    const labelOf = (name: string): string => {
+      const choice = vocabulary.find((candidate) => candidate.name === name);
+      return choice === undefined ? RunModal.humanizeFactName(name) : RunModal.mailFactChoiceLabel(choice, ownedMailFactKinds, type);
+    };
+
+    // What it watches: the chosen values, then one more to choose.
+    const watched = current.fields ?? [];
+    const watch = doc.createElement('fieldset');
+    watch.className = 'recipe-editor-fact-fields';
+    appendText(doc, watch, 'legend', 'Wake when one of these changes — none chosen: on every change');
+    for (const name of watched) {
+      const label = doc.createElement('label');
+      label.className = 'recipe-editor-field-checkbox';
+      const box = doc.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      box.setAttribute(RECIPE_EDITOR_FIELD_ATTR, `event_trigger_fact_field:${index}:${name}`);
+      box.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part(`field:${name}`));
+      box.addEventListener('change', () => {
+        // Kept in place until the row repaints, to tick again.
+        const kept = (current.fields ?? []).filter((field) => field !== name);
+        const picked = box.checked ? watched.filter((field) => field === name || kept.includes(field)) : kept;
+        const next = { ...current };
+        if (picked.length > 0) next.fields = picked;
+        else delete next.fields;
+        patch(next);
+      });
+      label.appendChild(box);
+      appendText(doc, label, 'span', labelOf(name));
+      watch.appendChild(label);
+    }
+    fields.appendChild(watch);
+    const add = makeLabelledSelect(
+      doc,
+      '',
+      [
+        { value: '', label: 'choose a value…' },
+        ...vocabulary
+          .filter((choice) => !watched.includes(choice.name))
+          .map((choice) => ({ value: choice.name, label: RunModal.mailFactChoiceLabel(choice, ownedMailFactKinds, type) })),
+      ],
+      `event_trigger_fact_field_add:${index}`,
+      (value) => {
+        if (value === '' || (current.fields ?? []).includes(value)) return;
+        replace({ ...current, fields: [...(current.fields ?? []), value] });
+      },
+    );
+    add.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('field-add'));
+    addField(doc, fields, watched.length > 0 ? 'Also watch' : 'Watch', add);
+
+    const whereOptions = RunModal.mailFactWhereOptions(ownedMailFactKinds, type);
+    const where = current.where ?? {};
+    const editable = Object.keys(where).find((key) => whereOptions.some((option) => option.name === key));
+    const chosen = whereOptions.find((option) => option.name === editable);
+    const variable = makeLabelledSelect(
+      doc,
+      editable ?? '',
+      [
+        { value: '', label: 'Always' },
+        ...whereOptions.map((option) => ({
+          value: option.name,
+          label: option.kind === 'complete' ? 'Every required value was read' : labelOf(option.name),
+        })),
+      ],
+      `event_trigger_fact_where:${index}`,
+      (value) => {
+        const nextWhere = { ...(current.where ?? {}) };
+        if (editable !== undefined) delete nextWhere[editable];
+        const picked = whereOptions.find((option) => option.name === value);
+        // A closed kind starts at its first value; an open one is typed next.
+        if (picked !== undefined && !(picked.name in nextWhere)) {
+          nextWhere[picked.name] = picked.values === undefined
+            ? ''
+            : picked.kind === 'complete' || picked.kind === 'boolean' ? true : picked.values[0]!;
+        }
+        replace(withWhere(nextWhere));
+      },
+    );
+    variable.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('where'));
+    addField(doc, fields, 'Only when', variable);
+
+    if (chosen !== undefined && editable !== undefined) {
+      const stored = where[editable];
+      const setWhereValue = (value: string | number | boolean): void =>
+        patch(withWhere({ ...(current.where ?? {}), [editable]: value }));
+      let control: HTMLInputElement | HTMLSelectElement;
+      if (chosen.values !== undefined) {
+        const yesNo = chosen.kind === 'complete' || chosen.kind === 'boolean';
+        control = makeLabelledSelect(
+          doc,
+          String(stored),
+          chosen.values.map((value) => ({
+            value,
+            label: yesNo ? (value === 'true' ? 'Yes' : 'No') : RunModal.humanizeFactName(value),
+          })),
+          `event_trigger_fact_value:${index}`,
+          (raw) => {
+            const typed = RunModal.mailFactWhereValue(chosen, raw);
+            if ('value' in typed) setWhereValue(typed.value);
+          },
+        );
+      } else {
+        control = makeTextInput(doc, stored === undefined ? '' : String(stored), `event_trigger_fact_value:${index}`, (raw) => {
+          const typed = RunModal.mailFactWhereValue(chosen, raw);
+          // What a fact cannot hold is kept as typed, for the check to name.
+          setWhereValue('value' in typed ? typed.value : raw.trim());
+        });
+        if (chosen.kind === 'date') control.type = 'date';
+      }
+      control.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('value'));
+      addField(doc, fields, 'Must be', control);
+    }
+
+    const others = Object.fromEntries(Object.entries(where).filter(([key]) => key !== editable));
+    if (Object.keys(others).length > 0) addReadonlyField(doc, fields, 'Other filters', JSON.stringify(others));
+
+    const hint = doc.createElement('span');
+    hint.className = 'recipe-editor-hint';
+    const typeSpec = type === null ? undefined : RunModal.mailFactTypeOf(type, ownedMailFactKinds);
+    hint.textContent = (type === null
+      ? 'Starts when a fact read from mail is new or changes, whatever kind of email it came from, if it has what this watches'
+      : `Starts when ${RunModal.withIndefiniteArticle((typeSpec?.name ?? type).toLowerCase())} read from mail is new or changes`)
+      + `${Object.keys(others).length > 0 ? ', and the other filters shown still apply' : ''}. Later steps read its values at `;
+    const ref = doc.createElement('code');
+    ref.textContent = '{{context.event.payload.record}}';
+    hint.appendChild(ref);
+    appendText(doc, hint, 'span', ', and its kind at ');
+    const kindRef = doc.createElement('code');
+    kindRef.textContent = '{{context.event.payload.record.type}}';
+    hint.appendChild(kindRef);
+    appendText(doc, hint, 'span', '.');
+    body.appendChild(hint);
+    body.appendChild(problems);
+    body.appendChild(notes);
+    showProblems();
+    return kindSelect;
+  };
+
   const renderTriggersSection = (host2: HTMLElement): void => {
     const triggers = state.recipe.event_triggers ?? [];
     const section = doc.createElement('section');
@@ -3723,6 +4031,11 @@ export const bootstrapRecipeEditorRoute = (
             + 'still apply. The reader below gets the whole answer once you have said yes to it.',
         );
         readerHint.className = 'recipe-editor-hint';
+      } else if (isMailFactTrigger(trigger)) {
+        appendText(doc, title, 'span', 'A mail fact');
+        const code = appendText(doc, title, 'code', trigger.on ?? '');
+        code.className = 'recipe-editor-trigger-code';
+        triggerFocusTarget = renderMailFactTrigger(fields, body, index, trigger);
       } else if (typeof trigger.event === 'string') {
         appendText(doc, title, 'span', 'Your own event pattern');
         const code = appendText(doc, title, 'code', 'event');
@@ -3838,6 +4151,7 @@ export const bootstrapRecipeEditorRoute = (
     const draft = {
       kind: ADD_TRIGGER_KINDS[0] as AddTriggerKind,
       event: '',
+      factType: '',
     };
     const addWrap = doc.createElement('div');
     addWrap.className = 'recipe-editor-add recipe-editor-add--compact';
@@ -3864,7 +4178,7 @@ export const bootstrapRecipeEditorRoute = (
 
     const eventField = doc.createElement('div');
     eventField.className = 'recipe-editor-field';
-    appendText(doc, eventField, 'label', 'Event pattern');
+    const eventLabel = appendText(doc, eventField, 'label', 'Event pattern');
     addWrap.appendChild(eventField);
 
     let addTrigger: HTMLButtonElement | undefined;
@@ -3882,7 +4196,15 @@ export const bootstrapRecipeEditorRoute = (
       while (eventField.children.length > 1) {
         eventField.removeChild(eventField.children[eventField.children.length - 1]!);
       }
-      if (draft.kind === 'Your own event pattern') {
+      eventLabel.textContent = draft.kind === 'A mail fact' ? 'Kind of email' : 'Event pattern';
+      if (draft.kind === 'A mail fact') {
+        const select = makeLabelledSelect(doc, draft.factType, mailFactKindOptions(ownedMailFactKinds, null, ownedMailFactKindsKnown), 'event_trigger_add_fact_type', (value) => {
+          draft.factType = value;
+        });
+        select.setAttribute(RECIPE_EDITOR_TRIGGER_ADD_FACT_TYPE_ATTR, '');
+        select.setAttribute('aria-label', 'Kind of email');
+        eventField.appendChild(select);
+      } else if (draft.kind === 'Your own event pattern') {
         const input = makeTextInput(doc, draft.event, 'event_trigger_add_event', (value) => {
           draft.event = value;
           syncAddTrigger();
@@ -3910,7 +4232,9 @@ export const bootstrapRecipeEditorRoute = (
     addTrigger = makeButton(doc, 'Add trigger', 'secondary', 'sm', () => {
       const nextTrigger: RecipeEventTrigger = draft.kind === 'A form answer you accepted'
         ? { on: FORM_RESPONSE_ON_SHORTHAND }
-        : { event: draft.event.trim() };
+        : draft.kind === 'A mail fact'
+          ? { on: mailFactOn(draft.factType === '' ? null : draft.factType) }
+          : { event: draft.event.trim() };
       if (
         draft.kind === 'Your own event pattern'
           ? !canAddCustomEvent()
@@ -4460,6 +4784,18 @@ export const bootstrapRecipeEditorRoute = (
   if (focusHeadingOnMount) {
     routeHeading?.focus?.({ preventScroll: true });
   }
+  void options.mailFactTypesCaller?.().then(({ types }) => {
+    if (disposed) return;
+    ownedMailFactKinds = types;
+    ownedMailFactKindsKnown = 'loaded';
+    if ((state.recipe.event_triggers ?? []).some(isMailFactTrigger)) rerender();
+  }, () => {
+    // The pickers keep the built-in kinds, and a kind the recipe names is not
+    // called missing: it may be one of the owner's.
+    if (disposed) return;
+    ownedMailFactKindsKnown = 'unread';
+    if ((state.recipe.event_triggers ?? []).some(isMailFactTrigger)) rerender();
+  });
 
   // Cmd/Ctrl+S saves — the reflex every editor user has. Scoped and gated:
   // the listener sits on the document (a focused field must not swallow it),

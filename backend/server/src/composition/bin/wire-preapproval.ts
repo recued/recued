@@ -29,6 +29,8 @@ export const composePreapproval = (deps: {
   mail?: Pick<Parameters<typeof createPreapprovalMail>[0], 'registry' | 'instances' | 'blobs'>;
   now?: () => number;
   onActivationChanged?: () => void | Promise<void>;
+  /** D-315 §6.4 — the recovery clock's runs go on the trigger dispatcher's books. */
+  settleRecoveredTrigger?: Parameters<typeof createPreapprovalDriver>[0]['settleRecovered'];
 }) => {
   if (!deps.execution.opAdmissionGate || !deps.execution.approvalResumeAuthority
     || !deps.execution.commitStore || !deps.execution.checkpointStore || !deps.execution.gatedActionStore) {
@@ -70,7 +72,8 @@ export const composePreapproval = (deps: {
     ...(deps.onActivationChanged ? { onActivationChanged: deps.onActivationChanged } : {}),
     maintain: async () => { mail?.releaseExpired(deps.now?.() ?? Date.now()); await runtime.maintain(); } });
   const driver = createPreapprovalDriver({ storage: deps.storage, activations, runtime,
-    execution: deps.execution, pumpOutbox: () => outbox.drain() });
+    execution: deps.execution, pumpOutbox: () => outbox.drain(),
+    ...(deps.settleRecoveredTrigger ? { settleRecovered: deps.settleRecoveredTrigger } : {}) });
   deps.execution.preapprovalRuntime = runtime;
   deps.execution.mailDraft = async (method, raw, meta) => drafts.kernel(method, raw, meta);
   // D-264 — wired only when the mail stack is up, because the export needs a

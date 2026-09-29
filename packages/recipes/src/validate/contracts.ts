@@ -11,10 +11,17 @@
  *
  *  Also validates that AI function ingredients have all the `llm.*`
  *  inputs their contract requires (ai-classify needs llm.categories,
- *  etc.).
+ *  etc.), and that every read of a contracted AI step's result names a
+ *  field its function returns.
  */
 
-import { isBatchCapableAISlug, isEntityFieldPrivacy, stripCorePrefix } from '@recued/contracts';
+import {
+  AI_RESULT_FIELDS,
+  isBatchCapableAISlug,
+  isEntityFieldPrivacy,
+  recipeOutputSections,
+  stripCorePrefix,
+} from '@recued/contracts';
 import { getKernelOp } from '@recued/contracts';
 import { AI_FUNCTION_REQUIRED_INPUTS, KERNEL_REQUIRED_INPUTS } from './constants.js';
 import { REF_PATTERN, validateConditionField, type AddFn } from './helpers.js';
@@ -91,6 +98,103 @@ export const validateContracts = (r: Record<string, unknown>, add: AddFn): void 
         + 'connection generates one op per tool, each with its own risk tier and approval.');
     }
   }
+
+  validateAiResultReads(r, add);
+};
+
+/** The fields a contracted AI function's result carries, by bare slug. The
+ *  parser builds each result from exactly these (`packages/llm/src/parse.ts`)
+ *  and drops anything else the model wrote. `ai-extract` (its fields are the
+ *  call's own `llm.fields`), `ai-prompt` (uncontracted) and `ai-compare` have
+ *  no entry, so reads of them are not checked. */
+const aiResultFields = (slug: string): readonly string[] | undefined =>
+  (AI_RESULT_FIELDS as Readonly<Record<string, readonly string[] | undefined>>)[slug];
+
+const STEP_FIELD_REF = /\{\{\s*step\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_]+)[^}]*\}\}/g;
+const STEP_FIELD_SOURCE = /^\s*step\.([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z0-9_]+)/;
+
+/** Every string in the recipe, with the validator's path to it
+ *  (`steps[3].fields[1].value`, `steps[0].args['llm.data']`). */
+const walkStrings = (
+  value: unknown,
+  path: string,
+  visit: (path: string, text: string) => void,
+): void => {
+  if (typeof value === 'string') {
+    visit(path, value);
+  } else if (Array.isArray(value)) {
+    value.forEach((item, i) => walkStrings(item, `${path}[${i}]`, visit));
+  } else if (isRecord(value)) {
+    for (const [key, child] of Object.entries(value)) {
+      const childPath = !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? `${path}['${key}']`
+        : path === '' ? key : `${path}.${key}`;
+      walkStrings(child, childPath, visit);
+    }
+  }
+};
+
+/** Flag a read of a field a contracted AI step never returns.
+ *
+ *  The step's stored result IS the parsed contract object: `executeLLM` returns
+ *  it and the dispatcher passes it through unchanged. So `{{step.scoring.confidence}}`
+ *  on an `ai-score` step, or an output section sourcing `step.summary.result` as
+ *  though the result were wrapped the way a catalog op's is, resolves to nothing
+ *  on every run. 32 shipped recipes did one or the other: two stored a constant
+ *  0.6 fallback as each deal's confidence, and thirty briefs showed an empty block
+ *  or row where the AI's summary belonged.
+ *
+ *  Both read forms are checked: a `{{step.<id>.<field>…}}` template anywhere but
+ *  `metadata.readme` (prose, see `validateReferences`), and an output section's
+ *  `source`, which the engine resolves as the same template. Only the segment
+ *  after the step id is checked — deeper segments walk the field's own value
+ *  (`breakdown.0.criterion`).
+ *
+ *  Skipped where the stored result is not the contract object: batch mode
+ *  (`llm.id_field` is the switch, and `llm.data` is usually a ref here, so the
+ *  runtime's array check can't be made), `foreach` (per-iteration envelopes), and
+ *  a step-level `output` mapping (the author reshaped it).
+ *
+ *  ⛔ 'warn', NOT 'error', for the reason on `validateKernelRequiredInputs`: an
+ *  error would stop installed recipes that run today. `recipe-corpus-validity.test.ts`
+ *  holds shipped recipes at zero. */
+const validateAiResultReads = (r: Record<string, unknown>, add: AddFn): void => {
+  const aiSteps = new Map<string, { slug: string; fields: readonly string[] }>();
+  for (const list of ['prefetch_steps', 'steps'] as const) {
+    const listed = Array.isArray(r[list]) ? (r[list] as unknown[]) : [];
+    for (const s of listed) {
+      if (!isRecord(s) || typeof s.id !== 'string') continue;
+      const slug = stepSlug(s);
+      const fields = slug === undefined ? undefined : aiResultFields(slug);
+      if (slug === undefined || fields === undefined) continue;
+      const bag = isRecord(s.args) ? s.args : isRecord(s.input) ? s.input : {};
+      const batch = typeof bag['llm.id_field'] === 'string' && bag['llm.id_field'] !== '';
+      if (batch || s.foreach !== undefined || s.output !== undefined) continue;
+      aiSteps.set(s.id, { slug, fields });
+    }
+  }
+  if (aiSteps.size === 0) return;
+
+  const check = (path: string, read: string, stepId: string, field: string): void => {
+    const step = aiSteps.get(stepId);
+    if (step === undefined || step.fields.includes(field)) return;
+    add('warn', 'ai_result_field_unknown', path,
+      `${read} reads "${field}", which ${step.slug} never returns, so it is empty on every run. `
+      + `The step's result has only: ${step.fields.join(', ')}`
+      + (field === 'result' ? ' — it is not wrapped in "result" the way a catalog operation\'s result is.' : '.'));
+  };
+
+  walkStrings(r, '', (path, text) => {
+    if (path === 'metadata.readme') return;
+    for (const m of text.matchAll(STEP_FIELD_REF)) check(path, m[0], String(m[1]), String(m[2]));
+  });
+
+  const output = isRecord(r.output) ? r.output : {};
+  const sectionsKey = Array.isArray(output.render) ? 'render' : 'sidebar';
+  recipeOutputSections(r as Parameters<typeof recipeOutputSections>[0]).forEach((section, i) => {
+    const source = isRecord(section) ? section.source : undefined;
+    const m = typeof source === 'string' ? STEP_FIELD_SOURCE.exec(source) : null;
+    if (m !== null) check(`output.${sectionsKey}[${i}].source`, String(source), String(m[1]), String(m[2]));
+  });
 };
 
 /** The ingredient a step dispatches to, with any `core-` alias stripped:

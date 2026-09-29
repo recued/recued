@@ -35,6 +35,7 @@ import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 import {
   bootstrapRecipeEditorRoute,
   RECIPE_EDITOR_ROUTE_ATTR,
+  type BootstrapRecipeEditorRouteOptions,
   type RecipeEditorRoute,
   type RecipeSaveResult,
   type RecipeWebhookControl,
@@ -273,6 +274,8 @@ export interface MountRecipeEditorRouteOptions {
   }>;
   webhookArmCaller?: RecipeWebhookControl['armCaller'];
   webhookDisarmCaller?: RecipeWebhookControl['disarmCaller'];
+  /** D-315 §5.1 — the owner's kinds of email, for the mail-fact pickers. */
+  mailFactTypesCaller?: BootstrapRecipeEditorRouteOptions['mailFactTypesCaller'];
   onSaved?: (result: RecipeSaveResult) => void;
 }
 
@@ -309,6 +312,8 @@ export interface MountFormResponseRecipeSeedRouteOptions {
     recipe: RecipeDefinition;
     publisher_id?: string;
   }) => Promise<RecipeSaveResult>;
+  /** D-315 §5.1 — the owner's kinds of email, for the mail-fact pickers. */
+  mailFactTypesCaller?: BootstrapRecipeEditorRouteOptions['mailFactTypesCaller'];
   onSaved?: (result: RecipeSaveResult) => void;
 }
 
@@ -486,6 +491,7 @@ export const mountRecipeEditorRoute = (
         simulateCaller: options.simulateCaller,
         saveCaller: options.saveCaller,
         ...(webhookControl ? { webhookControl } : {}),
+        ...(options.mailFactTypesCaller !== undefined ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });
     } catch (error: unknown) {
@@ -594,6 +600,7 @@ export const mountFormResponseRecipeSeedRoute = (
         validateCaller: options.validateCaller,
         simulateCaller: options.simulateCaller,
         saveCaller: options.saveCaller,
+        ...(options.mailFactTypesCaller !== undefined ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });
     } catch (error: unknown) {

@@ -108,6 +108,14 @@ export interface MailStackStorageDeps {
    *  Threaded through to `createMailCollection.onMessageUpserted` so
    *  contact rows materialise from From/To/CC headers as mail lands. */
   onMessageUpserted?: CreateMailCollectionOptions['onMessageUpserted'];
+  /** D-315 — forwarded to `createMailCollection.onMessageStored`: a first
+   *  sighting is recorded as news the moment its row lands. */
+  onMessageStored?: CreateMailCollectionOptions['onMessageStored'];
+  /** D-315 — forwarded to `createMailCollection.onRecordsRemoved` /
+   *  `onRecordRekeyed`, so a message's derived facts follow it out and
+   *  across a move. */
+  onRecordsRemoved?: CreateMailCollectionOptions['onRecordsRemoved'];
+  onRecordRekeyed?: CreateMailCollectionOptions['onRecordRekeyed'];
   /** D-172 P2 — lazy provider of the `file.read` deps for resolving
    *  outbound `attachments` refs. Forwarded verbatim to
    *  `createMailCollection.fileReadDeps`. Lazy because the collection
@@ -231,7 +239,10 @@ const buildImapConfig = (
   };
 };
 
-const buildMailCollectionConfig = (
+/** A mailbox's backfill, retention and quota, defaults filled in. Exported so
+ *  a reader outside the collection (the mail facts list's "goes with its
+ *  email", D-315 §5.3) uses the same defaults rather than a copy of them. */
+export const buildMailCollectionConfig = (
   row: CollectionInstanceRecord,
 ): MailCollectionConfig => {
   const cfg = (row.config ?? {}) as Record<string, unknown>;
@@ -428,6 +439,15 @@ export const composeMailStack = (
         ...(bundle.now ? { now: bundle.now } : {}),
         ...(storage.onMessageUpserted
           ? { onMessageUpserted: storage.onMessageUpserted }
+          : {}),
+        ...(storage.onMessageStored
+          ? { onMessageStored: storage.onMessageStored }
+          : {}),
+        ...(storage.onRecordsRemoved
+          ? { onRecordsRemoved: storage.onRecordsRemoved }
+          : {}),
+        ...(storage.onRecordRekeyed
+          ? { onRecordRekeyed: storage.onRecordRekeyed }
           : {}),
         ...(storage.fileReadDeps
           ? { fileReadDeps: storage.fileReadDeps }

@@ -28,15 +28,15 @@ import type {
   WarehouseEvent,
   WarehouseEventBus,
 } from '@recued/warehouse-events';
-import { matchesPattern, eventPath, RUN_OUTCOME_PLATFORM } from '@recued/warehouse-events';
+import { createWarehouseEventBus, matchesPattern, eventPath, RUN_OUTCOME_PLATFORM } from '@recued/warehouse-events';
 import type { AuditLogStore } from '@recued/storage';
 import type { EventTrigger } from '@recued/contracts';
-import { matchesTriggerDispatchFilter } from '@recued/contracts';
+import { MAIL_FACT_EVENT_PLATFORM, matchesTriggerDispatchFilter } from '@recued/contracts';
 import type { EventBus } from '../events/bus.js';
 import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggersStore } from './store.js';
 import type { BackfillStateLookup } from './backfill-state.js';
-import { createTriggerDispatchQueue } from './queue.js';
+import { createTriggerDispatchQueue, TRIGGER_QUEUE_PRODUCER_DEPTH, TRIGGER_QUEUE_PRODUCER_KEYS } from './queue.js';
 import type { NotificationMessage } from '@recued/notification';
 import { presentAutomationFailure } from '../automation-failure.js';
 import {
@@ -63,8 +63,40 @@ export interface TriggerDispatchRuntime {
     trigger_id: string;
     /** Private queue metadata, never part of recipe context or public RPC. */
     candidate?: object;
-  }) => Promise<void | { skipped: true } | { total_refusal: true }>;
+    /** D-315 §6.3 — the event came from a backfill of past mail: the run is
+     *  started with `trigger_source: 'backfill'`. */
+    origin?: 'backfill';
+  }) => Promise<void | TriggerRunOutcome>;
 }
+
+/** What became of one fire. `skipped` started no run. Every other outcome may
+ *  name its run (`run_id`), and a thrown failure carries it the same way, so
+ *  `trigger_fired` can link a fire to its run for every outcome (D-315 §6.4). */
+export type TriggerRunOutcome =
+  | { skipped: true }
+  | { total_refusal: true; run_id?: string }
+  | {
+      run_id?: string;
+      /** Paused for the owner's approval or a peer's answer. */
+      held?: true;
+      /** The recipe's own trigger gate declined to act. */
+      declined?: true;
+    };
+
+/** How a started fire ended here — the `trigger_fired` entry's `detail`. */
+export type TriggerFiredOutcome = 'completed' | 'held' | 'declined' | 'total_refusal' | 'failed';
+
+/** One fire that started a run (or failed trying), as `onFired` sees it. */
+export interface TriggerFire {
+  readonly trigger: EventTrigger;
+  readonly event: WarehouseEvent;
+  readonly run_id?: string;
+  readonly outcome: TriggerFiredOutcome;
+  readonly at: number;
+}
+
+/** How often a wait for a sealed vault looks again. */
+export const DISPATCHER_VAULT_POLL_MS = 1_000;
 
 export interface EventTriggerDispatcher {
   /** Idempotent — safe to call repeatedly. Subscribes every enabled
@@ -83,6 +115,24 @@ export interface EventTriggerDispatcher {
    *  Test affordance — production callers don't need it (the drain
    *  orchestrator runs `pause_collections` upstream). */
   drained(): Promise<void>;
+  /** D-315 §6.3 — resolves once the queue has room for a producer that can
+   *  wait: fewer than half the keys it can hold, no key as deep as
+   *  `TRIGGER_QUEUE_PRODUCER_DEPTH`, and the vault open. A backfill that runs
+   *  recipes waits here rather than build a backlog behind a slow recipe. */
+  room(): Promise<void>;
+  /** D-124 — an event that reached the bus before this dispatcher subscribed
+   *  (a boot scan's), handed to its triggers exactly as the bus would have. */
+  deliver(event: WarehouseEvent): void;
+  /** D-315 §6.4 — a fire started outside the queue: the pre-approval
+   *  recovery clock runs a reviewed trigger's sealed event itself. It is run
+   *  here and kept on the same books as a queued fire — `last_fired_at`, the
+   *  error count, the `trigger_fired` entry and `onFired` — so its run is
+   *  linked like any other. A row that is gone keeps no books. */
+  settleFire(
+    trigger_id: string,
+    event: WarehouseEvent,
+    run: (trigger: EventTrigger | null) => Promise<void | TriggerRunOutcome>,
+  ): Promise<void>;
 }
 
 export interface EventTriggerDispatcherDeps {
@@ -94,6 +144,11 @@ export interface EventTriggerDispatcherDeps {
    *  an episode, and the disarm. Absent ⇒ failures are recorded on the trigger
    *  row and reach nobody, which is the pre-D-268 behaviour. */
   onAutomationFailure?: (notice: NotificationMessage, unit: AutomationUnitRef) => void;
+  /** D-315 §6.4 — told of every fire its `trigger_fired` entry records. The
+   *  mail facts list links a run to the EMAIL that caused it through this: the
+   *  entry names only the record, which for a fact is the thing, shared by
+   *  every email about it. A throw is swallowed; it never touches the fire. */
+  onFired?: (fire: TriggerFire) => void;
   /** D-121 broadcast bus — the error-cap auto-disable fans
    *  `automation_rule_changed` so the Automation governance surface
    *  sees the server-side disarm (the one rule mutation with no rpc
@@ -103,6 +158,8 @@ export interface EventTriggerDispatcherDeps {
    *  trigger auto-disables. Defaults to 10. */
   autoDisableAfterErrors24h?: number;
   now?: () => number;
+  /** How often a wait for a sealed vault looks again. Tests shorten it. */
+  vaultPollMs?: number;
   /** D-124 Phase 2.2 — backfill-state lookup. The dispatcher gates
    *  every fan-out on `isComplete(event.platform, event.slug)`. Events
    *  emitted while the source adapter is still draining its initial
@@ -121,7 +178,11 @@ export interface EventTriggerDispatcherDeps {
    *  vault state is transient, not a trigger fault. Watch-driven
    *  triggers re-detect on the next poll once unlocked; this is a
    *  best-effort at-most-once surface, so a dropped external event is
-   *  not re-delivered. Absent → un-gated (legacy / tests). */
+   *  not re-delivered. D-315: a mail fact's event queued before the vault
+   *  sealed waits for it to open instead — its fact announces once, and
+   *  nothing else delivers it — and one that comes while it is sealed, with
+   *  the preapproval driver (whose capture needs it open), is held until it
+   *  opens, in order. Absent → un-gated (legacy / tests). */
   isVaultUnlocked?: () => boolean;
   /** Late-bound because the realm review service composes after this bus. */
   getPreapprovalDriver?: () => PreapprovalDriver | undefined;
@@ -144,6 +205,10 @@ export const createEventTriggerDispatcher = (
   const errorWindowMs = 24 * 60 * 60 * 1000;
 
   const subscriptions: Subscription[] = [];
+  // What `deliver` hands over reaches the triggers through the same callbacks
+  // as the bus's own events — never through the bus, whose other subscribers
+  // heard it when it came.
+  const late = createWarehouseEventBus();
   const errorsByTrigger = new Map<string, ErrorWindowEntry[]>();
 
   const recordError = (trigger_id: string): number => {
@@ -225,6 +290,44 @@ export const createEventTriggerDispatcher = (
     emitAutomationRule(deps.eventBus, 'event_trigger');
   };
 
+  /** D-315 §6.4 — one entry per run a fire started, whatever became of it,
+   *  naming the run: what an event started (the mail-facts list's "triggered
+   *  recipes") must show a failed or held run too, not only a clean one. It was
+   *  written on a clean success only, and without the run. */
+  const logFired = async (
+    trigger: EventTrigger,
+    event: WarehouseEvent,
+    run_id: string | undefined,
+    outcome: TriggerFiredOutcome,
+  ): Promise<void> => {
+    const at = now();
+    await deps.auditLog?.logActivity({
+      activity_id: '',
+      timestamp: at,
+      action: 'trigger_fired',
+      target: `${trigger.trigger_id}|${event.record_id}`,
+      detail: outcome,
+      recipe_id: trigger.recipe_id,
+      ...(run_id !== undefined ? { run_id } : {}),
+    }).catch(() => { /* best-effort */ });
+    try {
+      deps.onFired?.({ trigger, event, ...(run_id !== undefined ? { run_id } : {}), outcome, at });
+    } catch {
+      /* an observer never touches the fire */
+    }
+  };
+
+  /** Resolves once the vault is open — at once when it is, or when nothing
+   *  seals it. */
+  const vaultOpen = async (): Promise<void> => {
+    while (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked()) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, deps.vaultPollMs ?? DISPATCHER_VAULT_POLL_MS);
+        timer.unref?.();
+      });
+    }
+  };
+
   const onEvent = async (trigger: EventTrigger, event: WarehouseEvent, candidate?: object): Promise<void> => {
     // D-124 Phase 2.2 — suppress trigger fan-out for events emitted
     // while the source adapter is still in initial-backfill drain.
@@ -233,7 +336,7 @@ export const createEventTriggerDispatcher = (
     // broadcast bridge see this event. We just don't run the user
     // recipe (and don't audit / count / clear errors) until the
     // adapter has flipped `collection_instances.backfill_complete`.
-    if (deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug)) {
+    if (event.in_drain === true || (deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug))) {
       return;
     }
     // Vault-locked gate: drop the fan-out silently while the vault is
@@ -243,7 +346,11 @@ export const createEventTriggerDispatcher = (
     // No error bookkeeping — a sealed vault is a transient condition,
     // not a trigger fault.
     if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) {
-      return;
+      // D-315 — except a mail fact's: it is its fact's one announcement (read
+      // again, the fact never fires again), so nothing would deliver it
+      // later. Queued before the vault sealed, it waits for it to open.
+      if (event.platform !== MAIL_FACT_EVENT_PLATFORM) return;
+      await vaultOpen();
     }
     // D-179 P4 — direct self-loop guard: the run-outcome event of a
     // run THIS trigger dispatched never re-fires this trigger (a
@@ -258,22 +365,35 @@ export const createEventTriggerDispatcher = (
     ) {
       return;
     }
+    await settle(trigger, event, () => deps.runtime.runRecipe({
+      recipe_id: trigger.recipe_id,
+      publisher_id: trigger.publisher_id,
+      context: triggerEventContext(trigger.trigger_id, event),
+      dish_id: trigger.dish_id ?? null,
+      trigger_id: trigger.trigger_id,
+      ...(candidate ? { candidate } : {}),
+      ...(event.origin === 'backfill' ? { origin: 'backfill' as const } : {}),
+    }));
+  };
+
+  /** One fire's books, whoever started it: what its run came to, on the row,
+   *  the error count, `trigger_fired` and `onFired`. */
+  const settle = async (
+    trigger: EventTrigger,
+    event: WarehouseEvent,
+    run: () => Promise<void | TriggerRunOutcome>,
+  ): Promise<void> => {
     try {
-      const outcome = await deps.runtime.runRecipe({
-        recipe_id: trigger.recipe_id,
-        publisher_id: trigger.publisher_id,
-        context: triggerEventContext(trigger.trigger_id, event),
-        dish_id: trigger.dish_id ?? null,
-        trigger_id: trigger.trigger_id,
-        ...(candidate ? { candidate } : {}),
-      });
+      const outcome = await run();
       if (outcome !== undefined && 'skipped' in outcome) return;
+      const runId = outcome !== undefined && 'run_id' in outcome ? outcome.run_id : undefined;
       // D-268 — a run that reported success and refused every item it attempted.
       // It is a failure for the counter's sake and NOT for the row's: the run
       // completed, so `last_error` stays null and the status is untouched. What
       // is false is the inference that it produced anything.
       if (outcome !== undefined && 'total_refusal' in outcome) {
         deps.store.update(trigger.trigger_id, { last_fired_at: now() });
+        await logFired(trigger, event, runId, 'total_refusal');
         const verdict = handleFailure(trigger, undefined, true,
           'This run attempted items and every one was refused.');
         if (verdict === 'stop') await disableTrigger(trigger, 'total_refusal');
@@ -284,12 +404,16 @@ export const createEventTriggerDispatcher = (
         last_error: null,
       });
       clearErrors(trigger.trigger_id);
-      await deps.auditLog?.logActivity({
-        activity_id: '',
-        timestamp: now(),
-        action: 'trigger_fired',
-        target: `${trigger.trigger_id}|${event.record_id}`,
-      }).catch(() => { /* best-effort */ });
+      await logFired(
+        trigger,
+        event,
+        runId,
+        outcome !== undefined && 'held' in outcome && outcome.held === true
+          ? 'held'
+          : outcome !== undefined && 'declined' in outcome && outcome.declined === true
+            ? 'declined'
+            : 'completed',
+      );
     } catch (err) {
       const failure = presentAutomationFailure(err);
       if (failure.redacted) {
@@ -299,7 +423,14 @@ export const createEventTriggerDispatcher = (
       }
       const raw = (err as { code?: unknown } | null)?.code;
       const code = typeof raw === 'string' ? raw : undefined;
+      const failedRunId = (err as { run_id?: unknown } | null)?.run_id;
       const verdict = handleFailure(trigger, code, false, failure.userMessage);
+      await logFired(
+        trigger,
+        event,
+        typeof failedRunId === 'string' ? failedRunId : undefined,
+        verdict === 'not_a_failure' ? 'declined' : 'failed',
+      );
       // ⛔ A `conditional` code is the recipe DECIDING not to act and being right
       // to — a tripped guard, a matched fail-on, an absent prerequisite. It
       // leaves no `last_error` and touches no counter: counting those toward the
@@ -332,6 +463,24 @@ export const createEventTriggerDispatcher = (
     },
   });
 
+  /** D-315 — mail facts' events a preapproval capture could not take while the
+   *  vault was sealed, each with the subscription it came through, in the
+   *  order they came; `releasing` while they wait for it to open. */
+  const sealed: { readonly receive: (event: WarehouseEvent) => void; readonly event: WarehouseEvent }[] = [];
+  let releasing: Promise<void> | null = null;
+  const holdSealed = (receive: (event: WarehouseEvent) => void, event: WarehouseEvent): void => {
+    sealed.push({ receive, event });
+    releasing ??= vaultOpen().then(() => {
+      releasing = null;
+      // Each as it came, through the checks it came through: sealed again
+      // meanwhile, it and those after it are held again, in order. One that
+      // throws stops none of the rest, as on the bus.
+      for (const held of sealed.splice(0)) {
+        try { held.receive(held.event); } catch { /* a receiver never stops the rest */ }
+      }
+    });
+  };
+
   const rebuild = (): void => {
     for (const sub of subscriptions) {
       try { sub.unsubscribe(); } catch { /* idempotent */ }
@@ -342,7 +491,7 @@ export const createEventTriggerDispatcher = (
     // their next execution can arm them without an asynchronous rebuild gap.
     // Every callback still checks the live row and captures only eligible work.
     for (const subscribed of deps.getPreapprovalDriver ? deps.store.list() : deps.store.listEnabled()) {
-      const unsubscribe = deps.bus.subscribe(subscribed.pattern, (event) => {
+      const receive = (event: WarehouseEvent): void => {
         const driver = deps.getPreapprovalDriver?.();
         const trigger = deps.getPreapprovalDriver ? deps.store.get(subscribed.trigger_id) : subscribed;
         if (!trigger) return;
@@ -377,7 +526,10 @@ export const createEventTriggerDispatcher = (
         // the latest snapshot would re-introduce the exact per-event
         // queue churn the filter exists to absorb. Recipes needing
         // guaranteed-latest state re-read it.
-        if ((trigger.filter !== undefined || trigger.fields !== undefined)
+        // D-315 ruling 44 — a mail fact's event goes through the filter even
+        // for a row with none: a change of the time alone wakes only a row
+        // that names it in `fields`.
+        if ((trigger.filter !== undefined || trigger.fields !== undefined || event.platform === MAIL_FACT_EVENT_PLATFORM)
           && !matchesTriggerDispatchFilter(trigger, {
             record_id: event.record_id,
             at: event.at,
@@ -399,15 +551,26 @@ export const createEventTriggerDispatcher = (
         // Capture only after the same suppression/self-loop rules that govern
         // execution. An initial backfill is not a qualifying future event.
         if (driver) {
-          if ((deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug))
-            || (deps.isVaultUnlocked && !deps.isVaultUnlocked())
+          if (event.in_drain === true || (deps.backfillState && !deps.backfillState.isComplete(event.platform, event.slug))
             || (event.platform === RUN_OUTCOME_PLATFORM && event.record?.origin_trigger_id === trigger.trigger_id)) return;
+          // A sealed vault drops a fire as it arrives — but a mail fact's
+          // event is its fact's one announcement (D-315: read again, the fact
+          // never fires again), so it is held, in the order it came, and
+          // captured once the vault opens. One that comes while others are
+          // held waits behind them, the vault open or not.
+          if (event.platform === MAIL_FACT_EVENT_PLATFORM && ((deps.isVaultUnlocked && !deps.isVaultUnlocked()) || sealed.length > 0)) {
+            holdSealed(receive, event);
+            return;
+          }
+          if (deps.isVaultUnlocked && !deps.isVaultUnlocked()) return;
           const candidate = driver.captureTrigger(trigger, event);
           if (!candidate) return;
           queue.enqueue(trigger, event, candidate);
         } else queue.enqueue(trigger, event);
-      });
-      subscriptions.push({ trigger_id: subscribed.trigger_id, unsubscribe });
+      };
+      const fromBus = deps.bus.subscribe(subscribed.pattern, receive);
+      const fromLate = late.subscribe(subscribed.pattern, receive);
+      subscriptions.push({ trigger_id: subscribed.trigger_id, unsubscribe: () => { fromBus(); fromLate(); } });
     }
   };
 
@@ -416,6 +579,7 @@ export const createEventTriggerDispatcher = (
       try { sub.unsubscribe(); } catch { /* idempotent */ }
     }
     subscriptions.length = 0;
+    sealed.length = 0;
     errorsByTrigger.clear();
   };
 
@@ -424,6 +588,30 @@ export const createEventTriggerDispatcher = (
     dispose,
     activeSubscriptions: () => subscriptions.length,
     activeQueueKeys: () => queue.activeKeys(),
-    drained: () => queue.drained(),
+    drained: async () => {
+      // What the vault holds is not yet queued: drained, it has run too.
+      while (releasing !== null) await releasing;
+      await queue.drained();
+    },
+    room: async () => {
+      // A sealed vault drops a fire as it arrives, and holds a mail fact's
+      // until it opens (above): its fact is marked announced, and nothing
+      // emits it again. A producer that can wait — an AI answer or a backfill
+      // that starts recipes — waits for it to open rather than pile its fires
+      // up behind it. Sealed again while it waited for the queue, it waits again.
+      do {
+        await vaultOpen();
+        await queue.room(TRIGGER_QUEUE_PRODUCER_KEYS, TRIGGER_QUEUE_PRODUCER_DEPTH);
+      } while (deps.isVaultUnlocked !== undefined && !deps.isVaultUnlocked());
+    },
+    deliver: (event) => late.emit(event),
+    settleFire: async (trigger_id, event, run) => {
+      const trigger = deps.store.get(trigger_id);
+      if (trigger === null) {
+        await run(null);
+        return;
+      }
+      await settle(trigger, event, () => run(trigger));
+    },
   };
 };

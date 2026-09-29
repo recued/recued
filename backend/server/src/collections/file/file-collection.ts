@@ -47,7 +47,8 @@ import {
   INLINE_CUTOFF_BYTES,
   type CollectionTable,
 } from '../table.js';
-import { createCollectionEmitter } from '../events.js';
+import { quoteSqliteIdent } from '../../storage/collection-blob-refs.js';
+import { changedHotFields, createCollectionEmitter } from '../events.js';
 import {
   createCollectionRetention,
   type CollectionRetention,
@@ -255,8 +256,15 @@ export const createFileCollection = (
       if (blob_hash !== undefined) record.blob_hash = blob_hash;
 
       const prev = table.upsert(record);
-      if (prev) emitter.updated(recordId, prev.hot_fields);
-      else emitter.created(recordId);
+      if (prev) {
+        // Only a change is an update, named by what changed: a restart's walk
+        // lists every stored file again.
+        const changed = changedHotFields(prev.hot_fields, record.hot_fields);
+        if ((prev.body_inline ?? null) !== (record.body_inline ?? null) || (prev.blob_hash ?? null) !== (record.blob_hash ?? null)) {
+          changed.push('body');
+        }
+        if (changed.length > 0) emitter.updated(recordId, prev.hot_fields, changed);
+      } else emitter.created(recordId);
       lastIndexedAt = record.received_at;
       // D-124 Phase 2.4 — count successful imports during initial walk.
       // No-op once `backfillRecorder.finish()` runs (post-walk).
@@ -276,6 +284,12 @@ export const createFileCollection = (
       if (watcher) return;
       const cfg = opts.config();
       state = 'syncing';
+      // What was stored before the walk, and what the walk found on disk: a
+      // file removed while the server was down is on no list, and its record
+      // would stay forever.
+      const storedBefore = (opts.db.prepare(`SELECT record_id, source_id FROM ${quoteSqliteIdent(table.tableName)}`)
+        .all() as { record_id: string; source_id: string }[]);
+      const walked = new Set<string>();
       watcher = createFsWatcher({
         root: rootAbs,
         ignore: cfg.ignore,
@@ -283,6 +297,7 @@ export const createFileCollection = (
         onEvent: async (event) => {
           pending++;
           try {
+            if (event.type === 'present') walked.add(recordIdFor(toPosix(relative(rootAbs, event.path))));
             await ingestEvent(event.type, event.path);
           } finally {
             pending = Math.max(0, pending - 1);
@@ -300,6 +315,15 @@ export const createFileCollection = (
       try {
         await watcher.start();
         state = 'connected';
+        // Gone while the server was down: taken out as a live `remove` takes
+        // a file out — after a walk that read every directory. One that could
+        // not read the folder (a drive unplugged, a folder moved) is no list
+        // of what is on disk, and takes nothing out.
+        if (watcher.walkErrors() === 0) {
+          for (const { record_id, source_id } of storedBefore) {
+            if (!walked.has(record_id)) await ingestEvent('remove', resolve(rootAbs, source_id));
+          }
+        }
         // D-124 Phase 2.1 — fs watcher's `start()` resolves only after
         // the initial directory walk completes (`scanDir(root)` in
         // fs-adapter.ts). Flip the denormalized backfill bool exactly

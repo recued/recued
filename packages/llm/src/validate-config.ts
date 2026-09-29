@@ -59,6 +59,8 @@ const PROVIDERS: ReadonlySet<LLMProvider> = new Set(
   LLM_PROVIDER_REGISTRY.map((entry) => entry.provider),
 );
 const PROVIDER_LIST_MSG = Array.from(PROVIDERS).join(' | ');
+/** A label, not a document: long enough for "OpenRouter (work account)". */
+export const PROVIDER_NAME_MAX_CHARS = 64;
 const isProvider = (v: unknown): v is LLMProvider =>
   isString(v) && PROVIDERS.has(v as LLMProvider);
 
@@ -111,6 +113,21 @@ const parseSlot = (v: unknown, field: string): LLMSlot | null => {
     throw new LLMConfigValidationError(`${field}.api_key`, 'must be a string');
   }
   const out: LLMSlot = { provider: v.provider, model: v.model, api_key: v.api_key };
+  // Display only (see `LLMSlot.provider_name`). Blank reads as absent, so
+  // clearing the field in Settings clears the name rather than storing "".
+  if (v.provider_name !== undefined) {
+    if (!isString(v.provider_name)) {
+      throw new LLMConfigValidationError(`${field}.provider_name`, 'must be a string');
+    }
+    const name = v.provider_name.trim();
+    if (name.length > PROVIDER_NAME_MAX_CHARS) {
+      throw new LLMConfigValidationError(
+        `${field}.provider_name`,
+        `must be at most ${PROVIDER_NAME_MAX_CHARS} characters`,
+      );
+    }
+    if (name.length > 0) out.provider_name = name;
+  }
   if (v.base_url !== undefined) {
     if (!isString(v.base_url)) {
       throw new LLMConfigValidationError(`${field}.base_url`, 'must be a string');

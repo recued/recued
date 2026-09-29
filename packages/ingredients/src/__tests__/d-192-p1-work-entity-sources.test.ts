@@ -453,6 +453,12 @@ describe('D-192 P1 work_entity_sources section validation', () => {
     );
   });
 
+  it('accepts a clear argument for a writable date', () => {
+    const manifest = validCatalog();
+    (source(manifest) as { clear_args?: Record<string, string> }).clear_args = { due_at: 'clear_due_at' };
+    expect(collectWorkEntityIssues(manifest)).toEqual([]);
+  });
+
   it('accepts write_paths overrides for writable fields (read≠write vendors)', () => {
     const manifest = validCatalog();
     (source(manifest) as { write_paths?: Record<string, string> }).write_paths = {
@@ -807,6 +813,44 @@ describe('D-192 P1 work_entity_sources section validation', () => {
       },
       code: 'WORK_ENTITY_SOURCES_WRITABLE_INVALID',
       path: 'work_entity_sources[0].write_paths.title',
+    },
+    {
+      // A title or a state has no empty value to clear to.
+      name: 'rejects a clear for a field that is not a writable date',
+      mutate: (manifest) => {
+        (source(manifest) as { clear_args?: Record<string, string> }).clear_args = { title: 'clear_title' };
+      },
+      code: 'WORK_ENTITY_SOURCES_WRITABLE_INVALID',
+      path: 'work_entity_sources[0].clear_args.title',
+      messageIncludes: 'writable date field',
+    },
+    {
+      // The vendor would receive `true` where it expects the title.
+      name: 'rejects a clear argument another field is written through',
+      mutate: (manifest) => {
+        (source(manifest) as { clear_args?: Record<string, string> }).clear_args = { due_at: 'Subject' };
+      },
+      code: 'WORK_ENTITY_SOURCES_WRITABLE_INVALID',
+      path: 'work_entity_sources[0].clear_args.due_at',
+      messageIncludes: 'argument of its own',
+    },
+    {
+      // …or where it expects a preview field — `body` is written to `Description`.
+      name: 'rejects a clear argument a preview field is written through',
+      mutate: (manifest) => {
+        (source(manifest) as { clear_args?: Record<string, string> }).clear_args = { due_at: 'Description' };
+      },
+      code: 'WORK_ENTITY_SOURCES_WRITABLE_INVALID',
+      path: 'work_entity_sources[0].clear_args.due_at',
+      messageIncludes: 'argument of its own',
+    },
+    {
+      name: 'rejects an empty clear argument',
+      mutate: (manifest) => {
+        (source(manifest) as { clear_args?: Record<string, string> }).clear_args = { due_at: '' };
+      },
+      code: 'WORK_ENTITY_SOURCES_WRITABLE_INVALID',
+      path: 'work_entity_sources[0].clear_args.due_at',
     },
     {
       name: 'rejects a create arg binding with an unknown source',

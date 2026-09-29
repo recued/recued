@@ -58,6 +58,8 @@ const RESIDUAL_SUFFIX: Record<Exclude<AutoPiiResidualOutcome, 'content_only'>, s
     " (auto-protection declined: a context.recipe continuity ref reads this step's prior-run output)",
   self_referential_fail_on:
     " (auto-protection declined: the step's own fail_on reads its output before the restore)",
+  self_referential_stop_when:
+    " (auto-protection declined: the step's own stop_when reads its output before the restore)",
   declaration_conflict:
     " (auto-injection declined: the step's llm.pii_fields is a dynamic declaration — verify it covers these paths)",
   verification_failed:

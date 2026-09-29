@@ -388,6 +388,40 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
     );
     expect(changed.ok).toBe(false);
     expect(changed.diagnosis).toBe('auth');
+    // ⚠ A key IS stored — it was kept back, not missing. "No API key is
+    // stored" here sent the owner to paste the same key without saying why.
+    expect(changed.detail).toBe(
+      'You changed the protocol or base URL, so the saved key is not sent there. '
+        + 'Enter the key for this endpoint and test again.',
+    );
+    expect(seen).toHaveLength(1);
+  });
+
+  /** The pool form tests an entry before it is added: the draft is the whole
+   *  source, key included. Without a draft it is still "no such entry". */
+  it('probes an unsaved pool entry from its draft alone', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    const result = await h['server.probeLlmSource'](
+      {
+        target: { kind: 'pool_entry', entry_id: 'groq-2' },
+        draft: {
+          provider: 'openai-compatible', model: 'llama-3.1-8b', api_key: 'gsk-new',
+          base_url: 'https://api.groq.com/openai/v1',
+        },
+      },
+      undefined as never,
+    );
+    expect(result.ok).toBe(true);
+    expect(seen[0]?.slot).toMatchObject({
+      provider: 'openai-compatible', model: 'llama-3.1-8b', api_key: 'gsk-new',
+      base_url: 'https://api.groq.com/openai/v1',
+    });
+
+    const saved = await h['server.probeLlmSource'](
+      { target: { kind: 'pool_entry', entry_id: 'groq-2' } }, undefined as never);
+    expect(saved).toMatchObject({ ok: false, diagnosis: 'rejected' });
     expect(seen).toHaveLength(1);
   });
 
@@ -404,7 +438,7 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
     );
     // Not a provider failure — but it IS the answer, and it names the field.
     expect(result.diagnosis).toBe('auth');
-    expect(result.detail).toMatch(/No API key/i);
+    expect(result.detail).toBe('No API key is stored for this source. Enter one and test again.');
     expect(seen).toHaveLength(0);
   });
 
@@ -758,6 +792,31 @@ describe('makeConfigHandlers — free-pool field-level handlers', () => {
     expect(llmManager.getConfig().free_pool?.map((e) => e.id)).toEqual(['a2']);
   });
 
+  /** ⛔ Remove and Disable refuse a blank id, so one saved blank could never
+   *  be changed again. */
+  it('upsertFreePoolEntry refuses a blank id, and a keyless new entry', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const h = handlersFor(llmManager);
+    await expect(
+      h['server.upsertFreePoolEntry']({ entry: ENTRY('  ') }, undefined as never),
+    ).rejects.toMatchObject({ code: 'bad_request', message: 'entry.id must be a non-empty string' });
+    await expect(
+      h['server.upsertFreePoolEntry']({ entry: ENTRY('a1', { api_key: '' }) }, undefined as never),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    expect(llmManager.getConfig().free_pool ?? []).toEqual([]);
+  });
+
+  it('upsertFreePoolEntry keeps the stored key when an edit leaves it blank', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const h = handlersFor(llmManager);
+    await h['server.upsertFreePoolEntry']({ entry: ENTRY('a1', { api_key: 'gsk-1' }) }, undefined as never);
+    await h['server.upsertFreePoolEntry'](
+      { entry: ENTRY('a1', { api_key: '', model: 'llama-3.3-70b' }) }, undefined as never);
+    expect(llmManager.getConfig().free_pool?.[0]).toMatchObject({
+      id: 'a1', model: 'llama-3.3-70b', api_key: 'gsk-1',
+    });
+  });
+
   it('removeFreePoolEntry rejects an empty id', async () => {
     const h = handlersFor(createLLMConfigManager(db));
     await expect(
@@ -815,6 +874,28 @@ describe('makeConfigHandlers — server.getLLMConfig api_key redaction (Slice B)
     expect(cfg.free_pool?.[0]).not.toHaveProperty('api_key');
     // The slot secret appears nowhere in the serialized wire payload.
     expect(JSON.stringify(res.config)).not.toContain('sk-secret');
+  });
+
+  /** ⚠ An older server's slot parser drops a field it does not know without
+   *  an error, so the webclient offers the name only when this says so. */
+  it('says which slot fields it keeps, and round-trips provider_name', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const h = handlersFor(llmManager);
+    await h['server.setLLMSlot'](
+      {
+        slot_key: 'slot_1',
+        slot: {
+          ...SLOT, provider: 'openai-compatible', provider_name: 'Groq',
+          base_url: 'https://api.groq.com/openai/v1',
+        },
+      },
+      undefined as never,
+    );
+    const res = await h['server.getLLMConfig'](undefined as never, undefined as never);
+    expect(res.supports).toEqual({ slot_provider_name: true, pool_entry_drafts: true });
+    expect((res.config as { slot_1: Record<string, unknown> }).slot_1).toMatchObject({
+      provider: 'openai-compatible', provider_name: 'Groq', has_key: true,
+    });
   });
 
   it('setLLMConfig accepts a redacted get-payload written back (blank-key preserve)', async () => {

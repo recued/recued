@@ -367,7 +367,13 @@ export const makeConfigHandlers = (
         try {
           // Redact every api_key off the wire (D-174 R28 Slice B) — the
           // browser receives `has_key` booleans, never the secret.
-          return { config: redactLLMConfig(llmManager.getConfig()) };
+          // `supports` is how a webclient tells this server from an older one:
+          // an older server's slot parser DROPS a field it does not know, so a
+          // name typed against it would be accepted and silently lost.
+          return {
+            config: redactLLMConfig(llmManager.getConfig()),
+            supports: { slot_provider_name: true, pool_entry_drafts: true },
+          };
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           if (/locked/i.test(msg)) {
@@ -661,17 +667,31 @@ export const makeConfigHandlers = (
         try {
           const parsed = parseLLMConfig({ free_pool: [args.entry] });
           // free_pool was just validated as a one-element array.
-          entry = parsed.free_pool![0];
+          entry = parsed.free_pool![0]!;
         } catch (e) {
           if (e instanceof LLMConfigValidationError) {
             throw new RpcError('bad_request', e.message, 400);
           }
           throw e;
         }
+        // ⛔ Remove and Disable refuse a blank id, so an entry saved with one
+        // could never be changed again. Refused at the door that made them.
+        if (entry.id.trim().length === 0) {
+          throw new RpcError('bad_request', 'entry.id must be a non-empty string', 400);
+        }
+        let outcome: 'saved' | 'key_required';
         try {
-          llmManager.upsertPoolEntry(entry);
+          outcome = llmManager.upsertPoolEntry(entry);
         } catch (e) {
           return rethrowLocked(e, 'write LLM config');
+        }
+        if (outcome === 'key_required') {
+          throw new RpcError(
+            'bad_request',
+            'entry.api_key is required: a blank key keeps the stored one only for an existing '
+              + 'entry whose provider and base_url are unchanged',
+            400,
+          );
         }
         return { ok: true };
       },
@@ -818,7 +838,9 @@ export const makeConfigHandlers = (
             ...(entry.base_url !== undefined ? { base_url: entry.base_url } : {}),
             supports_json: entry.supports_json,
           };
-          if (entry === undefined) {
+          // With a draft, an entry not saved yet is tested as it would be
+          // added: from the draft alone, its key included.
+          if (entry === undefined && (args.draft === null || args.draft === undefined)) {
             return {
               ok: false,
               diagnosis: 'rejected' as const,
@@ -878,10 +900,18 @@ export const makeConfigHandlers = (
         if (slot.api_key.length === 0) {
           // Not a provider failure, so it never reaches the probe — but it IS
           // the answer, and it points at the field the owner has to fill.
+          // ⚠ Two different answers. "No key is stored" was said even when one
+          // WAS stored and the guard above had declined to send it to a changed
+          // protocol or base URL — true of the request, false to the owner, who
+          // then pasted the same key back without learning why.
+          const keptBack = stored !== undefined && stored.api_key.length > 0;
           return {
             ok: false,
             diagnosis: 'auth' as const,
-            detail: 'No API key is stored for this source. Enter one and test again.',
+            detail: keptBack
+              ? 'You changed the protocol or base URL, so the saved key is not sent there. '
+                + 'Enter the key for this endpoint and test again.'
+              : 'No API key is stored for this source. Enter one and test again.',
             elapsed_ms: 0,
           };
         }

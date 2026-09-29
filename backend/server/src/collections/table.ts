@@ -172,11 +172,13 @@ export interface CollectionTable {
   /** Delete every row with `received_at < cutoff`. Returns the
    *  deleted count, the bytes freed, and the list of orphaned blob
    *  hashes so retention can pipe them into the CAS sweep or an
-   *  eager eviction path. */
+   *  eager eviction path, and the deleted `record_id`s so what was
+   *  derived from those rows can go with them (D-315 mail facts). */
   pruneOlderThan(cutoff: number): {
     pruned_count: number;
     bytes_freed: number;
     blob_hashes_freed: string[];
+    record_ids: string[];
   };
 
   /** Drop both the data + FTS tables. Called from `dispose()` only
@@ -1123,6 +1125,10 @@ export const createCollectionTable = (
       where.push('received_at < ?');
       params.push(query.until);
     }
+    if (query.before !== undefined) {
+      where.push('(received_at < ? OR (received_at = ? AND record_id < ?))');
+      params.push(query.before.received_at, query.before.received_at, query.before.record_id);
+    }
     if (query.modified_since !== undefined) {
       where.push('modified_at >= ?');
       params.push(query.modified_since);
@@ -1597,12 +1603,13 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     pruned_count: number;
     bytes_freed: number;
     blob_hashes_freed: string[];
+    record_ids: string[];
   } => {
     const rows = db
       .prepare(`SELECT * FROM ${tableName} WHERE received_at < ?`)
       .all(cutoff) as Row[];
     if (rows.length === 0) {
-      return { pruned_count: 0, bytes_freed: 0, blob_hashes_freed: [] };
+      return { pruned_count: 0, bytes_freed: 0, blob_hashes_freed: [], record_ids: [] };
     }
     let bytes_freed = 0;
     const blob_hashes_freed: string[] = [];
@@ -1616,7 +1623,12 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
     });
     pruneTx(rows);
     reportDelta(-bytes_freed);
-    return { pruned_count: rows.length, bytes_freed, blob_hashes_freed };
+    return {
+      pruned_count: rows.length,
+      bytes_freed,
+      blob_hashes_freed,
+      record_ids: rows.map((row) => row.record_id),
+    };
   };
 
   const dropSchema = (): void => {

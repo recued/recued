@@ -181,7 +181,10 @@ const executePrefetchStep = async (
       input = (rawInput as Record<string, unknown>) ?? {};
     }
     const stepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' as const }
-      : ps.cache !== undefined ? { cache: ps.cache } : undefined;
+      : ps.cache !== undefined ? { cache: ps.cache }
+      // A read before a write (`step-seed.ts`) skips the host's L1 cache too.
+      : ctx.readFreshSteps?.has(id) ? { cache: 'fresh' as const }
+      : undefined;
     // Read-tier calls may still require approval (for example an always rule).
     // The resumed decision stays on this exact prefetch occurrence.
     const recipe = requireRecipe(ctx);

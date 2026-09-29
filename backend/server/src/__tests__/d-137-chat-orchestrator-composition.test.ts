@@ -160,6 +160,10 @@ const expectedBundleKeys = [
   'executionCaseSourcePruner',
   // D-177 rule 5 slice B — per-session forwarded-sender candidate index
   'forwardedSenderIndex',
+  // D-315 §4.3 — one model call through the chat's privacy layer, for work
+  // held to the chat's standard outside a turn (ruling 30): the mail facts'
+  // AI pass and Draft with AI. A ledger of its own per call, never a session's.
+  'privateAiCall',
 ].sort();
 
 const expectedChatDepsKeys = [
@@ -340,6 +344,7 @@ describe('composeChatOrchestrator', () => {
     expect(bundle.executionCaseVerificationRecorder).toEqual(expect.objectContaining({
       record: expect.any(Function),
     }));
+    expect(bundle.privateAiCall).toEqual(expect.any(Function));
   });
 
   it('injects recall.search only into the cooperative chat registry, never the raw MCP or grant catalog', async () => {

@@ -32,6 +32,7 @@
  *
  *  Spec: internal design notes D-269 REV 2 Q1/Q2 + REV 5. */
 
+import { isDuePast } from './due-day.js';
 import { zonedWallClockToEpochMs } from './zoned-wall-clock.js';
 import type { ServerTimeZoneSetting } from './server-timezone.js';
 import { isServerTimeZoneConfigured } from './server-timezone.js';
@@ -406,11 +407,14 @@ export const buildQuietHoursDigest = (
   items: ReadonlyArray<QuietHoursDigestItem>,
   window: { from: number; to: number },
   now: number,
+  /** The zone a DATE-ONLY anchor's day is judged in (`due-day.ts`): it has not
+   *  passed until that day is over there. */
+  timeZone?: string,
 ): QuietHoursDigest => {
   const still_ahead: QuietHoursDigestItem[] = [];
   let already_passed = 0;
   for (const item of items) {
-    if (item.anchor_at > now) still_ahead.push(item);
+    if (!isDuePast(item.anchor_at, now, timeZone)) still_ahead.push(item);
     else already_passed += 1;
   }
   // Soonest first — the owner reads the top of a card, and the thing happening

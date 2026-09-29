@@ -510,6 +510,8 @@ describe('Conditional work-entity sweep', () => {
         store: workEntityStore,
         bus: warehouseBus,
         cascade: enrichmentCascade,
+        // The owner's zone, read per sweep: a date-only due is judged by its day.
+        timeZone: expect.any(Function),
       },
     });
     expect(housekeepingMocks.registerHousekeepingTask).toHaveBeenCalledWith(workEntitySweepTask);
@@ -524,7 +526,10 @@ describe('Conditional work-entity sweep', () => {
     expect(options.deps).toEqual({
       store: workEntityStore,
       bus: warehouseBus,
+      timeZone: expect.any(Function),
     });
+    // With no zone setting it follows the host's zone.
+    expect(options.deps.timeZone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
     expect(options.deps).not.toHaveProperty('cascade');
     expect(housekeepingMocks.registerHousekeepingTask).toHaveBeenCalledWith(workEntitySweepTask);
   });

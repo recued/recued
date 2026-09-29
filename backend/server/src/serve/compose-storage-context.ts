@@ -34,6 +34,10 @@ import {
   type GatedActionRecord,
   type GatedActionStore,
 } from '../gated-action-store.js';
+import {
+  createSettledRunResults,
+  type SettledRunResults,
+} from '../settled-run-results.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -268,6 +272,10 @@ export interface StorageContext {
   mcpActionStore: McpActionStore;
   /** Owner-facing, operation-scoped receipts for checkpointed gated steps. */
   gatedActionStore: GatedActionStore;
+  /** What an owner's page-started run answered once its approval let it
+   *  finish — written by the approval resumer, read by `execution.get`.
+   *  In memory: a courtesy to an open page, not a record. */
+  settledRunResults: SettledRunResults;
   workEntityStoreRef: PerPairStore<'workEntityStore'>;
   s2sPreviewStoreRef: PerPairStore<'s2sPreviewStore'>;
   correctionEventsStoreRef: PerPairStore<'correctionEventsStore'>;
@@ -280,6 +288,8 @@ export interface StorageContext {
   intakeRecipePairStoreRef: PerPairStore<'intakeRecipePairStore'>;
   intakeFormSubmissionStoreRef: PerPairStore<'intakeFormSubmissionStore'>;
   formResponseStoreRef: PerPairStore<'formResponseStore'>;
+  /** D-315 — mail templates, facts and things. */
+  mailFactStoreRef: PerPairStore<'mailFactStore'>;
   intakeFormNonceStoreRef: PerPairStore<'intakeFormNonceStore'>;
   dropBlobStoreRef: PerPairStore<'dropBlobStore'>;
   dropLinkNonceStoreRef: PerPairStore<'dropLinkNonceStore'>;
@@ -913,6 +923,7 @@ export const composeStorageContext = async (
       changeClock: gatedActionChangeClock.snapshot,
     },
   );
+  const settledRunResults = createSettledRunResults();
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
   // Receipt content stays in the owner-only RPC. The bus frame only wakes
@@ -942,6 +953,7 @@ export const composeStorageContext = async (
   const intakeRecipePairStoreRef = perPairStores?.intakeRecipePairStore;
   const intakeFormSubmissionStoreRef = perPairStores?.intakeFormSubmissionStore;
   const formResponseStoreRef = perPairStores?.formResponseStore;
+  const mailFactStoreRef = perPairStores?.mailFactStore;
   const intakeFormNonceStoreRef = perPairStores?.intakeFormNonceStore;
   const dropBlobStoreRef = perPairStores?.dropBlobStore;
   const dropLinkNonceStoreRef = perPairStores?.dropLinkNonceStore;
@@ -1118,6 +1130,7 @@ export const composeStorageContext = async (
     checkpointStore,
     mcpActionStore,
     gatedActionStore,
+    settledRunResults,
     workEntityStoreRef,
     s2sPreviewStoreRef,
     correctionEventsStoreRef,
@@ -1130,6 +1143,7 @@ export const composeStorageContext = async (
     intakeRecipePairStoreRef,
     intakeFormSubmissionStoreRef,
     formResponseStoreRef,
+    mailFactStoreRef,
     intakeFormNonceStoreRef,
     dropBlobStoreRef,
     dropLinkNonceStoreRef,

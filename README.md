@@ -58,15 +58,19 @@ curl -fsSL https://recued.com/install.sh | sh
 irm https://recued.com/install.ps1 | iex
 ```
 
-Start it with `recued serve`. It prints a pairing code. Open the webclient it
-names and pair a browser to it.
+The installer starts the server too. So when it is done, the server is
+already running. To pair a browser, run `recued pair`. It prints a pairing
+code and a link to the webclient. Open the link and type in the code. If
+`recued` is not found in that terminal, open a new one.
 
 Do not want it to start at login? Put `RECUED_AUTOSTART=0` in front of the
-command. The install location, the release channel, and the rest are in
+command. Then start it yourself with `recued serve`. It prints the pairing
+code. The install location, the release channel, and the rest are in
 [INSTALL.md](./INSTALL.md#options).
 
 A **headless Linux** box is one with no screen or desktop. There, starting at
-boot needs root, the admin account. Run the installer with `sudo`. Here is why. Without a desktop keyring, there is only one way to
+boot needs root, the admin account. Run the installer with `sudo`, and pair
+with `sudo` too. The installer prints the exact command. Here is why. Without a desktop keyring, there is only one way to
 seal the key file to the machine. That way reads a host key only root can
 read. A Linux desktop session installs a user unit and needs no root.
 

@@ -62,6 +62,8 @@ import {
   TASK_TITLE_MAX,
   TASK_STATE_MAX,
   parseTaskListFilter,
+  calendarDayMs,
+  localDayAsDateOnly,
   type TaskListFilter,
   WORK_ENTITY_KINDS,
   WORK_ENTITY_KIND_SET,
@@ -98,6 +100,7 @@ import {
 } from '@recued/contracts';
 
 import { contactAddressSet } from './contact-merge-graph.js';
+import { createDataRepairLedger } from './data-repair-ledger.js';
 
 // ────────────────────────────────────────────────────────────────
 // Table names — exported for tests + downstream housekeeping refs.
@@ -763,6 +766,130 @@ export const ensureWorkEntitySchema = (db: Database.Database): void => {
   if (!migrated && workEntityFtsIsEmpty(db)) {
     reindexWorkEntityFts(db);
   }
+
+  repairWorkEntityTextDates(db, Date.now());
+};
+
+// ────────────────────────────────────────────────────────────────
+// The text-dates repair (once per server)
+// ────────────────────────────────────────────────────────────────
+
+/** The D-308 ledger id of the one-off repair of dates stored as text. */
+export const WORK_ENTITY_TEXT_DATES_REPAIR_ID = 'work-entity-text-dates-v1';
+
+export type WorkEntityDateKind = 'task' | 'commitment' | 'project' | 'booking';
+
+export interface WorkEntityTextDateFix {
+  readonly kind: WorkEntityDateKind;
+  readonly id: string;
+  readonly field: string;
+  /** What was stored. */
+  readonly was: string;
+  /** What is stored now — `null` when the text named no date and was cleared. */
+  readonly now: number | null;
+}
+
+export interface WorkEntityTextDatesSummary {
+  readonly fixed: readonly WorkEntityTextDateFix[];
+  /** Text that named no date: cleared, and kept here verbatim. */
+  readonly cleared: readonly WorkEntityTextDateFix[];
+}
+
+/** Every date column a caller writes. `day` marks a date that names a DAY — its
+ *  zone-less time reads as that day — and `required` one that cannot be cleared. */
+const TEXT_DATE_COLUMNS: ReadonlyArray<{
+  readonly kind: WorkEntityDateKind;
+  readonly table: string;
+  readonly column: string;
+  readonly day: boolean;
+  readonly required: boolean;
+}> = [
+  { kind: 'task', table: TASK_TABLE, column: 'due_at', day: true, required: false },
+  { kind: 'task', table: TASK_TABLE, column: 'completed_at', day: false, required: false },
+  { kind: 'commitment', table: COMMITMENT_TABLE, column: 'promised_for_at', day: true, required: false },
+  { kind: 'commitment', table: COMMITMENT_TABLE, column: 'promised_at', day: false, required: true },
+  { kind: 'project', table: PROJECT_TABLE, column: 'target_completion_at', day: true, required: false },
+  { kind: 'booking', table: BOOKING_TABLE, column: 'slot_start_at', day: false, required: false },
+  { kind: 'booking', table: BOOKING_TABLE, column: 'slot_end_at', day: false, required: false },
+];
+
+const ZONED_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/iu;
+/** A date-time with no zone — `T` or a space, then at least `HH:MM`. */
+export const ZONELESS_DATE_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/u;
+/** Epoch ms has had 12+ digits since 2001; fewer is seconds or a compact date. */
+const EPOCH_MS_DIGITS = /^\d{12,}$/u;
+
+/** Text that names exactly ONE instant, as epoch ms — or null:
+ *  - epoch ms as digits → that number;
+ *  - a calendar day `YYYY-MM-DD` → UTC midnight, the "whole day" convention
+ *    (`calendarDayMs`, `due-day.ts`);
+ *  - an ISO date-time WITH its zone (`Z`, `+02:00`) → that instant.
+ *  A day that does not exist (`2026-02-30`) names none, and neither does a
+ *  date-time with no zone: it is a different instant in every zone. */
+export const unambiguousDateMs = (text: string): number | null => {
+  const t = text.trim();
+  if (EPOCH_MS_DIGITS.test(t)) return Number(t);
+  const day = calendarDayMs(t.slice(0, 10));
+  if (day === null) return null;
+  if (t.length === 10) return day;
+  if (!ZONED_DATE_TIME.test(t)) return null;
+  const ms = Date.parse(t);
+  return Number.isFinite(ms) ? ms : null;
+};
+
+/** A stored text date as epoch ms, or null when it names none. What
+ *  `unambiguousDateMs` reads, and a date-time with NO zone as well — the
+ *  repair cannot refuse what is already stored:
+ *  - for a day field, its date: the day it named;
+ *  - otherwise in the server's zone, the one `date_parse` read it in when it
+ *    was written — the only record of what it meant. */
+export const storedTextDateMs = (text: string, day: boolean): number | null => {
+  const t = text.trim();
+  const ms = unambiguousDateMs(t);
+  if (ms !== null || !ZONELESS_DATE_TIME.test(t)) return ms;
+  if (day) return calendarDayMs(t.slice(0, 10));
+  if (calendarDayMs(t.slice(0, 10)) === null) return null;
+  const local = Date.parse(t.replace(' ', 'T'));
+  return Number.isFinite(local) ? local : null;
+};
+
+/** ⛔ DATES STORED AS TEXT, REPAIRED ONCE. Before the store refused them, a
+ *  recipe could store a date as text: the first-run seed's ISO strings, and a
+ *  federated project's target from the run dialog's zone-less clock. Text reads
+ *  as `NaN` to every sweep, so those commitments never came due — and now that
+ *  an update carries the stored value into a refused write, such a record could
+ *  not even be renamed. Each is converted (`storedTextDateMs`); text that names
+ *  no date is cleared (a promise's `promised_at` falls back to its creation) and
+ *  kept verbatim in the summary. Recorded in the D-308 ledger in the SAME
+ *  transaction as the writes, so it runs once per server; the owner is told by
+ *  `work-entity-date-repair-notice.ts` at boot. */
+const repairWorkEntityTextDates = (db: Database.Database, now: number): void => {
+  const ledger = createDataRepairLedger(db);
+  if (ledger.get(WORK_ENTITY_TEXT_DATES_REPAIR_ID) !== null) return;
+  db.transaction(() => {
+    // Again under the write lock: another process opening this database (the
+    // MCP server beside the server) may have run it since the check above.
+    if (ledger.get(WORK_ENTITY_TEXT_DATES_REPAIR_ID) !== null) return;
+    const fixed: WorkEntityTextDateFix[] = [];
+    const cleared: WorkEntityTextDateFix[] = [];
+    for (const { kind, table, column, day, required } of TEXT_DATE_COLUMNS) {
+      const rows = db.prepare(
+        `SELECT id, ${column} AS value, created_at FROM ${table} WHERE typeof(${column}) = 'text'`,
+      ).all() as Array<{ id: string; value: string; created_at: number }>;
+      const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE id = ?`);
+      for (const row of rows) {
+        const ms = storedTextDateMs(row.value, day);
+        const next = ms ?? (required ? row.created_at : null);
+        update.run(next, row.id);
+        (ms === null ? cleared : fixed).push({ kind, id: row.id, field: column, was: row.value, now: next });
+      }
+    }
+    ledger.record({
+      repair_id: WORK_ENTITY_TEXT_DATES_REPAIR_ID,
+      applied_at: now,
+      summary: { fixed, cleared } satisfies WorkEntityTextDatesSummary,
+    });
+  }).immediate();
 };
 
 /** One row, or none — never a COUNT over an index that may hold millions.
@@ -1079,6 +1206,11 @@ export interface WorkEntityListQuery {
   /** Task/booking search. Applied by SQL before pagination. */
   search?: string;
   task_filter?: TaskListFilter;
+  /** Server-internal, never from the wire: the zone a DATE-ONLY due's day is
+   *  read in by `task_filter` (`due-day.ts`). The filter's own bounds are
+   *  instants; a date-only due is "today" when its DAY is today there, and
+   *  overdue once that day is over. Absent ⇒ UTC. */
+  time_zone?: string;
   /** Internal read policy exclusions, applied before pagination and count. */
   excluded_source_ids?: readonly string[];
   /** Booking-only business lifecycle filter. */
@@ -1100,8 +1232,9 @@ export interface WorkEntityContactRelationshipSummary {
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 1000;
 
-type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter'> & {
+type NormalizedListQuery = Omit<Required<WorkEntityListQuery>, 'task_filter' | 'time_zone'> & {
   task_filter: TaskListFilter | null;
+  time_zone: string | undefined;
 };
 const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): NormalizedListQuery => {
   const sync_states =
@@ -1147,6 +1280,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery, searchLimit = 200): Normali
     search,
     booking_lifecycle_states,
     task_filter,
+    time_zone: q?.time_zone,
     excluded_source_ids: q?.excluded_source_ids ?? [],
   };
 };
@@ -1229,12 +1363,25 @@ const buildListWhere = (
       clauses.push('done = ?');
       params.push(completion === 'completed' ? 1 : 0);
     }
+    // ⛔ A due at UTC midnight names a DAY (`due-day.ts`). It is overdue once
+    // that day is over and "today" for the whole of it — so it is compared as a
+    // date, against the local dates of the filter's instants. Every other due
+    // is an instant and is compared as one, exactly as before. (Live drive:
+    // "due Monday" was listed overdue on Sunday evening in Pacific time.)
+    const DAY = 'due_at % 86400000 = 0';
     if (due.kind === 'overdue') {
-      clauses.push('done = 0 AND due_at < ?');
-      params.push(due.before);
+      clauses.push(`done = 0 AND ((${DAY} AND due_at < ?) OR (NOT ${DAY} AND due_at < ?))`);
+      params.push(localDayAsDateOnly(due.before, q.time_zone), due.before);
     } else if (due.kind === 'range') {
-      clauses.push('due_at >= ? AND due_at < ?');
-      params.push(due.from, due.before);
+      clauses.push(
+        `((${DAY} AND due_at >= ? AND due_at < ?) OR (NOT ${DAY} AND due_at >= ? AND due_at < ?))`,
+      );
+      params.push(
+        localDayAsDateOnly(due.from, q.time_zone),
+        localDayAsDateOnly(due.before, q.time_zone),
+        due.from,
+        due.before,
+      );
     }
   }
   return { sql: `WHERE ${clauses.join(' AND ')}`, params };
@@ -1568,6 +1715,19 @@ const validateText = (
   }
 };
 
+/** ⛔ A DATE IS EPOCH MS. A date stored as text reads as `NaN` to every sweep
+ *  and comparison — a commitment promised as text never came due, never
+ *  reminded, never escalated, while every list rendered it correctly with
+ *  `new Date(text)`. Converting text is the caller's side (`dateInputMs` in
+ *  `work-entity-ingredients.ts`, `coerceDateMs` for vendor rows); the store
+ *  only refuses. `null` clears the date; absent leaves it as it is. */
+const validateDateField = (field: string, value: unknown): void => {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new WorkEntityValidationError(`${field} must be a finite number`, field);
+  }
+};
+
 const validateTaskInput = (input: TaskWriteInput): void => {
   validateText('title', input.title, TASK_TITLE_MAX, true);
   if (input.priority !== undefined && !TASK_PRIORITY_SET.has(input.priority)) {
@@ -1646,6 +1806,8 @@ const BOOKING_CONTACT_ID_REGEX = /^[A-Za-z0-9._:-]{1,256}$/;
 
 const validateBookingInput = (input: BookingWriteInput): void => {
   validateText('title', input.title, BOOKING_TITLE_MAX, true);
+  validateDateField('slot_start_at', input.slot_start_at);
+  validateDateField('slot_end_at', input.slot_end_at);
   if (
     input.counterparty_contact_id !== undefined
     && !BOOKING_CONTACT_ID_REGEX.test(input.counterparty_contact_id)
@@ -1688,6 +1850,8 @@ const validateBookingInput = (input: BookingWriteInput): void => {
 };
 
 const validateCommitmentInput = (input: CommitmentWriteInput): void => {
+  validateDateField('promised_at', input.promised_at);
+  validateDateField('promised_for_at', input.promised_for_at);
   if (!COMMITMENT_DIRECTION_SET.has(input.direction)) {
     throw new WorkEntityValidationError(
       `unknown direction '${input.direction}'`,
@@ -1923,6 +2087,7 @@ const validateCommitmentInput = (input: CommitmentWriteInput): void => {
 
 const validateProjectInput = (input: ProjectWriteInput): void => {
   validateText('title', input.title, PROJECT_TITLE_MAX, true);
+  validateDateField('target_completion_at', input.target_completion_at);
   if (input.state !== undefined && !PROJECT_STATE_SET.has(input.state)) {
     throw new WorkEntityValidationError(`unknown state '${input.state}'`, 'state');
   }
@@ -2026,6 +2191,9 @@ export interface WorkEntityStore {
   }): Task[];
   // ── notes ──────────────────────────────────────────────────────
   writeNote(input: NoteWriteInput, now?: number): Note;
+  /** Atomic create-if-absent for a caller-derived stable local note id — the
+   *  store half of an idempotent create (see `ensureTask`). */
+  ensureNote(input: NoteWriteInput & { id: string }, now?: number): { note: Note; created: boolean };
   readNote(id: string): Note | null;
   listNotes(query?: WorkEntityListQuery): Note[];
   findNote(predicate: (n: Note) => boolean, query?: WorkEntityListQuery): Note | null;
@@ -2048,6 +2216,12 @@ export interface WorkEntityStore {
   listNoteAccess(note_id: string, opts?: { limit?: number }): NoteAccessLedgerEntry[];
   // ── commitments ────────────────────────────────────────────────
   writeCommitment(input: CommitmentWriteInput, now?: number): Commitment;
+  /** Atomic create-if-absent for a caller-derived stable local commitment id
+   *  (see `ensureTask`). */
+  ensureCommitment(
+    input: CommitmentWriteInput & { id: string },
+    now?: number,
+  ): { commitment: Commitment; created: boolean };
   readCommitment(id: string): Commitment | null;
   listCommitments(query?: WorkEntityListQuery): Commitment[];
   findCommitment(
@@ -2074,6 +2248,9 @@ export interface WorkEntityStore {
   }): BookingHistorySummary;
   // ── projects ───────────────────────────────────────────────────
   writeProject(input: ProjectWriteInput, now?: number): Project;
+  /** Atomic create-if-absent for a caller-derived stable local project id
+   *  (see `ensureTask`). */
+  ensureProject(input: ProjectWriteInput & { id: string }, now?: number): { project: Project; created: boolean };
   readProject(id: string): Project | null;
   listProjects(query?: WorkEntityListQuery): Project[];
   findProject(
@@ -3668,6 +3845,41 @@ export const createWorkEntityStore = (
     return res.changes > 0;
   };
 
+  // Idempotent creates for notes, commitments and projects — the same shape as
+  // `ensureTask`: read-then-insert under the writer lock, so two processes can
+  // never both see absence and both create.
+  const ensureNote: WorkEntityStore['ensureNote'] = (input, now = Date.now()) => {
+    validateNoteInput(input);
+    if (input.id.length === 0) throw new WorkEntityValidationError('id is required', 'id');
+    const apply = db.transaction((): { note: Note; created: boolean } => {
+      const existing = readNote(input.id);
+      if (existing !== null) return { note: existing, created: false };
+      return { note: writeNote(input, now), created: true };
+    });
+    return apply.immediate();
+  };
+
+  const ensureCommitment: WorkEntityStore['ensureCommitment'] = (input, now = Date.now()) => {
+    validateCommitmentInput(input);
+    if (input.id.length === 0) throw new WorkEntityValidationError('id is required', 'id');
+    const apply = db.transaction((): { commitment: Commitment; created: boolean } => {
+      const existing = readCommitment(input.id);
+      if (existing !== null) return { commitment: existing, created: false };
+      return { commitment: writeCommitment(input, now), created: true };
+    });
+    return apply.immediate();
+  };
+
+  const ensureProject: WorkEntityStore['ensureProject'] = (input, now = Date.now()) => {
+    validateProjectInput(input);
+    if (input.id.length === 0) throw new WorkEntityValidationError('id is required', 'id');
+    const apply = db.transaction((): { project: Project; created: boolean } => {
+      const existing = readProject(input.id);
+      if (existing !== null) return { project: existing, created: false };
+      return { project: writeProject(input, now), created: true };
+    });
+    return apply.immediate();
+  };
   return {
     summarizeContactRelationships,
     writeTask,
@@ -3680,6 +3892,7 @@ export const createWorkEntityStore = (
     walkByTaskId,
     findCrossSourceTaskCandidates,
     writeNote,
+    ensureNote,
     readNote,
     listNotes,
     findNote,
@@ -3689,6 +3902,7 @@ export const createWorkEntityStore = (
     recordNoteAccess,
     listNoteAccess,
     writeCommitment,
+    ensureCommitment,
     readCommitment,
     listCommitments,
     findCommitment,
@@ -3702,6 +3916,7 @@ export const createWorkEntityStore = (
     countBookings,
     getBookingHistory,
     writeProject,
+    ensureProject,
     readProject,
     listProjects,
     findProject,

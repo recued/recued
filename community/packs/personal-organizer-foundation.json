@@ -4,7 +4,7 @@
   "publisher": "recued-core",
   "name": "Personal Organizer Foundation",
   "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
-  "version": 5,
+  "version": 6,
   "bundled": true,
   "recipes": [],
   "contents": [
@@ -35,13 +35,13 @@
     {
       "type": "recipe",
       "slug": "extract-commitments-from-mail",
-      "version": 2,
+      "version": 3,
       "visible": true
     },
     {
       "type": "recipe",
       "slug": "extract-tasks-from-mail",
-      "version": 2,
+      "version": 3,
       "visible": true
     },
     {

@@ -38,6 +38,31 @@ const mk = (over: Record<string, unknown> = {}) => createAskCardDetailResolver({
 } as never);
 
 describe('D-270 card detail resolver', () => {
+  it('⛔ renders no block for a held foreach with items still to come — the approval covers them all', async () => {
+    // Found live: the Details named one recipient of a mail-out that went to
+    // everyone. The prose lists every covered call; one item here would read as
+    // the whole approval.
+    const progress = { step_id: 's1', next_index: 0, source_length: 3, source_hash: 'h', results: [] };
+    expect(await mk({
+      getCheckpoint: async () => recipeCheckpoint({ to: 'a@b.c', subject: 'Hi' }, { foreach_progress: progress }),
+    })(ask({ checkpoint_id: 'cp1' }))).toBeNull();
+
+    // NON-VACUITY: paused on its LAST item it is one call, and renders.
+    expect(await mk({
+      getCheckpoint: async () => recipeCheckpoint({ to: 'a@b.c', subject: 'Hi' }, {
+        foreach_progress: { ...progress, next_index: 2, results: [{}, {}] },
+      }),
+    })(ask({ checkpoint_id: 'cp1' }))).toHaveLength(2);
+
+    // A chunked gate is bounded to its one item, so it renders too.
+    expect(await mk({
+      getCheckpoint: async () => recipeCheckpoint({ to: 'a@b.c', subject: 'Hi' }, {
+        foreach_progress: progress,
+        preflight_context: { egress_bound: { requests: 4, total_bytes: 1_000 } },
+      }),
+    })(ask({ checkpoint_id: 'cp1' }))).toHaveLength(2);
+  });
+
   it('⛔ resolves a NON-RECEPTION hold — the case the landing resolver fences off', async () => {
     // Nothing in this resolver consults an origin: the allowlist is the fence,
     // not the channel. An agent's held MCP write resolves exactly like any other.

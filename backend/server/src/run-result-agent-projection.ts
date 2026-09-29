@@ -345,6 +345,38 @@ export const ITEMS_PARTIALLY_REFUSED_MESSAGE =
   + 'refused. ⛔ Do NOT repeat this call to retry the refused ones — it would run '
   + 'over the items that already succeeded and can duplicate them.';
 
+/** A run a step's `stop_when` ended early. The run SUCCEEDED and the steps up to
+ *  that one ran — unlike a skipped trigger, something WAS checked, and that check
+ *  is why it stopped — so its output stays and this sentence is added beside it:
+ *  a `success: true` next to a short output reads as "that is everything" unless
+ *  something says the rest was never needed. Names the step, whose id is recipe
+ *  structure, never the run's data.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const runStoppedMessage = (stepId: string): string =>
+  `This recipe ended early, as it was written to: its stop condition held at step "${stepId}", `
+  + 'so the steps after it did not run. That is an expected outcome, not a failure. '
+  + 'Do not run it again to get the rest. Answer from the output below, and tell the user '
+  + 'the recipe stopped at that step.';
+
+/** The fields ANNOTATED onto a stopped run's otherwise-unchanged result — the
+ *  same augment-not-replace posture as {@link AgentItemsRefusedAnnotation}, for
+ *  the same reason: the run produced real output. */
+export interface AgentRunStoppedAnnotation {
+  status: 'stopped';
+  message: string;
+}
+
+/** Read the run-level `stopped` marker `handleExecute` copies from the engine.
+ *  `null` when the run went to the end. */
+const runStoppedAnnotation = (result: object): AgentRunStoppedAnnotation | null => {
+  const stopped = (result as { stopped?: unknown }).stopped;
+  if (stopped === null || typeof stopped !== 'object') return null;
+  const stepId = (stopped as { step_id?: unknown }).step_id;
+  if (typeof stepId !== 'string' || stepId === '') return null;
+  return { status: 'stopped', message: runStoppedMessage(stepId) };
+};
+
 /** One `foreach` step that refused at least one item. */
 export interface AgentRefusedStepSummary {
   step_id: string;
@@ -354,10 +386,10 @@ export interface AgentRefusedStepSummary {
 
 /** The fields ANNOTATED onto an otherwise-unchanged run result.
  *
- *  ⛔ This is the ONE projection that AUGMENTS rather than REPLACES, and the
- *  difference is load-bearing. Every sibling third-state describes a run that
- *  STOPPED (cancelled / held / pick / plan / skipped) or one that FIRED instead
- *  of returning, so replacing the body loses nothing. A partially-refused run
+ *  ⛔ This AUGMENTS rather than REPLACES (as does {@link AgentRunStoppedAnnotation}),
+ *  and the difference is load-bearing. Every sibling third-state describes a run
+ *  that was HALTED (cancelled / held / pick / plan / skipped) or one that FIRED
+ *  instead of returning, so replacing the body loses nothing. A partially-refused run
  *  RAN and produced real output the model still has to answer from — replacing
  *  it would throw away the items that did land. */
 export interface AgentItemsRefusedAnnotation {
@@ -427,8 +459,8 @@ const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null
  *    - **held for approval** (`awaiting_approval === true`) →
  *      `{ status: 'awaiting_approval', awaiting_approval: true, recipe_id,
  *      message }`.
- *  Anything else passes through unchanged, with ONE exception that ANNOTATES
- *  rather than replaces:
+ *  Anything else passes through unchanged, with TWO exceptions that ANNOTATE
+ *  rather than replace:
  *    - **items refused** — one or more `foreach` steps reported
  *      `foreach: { items, failed }` with `failed > 0`. A `foreach` is
  *      continue-on-error, so this run says `success: true` with an EMPTY
@@ -437,6 +469,10 @@ const collectItemRefusals = (result: object): AgentItemsRefusedAnnotation | null
  *      `{ status: 'items_refused', items_refused: {…}, message }`. Checked LAST
  *      — it is the only branch that rides on a run which neither stopped nor
  *      fired. See {@link AgentItemsRefusedAnnotation}.
+ *    - **ended at a `stop_when`** — the run succeeded and its output stands;
+ *      it gains `{ status: 'stopped', message }` naming the step. After the
+ *      refusal tally, which wins when both hold. See
+ *      {@link AgentRunStoppedAnnotation}.
  *
  *  This is the projection the MCP `recued_runRecipe` / direct-ingredient paths
  *  surface verbatim (`text(...)`), so both legacy MCP and registry-routed MCP
@@ -627,7 +663,11 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
     // {@link AgentItemsRefusedAnnotation}. No refusals ⇒ the ORIGINAL object,
     // by reference.
     const refusals = collectItemRefusals(result);
-    return refusals === null ? result : { ...result, ...refusals };
+    if (refusals !== null) return { ...result, ...refusals };
+    // A run that ended at a `stop_when` also RAN, so it annotates too. Below the
+    // refusal tally, whose sentence is the more urgent of the two when both hold.
+    const stopped = runStoppedAnnotation(result);
+    return stopped === null ? result : { ...result, ...stopped };
   }
   const held = result as ExecuteResponse;
   return {

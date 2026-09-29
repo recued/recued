@@ -33,6 +33,7 @@
 import { isListOfNumbers, listFromTypedText, listSettingChoices, splitSpacedItems } from '@recued/contracts';
 import type { ListChoices, VariableDefault, ValueHint } from '@recued/contracts';
 import { initialRefPickerState } from './ref-picker/model.js';
+import { localToIsoWithOffset } from './form-renderer/read.js';
 import { renderRefPicker } from './ref-picker/render.js';
 import { e } from './template.js';
 
@@ -40,8 +41,12 @@ export type WidgetType =
   /** D-215 slice 5 — an INSTANT picker. Distinct from `text` because a
    *  bare string is how every time-valued arg in the corpus is declared
    *  today, and a zone-less wall clock parsed server-side resolves in the
-   *  SERVER's zone (§ 4.6). */
+   *  SERVER's zone (§ 4.6). `readWidgetValue` therefore sends it WITH the
+   *  browser's offset — the owner's zone is only known here. */
   | 'datetime'
+  /** A calendar DAY (`YYYY-MM-DD`), not an instant: no time, no zone, so it
+   *  reads the same wherever it is read. What a due or target date is. */
+  | 'date'
   /** D-215 slice 5 — an ORDERED list of file refs. Selection order is part
    *  of the value (a carousel), so it is not a set. */
   | 'file_ref_array'
@@ -638,20 +643,25 @@ export const renderVariableWidget = (
   // when the host has no inventory-search caller).
   const inputType = w.type === 'number'
     ? 'number'
-    // D-215 slice 5 — the browser's own instant picker. The VALUE it emits
-    // is a zone-less wall clock, so a consumer must resolve it against the
-    // owner's zone before it travels (the run-modal's `parseLocalDateTime`
-    // is the worked example).
-    : w.type === 'datetime' ? 'datetime-local' : 'text';
+    // D-215 slice 5 — the browser's own instant picker. The control holds a
+    // zone-less wall clock; `readWidgetValue` adds the owner's offset before
+    // the value leaves, and `datetimeInputValue` turns a stored instant back
+    // into the wall clock the control can show.
+    : w.type === 'datetime' ? 'datetime-local'
+      : w.type === 'date' ? 'date' : 'text';
   // The `file_ref[]` fallback is an explicit comma-separated list that
   // `readWidgetValue` splits back. `String([…])` would round-trip through
   // this box only by coincidence, and not at all once a value arrives as a
   // string from a previous pass through the same box.
   const display = w.type === 'file_ref_array'
     ? toFileRefIds(w.value).join(', ')
-    : w.list !== undefined && Array.isArray(w.value)
-      ? w.value.map(String).join(', ')
-      : w.value === undefined || w.value === null ? '' : String(w.value);
+    : w.type === 'datetime'
+      ? datetimeInputValue(w.value)
+      : w.type === 'date'
+        ? dateInputValue(w.value)
+        : w.list !== undefined && Array.isArray(w.value)
+          ? w.value.map(String).join(', ')
+          : w.value === undefined || w.value === null ? '' : String(w.value);
   return `
     <div class="var-row">
       <label for="${e(id)}">${e(w.label)}${
@@ -670,6 +680,39 @@ export const renderVariableWidget = (
       />
     </div>
   `;
+};
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** What a `datetime-local` control shows for a stored value: the wall clock in
+ *  the browser's zone. An instant (epoch ms, or an ISO string with its offset)
+ *  is converted; a zone-less wall clock saved before instants were sent is
+ *  shown as it was typed; anything else shows empty rather than a value the
+ *  control would refuse. */
+export const datetimeInputValue = (value: unknown): string => {
+  if (typeof value === 'string') {
+    const wall = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(value.trim());
+    if (wall) return wall[1]!;
+  }
+  const ms = typeof value === 'number' ? value
+    : typeof value === 'string' && value.trim() !== '' ? Date.parse(value) : NaN;
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+    + `T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+
+/** What a `date` control shows: the `YYYY-MM-DD` day. A stored instant shows
+ *  its UTC day — epoch ms at UTC midnight is how a day is stored. */
+export const dateInputValue = (value: unknown): string => {
+  if (typeof value === 'string') {
+    const day = /^(\d{4}-\d{2}-\d{2})/.exec(value.trim());
+    return day ? day[1]! : '';
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return new Date(value).toISOString().slice(0, 10);
+  }
+  return '';
 };
 
 /** Read a widget's current value back from the DOM. Accepts any
@@ -737,6 +780,14 @@ export const readWidgetValue = (el: Element): unknown => {
       .map((item) => item.getAttribute(FILE_REF_ARRAY_ITEM_ATTR) ?? '')
       .filter((fileId) => fileId.length > 0);
   }
+  // ⛔ A `datetime` control holds a ZONE-LESS wall clock, and the server
+  // cannot know whose wall clock it was: `date_parse` would read it in the
+  // SERVER's zone. The owner's zone is only known here, so the value leaves
+  // with the browser's offset — what the `datetime` hint has always required.
+  if (type === 'datetime') {
+    const raw = (el as HTMLInputElement).value;
+    return raw === '' ? raw : localToIsoWithOffset(raw);
+  }
   // A list setting's box reads back the list it spells; a blank box is no
   // value, so the key drops out of the saved config and the default applies.
   const list = (el as HTMLElement).dataset.varList;
@@ -785,7 +836,7 @@ export const validateWidgetValue = (
   // union and still lies.
   if (
     w.type === 'text' || w.type === 'textarea' || w.type === 'secret'
-    || w.type === 'file_ref' || w.type === 'datetime'
+    || w.type === 'file_ref' || w.type === 'datetime' || w.type === 'date'
   ) {
     if (typeof value !== 'string' || value.trim() === '') return 'Required';
     return null;
@@ -889,6 +940,8 @@ const mapHintType = (hint: ValueHint): WidgetType => {
       return 'file_ref_array';
     case 'datetime':
       return 'datetime';
+    case 'date':
+      return 'date';
     case 'url':
     case 'text':
     default:

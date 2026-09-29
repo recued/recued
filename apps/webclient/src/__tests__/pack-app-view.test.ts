@@ -907,6 +907,56 @@ describe('pack app business lifecycle', () => {
     rig.view.dispose();
   });
 
+  it('a held run\'s later result replaces its "held" note — never a result the owner moved on to', () => {
+    type OnRan = NonNullable<Parameters<NonNullable<MountPackAppViewOptions['openRunModal']>>[1]>;
+    let onRan: OnRan | undefined;
+    const rig = mount(vi.fn<PackAppExecuteCaller>(), {
+      surface: {
+        views: [],
+        lookups: [],
+        operations: [{
+          recipe_id: taskEntry.recipe_id,
+          name: 'Post entry',
+          description: 'Record both sides and keep the receipt.',
+          entry: taskEntry,
+        }],
+        automations: [],
+        missing: [],
+      },
+      installedRecipes: [taskEntry],
+      openRunModal: (_entry, callback) => { onRan = callback; },
+    });
+
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    const held = {
+      ...taskResult(taskEntry.recipe_id, 'unused'),
+      success: false,
+      awaiting_approval: true,
+      action_ref: 'act-1',
+      output: { render: [], sidebar: [] },
+    } as ServerExecuteResponse;
+    onRan?.(held);
+    expect(rig.root.innerHTML).toContain('Awaiting approval · Post entry');
+    expect(rig.root.innerHTML).toContain('Once it is approved, its result shows here.');
+
+    // Approved elsewhere; the run finished and its own result arrives.
+    onRan?.(taskResult(taskEntry.recipe_id, 'Entry posted'), { replaces: held });
+    expect(rig.root.innerHTML).toContain('Run completed · Post entry');
+    expect(rig.root.innerHTML).toContain('Entry posted');
+    expect(rig.root.innerHTML).not.toContain('Awaiting approval');
+
+    // Held again — and this time the owner runs something else before approving.
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    const heldAgain = { ...held, action_ref: 'act-2' } as ServerExecuteResponse;
+    onRan?.(heldAgain);
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    onRan?.(taskResult(taskEntry.recipe_id, 'Second entry posted'));
+    onRan?.(taskResult(taskEntry.recipe_id, 'Late result'), { replaces: heldAgain });
+    expect(rig.root.innerHTML).toContain('Second entry posted');
+    expect(rig.root.innerHTML).not.toContain('Late result');
+    rig.view.dispose();
+  });
+
   it('keeps a write result in Pack detail, then refreshes the browse view on return', async () => {
     const execute = vi.fn<PackAppExecuteCaller>()
       .mockResolvedValueOnce(tableResult())

@@ -126,8 +126,11 @@ describe('D-237 P2 — deriveRunYield', () => {
       { skipped: true },
       { skipped: true },
     ]);
+    // `stopped_at: null` is recorded-and-ran-to-the-end — emitted on every run for
+    // the reason `skipped_step_ids: []` is: absent must keep meaning "predates it".
     expect(y).toEqual({
       steps_run: 1, steps_skipped: 2, items_total: 0, items_failed: 0, skipped_step_ids: [],
+      stopped_at: null,
     });
 
     // Named steps ARE listed, which is what makes a single gate's rate a query.
@@ -377,6 +380,7 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
     expect(entry?.errors ?? []).toEqual([]);
     expect(entry?.run_yield).toEqual({
       steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 3, skipped_step_ids: [],
+      stopped_at: null,
     });
   });
 
@@ -385,6 +389,7 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
     expect(entry?.commit_status).toBe('succeeded');
     expect(entry?.run_yield).toEqual({
       steps_run: 1, steps_skipped: 0, items_total: 3, items_failed: 0, skipped_step_ids: [],
+      stopped_at: null,
     });
   });
 
@@ -403,6 +408,7 @@ describe('D-237 P2 — the wiring: a real run stamps its own yield', () => {
     // omitted-when-empty field could not say which.
     expect(entry?.run_yield).toEqual({
       steps_run: 1, steps_skipped: 0, items_total: 0, items_failed: 0, skipped_step_ids: [],
+      stopped_at: null,
     });
   });
 });

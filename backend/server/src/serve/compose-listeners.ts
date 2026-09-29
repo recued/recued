@@ -16,6 +16,7 @@ import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingres
 import { composePreapproval } from '../composition/bin/wire-preapproval.js';
 import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
+import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
 import { composeMessengerLiveControl } from '../composition/bin/wire-messenger-live-control.js';
 import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
@@ -149,6 +150,7 @@ import {
 import { createPreviewConnectionExecute } from '../ingredient-authoring/preview-execute.js';
 import type { IngredientDraftRpcDeps } from '../ingredient-authoring/draft-preview-rpc.js';
 import { supervisorWillRespawn as supervisorRespawns } from '@recued/contracts';
+import { resolveServerTimeZone } from '@recued/contracts';
 import type { Lifecycle } from '../lifecycle/index.js';
 import type { ArchiveRpcDeps } from '../archive/archive-handler.js';
 import { createHostnameSniBindingLookup } from '../hostname/index.js';
@@ -165,6 +167,7 @@ import {
 import { emitAutomationRule, emitSchedule } from '../events/emit-sites.js';
 import { removeRecipeOwnedState, type RecipeOwnedStateDeps } from '../recipe-owned-state.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
+import { switchOffUserTriggers } from '../triggers/handler.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
 import {
   RpcError,
@@ -300,6 +303,8 @@ export interface ComposeListenersOptions {
     | 'fileStack'
     | 'workEntityStoreRef'
     | 'formResponseStoreRef'
+    // D-315 — the owner's mail templates (`mail_fact.template.*`).
+    | 'mailFactStoreRef'
     | 'recordsStore'
     | 's2sPreviewStoreRef'
     // D-170 — local manifest body store + recipe store back the
@@ -402,6 +407,8 @@ export interface ComposeListenersOptions {
     // `data.contact.engagements.list` pair-RPC (and the MCP read).
     | 'contactEngagementsResolveDepsRef'
     | 'chatDeps'
+    // D-315 §6.1 — Draft with AI's call through the chat's privacy layer.
+    | 'privateAiCall'
     | 'keys'
     // R21.1 — gates the event-trigger dispatcher + watch poll-manager on
     // vault-unlocked (drop fan-out / disarm loops while sealed).
@@ -423,6 +430,12 @@ export interface ComposeListenersOptions {
     | 'watcherDispatcher'
     | 'calendarStack'
     | 'mailStack'
+    // D-315 §6.3 — the one fact writer, for a backfill.
+    | 'mailFactWriter'
+    | 'mailFactTriggerRoom'
+    | 'mailFactAiSettled'
+    | 'mailFactEvents'
+    | 'bootEvents'
     | 'serviceStack'
     | 'supervisionStack'
     | 'channelDispatchers'
@@ -1873,7 +1886,31 @@ export const composeListeners = async (
         },
       }
       : {}),
+    // D-315 §6.4 — a run a mail fact's event started is linked to the EMAIL
+    // that caused it; the audit entry names only the thing.
+    ...(storage.mailFactStoreRef
+      ? {
+          onFired: linkMailFactRuns(
+            storage.mailFactStoreRef,
+            storage.eventBus ? () => { storage.eventBus!.emit({ kind: 'mail_fact', subkind: 'facts' }); } : undefined,
+          ),
+        }
+      : {}),
+    // D-315 §5.1 — a row made here is checked against every kind of email a
+    // fact here can have: the built-in ones and the owner's.
+    ...(storage.mailFactStoreRef
+      ? { mailFactTypes: () => storage.mailFactStoreRef!.listCustomTypes() }
+      : {}),
   });
+  // D-124 — the dispatcher hears what comes from now on (composing it
+  // subscribed it): the boot recorder keeps no more. What it kept is replayed
+  // below, once the pre-approval driver is there.
+  collection.bootEvents.seal();
+  // D-315 §4.3 — an AI answer that may start recipes waits for room in this
+  // dispatcher's queue, as a backfill's email does.
+  if (eventTriggersBundle && collection.mailFactTriggerRoom !== undefined) {
+    collection.mailFactTriggerRoom.current = () => eventTriggersBundle.dispatcher.room();
+  }
   // D-296 — the pack install preview names an armed automation an update
   // switches off; it reads the trigger rows and compiles declarations with
   // the SAME vendor registry as the reconcile. Published before listeners start.
@@ -1915,6 +1952,9 @@ export const composeListeners = async (
       clientTokens: app.clientTokensRef, definitions: execution.contractDefinitionStore, inboundTokens: app.chatInboundTokenStoreRef,
       notifications: execution.notificationBlock, keys: app.keys,
       onActivationChanged: () => refreshPreapprovalAutomations?.(),
+      // D-315 §6.4 — a sealed event the recovery clock runs is kept on the
+      // dispatcher's books, so its run is linked to the email that caused it.
+      settleRecoveredTrigger: eventTriggersBundle.settleRecovered,
       ...(collection.mailStack && app.cacheBlobs ? { mail: {
         registry: collection.collectionRegistry, instances: collection.mailStack.instances, blobs: app.cacheBlobs,
       } } : {}),
@@ -1928,6 +1968,17 @@ export const composeListeners = async (
     if (eventTriggersBundle) eventTriggersBundle.triggersDeps.preapprovalStatus = preapproval.triggerStatus;
   }
   if (preapproval && await storage.preapprovalStorage!.recover()) await preapproval.outbox.drain();
+  // D-315 §5 — the fact events held since the mailboxes started go out now:
+  // the dispatcher is subscribed and the pre-approval driver it captures
+  // through is there. Sooner, they reached no trigger, or were queued with no
+  // driver and skipped — and a fact announces once.
+  void collection.mailFactEvents.open(eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined);
+  // D-124 — and what the collections' boot scans found before the dispatcher
+  // subscribed reaches the triggers now, one at a time as the queue has room.
+  void collection.bootEvents.replay(
+    (event) => { eventTriggersBundle?.dispatcher.deliver(event); },
+    eventTriggersBundle ? () => eventTriggersBundle.dispatcher.room() : undefined,
+  );
 
   // Poll-manager / G6 — the watch substrate composes on top of the
   // trigger store (its demand source). Demand-changing seams hook
@@ -2677,6 +2728,11 @@ export const composeListeners = async (
     storage.workEntityStoreRef && collection.workEntityDispatchers
       ? {
           store: storage.workEntityStoreRef,
+          // The owner's zone, for the Tasks filter's reading of a date-only due.
+          timeZone: (): string => resolveServerTimeZone(
+            storage.serverTimeZoneStore?.read(),
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ),
           // D-192 read resolution — the sync-state dep lights up the
           // resolver's `sourceFreshness`, so `work_entity.{list,get}`
           // responses carry per-Source freshness metadata.
@@ -3674,6 +3730,47 @@ export const composeListeners = async (
     // dedicated registered-client read slice for Data → Form responses.
     ...(storage.formResponseStoreRef
       ? { formResponseDeps: { store: storage.formResponseStoreRef } }
+      : {}),
+    // D-315 — the owner's mail templates and the reads behind Data → Received →
+    // Mail facts. Recipes read facts through the kernel's `core.mail.fact.*`; this
+    // slice is the owner's control plane and screens.
+    ...(storage.mailFactStoreRef
+      ? {
+          mailFactRpcDeps: mailFactScreensRpcDeps({
+            store: storage.mailFactStoreRef,
+            ...(collection.mailStack && app.cacheBlobs
+              ? {
+                  mail: {
+                    registry: collection.collectionRegistry,
+                    instances: collection.mailStack.instances,
+                    blobs: app.cacheBlobs,
+                    ...(app.contactStoreRef
+                      ? { relationshipsOf: (address: string) => app.contactStoreRef!.get(address)?.network_domain ?? [] }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(storage.auditLog ? { auditLog: storage.auditLog } : {}),
+            recipeStore: storage.recipeStore,
+            ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
+            ...(collection.mailFactWriter ? { writer: collection.mailFactWriter } : {}),
+            // D-315 §6.3 — a backfill that runs recipes tells each email as it
+            // came: it waits for the AI's answer to one before the next.
+            aiSettled: collection.mailFactAiSettled,
+            // D-315 §6.1 — Draft with AI calls through the chat's privacy layer.
+            ...(app.privateAiCall ? { privateAiCall: app.privateAiCall } : {}),
+            // D-315 §5.1 — deleting a template or kind switches off the rows
+            // narrowed to it, through the triggers rpc's own update.
+            ...(eventTriggersBundle
+              ? {
+                  switchOffTriggers: (match) => switchOffUserTriggers(eventTriggersBundle.triggersDeps, match),
+                  // D-315 §6.3 — a backfill that runs recipes waits for room
+                  // in the trigger queue rather than overflow it.
+                  triggerRoom: () => eventTriggersBundle.dispatcher.room(),
+                }
+              : {}),
+          }),
+        }
       : {}),
     // D-221 — #data Records uses this owner-pair control plane, never a
     // `data.records.*` resolver or the agent-facing Tier-P executor.

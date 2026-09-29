@@ -139,6 +139,16 @@ export interface LLMCompletionOptions {
  *  slots share one adapter-key surface. */
 export interface LLMSlot {
   provider: AdapterKey;
+  /** The provider's NAME, as the owner calls it: "Groq", "OpenRouter", "my
+   *  Ollama". DISPLAY ONLY. `provider` above is the PROTOCOL, the adapter that
+   *  speaks to the endpoint, and it stays a closed list because it picks code.
+   *  Settings used to label that field "Provider", so an owner typing "groq"
+   *  was refused, and there was nowhere to say which service a slot is.
+   *
+   *  ⛔ Nothing routes, prices or keys on this. In particular it is NOT part of
+   *  the credential context: renaming a slot keeps its saved key, while a
+   *  changed protocol or base_url still drops it (`writeSlot`). */
+  provider_name?: string;
   model: string;
   /** BYOK: API key for this slot. Stored in the vault, injected at execute time. */
   api_key: string;

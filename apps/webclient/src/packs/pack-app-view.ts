@@ -143,6 +143,7 @@ import {
 } from '../recipes/result-table-edit-host.js';
 
 import { lookupTargetVariable } from './pack-app-model.js';
+import type { LaterRunResult } from '../held-run-follow.js';
 import type { PackAppRecipe, PackAppSurface } from './pack-app-model.js';
 import { projectPackAppNavigation } from './pack-app-navigation.js';
 import { serializeShellRoute } from '../shell/route.js';
@@ -213,8 +214,11 @@ export interface MountPackAppViewOptions {
     entry: ServerRecipeListEntry,
     /** The returned result stays in this pack workspace. This is the lifecycle
      *  seam that turns a modal launcher into an app: run -> rendered receipt /
-     *  detail -> return to the refreshed browse view. */
-    onRan?: (result: ServerExecuteResponse) => void,
+     *  detail -> return to the refreshed browse view.
+     *
+     *  `later` rides a result that arrives after the modal closed — a held run
+     *  the owner has since approved — naming the result it replaces. */
+    onRan?: (result: ServerExecuteResponse, later?: LaterRunResult) => void,
     prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
   ) => void;
   /** The full installed roster. The result panel validates every row action
@@ -1402,8 +1406,12 @@ export const mountPackAppView = (
           focus: returnFocusFrom(returnOpener ?? doc.activeElement as HTMLElement | null),
           scroll: readListScroll(scrollRoot),
         } satisfies ReturnUiFrame;
-    open(entry, (nextResult) => {
+    open(entry, (nextResult, later) => {
       if (disposed) return;
+      // A held run finishing after the owner approved it replaces its "held"
+      // note — only while that note is still what this page shows. An owner
+      // who has moved on is not pulled back to it.
+      if (later !== undefined && resultPanel?.result !== later.replaces) return;
       runToken += 1;
       busy = false;
       busyOwner = null;

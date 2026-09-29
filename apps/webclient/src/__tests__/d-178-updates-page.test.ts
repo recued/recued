@@ -7,6 +7,7 @@
  *  dispose. */
 
 import { describe, expect, it, vi } from 'vitest';
+import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
 import { RpcError } from '@recued/contracts';
 
 import type {
@@ -40,8 +41,9 @@ import {
   UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
   UPDATES_APPLY_BTN_ATTR,
   UPDATES_APPLY_RESULT_ATTR,
-  UPDATES_ROLLOUT_NOTICE_ATTR,
-  UPDATES_ROLLOUT_CONFIRM_ATTR,
+  UPDATES_APPLY_CONFIRM_ATTR,
+  UPDATES_WEBAPP_VERSION_ATTR,
+  UPDATES_APPLY_CANCEL_ATTR,
   UPDATES_AVAILABLE_ATTR,
   UPDATES_CHECK_BTN_ATTR,
   UPDATES_ERROR_ATTR,
@@ -169,6 +171,12 @@ const allText = (root: FE): string =>
   root.textContent + root.children.map(allText).join('');
 const fire = (el: FE, name: string): void => {
   for (const f of el.listeners.get(name) ?? []) f({});
+};
+/** Every update asks once: the first click turns the button into "Confirm
+ *  update", the second installs. */
+const pressUpdate = (el: FE): void => {
+  fire(find(el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+  fire(find(el, UPDATES_APPLY_BTN_ATTR)!, 'click');
 };
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 6; i += 1) await Promise.resolve();
@@ -312,7 +320,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(firstHost.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(firstHost.el);
     await flush();
 
     expect(ownerApply).toHaveBeenCalledOnce();
@@ -350,7 +358,7 @@ describe('mountUpdatesPage', () => {
     )?.hasAttribute('disabled')).toBe(true);
 
     // A scripted click on the disabled sibling control still cannot reach RPC.
-    fire(find(secondHost.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(secondHost.el);
     await flush();
     expect(siblingApply).not.toHaveBeenCalled();
 
@@ -867,7 +875,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
 
     expect(runApply).toHaveBeenCalledOnce();
@@ -900,7 +908,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     // ⚠ ECHOED, NOT REBUILT: the card says `stable` and version 26.8.0, and the
     // identity is `edge:26.8.0` — an edge install resolving a stable release.
@@ -930,7 +938,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(runApply).toHaveBeenCalledWith(
       expect.not.objectContaining({ expected_release_identity: expect.anything() }),
@@ -959,7 +967,7 @@ describe('mountUpdatesPage', () => {
     await flush();
     expect(runCheck).toHaveBeenCalledOnce();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     // ⛔ The offer changed under the card, so it is re-read rather than retried:
     // re-arming would carry a major-bump "yes" onto notes nobody has seen.
@@ -986,7 +994,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     apply.resolve({ status: 'applying', operation_id: 'op-7' });
     await flush();
@@ -1015,7 +1023,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     apply.resolve({ status: 'applying' });   // an older server: no receipt
     await flush();
@@ -1037,7 +1045,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read()).toMatchObject({
       phase: 'applying',
@@ -1073,7 +1081,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(runApply).toHaveBeenCalledOnce();
     mount.dispose();
@@ -1110,7 +1118,7 @@ describe('mountUpdatesPage', () => {
     });
     await flush();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     const owned = tabs.read();
     expect(owned).toMatchObject({ phase: 'applying', operation: 'update' });
@@ -1421,7 +1429,7 @@ describe('mountUpdatesPage', () => {
     });
     expect(continuity.read()?.name).toBe('github-main');
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(continuity.read()?.phase).toBe('awaiting_reconnect');
     expect(find(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.hasAttribute('disabled'))
@@ -1752,7 +1760,7 @@ describe('mountUpdatesPage', () => {
     expect(mode.getAttribute('aria-disabled')).toBeNull();
     expect(mode.getAttribute('aria-busy')).toBeNull();
 
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     const pendingApply = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
     expect(m.hasInFlightWork()).toBe(true);
@@ -1812,7 +1820,7 @@ describe('mountUpdatesPage', () => {
     expect(find(h.el, UPDATES_APPLY_BTN_ATTR)?.className)
       .toContain('rx-btn-primary');
     expect(onAvailabilityChanged).toHaveBeenLastCalledWith(true);
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR) as FE, 'click');
+    pressUpdate(h.el);
     await flush();
     // ⚠ The receipt now rides every apply — see 'an apply whose reply may never
     // arrive'. What this arm cares about is that nothing ELSE was sent.
@@ -1860,7 +1868,7 @@ describe('mountUpdatesPage', () => {
     runApply.mockResolvedValueOnce({ status: 'major-blocked' });
     const m = mountUpdatesPage({ host: h.asHost, document: fakeDoc(), runCheck, runApply });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR) as FE, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(runApply).toHaveBeenNthCalledWith(1, { operation_id: expect.any(String) });
     const forceBtn = find(h.el, UPDATES_FORCE_APPLY_BTN_ATTR);
@@ -2030,7 +2038,7 @@ describe('mountUpdatesPage', () => {
     const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'not-available' }));
     const m = mountUpdatesPage({ host: h.asHost, document: fakeDoc(), runCheck, runApply, onAvailabilityChanged });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR) as FE, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)?.textContent).toMatch(/no installable update/i);
     expect(find(h.el, UPDATES_AVAILABLE_ATTR)?.hasAttribute('hidden')).toBe(true);
@@ -2039,113 +2047,300 @@ describe('mountUpdatesPage', () => {
   });
 });
 
-describe('D-178 — staged rollout is stated on the card', () => {
-  /** ⛔ The card said NOTHING about cohort membership, so an owner clicking
-   *  Update could not know they were taking a release the fleet had not been
-   *  given yet. The spec calls that bypass "an EXPLICIT, confirmed, audited
-   *  act"; this is the explicit half. */
-  it('says so, with the percentage, when this server is OUTSIDE the cohort', async () => {
+describe('the page names the web app build, not only the server', () => {
+  /** Asked 2026-09-28: "how can I check if the browser I am using … is the most
+   *  up-to-date version?" — the answer was DevTools and `caches.keys()`. */
+  it('shows the build this browser runs, from the service-worker cache name', async () => {
     const h = host();
-    const mount = mountUpdatesPage({
-      host: h.asHost,
-      document: fakeDoc(),
-      runCheck: async () => ({
-        ...AVAILABLE,
-        available: { ...AVAILABLE.available!, in_rollout_cohort: false, rollout_pct: 40 },
-      }),
-    });
+    const mount = mountUpdatesPage({ host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE });
     await flush();
-    const notice = find(h.el, UPDATES_ROLLOUT_NOTICE_ATTR);
-    expect(notice?.textContent).toMatch(/staged rollout \(40%\)/);
-    expect(notice?.textContent).toMatch(/not in the cohort yet/);
-    mount.dispose();
-  });
-
-  it('stays quiet when this server IS in the cohort', async () => {
-    const h = host();
-    const mount = mountUpdatesPage({
-      host: h.asHost,
-      document: fakeDoc(),
-      runCheck: async () => AVAILABLE,
-    });
-    await flush();
-    // A LOCATOR, not a text search: this fake DOM does not aggregate
-    // textContent, so asserting against the container would pass vacuously.
-    expect(find(h.el, UPDATES_ROLLOUT_NOTICE_ATTR)).toBeNull();
-    mount.dispose();
-  });
-
-  it('an OLDER server that omits rollout_pct still says the honest half', async () => {
-    // Rendering "undefined%" would be worse than saying less.
-    const h = host();
-    const mount = mountUpdatesPage({
-      host: h.asHost,
-      document: fakeDoc(),
-      runCheck: async () => ({
-        ...AVAILABLE,
-        available: { ...AVAILABLE.available!, in_rollout_cohort: false },
-      }),
-    });
-    await flush();
-    const notice = find(h.el, UPDATES_ROLLOUT_NOTICE_ATTR);
-    expect(notice?.textContent).toMatch(/staged rollout/);
-    expect(notice?.textContent).not.toMatch(/undefined/);
+    const line = find(h.el, UPDATES_WEBAPP_VERSION_ATTR);
+    expect(line?.textContent).toBe(
+      `Web app ${WEBCLIENT_SHELL_CACHE_NAME.replace('webclient-shell-', '')} (this browser)`,
+    );
+    expect(line?.textContent).toMatch(/^Web app v\d+ \(this browser\)$/);
     mount.dispose();
   });
 });
 
-describe('D-178 — an out-of-cohort update must be CONFIRMED, not just disclosed', () => {
-  /** The card disclosed the rollout and the ledger recorded the bypass, but the
-   *  first ordinary "Update now" click still went straight through — so the
-   *  spec's "explicit, CONFIRMED, audited" was only ever two of three. */
-  const outOfCohort = {
+describe('an update asks once, in the same words for every release', () => {
+  /** ⛔ A release this server had not been offered yet said "Update now —
+   *  install early?" under a paragraph about staged rollout (0%) and cohorts,
+   *  while any other release installed on one click. The owner, 2026-09-28: "no
+   *  one built an app with that message or flow". Now it is Update to <version>
+   *  → Confirm update → Updating…, whatever the rollout says. */
+  const notOfferedYet: ReleaseCheckResponse = {
     ...AVAILABLE,
-    available: { ...AVAILABLE.available!, in_rollout_cohort: false, rollout_pct: 40 },
+    available: { ...AVAILABLE.available!, in_rollout_cohort: false, rollout_pct: 0 },
   };
+  const version = AVAILABLE.available!.version;
 
-  it('the FIRST click arms and does not apply', async () => {
+  for (const [label, check] of [
+    ['a release in the rollout', AVAILABLE],
+    ['a release not offered to this server yet (0%)', notOfferedYet],
+  ] as const) {
+    it(`${label}: Update to <version>, then Confirm update, then Updating…`, async () => {
+      const h = host();
+      let settle!: (r: UpdateApplyResponse) => void;
+      const runApply = vi.fn(() => new Promise<UpdateApplyResponse>((r) => { settle = r; }));
+      const mount = mountUpdatesPage({
+        host: h.asHost, document: fakeDoc(), runCheck: async () => check, runApply,
+      });
+      await flush();
+      const first = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
+      expect(first.textContent).toBe(`Update to ${version}`);
+      expect(first.hasAttribute(UPDATES_APPLY_CONFIRM_ATTR)).toBe(false);
+      fire(first, 'click');
+      await flush();
+      expect(runApply, 'the first click must not install').not.toHaveBeenCalled();
+      const confirm = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
+      expect(confirm.textContent).toBe('Confirm update');
+      expect(confirm.hasAttribute(UPDATES_APPLY_CONFIRM_ATTR)).toBe(true);
+      fire(confirm, 'click');
+      await flush();
+      expect(runApply).toHaveBeenCalledOnce();
+      expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe('Updating…');
+      settle({ status: 'restarting' });
+      await flush();
+      mount.dispose();
+    });
+  }
+
+  it('says nothing about rollout, cohorts or installing early', async () => {
     const h = host();
-    const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'restarting' }));
     const mount = mountUpdatesPage({
-      host: h.asHost, document: fakeDoc(), runCheck: async () => outOfCohort, runApply,
+      host: h.asHost, document: fakeDoc(), runCheck: async () => notOfferedYet,
+      runApply: async () => ({ status: 'restarting' }),
     });
     await flush();
-    const btn = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
-    expect(btn.hasAttribute(UPDATES_ROLLOUT_CONFIRM_ATTR), 'armed state on the button').toBe(true);
-    fire(btn, 'click');
+    const card = find(h.el, UPDATES_AVAILABLE_ATTR)!;
+    expect(allText(card)).toContain(`Version ${version} is available.`);
+    expect(allText(card)).not.toMatch(/rollout|cohort|early/i);
+    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
     await flush();
-    expect(runApply, 'the first click must not install').not.toHaveBeenCalled();
+    expect(allText(find(h.el, UPDATES_AVAILABLE_ATTR)!)).not.toMatch(/rollout|cohort|early/i);
     mount.dispose();
   });
 
-  it('the SECOND click installs', async () => {
-    const h = host();
-    const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'restarting' }));
-    const mount = mountUpdatesPage({
-      host: h.asHost, document: fakeDoc(), runCheck: async () => outOfCohort, runApply,
-    });
-    await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
-    await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
-    await flush();
-    expect(runApply).toHaveBeenCalledOnce();
-    mount.dispose();
+  /** The confirm is the consent the server needs for a release it has not
+   *  offered yet: a strict apply without `confirm_rollout` is refused. */
+  it('a release not offered yet carries confirm_rollout; one in the rollout does not', async () => {
+    for (const [check, expected] of [[notOfferedYet, true], [AVAILABLE, undefined]] as const) {
+      const h = host();
+      const runApply = vi.fn(async (_args: { confirm_rollout?: boolean }): Promise<UpdateApplyResponse> => ({ status: 'restarting' }));
+      const mount = mountUpdatesPage({
+        host: h.asHost, document: fakeDoc(), runCheck: async () => check, runApply,
+      });
+      await flush();
+      pressUpdate(h.el);
+      await flush();
+      expect(runApply.mock.calls[0]![0].confirm_rollout).toBe(expected);
+      mount.dispose();
+    }
   });
 
-  it('an IN-cohort update still installs on the first click', async () => {
-    // The confirm must not become a tax on the ordinary path.
+  it('Cancel goes back to Update to <version> and installs nothing', async () => {
     const h = host();
     const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'restarting' }));
     const mount = mountUpdatesPage({
       host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE, runApply,
     });
     await flush();
-    const btn = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
-    expect(btn.hasAttribute(UPDATES_ROLLOUT_CONFIRM_ATTR)).toBe(false);
-    fire(btn, 'click');
+    expect(find(h.el, UPDATES_APPLY_CANCEL_ATTR), 'no Cancel before the question').toBeNull();
+    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    await flush();
+    fire(find(h.el, UPDATES_APPLY_CANCEL_ATTR)!, 'click');
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe(`Update to ${version}`);
+    expect(find(h.el, UPDATES_APPLY_CANCEL_ATTR)).toBeNull();
+    expect(runApply).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  /** Caught by the full-app e2e: "Updating…" is only aria-disabled, so a click
+   *  on it still ran the handler and armed the NEXT update mid-run. */
+  it('a click on "Updating…" does nothing — it neither applies nor arms the next one', async () => {
+    const h = host();
+    let settle!: (r: UpdateApplyResponse) => void;
+    const runApply = vi.fn(() => new Promise<UpdateApplyResponse>((r) => { settle = r; }));
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE, runApply,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe('Updating…');
+    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
     await flush();
     expect(runApply).toHaveBeenCalledOnce();
+    settle({ status: 'download-failed' });
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe(`Update to ${version}`);
+    mount.dispose();
+  });
+
+  it('the confirm is used up by the apply: after a failure it asks again', async () => {
+    const h = host();
+    const runApply = vi.fn(async (): Promise<UpdateApplyResponse> => ({ status: 'download-failed' }));
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE, runApply,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    expect(runApply).toHaveBeenCalledOnce();
+    const btn = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
+    expect(btn.textContent).toBe(`Update to ${version}`);
+    fire(btn, 'click');
+    await flush();
+    expect(runApply, 'one click after a failure only asks').toHaveBeenCalledOnce();
+    mount.dispose();
+  });
+});
+
+describe('an update whose final event never reached this tab', () => {
+  /** ⛔ Reported 2026-09-28: "Updating…" for 25 minutes over an update a new tab
+   *  showed as done (26.9.2 → 26.9.26). The final `update.progress` goes out just
+   *  before the server restarts and can die with the old process; the bootstrap
+   *  settles the shared record from the new server, but the page's own
+   *  `applying` flag followed nothing. */
+  const acceptingApply = vi.fn(async (args: { operation_id?: string }): Promise<UpdateApplyResponse> => ({
+    status: 'applying',
+    ...(args.operation_id === undefined ? {} : { operation_id: args.operation_id }),
+  }));
+
+  it('when the shared record for its run is settled, it stops "Updating…" and reads the version again', async () => {
+    const tabs = sharedServerUpdateTabs();
+    const h = host();
+    const runCheck = vi.fn()
+      .mockResolvedValueOnce(AVAILABLE)
+      .mockResolvedValue({ ...UP_TO_DATE, current_version: AVAILABLE.available!.version });
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck, runApply: acceptingApply,
+      serverUpdateTabConvergence: tabs.first,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)!.textContent).toBe('Updating…');
+    expect(tabs.read()).toMatchObject({ phase: 'applying', operation: 'update' });
+
+    // What the bootstrap does after asking the NEW server about the receipt.
+    tabs.publish(null);
+    await flush();
+
+    expect(mount.hasInFlightWork(), 'no longer pending').toBe(false);
+    expect(runCheck).toHaveBeenCalledTimes(2);
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR), 'the new version is current: nothing to update').toBeNull();
+    mount.dispose();
+  });
+
+  it('when the record for its run moves to awaiting reconnect, it shows the restart', async () => {
+    const tabs = sharedServerUpdateTabs();
+    const h = host();
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE, runApply: acceptingApply,
+      serverUpdateTabConvergence: tabs.first,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    const running = tabs.read()!;
+
+    tabs.publish({ phase: 'awaiting_reconnect', operation: 'update', operationId: running.operationId });
+    await flush();
+
+    expect(mount.getState().applying).toBe(false);
+    expect(mount.getState().applyResult?.status).toBe('restarting');
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR)?.textContent).not.toBe('Updating…');
+    mount.dispose();
+  });
+
+  /** And when nothing settles the record either: a reconnect during
+   *  "Updating…" asks the server its version directly. */
+  const droppingConnection = () => {
+    type Status = 'connected' | 'reconnecting';
+    let current: Status = 'connected';
+    const listeners = new Set<(status: Status) => void>();
+    return {
+      controller: {
+        status: () => current,
+        onStatus: (listener: (status: Status) => void) => {
+          listeners.add(listener);
+          return () => { listeners.delete(listener); };
+        },
+      },
+      restart: () => {
+        for (const next of ['reconnecting', 'connected'] as const) {
+          current = next;
+          for (const listener of [...listeners]) listener(next);
+        }
+      },
+    };
+  };
+
+  it('after a reconnect, a server now on the release being installed ends "Updating…"', async () => {
+    const tabs = sharedServerUpdateTabs();
+    const connection = droppingConnection();
+    const h = host();
+    const runCheck = vi.fn()
+      .mockResolvedValueOnce(AVAILABLE)
+      .mockResolvedValue({ ...UP_TO_DATE, current_version: AVAILABLE.available!.version });
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck, runApply: acceptingApply,
+      serverUpdateTabConvergence: tabs.first, serverConnectionStatus: connection.controller,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    expect(mount.getState().applying).toBe(true);
+
+    connection.restart();
+    await flush();
+
+    expect(mount.getState().applying).toBe(false);
+    expect(tabs.read(), 'this page retired its own record').toBeNull();
+    expect(find(h.el, UPDATES_APPLY_BTN_ATTR), 'the card now says it is current').toBeNull();
+    mount.dispose();
+  });
+
+  it('a reconnect to a server still on the old release keeps waiting', async () => {
+    const tabs = sharedServerUpdateTabs();
+    const connection = droppingConnection();
+    const h = host();
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE, runApply: acceptingApply,
+      serverUpdateTabConvergence: tabs.first, serverConnectionStatus: connection.controller,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+
+    connection.restart();
+    await flush();
+
+    expect(mount.getState().applying).toBe(true);
+    expect(tabs.read()).toMatchObject({ phase: 'applying', operation: 'update' });
+    mount.dispose();
+  });
+
+  it('a change while the apply is still unanswered does not end it', async () => {
+    const tabs = sharedServerUpdateTabs();
+    const h = host();
+    const apply = deferred<UpdateApplyResponse>();
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck: async () => AVAILABLE,
+      runApply: () => apply.promise, serverUpdateTabConvergence: tabs.first,
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+
+    tabs.publish(null);
+    await flush();
+    expect(mount.getState().applying, 'the rpc has not answered yet').toBe(true);
+    apply.resolve({ status: 'restarting' });
+    await flush();
     mount.dispose();
   });
 });
@@ -2170,7 +2365,7 @@ describe('D-257 — an async apply must not leak or latch shared ownership', () 
       updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read(), 'the apply owns a lineage while it runs').not.toBeNull();
 
@@ -2205,7 +2400,7 @@ describe('D-257 — an async apply must not leak or latch shared ownership', () 
       updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
 
     // The run ends on the bus first…
@@ -2247,7 +2442,7 @@ describe('D-257 — an async apply must not leak or latch shared ownership', () 
       updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
 
     apply.resolve({ status: 'applying', operation_id: 'op-10' });
@@ -2274,7 +2469,7 @@ describe('D-257 — an async apply must not leak or latch shared ownership', () 
       updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read()).toMatchObject({ phase: 'applying', operationId: 'owned-op' });
 
@@ -2320,7 +2515,7 @@ describe('D-257 — an async apply must not leak or latch shared ownership', () 
       updateProgress: { subscribe: () => () => {} },
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(releases, 'an async apply PARKS its lease rather than releasing it').toEqual([]);
 
@@ -2362,7 +2557,7 @@ describe('an apply whose reply may never arrive', () => {
       return { status: 'applying', operation_id: args.operation_id };
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(latchedAtCallTime, 'the latch named nothing until the reply came back')
       .toMatch(/^[0-9a-f-]{36}$/i);
@@ -2376,7 +2571,7 @@ describe('an apply whose reply may never arrive', () => {
       throw new RpcError('connection_lost', 'the connection dropped', 0);
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read()?.operationId, 'a later tab must still be able to ask about this run')
       .toMatch(/^[0-9a-f-]{36}$/i);
@@ -2390,7 +2585,7 @@ describe('an apply whose reply may never arrive', () => {
       throw new RpcError('invalid_args', 'nope', 400);
     });
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read(), 'no run started, so no receipt is owed').toBeNull();
   });
@@ -2403,7 +2598,7 @@ describe('an apply whose reply may never arrive', () => {
     // for an update that is running perfectly well.
     const { tabs, h } = mountWith(async () => ({ status: 'applying' }));
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(tabs.read(), 'the latch survives — the run is still going').not.toBeNull();
     expect(
@@ -2416,7 +2611,7 @@ describe('an apply whose reply may never arrive', () => {
     const SERVER_ID = '99999999-8888-4777-8666-555555555555';
     const { tabs, h } = mountWith(async () => ({ status: 'applying', operation_id: SERVER_ID }));
     await flush();
-    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    pressUpdate(h.el);
     await flush();
     expect(
       tabs.read()?.operationId,

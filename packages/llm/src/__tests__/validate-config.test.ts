@@ -104,6 +104,44 @@ describe('parseLLMConfig — slot validation', () => {
       'slot_1.supports_json',
     );
   });
+
+  /** `provider` is the protocol (a closed list); `provider_name` is the
+   *  owner's label for the service, so "groq" is refused as the one and kept
+   *  as the other. */
+  it('keeps provider_name beside the protocol, trimmed', () => {
+    const out = parseLLMConfig({
+      slot_1: {
+        provider: 'openai-compatible', provider_name: '  Groq (work)  ', model: 'llama',
+        api_key: 'gsk', base_url: 'https://api.groq.com/openai/v1',
+      },
+    });
+    expect(out.slot_1?.provider).toBe('openai-compatible');
+    expect(out.slot_1?.provider_name).toBe('Groq (work)');
+  });
+
+  it('reads a blank provider_name as absent', () => {
+    const out = parseLLMConfig({
+      slot_2: { provider: 'anthropic', provider_name: '   ', model: 'claude', api_key: 'k' },
+    });
+    expect(out.slot_2).not.toHaveProperty('provider_name');
+  });
+
+  it('rejects a provider_name that is not a string, or longer than a label', () => {
+    expectThrowsField(
+      () => parseLLMConfig({ slot_1: { provider: 'openai', provider_name: 7, model: 'x', api_key: 'k' } }),
+      'slot_1.provider_name',
+    );
+    expectThrowsField(
+      () => parseLLMConfig({
+        slot_1: { provider: 'openai', provider_name: 'x'.repeat(65), model: 'x', api_key: 'k' },
+      }),
+      'slot_1.provider_name',
+    );
+    // 64 is a label ("OpenRouter (work account)" and room to spare).
+    expect(parseLLMConfig({
+      slot_1: { provider: 'openai', provider_name: 'x'.repeat(64), model: 'x', api_key: 'k' },
+    }).slot_1?.provider_name).toHaveLength(64);
+  });
 });
 
 describe('parseLLMConfig — free_pool validation', () => {

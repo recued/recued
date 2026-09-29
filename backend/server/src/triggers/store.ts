@@ -43,8 +43,8 @@ export interface EventTriggersStore {
     origin?: EventTriggerOrigin;
     /** Authoring-sugar compile-down — dispatch-filter halves. Set by
      *  the declarative reconciler (a raw entry's `filter` / a sugar
-     *  entry's compiled `where` + `fields`); the `triggers.create`
-     *  rpc has no surface for them yet. */
+     *  entry's compiled `where` + `fields`), and by `triggers.create`
+     *  from the same sugar (D-315 §5.1). */
     filter?: Record<string, unknown> | null;
     fields?: string[] | null;
   }): EventTrigger;
@@ -60,6 +60,10 @@ export interface EventTriggersStore {
       watch_interval_ms?: number | null;
       last_fired_at?: number;
       last_error?: string | null;
+      /** D-315 §5.1 — the dispatch-filter halves, recompiled with a new
+       *  `pattern` by `triggers.update`. Null clears. */
+      filter?: Record<string, unknown> | null;
+      fields?: string[] | null;
     },
   ): EventTrigger | null;
   /** Hard-delete by id. Returns true when a row was removed. */
@@ -269,7 +273,8 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
     update(trigger_id, patch) {
       return mutatePreapprovalResource(db, 'next_trigger', trigger_id, () => material(trigger_id), () => {
         assertPreapprovalLegacyEnable(db, 'next_trigger', trigger_id, patch.enabled === true);
-        if (patch.enabled !== undefined || patch.pattern !== undefined || patch.dish_id !== undefined || patch.watch_interval_ms !== undefined) {
+        if (patch.enabled !== undefined || patch.pattern !== undefined || patch.dish_id !== undefined
+          || patch.watch_interval_ms !== undefined || patch.filter !== undefined || patch.fields !== undefined) {
           notePreapprovalOwnerMutation(db, 'next_trigger', trigger_id);
         }
         const existing = selectOne.get(trigger_id) as Row | undefined;
@@ -283,6 +288,8 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
         }
         if (patch.last_fired_at !== undefined) next.last_fired_at = patch.last_fired_at;
         if (patch.last_error !== undefined) next.last_error = patch.last_error;
+        if (patch.filter !== undefined) next.filter = serializeFilter(patch.filter);
+        if (patch.fields !== undefined) next.fields = serializeFields(patch.fields);
 
         db.prepare(
           `UPDATE ${TABLE} SET
@@ -291,7 +298,9 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
              dish_id = ?,
              watch_interval_ms = ?,
              last_fired_at = ?,
-             last_error = ?
+             last_error = ?,
+             filter = ?,
+             fields = ?
            WHERE trigger_id = ?`,
         ).run(
           next.pattern,
@@ -300,6 +309,8 @@ export const createEventTriggersStore = (db: Database.Database): EventTriggersSt
           next.watch_interval_ms,
           next.last_fired_at,
           next.last_error,
+          next.filter,
+          next.fields,
           trigger_id,
         );
         return rowToTrigger(next);

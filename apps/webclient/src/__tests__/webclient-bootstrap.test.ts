@@ -6574,6 +6574,11 @@ describe('bootstrapWebclient: Account server profiles', () => {
     const beforeClick = fixture.transportControls.sendCalls().length;
     actionButton?.click();
     await flush();
+    // An update asks once: the first click turns the button into "Confirm update".
+    if (operation === 'update') {
+      findChildByAttr(fixture.root, buttonAttr)?.click();
+      await flush();
+    }
 
     const actionCalls = fixture.transportControls.sendCalls().slice(beforeClick).filter(
       (message): message is {

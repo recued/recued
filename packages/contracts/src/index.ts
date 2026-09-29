@@ -1379,8 +1379,12 @@ export type { MailSendClaim, MailSendClaimStatus } from './mail.js';
 export {
   MAIL_SEND_CLAIM_STATUSES,
   MAIL_SEND_CLAIM_SETTLED_STATUSES,
+  MAIL_SEND_CLAIM_DELIVERED_STATUSES,
+  MAIL_SEND_CLAIM_RECLAIMABLE_STATUSES,
   isMailSendClaimStatus,
   isMailSendClaimSettled,
+  isMailSendClaimDelivered,
+  isMailSendClaimReclaimable,
   mailSentReconciliationQueryFor,
 } from './mail.js';
 export {
@@ -1982,6 +1986,7 @@ export type {
   Checkpoint,
   PreflightApprovedTarget,
   PreflightCheckpointContext,
+  PreflightForeachCover,
 } from './checkpoint.js';
 export type {
   ForeachCheckpointProgress,
@@ -3212,6 +3217,18 @@ export type {
 // D-269 step 3 follow-on — zoned wall clock, shared by the server sweep and the
 // client's quiet-hours preview (which cannot import from `backend/`).
 export { zonedWallClockToEpochMs, zoneOffsetMsAt, cronZoneFor } from './zoned-wall-clock.js';
+// A due at UTC midnight names a DAY (live drive: "due Monday" read overdue on
+// Sunday evening in Pacific time). One rule, every reader.
+export {
+  DAY_MS,
+  calendarDayMs,
+  dueDayIso,
+  dueSpan,
+  isDateOnlyDue,
+  isDuePast,
+  localDayAsDateOnly,
+  timedDueMs,
+} from './due-day.js';
 
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
 export {
@@ -3418,6 +3435,7 @@ export {
 // (design § 3/§ 4 compile-down).
 export type {
   TriggerSugarVerb,
+  TriggerSugarOptions,
   ParsedTriggerOn,
   CompiledTriggerSubscription,
   TriggerDispatchFilter,
@@ -3433,6 +3451,7 @@ export {
   compileTriggerSugarEntry,
   matchesTriggerDispatchFilter,
   validateRecipeEventTriggerEntry,
+  recipeEventTriggerNotes,
 } from './trigger-sugar.js';
 export {
   ELEMENT_ON_SHORTHAND,
@@ -5201,6 +5220,7 @@ export {
   TASK_IDEMPOTENCY_ID_PREFIX,
   isTaskIdempotencyKey,
   taskIdFromIdempotencyKey,
+  workEntityIdFromIdempotencyKey,
   TASK_STATE_MAX,
   NOTE_TITLE_MAX,
   NOTE_ACCESS_KINDS,
@@ -5253,6 +5273,7 @@ export {
 } from './work-entities.js';
 export type {
   WorkEntityKind,
+  IdempotentCreateKind,
   SyncState,
   ConflictPolicy,
   SourceRowIdentity,
@@ -6680,6 +6701,9 @@ export {
 export type {
   FreePoolDataUse, FreePoolDataUseTerms,
 } from './free-pool-data-use.js';
+// A name for a free-pool entry the owner did not name — shared by the page
+// that adds one and the server that repairs a stored blank id.
+export { suggestFreePoolEntryId } from './free-pool-entry-id.js';
 
 // ────────────────────────────────────────────────────────────────
 // D-250 § D — owner metrics
@@ -6783,3 +6807,7 @@ export type {
 export { recipeRequiredConnections } from './required-connections.js';
 export { recipeConsumedEnrichments, recipeNotificationChannels } from './recipe-card-facts.js';
 export type { RequiredConnection } from './required-connections.js';
+
+// D-315 — mail facts: the built-in fact types, the template shape, the fact and
+// thing records, and the event vocabulary.
+export * from './mail-facts.js';

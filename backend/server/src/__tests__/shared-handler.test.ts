@@ -12,6 +12,7 @@ import { createSharedStore } from '../storage/shared-store.js';
 import {
   handleSharedWrite,
   handleSharedCompareAndSet,
+  handleSharedPatch,
   handleSharedRead,
   handleSharedList,
   handleSharedSearch,
@@ -196,6 +197,39 @@ describe('handleSharedCompareAndSet', () => {
       expected_revision: null,
       value: { revision: 0, payload: 'x'.repeat(64 * 1024) },
     })).rejects.toMatchObject({ code: 'payload_too_large', status: 413 });
+  });
+});
+
+describe('handleSharedPatch', () => {
+  const key = 'data.shared.recipe.follow-up.active.thread-1';
+
+  it('changes only the named fields and says what it did', async () => {
+    await handleSharedWrite(deps, { key, value: { status: 'watching', order_id: 'ord-1' } });
+    expect(await handleSharedPatch(deps, { key, set: { status: 'needs_owner' } }))
+      .toMatchObject({ ok: true, key, found: true, applied: true, bytes_written: expect.any(Number) });
+    expect(await handleSharedRead(deps, { key })).toMatchObject({ value: { status: 'needs_owner', order_id: 'ord-1' } });
+  });
+
+  it('an absent record and a match that no longer holds are answers, not errors', async () => {
+    expect(await handleSharedPatch(deps, { key, set: { status: 'x' } }))
+      .toEqual({ ok: true, key, found: false, applied: false, bytes_written: 0 });
+    await handleSharedWrite(deps, { key, value: { reply_id: 'r-2' } });
+    expect(await handleSharedPatch(deps, { key, set: { task_id: 't' }, match: { reply_id: 'r-1' } }))
+      .toEqual({ ok: true, key, found: true, applied: false, bytes_written: 0 });
+  });
+
+  it('refuses a cache-tier key, a bad patch, a revision-controlled row and an oversized record, typed', async () => {
+    await expect(handleSharedPatch(deps, { key: 'shared.state.1', set: { x: 1 } }))
+      .rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handleSharedPatch(deps, { set: { x: 1 } })).rejects.toMatchObject({ code: 'bad_request' });
+    await handleSharedWrite(deps, { key, value: { status: 'watching' } });
+    await expect(handleSharedPatch(deps, { key, set: { status: 'x' }, unset: ['status'] }))
+      .rejects.toMatchObject({ code: 'bad_request', status: 400 });
+    await handleSharedCompareAndSet(deps, { key: 'data.shared.state.cas', expected_revision: null, value: { revision: 0 } });
+    await expect(handleSharedPatch(deps, { key: 'data.shared.state.cas', set: { x: 1 } }))
+      .rejects.toMatchObject({ code: 'conflict', status: 409 });
+    await expect(handleSharedPatch(deps, { key, set: { note: 'x'.repeat(64 * 1024) } }))
+      .rejects.toMatchObject({ code: 'payload_too_large', status: 413 });
   });
 });
 

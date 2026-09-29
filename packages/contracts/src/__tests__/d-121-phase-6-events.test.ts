@@ -98,6 +98,8 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       // D-148 § A.7 — exposure transition broadcast (M-XSURF-1 wiring).
       'exposure_changed',
       'housekeeping_cycle',
+      // D-315 §6 — the owner's mail facts moved (facts / templates).
+      'mail_fact',
       'memory',
       'merge_candidate',
       'merge_scan_progress',

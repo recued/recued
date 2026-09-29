@@ -304,6 +304,10 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   'records',
   'warehouse',
   'memory',
+  // D-315 §6 — the owner's mail facts moved (facts written or removed, a template
+  // changed). The #data route's Mail facts tab re-reads its list off this; a
+  // scan, a backfill and an unpaired fact put nothing on `warehouse`.
+  'mail_fact',
 ] as const;
 
 export type BroadcastListener<K extends BroadcastEventKind = BroadcastEventKind> = (

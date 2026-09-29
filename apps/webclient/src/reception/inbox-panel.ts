@@ -308,6 +308,16 @@ export const RECEPTION_INBOX_STYLES = `
   font-size: 12px;
   font-weight: 600;
 }
+/* How many items one approval runs — read before approving, like the overlap
+   count, so it carries the same weight; and like it, no alarm colour. */
+.reception-inbox-row-covers,
+.reception-inbox-detail-covers {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+}
 .reception-inbox-history {
   margin-top: 14px;
   padding: 12px;
@@ -1255,6 +1265,14 @@ export const mountReceptionInboxPanel = (
             overlap.textContent = row.overlap_label;
             btn.appendChild(overlap);
           }
+          // Its own line for the same reason: approving this row runs more
+          // than the one item it names.
+          if (row.covers_label !== null) {
+            const covers = doc.createElement('span');
+            covers.className = 'reception-inbox-row-covers';
+            covers.textContent = row.covers_label;
+            btn.appendChild(covers);
+          }
           groupEl.appendChild(btn);
         }
       }
@@ -1689,6 +1707,12 @@ export const mountReceptionInboxPanel = (
       overlap.textContent = detail.item.overlap_label;
       parent.appendChild(overlap);
     }
+    if (detail.item.covers_label !== null) {
+      const covers = doc.createElement('span');
+      covers.className = 'reception-inbox-detail-covers';
+      covers.textContent = detail.item.covers_label;
+      parent.appendChild(covers);
+    }
 
     const bookingHistory = detail.item.booking_history;
     if (bookingHistory !== null && bookingHistory !== undefined) {
@@ -1792,7 +1816,11 @@ export const mountReceptionInboxPanel = (
     if (detail.fields.length === 0) {
       const noFields = doc.createElement('div');
       noFields.className = 'reception-inbox-muted';
-      noFields.textContent = 'There is nothing to change here.';
+      // A loop's item has fields the server withholds, not none: an edit
+      // would be applied to every item the approval runs.
+      noFields.textContent = detail.item.covers_label !== null
+        ? "This can't be changed here: a change would apply to every item."
+        : 'There is nothing to change here.';
       form.appendChild(noFields);
     }
 

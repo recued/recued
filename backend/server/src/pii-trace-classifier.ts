@@ -65,6 +65,19 @@ const KERNEL_INGREDIENT_PROFILES: Readonly<Record<string, PiiPathProfile>> = {
     'messages.[].subject': ['content'],
     'messages.[].body': ['content'],
   },
+  // ── D-315 mail facts ──
+  // A fact's values are read from an email, so they carry the email's taint as
+  // whole subtrees: variables (a merchant, an amount, a booking code) and data
+  // (free-form, per template). Ancestor taint covers every nested ref.
+  'mail-fact-get': {
+    'thing.variables': ['content'],
+    'facts.[].variables': ['content'],
+    'facts.[].data': ['content'],
+  },
+  'mail-fact-list': {
+    'records.[].variables': ['content'],
+    'records.[].data': ['content'],
+  },
   // ── accepted Reception responses ──
   // The form schema is deliberately free-form, so submitted values and
   // promotion metadata stay content-tainted as whole subtrees. The one typed

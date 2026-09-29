@@ -51,6 +51,8 @@
 import {
   WORK_ENTITY_DUE_SOON_WINDOW_MS,
   buildQuietHoursDigest,
+  dueSpan,
+  isDuePast,
   isQuietHoursDigestEmpty,
   type QuietHoursDigest,
   type QuietHoursDigestItem,
@@ -93,6 +95,10 @@ export const createTaskEmissionLedger = (): TaskEmissionLedger => {
 
 export interface DueStatusSweepDeps {
   store: WorkEntityStore;
+  /** The zone a DATE-ONLY due is judged in (`due-day.ts`): due for the whole
+   *  of its day there, overdue once that day ends. Read per sweep, like the
+   *  policy. Absent ⇒ its day is judged in UTC. */
+  timeZone?: () => string | undefined;
   /** Optional warehouse event bus. Required to surface due_soon /
    *  overdue events to recipes — the sweep is silent without it. */
   bus?: WarehouseEventBus;
@@ -200,13 +206,14 @@ export interface DueStatusSweepResult {
  *  deduping: each half reads as correct and only the PAIR is wrong. Not imported
  *  from the reminder sweep because that module imports the classifiers from this
  *  one, and the cycle would be real. */
-const digestMarkKey = (i: QuietHoursDigestItem, now: number): string => {
+const digestMarkKey = (i: QuietHoursDigestItem, now: number, timeZone: string | undefined): string => {
   // ⚠ PRECONDITION: every item here classified `due_soon` or `overdue` a few
-  // lines ago, and both classifiers split those two on exactly `now >= anchor`.
-  // So this re-derives the state from the anchor rather than carrying it —
-  // which is NOT a second copy of the window arithmetic (the offset-dependent
-  // half), only of the past/future split the precondition already narrowed to.
-  const state = i.anchor_at <= now ? 'overdue' : 'due_soon';
+  // lines ago, and both classifiers split those two on exactly `isDuePast`
+  // (an instant at the instant, a date-only due once its day is over). So this
+  // re-derives the state from the anchor rather than carrying it — which is NOT
+  // a second copy of the window arithmetic (the offset-dependent half), only of
+  // the past/future split the precondition already narrowed to.
+  const state = isDuePast(i.anchor_at, now, timeZone) ? 'overdue' : 'due_soon';
   return `${i.kind}:${i.id}:${i.anchor_at}:${state}`;
 };
 
@@ -247,10 +254,15 @@ export const classifyCommitmentDueStatus = (
   /** D-269 step 2 — the owner's per-kind horizon. Defaults to the shared 24h
    *  constant so every existing caller (and every test) keeps its meaning. */
   offsetMs: number = WORK_ENTITY_DUE_SOON_WINDOW_MS,
+  /** The zone a date-only deadline is judged in — see `due-day.ts`. */
+  timeZone?: string,
 ): 'not_due' | 'due_soon' | 'overdue' | 'no_deadline' => {
   if (commitment.promised_for_at === undefined) return 'no_deadline';
-  if (now >= commitment.promised_for_at) return 'overdue';
-  if (now >= commitment.promised_for_at - offsetMs) {
+  // ⛔ A date-only deadline is a whole DAY: overdue once it ends, not at its
+  // start ("due Monday" read overdue on Sunday evening in Pacific time).
+  const span = dueSpan(commitment.promised_for_at, timeZone);
+  if (now >= span.end) return 'overdue';
+  if (now >= span.start - offsetMs) {
     return 'due_soon';
   }
   return 'not_due';
@@ -264,11 +276,14 @@ export const classifyTaskDueWindow = (
   now: number,
   /** D-269 step 2 — see `classifyCommitmentDueStatus`. */
   offsetMs: number = WORK_ENTITY_DUE_SOON_WINDOW_MS,
+  /** The zone a date-only due is judged in — see `due-day.ts`. */
+  timeZone?: string,
 ): 'no_deadline' | 'not_due' | 'due_soon' | 'overdue' => {
   if (task.done) return 'no_deadline';
   if (task.due_at === undefined) return 'no_deadline';
-  if (now >= task.due_at) return 'overdue';
-  if (now >= task.due_at - offsetMs) return 'due_soon';
+  const span = dueSpan(task.due_at, timeZone);
+  if (now >= span.end) return 'overdue';
+  if (now >= span.start - offsetMs) return 'due_soon';
   return 'not_due';
 };
 
@@ -308,6 +323,7 @@ export const runDueStatusSweep = (
   // not straddle the window boundary and classify half its rows each way.
   const taskQuiet = deps.isQuiet?.(now) ?? false;
   const commitmentQuiet = deps.isQuiet?.(now) ?? false;
+  const timeZone = deps.timeZone?.();
   const tellTask = taskPolicy.enabled && !taskQuiet;
   const tellCommitment = commitmentPolicy.enabled && !commitmentQuiet;
 
@@ -344,7 +360,7 @@ export const runDueStatusSweep = (
         continue;
       }
       result.tasks_visited++;
-      const cls = classifyTaskDueWindow(task, now, taskPolicy.offset_ms);
+      const cls = classifyTaskDueWindow(task, now, taskPolicy.offset_ms, timeZone);
       // Codex P1 fold — task event idempotence. Only emit when the
       // classified state diverges from the ledger's last entry. Tasks
       // not in the ledger are first-observation (or post-restart);
@@ -409,7 +425,7 @@ export const runDueStatusSweep = (
     if (commitment.lifecycle_state !== 'pending') continue;
     if (commitment.promised_for_at === undefined) continue;
     result.commitments_visited++;
-    const target = classifyCommitmentDueStatus(commitment, now, commitmentPolicy.offset_ms);
+    const target = classifyCommitmentDueStatus(commitment, now, commitmentPolicy.offset_ms, timeZone);
     if (target === commitment.due_status) continue;
     // Forward-direction transitions are sweep-driven; back-transitions
     // (overdue → due_soon when rescheduled) are dispatcher-driven
@@ -558,7 +574,7 @@ export const runDueStatusSweep = (
       if (page.length === 0) break;
       for (const t of page) {
         if (t.done || t.due_at === undefined) continue;
-        const cls = classifyTaskDueWindow(t, now, taskPolicy.offset_ms);
+        const cls = classifyTaskDueWindow(t, now, taskPolicy.offset_ms, timeZone);
         if (cls !== 'due_soon' && cls !== 'overdue') continue;
         items.push({ kind: 'task', id: t.id, title: t.title, anchor_at: t.due_at });
       }
@@ -571,12 +587,12 @@ export const runDueStatusSweep = (
     const ledger = deps.reminderLedger;
     const named = ledger === undefined
       ? items
-      : items.filter((i) => !ledger.has(digestMarkKey(i, now)));
+      : items.filter((i) => !ledger.has(digestMarkKey(i, now, timeZone)));
     if (ledger !== undefined) {
-      for (const i of named) ledger.set(digestMarkKey(i, now), i.anchor_at);
+      for (const i of named) ledger.set(digestMarkKey(i, now, timeZone), i.anchor_at);
     }
 
-    const digest = buildQuietHoursDigest(named, { from: lastActive!, to: now }, now);
+    const digest = buildQuietHoursDigest(named, { from: lastActive!, to: now }, now, timeZone);
     // ⛔ AN EMPTY CARD IS NOT SENT. "Nothing happened while you were away", every
     // morning, is the notification an owner switches off — taking the feature
     // with it.

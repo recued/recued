@@ -6,7 +6,7 @@ import { handleExecute, resumeReviewedParent, type ExecuteHandlerDeps } from './
 import type { PreapprovalStorage } from './storage/preapproval-storage.js';
 import type { PreapprovalActivations, TriggerOccurrence } from './storage/preapproval-activations.js';
 import type { createPreapprovalExecutionRuntime } from './preapproval-execution.js';
-import type { ExecuteRequest, ExecuteResponse } from './types.js';
+import type { ExecuteRequest, ExecuteResponse, InternalExecuteOverrides } from './types.js';
 import { triggerEventContext } from './triggers/event-context.js';
 
 export const createPreapprovalDriver = (deps: {
@@ -16,9 +16,20 @@ export const createPreapprovalDriver = (deps: {
   execution: ExecuteHandlerDeps;
   onError?: (futureRef: string, error: unknown) => void;
   pumpOutbox?: () => Promise<void>;
+  /** D-315 §6.4 — a sealed event the recovery clock runs itself is kept on
+   *  the trigger dispatcher's books (`trigger_fired`, the run's link to the
+   *  email that caused it), as a fire the dispatcher queued is. */
+  settleRecovered?: (
+    trigger_id: string,
+    event: WarehouseEvent,
+    run: (observe: Pick<InternalExecuteOverrides, 'onRunMinted'>) => Promise<ExecuteResponse | null>,
+  ) => Promise<void>;
 }) => {
   const triggerCandidates = new WeakMap<object, { occurrence: TriggerOccurrence; entered: boolean }>();
-  const runReviewedTrigger = async (futureRef: string): Promise<ExecuteResponse | null> => {
+  const runReviewedTrigger = async (
+    futureRef: string,
+    observe: Pick<InternalExecuteOverrides, 'onRunMinted'> = {},
+  ): Promise<ExecuteResponse | null> => {
     let handle: object | undefined;
     try {
       const { candidate, event } = await deps.storage.triggerIngress.read(futureRef);
@@ -29,16 +40,27 @@ export const createPreapprovalDriver = (deps: {
       handle = claimed.handle;
       const plan = claimed.plan;
       return await handleExecute(deps.execution, { recipe_id: plan.recipe.recipe_id,
-        config: plan.recipe_snapshots[0]!.effective_config, trigger_source: 'event_trigger',
+        config: plan.recipe_snapshots[0]!.effective_config,
+        // D-315 §6.3 — the sealed event keeps a backfill's origin.
+        trigger_source: event.origin === 'backfill' ? 'backfill' : 'event_trigger',
         execution_source: plan.origin.source, ...deps.runtime.resolveOrigin(handle),
         context: triggerEventContext(candidate.trigger_id, event),
-      }, { run_id: claimed.run_id, preapproval_run: handle });
+      }, { run_id: claimed.run_id, preapproval_run: handle, ...observe });
     } catch (error) {
       if (handle) await deps.runtime.finish(handle, 'failed');
       if (error instanceof RpcError && ['preapproval_already_claimed', 'preapproval_cancelled',
         'preapproval_expired', 'preapproval_stale', 'preapproval_authority_changed'].includes(error.code)) return null;
       throw error;
     } finally { deps.activations.retire(futureRef); await deps.pumpOutbox?.(); }
+  };
+  /** The recovery clock's own run of a sealed event. */
+  const recoverTrigger = async (futureRef: string): Promise<void> => {
+    if (!deps.settleRecovered) {
+      await runReviewedTrigger(futureRef);
+      return;
+    }
+    const { candidate, event } = await deps.storage.triggerIngress.read(futureRef);
+    await deps.settleRecovered(candidate.trigger_id, event, (observe) => runReviewedTrigger(futureRef, observe));
   };
   const autoRunActivation = (recipeId: string, enabled: boolean) => {
     if (!deps.storage.isReady()) return { kind: 'disabled' as const };
@@ -72,14 +94,18 @@ export const createPreapprovalDriver = (deps: {
     triggerCandidates.set(handle, { occurrence, entered: false });
     return handle;
   },
-  async executeTrigger(request: ExecuteRequest, candidate: object): Promise<ExecuteResponse | null> {
+  async executeTrigger(
+    request: ExecuteRequest,
+    candidate: object,
+    observe: Pick<InternalExecuteOverrides, 'onRunMinted'> = {},
+  ): Promise<ExecuteResponse | null> {
     if (!deps.storage.isReady()) return null;
     const entry = triggerCandidates.get(candidate);
     if (!entry || entry.entered) throw new RpcError('preapproval_stale', 'This trigger candidate was not issued by the active driver.', 409);
     entry.entered = true;
-    if (entry.occurrence.kind === 'preapproved') return runReviewedTrigger(entry.occurrence.future_execution_ref);
+    if (entry.occurrence.kind === 'preapproved') return runReviewedTrigger(entry.occurrence.future_execution_ref, observe);
     if (!deps.activations.claimOrdinaryTrigger(entry.occurrence)) return null;
-    return handleExecute(deps.execution, request);
+    return handleExecute(deps.execution, request, observe);
   },
   /** A selected event is encrypted before queueing, so queue pressure or a
    * process restart cannot replace it with a later event. The same root CAS
@@ -88,7 +114,7 @@ export const createPreapprovalDriver = (deps: {
     if (!deps.storage.isReady()) return;
     deps.storage.repository.expire();
     for (const futureRef of deps.storage.triggerIngress.pending()) {
-      try { await runReviewedTrigger(futureRef); }
+      try { await recoverTrigger(futureRef); }
       catch (error) {
         if (deps.onError) deps.onError(futureRef, error);
         else console.warn('[preapproval] trigger execution failed', futureRef, error);
@@ -175,7 +201,7 @@ export const createPreapprovalDriver = (deps: {
     // The schedule pump is also the recovery clock for durably received event
     // candidates; a vanished in-memory dispatcher queue is not a new event.
     for (const futureRef of deps.storage.triggerIngress.pending()) {
-      try { await runReviewedTrigger(futureRef); }
+      try { await recoverTrigger(futureRef); }
       catch (error) {
         if (deps.onError) deps.onError(futureRef, error);
         else console.warn('[preapproval] trigger recovery failed', futureRef, error);

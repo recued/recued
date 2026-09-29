@@ -147,6 +147,33 @@ describe('withIngredientCache — data category', () => {
     expect(counts['webhook-operation-fixture']).toBe(2);
     expect(await store.size()).toBe(0);
   });
+
+  it('⛔ never serves a catalog WRITE from the cache — every one reaches the provider', async () => {
+    // A catalog wrapper is read/data at the top whatever operation it runs, and
+    // the commit gateway records a cache hit as done: two identical writes
+    // within the TTL reached the provider once. The dispatch carries the
+    // operation's own tier.
+    const store = createInMemoryStore();
+    const { exec, counts } = mkExecutor(() => ({ result: { ok: true } }));
+    const cached = withIngredientCache(exec, {
+      manifestLoader: mkLoader({ 'crm-catalog': 'data' }),
+      store,
+      recipe_ttl: 300,
+      recipe_id: 'deal-stage-recipe',
+    });
+    const input = { method: 'PATCH', path: '/deals/1', body: { stage: 'won' } };
+    const writeMeta = { step_id: 'set-stage', surface_dispatch: true, surface_risk_tier: 'write' as const };
+    await cached('crm-catalog', input, undefined, undefined, writeMeta);
+    await cached('crm-catalog', input, undefined, undefined, writeMeta);
+    expect(counts['crm-catalog']).toBe(2);
+    expect(await store.size()).toBe(0);
+
+    // The same catalog's READ still caches.
+    const readMeta = { step_id: 'get-deal', surface_dispatch: true, surface_risk_tier: 'read' as const };
+    await cached('crm-catalog', { method: 'GET', path: '/deals/1' }, undefined, undefined, readMeta);
+    await cached('crm-catalog', { method: 'GET', path: '/deals/1' }, undefined, undefined, readMeta);
+    expect(counts['crm-catalog']).toBe(3);
+  });
 });
 
 describe('withIngredientCache — ai category', () => {

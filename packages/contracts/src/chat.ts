@@ -2426,22 +2426,44 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           type: 'string',
           enum: ['task', 'note', 'commitment', 'project'],
           description:
-            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person. `project` = a container other tasks hang under.',
+            'REQUIRED — what to create. `task` = something to do (optionally with a due date). `note` = something to keep, body required. `commitment` = something promised to or by a named person — say who promised with `direction`. `project` = a container other tasks hang under.',
         },
         title: {
           type: 'string',
           description:
-            'The one-line subject, as the user would recognise it ("Call the dentist"). REQUIRED for `task`, `commitment` and `project`; optional for `note`, which titles itself from the body when omitted.',
+            'The one-line subject, as the user would recognise it ("Call the dentist"). For a commitment, what was promised ("Send Anna the signed quote"). REQUIRED for `task`, `commitment` and `project`; optional for `note`, which titles itself from the body when omitted.',
         },
         body: {
           type: 'string',
           description:
-            'Longer detail. REQUIRED for `note` (it is the note). Optional elsewhere — omit when the title already says it all.',
+            "Longer detail. REQUIRED for `note` (it is the note). Optional for a task, and for a project it is the project's description — omit when the title already says it all. A commitment has none.",
         },
         due_at: {
           type: 'number',
           description:
-            'Optional Unix-ms deadline. Set it only when the user gave one; do NOT invent a date to make a task look complete.',
+            'Tasks only. Optional Unix-ms deadline. Set it only when the user gave one; do NOT invent a date to make a task look complete.',
+        },
+        target_completion_at: {
+          type: 'string',
+          format: 'date',
+          description:
+            "Projects only. Optional target date, YYYY-MM-DD — a day, not a time. Set it only when the user gave one.",
+        },
+        direction: {
+          type: 'string',
+          enum: ['outbound', 'inbound', 'internal'],
+          description:
+            'REQUIRED for a commitment — who promised: `outbound` = the user promised it; `inbound` = someone promised it to the user; `internal` = within the user\'s own team.',
+        },
+        promised_for_at: {
+          type: 'string',
+          description:
+            'Commitments only. Optional — when it is promised for: a day as YYYY-MM-DD, or an exact time as ISO 8601 with its offset. Set it only when the user gave one.',
+        },
+        counterparty_email: {
+          type: 'string',
+          description:
+            'Commitments only. Optional — the other person\'s email address, when the user gave it or a contact search found it. Never invent one.',
         },
       },
     },
@@ -2494,7 +2516,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.update': {
     name: 'work.update',
     description:
-      "Change something already in the user's work graph: mark a task done, move a deadline, retitle it, or edit a note's text. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
+      "Change something already in the user's work graph: mark a task done, move a task's deadline, a project's target date or a promise's date, retitle it, or edit a note's text. \u26a0 This CHANGES a row they have already been reading, so it is proposed to them first and runs only once they confirm \u2014 say what you are about to change, do not report it done. \u26d4 Find the row with `work.search` and use the `id` it returned. Never guess an id, and when the search returned more than one plausible match, say which you found and ask which they mean. \u26a0 Send ONLY what changes; anything omitted keeps its value. \u26d4 `done` is a claim about the world, not a field edit \u2014 send it on its own, in a call that changes nothing else. To create something new use `work.create`; this tool only changes what already exists.",
     arg_schema: {
       type: 'object',
       required: ['kind', 'id'],
@@ -2502,10 +2524,15 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
         kind: { type: 'string', enum: ['task', 'note', 'commitment', 'project'], description: 'REQUIRED — the kind of the row being changed, as `work.search` reported it.' },
         id: { type: 'string', description: 'REQUIRED — the id of the row to change, exactly as `work.search` returned it.' },
         done: { type: 'boolean', description: 'Tasks only. `true` marks the task complete, `false` reopens it. Send it ALONE — not alongside title/body/due_at.' },
-        title: { type: 'string', description: 'Optional new one-line subject.' },
-        body: { type: 'string', description: "Optional new detail. For a note this is the note's text." },
-        due_at: { type: 'number', description: 'Optional new deadline, Unix ms. Set only when the user gave one.' },
-        state: { type: 'string', description: "Optional free-form pipeline state (e.g. 'blocked'). It does NOT mark anything done — use `done` for that." },
+        title: { type: 'string', description: 'Optional new one-line subject. For a commitment, what was promised.' },
+        body: { type: 'string', description: "Optional new detail: a note's text, a task's detail, a project's description. A commitment has none." },
+        due_at: { type: 'number', description: 'Tasks only. Optional new deadline, Unix ms. Set only when the user gave one.' },
+        clear_due_at: { type: 'boolean', description: 'Tasks only. `true` removes the deadline — only when the user asked for that. Never with `due_at`.' },
+        target_completion_at: { type: 'string', format: 'date', description: "Projects only. The project's new target date, YYYY-MM-DD — a day, not a time. Set only when the user gave one." },
+        clear_target_completion_at: { type: 'boolean', description: 'Projects only. `true` removes the target date — only when the user asked for that. Never with `target_completion_at`.' },
+        state: { type: 'string', description: "Tasks and projects only. A task's free-form pipeline state (e.g. 'blocked'); a project's is one of active / paused / completed / archived. It does NOT mark anything done — use `done` for that." },
+        promised_for_at: { type: 'string', description: 'Commitments only. When it is promised for: a day as YYYY-MM-DD, or an exact time as ISO 8601 with its offset. Set only when the user gave one.' },
+        clear_promised_for_at: { type: 'boolean', description: 'Commitments only. `true` removes the promised date — only when the user asked for that. Never with `promised_for_at`.' },
       },
     },
     classification: TIER1_CLASSIFICATIONS['work.update'],

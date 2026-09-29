@@ -2,11 +2,12 @@
  * Intake-form responses as canonical owner data — the generic DESTINATION.
  *
  * ⚠ This header used to say *"this table owns the immutable result of an owner
- * acceptance"*. Both halves were wrong by the time anyone read it: D-210 WS2
- * moved the write to SUBMIT time (the public visitor POST handler), and A.8
- * slice 2 makes the record MUTABLE. That stale sentence was cited once as proof
- * of post-approval semantics and produced a wrong conclusion, so it is
- * corrected rather than left standing. ⇒ [[feedback_declared_is_not_backed]]
+ * acceptance"*. The first half holds: every row is written when the owner
+ * approves the held submission (`form-response-promotion.ts`, its only writer).
+ * D-210 WS2 had moved the write to SUBMIT, and this header then said so, but
+ * audit finding 3a moved it back to approval on 2026-07-21 (`2ec931cc7`). The
+ * second half is wrong: A.8 slice 2 makes the record MUTABLE.
+ * ⇒ [[feedback_declared_is_not_backed]]
  *
  * What is true now: this store is still deliberately separate from the
  * Reception inbox queue — the queue owns unreviewed anonymous input. This table

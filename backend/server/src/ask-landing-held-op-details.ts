@@ -341,7 +341,10 @@ const resolveDefaultTimeZone = (): string => {
  *      args would show one member's values as if they were the whole
  *      approval. The prose already enumerates a batch's items;
  *    - no `checkpoint_id`, or a hold that is unknown / consumed / not
- *      reception-origin.
+ *      reception-origin;
+ *    - a held loop item whose approval runs the remaining items too: the
+ *      inbox projection offers it no fields (`holdCoversSeveralItems`), since
+ *      an edit would reach every item. The prose lists them.
  *
  *  ⛔ THE SECOND BULLET USED TO KEY ON `batch_id` PRESENCE, and that predicate
  *  was far wider than its own reason. `buildPreflightAsk` stamps `batch_id` for

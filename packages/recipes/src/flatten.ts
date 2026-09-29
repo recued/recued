@@ -325,16 +325,16 @@ const classifyIngredient = (
 };
 
 /** Extract a deduped list of fully-qualified refs from a step's
- *  inputs. Ignores skip_when / fail_on (those are caller-controlled
- *  gates, not entity touches). Returns `data.x.y` style strings ready
- *  for L3+ link reasoning. */
+ *  inputs. Ignores skip_when / fail_on / stop_when (those are
+ *  caller-controlled gates, not entity touches). Returns `data.x.y` style
+ *  strings ready for L3+ link reasoning. */
 const extractRefs = (step: RecipeStep | PrefetchStep): string[] => {
   // Pull just the writable surfaces a step uses for data flow:
   //   - transforms keep their params at the top level (RecipeStep
   //     spreads `Record<string, unknown>` over BaseStep), so we
   //     copy the whole record minus the well-known control fields.
   //   - ingredients/guards put params under `input`.
-  // skip_when / fail_on / cache / id are control fields, never
+  // skip_when / fail_on / stop_when / cache / id are control fields, never
   // entity-emitting; strip them so the ref scan stays focused.
   const target: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(step)) {
@@ -342,6 +342,7 @@ const extractRefs = (step: RecipeStep | PrefetchStep): string[] => {
       key === 'id' ||
       key === 'skip_when' ||
       key === 'fail_on' ||
+      key === 'stop_when' ||
       key === 'cache' ||
       key === 'optional' ||
       key === 'transform' ||

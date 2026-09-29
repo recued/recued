@@ -60,6 +60,7 @@ import type {
   OriginUnitKind,
   AuthorizationProvenance,
   OperationApproval,
+  PreflightForeachCover,
   PreflightOverrideOffer,
   RiskTier,
 } from '@recued/contracts';
@@ -267,6 +268,13 @@ export interface PreflightAskContext {
     items: ReadonlyArray<BatchedApprovalItem>;
     unit: OriginUnit;
   };
+  /** A held `foreach` step: every call this ONE approval covers. The engine
+   *  approves the step's remaining same-target items together, so an ask that
+   *  showed only the item it paused on under-stated what "Approve" does —
+   *  found live, when approving one recipient mailed the whole list. Persisted
+   *  on the checkpoint context, so a restart's re-raise says it too. Ignored
+   *  beside `batch` (a batch-registered hold is one call). */
+  foreach_cover?: PreflightForeachCover;
   /** D-177 P5a (N.10) — answer-time resume context ONLY: the member-claim
    *  instruction for ONE held run of a batched approve. The batch answer
    *  flow (the sole writer) populates it per member; the resumer threads
@@ -566,6 +574,23 @@ const startedByPhrase = (actor: string | undefined): string | undefined => {
  *  offered bounds on the payload, so the answer mints exactly what the ask
  *  offered even if the cell defaults are tuned while the ask is outstanding.
  *  Absent offer ⇒ the binary ask, byte-identical to pre-P3. */
+/** The foreach cover as persisted — read defensively, because a malformed one
+ *  must degrade to a single-call ask, never lose the hold. */
+export const readForeachCover = (value: unknown): PreflightForeachCover | undefined => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { total, items } = value as { total?: unknown; items?: unknown };
+  if (typeof total !== 'number' || !Number.isInteger(total) || total < 2) return undefined;
+  const listed = Array.isArray(items)
+    && items.length === total
+    && items.every((item) => item !== null && typeof item === 'object'
+      && typeof (item as { summary?: unknown }).summary === 'string'
+      && (item as { args_preview?: unknown }).args_preview !== null
+      && typeof (item as { args_preview?: unknown }).args_preview === 'object')
+    ? items as PreflightForeachCover['items']
+    : undefined;
+  return listed !== undefined ? { total, items: listed } : { total };
+};
+
 export const buildPreflightAsk = (args: {
   checkpoint: Checkpoint;
   context: PreflightAskContext;
@@ -576,7 +601,11 @@ export const buildPreflightAsk = (args: {
   // payload). A single-member batch is the degenerate case — same shape,
   // one item.
   const batch = context.batch;
-  const count = batch?.items.length ?? 1;
+  const cover = batch === undefined ? readForeachCover(context.foreach_cover) : undefined;
+  const count = batch?.items.length ?? cover?.total ?? 1;
+  // Without the listed items the total is an upper bound (an item aimed at a
+  // different account is asked about on its own), so it is worded as one.
+  const upTo = cover !== undefined && cover.items === undefined ? 'up to ' : '';
   // What is being run. `raw_op` names the op directly; on a catalog hold
   // `tool_slug` already IS the operation id. Neither ⇒ a legacy path
   // whose gate origin can't be classified: say that, rather than name
@@ -597,8 +626,12 @@ export const buildPreflightAsk = (args: {
         ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run ${count} `
           + `${action} actions${onConnection}, all from `
           + `${UNIT_PHRASE[batch.unit.kind]}.`
-        : `Recipe ${clipRecipeId(context.recipe_id)} wants to run `
-          + `${action}${onConnection} (step ${context.gated_step_id}).`;
+        : cover !== undefined
+          ? `Recipe ${clipRecipeId(context.recipe_id)} wants to run `
+            + `${action}${onConnection} for ${upTo}${count} items (step `
+            + `${context.gated_step_id}). One approval covers them all.`
+          : `Recipe ${clipRecipeId(context.recipe_id)} wants to run `
+            + `${action}${onConnection} (step ${context.gated_step_id}).`;
 
   // Sentence 2 — why it stopped here. The tier IS the reason; naming the
   // consequence answers "should I care?" in a way `risk_tier='write'`
@@ -658,7 +691,11 @@ export const buildPreflightAsk = (args: {
     : '';
 
   const itemsBlock =
-    batch !== undefined ? `\n\n${renderBatchItemsBlock(batch.items)}` : '';
+    batch !== undefined
+      ? `\n\n${renderBatchItemsBlock(batch.items)}`
+      : cover?.items !== undefined
+        ? `\n\n${renderBatchItemsBlock(cover.items)}`
+        : '';
 
   // D-177 P5b (N.11 rule 7) — an OPEN offer renders its confirm sentence:
   // every clause maps 1:1 onto an enforced bound (use budget → `max_uses`,
@@ -682,7 +719,9 @@ export const buildPreflightAsk = (args: {
   // open-grant block used to land AFTER "Approve?" for exactly this
   // reason: the question was baked into the sentence instead of being
   // composed last.)
-  const question = count > 1 ? `Approve all ${count}?` : 'Approve?';
+  const question = count > 1
+    ? upTo !== '' ? 'Approve all of them?' : `Approve all ${count}?`
+    : 'Approve?';
 
   // Every ask used to be titled "Approval required" — identical across
   // every pending decision, and the title is also the notification
@@ -696,7 +735,7 @@ export const buildPreflightAsk = (args: {
     context.risk_tier !== undefined ? ` (${context.risk_tier})` : '';
   const title =
     named !== undefined
-      ? `Approve ${count > 1 ? `${count} × ` : ''}${titleOperation(named)}${tierSuffix}`
+      ? `Approve ${count > 1 ? `${upTo}${count} × ` : ''}${titleOperation(named)}${tierSuffix}`
       : 'Approval required';
 
   const message: NotificationMessage = {

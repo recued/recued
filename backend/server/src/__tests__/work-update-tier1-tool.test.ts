@@ -30,6 +30,7 @@ import {
   ensureWorkEntitySchema,
   type WorkEntityStore,
 } from '../storage/work-entity-store.js';
+import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 
 const ownerSource: ExecutionSource = {
@@ -234,6 +235,62 @@ describe('field edits — a patch, and never an empty one', () => {
     expect(d.__markDone).not.toHaveBeenCalled();
   });
 
+  it('removes a task\'s deadline with `clear_due_at` — never beside a new one, never on another kind', async () => {
+    // A task's `null` means "not given", so a removal has a flag of its own.
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const res = await h['work.update']!({ kind: 'task', id: 't1', clear_due_at: true }, ctx());
+    expect(res.ok).toBe(true);
+    expect(d.__taskUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 't1', clear_due_at: true }));
+    expect((res as { result: { fields: string[] } }).result.fields).toEqual(['clear_due_at']);
+
+    const both = await h['work.update']!({ kind: 'task', id: 't1', due_at: 99_000, clear_due_at: true }, ctx());
+    expect((both as { detail: string }).detail).toMatch(/not both/u);
+    const project = await h['work.update']!({ kind: 'project', id: 'p1', clear_due_at: true }, ctx());
+    expect((project as { detail: string }).detail).toMatch(/task only/u);
+    expect(d.__taskUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets a project\'s target as a DAY, and removes it with `clear_target_completion_at`', async () => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const set = await h['work.update']!({ kind: 'project', id: 'p1', target_completion_at: '2026-10-30' }, ctx());
+    expect(set.ok).toBe(true);
+    // A day is stored as its UTC midnight — due all of that day where the owner is.
+    expect(d.__taskUpdate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'p1', target_completion_at: Date.UTC(2026, 9, 30) }),
+    );
+    expect((set as { result: { fields: string[] } }).result.fields).toEqual(['target_completion_at']);
+
+    const removed = await h['work.update']!({ kind: 'project', id: 'p1', clear_target_completion_at: true }, ctx());
+    // A project's `null` removes its target (a task's would not).
+    expect(d.__taskUpdate).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'p1', target_completion_at: null }));
+    expect((removed as { result: { fields: string[] } }).result.fields).toEqual(['clear_target_completion_at']);
+  });
+
+  it.each([
+    ['a day that does not exist', { kind: 'project', target_completion_at: '2026-02-30' }, /YYYY-MM-DD/u],
+    ['a time, not a day', { kind: 'project', target_completion_at: '2026-10-30T09:00' }, /YYYY-MM-DD/u],
+    ['epoch ms, not a day', { kind: 'project', target_completion_at: 1_790_000_000_000 }, /YYYY-MM-DD/u],
+    ['a target AND its removal', { kind: 'project', target_completion_at: '2026-10-30', clear_target_completion_at: true }, /not both/u],
+    ['a target on a task', { kind: 'task', target_completion_at: '2026-10-30' }, /project only/u],
+    ['a removal on a task', { kind: 'task', clear_target_completion_at: true }, /project only/u],
+  ])('refuses %s, and changes nothing', async (_label, args, detail) => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const res = await h['work.update']!({ id: 'x1', ...args }, ctx());
+    expect((res as { detail: string }).detail).toMatch(detail);
+    expect(d.__taskUpdate).not.toHaveBeenCalled();
+  });
+
+  it('⛔ a task\'s `due_at` on a project is REFUSED — it changed nothing and was reported as changed', async () => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const res = await h['work.update']!({ kind: 'project', id: 'p1', due_at: 99_000 }, ctx());
+    expect((res as { detail: string }).detail).toMatch(/target_completion_at/u);
+    expect(d.__taskUpdate).not.toHaveBeenCalled();
+  });
+
   it('a `state` change is not a completion', async () => {
     const d = deps();
     const h = buildChatTier1Handlers(d);
@@ -275,3 +332,86 @@ describe('field edits — a patch, and never an empty one', () => {
     expect((res as { reason: string }).reason).toBe('classification_blocked');
   });
 });
+
+describe('every field goes where its kind keeps it, or is refused', () => {
+  // ⛔ A dispatcher ignores a field it does not have, and this tool reported each
+  // such field as changed: a project's `body`, a commitment's `title`, a date on
+  // the wrong kind, a note's or a commitment's `state`. Nothing changed, and the
+  // model was told it had.
+  it.each([
+    ['a project\'s body is its description', { kind: 'project', body: 'Scope' }, { description: 'Scope' }, ['body']],
+    ['a project\'s state', { kind: 'project', state: 'paused' }, { state: 'paused' }, ['state']],
+    ['a commitment\'s title is what was promised', { kind: 'commitment', title: 'Send the quote' }, { statement: 'Send the quote' }, ['title']],
+    ['a promise for a day', { kind: 'commitment', promised_for_at: '2026-10-02' }, { promised_for_at: Date.UTC(2026, 9, 2) }, ['promised_for_at']],
+    ['a promise for a time, with its offset', { kind: 'commitment', promised_for_at: '2026-10-02T15:00:00+02:00' }, { promised_for_at: Date.parse('2026-10-02T13:00:00Z') }, ['promised_for_at']],
+    ['a promise date removed', { kind: 'commitment', clear_promised_for_at: true }, { promised_for_at: null }, ['clear_promised_for_at']],
+  ])('%s', async (_label, args, sent, fields) => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const res = await h['work.update']!({ id: 'x1', ...args }, ctx());
+    expect(res.ok).toBe(true);
+    expect(d.__taskUpdate).toHaveBeenCalledWith(expect.objectContaining({ id: 'x1', ...sent }));
+    // Reported in the tool's own words — what the model asked to change.
+    expect((res as { result: { fields: string[] } }).result.fields).toEqual(fields);
+  });
+
+  it('a commitment is not sent a `title` it would ignore', async () => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    await h['work.update']!({ kind: 'commitment', id: 'c1', title: 'Send the quote' }, ctx());
+    expect(d.__taskUpdate.mock.calls[0]?.[0]).not.toHaveProperty('title');
+  });
+
+  it.each([
+    ['a commitment\'s body', { kind: 'commitment', body: 'x' }, /a commitment has no `body` — what was promised is its `title`/u],
+    ['a commitment\'s state', { kind: 'commitment', state: 'blocked' }, /a commitment has no `state`/u],
+    ['a note\'s state', { kind: 'note', state: 'blocked' }, /a note has no `state`/u],
+    ['a promise date on a task', { kind: 'task', promised_for_at: '2026-10-02' }, /commitment only — a task's date is `due_at`/u],
+    ['a task deadline on a commitment', { kind: 'commitment', due_at: 99_000 }, /task only — a commitment's date is `promised_for_at`/u],
+    ['a promise time with no zone', { kind: 'commitment', promised_for_at: '2026-10-02T15:00' }, /with its offset/u],
+    ['a promise on a day that does not exist', { kind: 'commitment', promised_for_at: '2026-02-30' }, /with its offset/u],
+    ['a promise date AND its removal', { kind: 'commitment', promised_for_at: '2026-10-02', clear_promised_for_at: true }, /not both/u],
+  ])('refuses %s, and changes nothing', async (_label, args, detail) => {
+    const d = deps();
+    const h = buildChatTier1Handlers(d);
+    const res = await h['work.update']!({ id: 'x1', ...args }, ctx());
+    expect((res as { detail: string }).detail).toMatch(detail);
+    expect(d.__taskUpdate).not.toHaveBeenCalled();
+  });
+
+  it('lands on the real store: a project\'s description and target, a promise\'s words and date', async () => {
+    for (const kind of ['project', 'commitment'] as const) {
+      store.registerSource({
+        id: RECUED_BUILTIN_SOURCE_ID(kind), top_tier_kind: kind, source_kind: 'builtin',
+        source_label: `Recued built-in (${kind})`, write_capable: true, registered_at: NOW,
+      });
+    }
+    const project = store.writeProject({ title: 'Launch', source_id: RECUED_BUILTIN_SOURCE_ID('project') }, NOW);
+    const promise = store.writeCommitment({
+      direction: 'outbound', statement: 'Send it', derivation: 'user_declared',
+      source_id: RECUED_BUILTIN_SOURCE_ID('commitment'),
+    }, NOW);
+    const resolver = createWorkEntityResolver(store);
+    const dispatchers = createWorkEntityDispatchers({ store, resolver, now: () => NOW });
+    const h = buildChatTier1Handlers({
+      getWorkEntityCrudDeps: () => ({ store, resolver, dispatchers }),
+      getOpAdmissionGate: () => ({ isFrozenByPause: () => false, isOpGranted: () => true }),
+    } as unknown as ChatToolHandlerDeps);
+
+    expect((await h['work.update']!({
+      kind: 'project', id: project.id, body: 'Ship the pilot', target_completion_at: '2026-11-30',
+    }, ctx())).ok).toBe(true);
+    expect(store.readProject(project.id)).toMatchObject({
+      description: 'Ship the pilot', target_completion_at: Date.UTC(2026, 10, 30),
+    });
+    expect((await h['work.update']!({
+      kind: 'commitment', id: promise.id, title: 'Send the signed quote', promised_for_at: '2026-10-02',
+    }, ctx())).ok).toBe(true);
+    expect(store.readCommitment(promise.id)).toMatchObject({
+      statement: 'Send the signed quote', promised_for_at: Date.UTC(2026, 9, 2),
+    });
+    await h['work.update']!({ kind: 'commitment', id: promise.id, clear_promised_for_at: true }, ctx());
+    expect(store.readCommitment(promise.id)?.promised_for_at).toBeUndefined();
+  });
+});
+

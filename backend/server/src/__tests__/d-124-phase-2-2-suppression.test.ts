@@ -10,7 +10,7 @@
  *  Coverage:
  *    1. Suppressed during drain — runRecipe NOT called, `last_fired_at`
  *       NOT updated, error counter NOT touched.
- *    2. Fires after `markBackfillComplete` + cache invalidate.
+ *    2. Fires after `markBackfillComplete` — at once, with no restart.
  *    3. Fires immediately for vacuous platforms (webhook / service).
  *    4. Fires for unknown rows (suppression is opt-in by row presence).
  *    5. Fires for `data.contact.*` only when both mail + calendar
@@ -131,7 +131,61 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
     expect(h.store.get('t-mail')?.last_fired_at).toBeNull();
   });
 
-  it('fires after markBackfillComplete + invalidate', async () => {
+  it('suppresses what a draining collection published on another’s behalf: a mailbox’s first scan and its attachments', async () => {
+    h.store.create({
+      trigger_id: 't-file',
+      recipe_id: 'r-file',
+      publisher_id: 'local',
+      pattern: 'data.file.received.*.created',
+      enabled: true,
+      created_at: 1_000,
+    });
+    const dispatcher = createEventTriggerDispatcher({
+      bus: h.bus,
+      store: h.store,
+      runtime: { runRecipe: h.runRecipe },
+      backfillState: h.lookup,
+      now: () => 10_000,
+    });
+    dispatcher.rebuild();
+    // The received files never drain: their own state says complete. The
+    // event says whose drain it came from.
+    emit(h.bus, { platform: 'file', slug: 'received', entity_type: 'file', event_kind: 'created', in_drain: true });
+    await flush();
+    expect(h.runRecipe).not.toHaveBeenCalled();
+    emit(h.bus, { platform: 'file', slug: 'received', entity_type: 'file', event_kind: 'created', record_id: 'rec-2' });
+    await flush();
+    expect(h.runRecipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('never captures a drained event as a pre-approval candidate', async () => {
+    h.store.create({
+      trigger_id: 't-file',
+      recipe_id: 'r-file',
+      publisher_id: 'local',
+      pattern: 'data.file.received.*.created',
+      enabled: true,
+      created_at: 1_000,
+    });
+    const captureTrigger = vi.fn(() => null);
+    const dispatcher = createEventTriggerDispatcher({
+      bus: h.bus,
+      store: h.store,
+      runtime: { runRecipe: h.runRecipe },
+      backfillState: h.lookup,
+      getPreapprovalDriver: () => ({ captureTrigger }) as never,
+      now: () => 10_000,
+    });
+    dispatcher.rebuild();
+    emit(h.bus, { platform: 'file', slug: 'received', entity_type: 'file', event_kind: 'created', in_drain: true });
+    await flush();
+    expect(captureTrigger).not.toHaveBeenCalled();
+    emit(h.bus, { platform: 'file', slug: 'received', entity_type: 'file', event_kind: 'created', record_id: 'rec-2' });
+    await flush();
+    expect(captureTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('⛔ fires after markBackfillComplete — at once, with no restart and no invalidation', async () => {
     h.instances.upsert({
       platform: 'mail',
       slug: 'work',
@@ -169,13 +223,11 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
     await flush();
     expect(h.runRecipe).not.toHaveBeenCalled();
 
-    // Adapter signals drain done. The lookup caches `false` on first
-    // read, so explicit invalidate is needed for the next isComplete
-    // call to re-read SQLite. (Phase 2.2 ships gate-only;
-    // production-wiring task wires invalidation through compose-root
-    // hooks — tests stand in for it here.)
+    // Adapter signals drain done — and that is ALL production does. This
+    // test used to call `h.lookup.invalidate(...)` here, "standing in" for
+    // compose-root wiring that never shipped; the lookup cached `false`, so
+    // in production a new mailbox's triggers stayed silent until a restart.
     h.instances.markBackfillComplete('mail', 'work');
-    h.lookup.invalidate('mail', 'work');
 
     emit(h.bus, {
       platform: 'mail',

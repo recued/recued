@@ -89,6 +89,7 @@ import { createContractStore } from '../storage/contract-store.js';
 import { createSellerStore } from '../storage/seller-store.js';
 import { createSellerOrderStore } from '../storage/seller-order-store.js';
 import { createFormResponseStore } from '../storage/form-response-store.js';
+import { createMailFactStore } from '../storage/mail-fact-store.js';
 import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { installRecipeGrantSeed } from '../recipe-grant-seed.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -343,6 +344,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     blobs: cacheBlobs,
   });
   const formResponseStore = createFormResponseStore(db);
+  const mailFactStore = createMailFactStore(db);
   const annotationStore = createAnnotationStore({
     db,
     blobs: cacheBlobs,
@@ -427,6 +429,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     serviceStack: undefined,
     sharedStore,
     formResponseStore,
+    mailFactStore,
     contactStore: undefined,
     businessContextContactStore: businessContextReaders.contacts,
     businessContextWorkEntityStore: businessContextReaders.workEntities,

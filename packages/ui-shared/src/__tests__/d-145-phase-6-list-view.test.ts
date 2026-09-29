@@ -17,7 +17,7 @@ import {
   type WorkEntityListRow,
 } from '@recued/contracts';
 
-import { renderWorkEntityListView } from '../work-entity-page/list-view.js';
+import { projectRowText, renderWorkEntityListView } from '../work-entity-page/list-view.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -256,5 +256,22 @@ describe('D-267 follow-on — the row says what only Recued can say', () => {
       show_source_label: true, search_query: '',
     });
     expect(html).not.toContain('work-entity-list-row-badge');
+  });
+});
+
+describe('a task row\'s due date', () => {
+  const task = (due_at: number) => ({
+    _kind: 'task', id: 't', title: 'File the return', done: false, due_at,
+    source_id: 'recued.task', sync_state: 'live', conflict_policy: 'recued_wins',
+    last_seen_at: 1, created_at: 1, updated_at: 1, blocks_task_ids: [],
+  }) as never;
+
+  it('prints a whole-DAY due (UTC midnight) as that day', () => {
+    expect(projectRowText(task(Date.UTC(2026, 8, 28))).meta).toContain('Due 2026-09-28');
+  });
+
+  it('prints a timed due as the date it falls on HERE, as the filter hint promises', () => {
+    const at = new Date(2026, 8, 27, 23, 30).getTime() + 1; // late Sunday, local
+    expect(projectRowText(task(at)).meta).toContain('Due 2026-09-27');
   });
 });

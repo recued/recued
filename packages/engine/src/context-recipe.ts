@@ -92,10 +92,17 @@ export interface ContextRecipeSnapshotResult {
  *  so re-extraction at run time stays correct across recipe-version
  *  upgrades automatically.
  *
- *  Steps in the manifest with no output in `stores.step` (skipped via
- *  `skip_when`, errored before completion, etc.) are simply omitted —
- *  next run sees the prior snapshot for those keys, which is the
- *  desired "fall back to last successful value" semantic. */
+ *  A manifest step the run never REACHED — it stopped early (`stop_when`) or
+ *  failed first — has no entry in `stores.step`, and keeps the value the
+ *  previous run saved (installed at `stores.context.recipe` by
+ *  `injectContextRecipe`): the "fall back to last successful value" semantic.
+ *
+ *  ⛔ Carried here, not by omission. This doc once said an omitted key falls
+ *  back on its own, but the host REPLACES the stored snapshot whole
+ *  (`dish-context-store.ts`, `INSERT OR REPLACE`), so an omitted key was
+ *  ERASED, and a cursor read through `coalesce` restarted from its first-run
+ *  default — the silent redo. A SKIPPED step is different: its `skip_when` ran,
+ *  it stores `null`, and `null` is what the next run sees. */
 export const snapshotContextRecipe = (
   recipe: RecipeDefinition,
   stores: NamespaceStores,
@@ -104,12 +111,18 @@ export const snapshotContextRecipe = (
   if (manifest.length === 0) return { snapshot: {}, truncated: [] };
 
   const stepStore = (stores.step ?? {}) as Record<string, unknown>;
+  const priorRaw = (stores.context as Record<string, unknown> | undefined)?.recipe;
+  const prior = priorRaw !== null && typeof priorRaw === 'object'
+    ? priorRaw as Record<string, unknown>
+    : {};
   const candidate: ContextRecipe = {};
   for (const stepId of manifest) {
     if (hasOwnSafe(stepStore, stepId)) {
       // D-185 Slice 2 — drop any run-scoped `temp` ref before it becomes durable
       // cross-run state (its file is gone next run; §3.4).
       setNamespaceValue(candidate, stepId, stripTempRefs(stepStore[stepId]));
+    } else if (hasOwnSafe(prior, stepId)) {
+      setNamespaceValue(candidate, stepId, prior[stepId]);
     }
   }
 

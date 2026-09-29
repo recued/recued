@@ -46,6 +46,15 @@ import {
   MAIL_SENT_RECONCILIATION_MAX_WINDOW_MS,
   isEnrichmentScope,
   isMailReconciliationId,
+  isMailFactTypeId,
+  MAIL_FACT_LIST_MAX_LIMIT,
+  MAIL_FACT_LIST_OF,
+  type MailFact,
+  type MailFactGetResult,
+  type MailFactListInput,
+  type MailFactListOf,
+  type MailFactThing,
+  type MailFactTypeId,
   isSellerCustomerCloseReason,
   isSellerLifecycleSource,
   SELLER_LIFECYCLE_SOURCES,
@@ -699,6 +708,22 @@ export interface KernelDispatchers {
     key: string;
     revision: number;
     created: boolean;
+    bytes_written: number;
+  }>;
+  /** Change named top-level fields of one existing `data.shared.*` record and
+   *  leave the rest as it is — read, `match` check and write in one transaction,
+   *  so two writers of different fields both keep their change. No record, or a
+   *  `match` that no longer holds, answers `found` / `applied` false. */
+  patch?: (input: {
+    key: string;
+    set?: Record<string, unknown>;
+    unset?: string[];
+    match?: Record<string, unknown>;
+  }) => Promise<{
+    ok: true;
+    key: string;
+    found: boolean;
+    applied: boolean;
     bytes_written: number;
   }>;
   /** D-232 § 23 — what happened to an exchange. Server-side because the answer
@@ -1369,6 +1394,15 @@ export interface KernelDispatchers {
   mailGet?: (input: { slug: string; record_id: string }) =>
     Promise<{ record: unknown | null }>;
 
+  /** D-315 — backs `mail-fact-get`: a thing with its facts, or one fact with
+   *  its thing, by either id. Both `null` / empty when the id is unknown. */
+  mailFactGet?: (input: { id: string }) => Promise<MailFactGetResult>;
+
+  /** D-315 — backs `mail-fact-list`: things (default) or the facts they fold,
+   *  newest first, filtered as `MailFactListInput` says. */
+  mailFactList?: (input: MailFactListInput) =>
+    Promise<{ records: readonly (MailFactThing | MailFact)[] }>;
+
   /** Backs `mail-body-read`. Materializes a mail record's full body —
    *  `body_inline` directly (≤64 KB) or hydrated from content-addressed
    *  storage via `blob_hash` (>64 KB) — closing the gap where `mail-get`
@@ -1756,6 +1790,7 @@ export interface KernelDispatchers {
   noteCreate?: (input: {
     body: string;
     title?: string;
+    idempotency_key?: string;
     related_contact_ids?: readonly string[];
     related_calendar_event_ids?: readonly string[];
     related_mail_thread_ids?: readonly string[];
@@ -1785,6 +1820,7 @@ export interface KernelDispatchers {
   commitmentCreate?: (input: {
     direction: CommitmentDirection;
     statement: string;
+    idempotency_key?: string;
     derivation: CommitmentDerivation;
     promised_at?: number;
     promised_for_at?: number;
@@ -1827,6 +1863,7 @@ export interface KernelDispatchers {
 
   projectCreate?: (input: {
     title: string;
+    idempotency_key?: string;
     description?: string;
     state?: ProjectState;
     target_completion_at?: number;
@@ -1887,6 +1924,70 @@ export interface KernelDispatchers {
     tombstone?: boolean;
   }) => Promise<{ ok: true; id: string; tombstoned: boolean }>;
 }
+
+/** D-315 — `mail-fact-list`'s input, checked before dispatch. Every filter is
+ *  optional; one that is present and malformed is REFUSED, never dropped — a
+ *  dropped filter would widen the list without a word. */
+const parseMailFactListInput = (raw: unknown, slug: string): MailFactListInput => {
+  const input = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const refuse = (message: string): never => {
+    throw new IngredientError('BAD_INPUT', `mail-fact-list: ${message}`, { slug });
+  };
+  const present = (key: string): boolean => input[key] !== undefined && input[key] !== null;
+  const of = present('of') ? input.of : 'things';
+  if (!(MAIL_FACT_LIST_OF as readonly unknown[]).includes(of)) {
+    refuse(`of must be one of ${MAIL_FACT_LIST_OF.join(', ')}`);
+  }
+  const out: {
+    of: MailFactListOf;
+    type?: MailFactTypeId;
+    state?: string;
+    identity?: Record<string, string>;
+    since?: number;
+    limit?: number;
+  } = { of: of as MailFactListOf };
+  if (present('type')) {
+    if (!isMailFactTypeId(input.type)) refuse('type must be a mail fact type (purchase, shipment, bill, …)');
+    out.type = input.type as MailFactTypeId;
+  }
+  if (present('state')) {
+    if (typeof input.state !== 'string' || input.state.length === 0) refuse('state must be a non-empty string');
+    if (out.of === 'facts') refuse('state filters things — a fact carries its state among its variables');
+    out.state = input.state as string;
+  }
+  if (present('identity')) {
+    const identity = input.identity;
+    if (
+      identity === null
+      || typeof identity !== 'object'
+      || Array.isArray(identity)
+      || Object.values(identity).some((value) => typeof value !== 'string' || value.length === 0)
+    ) {
+      refuse('identity must be an object of variable → non-empty string');
+    }
+    if (out.type === undefined) refuse('identity needs a type — an identity belongs to one type');
+    if (out.of === 'facts') refuse('identity names a thing — read its facts with mail-fact-get');
+    out.identity = identity as Record<string, string>;
+  }
+  if (present('since')) {
+    if (typeof input.since !== 'number' || !Number.isFinite(input.since) || input.since < 0) {
+      refuse('since must be a time in milliseconds');
+    }
+    out.since = input.since as number;
+  }
+  if (present('limit')) {
+    if (
+      typeof input.limit !== 'number'
+      || !Number.isInteger(input.limit)
+      || input.limit < 1
+      || input.limit > MAIL_FACT_LIST_MAX_LIMIT
+    ) {
+      refuse(`limit must be a whole number from 1 to ${MAIL_FACT_LIST_MAX_LIMIT}`);
+    }
+    out.limit = input.limit as number;
+  }
+  return out;
+};
 
 /** Produce an Adapter that dispatches the shared-* kernel slugs
  *  to the provided callbacks. Useful from both the server runtime (in-
@@ -1997,6 +2098,31 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           key,
           expected_revision,
           value,
+        });
+      }
+      case 'shared-patch': {
+        if (!dispatchers.patch) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `shared-patch unavailable — no paired server or kernel dispatcher`,
+            { slug },
+          );
+        }
+        const { key, set, unset, match } = call.input as {
+          key: unknown;
+          set?: Record<string, unknown> | null;
+          unset?: string[] | null;
+          match?: Record<string, unknown> | null;
+        };
+        if (typeof key !== 'string' || key.length === 0) {
+          throw new IngredientError('BAD_INPUT', `shared-patch: key is required`, { slug });
+        }
+        // A null part is an absent one, as with every optional kernel input.
+        return dispatchers.patch({
+          key,
+          ...(set != null ? { set } : {}),
+          ...(unset != null ? { unset } : {}),
+          ...(match != null ? { match } : {}),
         });
       }
       case 'exchange-status': {
@@ -3674,6 +3800,32 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           throw new IngredientError('BAD_INPUT', 'mail-get: record_id is required', { slug });
         }
         return dispatchers.mailGet({ slug: input.slug, record_id: input.record_id });
+      }
+
+      case 'mail-fact-get': {
+        if (!dispatchers.mailFactGet) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-fact-get unavailable — no paired server or mail-fact dispatcher`,
+            { slug },
+          );
+        }
+        const input = call.input as { id?: unknown };
+        if (typeof input.id !== 'string' || input.id.trim().length === 0) {
+          throw new IngredientError('BAD_INPUT', 'mail-fact-get: id is required', { slug });
+        }
+        return dispatchers.mailFactGet({ id: input.id.trim() });
+      }
+
+      case 'mail-fact-list': {
+        if (!dispatchers.mailFactList) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `mail-fact-list unavailable — no paired server or mail-fact dispatcher`,
+            { slug },
+          );
+        }
+        return dispatchers.mailFactList(parseMailFactListInput(call.input, slug));
       }
 
       case 'mail-body-read': {

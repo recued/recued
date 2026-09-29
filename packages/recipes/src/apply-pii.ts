@@ -59,7 +59,8 @@
  *     anywhere in the recipe (the engine snapshots the RAW step output —
  *     aliased text whose ledger dies with the run) → `continuity_reference`;
  *   - the ai-step's own `fail_on` reading its own output (it evaluates
- *     BEFORE the restore step) → `self_referential_fail_on`.
+ *     BEFORE the restore step) → `self_referential_fail_on`; the same for its
+ *     own `stop_when` → `self_referential_stop_when`.
  *
  * Checkpoint pause/resume across the bracket (the former known edge) is
  * CLOSED by the pii-ledger-in-checkpoint substrate: a preflight pause
@@ -133,6 +134,10 @@ export type AutoPiiResidualOutcome =
    *  evaluates BEFORE the synthesized restore, so it would observe aliased
    *  echoes where the original observed raw text. */
   | 'self_referential_fail_on'
+  /** The same, for the ai-step's own `stop_when`: it too is checked right after
+   *  the step, before the restore, and would decide whether the run goes on from
+   *  aliased echoes. */
+  | 'self_referential_stop_when'
   /** The step declares a non-static `llm.pii_fields` (a `{{ref}}`) the
    *  injection must not clobber. */
   | 'declaration_conflict'
@@ -345,13 +350,17 @@ const hasContinuityRef = (recipe: Rec, aiId: string): boolean =>
     JSON.stringify(recipe),
   );
 
-/** The ai-step's own `fail_on` referencing its own output (`{{step.<self>…}}`,
- *  string or object condition form) — that condition runs BEFORE the restore
- *  step, so under a bracket it would see aliased echoes. */
-const hasSelfReferentialFailOn = (aiStep: Rec, aiId: string): boolean =>
-  aiStep.fail_on !== undefined
+/** The ai-step's own `fail_on` / `stop_when` referencing its own output
+ *  (`{{step.<self>…}}`, string or object condition form) — both run BEFORE the
+ *  restore step, so under a bracket they would see aliased echoes. */
+const hasSelfReferentialCondition = (
+  aiStep: Rec,
+  aiId: string,
+  field: 'fail_on' | 'stop_when',
+): boolean =>
+  aiStep[field] !== undefined
   && new RegExp(`\\{\\{\\s*step\\.${escapeRegExp(aiId)}[.:\\s}]`).test(
-    JSON.stringify(aiStep.fail_on),
+    JSON.stringify(aiStep[field]),
   );
 
 /** Bare `step.<aiId>[.path]` rewiring for output section sources — the one
@@ -474,8 +483,12 @@ export const applyAutoPiiProtection = (
       fail('continuity_reference');
       continue;
     }
-    if (hasSelfReferentialFailOn(loc.step, gap.step_id)) {
+    if (hasSelfReferentialCondition(loc.step, gap.step_id, 'fail_on')) {
       fail('self_referential_fail_on');
+      continue;
+    }
+    if (hasSelfReferentialCondition(loc.step, gap.step_id, 'stop_when')) {
+      fail('self_referential_stop_when');
       continue;
     }
 

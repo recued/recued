@@ -81,6 +81,9 @@ export const simulateRecipe = async (
     throw new Error(message);
   };
   let stopped = false;
+  // What a step after the stop point is told. A `stop_when` that held is a
+  // success, so it names the step that ended the run rather than a failure.
+  let blockedMessage = 'An earlier step stopped this test.';
   try {
     for (const [phase, list] of phases) {
       signal?.throwIfAborted();
@@ -142,7 +145,7 @@ export const simulateRecipe = async (
           input: null,
         };
         steps.push(trace);
-        if (stopped) { trace.message = 'An earlier step stopped this test.'; retainTrace(trace); continue; }
+        if (stopped) { trace.message = blockedMessage; retainTrace(trace); continue; }
         const calls: unknown[] = [];
         let callBytes = 0;
         let callIndex = 0;
@@ -163,7 +166,7 @@ export const simulateRecipe = async (
           },
         };
         const inputValue = raw.args ?? raw.input ?? Object.fromEntries(
-          Object.entries(raw).filter(([key]) => !['id', 'transform', 'skip_when', 'fail_on'].includes(key)),
+          Object.entries(raw).filter(([key]) => !['id', 'transform', 'skip_when', 'fail_on', 'stop_when'].includes(key)),
         );
         trace.input = resolveDeep(inputValue, stores, { deferItem: true });
         retainTrace(trace);
@@ -173,6 +176,7 @@ export const simulateRecipe = async (
           id: authored.id, ingredient: 'kitchen-simulation-fixture', input: inputValue,
           ...(raw.skip_when !== undefined ? { skip_when: raw.skip_when } : {}),
           ...(raw.fail_on !== undefined ? { fail_on: raw.fail_on } : {}),
+          ...(raw.stop_when !== undefined ? { stop_when: raw.stop_when } : {}),
           ...(raw.foreach !== undefined ? { foreach: raw.foreach } : {}),
         } as RecipeStep : authored as RecipeStep;
         try {
@@ -192,6 +196,11 @@ export const simulateRecipe = async (
             trace.message = 'One or more iterations failed; inspect the output.';
           }
           if (trace.status === 'failed') { result.status = 'failed'; stopped = true; }
+          if (trace.status === 'passed' && log.stopped === true) {
+            trace.message = 'Its stop_when held, so the run ends here as a success.';
+            blockedMessage = `Step '${authored.id}' ended the run (its stop_when held), so this step does not run.`;
+            stopped = true;
+          }
           if (phase === 'trigger' && !stopped) {
             const out = record(log.result) ? log.result : {};
             const { should_run, ...rest } = out;

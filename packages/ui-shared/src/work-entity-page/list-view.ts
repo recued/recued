@@ -18,6 +18,7 @@
 
 import {
   BOOKING_LIFECYCLE_STATES,
+  dueDayIso,
   type WorkEntity,
   type WorkEntityKind,
   type WorkEntityListRow,
@@ -25,13 +26,20 @@ import {
 } from '@recued/contracts';
 import { e, timeAgo } from '../template.js';
 
+/** YYYY-MM-DD — locale-stable for list rendering.
+ *
+ *  ⛔ A due at UTC midnight names a DAY (`due-day.ts`) and prints as that date.
+ *  Any other due is an instant, and prints as the date it falls on HERE — the
+ *  UTC date put a Sunday-evening deadline in Pacific time on Monday, and the
+ *  filter hint below promises local dates. */
 const formatDate = (ts: number | undefined): string => {
   if (ts === undefined || ts === 0) return '';
-  // YYYY-MM-DD — locale-stable for list rendering.
+  const day = dueDayIso(ts);
+  if (day !== null) return day;
   const d = new Date(ts);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 };
 
