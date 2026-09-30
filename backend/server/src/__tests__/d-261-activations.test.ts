@@ -109,9 +109,11 @@ describe('D-261 activation in actual automation stores', () => {
   });
   it('bounds qualification history and unfinished polls without granting or reviving a pruned poll', async () => {
     const f = connect();
-    f.recipes.save({ ...fixtureRecipe, auto_run: { interval_ms: 60_000, default_enabled: false } }, 'core', 'inline');
+    f.recipes.save({ ...fixtureRecipe, auto_run: { interval_ms: 60_000 } }, 'core', 'inline');
+    // D-319 — a timer is one dish's; this one is switched off.
+    f.autoRun.setEnabled('dsh_auto', fixtureRecipe.recipe_id, false);
     const plan = preparedPlan(); plan.request.activation = { kind: 'next_auto_run', recipe_id: fixtureRecipe.recipe_id,
-      publisher_id: 'core', expected_revision: 1 }; plan.target = f.activations.prepareTarget(plan.request);
+      publisher_id: 'core', dish_id: 'dsh_auto', expected_revision: 1 }; plan.target = f.activations.prepareTarget(plan.request);
     const approved = await approve(f, plan);
     const oldest = (await f.repository.beginAutoRunPoll(approved.future_execution_ref, 'worker')).binding;
     f.db.prepare('INSERT INTO checkpoints(key,data) VALUES(?,?)').run('old-poll-checkpoint', JSON.stringify({ run_id: oldest.run_id }));
@@ -135,16 +137,21 @@ describe('D-261 activation in actual automation stores', () => {
   });
   it('the real Arm status exposes a lifecycle revision and projects a reviewed next run while its legacy row is parked', async () => {
     const f = connect();
-    f.recipes.save({ ...fixtureRecipe, auto_run: { interval_ms: 60_000, default_enabled: false } }, 'core', 'inline');
+    f.recipes.save({ ...fixtureRecipe, auto_run: { interval_ms: 60_000 } }, 'core', 'inline');
+    // D-319 — the timer of one dish, switched off.
+    const dish = { dish_id: 'dsh_auto', recipe_id: fixtureRecipe.recipe_id, publisher_id: 'core', name: '', is_default: true,
+      config_overlay: {}, enabled: true, created_at: 1 };
+    f.autoRun.setEnabled('dsh_auto', fixtureRecipe.recipe_id, false);
     const status = () => listAutoRun({ recipeStore: f.recipes, settingsStore: f.autoRun, circuitStore: f.circuits,
-      getHandle: () => undefined, preapprovalStatus: f.activations.describeAutoRun }).entries[0]!;
-    expect(status()).toMatchObject({ recipe_id: fixtureRecipe.recipe_id, enabled: false, lifecycle_revision: 1 });
+      getHandle: () => undefined, preapprovalStatus: f.activations.describeAutoRun,
+      dishStore: { get: () => dish, listByRecipe: () => [dish] } }).entries[0]!;
+    expect(status()).toMatchObject({ recipe_id: fixtureRecipe.recipe_id, dish_id: 'dsh_auto', enabled: false, lifecycle_revision: 1 });
     const plan = preparedPlan();
     plan.request.activation = { kind: 'next_auto_run', recipe_id: fixtureRecipe.recipe_id,
-      publisher_id: 'core', expected_revision: status().lifecycle_revision! };
+      publisher_id: 'core', dish_id: 'dsh_auto', expected_revision: status().lifecycle_revision! };
     plan.target = f.activations.prepareTarget(plan.request);
     const approved = await approve(f, plan);
-    expect(f.autoRun.isEnabled(fixtureRecipe.recipe_id, false)).toBe(false);
+    expect(f.autoRun.isEnabled('dsh_auto')).toBe(false);
     expect(status()).toMatchObject({ enabled: true, lifecycle_revision: 1, preapproval: {
       proposal_id: approved.proposal_id, future_execution_ref: approved.future_execution_ref, execution_status: 'active',
     } });
@@ -351,14 +358,14 @@ describe('D-261 activation in actual automation stores', () => {
     expect((await f.repository.inspect(triggerApproval.proposal_id)).execution_status).toBe('invalidated');
 
     f.recipes.save({ ...fixtureRecipe, auto_run: { interval_ms: 60_000 } }, 'core', 'inline');
-    f.autoRun.setEnabled(fixtureRecipe.recipe_id, true);
+    f.autoRun.setEnabled('dsh_auto', fixtureRecipe.recipe_id, true);
     const autoPlan = preparedPlan(); autoPlan.request.activation = { kind: 'next_auto_run', recipe_id: fixtureRecipe.recipe_id,
-      publisher_id: 'core', expected_revision: 1 }; autoPlan.target = f.activations.prepareTarget(autoPlan.request);
+      publisher_id: 'core', dish_id: 'dsh_auto', expected_revision: 1 }; autoPlan.target = f.activations.prepareTarget(autoPlan.request);
     const autoApproval = await approve(f, autoPlan);
-    expect(f.autoRun.isEnabled(fixtureRecipe.recipe_id)).toBe(false);
-    f.circuits.set({ recipe_id: fixtureRecipe.recipe_id, consecutive_failures: 3, auto_disabled: true });
+    expect(f.autoRun.isEnabled('dsh_auto')).toBe(false);
+    f.circuits.set({ dish_id: 'dsh_auto', recipe_id: fixtureRecipe.recipe_id, consecutive_failures: 3, auto_disabled: true });
     expect((await f.repository.inspect(autoApproval.proposal_id)).execution_status).toBe('invalidated');
     f.activations.retire(autoApproval.future_execution_ref);
-    expect(f.autoRun.isEnabled(fixtureRecipe.recipe_id)).toBe(false);
+    expect(f.autoRun.isEnabled('dsh_auto')).toBe(false);
   });
 });

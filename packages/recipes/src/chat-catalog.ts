@@ -409,6 +409,10 @@ const variableToArgProp = (
   // without a named connection keeps saying so — from the guard, which is the
   // authority, rather than from the shape of the declaration.
   if (hintType === 'connection') return { schema, required: false };
+  // D-315 §5.2 — a `mail_template` names a template minted on THIS server, which
+  // the recipe's own setting holds; a caller cannot know it, so it is never
+  // asked of one. Advertised, like a connection: the owner may name another.
+  if (hintType === 'mail_template') return { schema, required: false };
   // A hint with a `default` is filled by preflight, so it is not required even
   // when `.optional` is unset (preflight treats a present default as supplied).
   return { schema, required: hint.optional !== true && hint.default === undefined };

@@ -3,6 +3,8 @@ import {
   FORM_RESPONSE_ON_SHORTHAND,
   type LocalRecipeWebhookStatus,
   type MailFactTypeSpec,
+  type MailTemplate,
+  type MailTemplateDefinition,
   type RecipeDefinition,
 } from '@recued/contracts';
 
@@ -17,6 +19,11 @@ import {
   RECIPE_EDITOR_CONN_VAR_NAME_ATTR,
   RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR,
   RECIPE_EDITOR_CONN_VAR_ROW_ATTR,
+  RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR,
+  RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR,
+  RECIPE_EDITOR_MAIL_TEMPLATE_NAME_ATTR,
+  RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR,
+  RECIPE_EDITOR_MAIL_TEMPLATE_SOURCE_ATTR,
   RECIPE_EDITOR_DIRTY_ATTR,
   RECIPE_EDITOR_FIELD_ATTR,
   RECIPE_EDITOR_FORM_RESPONSE_READER_ACTION_ATTR,
@@ -268,6 +275,8 @@ interface MountOptions {
   saveCaller?: BootstrapSave;
   webhookControl?: RecipeWebhookControl;
   mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
+  mailTemplatesCaller?: () => Promise<{ readonly templates: readonly MailTemplate[] }>;
+  mailTemplateStarterCaller?: (args: { template_id: string }) => Promise<{ readonly starter: MailTemplateDefinition }>;
 }
 type BootstrapValidate = (args: {
   recipe: RecipeDefinition;
@@ -288,6 +297,8 @@ const mount = (options: MountOptions = {}) => {
     saveCaller: options.saveCaller ?? okSave,
     ...(options.webhookControl ? { webhookControl: options.webhookControl } : {}),
     ...(options.mailFactTypesCaller ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
+    ...(options.mailTemplatesCaller ? { mailTemplatesCaller: options.mailTemplatesCaller } : {}),
+    ...(options.mailTemplateStarterCaller ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller } : {}),
     ...(options.initialRecipe !== undefined
       ? { initialRecipe: options.initialRecipe }
       : {}),
@@ -1671,6 +1682,111 @@ describe('recipe-editor step inspector route', () => {
     expect(doc.activeElement).toBe(
       findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_label:billing'),
     );
+  });
+
+  describe('D-315 §5.2 — a mail template setting and the template it brings', () => {
+    const starter: MailTemplateDefinition = {
+      name: 'Shop parcels',
+      type: 'shipment',
+      entrance: { conditions: [{ field: 'from', op: 'is', value: 'ship@shop.example' }], variables: ['tracking_number'] },
+      rules: [{ target: { variable: 'tracking_number' }, source: 'body', find: { kind: 'after_label', label: 'Tracking number:' } }],
+      html: false,
+      ai: { enabled: false },
+    };
+    const mine = (over: Partial<MailTemplate> = {}): MailTemplate => ({
+      ...starter,
+      template_id: 'mtpl_mine',
+      origin: { kind: 'owner' },
+      active: true,
+      revision: 1,
+      health: { matched: 0, entered: 0, not_entered: 0 },
+      created_at: 1,
+      updated_at: 1,
+      ...over,
+    });
+    const withSetting = (hint: Record<string, unknown>): RecipeDefinition => {
+      const recipe = opRecipe({ id: 'x', transform: 'coalesce', values: ['{{config.template}}'] });
+      recipe.variables = { template: hint as never };
+      return recipe;
+    };
+    const flush = async (): Promise<void> => { for (let i = 0; i < 6; i += 1) await Promise.resolve(); };
+
+    it('says what the setting brings, and keeps it out of the raw inputs', () => {
+      const { root } = mount({ initialRecipe: withSetting({ label: 'Template', type: 'mail_template', starter }) });
+      const row = findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, 'template')!;
+      expect(textOf(row)).toContain('Brings “Shop parcels”, a shipment template.');
+      expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'variables.template')).toBeUndefined();
+      const none = mount({ initialRecipe: withSetting({ label: 'Template', type: 'mail_template' }) });
+      expect(textOf(findByAttrValue(none.root, RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, 'template')!))
+        .toContain('Brings no template: whoever installs it picks one of theirs.');
+    });
+
+    it('brings one of the author’s templates, as their server copies it', async () => {
+      const mailTemplateStarterCaller = vi.fn(async () => ({ starter }));
+      const { root, route } = mount({
+        initialRecipe: withSetting({ label: 'Template', type: 'mail_template' }),
+        mailTemplatesCaller: async () => ({ templates: [mine()] }),
+        mailTemplateStarterCaller,
+      });
+      await flush();
+      setValue(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_SOURCE_ATTR, 'template'), 'mtpl_mine');
+      findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR, 'template')!.click();
+      await flush();
+      expect(mailTemplateStarterCaller).toHaveBeenCalledWith({ template_id: 'mtpl_mine' });
+      expect(route.getRecipe().variables.template).toMatchObject({ type: 'mail_template', starter });
+    });
+
+    it('finds the template a starter came from, and says when it changed since the copy', async () => {
+      const changed = mine({ rules: [{ target: { variable: 'tracking_number' }, source: 'body', find: { kind: 'after_label', label: 'Parcel:' } }] });
+      const { root } = mount({
+        initialRecipe: withSetting({ label: 'Template', type: 'mail_template', starter }),
+        mailTemplatesCaller: async () => ({ templates: [changed] }),
+        mailTemplateStarterCaller: async () => ({ starter }),
+      });
+      await flush();
+      expect(textOf(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR, 'template')!)).toBe('Update from my template');
+      expect(textOf(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, 'template')!))
+        .toContain('“Shop parcels” changed since this copy. Update from it to bring the change.');
+    });
+
+    it('⛔ shows, where the setting is, why the author’s server refused a copy', async () => {
+      const refusal = Object.assign(new Error('refused'), { details: { problems: ['rules[0].find.label: holds an email address'] } });
+      const { root, route } = mount({
+        initialRecipe: withSetting({ label: 'Template', type: 'mail_template' }),
+        mailTemplatesCaller: async () => ({ templates: [mine()] }),
+        mailTemplateStarterCaller: async () => { throw refusal; },
+      });
+      await flush();
+      setValue(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_SOURCE_ATTR, 'template'), 'mtpl_mine');
+      findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR, 'template')!.click();
+      await flush();
+      expect(textOf(findByAttrValue(root, RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, 'template')!))
+        .toContain('rules[0].find.label: holds an email address');
+      expect(route.getRecipe().variables.template).not.toHaveProperty('starter');
+    });
+
+    it('narrows a mail-fact trigger to the template a setting holds, and back to any', () => {
+      const recipe = withSetting({ label: 'Parcels template', type: 'mail_template', starter });
+      recipe.event_triggers = [{ on: 'mail_fact.shipment' }];
+      const { root, route } = mount({ initialRecipe: recipe });
+      const readBy = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'event_trigger_fact_template:0');
+      expect(readBy).toBeDefined();
+      setValue(readBy, 'template');
+      expect(route.getRecipe().event_triggers?.[0]).toEqual({ on: 'mail_fact.shipment', template_variable: 'template' });
+      setValue(readBy, '');
+      expect(route.getRecipe().event_triggers?.[0]).toEqual({ on: 'mail_fact.shipment' });
+    });
+
+    it('shows only where it can matter, and adds a template setting', () => {
+      const plain = mount({ mailTemplatesCaller: async () => ({ templates: [] }) });
+      expect(findByAttr(plain.root, RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR)).toBeUndefined();
+      const recipe = opRecipe({ id: 'x', transform: 'coalesce', values: ['{{context.event.payload.record_id}}'] });
+      recipe.event_triggers = [{ on: 'mail_fact.shipment' }];
+      const { root, route } = mount({ initialRecipe: recipe, mailTemplatesCaller: async () => ({ templates: [] }) });
+      setValue(findByAttr(root, RECIPE_EDITOR_MAIL_TEMPLATE_NAME_ATTR), 'parcels');
+      findByAttr(root, RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR)!.click();
+      expect(route.getRecipe().variables.parcels).toEqual({ label: 'Mail template', type: 'mail_template' });
+    });
   });
 
   it('editing depends_on sets the Tier-P pack list (CSV); empty clears it', () => {

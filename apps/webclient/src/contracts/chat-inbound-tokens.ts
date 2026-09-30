@@ -287,6 +287,8 @@ export interface ChatInboundTokenTableRow {
 const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> = {
   'contact.search': 'storage',
   'mail.search': 'storage',
+  'mail.read': 'storage',
+  'document.read': 'storage',
   'calendar.search': 'storage',
   'memory.search': 'storage',
   // D-198 — memory.write lands in the local user_memory warehouse (storage).

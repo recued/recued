@@ -116,7 +116,7 @@ describe('owner-facing update alert', () => {
     const block = { notify, ask };
     const sink = createUpdateOwnerAlertSink(
       block,
-      'https://home.example.net/#settings/updates',
+      () => 'https://home.example.net/#settings/updates',
     );
 
     sink(updateApplied);
@@ -127,6 +127,19 @@ describe('owner-facing update alert', () => {
       link_url: 'https://home.example.net/#settings/updates',
     }));
     expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('reads the link when the alert fires, so an address that appears later is used', () => {
+    const notify = vi.fn(async (_message: { link_url?: string }) => undefined);
+    let link: string | undefined;
+    const sink = createUpdateOwnerAlertSink({ notify }, () => link);
+
+    sink(updateApplied);
+    link = 'https://alice.recued.net/#settings/updates';
+    sink(updateApplied);
+
+    expect(notify.mock.calls.map(([message]) => message.link_url))
+      .toEqual([undefined, 'https://alice.recued.net/#settings/updates']);
   });
 
   it('contains notification failure and reports it without throwing into recovery', async () => {

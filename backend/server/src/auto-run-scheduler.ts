@@ -1,11 +1,15 @@
 /** D-115 Phase 4 — Server-side auto-run scheduler.
  *
  *  The headless server's equivalent of the extension SW scheduler:
- *  per-recipe `setTimeout` timers (sub-second cadence supported down
+ *  per-timer `setTimeout` timers (sub-second cadence supported down
  *  to `AUTO_RUN_SERVER_FLOOR_MS`), SQLite-persisted circuit-breaker
- *  state so a restart doesn't forget which recipes are auto-disabled,
+ *  state so a restart doesn't forget which timers are auto-disabled,
  *  and direct `handleExecute` dispatch instead of the extension's
  *  `runtime.runRecipe`.
+ *
+ *  D-319 — ONE TIMER PER DISH. A dish is an auto-run recipe switched on
+ *  with its own settings; each dish of it runs on its own timer, as the
+ *  dish, with its own breaker. A recipe with no dish runs nothing.
  *
  *  Lifecycle:
  *    1. `start()` → `refreshRoster()` builds the roster from the
@@ -24,6 +28,7 @@
 
 import type { Database } from 'better-sqlite3';
 import {
+  autoRunKey,
   createAutoRunScheduler,
   rosterAllAutoRun,
   type AutoRunEntry,
@@ -38,6 +43,7 @@ import {
   type RecipeDefinition,
 } from '@recued/contracts';
 import type { RecipeStore } from './recipe-store.js';
+import type { DishStore } from './dish-store.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
@@ -58,139 +64,141 @@ import {
 } from './storage/preapproval-lifecycle.js';
 
 // ────────────────────────────────────────────────────────────────
-// Circuit-breaker persistence (SQLite)
+// Circuit-breaker persistence (SQLite) — one breaker per dish's timer
 // ────────────────────────────────────────────────────────────────
 
 export interface CircuitBreakerStore {
   list(): CircuitBreakerState[];
-  get(recipe_id: string): CircuitBreakerState | null;
+  /** The breaker of a dish's timer (D-319). */
+  get(dish_id: string): CircuitBreakerState | null;
   set(state: CircuitBreakerState): void;
-  clear(recipe_id: string): void;
+  clear(dish_id: string): void;
+  /** D-304 — every breaker of a recipe's dishes: it was uninstalled.
+   *  Optional for test doubles. */
+  clearRecipe?(recipe_id: string): number;
 }
 
 // ────────────────────────────────────────────────────────────────
-// Per-recipe user-intent settings (SQLite)
+// A dish's auto-run timer (SQLite)
 // ────────────────────────────────────────────────────────────────
 
-/** Reactive-substrate slice 1 — per-recipe auto-run arm/disarm state.
- *  The user-intent axis, deliberately separate from the circuit-
- *  breaker's failure axis: `enabled: false` keeps a recipe out of the
- *  scheduler roster the same way an event-trigger's `enabled: false`
- *  keeps it off the warehouse bus. An absent row follows the recipe
- *  definition's `default_enabled` value, which remains true when omitted
- *  for existing recipes. */
+/** D-319 — one auto-run timer per dish of an auto-run recipe. */
+export interface AutoRunTimer {
+  dish_id: string;
+  recipe_id: string;
+  enabled: boolean;
+}
+
+/** D-319 — each dish's auto-run timer switch. The user-intent axis,
+ *  deliberately separate from the circuit breaker's failure axis:
+ *  `enabled: false` keeps a timer out of the scheduler roster the same way
+ *  a trigger row's `enabled: false` keeps it off the warehouse bus. A dish
+ *  with NO row is off — installing a recipe, or making a dish only to hold
+ *  a schedule's settings, starts nothing (§ 3.3, § 3.6); the dish's switch
+ *  (`dish-automation.ts`) writes the row.
+ *
+ *  (Until D-319 this was one row per RECIPE, on by default, with a pointer
+ *  to a managed config dish. That table is dropped, not converted: nothing
+ *  is published, and a timer the owner never switched on as a dish must
+ *  not start.) */
 export interface AutoRunSettingsStore {
-  /** An explicit row wins; otherwise returns the recipe definition's
-   *  supplied default (true when omitted for legacy callers). */
-  isEnabled(recipe_id: string, defaultEnabled?: boolean): boolean;
-  setEnabled(recipe_id: string, enabled: boolean): void;
-  /** recipe_ids with an explicit `enabled = 0` row. */
-  listDisabled(): string[];
-  /** D-179 — the current managed auto-run config dish for a recipe, or
-   *  `null` when no config is set (the fire runs on recipe defaults).
-   *  `executeFired` threads this into the reactive dispatch. */
-  getDishId(recipe_id: string): string | null;
-  /** Point the recipe at a (new) config dish, or `null` to clear. The
-   *  dish itself is immutable — a config change mints a new dish and
-   *  repoints here (the caller dissolves the superseded one). */
-  setDishId(
-    recipe_id: string,
-    dish_id: string | null,
-    defaultEnabled?: boolean,
-  ): void;
-  /** D-304 — drop the recipe's row (its on/off and config pointer): the recipe was
-   *  uninstalled. `true` when there was one. Optional for test doubles. */
-  forget?(recipe_id: string): boolean;
+  /** A dish's timer, when it has one. */
+  get(dish_id: string): AutoRunTimer | null;
+  list(): AutoRunTimer[];
+  /** Whether a dish's timer is on; a dish with no timer is off. */
+  isEnabled(dish_id: string): boolean;
+  /** As the OWNER set it: a timer a reviewed execution parks (D-261) reads
+   *  off in the store but is on for the owner. */
+  ownerEnabled(dish_id: string): boolean;
+  /** Switch a dish's timer, making its row when it has none. */
+  setEnabled(dish_id: string, recipe_id: string, enabled: boolean): void;
+  /** The dish is gone. `true` when it had a timer. Optional for test doubles. */
+  forget?(dish_id: string): boolean;
+  /** D-304 — the recipe was uninstalled: every timer of its dishes goes.
+   *  Optional for test doubles. */
+  forgetRecipe?(recipe_id: string): number;
 }
 
-/** SQLite-backed settings store. Creates the table on first use —
- *  same shared-db posture as the circuit store above. */
+/** SQLite-backed timer store. Creates its table on first use — the same
+ *  shared-db posture as the circuit store below. */
 export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore => {
   initializePreapprovalLifecycle(db);
   db.exec(`
-    CREATE TABLE IF NOT EXISTS auto_run_settings (
-      recipe_id  TEXT PRIMARY KEY,
-      enabled    INTEGER NOT NULL DEFAULT 1,
+    DROP TABLE IF EXISTS auto_run_settings;
+    CREATE TABLE IF NOT EXISTS auto_run_timers (
+      dish_id    TEXT PRIMARY KEY,
+      recipe_id  TEXT NOT NULL,
+      enabled    INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS auto_run_timers_recipe_idx ON auto_run_timers (recipe_id);
   `);
-  // D-179 — `dish_id` points at the recipe's current managed auto-run
-  // config dish. Added by migration for tables that predate it.
-  const cols = new Set(
-    (db.prepare(`PRAGMA table_info(auto_run_settings)`).all() as Array<{ name: string }>)
-      .map((c) => c.name),
-  );
-  if (!cols.has('dish_id')) {
-    db.exec(`ALTER TABLE auto_run_settings ADD COLUMN dish_id TEXT`);
-  }
-  const material = (id: string) => {
-    const row = db.prepare('SELECT enabled,dish_id FROM auto_run_settings WHERE recipe_id=?')
-      .get(id) as { enabled: number; dish_id: string | null } | undefined;
-    return row ? { enabled: preapprovalLogicalEnabled(db, 'next_auto_run', id, row.enabled === 1), dish_id: row.dish_id } : null;
+  interface Row { dish_id: string; recipe_id: string; enabled: number }
+  const toTimer = (row: Row): AutoRunTimer => ({ dish_id: row.dish_id, recipe_id: row.recipe_id, enabled: row.enabled === 1 });
+  const read = (dish_id: string): Row | undefined =>
+    db.prepare('SELECT dish_id, recipe_id, enabled FROM auto_run_timers WHERE dish_id = ?').get(dish_id) as Row | undefined;
+  const material = (dish_id: string) => {
+    const row = read(dish_id);
+    return row ? { enabled: preapprovalLogicalEnabled(db, 'next_auto_run', dish_id, row.enabled === 1) } : null;
   };
 
-  return {
-    isEnabled(recipe_id, defaultEnabled = true) {
-      const row = db.prepare(
-        'SELECT enabled FROM auto_run_settings WHERE recipe_id = ?',
-      ).get(recipe_id) as { enabled: number } | undefined;
-      return row === undefined ? defaultEnabled : row.enabled === 1;
+  const store: AutoRunSettingsStore = {
+    get(dish_id) {
+      const row = read(dish_id);
+      return row ? toTimer(row) : null;
     },
-    setEnabled(recipe_id, enabled) {
-      mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
-        assertPreapprovalLegacyEnable(db, 'next_auto_run', recipe_id, enabled);
-        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
+    list() {
+      return (db.prepare('SELECT dish_id, recipe_id, enabled FROM auto_run_timers ORDER BY dish_id').all() as Row[]).map(toTimer);
+    },
+    isEnabled(dish_id) {
+      return read(dish_id)?.enabled === 1;
+    },
+    ownerEnabled(dish_id) {
+      const row = read(dish_id);
+      return row !== undefined && preapprovalLogicalEnabled(db, 'next_auto_run', dish_id, row.enabled === 1);
+    },
+    setEnabled(dish_id, recipe_id, enabled) {
+      mutatePreapprovalResource(db, 'next_auto_run', dish_id, () => material(dish_id), () => {
+        assertPreapprovalLegacyEnable(db, 'next_auto_run', dish_id, enabled);
+        notePreapprovalOwnerMutation(db, 'next_auto_run', dish_id);
         db.prepare(`
-          INSERT INTO auto_run_settings (recipe_id, enabled, updated_at)
-          VALUES (?, ?, ?)
-          ON CONFLICT (recipe_id) DO UPDATE SET
+          INSERT INTO auto_run_timers (dish_id, recipe_id, enabled, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT (dish_id) DO UPDATE SET
             enabled = excluded.enabled,
             updated_at = excluded.updated_at
-        `).run(recipe_id, enabled ? 1 : 0, Date.now());
+        `).run(dish_id, recipe_id, enabled ? 1 : 0, Date.now());
       });
     },
-    listDisabled() {
-      return (db.prepare(
-        'SELECT recipe_id FROM auto_run_settings WHERE enabled = 0',
-      ).all() as Array<{ recipe_id: string }>).map((r) => r.recipe_id);
-    },
-    getDishId(recipe_id) {
-      const row = db.prepare(
-        'SELECT dish_id FROM auto_run_settings WHERE recipe_id = ?',
-      ).get(recipe_id) as { dish_id: string | null } | undefined;
-      return row?.dish_id ?? null;
-    },
-    setDishId(recipe_id, dish_id, defaultEnabled = true) {
-      mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
-        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
-        // A fresh row preserves the recipe's definitional default; a conflict
-        // touches only dish_id so explicit owner intent is preserved.
-        db.prepare(`
-          INSERT INTO auto_run_settings (recipe_id, enabled, updated_at, dish_id)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT (recipe_id) DO UPDATE SET
-            dish_id = excluded.dish_id,
-            updated_at = excluded.updated_at
-        `).run(recipe_id, defaultEnabled ? 1 : 0, Date.now(), dish_id);
+    forget(dish_id) {
+      return mutatePreapprovalResource(db, 'next_auto_run', dish_id, () => material(dish_id), () => {
+        notePreapprovalOwnerMutation(db, 'next_auto_run', dish_id);
+        return db.prepare('DELETE FROM auto_run_timers WHERE dish_id = ?').run(dish_id).changes > 0;
       });
     },
-    forget(recipe_id) {
-      return mutatePreapprovalResource(db, 'next_auto_run', recipe_id, () => material(recipe_id), () => {
-        notePreapprovalOwnerMutation(db, 'next_auto_run', recipe_id);
-        return db.prepare('DELETE FROM auto_run_settings WHERE recipe_id = ?').run(recipe_id).changes > 0;
-      });
+    forgetRecipe(recipe_id) {
+      const dishes = (db.prepare('SELECT dish_id FROM auto_run_timers WHERE recipe_id = ?').all(recipe_id) as Array<{ dish_id: string }>);
+      let forgotten = 0;
+      for (const { dish_id } of dishes) {
+        if (store.forget!(dish_id)) forgotten += 1;
+      }
+      return forgotten;
     },
   };
+  return store;
 };
 
-/** SQLite-backed circuit-breaker store. Creates the table on first
- *  use — tolerates sharing the recued-server.db with every other
- *  table. */
+/** SQLite-backed circuit-breaker store, one row per dish's timer. Creates
+ *  its table on first use — tolerates sharing the recued-server.db with
+ *  every other table. (The per-recipe `auto_run_circuit` is dropped with the
+ *  per-recipe timers — D-319.) */
 export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => {
   initializePreapprovalLifecycle(db);
   db.exec(`
-    CREATE TABLE IF NOT EXISTS auto_run_circuit (
-      recipe_id            TEXT PRIMARY KEY,
+    DROP TABLE IF EXISTS auto_run_circuit;
+    CREATE TABLE IF NOT EXISTS auto_run_timer_circuit (
+      dish_id              TEXT PRIMARY KEY,
+      recipe_id            TEXT NOT NULL,
       consecutive_failures INTEGER NOT NULL DEFAULT 0,
       auto_disabled        INTEGER NOT NULL DEFAULT 0,
       last_failure_at      INTEGER,
@@ -199,6 +207,7 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
   `);
 
   interface Row {
+    dish_id: string;
     recipe_id: string;
     consecutive_failures: number;
     auto_disabled: number;
@@ -207,6 +216,7 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
   }
 
   const rowToState = (row: Row): CircuitBreakerState => ({
+    dish_id: row.dish_id,
     recipe_id: row.recipe_id,
     consecutive_failures: row.consecutive_failures,
     auto_disabled: row.auto_disabled === 1,
@@ -216,24 +226,25 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
 
   return {
     list() {
-      return (db.prepare('SELECT * FROM auto_run_circuit').all() as Row[]).map(rowToState);
+      return (db.prepare('SELECT * FROM auto_run_timer_circuit').all() as Row[]).map(rowToState);
     },
-    get(recipe_id) {
-      const row = db.prepare('SELECT * FROM auto_run_circuit WHERE recipe_id = ?').get(recipe_id) as Row | undefined;
+    get(dish_id) {
+      const row = db.prepare('SELECT * FROM auto_run_timer_circuit WHERE dish_id = ?').get(dish_id) as Row | undefined;
       return row ? rowToState(row) : null;
     },
     set(state) {
       db.transaction(() => {
-        if (state.auto_disabled) notePreapprovalOwnerMutation(db, 'next_auto_run', state.recipe_id);
+        if (state.auto_disabled) notePreapprovalOwnerMutation(db, 'next_auto_run', state.dish_id);
         db.prepare(`
-          INSERT INTO auto_run_circuit (recipe_id, consecutive_failures, auto_disabled, last_failure_at, last_failure_reason)
-          VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT (recipe_id) DO UPDATE SET
+          INSERT INTO auto_run_timer_circuit (dish_id, recipe_id, consecutive_failures, auto_disabled, last_failure_at, last_failure_reason)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT (dish_id) DO UPDATE SET
             consecutive_failures = excluded.consecutive_failures,
             auto_disabled = excluded.auto_disabled,
             last_failure_at = excluded.last_failure_at,
             last_failure_reason = excluded.last_failure_reason
         `).run(
+          state.dish_id,
           state.recipe_id,
           state.consecutive_failures,
           state.auto_disabled ? 1 : 0,
@@ -242,8 +253,11 @@ export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => 
         );
       }).immediate();
     },
-    clear(recipe_id) {
-      db.prepare('DELETE FROM auto_run_circuit WHERE recipe_id = ?').run(recipe_id);
+    clear(dish_id) {
+      db.prepare('DELETE FROM auto_run_timer_circuit WHERE dish_id = ?').run(dish_id);
+    },
+    clearRecipe(recipe_id) {
+      return db.prepare('DELETE FROM auto_run_timer_circuit WHERE recipe_id = ?').run(recipe_id).changes;
     },
   };
 };
@@ -265,12 +279,15 @@ export interface ServerAutoRunConfig {
    *  result; production wiring omits this and passes `executeDeps`. */
   execute?: (request: ExecuteRequest) => Promise<ExecuteResponse>;
   circuitStore: CircuitBreakerStore;
-  /** Reactive-substrate slice 1 — per-recipe user arm/disarm state.
-   *  Consulted at roster-build time: a disabled recipe maps to
-   *  `status: 'disabled_by_user'` so `rosterAllAutoRun` drops it.
-   *  When absent, the recipe's `default_enabled` definition applies;
-   *  omission retains legacy enabled behavior. */
+  /** D-319 — each dish's timer switch. Consulted at roster-build time: a
+   *  timer switched off maps to `status: 'disabled_by_user'` so
+   *  `rosterAllAutoRun` drops it. Absent (a harness) ⇒ every dish's timer
+   *  counts as on, and the dish's own switch decides. */
   settingsStore?: AutoRunSettingsStore;
+  /** D-319 — the dishes each auto-run recipe is switched on as: one timer
+   *  per dish. Defaults to `executeDeps.dishStore`; with neither, no dish ⇒
+   *  nothing runs. */
+  dishStore?: Pick<DishStore, 'listByRecipe' | 'get'>;
   /** Reactive-substrate slice 1 — per-fire hook, invoked after each
    *  dispatched execution settles (success, skip, or failure). The
    *  boot wires `emitReactiveFire` so paired clients' Automation /
@@ -318,15 +335,20 @@ export interface ServerAutoRunHandle {
   /** Rebuild the roster (install / uninstall / enable / disable) +
    *  reset per-entry timers. */
   refreshRoster(): Promise<void>;
-  /** User-initiated rearm after circuit-breaker auto-disable. */
-  resetCircuit(recipe_id: string): void;
-  /** Read-only roster view — used by status CLI + tests. */
+  /** User-initiated rearm after circuit-breaker auto-disable, by roster
+   *  key — the dish's id (D-319). */
+  resetCircuit(key: string): void;
+  /** Read-only roster view, keyed by dish — used by status CLI + tests. */
   readonly roster: ReadonlyMap<string, AutoRunEntry>;
   /** True while scheduler-owned work is running, including a fire executing
    *  or persisting its final state. Used by the drain orchestrator to wait for
    *  a clean shutdown. */
   inFlight(): boolean;
 }
+
+/** A tick whose dish was switched off after the roster was built: nothing
+ *  ran, nothing failed. */
+class SkippedFire extends Error {}
 
 export const createServerAutoRunScheduler = (
   config: ServerAutoRunConfig,
@@ -340,17 +362,20 @@ export const createServerAutoRunScheduler = (
     return t;
   });
   const clearTimer = config.clearTimer ?? ((t) => clearTimeout(t as NodeJS.Timeout));
+  const dishes = config.dishStore ?? config.executeDeps?.dishStore;
+  /** A dish's timer is on: its row, and the dish's own switch. */
+  const timerOn = (dish_id: string): boolean =>
+    (config.settingsStore ? config.settingsStore.isEnabled(dish_id) : true)
+    && dishes?.get(dish_id)?.enabled === true;
   const execute = config.execute ?? ((request: ExecuteRequest) => {
     if (!config.executeDeps) {
       throw new Error('auto-run scheduler: executeDeps required when no custom execute provided');
     }
     const recipe = request.recipe_id ? config.recipeStore.get(request.recipe_id) : null;
-    const enabled = !!recipe?.auto_run && (config.settingsStore
-      ? config.settingsStore.isEnabled(recipe.recipe_id, recipe.auto_run.default_enabled ?? true)
-      : recipe.auto_run.default_enabled ?? true);
+    const enabled = !!recipe?.auto_run && request.dish_id !== undefined && timerOn(request.dish_id);
     if (config.executeDeps.preapprovalDriver) return config.executeDeps.preapprovalDriver.executeAutoRun(request, enabled);
     // Recheck when a timer actually fires; a roster built before Disarm must
-    // not dispatch a now-disabled recipe through the ordinary path.
+    // not dispatch a now-disabled timer through the ordinary path.
     return enabled ? handleExecute(config.executeDeps, request) : Promise.resolve(null);
   });
 
@@ -388,6 +413,7 @@ export const createServerAutoRunScheduler = (
     );
   };
 
+  /** D-319 — one install input per dish of each installed auto-run recipe. */
   const listInstallInputs = (): AutoRunInstallInput[] => {
     const stored = config.recipeStore.listStored();
     const out: AutoRunInstallInput[] = [];
@@ -399,22 +425,22 @@ export const createServerAutoRunScheduler = (
         continue;
       }
       if (!recipe.auto_run) continue;
-      const defaultEnabled = recipe.auto_run.default_enabled ?? true;
-      const legacyEnabled = config.settingsStore
-        ? config.settingsStore.isEnabled(recipe.recipe_id, defaultEnabled)
-        : defaultEnabled;
-      const enabled = config.executeDeps?.preapprovalDriver?.autoRunEligible(recipe.recipe_id, legacyEnabled) ?? legacyEnabled;
-      out.push({
-        recipe_id: recipe.recipe_id,
-        publisher_id: row.publisher_id,
-        // User-disabled recipes map to a non-'enabled' status so
-        // `rosterAllAutoRun` drops them — same mechanism the extension
-        // install registry used for its pause state.
-        status: !enabled
-          ? 'disabled_by_user'
-          : 'enabled',
-        auto_run: recipe.auto_run,
-      });
+      for (const dish of dishes?.listByRecipe(recipe.recipe_id) ?? []) {
+        const legacyEnabled = timerOn(dish.dish_id);
+        const enabled = config.executeDeps?.preapprovalDriver?.autoRunEligible(dish.dish_id, legacyEnabled) ?? legacyEnabled;
+        out.push({
+          recipe_id: recipe.recipe_id,
+          dish_id: dish.dish_id,
+          publisher_id: row.publisher_id,
+          // A timer switched off maps to a non-'enabled' status so
+          // `rosterAllAutoRun` drops it — same mechanism the extension
+          // install registry used for its pause state.
+          status: !enabled
+            ? 'disabled_by_user'
+            : 'enabled',
+          auto_run: recipe.auto_run,
+        });
+      }
     }
     return out;
   };
@@ -427,34 +453,36 @@ export const createServerAutoRunScheduler = (
   const scheduleNext = (entry: AutoRunEntry) => {
     if (!running) return;
     if (entry.auto_disabled) return;
-    const existing = timers.get(entry.recipe_id);
+    const key = autoRunKey(entry);
+    const existing = timers.get(key);
     if (existing !== undefined) clearTimer(existing);
     const delay = Math.max(AUTO_RUN_SERVER_FLOOR_MS, entry.next_run_at - now());
     const token = setTimer(() => {
-      timers.delete(entry.recipe_id);
+      timers.delete(key);
       launchBackground(
-        `timer fire failed for recipe ${entry.recipe_id}`,
-        fireEntry(entry.recipe_id),
+        `timer fire failed for recipe ${entry.recipe_id} (dish ${key})`,
+        fireEntry(key),
       );
     }, delay);
-    timers.set(entry.recipe_id, token);
+    timers.set(key, token);
   };
 
   const hydrateFromCircuitStore = () => {
     const states = config.circuitStore.list();
     for (const state of states) {
-      const entry = scheduler.roster.get(state.recipe_id);
+      const entry = scheduler.roster.get(state.dish_id);
       if (!entry) continue;
       entry.consecutive_failures = state.consecutive_failures;
       entry.auto_disabled = state.auto_disabled;
     }
   };
 
-  const persistCircuitState = (recipe_id: string, nowMs: number, reason?: string) => {
-    const entry = scheduler.roster.get(recipe_id);
+  const persistCircuitState = (key: string, nowMs: number, reason?: string) => {
+    const entry = scheduler.roster.get(key);
     if (!entry) return;
     config.circuitStore.set({
-      recipe_id,
+      dish_id: key,
+      recipe_id: entry.recipe_id,
       consecutive_failures: entry.consecutive_failures,
       auto_disabled: entry.auto_disabled,
       ...(entry.consecutive_failures > 0 ? { last_failure_at: nowMs } : {}),
@@ -463,11 +491,15 @@ export const createServerAutoRunScheduler = (
   };
 
   const executeFired = async (
-    recipe_id: string,
+    key: string,
     process_id: string,
     firedAt: number,
   ): Promise<void> => {
-    scheduler.markStarting(recipe_id, process_id, firedAt);
+    const fired = scheduler.roster.get(key);
+    if (!fired) return;
+    const { recipe_id } = fired;
+    const dish_id = fired.dish_id;
+    scheduler.markStarting(key, process_id, firedAt);
     inflightCount++;
     let outcome: AutoRunOutcome = 'failed';
     let nextRunHint: number | undefined;
@@ -500,12 +532,14 @@ export const createServerAutoRunScheduler = (
         // phase), so `event_kind` carries the generic `'auto_run_tick'`
         // placeholder. When the trigger-source registry lands (spec
         // line 587), this widens to the registered event kind.
-        // D-179 — dispatch as the recipe's current managed auto-run config
-        // dish when one is set, so the headless fire honours the user's
-        // configured overlay (the executor merges dish.config_overlay over
-        // recipe defaults). Null ⇒ a dishless fire on recipe defaults,
-        // exactly as before.
-        const configDishId = config.settingsStore?.getDishId(recipe_id) ?? null;
+        // D-319 — fire-time dish gate. A dish switched off (or gone) SKIPS
+        // the tick silently: its switch also takes its timer off the roster,
+        // so this is the backstop for a roster built a moment before.
+        if (dish_id !== undefined && dishes !== undefined && dishes.get(dish_id)?.enabled !== true) {
+          throw new SkippedFire();
+        }
+        // D-319 — the timer fires AS its dish, with its settings (resolved
+        // inside handleExecute).
         const result = await execute({
           recipe_id,
           trigger_source: 'auto_run',
@@ -524,7 +558,7 @@ export const createServerAutoRunScheduler = (
             // every auto-run tick failed at the gate.
           },
           process_id,
-          ...(configDishId !== null ? { dish_id: configDishId } : {}),
+          ...(dish_id !== undefined ? { dish_id } : {}),
         });
         nextRunHint = result?.next_run_at;
         // D-115 outcome classification mirrors the extension controller:
@@ -578,10 +612,14 @@ export const createServerAutoRunScheduler = (
           failureReason = visibleFailure(first?.message ?? 'execution failed');
         }
       } catch (e) {
-        outcome = 'failed';
-        const code = (e as { code?: unknown } | null)?.code;
-        failureCode = typeof code === 'string' ? code : undefined;
-        failureReason = visibleFailure(e);
+        if (e instanceof SkippedFire) {
+          outcome = 'skipped';
+        } else {
+          outcome = 'failed';
+          const code = (e as { code?: unknown } | null)?.code;
+          failureCode = typeof code === 'string' ? code : undefined;
+          failureReason = visibleFailure(e);
+        }
       }
 
       // Finalization is part of the in-flight unit. In particular, keep the
@@ -589,12 +627,13 @@ export const createServerAutoRunScheduler = (
       // after `execute` but before this write lets close_db race the store.
       // D-268 — classify BEFORE `markFinished`, because the prior counter is the
       // episode boundary and `markFinished` is what moves it.
-      const priorFailures = scheduler.roster.get(recipe_id)?.consecutive_failures ?? 0;
+      const priorFailures = scheduler.roster.get(key)?.consecutive_failures ?? 0;
       let disarmNow = false;
       if (outcome === 'failed') {
+        // D-319 — the failing unit is the dish's timer.
         const unit: AutomationUnitRef = {
           kind: 'auto_run',
-          id: recipe_id,
+          id: key,
           recipe_id,
         };
         const report = decideAutomationFailure({
@@ -635,12 +674,12 @@ export const createServerAutoRunScheduler = (
           }
         }
       }
-      scheduler.markFinished(recipe_id, outcome, nextRunHint, now(),
+      scheduler.markFinished(key, outcome, nextRunHint, now(),
         ...(disarmNow ? [{ disarmNow: true }] as const : []));
       // ⚠ A tripped guard skips the persist entirely. Every other outcome still
       // writes, including `skipped` / `held` — unchanged, and out of scope here:
       // a `trigger_skipped` tick has always rewritten this row without a reason.
-      if (!notAFailure) persistCircuitState(recipe_id, now(), failureReason);
+      if (!notAFailure) persistCircuitState(key, now(), failureReason);
       try {
         config.onFired?.(recipe_id);
       } catch {
@@ -651,18 +690,18 @@ export const createServerAutoRunScheduler = (
     }
   };
 
-  const fireEntry = async (recipe_id: string): Promise<void> => {
+  const fireEntry = async (key: string): Promise<void> => {
     // Vault-locked gate: skip before advancing the scheduler clock so the
     // entry stays due, and do NOT re-arm — the dormant one-shot timer is
     // re-armed by the coordinator's `tick()` kick on unlock.
     if (config.isVaultUnlocked && !config.isVaultUnlocked()) return;
     const t = now();
     const report = scheduler.tick(t);
-    const fired = report.fired.find((f) => f.recipe_id === recipe_id);
+    const fired = report.fired.find((f) => f.key === key);
     if (fired) {
-      await executeFired(recipe_id, fired.process_id, t);
+      await executeFired(key, fired.process_id, t);
     }
-    const updated = scheduler.roster.get(recipe_id);
+    const updated = scheduler.roster.get(key);
     if (updated) scheduleNext(updated);
   };
 
@@ -698,7 +737,7 @@ export const createServerAutoRunScheduler = (
     // all hitting the engine at once. A future tuning knob could
     // parallelize with a concurrency cap; Phase 4 keeps it simple.
     for (const fired of report.fired) {
-      await executeFired(fired.recipe_id, fired.process_id, t);
+      await executeFired(fired.key, fired.process_id, t);
     }
     // Rearm timers for every entry that's now got an updated
     // next_run_at (tick advanced them and markFinished may have
@@ -743,10 +782,10 @@ export const createServerAutoRunScheduler = (
     },
     tick,
     refreshRoster,
-    resetCircuit(recipe_id) {
-      scheduler.resetCircuit(recipe_id, now());
-      config.circuitStore.clear(recipe_id);
-      const entry = scheduler.roster.get(recipe_id);
+    resetCircuit(key) {
+      scheduler.resetCircuit(key, now());
+      config.circuitStore.clear(key);
+      const entry = scheduler.roster.get(key);
       if (entry && running) scheduleNext(entry);
     },
     get roster() {

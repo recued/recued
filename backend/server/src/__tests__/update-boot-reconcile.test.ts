@@ -566,7 +566,8 @@ describe('production boot-reconcile composition', () => {
 
   it('binds update owner alerts to the production notification block and forwards the port', () => {
     expect(source).toMatch(
-      /createUpdateOwnerAlertSink\(\s*execution\.notificationBlock,\s*buildUpdatesSurfaceLink/,
+      // The link is resolved when an alert fires, from the server's public address.
+      /createUpdateOwnerAlertSink\(\s*execution\.notificationBlock,\s*\(\) => buildUpdatesSurfaceLink\(storage\.publicAddress\.baseUrl\('root'\)\)/,
     );
     expect(source).toMatch(
       /runUpdateBootReconcileImpl\(\{[\s\S]*ownerAlert: updateOwnerAlert/,

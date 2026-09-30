@@ -74,6 +74,10 @@ export interface FakeDoc {
     querySelector(sel: string): FakeEl | null;
     appendChild(el: FakeEl): FakeEl;
   };
+  /** Only when a test asks for one (`body: true`): a settings form mounts on
+   *  it. The run dialog portals to `body` when there is one, so a default
+   *  body would move it for every other test. */
+  body?: FakeEl;
   createElement(tag: string): FakeEl;
   addEventListener(type: string, fn: (ev: Event) => void): void;
   removeEventListener(type: string, fn: (ev: Event) => void): void;
@@ -161,6 +165,7 @@ export const makeFakeDocument = (overrides: {
    *  Omitted by default so every other test keeps a `defaultView` with no `history`,
    *  which the route treats as sync-disabled — the sandboxed-embedding path. */
   history?: FakeHistory;
+  body?: boolean;
 } = {}): FakeDoc => {
   const styleElements: FakeEl[] = [];
   const docListeners = new Map<string, Array<(ev: Event) => void>>();
@@ -206,6 +211,7 @@ export const makeFakeDocument = (overrides: {
         return el;
       },
     },
+    ...(overrides.body === true ? { body: makeFakeEl('body') } : {}),
     createElement: (tag) => makeFakeEl(tag),
     addEventListener(type, fn) {
       const arr = docListeners.get(type) ?? [];
@@ -313,6 +319,8 @@ export const autoRunStatus = (
 ): AutoRunStatusEntry => ({
   recipe_id,
   publisher_id: 'recued-core',
+  dish_id: null,
+  dish_name: null,
   recipe_name: recipe_id,
   interval_ms: 60_000,
   dynamic: false,
@@ -352,8 +360,10 @@ export const mountRoute = (overrides: {
   autoRunListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['autoRunListCaller'];
   autoRunUpdateCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['autoRunUpdateCaller'];
   dishesListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesListCaller'];
-  recipeConfigGetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigGetCaller'];
-  recipeConfigSetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigSetCaller'];
+  dishesCreateCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesCreateCaller'];
+  dishesUpdateCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesUpdateCaller'];
+  dishesDeleteCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesDeleteCaller'];
+  dishesDefaultsCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['dishesDefaultsCaller'];
   sheetImportUploadCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['sheetImportUploadCaller'];
   recipeCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeCatalogCaller'];
   packCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packCatalogCaller'];
@@ -365,6 +375,8 @@ export const mountRoute = (overrides: {
   confirm?: (message?: string) => boolean;
   clipboardWrite?: (value: string) => Promise<void>;
   fileBrowser?: boolean;
+  /** A settings form mounts on `document.body` (D-319 "Running as"). */
+  body?: boolean;
   recordRefSearchCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recordRefSearchCaller'];
   history?: FakeHistory;
   document?: FakeDoc;
@@ -379,6 +391,7 @@ export const mountRoute = (overrides: {
         ? { clipboardWrite: overrides.clipboardWrite }
         : {}),
       ...(overrides.fileBrowser === true ? { fileBrowser: true } : {}),
+      ...(overrides.body === true ? { body: true } : {}),
     },
   );
   const root = overrides.root ?? doc.createElement('div');
@@ -447,11 +460,17 @@ export const mountRoute = (overrides: {
     ...(overrides.dishesListCaller !== undefined
       ? { dishesListCaller: overrides.dishesListCaller }
       : {}),
-    ...(overrides.recipeConfigGetCaller !== undefined
-      ? { recipeConfigGetCaller: overrides.recipeConfigGetCaller }
+    ...(overrides.dishesCreateCaller !== undefined
+      ? { dishesCreateCaller: overrides.dishesCreateCaller }
       : {}),
-    ...(overrides.recipeConfigSetCaller !== undefined
-      ? { recipeConfigSetCaller: overrides.recipeConfigSetCaller }
+    ...(overrides.dishesUpdateCaller !== undefined
+      ? { dishesUpdateCaller: overrides.dishesUpdateCaller }
+      : {}),
+    ...(overrides.dishesDeleteCaller !== undefined
+      ? { dishesDeleteCaller: overrides.dishesDeleteCaller }
+      : {}),
+    ...(overrides.dishesDefaultsCaller !== undefined
+      ? { dishesDefaultsCaller: overrides.dishesDefaultsCaller }
       : {}),
     ...(overrides.sheetImportUploadCaller !== undefined
       ? { sheetImportUploadCaller: overrides.sheetImportUploadCaller }

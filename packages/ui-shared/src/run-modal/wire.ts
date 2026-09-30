@@ -39,14 +39,12 @@ import {
 } from '../ref-picker/index.js';
 import { wireRecordRefVariables } from '../record-ref-variable.js';
 import { stampZone } from '../two-clock.js';
-import {
-  wireConfigEditorOverlay,
-  type ConfigEditorOverlayHandle,
-} from '../config-editor-overlay.js';
 
 import { mailFactCreateArgs } from './mail-fact-trigger.js';
 import {
+  configTextAsDish,
   EMPTY_MAIL_FACT_DRAFT,
+  initialDishId,
   initialRunModalState,
   parseRunConfig,
   recipeSchedules,
@@ -57,6 +55,7 @@ import {
   renderRunModal,
   RUN_MODAL_ACTION_ATTR,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_DISH_ATTR,
   RUN_MODAL_FACT_ATTR,
   RUN_MODAL_PATTERN_ATTR,
   RUN_MODAL_PRESET_ATTR,
@@ -149,6 +148,13 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   let state: RunModalState = initialRunModalState(
     opts.initialTab ?? 'run',
     firstPreset,
+    initialDishId(opts.dishes, opts.dish_id),
+  );
+  /** D-319 — the config the Run tab shows and checks: the chosen dish's
+   *  settings, what the owner changed on top. Only the changes are sent. */
+  const shownConfigText = (): string => configTextAsDish(
+    state.config_text,
+    opts.dishes?.find((dish) => dish.dish_id === state.dish_id)?.config_overlay,
   );
   // D-269 — resolved once at open. The server's zone does not change mid-dialog,
   // and re-reading per keystroke would be a thunk call inside a render loop.
@@ -160,10 +166,6 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   // Assigned after the first paint (the panel must exist to focus into); the
   // trap traps Tab within the overlay + restores focus to the opener on detach.
   let trap: FocusTrapHandle | null = null;
-  // D-179 — the per-row config editor overlay (Schedule/Trigger tabs), a
-  // shared component opened over the modal. It owns its own focus trap; the
-  // modal's trap is released while it's open and re-armed on close.
-  let configEditorHandle: ConfigEditorOverlayHandle | null = null;
   let refPickers: RefPickerHandle[] = [];
   let fileRefArrays: FileRefArrayHandle[] = [];
 
@@ -258,7 +260,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     refPickers = [];
     for (const list of fileRefArrays) list.destroy();
     fileRefArrays = [];
-    overlay.innerHTML = renderRunModal(state, opts.recipe, caps);
+    overlay.innerHTML = renderRunModal(state, opts.recipe, caps, opts.dishes ?? []);
     mountVariablePickers();
     if (restoreFocus !== null) {
       const target = focusIdentityElement(restoreFocus);
@@ -288,7 +290,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     if (state.tab !== 'run') return;
     const gate = runTargetGate(
       opts.recipe.recipe,
-      state.config_text,
+      shownConfigText(),
       state.target_values,
       state.context_values,
     );
@@ -335,10 +337,6 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     overlay.removeEventListener('change', onInput);
     doc.removeEventListener('keydown', onKeydown);
     overlay.remove();
-    // Tear down an open per-row config editor with the modal (its `onClose`
-    // sees `destroyed` and skips re-arming the trap).
-    configEditorHandle?.destroy();
-    configEditorHandle = null;
     // Detach the Tab-trap's keydown + restore focus to the opener.
     trap?.release();
   };
@@ -372,8 +370,12 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       return;
     }
     // D-314 — a required list with every box unticked does not run: the recipe
-    // would get an empty list (a weekday window with no days).
-    const listProblem = choiceListProblem(opts.recipe.recipe.variables ?? {}, config);
+    // would get an empty list (a weekday window with no days). Checked as the
+    // run will see it: the dish's settings with the changes on top.
+    const listProblem = choiceListProblem(
+      opts.recipe.recipe.variables ?? {},
+      parseRunConfig(shownConfigText()),
+    );
     if (listProblem !== null) {
       state = { ...state, run_error: listProblem };
       paint(runFocus);
@@ -383,7 +385,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     // missing never dispatches (the server guard would block it anyway).
     const gate = runTargetGate(
       opts.recipe.recipe,
-      state.config_text,
+      shownConfigText(),
       state.target_values,
       state.context_values,
     );
@@ -405,6 +407,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         recipe_id: opts.recipe.recipe_id,
         config,
         ...(Object.keys(gate.context).length > 0 ? { context: gate.context } : {}),
+        // D-319 — as the chosen dish; `config` is what changed for this run.
+        ...(state.dish_id !== null ? { dish_id: state.dish_id } : {}),
       });
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
@@ -486,17 +490,6 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       paint(addFocus);
       return Promise.resolve();
     }
-    let overlay: Record<string, unknown>;
-    try {
-      overlay = parseRunConfig(state.config_text);
-    } catch (err) {
-      // Invalid config JSON (only reachable via the Run tab's advanced
-      // field, which shares this buffer) — surface it like confirmRun
-      // rather than silently arming with recipe defaults.
-      state = { ...state, schedule_error: errMessage(err) };
-      paint(addFocus);
-      return Promise.resolve();
-    }
     return runScheduleMutation(() =>
       create({
         recipe_id: opts.recipe.recipe_id,
@@ -511,7 +504,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
           // The server SYNTHESIZES `cron_expression` from `run_at`, so the
           // caller never supplies one for a one-shot.
           : { mode: 'one_shot' as const, run_at: runAt! }),
-        ...(Object.keys(overlay).length > 0 ? { config_overlay: overlay } : {}),
+        // D-319 — the schedule runs as its dish, with the dish's settings.
+        ...(state.dish_id !== null ? { dish_id: state.dish_id } : {}),
         // D-266 — omitted at the default, not sent as 'auto': the contract
         // reads absent as 'auto', so every pre-D-266 host and payload stays
         // byte-identical (same discipline as `mode` above). One-shots have no
@@ -697,20 +691,13 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     // An empty pattern never creates a row (the rendered Add is disabled;
     // this guards the imperative path).
     if (shorthand === null && pattern.length === 0) return Promise.resolve();
-    let overlay: Record<string, unknown>;
-    try {
-      overlay = parseRunConfig(state.config_text);
-    } catch (err) {
-      state = { ...state, trigger_error: errMessage(err) };
-      paint(addFocus);
-      return Promise.resolve();
-    }
     return runTriggerMutation(() =>
       create({
         recipe_id: opts.recipe.recipe_id,
         publisher_id: opts.publisherId ?? opts.recipe.publisher_id,
         ...(shorthand !== null ? shorthand : { pattern }),
-        ...(Object.keys(overlay).length > 0 ? { config_overlay: overlay } : {}),
+        // D-319 — the trigger fires as its dish, with the dish's settings.
+        ...(state.dish_id !== null ? { dish_id: state.dish_id } : {}),
       }),
     );
   };
@@ -740,79 +727,6 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       () => del({ trigger_id: ruleId }),
       successFocus,
     );
-  };
-
-  // ── D-179 per-row config editor (Schedule / Trigger tabs) ──
-  const closeRowConfigEditor = (): void => {
-    // `destroy()` fires the shared editor's `onClose`, which re-arms the
-    // modal trap.
-    configEditorHandle?.destroy();
-  };
-
-  const openRowConfigEditor = (
-    section: 'schedule' | 'trigger',
-    ruleId: string,
-  ): void => {
-    if (section === 'schedule' ? state.mutating : state.trigger_mutating) return;
-    const row = section === 'schedule'
-      ? state.schedules?.find((s) => s.schedule_id === ruleId)
-      : state.triggers?.find((t) => t.trigger_id === ruleId);
-    if (row === undefined || row === null) return;
-    if (section === 'schedule' ? opts.schedulesUpdate === undefined
-      : opts.triggersUpdate === undefined) return;
-    closeRowConfigEditor();
-
-    // Hand the focus trap to the editor: release the modal's trap so Tab
-    // stays inside the editor; re-arm it on close (via `onClose`).
-    trap?.release();
-    trap = null;
-    const returnFocus: RunModalFocusIdentity = {
-      kind: 'action',
-      value: `config-${section}`,
-      ruleId,
-    };
-    configEditorHandle = wireConfigEditorOverlay({
-      document: doc,
-      title: 'Config',
-      copy: `These values apply to every ${
-        section === 'schedule' ? 'scheduled' : 'triggered'
-      } run.`,
-      confirmLabel: 'Save',
-      variables: opts.recipe.recipe.variables ?? {},
-      currentOverlay: row.config_overlay ?? {},
-      ...(opts.fileRefSearch !== undefined
-        ? { fileRefSearch: opts.fileRefSearch }
-        : {}),
-      ...(opts.recordRefSearch !== undefined
-        ? { recordRefSearch: opts.recordRefSearch }
-        : {}),
-      onConfirm: (config) => {
-        if (section === 'schedule') {
-          void runScheduleMutation(
-            () => opts.schedulesUpdate!({
-              schedule_id: ruleId,
-              config_overlay: config,
-            }),
-            returnFocus,
-          );
-        } else {
-          void runTriggerMutation(
-            () => opts.triggersUpdate!({
-              trigger_id: ruleId,
-              config_overlay: config,
-            }),
-            returnFocus,
-          );
-        }
-      },
-      onClose: () => {
-        configEditorHandle = null;
-        if (!destroyed) {
-          armModalTrap();
-          focusIdentityElement(returnFocus)?.focus?.({ preventScroll: true });
-        }
-      },
-    });
   };
 
   function onClick(ev: Event): void {
@@ -857,14 +771,6 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       return;
     }
     const ruleId = actor.getAttribute(RUN_MODAL_RULE_ID_ATTR) ?? '';
-    if (action === 'config-schedule') {
-      openRowConfigEditor('schedule', ruleId);
-      return;
-    }
-    if (action === 'config-trigger') {
-      openRowConfigEditor('trigger', ruleId);
-      return;
-    }
     if (action === 'toggle-schedule:on') {
       void toggleSchedule(ruleId, true);
       return;
@@ -895,6 +801,12 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       | (HTMLElement & { value?: string; dataset?: DOMStringMap })
       | null;
     if (target === null || typeof target.hasAttribute !== 'function') return;
+    // D-319 — which dish: the fields repaint with its settings.
+    if (target.hasAttribute(RUN_MODAL_DISH_ATTR)) {
+      const next = target.value ?? '';
+      if (next !== (state.dish_id ?? '')) setDish(next === '' ? null : next);
+      return;
+    }
     // Schedule preset — captured in state (not read at Add-click time) so a
     // re-paint mid-choice can't reset it. Selects emit input + change.
     // D-266 — the per-schedule missed-run policy. Selects emit input +
@@ -1045,7 +957,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     if (typeof overlay.querySelector !== 'function') return;
     let config: Record<string, unknown> = {};
     try {
-      config = parseRunConfig(state.config_text);
+      config = parseRunConfig(shownConfigText());
     } catch {
       config = {};
     }
@@ -1173,6 +1085,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     state = { ...state, config_text: text };
     paint();
   };
+  /** D-319 — changes typed for one run are that run's alone: another dish
+   *  starts from its own settings. */
+  function setDish(dish_id: string | null): void {
+    if (state.executing || state.dish_id === dish_id) return;
+    if (dish_id !== null && !(opts.dishes ?? []).some((dish) => dish.dish_id === dish_id)) return;
+    state = { ...state, dish_id, config_text: '{}', run_error: null };
+    paint({ kind: 'id', value: 'run-modal-dish', selectionStart: null, selectionEnd: null });
+  }
   const setTargetValue = (key: string, value: string): void => {
     state = {
       ...state,
@@ -1232,6 +1152,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     element: overlay,
     getState: () => state,
     setTab,
+    setDish,
     setConfigText,
     setTargetValue,
     setContextValues,

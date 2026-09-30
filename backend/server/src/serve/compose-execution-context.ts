@@ -1,6 +1,5 @@
 import { hostname } from 'node:os';
 
-import { canBindHostname } from '@recued/contracts';
 import type { BatchAskRecord } from '@recued/contracts';
 import type { PreflightRunSettled } from '../preflight-resumer.js';
 import type { BatchApprovalCoordinator } from '../batch-approval.js';
@@ -25,7 +24,6 @@ import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-inde
 import {
   buildAskLandingAnswerLink,
   buildOwnerSurfaceLink,
-  resolvePublicBaseUrl,
 } from '../ask-landing-answer-link.js';
 import { buildMessengerRemoteChannels } from '../composition/bin/messenger-transport-leaves.js';
 import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
@@ -170,7 +168,9 @@ export interface ComposeExecutionContextOptions {
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path
     // R1 pre-pass binds pack-composition CRM/acct vendors (`liveVendorRegistry`).
     | 'localManifestStore'
-    | 'hostnameRegistryStore'
+    // Answer links, owner links and seller claims read the server's public
+    // address here.
+    | 'publicAddress'
     // D-210 Phase C — the `reception_page` singleton carries the owner's
     // global inbox device-fanout mode, read fresh at each preflight raise.
     | 'publicEndpointRegistryStoreRef'
@@ -321,31 +321,6 @@ const resolveServerDisplayName = (
   env: Record<string, string | undefined>,
 ): string => env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
 
-/** Claim links are emailed, so they use the strict public-host filter from the
- * ask-link path. Candidate precedence still matches Reception itself: explicit
- * public base URL, then a live verified/enabled hostname-registry binding. */
-const resolveSellerClaimPublicBaseUrl = (
-  configured: string | undefined,
-  hostnameRegistryStore: Pick<StorageContext['hostnameRegistryStore'], 'list'>,
-): string | null => {
-  const configuredBaseUrl = resolvePublicBaseUrl(configured);
-  if (configuredBaseUrl !== null) return configuredBaseUrl;
-
-  for (const registered of hostnameRegistryStore.list()) {
-    if (!canBindHostname(registered)) continue;
-    const port = registered.listener_ports.includes(443)
-      ? 443
-      : registered.listener_ports[0];
-    if (port === undefined) continue;
-    const candidate = port === 443
-      ? `https://${registered.hostname}`
-      : `https://${registered.hostname}:${port}`;
-    const resolved = resolvePublicBaseUrl(candidate);
-    if (resolved !== null) return resolved;
-  }
-  return null;
-};
-
 export const composeExecutionContext = async (
   options: ComposeExecutionContextOptions,
 ): Promise<ExecutionContext> => {
@@ -419,11 +394,12 @@ export const composeExecutionContext = async (
     contractStore: app.contractStoreRef,
     inboundTokenStore: app.chatInboundTokenStoreRef,
     sellerClaimStore: app.sellerClaimStoreRef,
+    // ⚠ A HANDED-OUT address, never the probe-ranked one: a claim gives the
+    // customer an MCP / gateway URL to keep (and the claim support keeps its
+    // first answer for the life of the process). Kept from its first use; the
+    // owner moves it on the Hostnames screen.
     getSellerPublicBaseUrl: () => {
-      const publicBaseUrl = resolveSellerClaimPublicBaseUrl(
-        env.RECUED_PUBLIC_BASE_URL,
-        storage.hostnameRegistryStore,
-      );
+      const publicBaseUrl = storage.publicAddress.handOut('customer_access').base_url;
       if (publicBaseUrl === null) {
         throw new Error('seller customer claim public base URL is unavailable');
       }
@@ -553,17 +529,21 @@ export const composeExecutionContext = async (
   // D-238 — HOISTED above the registry below. A `landing-page` channel composes
   // its OWN answer affordance at `deliverAsk` time (`withAnswerLink` skips it so
   // the URL is not appended twice), so the builder has to exist before the
-  // channels do. Absent on a non-public deployment, where the ask carries the
-  // typed-reply hint alone.
-  const askAnswerLink =
-    buildAskLandingAnswerLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
-    undefined;
+  // channels do. It answers nothing while the server has no public address for
+  // `/ask`, and the ask then carries the typed-reply hint alone.
+  //
+  // ⛔ Resolved PER ASK, no longer once at boot from `RECUED_PUBLIC_BASE_URL`:
+  // a Pro server without the variable sent every ask without its link, and an
+  // address that appears later (a certificate lands, a path is made Public)
+  // was not used until a restart.
+  const askAnswerLink = (ask_id: string, via?: string): string | undefined =>
+    buildAskLandingAnswerLink(storage.publicAddress.baseUrl('ask'))?.(ask_id, via);
 
   const messengerChannels: Record<string, RemoteChannel> = app.connectionStoreRef
     ? buildMessengerRemoteChannels({
         connectionStore: app.connectionStoreRef,
         ...(app.keys ? { keys: app.keys } : {}),
-        ...(askAnswerLink !== undefined ? { answerLink: askAnswerLink } : {}),
+        answerLink: askAnswerLink,
         // D-238 — the process-shared refresher (memoized per connection store),
         // so an expiring Graph credential is renewed before the send path reads
         // it. The SAME instance reaches the ingress supervisor, which is what
@@ -590,23 +570,20 @@ export const composeExecutionContext = async (
   // readiness probe keeps the email Settings row `not_ready`.
   const emailMailRpc = collection.notificationDeps?.mailRpc;
   // D-158 P2b-ii — the one-click `answerLink` rides ONLY on a publicly-
-  // reachable server. Presence is a boot-time decision (the leaf's
-  // `answerLink?` is binary at construction): resolve the public base URL
-  // from `RECUED_PUBLIC_BASE_URL`; null (non-public / local) ⇒ no answerLink
-  // ⇒ text-only asks (answerable on `ui` + by reply). When present, the
+  // reachable server: with no public address for `/ask` it answers nothing,
+  // and the ask stays text-only (answerable on `ui` + by reply). The
   // `/ask/<ask_id>` route serves the landing page (mounted in
-  // `composeListeners`).
-  // (hoisted above the messenger channel registry — see there.)
-  // D-234 § 234.3 — the same base-URL decision, one line down, so "reachable
-  // enough to answer" and "reachable enough to read" can never disagree.
-  const ownerSurfaceLink =
-    buildOwnerSurfaceLink(resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL)) ??
-    undefined;
+  // `composeListeners`). (Hoisted above the messenger channel registry — see
+  // there.)
+  // D-234 § 234.3 — the same resolver, per link. A deep link opens the
+  // webclient at `<base>/#…`, so it needs an address whose root lands there.
+  const ownerSurfaceLink = (recipe_id: string): string | undefined =>
+    buildOwnerSurfaceLink(storage.publicAddress.baseUrl('root'))?.(recipe_id);
   const emailChannel = app.connectionStoreRef && emailMailRpc
     ? composeEmailChannel({
         connectionStore: app.connectionStoreRef,
         mailRpc: emailMailRpc,
-        ...(askAnswerLink ? { answerLink: askAnswerLink } : {}),
+        answerLink: askAnswerLink,
       })
     : undefined;
   // D-165 — boot-seed the catalog operation-profile store for enrolled
@@ -707,12 +684,12 @@ export const composeExecutionContext = async (
     // The page that started a held run reads its result from here once the
     // approval lets it finish (`execution.get`).
     settledRunResults: storage.settledRunResults,
-    // D-210 A.8 slice 3d — the SAME resolved link the email channel got above,
-    // deliberately not re-resolved: one public-base-URL decision, so a
-    // deployment can never end up with a link on one surface and not the other.
-    ...(askAnswerLink ? { askAnswerLink } : {}),
-    // D-234 § 234.3 — same resolved base, same reason.
-    ...(ownerSurfaceLink ? { ownerSurfaceLink } : {}),
+    // D-210 A.8 slice 3d — the SAME builder the email channel got above: one
+    // public-address decision, so a deployment can never end up with a link on
+    // one surface and not the other.
+    askAnswerLink,
+    // D-234 § 234.3 — same resolver, same reason.
+    ownerSurfaceLink,
     recipeStore: storage.recipeStore,
     recordsStore: storage.recordsStore,
     executorConfig,
@@ -937,10 +914,8 @@ export const composeExecutionContext = async (
             now: () => Date.now(),
             auditLog,
             notifier,
-            publicBaseUrl: resolveSellerClaimPublicBaseUrl(
-              env.RECUED_PUBLIC_BASE_URL,
-              storage.hostnameRegistryStore,
-            ),
+            // Runs before the listener: the server's last published answer.
+            publicBaseUrl: storage.publicAddress.baseUrl('root'),
           });
         })(),
       }

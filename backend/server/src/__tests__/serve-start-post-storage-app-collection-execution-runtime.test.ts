@@ -49,6 +49,14 @@ vi.mock('../composition/bin/housekeeping-scheduler-instance.js', () => ({
   housekeepingSchedulerRegistry: singletonMocks.schedulerRegistry,
 }));
 
+const repairMocks = vi.hoisted(() => ({
+  repairSharedMailAttachmentLinks: vi.fn(() => ({ applied: true, unlinked: 0 })),
+}));
+
+vi.mock('../collections/mail/mail-attachment-link-repair.js', () => ({
+  repairSharedMailAttachmentLinks: repairMocks.repairSharedMailAttachmentLinks,
+}));
+
 import {
   startPostBaseStorageVaultRuntime,
   startPostStorageAppCollectionExecutionRuntime,
@@ -336,6 +344,10 @@ describe('startPostBaseStorageVaultRuntime', () => {
         expect(
           actualOptions.postExecution.runtime.getSigningIdentity(),
         ).toBe(updatedIdentity);
+        // The shared mail attachment link repair reaches boot recovery, bound
+        // over the storage context's own db.
+        actualOptions.postExecution.runtime.recovery.mailAttachmentLinkRepair?.();
+        expect(repairMocks.repairSharedMailAttachmentLinks).toHaveBeenCalledWith(db, expect.any(Number));
 
         const upstream = new Map();
         actualOptions.postExecution.runtime.publishUpstreamMergeRegistry(

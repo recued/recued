@@ -7,6 +7,9 @@
  *                 modal (the 4a `RunModal`) on the matching tab.
  *   - reactive  → a state-aware auto-run toggle: off/paused → [Arm],
  *                 armed → [Pause], tripped → [Re-arm] (drives `auto_run.update`).
+ *                 D-319 §5.5: a recipe nobody switched on has no timer to arm —
+ *                 [Switch on…] opens the switch-on form (its settings, then a
+ *                 dish), never a timer that would start it with none.
  *   - reactive without an auto-run mechanism (pure event-triggers) → a
  *                 "Manage in Automation →" deep-link (the toggle doesn't apply).
  *
@@ -90,6 +93,17 @@ export interface RunPaletteOptions {
     recipe_id: string;
     enabled: boolean;
   }) => Promise<unknown>;
+  /** D-319 §5.5 — switch on a recipe nobody switched on: the host opens the
+   *  switch-on form over the palette and returns it, or `null` when there is
+   *  nothing to ask (the recipe has a dish after all). A rejection is a read
+   *  that failed before the form could open. `onClosed` fires when the form
+   *  closes, with what to tell the owner (a schedule that could not be
+   *  added), if anything. Absent ⇒ the palette sends the owner to
+   *  Automation instead of starting the recipe with no settings. */
+  switchOn?: (
+    entry: ServerRecipeListEntry,
+    onClosed: (notice: string | null) => void,
+  ) => Promise<{ destroy(): void } | null>;
   /** Deep-link builder to the Automation surface for a pure event-trigger
    *  recipe — passed the recipe id so it can filter to that recipe's rules
    *  (recipes-route parity: `serializeShellRoute('automation', recipe_id)`). */
@@ -297,6 +311,9 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   let selectedId: string | null = null;
   let refPicker: RefPicker.RefPickerHandle | null = null;
   let childRunModal: RunModal.RunModalHandle | null = null;
+  /** D-319 — the switch-on form, while it is open over the palette. */
+  let childForm: { destroy(): void } | null = null;
+  let switchOnPending = false;
   let focusTrap: FocusTrapHandle | null = null;
   let inventoryState: 'loading' | 'ready' | 'error' = 'loading';
   let inventoryLoadPending = false;
@@ -434,6 +451,52 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     });
     const portal = (doc as { body?: HTMLElement }).body ?? overlay;
     portal.appendChild(childRunModal.element);
+  };
+
+  /** D-319 §5.5 — the switch-on form, over the palette. */
+  const switchOnFor = (entry: ServerRecipeListEntry): void => {
+    const switchOn = opts.switchOn;
+    if (switchOn === undefined || switchOnPending || childForm !== null || childRunModal !== null) return;
+    switchOnPending = true;
+    autoRunNotice = null;
+    renderActions();
+    // Two document-level traps must never compete: the form brings its own.
+    focusTrap?.release();
+    focusTrap = null;
+    const backToPalette = (): void => {
+      armFocusTrap();
+      void loadAutoRun().then(() => {
+        if (closed) return;
+        renderActions();
+        actionArea.querySelector<HTMLElement>(`[${RUN_PALETTE_ACTION_ATTR}]`)?.focus({ preventScroll: true });
+      });
+    };
+    void (async () => {
+      let form: { destroy(): void } | null = null;
+      try {
+        form = await switchOn(entry, (notice) => {
+          childForm = null;
+          if (closed) return;
+          if (notice !== null) autoRunNotice = { recipeId: entry.recipe_id, text: notice };
+          backToPalette();
+        });
+      } catch {
+        if (!closed) {
+          autoRunNotice = {
+            recipeId: entry.recipe_id,
+            text: 'Recued could not read this Recipe’s settings. Try again.',
+          };
+        }
+      }
+      switchOnPending = false;
+      if (closed) {
+        form?.destroy();
+        return;
+      }
+      childForm = form;
+      if (form === null) backToPalette();
+      else renderActions();
+    })();
   };
 
   const toggleAutoRun = (recipeId: string, nextEnabled: boolean): void => {
@@ -575,9 +638,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     }
 
     if (kind === 'autorun') {
-      const state = autoRunStateOf(
-        autoRunEntries.find((e) => e.recipe_id === selectedId),
-      );
+      // The server lists a recipe's main dish's timer first; a recipe nobody
+      // switched on lists as one row with no dish.
+      const main = autoRunEntries.find((e) => e.recipe_id === selectedId);
+      const switchedOn = main !== undefined && (main.dish_id ?? null) !== null;
+      const state = switchedOn ? autoRunStateOf(main) : 'off';
       const stateLine = doc.createElement('div');
       stateLine.className = 'run-palette-state';
       stateLine.textContent = autoRunStateLabel(state);
@@ -588,6 +653,26 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         result.setAttribute('role', 'status');
         result.textContent = autoRunNotice.text;
         actionArea.appendChild(result);
+      }
+      if (!switchedOn) {
+        // D-319 §5.5 — its settings first.
+        if (opts.switchOn !== undefined) {
+          const switchOn = actionButton(switchOnPending ? 'Opening…' : 'Switch on…', true, () => switchOnFor(entry));
+          if (switchOnPending) {
+            switchOn.setAttribute('aria-disabled', 'true');
+            switchOn.setAttribute('aria-busy', 'true');
+          }
+          buttons.appendChild(switchOn);
+        } else if (opts.automationHref !== undefined) {
+          const link = doc.createElement('a');
+          link.setAttribute(RUN_PALETTE_ACTION_ATTR, '');
+          link.setAttribute('href', opts.automationHref(entry.recipe_id));
+          link.textContent = 'Switch on in Automation →';
+          link.addEventListener('click', () => requestClose());
+          buttons.appendChild(link);
+        }
+        actionArea.appendChild(buttons);
+        return;
       }
       const { label, nextEnabled } = autoRunToggle(state);
       const toggle = actionButton(label, true, () => {
@@ -693,11 +778,13 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   };
 
   const onKey = (ev: KeyboardEvent): void => {
-    // When a Run modal is stacked above, let IT own Escape.
+    // When a Run modal or the switch-on form is stacked above, let IT own
+    // Escape.
     if (
       ev.key !== 'Escape'
       || ev.isComposing
       || childRunModal !== null
+      || childForm !== null
     ) return;
     if (autoRunMutationPending) {
       ev.preventDefault?.();
@@ -713,6 +800,9 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     refPicker?.destroy();
     childRunModal?.destroy();
     childRunModal = null;
+    const form = childForm;
+    childForm = null;
+    form?.destroy();
     focusTrap?.release();
     focusTrap = null;
     overlay.remove();
@@ -745,7 +835,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         || childRunModal?.hasInFlightWork() === true
       ),
     focus: () => {
-      if (!closed && childRunModal === null) focusTrap?.focusInitial();
+      if (!closed && childRunModal === null && childForm === null) focusTrap?.focusInitial();
     },
     destroy: closeSelf,
   };

@@ -3667,6 +3667,8 @@ export {
   normalizeHostname,
   projectHostname,
   canBindHostname,
+  HOSTNAME_ADDRESS_USES,
+  isHostnameAddressUse,
 } from './hostname.js';
 export type {
   HostnameCertSource,
@@ -3689,6 +3691,12 @@ export type {
   HostnameOwnershipProofInput,
   HostnameOwnershipProofFailureCode,
   HostnameOwnershipProofResult,
+  HostnameAddressUse,
+  HostnameAddressSource,
+  HostnameAddressUseState,
+  HostnameAddressChoice,
+  HostnameAddressUsesResponse,
+  HostnameSetAddressUseRequest,
 } from './hostname.js';
 
 // D-235 P1 — bring-your-own-domain enrolment + preflight.
@@ -5053,6 +5061,9 @@ export {
   OAUTH_CLOUD_CALLBACK_ORIGIN,
   WEBCLIENT_OAUTH_CALLBACK_PATH,
   isLoopbackOrigin,
+  selfServesOAuthCallback,
+  vendorOAuthCallbackUrlForPwa,
+  vendorOAuthAlternateCallbackUrl,
   alternateOAuthCallbackUrl,
   oauthCallbackUrlForPwa,
   pickOAuthCallbackHost,
@@ -6811,3 +6822,4 @@ export type { RequiredConnection } from './required-connections.js';
 // D-315 — mail facts: the built-in fact types, the template shape, the fact and
 // thing records, and the event vocabulary.
 export * from './mail-facts.js';
+export * from './mail-work.js';

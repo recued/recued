@@ -779,8 +779,9 @@ const buildFakeTransport = (
   delayComposeCommitResponse = false,
   delayReceptionDecisionResponse = false,
   recipesDefaultRunDemo = false,
-  delayRecipeConfigResponse = false,
-  failRecipeConfigRead = false,
+  // D-319 — Switch on reads what a first dish starts from (`dishes.defaults`).
+  delayDishesDefaultsResponse = false,
+  failDishesDefaultsRead = false,
   failChatHistoryActions = false,
   sameSpeedChatSlots = false,
   delayChatModelPreferenceResponse = false,
@@ -857,8 +858,9 @@ const buildFakeTransport = (
   delayChatSessionOpen = false,
   failChatSessionOpen = false,
   recipesRelatedAutoRunDemo = false,
-  delayRecipeConfigSetResponse = false,
-  recipeConfigSetFailures = 0,
+  // D-319 — switching a recipe on makes its dish (`dishes.create`).
+  delayDishesCreateResponse = false,
+  dishesCreateFailures = 0,
   collectionListFailures = 0,
   delayCollectionListRetry = false,
   collectionGetFailures = 0,
@@ -912,7 +914,7 @@ const buildFakeTransport = (
   let accountProReadFailuresRemaining = accountReadFailures;
   let rejectNextOpenForReauth = false;
   let chatSendFailuresRemaining = failFirstChatSend ? 1 : 0;
-  let recipeConfigSetFailuresRemaining = recipeConfigSetFailures;
+  let dishesCreateFailuresRemaining = dishesCreateFailures;
   let collectionListFailuresRemaining = collectionListFailures;
   let collectionGetFailuresRemaining = collectionGetFailures;
   let logsDetailFailuresRemaining = logsDetailFailures;
@@ -1168,7 +1170,25 @@ const buildFakeTransport = (
     },
   ];
   let runPaletteAutoRunEnabled = true;
+  // D-319 §5.5 — the palette's auto-run recipe is switched on (it has a dish)
+  // unless `run_palette=not-switched-on`, where Switch on… makes its dish.
+  const runPaletteDishes: Array<Record<string, unknown>> =
+    searchParams.get('run_palette') === 'not-switched-on'
+      ? []
+      : [{
+          dish_id: 'dsh_palette', recipe_id: runPaletteRecipeId, publisher_id: 'recued-core', name: '',
+          is_default: true, config_overlay: {}, enabled: true, created_at: 1,
+        }];
   let recipesRelatedAutoRunEnabled = true;
+  // D-319 — the recipes demo's dishes. The related demo's two auto-run recipes
+  // are switched on; every other recipe starts with none.
+  const recipesDemoDish = (dish_id: string, recipe_id: string) => ({
+    dish_id, recipe_id, publisher_id: 'recued-core', name: '', is_default: true,
+    config_overlay: {}, enabled: true, created_at: 1,
+  });
+  const recipesDishes: Array<Record<string, unknown>> = recipesRelatedAutoRunDemo
+    ? [recipesDemoDish('dsh_autorun', 'autorun-live-1'), recipesDemoDish('dsh_close', 'close-action')]
+    : [];
   const sourceAnswerMessages: Array<Record<string, unknown>> = [];
   const sourceAnswerSession = {
     id: 'chat_source_1',
@@ -3722,27 +3742,42 @@ const buildFakeTransport = (
             recipeFileArtifactResultDemo,
           );
         }
-        if (recipesDemo && rpc.method === 'recipe_config.get') {
-          if (failRecipeConfigRead) {
+        if (recipesDemo && rpc.method === 'dishes.defaults') {
+          if (failDishesDefaultsRead) {
             error = {
               code: 'UNAVAILABLE',
-              message: 'Recipe config is temporarily unavailable.',
+              message: 'Settings are temporarily unavailable.',
             };
           } else {
             result = { config_overlay: {} };
           }
         }
-        if (recipesDemo && rpc.method === 'recipe_config.set') {
-          if (recipeConfigSetFailuresRemaining > 0) {
-            recipeConfigSetFailuresRemaining -= 1;
+        if (recipesDemo && rpc.method === 'dishes.create') {
+          if (dishesCreateFailuresRemaining > 0) {
+            dishesCreateFailuresRemaining -= 1;
             error = {
               code: 'UNAVAILABLE',
-              message: 'Recipe config update is temporarily unavailable.',
+              message: 'Switching on is temporarily unavailable.',
             };
           } else {
-            result = {
-              config_overlay: (rpc.args as { config_overlay?: unknown }).config_overlay ?? {},
+            const args = rpc.args as { recipe_id: string; name?: string; config_overlay?: Record<string, unknown> };
+            const dish = {
+              ...recipesDemoDish(`dsh_made_${recipesDishes.length + 1}`, args.recipe_id),
+              is_default: !recipesDishes.some((row) => row.recipe_id === args.recipe_id),
+              name: args.name ?? '',
+              config_overlay: args.config_overlay ?? {},
             };
+            recipesDishes.push(dish);
+            result = { dish };
+          }
+        }
+        if (recipesDemo && rpc.method === 'dishes.update') {
+          const args = rpc.args as { dish_id: string; enabled?: boolean; config_overlay?: Record<string, unknown> };
+          const dish = recipesDishes.find((row) => row.dish_id === args.dish_id);
+          if (dish !== undefined) {
+            if (args.enabled !== undefined) dish.enabled = args.enabled;
+            if (args.config_overlay !== undefined) dish.config_overlay = args.config_overlay;
+            result = { dish: { ...dish } };
           }
         }
         if (recipesRouteDemo && rpc.method === 'recipe.runnability') {
@@ -4630,17 +4665,21 @@ const buildFakeTransport = (
           result = { triggers: [] };
         }
         if (recipesRouteDemo && rpc.method === 'dishes.list') {
-          result = { dishes: [], last_runs: {} };
+          result = { dishes: recipesDishes.map((dish) => ({ ...dish })), last_runs: {} };
         }
         if (runPaletteDemo && rpc.method === 'auto_run.list') {
+          const dish = runPaletteDishes[0];
           result = {
             entries: [{
               recipe_id: runPaletteRecipeId,
               publisher_id: 'recued-core',
+              // D-319 — a timer is a dish's; with none, nobody switched it on.
+              dish_id: (dish?.dish_id as string | undefined) ?? null,
+              dish_name: dish === undefined ? null : '',
               recipe_name: 'Watch pipeline',
               interval_ms: 60_000,
               dynamic: false,
-              enabled: runPaletteAutoRunEnabled,
+              enabled: dish === undefined ? false : runPaletteAutoRunEnabled,
               auto_disabled: false,
               consecutive_failures: 0,
               last_failure_at: null,
@@ -4659,6 +4698,8 @@ const buildFakeTransport = (
               {
                 recipe_id: runPaletteRecipeId,
                 publisher_id: 'recued-core',
+                dish_id: 'dsh_autorun',
+                dish_name: '',
                 recipe_name: runPaletteRecipeName,
                 interval_ms: 60_000,
                 dynamic: false,
@@ -4676,6 +4717,8 @@ const buildFakeTransport = (
               {
                 recipe_id: 'close-action',
                 publisher_id: 'recued-core',
+                dish_id: 'dsh_close',
+                dish_name: '',
                 recipe_name: 'Close action',
                 interval_ms: 60_000,
                 dynamic: false,
@@ -4692,6 +4735,21 @@ const buildFakeTransport = (
               },
             ],
           };
+        }
+        if (runPaletteDemo && rpc.method === 'dishes.list') {
+          result = { dishes: runPaletteDishes.map((dish) => ({ ...dish })), last_runs: {} };
+        }
+        if (runPaletteDemo && rpc.method === 'dishes.defaults') {
+          result = { config_overlay: {} };
+        }
+        if (runPaletteDemo && rpc.method === 'dishes.create') {
+          const args = rpc.args as { recipe_id: string; publisher_id: string; config_overlay?: Record<string, unknown> };
+          const dish = {
+            dish_id: 'dsh_palette', recipe_id: args.recipe_id, publisher_id: args.publisher_id, name: '',
+            is_default: true, config_overlay: args.config_overlay ?? {}, enabled: true, created_at: 2,
+          };
+          runPaletteDishes.push(dish);
+          result = { dish };
         }
         if (runPaletteDemo && rpc.method === 'auto_run.update') {
           if (runPaletteUpdateFails) {
@@ -4713,6 +4771,8 @@ const buildFakeTransport = (
             entry: {
               recipe_id: 'close-action',
               publisher_id: 'recued-core',
+              dish_id: 'dsh_close',
+              dish_name: '',
               recipe_name: 'Close action',
               interval_ms: 60_000,
               dynamic: false,
@@ -6176,6 +6236,17 @@ const buildFakeTransport = (
             // `HostnameListResponse` · `DdnsEnabledStatus` ·
             // `NetworkLocalUrlsResponse`
             'collection.hostname.list': { hostnames: [] },
+            // `HostnameAddressUsesResponse` — no names, so nothing to hand out.
+            'collection.hostname.addressUses': {
+              uses: [
+                { use: 'webhooks', source: 'automatic', base_url: null },
+                { use: 'reception', source: 'automatic', base_url: null },
+                { use: 'customer_access', source: 'automatic', base_url: null },
+              ],
+              choices: [],
+              links_now: { app: null, answers: null },
+              registered_webhooks: 0,
+            },
             'ddns.status': { enabled: true },
             'network.local_urls': { urls: [] },
             // `LearningCasesListCaller` · `LlmResultCacheStatsCaller` ·
@@ -6799,16 +6870,16 @@ const buildFakeTransport = (
           setTimeout(respond, 750);
           return;
         } else if (
-          delayRecipeConfigResponse
-          && rpc.method === 'recipe_config.get'
+          delayDishesDefaultsResponse
+          && rpc.method === 'dishes.defaults'
         ) {
           setTimeout(respond, 250);
           return;
         } else if (
-          delayRecipeConfigSetResponse
-          && rpc.method === 'recipe_config.set'
+          delayDishesCreateResponse
+          && rpc.method === 'dishes.create'
         ) {
-          setTimeout(respond, recipeConfigSetDelayMs);
+          setTimeout(respond, dishesCreateDelayMs);
           return;
         } else if (
           connectedSourceAnswerDemo
@@ -7560,12 +7631,12 @@ const requestedAutoRunUpdateDelayMs = Number.parseInt(
 const autoRunUpdateDelayMs = Number.isFinite(requestedAutoRunUpdateDelayMs)
   ? Math.min(5_000, Math.max(750, requestedAutoRunUpdateDelayMs))
   : 750;
-const requestedRecipeConfigSetDelayMs = Number.parseInt(
-  searchParams.get('recipe_config_set_delay_ms') ?? '',
+const requestedDishesCreateDelayMs = Number.parseInt(
+  searchParams.get('dishes_create_delay_ms') ?? '',
   10,
 );
-const recipeConfigSetDelayMs = Number.isFinite(requestedRecipeConfigSetDelayMs)
-  ? Math.min(5_000, Math.max(750, requestedRecipeConfigSetDelayMs))
+const dishesCreateDelayMs = Number.isFinite(requestedDishesCreateDelayMs)
+  ? Math.min(5_000, Math.max(750, requestedDishesCreateDelayMs))
   : 750;
 const automationWatchResponse = searchParams.get('automation_watch_response');
 const automationWatchDemo = automationWatchResponse !== null;
@@ -7992,6 +8063,7 @@ const transport = buildFakeTransport(
   searchParams.get('records_navigation_response') === 'slow',
   searchParams.get('live') === 'interrupted' ? 'interrupted' : searchParams.get('live') === 'running',
   searchParams.get('run_palette') === 'autorun'
+    || searchParams.get('run_palette') === 'not-switched-on'
     || searchParams.get('run_palette') === 'autorun-fail'
     || searchParams.get('run_palette') === 'inventory-retry'
     || searchParams.get('run_palette') === 'long',
@@ -8022,9 +8094,9 @@ const transport = buildFakeTransport(
   searchParams.get('compose_commit_response') === 'slow',
   searchParams.get('reception_decision_response') === 'slow',
   searchParams.get('recipe_default_run') === '1',
-  searchParams.get('recipe_config_response') === 'slow'
-    || searchParams.get('recipe_config_response') === 'fail-slow',
-  searchParams.get('recipe_config_response') === 'fail-slow',
+  searchParams.get('dishes_defaults_response') === 'slow'
+    || searchParams.get('dishes_defaults_response') === 'fail-slow',
+  searchParams.get('dishes_defaults_response') === 'fail-slow',
   searchParams.get('chat_history_action_response') === 'fail',
   searchParams.get('chat_model_sources') === 'same-speed-slot-2',
   searchParams.get('chat_model_pref_response') === 'slow',
@@ -8132,9 +8204,9 @@ const transport = buildFakeTransport(
     || searchParams.get('chat_session_open_response') === 'fail-slow',
   searchParams.get('chat_session_open_response') === 'fail-slow',
   searchParams.get('recipes') === 'related-autorun',
-  searchParams.get('recipe_config_set_response') === 'slow'
-    || searchParams.get('recipe_config_set_response') === 'fail-once-slow-retry',
-  searchParams.get('recipe_config_set_response') === 'fail-once-slow-retry'
+  searchParams.get('dishes_create_response') === 'slow'
+    || searchParams.get('dishes_create_response') === 'fail-once-slow-retry',
+  searchParams.get('dishes_create_response') === 'fail-once-slow-retry'
     ? 1
     : 0,
   searchParams.get('collection_list_response') === 'fail-twice-slow-retry'

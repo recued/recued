@@ -27,6 +27,8 @@ import {
   classifyAliasTokens,
   tokenizeForOverlap,
   containsPotentialPiiAliasLiteral,
+  containsPiiAliasToken,
+  holdsPiiAliasToken,
   derivePiiRestoreAuthority,
   restoreInStringWithAuthority,
 } from '../pii-alias.js';
@@ -387,6 +389,74 @@ describe('scanContent — case-discipline', () => {
 /* ──────────────── Domain-anchored email completion ──────────────── */
 
 describe('scanContent — domain-anchored email completion', () => {
+  it('does not replace a newly emitted email local alias with a matching real name', () => {
+    const l = createLedger('mail-work-alias-name-collision');
+    aliasIdentifierField(l, 'name', 'm2');
+    aliasIdentifierField(l, 'email', 'seed@client.test');
+    const original = 'Ask m2 via bob@client.test.';
+    const out = scanContent(l, original);
+    expect(out).toEqual({ text: 'Ask pii.Person1 via m2@d1.invalid.', replacements: 2 });
+    expect(restoreInStringWithAuthority(derivePiiRestoreAuthority(l, out.text), out.text)).toBe(original);
+    expect(scanContent(l, out.text)).toEqual({ text: out.text, replacements: 0 });
+  });
+  it.each(['name', 'org'] as const)('protects a complete email before replacing a matching %s inside its local part', kind => {
+    const l = createLedger('mail-work-local-part');
+    aliasIdentifierField(l, kind, 'Maya');
+    aliasIdentifierField(l, 'email', 'seed@client.test');
+    const original = 'Ask Maya via maya@client.test or maya+pilot@client.test.';
+    const out = scanContent(l, original);
+    expect(out.replacements).toBe(3);
+    expect(out.text).not.toMatch(/maya|client\.test/iu);
+    const authority = derivePiiRestoreAuthority(l, out.text);
+    expect(restoreInStringWithAuthority(authority, out.text)).toBe(original);
+    expect(scanContent(l, out.text)).toEqual({ text: out.text, replacements: 0 });
+    expect([...l.byKindRealValue.values()].filter(entry => entry.kind === 'email_local')
+      .map(entry => entry.real_value)).toEqual(['seed@client.test', 'maya@client.test', 'maya+pilot@client.test']);
+  });
+  // ⛔ The fix above once excluded EVERY value before `@`, not just an issued
+  // alias local part, so a known value at a domain the ledger does not know
+  // reached the provider raw. Each of these was aliased before it.
+  it.each([
+    ['name', 'Maya', 'use maya@newco.io', 'use cap_pii.Person1@newco.io'],
+    ['org', 'Acme', 'acme@gmail.com', 'cap_pii.Org1@gmail.com'],
+  ] as const)('still aliases a known %s right before @ at an unknown domain', (kind, value, original, expected) => {
+    const l = createLedger('unknown-domain');
+    aliasIdentifierField(l, kind, value);
+    const out = scanContent(l, original);
+    expect(out.text).toBe(expected);
+    expect(restoreInStringWithAuthority(derivePiiRestoreAuthority(l, out.text), out.text)).toBe(original);
+    expect(scanContent(l, out.text)).toEqual({ text: out.text, replacements: 0 });
+  });
+  it('aliases a whole non-ASCII local part at a known domain and restores it exactly', () => {
+    const l = createLedger('non-ascii-local-part');
+    aliasIdentifierField(l, 'name', 'José');
+    aliasIdentifierField(l, 'email', 'jose@client.test');
+    // Decomposed (NFD) as well as composed accents: the mark is part of the local part.
+    const original = 'Reply to josé@client.test, cc müller@client.test and josé.x@client.test.';
+    const out = scanContent(l, original);
+    expect(out.text).toBe('Reply to m2@d1.invalid, cc m3@d1.invalid and m4@d1.invalid.');
+    expect(restoreInStringWithAuthority(derivePiiRestoreAuthority(l, out.text), out.text)).toBe(original);
+    expect(scanContent(l, out.text)).toEqual({ text: out.text, replacements: 0 });
+  });
+  it('keeps a word written without spaces out of an address (CJK stays a boundary)', () => {
+    const l = createLedger('cjk-adjacent');
+    aliasIdentifierField(l, 'email', 'seed@client.test');
+    const out = scanContent(l, '发给maya@client.test');
+    expect(out.text).toBe('发给m2@d1.invalid');
+    // The alias must stand for the address itself, or a reply goes elsewhere.
+    expect(restoreInString(l, 'm2@d1.invalid')).toBe('maya@client.test');
+  });
+  it('replaces a known value that CONTAINS an address as one unit', () => {
+    const l = createLedger('id-with-address');
+    aliasIdentifierField(l, 'external_id', 'crm:maya@client.test:42');
+    aliasIdentifierField(l, 'email', 'maya@client.test');
+    const original = 'see crm:maya@client.test:42, from maya@client.test';
+    const out = scanContent(l, original);
+    expect(out.text).toBe('see pii.Id1, from m1@d1.invalid');
+    expect(restoreInStringWithAuthority(derivePiiRestoreAuthority(l, out.text), out.text)).toBe(original);
+    expect(scanContent(l, out.text)).toEqual({ text: out.text, replacements: 0 });
+  });
+
   it('aliased domain anchors a fresh email_local for new local-part mention', () => {
     const l = createLedger('s1');
     aliasIdentifierField(l, 'email', 'alice@acme.com');                     // m1, d1
@@ -1725,6 +1795,43 @@ describe('P1 — seed and replace consult ONE rule', () => {
     aliasIdentifierField(ledger, 'phone', '+14155550199');
     const out = scanContent(ledger, 'call 4155550199 now');
     expect(out.text).not.toContain('4155550199');
+  });
+
+  it('seeds AND replaces a name right before @ at an unknown domain', () => {
+    const ledger = createLedger('p1');
+    const out = aliasKnownValuesInContent(ledger, 'use maya@newco.io', indexOf('Maya', 'name'));
+    expect(out.text).toBe('use cap_pii.Person1@newco.io');
+  });
+
+  it('allocates nothing for a value that only precedes an issued alias domain', () => {
+    // The content pass leaves `m2` in `m2@d1.invalid` alone; the seed must too.
+    const ledger = createLedger('p1');
+    seedKnownValuesFromContent(ledger, 'reply to m2@d1.invalid', indexOf('m2', 'name'));
+    expect([...ledger.byKindRealValue.keys()]).toEqual([]);
+  });
+});
+
+describe('containsPiiAliasToken — the exact alias grammar, for a hard check after restore', () => {
+  it.each([
+    'm7@d9.invalid', 'pii.Person3', 'cap_pii.Org2', 'd4.invalid', 'owner_pii.Person1',
+    'PII.PERSON3', 'pii.Phone1.gb', 'm1.northwind@d1.invalid', 'pii.person1@client.test',
+  ])('finds %s', token => {
+    expect(containsPiiAliasToken(`Ask ${token} today.`)).toBe(true);
+  });
+  it.each([
+    'The export will not contain any PII.', 'Send the redacted pii.csv file.', 'The M1 MacBook arrived.',
+    'Rows m2 and d1 are done.', 'Do not d4.invalidate it.', 'mail@example.invalid',
+  ])('does not find one in prose: %s', text => {
+    expect(containsPiiAliasToken(text)).toBe(false);
+  });
+  it('answers each call afresh — a shared /g pattern would resume mid-string', () => {
+    expect(containsPiiAliasToken('pii.Person3 asked for the revised scope')).toBe(true);
+    expect(containsPiiAliasToken('pii.Person3')).toBe(true);
+  });
+  it('walks nested values and object keys', () => {
+    expect(holdsPiiAliasToken({ claims: [{ text: 'Call m7@d9.invalid.' }] })).toBe(true);
+    expect(holdsPiiAliasToken({ claims: [], 'pii.Org2': 'x' })).toBe(true);
+    expect(holdsPiiAliasToken({ claims: [{ text: 'No PII. Send pii.csv.', sources: [] }] })).toBe(false);
   });
 });
 

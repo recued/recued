@@ -54,6 +54,10 @@ import {
   RECIPES_ROUTE_BUNDLE_RETRY_ATTR,
   RECIPES_ROUTE_BUNDLE_STATUS_ATTR,
   RECIPES_ROUTE_STYLES_MARKER,
+  RUNNING_AS_ACTION_ATTR,
+  RUNNING_AS_ATTR,
+  RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_RECIPE_ATTR,
   bootstrapRecipesRoute,
   type RecipeExecuteCaller,
   type RecipeFileReadCaller,
@@ -147,6 +151,57 @@ const clickRecipeAction = (
     fn({ target, preventDefault: vi.fn() } as unknown as Event);
   }
 };
+
+/** D-319 — drive a "Running as" control, as the route's delegated click finds it. */
+const clickRunningAs = (
+  root: FakeEl,
+  action: string,
+  attrs: { dish_id?: string; recipe_id?: string } = {},
+): void => {
+  const actionTarget = {
+    getAttribute: (name: string) =>
+      name === RUNNING_AS_ACTION_ATTR ? action
+        : name === RUNNING_AS_DISH_ATTR ? attrs.dish_id ?? null
+          : name === RUNNING_AS_RECIPE_ATTR ? attrs.recipe_id ?? null
+            : null,
+  };
+  const target = {
+    closest: (selector: string) => (selector.includes(RUNNING_AS_ACTION_ATTR) ? actionTarget : null),
+  };
+  for (const fn of root.children[0]!.listeners.get('click') ?? []) {
+    fn({ target, preventDefault: vi.fn() } as unknown as Event);
+  }
+};
+
+/** D-319 — the settings form, once it mounts on the document body. */
+const settingsForm = (doc: FakeDoc): FakeEl | undefined =>
+  doc.body?.children.find((child) =>
+    (child as unknown as { className?: string }).className === 'config-editor-overlay');
+
+/** Type into one of the form's settings, as its input event reads it. */
+const editSetting = (form: FakeEl, key: string, value: string, varType = 'number'): void => {
+  for (const fn of form.listeners.get('input') ?? []) {
+    fn({ target: { dataset: { varKey: key, varType }, value } } as unknown as Event);
+  }
+};
+
+const confirmForm = (form: FakeEl): void => {
+  for (const fn of form.listeners.get('click') ?? []) {
+    fn({ target: { closest: () => ({ getAttribute: () => 'confirm' }) } } as unknown as Event);
+  }
+};
+
+const dishOf = (over: Partial<Dish> = {}): Dish => ({
+  dish_id: 'dsh_watch',
+  recipe_id: 'watch-mail',
+  publisher_id: 'recued-core',
+  name: '',
+  is_default: true,
+  config_overlay: {},
+  enabled: true,
+  created_at: 1,
+  ...over,
+});
 
 describe('R24 — Recipes route: list view', () => {
   it('⛔⛔ opening a detail PUSHES so native Back returns to the list, not past it', async () => {
@@ -1009,35 +1064,46 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.dispose();
   });
 
-  it('renders a standing dish owner through the shared provenance component', async () => {
+  it('D-319 — "Running as" replaces Config: the recipe’s dish as a line, with its switch', async () => {
     const dish: Dish = {
       dish_id: 'dish-1',
       recipe_id: 'daily-brief',
       publisher_id: 'recued-core',
       name: 'Weekday digest',
-      is_default: false,
+      is_default: true,
       config_overlay: {},
       enabled: true,
       created_at: 1,
-      managed_by_schedule_id: 'schedule-1',
     };
     const rig = mountRoute({
       initialRecipeId: 'daily-brief',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', { variables: { limit: 25 } }),
+        })],
+      })),
       dishesListCaller: vi.fn(async () => ({ dishes: [dish] })),
+      dishesUpdateCaller: vi.fn(async () => ({ dish })),
     });
     await rig.route.whenLoaded();
 
     const html = shellHtml(rig.root);
-    expect(html).toContain('data-dish-origin="schedule"');
-    expect(html).toContain('data-recued-provenance');
-    expect(html).toContain('Schedule schedule-1');
+    expect(html).toContain(`${RUNNING_AS_ATTR}="daily-brief"`);
+    expect(html).toContain('Running as');
+    expect(html).toContain('<span class="running-as-name">Weekday digest</span>');
+    expect(html).toContain(`${RUNNING_AS_ACTION_ATTR}="toggle-off" ${RUNNING_AS_DISH_ATTR}="dish-1"`);
+    expect(html).toContain(`${RUNNING_AS_ACTION_ATTR}="settings" ${RUNNING_AS_DISH_ATTR}="dish-1"`);
+    // The Config button it replaces is gone, and so is the read-only list.
+    expect(html).not.toContain('open-recipe-config');
+    expect(html).not.toContain('data-recued-recipes-dishes');
 
     rig.route.dispose();
   });
 
-  it('gives an auto-run detail lifecycle controls instead of Run or Schedule', async () => {
-    const update = deferred<{ entry: AutoRunStatusEntry }>();
-    const autoRunUpdateCaller = vi.fn(() => update.promise);
+  it('D-319 — gives an auto-run detail its dish’s switch instead of Run, Schedule or a timer toggle', async () => {
+    const update = deferred<{ dish: Dish }>();
+    const dishesUpdateCaller = vi.fn(() => update.promise);
+    let dishes = [dishOf()];
     const rig = mountRoute({
       initialRecipeId: 'watch-mail',
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
@@ -1068,9 +1134,10 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         throw new Error('reactive detail must not create a schedule');
       }),
       autoRunListCaller: vi.fn(async () => ({
-        entries: [autoRunStatus('watch-mail')],
+        entries: [autoRunStatus('watch-mail', { dish_id: 'dsh_watch', dish_name: '' })],
       })),
-      autoRunUpdateCaller,
+      dishesListCaller: vi.fn(async () => ({ dishes })),
+      dishesUpdateCaller,
     });
     await rig.route.whenLoaded();
 
@@ -1078,63 +1145,221 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).not.toContain('data-recued-recipes-action="open-run"');
     expect(html).not.toContain('data-recued-recipes-action="run-defaults"');
     expect(html).not.toContain('data-recued-recipes-action="open-schedule"');
-    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:off"');
-    expect(html).toContain('>Pause auto-run</button>');
+    expect(html).not.toContain('toggle-auto-run');
     expect(html).toContain('>Manage automation</a>');
+    expect(html).toContain('Runs every minute');
 
-    clickRecipeAction(rig.root, 'toggle-auto-run:off', 'watch-mail');
-    expect(autoRunUpdateCaller).toHaveBeenCalledWith({
-      recipe_id: 'watch-mail',
-      enabled: false,
-    });
+    clickRunningAs(rig.root, 'toggle-off', { dish_id: 'dsh_watch' });
+    expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_watch', enabled: false });
     html = shellHtml(rig.root);
-    expect(html).toContain('Pausing…');
-    expect(html).toContain('aria-disabled="true" aria-busy="true"');
+    expect(html).toContain('Switching…');
+    expect(html).toContain('aria-busy="true"');
 
-    update.resolve({ entry: autoRunStatus('watch-mail', { enabled: false }) });
-    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Arm auto-run'));
-    expect(shellHtml(rig.root)).toContain(
-      'data-recued-recipes-action="toggle-auto-run:on"',
-    );
+    dishes = [dishOf({ enabled: false })];
+    update.resolve({ dish: dishes[0]! });
+    await vi.waitFor(() => expect(shellHtml(rig.root))
+      .toContain(`${RUNNING_AS_ACTION_ATTR}="toggle-on" ${RUNNING_AS_DISH_ATTR}="dsh_watch"`));
 
     rig.route.dispose();
   });
 
-  it('offers Arm when an auto-run definition has no status entry yet', async () => {
-    const autoRunUpdateCaller = vi.fn(async () => ({
-      entry: autoRunStatus('watch-mail'),
+  it('D-319 — + Add another names the dish, starts from the main one’s settings, and puts the chosen schedule on it', async () => {
+    const main = dishOf({ dish_id: 'dsh_main', recipe_id: 'daily-brief', config_overlay: { limit: 30 } });
+    const made = dishOf({ dish_id: 'dsh_evening', recipe_id: 'daily-brief', is_default: false, name: 'Evening' });
+    const dishesCreateCaller = vi.fn(async () => ({ dish: made }));
+    const schedulesCreateCaller = vi.fn(async (args: { recipe_id: string; cron_expression?: string; dish_id?: string }) => ({
+      schedule: {
+        schedule_id: 'sch_1', recipe_id: args.recipe_id, publisher_id: 'recued-core', cron_expression: args.cron_expression ?? '',
+        enabled: true, created_at: 1, last_run_at: null, next_run_at: null, last_status: null, last_error: null,
+        ...(args.dish_id !== undefined ? { dish_id: args.dish_id } : {}),
+      },
     }));
     const rig = mountRoute({
+      body: true,
+      initialRecipeId: 'daily-brief',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', { variables: { limit: 25 } }),
+        })],
+      })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [main] })),
+      dishesCreateCaller,
+      schedulesListCaller: vi.fn(async () => ({ schedules: [] })),
+      schedulesCreateCaller,
+    });
+    await rig.route.whenLoaded();
+
+    clickRunningAs(rig.root, 'add', { recipe_id: 'daily-brief' });
+    const form = settingsForm(rig.doc)!;
+    expect(form.innerHTML).toContain('Add another “Daily brief”');
+    expect(form.innerHTML).toContain('data-recued-config-editor-name');
+    // The owner names it and picks a cadence (the form reads both on confirm).
+    const nameBox = makeFakeEl('input');
+    nameBox.setAttribute('data-recued-config-editor-name', '');
+    (nameBox as unknown as { value: string }).value = ' Evening ';
+    form.appendChild(nameBox);
+    const cadence = makeFakeEl('select');
+    cadence.setAttribute('data-recued-config-editor-schedule', '');
+    (cadence as unknown as { value: string }).value = '0 9 * * 1-5';
+    form.appendChild(cadence);
+    confirmForm(form);
+
+    await vi.waitFor(() => expect(schedulesCreateCaller).toHaveBeenCalled());
+    expect(dishesCreateCaller).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief', publisher_id: 'recued-core', config_overlay: { limit: 30 }, name: 'Evening',
+    });
+    expect(schedulesCreateCaller).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief', publisher_id: 'recued-core', cron_expression: '0 9 * * 1-5', dish_id: 'dsh_evening',
+    });
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — a dish’s Settings save its settings in place; its name only when changed', async () => {
+    const work = dishOf({ dish_id: 'dsh_work', recipe_id: 'daily-brief', name: 'Work', config_overlay: { limit: 30 } });
+    const home = dishOf({ dish_id: 'dsh_home', recipe_id: 'daily-brief', is_default: false, name: 'Home', created_at: 2 });
+    const dishesUpdateCaller = vi.fn(async () => ({ dish: work }));
+    const rig = mountRoute({
+      body: true,
+      initialRecipeId: 'daily-brief',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', { variables: { limit: 25 } }),
+        })],
+      })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [work, home] })),
+      dishesUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+
+    clickRunningAs(rig.root, 'settings', { dish_id: 'dsh_work' });
+    let form = settingsForm(rig.doc)!;
+    expect(form.innerHTML).toContain('Settings of “Work”');
+    editSetting(form, 'limit', '45');
+    confirmForm(form);
+    await vi.waitFor(() => expect(dishesUpdateCaller).toHaveBeenCalledTimes(1));
+    expect(dishesUpdateCaller).toHaveBeenLastCalledWith({ dish_id: 'dsh_work', config_overlay: { limit: 45 } });
+
+    await vi.waitFor(() => expect(settingsForm(rig.doc)).toBeUndefined());
+    clickRunningAs(rig.root, 'settings', { dish_id: 'dsh_work' });
+    form = settingsForm(rig.doc)!;
+    const nameBox = makeFakeEl('input');
+    nameBox.setAttribute('data-recued-config-editor-name', '');
+    (nameBox as unknown as { value: string }).value = 'Office';
+    form.appendChild(nameBox);
+    confirmForm(form);
+    await vi.waitFor(() => expect(dishesUpdateCaller).toHaveBeenCalledTimes(2));
+    expect(dishesUpdateCaller).toHaveBeenLastCalledWith({ dish_id: 'dsh_work', config_overlay: { limit: 30 }, name: 'Office' });
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — Run once as this runs as the dish when it answers every question, else opens the dialog as it', async () => {
+    const recipeExecuteCaller = vi.fn<RecipeExecuteCaller>(async () => executeResponse());
+    const answered = dishOf({ dish_id: 'dsh_a', recipe_id: 'daily-brief', config_overlay: { topic: 'markets' } });
+    const blank = dishOf({ dish_id: 'dsh_b', recipe_id: 'daily-brief', is_default: false, name: 'Blank', created_at: 2 });
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeExecuteCaller,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', {
+            variables: { topic: { label: 'Topic', type: 'text' } } as RecipeDefinition['variables'],
+          }),
+        })],
+      })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [answered, blank] })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRunningAs(rig.root, 'run', { dish_id: 'dsh_a' });
+    await vi.waitFor(() => expect(recipeExecuteCaller).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief', config: {}, dish_id: 'dsh_a',
+    }));
+
+    // Blank holds no topic: the run dialog opens, running as Blank.
+    clickRunningAs(rig.root, 'run', { dish_id: 'dsh_b' });
+    expect(rig.route.runModal()?.dish_id).toBe('dsh_b');
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — Remove asks first: a remove the owner did not ask for removes nothing', async () => {
+    const dishesDeleteCaller = vi.fn(async () => ({ deleted: true as const }));
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', { variables: { limit: 25 } }),
+        })],
+      })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [dishOf({ dish_id: 'dsh_a', recipe_id: 'daily-brief' })] })),
+      dishesDeleteCaller,
+    });
+    await rig.route.whenLoaded();
+
+    clickRunningAs(rig.root, 'remove-confirm', { dish_id: 'dsh_a' });
+    await Promise.resolve();
+    expect(dishesDeleteCaller).not.toHaveBeenCalled();
+
+    clickRunningAs(rig.root, 'remove', { dish_id: 'dsh_a' });
+    expect(shellHtml(rig.root)).toContain('Its triggers and schedules go with it.');
+    clickRunningAs(rig.root, 'remove-confirm', { dish_id: 'dsh_a' });
+    await vi.waitFor(() => expect(dishesDeleteCaller).toHaveBeenCalledWith({ dish_id: 'dsh_a' }));
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — offers Switch on for a recipe nobody switched on: the form asks, then a dish with its settings', async () => {
+    const made = dishOf({ dish_id: 'dsh_new', config_overlay: { template: 'mtpl_1' } });
+    const dishesCreateCaller = vi.fn(async () => ({ dish: made }));
+    const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: { template: 'mtpl_1' } }));
+    const autoRunUpdateCaller = vi.fn();
+    const rig = mountRoute({
+      body: true,
       initialRecipeId: 'watch-mail',
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
         recipes: [recipeEntry('watch-mail', {
-          recipe: recipeDefinition('watch-mail', {
-            auto_run: { interval_ms: 60_000 },
-          }),
+          recipe: recipeDefinition('watch-mail', { auto_run: { interval_ms: 60_000 } }),
         })],
       })),
       autoRunListCaller: vi.fn(async () => ({ entries: [] })),
       autoRunUpdateCaller,
+      dishesListCaller: vi.fn(async () => ({ dishes: [] })),
+      dishesCreateCaller,
+      dishesDefaultsCaller,
     });
     await rig.route.whenLoaded();
 
-    let html = shellHtml(rig.root);
-    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:on"');
-    expect(html).toContain('>Arm auto-run</button>');
+    const html = shellHtml(rig.root);
+    expect(html).toContain('Not switched on. It runs every minute.');
+    expect(html).toContain(`${RUNNING_AS_ACTION_ATTR}="switch-on"`);
+    expect(html).not.toContain('toggle-auto-run');
 
-    clickRecipeAction(rig.root, 'toggle-auto-run:on', 'watch-mail');
-    expect(autoRunUpdateCaller).toHaveBeenCalledWith({
-      recipe_id: 'watch-mail',
-      enabled: true,
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'watch-mail' });
+    expect(dishesDefaultsCaller).toHaveBeenCalledWith({ recipe_id: 'watch-mail' });
+    const form = await vi.waitFor(() => {
+      const found = settingsForm(rig.doc);
+      expect(found).toBeDefined();
+      return found!;
     });
-    html = shellHtml(rig.root);
-    expect(html).toContain('Setting it to run on its own…');
-    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Pause auto-run'));
+    expect(form.innerHTML).toContain('Switch on “Daily brief”');
+    expect(form.innerHTML).toContain('It runs every minute.');
+
+    confirmForm(form);
+    await vi.waitFor(() => expect(dishesCreateCaller).toHaveBeenCalledWith({
+      recipe_id: 'watch-mail',
+      publisher_id: 'recued-core',
+      config_overlay: { template: 'mtpl_1' },
+    }));
+    // Switching a recipe on is a dish, never the timer's own rpc.
+    expect(autoRunUpdateCaller).not.toHaveBeenCalled();
 
     rig.route.dispose();
   });
 
-  it('offers Re-arm when an auto-run circuit is tripped', async () => {
+  it('D-319 — a dish whose timer the server stopped is On and Failing, and offers Start again', async () => {
+    const dishesUpdateCaller = vi.fn(async () => ({ dish: dishOf() }));
     const rig = mountRoute({
       initialRecipeId: 'watch-mail',
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
@@ -1145,17 +1370,22 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         })],
       })),
       autoRunListCaller: vi.fn(async () => ({
-        entries: [autoRunStatus('watch-mail', { auto_disabled: true })],
+        entries: [autoRunStatus('watch-mail', {
+          dish_id: 'dsh_watch', auto_disabled: true, last_failure_reason: 'The key was refused.',
+        })],
       })),
-      autoRunUpdateCaller: vi.fn(async () => ({
-        entry: autoRunStatus('watch-mail'),
-      })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [dishOf()] })),
+      dishesUpdateCaller,
     });
     await rig.route.whenLoaded();
 
     const html = shellHtml(rig.root);
-    expect(html).toContain('data-recued-recipes-action="toggle-auto-run:on"');
-    expect(html).toContain('>Re-arm auto-run</button>');
+    expect(html).toContain('Failing');
+    expect(html).toContain('The key was refused.');
+    expect(html).toContain(`${RUNNING_AS_ACTION_ATTR}="rearm" ${RUNNING_AS_DISH_ATTR}="dsh_watch"`);
+    clickRunningAs(rig.root, 'rearm', { dish_id: 'dsh_watch' });
+    // Switching the dish on again restarts what the server stopped.
+    expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_watch', enabled: true });
 
     rig.route.dispose();
   });
@@ -1244,83 +1474,84 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.dispose();
   });
 
-  it('keeps Config focusable, blocks duplicate reads, and reports a retryable failure', async () => {
-    const configRead = deferred<{ config_overlay: Record<string, unknown> }>();
-    const recipeConfigGetCaller = vi.fn(() => configRead.promise);
+  it('D-319 — Switch on reads what a first dish starts from once, busy meanwhile, and says so when it cannot', async () => {
+    const read = deferred<{ config_overlay: Record<string, unknown> }>();
+    const dishesDefaultsCaller = vi.fn(() => read.promise);
     const rig = mountRoute({
+      body: true,
       initialRecipeId: 'daily-brief',
-      recipeConfigGetCaller,
-      recipeConfigSetCaller: vi.fn(async () => ({ config_overlay: {} })),
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
         recipes: [recipeEntry('daily-brief', {
           recipe: recipeDefinition('daily-brief', {
             variables: { limit: 25 },
-          }),
+            event_triggers: [{ event: 'data.mail.**.created' }],
+          } as unknown as Partial<RecipeDefinition>),
         })],
       })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [] })),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf() })),
+      dishesDefaultsCaller,
     });
     await rig.route.whenLoaded();
 
-    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
-    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'daily-brief' });
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'daily-brief' });
+    expect(dishesDefaultsCaller).toHaveBeenCalledTimes(1);
+    const pending = shellHtml(rig.root).match(
+      /<button[^>]*data-recued-running-as-action="switch-on"[^>]*>[^<]*<\/button>/,
+    )?.[0] ?? '';
+    expect(pending).toContain('aria-disabled="true" aria-busy="true"');
+    expect(pending).toContain('Switching on…');
 
-    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(1);
-    const pendingButton = shellHtml(rig.root).match(
-      /<button type="button" class="recipes-button"[\s\S]*?data-recued-recipes-action="open-recipe-config"[\s\S]*?<\/button>/,
-    )?.[0];
-    expect(pendingButton).toContain('aria-disabled="true" aria-busy="true"');
-    expect(pendingButton).not.toContain(' disabled');
-    expect(pendingButton).toContain('Loading settings…');
-
-    configRead.reject(new Error('read failed'));
-    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading settings…'));
-    expect(shellHtml(rig.root)).toContain('>Config</button>');
+    read.reject(new Error('read failed'));
+    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Switching on…'));
     expect(shellHtml(rig.root)).toContain('role="alert"');
-    expect(shellHtml(rig.root)).toContain(
-      'load the settings: read failed. Try again.',
-    );
+    expect(shellHtml(rig.root)).toContain('Recued could not read what this recipe starts from: read failed');
+    expect(settingsForm(rig.doc)).toBeUndefined();
 
     rig.route.dispose();
   });
 
-  it('retires a Config read when the same recipe is reopened', async () => {
+  it('D-319 — a Switch on read retires when the recipe is left and reopened', async () => {
     const firstRead = deferred<{ config_overlay: Record<string, unknown> }>();
     const secondRead = deferred<{ config_overlay: Record<string, unknown> }>();
-    const recipeConfigGetCaller = vi.fn()
+    const dishesDefaultsCaller = vi.fn()
       .mockImplementationOnce(() => firstRead.promise)
       .mockImplementationOnce(() => secondRead.promise);
     const rig = mountRoute({
+      body: true,
       initialRecipeId: 'daily-brief',
-      recipeConfigGetCaller,
-      recipeConfigSetCaller: vi.fn(async () => ({ config_overlay: {} })),
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
         recipes: [recipeEntry('daily-brief', {
           recipe: recipeDefinition('daily-brief', {
             variables: { limit: 25 },
-          }),
+            event_triggers: [{ event: 'data.mail.**.created' }],
+          } as unknown as Partial<RecipeDefinition>),
         })],
       })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [] })),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf() })),
+      dishesDefaultsCaller,
     });
     await rig.route.whenLoaded();
 
-    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
-    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(1);
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'daily-brief' });
+    expect(dishesDefaultsCaller).toHaveBeenCalledTimes(1);
     rig.route.closeDetail();
     rig.route.openRecipe('daily-brief');
-    expect(shellHtml(rig.root)).toContain('>Config</button>');
-    expect(shellHtml(rig.root)).not.toContain('Loading settings…');
+    expect(shellHtml(rig.root)).not.toContain('Switching on…');
 
-    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
-    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(2);
-    firstRead.reject(new Error('stale read failed'));
-    await firstRead.promise.catch(() => undefined);
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'daily-brief' });
+    expect(dishesDefaultsCaller).toHaveBeenCalledTimes(2);
+    // The first read answers late: it opens nothing and says nothing.
+    firstRead.resolve({ config_overlay: {} });
+    await firstRead.promise;
     await Promise.resolve();
-    expect(shellHtml(rig.root)).toContain('Loading settings…');
-    expect(shellHtml(rig.root)).not.toContain('stale read failed');
+    expect(settingsForm(rig.doc)).toBeUndefined();
+    expect(shellHtml(rig.root)).toContain('Switching on…');
 
-    secondRead.reject(new Error('current read failed'));
-    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading settings…'));
-    expect(shellHtml(rig.root)).toContain('load the settings: current read failed');
+    secondRead.resolve({ config_overlay: {} });
+    await vi.waitFor(() => expect(settingsForm(rig.doc)).toBeDefined());
 
     rig.route.dispose();
   });
@@ -1357,6 +1588,8 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
       entry: {
         recipe_id: args.recipe_id,
         publisher_id: 'recued-core',
+        dish_id: 'dsh_close',
+        dish_name: '',
         recipe_name: 'Close action',
         interval_ms: 60_000,
         dynamic: false,
@@ -1428,6 +1661,8 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         entries: [{
           recipe_id: 'close-action',
           publisher_id: 'recued-core',
+          dish_id: 'dsh_close',
+          dish_name: '',
           recipe_name: 'Close action',
           interval_ms: 60_000,
           dynamic: false,
@@ -1444,8 +1679,6 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         }],
       })),
       autoRunUpdateCaller,
-      recipeConfigGetCaller: vi.fn(async () => ({ config_overlay: {} })),
-      recipeConfigSetCaller: vi.fn(async () => ({ config_overlay: {} })),
       recipeCatalogCaller: vi.fn(async () => ({
         status: 'ok' as const,
         rows: [
@@ -1486,13 +1719,13 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).not.toContain(`${RECIPES_ROUTE_RELATED_ROW_ATTR}="unrelated"`);
     expect(html).toContain('href="#recipes/reply-action"');
     expect(html).toContain(`${RECIPES_ROUTE_RUN_BUTTON_ATTR}="reply-action"`);
-    expect(html).toContain('data-recipe-id="reply-action">Config</button>');
+    // D-319 — a dish's settings are on its recipe's own page.
+    expect(html).not.toContain('data-recipe-id="reply-action">Config</button>');
     expect(html).toContain('data-recipe-id="reply-action">Schedule</button>');
     expect(html).toContain('href="#automation/reply-action"');
     expect(html).toContain('href="#logs/recipe/reply-action"');
     expect(html).toContain('aria-label="Open Reply action (reply-action)"');
     expect(html).toContain('aria-label="Run Reply action (reply-action)"');
-    expect(html).toContain('aria-label="Config Reply action (reply-action)"');
     expect(html).toContain('aria-label="Schedule Reply action (reply-action)"');
     expect(html).toContain(
       'aria-label="Automation for Reply action (reply-action)"',
@@ -1565,6 +1798,8 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         entries: [{
           recipe_id: 'close-action',
           publisher_id: 'recued-core',
+          dish_id: 'dsh_close',
+          dish_name: '',
           recipe_name: 'Close action',
           interval_ms: 60_000,
           dynamic: false,
@@ -1618,6 +1853,56 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     });
     expect(rig.route.hasInFlightWork()).toBe(false);
     expect(rig.route.inFlightWorkPrompt()).toBeNull();
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — a related recipe nobody switched on offers Switch on…, which opens its own page under the form', async () => {
+    const bundle = 'recued-core/pipeline-response';
+    const bundled = (recipe_id: string, name: string, withAutoRun = false) => recipeDefinition(recipe_id, {
+      metadata: {
+        name,
+        description: `${name} description`,
+        author: 'recued-core',
+        supported_platforms: [],
+        tags: ['bundle'],
+        recipe_bundle: bundle,
+      },
+      ...(withAutoRun ? { auto_run: { interval_ms: 60_000, dynamic: false } } : {}),
+    });
+    const autoRunUpdateCaller = vi.fn();
+    const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: {} }));
+    const rig = mountRoute({
+      body: true,
+      initialRecipeId: 'watch-pipeline',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('watch-pipeline', { recipe: bundled('watch-pipeline', 'Watch pipeline') }),
+          recipeEntry('close-action', { recipe: bundled('close-action', 'Close action', true) }),
+        ],
+      })),
+      autoRunListCaller: vi.fn(async () => ({ entries: [autoRunStatus('close-action')] })),
+      autoRunUpdateCaller,
+      dishesListCaller: vi.fn(async () => ({ dishes: [] })),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf({ recipe_id: 'close-action' }) })),
+      dishesDefaultsCaller,
+    });
+    await rig.route.whenLoaded();
+
+    const row = shellHtml(rig.root).match(
+      /<li data-recued-recipes-related-row="close-action">[\s\S]*?<\/li>/,
+    )?.[0] ?? '';
+    expect(row).toContain(`${RUNNING_AS_ACTION_ATTR}="switch-on" ${RUNNING_AS_RECIPE_ATTR}="close-action"`);
+    // Never a one-click switch that starts it on no settings.
+    expect(row).not.toContain('toggle-auto-run');
+    // Nobody switched it on: it is not "paused".
+    expect(row).toContain('auto-run (not switched on)');
+
+    clickRunningAs(rig.root, 'switch-on', { recipe_id: 'close-action' });
+    expect(rig.route.selectedRecipe()).toBe('close-action');
+    expect(dishesDefaultsCaller).toHaveBeenCalledWith({ recipe_id: 'close-action' });
+    await vi.waitFor(() => expect(settingsForm(rig.doc)?.innerHTML).toContain('Switch on “Close action”'));
+    expect(autoRunUpdateCaller).not.toHaveBeenCalled();
 
     rig.route.dispose();
   });

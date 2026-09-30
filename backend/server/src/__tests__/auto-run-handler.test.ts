@@ -1,5 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { CircuitBreakerState, RecipeDefinition } from '@recued/contracts';
+/** `auto_run.*` — one timer per dish (D-319).
+ *
+ *  A dish is an auto-run recipe switched on with its own settings, and it
+ *  runs on its own timer: `auto_run.list` has a row per dish (the main one
+ *  first) and one `dish_id: null` row for a recipe nobody switched on;
+ *  `auto_run.update` pauses or re-arms one dish's timer, or — naming only a
+ *  recipe — its main dish's, making it when there is none. Over the real
+ *  dish, timer and circuit stores; the live scheduler handle is a fake. */
+
+import Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RecipeDefinition } from '@recued/contracts';
 import type { AutoRunEntry } from '@recued/scheduler';
 import {
   listAutoRun,
@@ -7,19 +17,20 @@ import {
   updateAutoRun,
   type AutoRunRpcDeps,
 } from '../auto-run-handler.js';
-import Database from 'better-sqlite3';
-import type {
-  AutoRunSettingsStore,
-  CircuitBreakerStore,
-  ServerAutoRunHandle,
+import {
+  createAutoRunSettingsStore,
+  createCircuitBreakerStore,
+  type ServerAutoRunHandle,
 } from '../auto-run-scheduler.js';
+import { createDish, mainDishFor, type DishHandlerDeps } from '../dish-handler.js';
 import { createDishStore } from '../dish-store.js';
-import { createDishContextStore } from '../dish-context-store.js';
 import type { StoredRecipe } from '../types.js';
 
 const makeRecipe = (
   recipe_id: string,
-  autoRun: RecipeDefinition['auto_run'] | undefined = { interval_ms: 1_000 },
+  // `null` — a recipe that does not auto-run (an explicit `undefined` would
+  // take the default and make it one).
+  autoRun: RecipeDefinition['auto_run'] | null = { interval_ms: 1_000 },
   name?: string,
 ): RecipeDefinition => ({
   recipe_id,
@@ -35,10 +46,7 @@ const makeRecipe = (
   steps: [],
 } as unknown as RecipeDefinition);
 
-const storedRow = (
-  recipe: RecipeDefinition,
-  overrides: Partial<StoredRecipe> = {},
-): StoredRecipe => ({
+const storedRow = (recipe: RecipeDefinition): StoredRecipe => ({
   recipe_id: recipe.recipe_id,
   publisher_id: 'publisher',
   version: recipe.version,
@@ -47,51 +55,20 @@ const storedRow = (
   source: 'inline',
   installed_at: 0,
   pack_slug: null,
-  ...overrides,
 });
 
-const makeSettingsStore = (disabled = new Set<string>()) => {
-  const dishIds = new Map<string, string | null>();
-  const enabledByRecipe = new Map<string, boolean>(
-    [...disabled].map((id) => [id, false]),
-  );
-  return {
-    isEnabled: vi.fn((id: string, defaultEnabled = true) =>
-      enabledByRecipe.get(id) ?? defaultEnabled),
-    setEnabled: vi.fn((id: string, enabled: boolean) => {
-      enabledByRecipe.set(id, enabled);
-    }),
-    listDisabled: vi.fn(() => [...enabledByRecipe]
-      .filter(([, enabled]) => !enabled)
-      .map(([id]) => id)),
-    getDishId: vi.fn((id: string) => dishIds.get(id) ?? null),
-    setDishId: vi.fn((
-      id: string,
-      dish_id: string | null,
-      defaultEnabled = true,
-    ) => {
-      dishIds.set(id, dish_id);
-      if (!enabledByRecipe.has(id)) enabledByRecipe.set(id, defaultEnabled);
-    }),
-  } satisfies AutoRunSettingsStore;
-};
-
-const makeCircuitStore = () => {
-  const rows = new Map<string, CircuitBreakerState>();
-  return {
-    rows,
-    store: {
-      list: vi.fn(() => [...rows.values()]),
-      get: vi.fn((id: string) => rows.get(id) ?? null),
-      set: vi.fn((row: CircuitBreakerState) => {
-        rows.set(row.recipe_id, row);
-      }),
-      clear: vi.fn((id: string) => {
-        rows.delete(id);
-      }),
-    } satisfies CircuitBreakerStore,
-  };
-};
+const liveEntry = (dish_id: string, recipe_id: string, over: Partial<AutoRunEntry> = {}): AutoRunEntry => ({
+  recipe_id,
+  dish_id,
+  publisher_id: 'publisher',
+  interval_ms: 1_000,
+  dynamic: false,
+  next_run_at: 0,
+  consecutive_failures: 0,
+  auto_disabled: false,
+  process_id: 'p',
+  ...over,
+});
 
 const makeHandle = (roster = new Map<string, AutoRunEntry>()) => ({
   roster,
@@ -99,449 +76,203 @@ const makeHandle = (roster = new Map<string, AutoRunEntry>()) => ({
   resetCircuit: vi.fn(),
 } as unknown as ServerAutoRunHandle);
 
-const makeDeps = (
-  rows: StoredRecipe[],
-  overrides: Partial<AutoRunRpcDeps> = {},
-): AutoRunRpcDeps => {
-  const circuit = makeCircuitStore();
+let db: Database.Database;
+let dishDeps: DishHandlerDeps;
+
+beforeEach(() => {
+  db = new Database(':memory:');
+  let now = 1_000;
+  dishDeps = { store: createDishStore(db), now: () => (now += 1) };
+});
+afterEach(() => { db.close(); });
+
+const makeDeps = (rows: StoredRecipe[], overrides: Partial<AutoRunRpcDeps> = {}): AutoRunRpcDeps => {
   const handle = makeHandle();
   return {
-    recipeStore: {
-      listStored: vi.fn(() => rows),
-    } as unknown as AutoRunRpcDeps['recipeStore'],
-    settingsStore: makeSettingsStore(),
-    circuitStore: circuit.store,
+    recipeStore: { listStored: vi.fn(() => rows) } as unknown as AutoRunRpcDeps['recipeStore'],
+    settingsStore: createAutoRunSettingsStore(db),
+    circuitStore: createCircuitBreakerStore(db),
     getHandle: vi.fn(() => handle),
+    dishStore: dishDeps.store,
+    mainDish: (input) => mainDishFor(dishDeps, input),
     eventBus: { emit: vi.fn() } as unknown as AutoRunRpcDeps['eventBus'],
     ...overrides,
   };
 };
 
-describe('auto-run rpc handlers', () => {
-  it('lists merged definitional, settings, persisted circuit, and live roster state', () => {
+describe('auto_run.list — a row per dish’s timer', () => {
+  it('merges each dish’s timer, circuit and live roster; the main dish first; a recipe with no dish is one row, off', () => {
     const unnamed = makeRecipe('unnamed', { interval_ms: 2_000, dynamic: true });
     delete (unnamed as { metadata?: unknown }).metadata;
-    const manual = makeRecipe('manual');
-    delete (manual as { auto_run?: unknown }).auto_run;
-    const disabled = new Set(['disabled']);
-    const settingsStore = makeSettingsStore(disabled);
-    const { rows: circuitRows, store: circuitStore } = makeCircuitStore();
-    circuitRows.set('disabled', {
-      recipe_id: 'disabled',
-      consecutive_failures: 3,
-      auto_disabled: true,
-      last_failure_at: 11,
-      last_failure_reason: 'persisted',
-    });
-    circuitRows.set('live-tripped', {
-      recipe_id: 'live-tripped',
-      consecutive_failures: 2,
-      auto_disabled: false,
-      last_failure_at: 22,
-      last_failure_reason: 'stored reason',
-    });
-    const handle = makeHandle(new Map([
-      ['live-tripped', {
-        recipe_id: 'live-tripped',
-        publisher_id: 'publisher',
-        interval_ms: 1_000,
-        dynamic: false,
-        next_run_at: 100,
-        last_started_at: 90,
-        last_finished_at: 95,
-        consecutive_failures: 9,
-        auto_disabled: true,
-        process_id: 'p-live',
-      }],
-    ]));
+    const manual = makeRecipe('manual', null);
+    const main = createDish(dishDeps, { recipe_id: 'r', config_overlay: { channel: '#main' } }).dish;
+    const other = createDish(dishDeps, { recipe_id: 'r', name: 'Other', config_overlay: { channel: '#other' } }).dish;
+    const settingsStore = createAutoRunSettingsStore(db);
+    settingsStore.setEnabled(main.dish_id, 'r', true);
+    const circuitStore = createCircuitBreakerStore(db);
+    circuitStore.set({ dish_id: other.dish_id, recipe_id: 'r', consecutive_failures: 3, auto_disabled: true,
+      last_failure_at: 11, last_failure_reason: 'persisted' });
+    const handle = makeHandle(new Map([[main.dish_id, liveEntry(main.dish_id, 'r', {
+      next_run_at: 100, last_started_at: 90, last_finished_at: 95,
+    })]]));
     const deps = makeDeps([
-      storedRow(makeRecipe('enabled', { interval_ms: 1_000 }, 'Enabled Recipe')),
-      storedRow(makeRecipe('disabled')),
-      storedRow(makeRecipe('live-tripped')),
+      storedRow(makeRecipe('r', { interval_ms: 1_000 }, 'The Recipe')),
       storedRow(unnamed),
       storedRow(manual),
-      {
-        ...storedRow(makeRecipe('bad-json')),
-        recipe_id: 'bad-json',
-        recipe_json: '{not json',
-      },
-    ], {
-      settingsStore,
-      circuitStore,
-      getHandle: vi.fn(() => handle),
-    });
+      { ...storedRow(makeRecipe('bad-json')), recipe_json: '{not json' },
+    ], { settingsStore, circuitStore, getHandle: vi.fn(() => handle) });
 
     expect(listAutoRun(deps).entries).toEqual([
       expect.objectContaining({
-        recipe_id: 'enabled',
-        recipe_name: 'Enabled Recipe',
-        enabled: true,
-        auto_disabled: false,
-        consecutive_failures: 0,
-        last_failure_at: null,
-        last_failure_reason: null,
-        next_run_at: null,
-        last_started_at: null,
-        last_finished_at: null,
+        recipe_id: 'r', dish_id: main.dish_id, dish_name: '', recipe_name: 'The Recipe', enabled: true,
+        config_overlay: { channel: '#main' }, next_run_at: 100, last_started_at: 90, last_finished_at: 95,
+        auto_disabled: false, consecutive_failures: 0,
       }),
       expect.objectContaining({
-        recipe_id: 'disabled',
-        enabled: false,
-        auto_disabled: true,
-        consecutive_failures: 3,
-        last_failure_at: 11,
-        last_failure_reason: 'persisted',
+        recipe_id: 'r', dish_id: other.dish_id, dish_name: 'Other', enabled: false,
+        config_overlay: { channel: '#other' }, auto_disabled: true, consecutive_failures: 3,
+        last_failure_at: 11, last_failure_reason: 'persisted', next_run_at: null,
       }),
       expect.objectContaining({
-        recipe_id: 'live-tripped',
-        auto_disabled: true,
-        consecutive_failures: 9,
-        last_failure_at: 22,
-        last_failure_reason: 'stored reason',
-        next_run_at: 100,
-        last_started_at: 90,
-        last_finished_at: 95,
-      }),
-      expect.objectContaining({
-        recipe_id: 'unnamed',
-        recipe_name: null,
-        interval_ms: 2_000,
-        dynamic: true,
+        recipe_id: 'unnamed', dish_id: null, dish_name: null, recipe_name: null, enabled: false,
+        interval_ms: 2_000, dynamic: true, config_overlay: {},
       }),
     ]);
   });
 
-  it('uses null live fields when the scheduler handle is unavailable or missing an entry', () => {
-    const deps = makeDeps([
-      storedRow(makeRecipe('r1')),
-      storedRow(makeRecipe('r2')),
-    ], {
-      getHandle: vi.fn(() => undefined),
-    });
-
+  it('⛔ installing starts nothing: a recipe with no dish lists off, whatever `default_enabled` says', () => {
+    const deps = makeDeps([storedRow(makeRecipe('eager', { interval_ms: 900_000, default_enabled: true }))]);
     expect(listAutoRun(deps).entries).toEqual([
-      expect.objectContaining({
-        recipe_id: 'r1',
-        next_run_at: null,
-        last_started_at: null,
-        last_finished_at: null,
-      }),
-      expect.objectContaining({
-        recipe_id: 'r2',
-        next_run_at: null,
-        last_started_at: null,
-        last_finished_at: null,
-      }),
+      expect.objectContaining({ recipe_id: 'eager', dish_id: null, enabled: false, next_run_at: null }),
     ]);
   });
 
-  it('lists a default-disabled definition as paused until explicit owner enable', () => {
-    const deps = makeDeps([
-      storedRow(makeRecipe('owner-armed', {
-        interval_ms: 900_000,
-        default_enabled: false,
-      })),
-    ]);
-
+  it('uses null live fields when the scheduler handle is unavailable', () => {
+    const dish = createDish(dishDeps, { recipe_id: 'r' }).dish;
+    const deps = makeDeps([storedRow(makeRecipe('r'))], { getHandle: vi.fn(() => undefined) });
     expect(listAutoRun(deps).entries).toEqual([
-      expect.objectContaining({
-        recipe_id: 'owner-armed',
-        enabled: false,
-        next_run_at: null,
-      }),
+      expect.objectContaining({ dish_id: dish.dish_id, next_run_at: null, last_started_at: null, last_finished_at: null }),
     ]);
   });
+});
 
+describe('auto_run.update — one dish’s timer', () => {
   it.each([
-    [{}, 'recipe_id is required'],
-    [{ recipe_id: 123, enabled: true }, 'recipe_id is required'],
-    [{ recipe_id: 'r', enabled: 'yes' }, 'enabled must be a boolean'],
-  ])('rejects invalid update body %#', async (body, message) => {
+    [{}, 'bad_request', 'dish_id (or recipe_id) is required'],
+    [{ recipe_id: 123, enabled: true }, 'bad_request', 'dish_id (or recipe_id) is required'],
+    [{ recipe_id: 'r', enabled: 'yes' }, 'bad_request', 'enabled must be a boolean'],
+    [{ recipe_id: 'r', config_overlay: 'nope' }, 'bad_request', 'config_overlay must be an object'],
+  ])('rejects invalid update body %#', async (body, code, message) => {
     const deps = makeDeps([storedRow(makeRecipe('r'))]);
-
-    await expect(updateAutoRun(deps, body)).rejects.toMatchObject({
-      code: 'bad_request',
-      message,
-    });
+    await expect(updateAutoRun(deps, body)).rejects.toMatchObject({ code, message });
   });
 
-  it('rejects unknown and non-auto-run recipes', async () => {
-    const manual = makeRecipe('manual');
-    delete (manual as { auto_run?: unknown }).auto_run;
-    const deps = makeDeps([storedRow(manual)]);
-
-    await expect(updateAutoRun(deps, { recipe_id: 'missing', enabled: true }))
-      .rejects.toMatchObject({ code: 'not_found' });
-    await expect(updateAutoRun(deps, { recipe_id: 'manual', enabled: true }))
-      .rejects.toMatchObject({ code: 'not_found' });
+  it('rejects an unknown dish, an unknown recipe and a recipe without auto_run', async () => {
+    const deps = makeDeps([storedRow(makeRecipe('manual', null))]);
+    await expect(updateAutoRun(deps, { dish_id: 'dsh_missing', enabled: true })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(updateAutoRun(deps, { recipe_id: 'missing', enabled: true })).rejects.toMatchObject({ code: 'not_found' });
+    await expect(updateAutoRun(deps, { recipe_id: 'manual', enabled: true })).rejects.toMatchObject({ code: 'not_found' });
+    const dish = createDish(dishDeps, { recipe_id: 'manual' }).dish;
+    await expect(updateAutoRun(deps, { dish_id: dish.dish_id, enabled: true })).rejects.toMatchObject({ code: 'not_found' });
   });
 
-  it('persists disable, refreshes the roster, emits a rule change, and leaves circuit state intact', async () => {
-    const handle = makeHandle();
-    const settingsStore = makeSettingsStore();
-    const { store: circuitStore } = makeCircuitStore();
-    const eventBus = { emit: vi.fn() };
-    const deps = makeDeps([storedRow(makeRecipe('r'))], {
-      settingsStore,
-      circuitStore,
-      getHandle: vi.fn(() => handle),
-      eventBus: eventBus as unknown as AutoRunRpcDeps['eventBus'],
-    });
-
-    await updateAutoRun(deps, { recipe_id: 'r', enabled: false });
-
-    expect(settingsStore.setEnabled).toHaveBeenCalledWith('r', false);
-    expect(handle.refreshRoster).toHaveBeenCalledTimes(1);
-    expect(eventBus.emit).toHaveBeenCalledWith({
-      kind: 'automation_rule_changed',
-      mechanism: 'auto_run',
-    });
-    expect(circuitStore.clear).not.toHaveBeenCalled();
+  it('⛔ refuses settings on a timer: they are its dish’s', async () => {
+    const dish = createDish(dishDeps, { recipe_id: 'r' }).dish;
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+    await expect(updateAutoRun(deps, { dish_id: dish.dish_id, config_overlay: { a: 1 } }))
+      .rejects.toThrow(/no settings of its own/);
   });
 
-  it('clears persisted circuit state before roster refresh and resets a tripped live circuit', async () => {
+  it('pauses one dish’s timer, refreshes the roster, emits a rule change, and leaves the circuit and the other dish alone', async () => {
+    const work = createDish(dishDeps, { recipe_id: 'r' }).dish;
+    const home = createDish(dishDeps, { recipe_id: 'r', name: 'Home' }).dish;
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+    deps.settingsStore.setEnabled(work.dish_id, 'r', true);
+    deps.settingsStore.setEnabled(home.dish_id, 'r', true);
+    deps.circuitStore.set({ dish_id: work.dish_id, recipe_id: 'r', consecutive_failures: 2, auto_disabled: false });
+
+    const { entry } = await updateAutoRun(deps, { dish_id: work.dish_id, enabled: false });
+
+    expect(entry).toMatchObject({ dish_id: work.dish_id, enabled: false });
+    expect(deps.settingsStore.isEnabled(work.dish_id)).toBe(false);
+    expect(deps.settingsStore.isEnabled(home.dish_id)).toBe(true);
+    expect(deps.circuitStore.get(work.dish_id)?.consecutive_failures).toBe(2);
+    expect(deps.getHandle()!.refreshRoster).toHaveBeenCalledTimes(1);
+    expect(deps.eventBus!.emit).toHaveBeenCalledWith({ kind: 'automation_rule_changed', mechanism: 'auto_run' });
+  });
+
+  it('re-arming clears the dish’s persisted circuit before the roster refresh and resets a tripped live one', async () => {
+    const dish = createDish(dishDeps, { recipe_id: 'r' }).dish;
     const calls: string[] = [];
-    const handle = makeHandle(new Map([
-      ['r', {
-        recipe_id: 'r',
-        publisher_id: 'publisher',
-        interval_ms: 1_000,
-        dynamic: false,
-        next_run_at: 0,
-        consecutive_failures: 1,
-        auto_disabled: true,
-        process_id: 'p',
-      }],
-    ]));
-    handle.refreshRoster = vi.fn(async () => {
-      calls.push('refresh');
-    });
-    handle.resetCircuit = vi.fn(() => {
-      calls.push('reset');
-    });
-    const { store: circuitStore } = makeCircuitStore();
-    circuitStore.clear = vi.fn((id: string) => {
-      calls.push(`clear:${id}`);
-    });
-    const deps = makeDeps([storedRow(makeRecipe('r'))], {
-      circuitStore,
-      getHandle: vi.fn(() => handle),
-    });
+    const handle = makeHandle(new Map([[dish.dish_id, liveEntry(dish.dish_id, 'r', { consecutive_failures: 1, auto_disabled: true })]]));
+    handle.refreshRoster = vi.fn(async () => { calls.push('refresh'); });
+    handle.resetCircuit = vi.fn((key: string) => { calls.push(`reset:${key}`); });
+    const circuitStore = createCircuitBreakerStore(db);
+    const clear = circuitStore.clear.bind(circuitStore);
+    circuitStore.clear = vi.fn((key: string) => { calls.push(`clear:${key}`); clear(key); });
+    const deps = makeDeps([storedRow(makeRecipe('r'))], { circuitStore, getHandle: vi.fn(() => handle) });
 
-    await updateAutoRun(deps, { recipe_id: 'r', enabled: true });
+    await updateAutoRun(deps, { dish_id: dish.dish_id, enabled: true });
 
-    expect(circuitStore.clear).toHaveBeenCalledWith('r');
-    expect(handle.resetCircuit).toHaveBeenCalledWith('r');
-    expect(calls).toEqual(['clear:r', 'reset', 'refresh']);
+    expect(calls).toEqual([`clear:${dish.dish_id}`, `reset:${dish.dish_id}`, 'refresh']);
   });
 
-  it('resets a tripped persisted circuit even when the live roster is healthy', async () => {
-    const handle = makeHandle(new Map([
-      ['r', {
-        recipe_id: 'r',
-        publisher_id: 'publisher',
-        interval_ms: 1_000,
-        dynamic: false,
-        next_run_at: 0,
-        consecutive_failures: 0,
-        auto_disabled: false,
-        process_id: 'p',
-      }],
-    ]));
-    const { rows: circuitRows, store: circuitStore } = makeCircuitStore();
-    circuitRows.set('r', {
-      recipe_id: 'r',
-      consecutive_failures: 3,
-      auto_disabled: true,
-    });
-    const deps = makeDeps([storedRow(makeRecipe('r'))], {
-      circuitStore,
-      getHandle: vi.fn(() => handle),
-    });
+  it('resets a tripped persisted circuit even when the live roster is healthy; a healthy one is cleared, not reset', async () => {
+    const tripped = createDish(dishDeps, { recipe_id: 'r' }).dish;
+    const healthy = createDish(dishDeps, { recipe_id: 'r', name: 'Healthy' }).dish;
+    const handle = makeHandle(new Map([[tripped.dish_id, liveEntry(tripped.dish_id, 'r')]]));
+    const deps = makeDeps([storedRow(makeRecipe('r'))], { getHandle: vi.fn(() => handle) });
+    deps.circuitStore.set({ dish_id: tripped.dish_id, recipe_id: 'r', consecutive_failures: 3, auto_disabled: true });
 
-    await updateAutoRun(deps, { recipe_id: 'r', enabled: true });
+    await updateAutoRun(deps, { dish_id: tripped.dish_id, enabled: true });
+    expect(handle.resetCircuit).toHaveBeenCalledWith(tripped.dish_id);
+    expect(deps.circuitStore.get(tripped.dish_id)).toBeNull();
 
-    expect(circuitStore.clear).toHaveBeenCalledWith('r');
-    expect(handle.resetCircuit).toHaveBeenCalledWith('r');
+    await updateAutoRun(deps, { dish_id: healthy.dish_id, enabled: true });
+    expect(handle.resetCircuit).toHaveBeenCalledTimes(1);
   });
 
-  it('clears but does not reset a healthy enabled recipe', async () => {
-    const handle = makeHandle();
-    const { store: circuitStore } = makeCircuitStore();
-    const deps = makeDeps([storedRow(makeRecipe('r'))], {
-      circuitStore,
-      getHandle: vi.fn(() => handle),
-    });
+  it('persists and returns an entry when switching on before the scheduler handle exists', async () => {
+    const dish = createDish(dishDeps, { recipe_id: 'r' }).dish;
+    const deps = makeDeps([storedRow(makeRecipe('r'))], { getHandle: vi.fn(() => undefined) });
+    await expect(updateAutoRun(deps, { dish_id: dish.dish_id, enabled: true }))
+      .resolves.toEqual({ entry: expect.objectContaining({ dish_id: dish.dish_id, enabled: true }) });
+  });
+});
 
-    await updateAutoRun(deps, { recipe_id: 'r', enabled: true });
-
-    expect(circuitStore.clear).toHaveBeenCalledWith('r');
-    expect(handle.resetCircuit).not.toHaveBeenCalled();
+describe('auto_run.update naming only a recipe — its main dish', () => {
+  it('with no dish, switching on makes the main dish from the settings given, and its timer on', async () => {
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+    const { entry } = await updateAutoRun(deps, { recipe_id: 'r', enabled: true, config_overlay: { stripe: 'primary' } });
+    const main = dishDeps.store.getDefault('r')!;
+    expect(main).toMatchObject({ config_overlay: { stripe: 'primary' }, enabled: true, publisher_id: 'publisher' });
+    expect(entry).toMatchObject({ dish_id: main.dish_id, enabled: true, config_overlay: { stripe: 'primary' } });
+    expect(deps.settingsStore.isEnabled(main.dish_id)).toBe(true);
   });
 
-  it('persists and returns an entry when enabling before the scheduler handle exists', async () => {
-    const settingsStore = makeSettingsStore();
-    const deps = makeDeps([storedRow(makeRecipe('r'))], {
-      settingsStore,
-      getHandle: vi.fn(() => undefined),
-    });
-
-    await expect(updateAutoRun(deps, { recipe_id: 'r', enabled: true }))
-      .resolves.toEqual({
-        entry: expect.objectContaining({
-          recipe_id: 'r',
-          enabled: true,
-        }),
-      });
-    expect(settingsStore.setEnabled).toHaveBeenCalledWith('r', true);
+  it('acts on the main dish that exists — and refuses settings that are not its', async () => {
+    const main = createDish(dishDeps, { recipe_id: 'r', config_overlay: { a: 1 } }).dish;
+    createDish(dishDeps, { recipe_id: 'r', name: 'Other' });
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+    const { entry } = await updateAutoRun(deps, { recipe_id: 'r', enabled: true });
+    expect(entry.dish_id).toBe(main.dish_id);
+    await expect(updateAutoRun(deps, { recipe_id: 'r', enabled: true, config_overlay: { a: 2 } }))
+      .rejects.toThrow(/Settings belong to the dish/);
   });
 
+  it('a server that keeps no dishes cannot switch a recipe on', async () => {
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+    delete (deps as { mainDish?: unknown }).mainDish;
+    await expect(updateAutoRun(deps, { recipe_id: 'r', enabled: true })).rejects.toMatchObject({ code: 'not_configured' });
+  });
+});
+
+describe('handler slice', () => {
   it('only creates a handler slice when dependencies are available', () => {
     expect(makeAutoRunHandlers(undefined)).toBeUndefined();
     expect(makeAutoRunHandlers(makeDeps([]))?.methods).toEqual([
       'auto_run.list',
       'auto_run.update',
     ]);
-  });
-});
-
-describe('auto-run config — managed immutable config dish (D-179)', () => {
-  const makeConfigDeps = (
-    recipe_id = 'r',
-    autoRun: RecipeDefinition['auto_run'] = { interval_ms: 1_000 },
-  ) => {
-    const db = new Database(':memory:');
-    const dishStore = createDishStore(db);
-    const dishContextStore = createDishContextStore(db);
-    const deps = makeDeps([storedRow(makeRecipe(recipe_id, autoRun))], {
-      dishStore,
-      dishContextStore,
-    });
-    return { db, dishStore, dishContextStore, deps };
-  };
-
-  it('mints a managed config dish on first config + returns its overlay', async () => {
-    const { deps, dishStore } = makeConfigDeps();
-    const { entry } = await updateAutoRun(deps, {
-      recipe_id: 'r',
-      config_overlay: { threshold: 30 },
-    });
-    const dishId = deps.settingsStore.getDishId('r');
-    expect(dishId).not.toBeNull();
-    expect(dishStore.get(dishId!)).toMatchObject({
-      recipe_id: 'r',
-      config_overlay: { threshold: 30 },
-      is_default: false,
-      enabled: true,
-      managed_by_auto_run: 'r',
-    });
-    expect(entry.config_overlay).toEqual({ threshold: 30 });
-  });
-
-  it('a config change mints a NEW dish + dissolves the prior (+ its snapshot)', async () => {
-    const { deps, dishStore, dishContextStore } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { threshold: 30 } });
-    const first = deps.settingsStore.getDishId('r')!;
-    dishContextStore.set(first, { step_a: 1 });
-
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { threshold: 50 } });
-    const second = deps.settingsStore.getDishId('r')!;
-    expect(second).not.toBe(first); // one dish_id = one config
-    expect(dishStore.get(first)).toBeNull(); // prior dissolved, never mutated
-    expect(dishContextStore.get(first)).toBeNull(); // + its continuity snapshot
-    expect(dishStore.get(second)).toMatchObject({ config_overlay: { threshold: 50 } });
-  });
-
-  it('an identical overlay is a no-op — no churn (same dish_id, key order aside)', async () => {
-    const { deps, dishStore } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { a: 1, b: 2 } });
-    const first = deps.settingsStore.getDishId('r')!;
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { b: 2, a: 1 } });
-    expect(deps.settingsStore.getDishId('r')).toBe(first);
-    expect(dishStore.list()).toHaveLength(1);
-  });
-
-  it('an empty overlay clears config (dish_id null, prior dissolved)', async () => {
-    const { deps, dishStore } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { threshold: 30 } });
-    const first = deps.settingsStore.getDishId('r')!;
-    const { entry } = await updateAutoRun(deps, { recipe_id: 'r', config_overlay: {} });
-    expect(deps.settingsStore.getDishId('r')).toBeNull();
-    expect(dishStore.get(first)).toBeNull();
-    expect(entry.config_overlay).toEqual({});
-  });
-
-  it('first resume of a default-disabled recipe configures then explicitly enables it', async () => {
-    const { deps } = makeConfigDeps('owner-armed', {
-      interval_ms: 900_000,
-      default_enabled: false,
-    });
-    const { entry } = await updateAutoRun(deps, {
-      recipe_id: 'owner-armed',
-      enabled: true,
-      config_overlay: { stripe: 'stripe-primary' },
-    });
-    expect(deps.settingsStore.setDishId).toHaveBeenCalledWith(
-      'owner-armed',
-      expect.any(String),
-      false,
-    );
-    expect(deps.settingsStore.setEnabled).toHaveBeenCalledWith('owner-armed', true);
-    expect(entry.enabled).toBe(true);
-    expect(entry.config_overlay).toEqual({ stripe: 'stripe-primary' });
-  });
-
-  it('a config-only edit omits enabled (no enable-state churn)', async () => {
-    const { deps } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { threshold: 30 } });
-    expect(deps.settingsStore.setEnabled).not.toHaveBeenCalled();
-  });
-
-  it('configuring a default-disabled recipe does not arm it implicitly', async () => {
-    const { deps } = makeConfigDeps('owner-armed', {
-      interval_ms: 900_000,
-      default_enabled: false,
-    });
-    const { entry } = await updateAutoRun(deps, {
-      recipe_id: 'owner-armed',
-      config_overlay: { stripe: 'stripe-primary' },
-    });
-
-    expect(deps.settingsStore.setDishId).toHaveBeenCalledWith(
-      'owner-armed',
-      expect.any(String),
-      false,
-    );
-    expect(deps.settingsStore.setEnabled).not.toHaveBeenCalled();
-    expect(entry.enabled).toBe(false);
-  });
-
-  it('rejects a non-object config_overlay', async () => {
-    const { deps } = makeConfigDeps();
-    await expect(updateAutoRun(deps, {
-      recipe_id: 'r',
-      config_overlay: 'nope',
-    })).rejects.toThrow(/config_overlay must be an object/);
-  });
-
-  it('a NESTED value re-sent in different key order is a no-op (deep canonical, no churn)', async () => {
-    const { deps, dishStore } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { filter: { a: 1, b: 2 } } });
-    const first = deps.settingsStore.getDishId('r')!;
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { filter: { b: 2, a: 1 } } });
-    expect(deps.settingsStore.getDishId('r')).toBe(first);
-    expect(dishStore.list()).toHaveLength(1);
-  });
-
-  it('an empty overlay clears a STALE dish pointer (dish deleted out-of-band)', async () => {
-    const { deps, dishStore } = makeConfigDeps();
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: { threshold: 30 } });
-    const stale = deps.settingsStore.getDishId('r')!;
-    // Simulate out-of-band deletion (e.g. uninstall) leaving the pointer
-    // dangling; an empty clear must still drop it or fires dispatch as a
-    // dead dish.
-    dishStore.delete(stale);
-    await updateAutoRun(deps, { recipe_id: 'r', config_overlay: {} });
-    expect(deps.settingsStore.getDishId('r')).toBeNull();
   });
 });

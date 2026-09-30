@@ -35,7 +35,8 @@ export type PreapprovalJson = null | boolean | number | string
 export type PreapprovalActivation =
   | { kind: 'one_shot'; run_at: number; time_zone: string }
   | { kind: 'next_schedule'; schedule_id: string; expected_revision: number }
-  | { kind: 'next_auto_run'; recipe_id: string; publisher_id: string; expected_revision: number }
+  /** D-319 — the next run of one dish's auto-run timer. */
+  | { kind: 'next_auto_run'; recipe_id: string; publisher_id: string; dish_id: string; expected_revision: number }
   | { kind: 'next_trigger'; trigger_id: string; expected_revision: number };
 export interface PreparePreapproval {
   idempotency_key: string;
@@ -274,8 +275,9 @@ export const parsePreapprovalActivation = (value: unknown): PreapprovalActivatio
     return { kind, schedule_id: string(row.schedule_id), expected_revision: integer(row.expected_revision) };
   }
   if (kind === 'next_auto_run') {
-    const row = closed(value, ['kind', 'recipe_id', 'publisher_id', 'expected_revision']);
-    return { kind, recipe_id: string(row.recipe_id), publisher_id: string(row.publisher_id), expected_revision: integer(row.expected_revision) };
+    const row = closed(value, ['kind', 'recipe_id', 'publisher_id', 'dish_id', 'expected_revision']);
+    return { kind, recipe_id: string(row.recipe_id), publisher_id: string(row.publisher_id), dish_id: string(row.dish_id),
+      expected_revision: integer(row.expected_revision) };
   }
   if (kind === 'next_trigger') {
     const row = closed(value, ['kind', 'trigger_id', 'expected_revision']);

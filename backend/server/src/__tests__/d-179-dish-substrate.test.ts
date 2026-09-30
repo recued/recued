@@ -7,10 +7,14 @@
  *    2. `dish-context-store` — snapshot round-trip + corrupt-row
  *       degradation to first-run semantics.
  *    3. `dish-handler` — rpc validation (lifecycle fields rejected when
- *       malformed), default-dish conflict mapping, delete clearing the
- *       continuity snapshot.
+ *       malformed), the main dish, delete clearing the continuity snapshot.
  *
- *  Spec: D-179 (RATIFIED 2026-06-12).
+ *  D-319 — a dish is a recipe switched on: the first is its main dish, a
+ *  schedule or trigger belongs to a dish (the main one when it names none)
+ *  and has no settings of its own, and a run as a dish takes its values
+ *  under the run's own.
+ *
+ *  Spec: D-179 (RATIFIED 2026-06-12), D-319.
  */
 
 import Database from 'better-sqlite3';
@@ -22,12 +26,14 @@ import { createDishContextStore } from '../dish-context-store.js';
 import {
   createDish,
   deleteDish,
-  getRecipeConfig,
+  dishDefaults,
   listDishes,
-  setRecipeConfig,
+  mainDishFor,
   updateDish,
   type DishHandlerDeps,
 } from '../dish-handler.js';
+import type { DishAutomation } from '../dish-automation.js';
+import { mergeRecipeConfigLayers } from '../recipe-effective-config.js';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -136,6 +142,18 @@ describe('dish-context-store', () => {
 });
 
 describe('dish-handler', () => {
+  /** What each change told the rows that follow a dish (D-319). */
+  const recorder = () => {
+    const calls: string[] = [];
+    const automation: DishAutomation = {
+      created: (d, opts) => { calls.push(`created ${d.dish_id} switchOn=${opts.switchOn}`); },
+      switched: (d) => { calls.push(`switched ${d.dish_id} ${d.enabled ? 'on' : 'off'}`); },
+      settingsChanged: (d) => { calls.push(`settings ${d.dish_id}`); },
+      deleted: (d) => { calls.push(`deleted ${d.dish_id}`); },
+      touched: () => { calls.push('touched'); },
+    };
+    return { calls, automation };
+  };
   const makeDeps = (): DishHandlerDeps & { store: DishStore } => {
     const db = makeDb();
     return {
@@ -145,25 +163,30 @@ describe('dish-handler', () => {
     };
   };
 
-  it('creates with defaults and lists by recipe', async () => {
+  it('the first dish of a recipe is its main one; the next is not', async () => {
     const deps = makeDeps();
-    const { dish: created } = createDish(deps, {
-      recipe_id: 'recipe-a',
-      name: 'repo: x',
-      config_overlay: { repo_dir: '/x' },
-    });
-    expect(created.dish_id.startsWith('dsh_')).toBe(true);
-    expect(created.enabled).toBe(true);
-    expect(created.is_default).toBe(false);
-    expect(created.created_at).toBe(5_000);
-    expect((await listDishes(deps, { recipe_id: 'recipe-a' })).dishes).toEqual([created]);
+    const { dish: first } = createDish(deps, { recipe_id: 'recipe-a', config_overlay: { repo_dir: '/x' } });
+    expect(first.dish_id.startsWith('dsh_')).toBe(true);
+    expect(first).toMatchObject({ enabled: true, is_default: true, name: '', created_at: 5_000 });
+    const { dish: second } = createDish(deps, { recipe_id: 'recipe-a', name: 'repo: y' });
+    expect(second.is_default).toBe(false);
+    expect((await listDishes(deps, { recipe_id: 'recipe-a' })).dishes.map((d) => d.dish_id).sort())
+      .toEqual([first.dish_id, second.dish_id].sort());
     expect((await listDishes(deps, { recipe_id: 'recipe-zzz' })).dishes).toEqual([]);
+    // Another recipe's first is its own main.
+    expect(createDish(deps, { recipe_id: 'recipe-b' }).dish.is_default).toBe(true);
+  });
+
+  it('carries the publisher its recipe is installed under when the caller names none', () => {
+    const deps = { ...makeDeps(), publisherOf: (recipe_id: string) => (recipe_id === 'recipe-a' ? 'recued-core' : null) };
+    expect(createDish(deps, { recipe_id: 'recipe-a' }).dish.publisher_id).toBe('recued-core');
+    expect(createDish(deps, { recipe_id: 'gone' }).dish.publisher_id).toBe('local');
+    expect(createDish(deps, { recipe_id: 'recipe-a', publisher_id: 'p' }).dish.publisher_id).toBe('p');
   });
 
   it.each([
     [{ name: 7 }, /name must be a string/],
     [{ enabled: 'yes' }, /enabled must be a boolean/],
-    [{ is_default: 1 }, /is_default must be a boolean/],
     [{ config_overlay: [1] }, /config_overlay must be an object/],
   ] as const)('create rejects malformed input %j', (bad, message) => {
     const deps = makeDeps();
@@ -174,26 +197,32 @@ describe('dish-handler', () => {
     expect(() => createDish(makeDeps(), {})).toThrow(/recipe_id is required/);
   });
 
-  it('maps a second default dish to a conflict error (pre-check AND race backstop)', () => {
+  it('a create that loses the race for main is stored as an ordinary dish', () => {
     const deps = makeDeps();
-    createDish(deps, { recipe_id: 'recipe-a', is_default: true });
-    expect(() =>
-      createDish(deps, { recipe_id: 'recipe-a', is_default: true }),
-    ).toThrow(/already has a default dish/);
-    // Race backstop: bypass the pre-check by inserting the competing
-    // default directly at the store layer, then verify the handler's
-    // constraint-mapping path also yields the conflict shape.
-    const fresh = makeDeps();
-    fresh.store.set(dish({ dish_id: 'dsh_racer', recipe_id: 'recipe-r', is_default: true }));
-    const getDefault = fresh.store.getDefault.bind(fresh.store);
-    fresh.store.getDefault = (() => null) as typeof fresh.store.getDefault; // simulate losing the race
-    expect(() =>
-      createDish(fresh, { recipe_id: 'recipe-r', is_default: true }),
-    ).toThrow(/already has a default dish/);
-    fresh.store.getDefault = getDefault;
+    deps.store.set(dish({ dish_id: 'dsh_racer', recipe_id: 'recipe-r', is_default: true }));
+    const getDefault = deps.store.getDefault.bind(deps.store);
+    deps.store.getDefault = (() => null) as typeof deps.store.getDefault; // lost the race
+    const { dish: late } = createDish(deps, { recipe_id: 'recipe-r' });
+    deps.store.getDefault = getDefault;
+    expect(late.is_default).toBe(false);
+    expect(deps.store.getDefault('recipe-r')!.dish_id).toBe('dsh_racer');
   });
 
-  it('updates name / overlay / enabled and rejects malformed lifecycle input', () => {
+  it('creating switches the dish on — unless it is made off, or made only to hold a row’s settings', () => {
+    const deps = makeDeps();
+    const { calls, automation } = recorder();
+    deps.automation = automation;
+    const on = createDish(deps, { recipe_id: 'recipe-a' }).dish;
+    const off = createDish(deps, { recipe_id: 'recipe-a', enabled: false }).dish;
+    const held = createDish(deps, { recipe_id: 'recipe-a' }, { switchOn: false }).dish;
+    expect(calls).toEqual([
+      `created ${on.dish_id} switchOn=true`,
+      `created ${off.dish_id} switchOn=false`,
+      `created ${held.dish_id} switchOn=false`,
+    ]);
+  });
+
+  it('updates name / settings / switch in place and rejects malformed lifecycle input', () => {
     const deps = makeDeps();
     const { dish: created } = createDish(deps, { recipe_id: 'recipe-a' });
 
@@ -202,6 +231,7 @@ describe('dish-handler', () => {
       config_overlay: { repo_dir: '/y' },
       enabled: false,
     });
+    expect(updated.dish_id).toBe(created.dish_id);
     expect(updated.name).toBe('renamed');
     expect(updated.config_overlay).toEqual({ repo_dir: '/y' });
     expect(updated.enabled).toBe(false);
@@ -212,22 +242,108 @@ describe('dish-handler', () => {
     expect(() => updateDish(deps, created.dish_id, { name: 9 })).toThrow(
       /name must be a string/,
     );
+    expect(() => updateDish(deps, created.dish_id, { main: false })).toThrow(/main must be true/);
     expect(() => updateDish(deps, 'dsh_missing', {})).toThrow(/not found/);
   });
 
-  it('delete removes the dish AND its continuity snapshot', () => {
+  it('tells the rows what changed: a switch (even to the same state — a re-arm), settings, or a label', () => {
+    const deps = makeDeps();
+    const { dish: created } = createDish(deps, { recipe_id: 'recipe-a' });
+    const { calls, automation } = recorder();
+    deps.automation = automation;
+    updateDish(deps, created.dish_id, { enabled: true });
+    updateDish(deps, created.dish_id, { enabled: false, config_overlay: { x: 1 } });
+    updateDish(deps, created.dish_id, { config_overlay: { x: 2 } });
+    updateDish(deps, created.dish_id, { name: 'n' });
+    expect(calls).toEqual([
+      `switched ${created.dish_id} on`,
+      `switched ${created.dish_id} off`,
+      `settings ${created.dish_id}`,
+      'touched',
+    ]);
+  });
+
+  it('`main: true` makes a dish its recipe’s main one, and only that one', () => {
+    const deps = makeDeps();
+    const first = createDish(deps, { recipe_id: 'recipe-a' }).dish;
+    const second = createDish(deps, { recipe_id: 'recipe-a', name: 'home' }).dish;
+    const { dish: made } = updateDish(deps, second.dish_id, { main: true });
+    expect(made.is_default).toBe(true);
+    expect(deps.store.get(first.dish_id)!.is_default).toBe(false);
+    expect(deps.store.getDefault('recipe-a')!.dish_id).toBe(second.dish_id);
+  });
+
+  it('delete removes the dish AND its continuity snapshot, and tells its rows', () => {
     const deps = makeDeps();
     const { dish: created } = createDish(deps, { recipe_id: 'recipe-a' });
     deps.contextStore!.set(created.dish_id, { step1: 42 });
+    const { calls, automation } = recorder();
+    deps.automation = automation;
 
     expect(deleteDish(deps, created.dish_id)).toEqual({ deleted: true });
     expect(deps.store.get(created.dish_id)).toBeNull();
     expect(deps.contextStore!.get(created.dish_id)).toBeNull();
+    expect(calls).toEqual([`deleted ${created.dish_id}`]);
     expect(() => deleteDish(deps, created.dish_id)).toThrow(/not found/);
+  });
+
+  it('removing the main dish makes the oldest remaining one main', () => {
+    let now = 1_000;
+    const deps = { ...makeDeps(), now: () => now };
+    const main = createDish(deps, { recipe_id: 'recipe-a' }).dish;
+    now = 3_000;
+    const newer = createDish(deps, { recipe_id: 'recipe-a', name: 'newer' }).dish;
+    now = 2_000;
+    const older = createDish(deps, { recipe_id: 'recipe-a', name: 'older' }).dish;
+    deleteDish(deps, main.dish_id);
+    expect(deps.store.getDefault('recipe-a')!.dish_id).toBe(older.dish_id);
+    expect(deps.store.get(newer.dish_id)!.is_default).toBe(false);
+  });
+
+  it('`dishes.defaults` answers what a new dish starts from', () => {
+    const deps = { ...makeDeps(), defaultsFor: (recipe_id: string) => ({ template: `mtpl_${recipe_id}` }) };
+    expect(dishDefaults(deps, { recipe_id: 'r' })).toEqual({ config_overlay: { template: 'mtpl_r' } });
+    expect(dishDefaults(makeDeps(), { recipe_id: 'r' })).toEqual({ config_overlay: {} });
+    expect(() => dishDefaults(deps, {})).toThrow(/recipe_id is required/);
   });
 });
 
-// ── D-179 P2 — attachment binding validation ─────────────────────
+describe('D-319 — the dish a row made without naming one belongs to (`mainDishFor`)', () => {
+  const makeDeps = (): DishHandlerDeps & { store: DishStore } => {
+    const db = makeDb();
+    return { store: createDishStore(db), now: () => 5_000 };
+  };
+
+  it('is the recipe’s main dish', () => {
+    const deps = makeDeps();
+    const main = createDish(deps, { recipe_id: 'recipe-a', config_overlay: { a: 1 } }).dish;
+    createDish(deps, { recipe_id: 'recipe-a', name: 'other' });
+    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: null }).dish_id).toBe(main.dish_id);
+    // Its own settings, in any key order, are no conflict.
+    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } }).dish_id).toBe(main.dish_id);
+  });
+
+  it('⛔ refuses settings that are not the main dish’s — settings belong to the dish', () => {
+    const deps = makeDeps();
+    createDish(deps, { recipe_id: 'recipe-a', config_overlay: { a: 1 } });
+    expect(() => mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 2 } }))
+      .toThrow(/Settings belong to the dish/);
+  });
+
+  it('with no dish, makes the main one from the settings given — on, but not switched on as a whole', () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    deps.automation = {
+      created: (d, opts) => { calls.push(`created switchOn=${opts.switchOn}`); },
+      switched: () => undefined, settingsChanged: () => undefined, deleted: () => undefined, touched: () => undefined,
+    };
+    const made = mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } });
+    expect(made).toMatchObject({ is_default: true, enabled: true, config_overlay: { a: 1 }, publisher_id: 'p' });
+    expect(calls).toEqual(['created switchOn=false']);
+  });
+});
+
+// ── D-179 P2 / D-319 — a row belongs to a dish ───────────────────
 
 describe('schedule create dish binding (P2)', () => {
   const makeScheduleDeps = () => {
@@ -279,6 +395,7 @@ describe('trigger create/update dish binding (P2)', () => {
     const db = makeDb();
     const dishStore = createDishStore(db);
     dishStore.set(dish({ dish_id: 'dsh_ok', recipe_id: 'recipe-a' }));
+    dishStore.set(dish({ dish_id: 'dsh_other', recipe_id: 'recipe-a' }));
     const { createEventTriggersStore } = await import('../triggers/store.js');
     const { handleTriggersCreate, handleTriggersUpdate } = await import('../triggers/handler.js');
     const deps = { store: createEventTriggersStore(db), dishStore };
@@ -308,354 +425,156 @@ describe('trigger create/update dish binding (P2)', () => {
       dish_id: 'dsh_ok',
     })).rejects.toThrow(/instantiates recipe/);
 
-    // update: null detaches; bad value rejects.
-    const detached = await handleTriggersUpdate(deps, {
-      trigger_id: trigger.trigger_id,
-      dish_id: null,
-    });
-    expect(detached.trigger.dish_id).toBeUndefined();
+    // D-319 — the owner's trigger moves to another dish of its recipe; it
+    // always has one.
+    const moved = await handleTriggersUpdate(deps, { trigger_id: trigger.trigger_id, dish_id: 'dsh_other' });
+    expect(moved.trigger.dish_id).toBe('dsh_other');
+    await expect(handleTriggersUpdate(deps, { trigger_id: trigger.trigger_id, dish_id: null }))
+      .rejects.toThrow(/dish_id must be a non-empty string/);
     await expect(handleTriggersUpdate(deps, {
       trigger_id: trigger.trigger_id,
       watch_interval_ms: -5,
     })).rejects.toThrow(/watch_interval_ms/);
   });
-});
 
-// ── D-179 config-on-schedule/trigger — managed overlay dish ──────
-// A schedule/trigger created with a non-empty `config_overlay` and no
-// explicit dish mints a managed dish to carry the overlay into headless
-// fires; deleting the row dissolves it.
-
-describe('schedule create/delete — managed overlay dish', () => {
-  const makeDeps = async (now = () => 5_000) => {
-    const { createScheduleStore } = await import('../schedule-store.js');
+  it('a recipe’s own trigger belongs to the dish it was made for', async () => {
     const db = makeDb();
     const dishStore = createDishStore(db);
-    const contextStore = createDishContextStore(db);
+    dishStore.set(dish({ dish_id: 'dsh_ok', recipe_id: 'recipe-a' }));
+    dishStore.set(dish({ dish_id: 'dsh_other', recipe_id: 'recipe-a' }));
+    const { createEventTriggersStore } = await import('../triggers/store.js');
+    const { handleTriggersUpdate } = await import('../triggers/handler.js');
+    const store = createEventTriggersStore(db);
+    store.create({
+      trigger_id: 't-recipe', recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**',
+      enabled: false, created_at: 1, origin: 'recipe', dish_id: 'dsh_ok',
+    });
+    await expect(handleTriggersUpdate({ store, dishStore }, { trigger_id: 't-recipe', dish_id: 'dsh_other' }))
+      .rejects.toThrow(/belongs to the dish it was made for/);
+  });
+});
+
+describe('D-319 — a schedule belongs to a dish and has no settings of its own', () => {
+  const makeDeps = async () => {
+    const { createScheduleStore } = await import('../schedule-store.js');
+    const db = makeDb();
+    const dishDeps: DishHandlerDeps = { store: createDishStore(db), contextStore: createDishContextStore(db), now: () => 5_000 };
     return {
-      dishStore,
-      contextStore,
+      dishDeps,
       deps: {
         store: createScheduleStore(makeDb()),
-        dishStore,
-        dishContextStore: contextStore,
+        dishStore: dishDeps.store,
+        mainDish: (input: Parameters<typeof mainDishFor>[1]) => mainDishFor(dishDeps, input),
         instanceId: 'i-1',
-        now,
+        now: () => 5_000,
       },
     };
   };
 
-  it('mints a managed dish holding the overlay + binds the schedule to it', async () => {
-    const { dishStore, deps } = await makeDeps();
+  it('one naming no dish joins the recipe’s main dish, made from its settings when there is none', async () => {
+    const { dishDeps, deps } = await makeDeps();
     const { createSchedule } = await import('../schedule-handler.js');
-
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: { threshold: 30 },
-    });
-
-    expect(schedule.dish_id).toBeDefined();
-    const minted = dishStore.get(schedule.dish_id!);
-    expect(minted).toMatchObject({
-      recipe_id: 'recipe-a',
-      config_overlay: { threshold: 30 },
-      is_default: false,
-      enabled: true,
-      managed_by_schedule_id: schedule.schedule_id,
-      created_at: 5_000,
-    });
+    const { schedule } = createSchedule(deps, { recipe_id: 'recipe-a', cron_expression: '0 9 * * *', config_overlay: { threshold: 30 } });
+    const main = dishDeps.store.getDefault('recipe-a')!;
+    expect(main).toMatchObject({ config_overlay: { threshold: 30 }, enabled: true });
+    expect(schedule.dish_id).toBe(main.dish_id);
+    // A second one joins the same dish — no settings of its own, none minted.
+    const { schedule: second } = createSchedule(deps, { recipe_id: 'recipe-a', cron_expression: '0 18 * * *' });
+    expect(second.dish_id).toBe(main.dish_id);
+    expect(dishDeps.store.listByRecipe('recipe-a')).toHaveLength(1);
   });
 
-  it('mints nothing for an empty overlay (fires on recipe defaults)', async () => {
-    const { dishStore, deps } = await makeDeps();
+  it('⛔ refuses settings on a schedule that names its dish, or that differ from its main dish’s', async () => {
+    const { dishDeps, deps } = await makeDeps();
     const { createSchedule } = await import('../schedule-handler.js');
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: {},
-    });
-    expect(schedule.dish_id).toBeUndefined();
-    expect(dishStore.list()).toEqual([]);
-  });
-
-  it('lets an explicit dish_id win over config_overlay (no mint)', async () => {
-    const { dishStore, deps } = await makeDeps();
-    dishStore.set(dish({ dish_id: 'dsh_user', recipe_id: 'recipe-a' }));
-    const { createSchedule } = await import('../schedule-handler.js');
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      dish_id: 'dsh_user',
-      config_overlay: { threshold: 30 },
-    });
-    expect(schedule.dish_id).toBe('dsh_user');
-    expect(dishStore.list().map((d) => d.dish_id)).toEqual(['dsh_user']);
-  });
-
-  it('rejects a non-object config_overlay', async () => {
-    const { deps } = await makeDeps();
-    const { createSchedule } = await import('../schedule-handler.js');
+    const main = createDish(dishDeps, { recipe_id: 'recipe-a', config_overlay: { threshold: 30 } }).dish;
     expect(() => createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: 'nope',
+      recipe_id: 'recipe-a', cron_expression: '0 9 * * *', dish_id: main.dish_id, config_overlay: { threshold: 30 },
+    })).toThrow(/Settings belong to the dish/);
+    expect(() => createSchedule(deps, {
+      recipe_id: 'recipe-a', cron_expression: '0 9 * * *', config_overlay: { threshold: 50 },
+    })).toThrow(/Settings belong to the dish/);
+    expect(() => createSchedule(deps, {
+      recipe_id: 'recipe-a', cron_expression: '0 9 * * *', config_overlay: 'nope',
     })).toThrow(/config_overlay must be an object/);
   });
 
-  it('dissolves its managed dish + continuity snapshot on delete but never a user-assigned one', async () => {
-    const { dishStore, contextStore, deps } = await makeDeps();
-    const { createSchedule, deleteSchedule } = await import('../schedule-handler.js');
+  it('removing a schedule leaves its dish; an update may move it, never re-set it', async () => {
+    const { dishDeps, deps } = await makeDeps();
+    const { createSchedule, deleteSchedule, updateSchedule } = await import('../schedule-handler.js');
+    const main = createDish(dishDeps, { recipe_id: 'recipe-a' }).dish;
+    const other = createDish(dishDeps, { recipe_id: 'recipe-a', name: 'other' }).dish;
+    dishDeps.contextStore!.set(main.dish_id, { step_a: 1 });
+    const { schedule } = createSchedule(deps, { recipe_id: 'recipe-a', cron_expression: '0 9 * * *' });
 
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: { threshold: 30 },
-    });
-    const managedDishId = schedule.dish_id!;
-    contextStore.set(managedDishId, { step_a: 1 });
+    expect(() => updateSchedule(deps, schedule.schedule_id, { config_overlay: { a: 1 } }))
+      .toThrow(/no settings of its own/);
+    expect(updateSchedule(deps, schedule.schedule_id, { dish_id: other.dish_id }).schedule.dish_id).toBe(other.dish_id);
+    expect(() => updateSchedule(deps, schedule.schedule_id, { dish_id: 'dsh_missing' })).toThrow(/not found/);
+
     deleteSchedule(deps, schedule.schedule_id);
-    expect(dishStore.get(managedDishId)).toBeNull();
-    expect(contextStore.get(managedDishId)).toBeNull(); // snapshot cleared too
-
-    // A user-assigned binding + its snapshot survive the schedule's deletion.
-    dishStore.set(dish({ dish_id: 'dsh_user', recipe_id: 'recipe-a' }));
-    contextStore.set('dsh_user', { step_a: 2 });
-    const { schedule: bound } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      dish_id: 'dsh_user',
-    });
-    deleteSchedule(deps, bound.schedule_id);
-    expect(dishStore.get('dsh_user')).not.toBeNull();
-    expect(contextStore.get('dsh_user')).not.toBeNull();
+    expect(dishDeps.store.get(main.dish_id)).not.toBeNull();
+    expect(dishDeps.contextStore!.get(main.dish_id)).toEqual({ step_a: 1 });
   });
 
-  it('edit: a config change on update mints a new dish + dissolves the prior (immutable)', async () => {
-    const { dishStore, contextStore, deps } = await makeDeps();
-    const { createSchedule, updateSchedule } = await import('../schedule-handler.js');
-
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: { threshold: 30 },
-    });
-    const first = schedule.dish_id!;
-    contextStore.set(first, { step_a: 1 });
-
-    const { schedule: edited } = updateSchedule(deps, schedule.schedule_id, {
-      config_overlay: { threshold: 50 },
-    });
-    expect(edited.dish_id).not.toBe(first); // new immutable dish
-    expect(dishStore.get(first)).toBeNull(); // prior dissolved, never mutated
-    expect(contextStore.get(first)).toBeNull(); // + its snapshot
-    expect(dishStore.get(edited.dish_id!)).toMatchObject({ config_overlay: { threshold: 50 } });
-  });
-
-  it('edit: an identical config is a no-op; empty clears', async () => {
-    const { dishStore, deps } = await makeDeps();
-    const { createSchedule, updateSchedule } = await import('../schedule-handler.js');
-
-    const { schedule } = createSchedule(deps, {
-      recipe_id: 'recipe-a',
-      cron_expression: '0 9 * * *',
-      config_overlay: { a: 1, b: 2 },
-    });
-    const first = schedule.dish_id!;
-    const { schedule: same } = updateSchedule(deps, schedule.schedule_id, {
-      config_overlay: { b: 2, a: 1 }, // key order aside
-    });
-    expect(same.dish_id).toBe(first); // no churn
-
-    const { schedule: cleared } = updateSchedule(deps, schedule.schedule_id, {
-      config_overlay: {},
-    });
-    expect(cleared.dish_id).toBeUndefined(); // cleared
-    expect(dishStore.get(first)).toBeNull(); // prior dissolved
+  it('a server that keeps no dishes refuses settings and makes a dishless schedule', async () => {
+    const { createScheduleStore } = await import('../schedule-store.js');
+    const { createSchedule } = await import('../schedule-handler.js');
+    const deps = { store: createScheduleStore(makeDb()), instanceId: 'i-1' };
+    expect(() => createSchedule(deps, { recipe_id: 'recipe-a', cron_expression: '0 9 * * *', config_overlay: { a: 1 } }))
+      .toThrow(/keeps none/);
+    expect(createSchedule(deps, { recipe_id: 'recipe-a', cron_expression: '0 9 * * *', config_overlay: {} }).schedule.dish_id)
+      .toBeUndefined();
   });
 });
 
-describe('trigger create/delete — managed overlay dish', () => {
+describe('D-319 — a trigger belongs to a dish and has no settings of its own', () => {
   const makeDeps = async () => {
     const { createEventTriggersStore } = await import('../triggers/store.js');
     const db = makeDb();
-    const dishStore = createDishStore(db);
-    const contextStore = createDishContextStore(db);
+    const dishDeps: DishHandlerDeps = { store: createDishStore(db), contextStore: createDishContextStore(db), now: () => 5_000 };
     return {
-      dishStore,
-      contextStore,
+      dishDeps,
       deps: {
         store: createEventTriggersStore(db),
-        dishStore,
-        dishContextStore: contextStore,
+        dishStore: dishDeps.store,
+        mainDish: (input: Parameters<typeof mainDishFor>[1]) => mainDishFor(dishDeps, input),
       },
     };
   };
 
-  it('mints a managed dish holding the overlay + binds the trigger to it', async () => {
-    const { dishStore, deps } = await makeDeps();
-    const { handleTriggersCreate } = await import('../triggers/handler.js');
-
-    const { trigger } = await handleTriggersCreate(deps, {
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      config_overlay: { threshold: 30 },
-    });
-
-    expect(trigger.dish_id).toBeDefined();
-    expect(dishStore.get(trigger.dish_id!)).toMatchObject({
-      recipe_id: 'recipe-a',
-      config_overlay: { threshold: 30 },
-      managed_by_trigger_id: trigger.trigger_id,
-    });
-  });
-
-  it('mints nothing for an empty overlay', async () => {
-    const { dishStore, deps } = await makeDeps();
+  it('one naming no dish joins the recipe’s main dish, made from its settings when there is none', async () => {
+    const { dishDeps, deps } = await makeDeps();
     const { handleTriggersCreate } = await import('../triggers/handler.js');
     const { trigger } = await handleTriggersCreate(deps, {
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      config_overlay: {},
+      recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**', config_overlay: { threshold: 30 },
     });
-    expect(trigger.dish_id).toBeUndefined();
-    expect(dishStore.list()).toEqual([]);
+    const main = dishDeps.store.getDefault('recipe-a')!;
+    expect(main.config_overlay).toEqual({ threshold: 30 });
+    expect(trigger.dish_id).toBe(main.dish_id);
   });
 
-  it('dissolves its managed dish + continuity snapshot on delete but never a user-assigned one', async () => {
-    const { dishStore, contextStore, deps } = await makeDeps();
-    const { handleTriggersCreate, handleTriggersDelete } = await import('../triggers/handler.js');
-
-    const { trigger } = await handleTriggersCreate(deps, {
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      config_overlay: { threshold: 30 },
-    });
-    const managedDishId = trigger.dish_id!;
-    contextStore.set(managedDishId, { step_a: 1 });
-    await handleTriggersDelete(deps, { trigger_id: trigger.trigger_id });
-    expect(dishStore.get(managedDishId)).toBeNull();
-    expect(contextStore.get(managedDishId)).toBeNull(); // snapshot cleared too
-
-    dishStore.set(dish({ dish_id: 'dsh_user', recipe_id: 'recipe-a' }));
-    contextStore.set('dsh_user', { step_a: 2 });
-    const { trigger: bound } = await handleTriggersCreate(deps, {
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.calendar.**',
-      dish_id: 'dsh_user',
-    });
-    await handleTriggersDelete(deps, { trigger_id: bound.trigger_id });
-    expect(dishStore.get('dsh_user')).not.toBeNull();
-    expect(contextStore.get('dsh_user')).not.toBeNull();
-  });
-
-  it('edit: a config change via update mints a new dish + dissolves the prior; empty clears', async () => {
-    const { dishStore, contextStore, deps } = await makeDeps();
+  it('⛔ refuses settings on a trigger that names its dish, or on an update', async () => {
+    const { dishDeps, deps } = await makeDeps();
     const { handleTriggersCreate, handleTriggersUpdate } = await import('../triggers/handler.js');
-
-    const { trigger } = await handleTriggersCreate(deps, {
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      config_overlay: { threshold: 30 },
-    });
-    const first = trigger.dish_id!;
-    contextStore.set(first, { step_a: 1 });
-
-    const { trigger: edited } = await handleTriggersUpdate(deps, {
-      trigger_id: trigger.trigger_id,
-      config_overlay: { threshold: 50 },
-    });
-    expect(edited.dish_id).not.toBe(first); // new immutable dish
-    expect(dishStore.get(first)).toBeNull(); // prior dissolved
-    expect(contextStore.get(first)).toBeNull(); // + its snapshot
-    expect(dishStore.get(edited.dish_id!)).toMatchObject({ config_overlay: { threshold: 50 } });
-
-    // Empty clears (dish detached + dissolved).
-    const { trigger: cleared } = await handleTriggersUpdate(deps, {
-      trigger_id: trigger.trigger_id,
-      config_overlay: {},
-    });
-    expect(cleared.dish_id).toBeUndefined();
-    expect(dishStore.get(edited.dish_id!)).toBeNull();
-  });
-});
-
-describe('recipe install config (recipe_config.*) — default-dish overlay (D-179)', () => {
-  const makeRcDeps = (): DishHandlerDeps => {
-    const db = makeDb();
-    return {
-      store: createDishStore(db),
-      contextStore: createDishContextStore(db),
-      now: () => 5_000,
-    };
-  };
-
-  it('set creates the is_default dish when none exists; get reads it back', () => {
-    const deps = makeRcDeps();
-    expect(getRecipeConfig(deps, { recipe_id: 'recipe-a' }).config_overlay).toEqual({});
-    setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: { threshold: 30 } });
-    const dishes = deps.store.listByRecipe('recipe-a');
-    expect(dishes).toHaveLength(1);
-    expect(dishes[0]).toMatchObject({
-      is_default: true,
-      config_overlay: { threshold: 30 },
-      name: '',
-    });
-    expect(getRecipeConfig(deps, { recipe_id: 'recipe-a' }).config_overlay).toEqual({ threshold: 30 });
+    const main = createDish(dishDeps, { recipe_id: 'recipe-a' }).dish;
+    await expect(handleTriggersCreate(deps, {
+      recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**', dish_id: main.dish_id, config_overlay: { a: 1 },
+    })).rejects.toThrow(/Settings belong to the dish/);
+    const { trigger } = await handleTriggersCreate(deps, { recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**' });
+    await expect(handleTriggersUpdate(deps, { trigger_id: trigger.trigger_id, config_overlay: { a: 1 } }))
+      .rejects.toThrow(/no settings of its own/);
   });
 
-  it('set updates the SAME dish in place — mutable config source, dish_id stable', () => {
-    const deps = makeRcDeps();
-    setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: { threshold: 30 } });
-    const first = deps.store.listByRecipe('recipe-a')[0]!.dish_id;
-    setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: { threshold: 50 } });
-    const dishes = deps.store.listByRecipe('recipe-a');
-    expect(dishes).toHaveLength(1);
-    expect(dishes[0].dish_id).toBe(first); // in place, NOT a new dish (config source ≠ dispatch identity)
-    expect(dishes[0].config_overlay).toEqual({ threshold: 50 });
-  });
-
-  it('set with empty {} clears install config (drops the default dish + its snapshot)', () => {
-    const deps = makeRcDeps();
-    setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: { threshold: 30 } });
-    const dishId = deps.store.listByRecipe('recipe-a')[0]!.dish_id;
-    deps.contextStore!.set(dishId, { step_a: 1 });
-    setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: {} });
-    expect(deps.store.listByRecipe('recipe-a')).toEqual([]);
-    expect(deps.contextStore!.get(dishId)).toBeNull();
-    expect(getRecipeConfig(deps, { recipe_id: 'recipe-a' }).config_overlay).toEqual({});
-  });
-
-  it('rejects a non-object config_overlay + a missing recipe_id', () => {
-    const deps = makeRcDeps();
-    expect(() => setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: 'nope' }))
-      .toThrow(/config_overlay must be an object/);
-    expect(() => setRecipeConfig(deps, { config_overlay: {} }))
-      .toThrow(/recipe_id is required/);
-  });
-
-  it('gates a set on the storage admission check (same posture as dishes.create)', () => {
-    const db = makeDb();
-    const deps: DishHandlerDeps = {
-      store: createDishStore(db),
-      contextStore: createDishContextStore(db),
-      now: () => 5_000,
-      gate: {
-        canWrite: () => ({ ok: false, reason: 'writes_blocked' }),
-      } as unknown as DishHandlerDeps['gate'],
-    };
-    expect(() => setRecipeConfig(deps, {
-      recipe_id: 'recipe-a',
-      config_overlay: { note: 'x'.repeat(200) },
-    })).toThrow(/rejected/);
-    // A clearing set frees space → never gated.
-    expect(() => setRecipeConfig(deps, { recipe_id: 'recipe-a', config_overlay: {} }))
-      .not.toThrow();
+  it('removing a trigger leaves its dish and its memory', async () => {
+    const { dishDeps, deps } = await makeDeps();
+    const { handleTriggersCreate, handleTriggersDelete } = await import('../triggers/handler.js');
+    const main = createDish(dishDeps, { recipe_id: 'recipe-a' }).dish;
+    dishDeps.contextStore!.set(main.dish_id, { step_a: 2 });
+    const { trigger } = await handleTriggersCreate(deps, { recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**' });
+    await handleTriggersDelete(deps, { trigger_id: trigger.trigger_id });
+    expect(dishDeps.store.get(main.dish_id)).not.toBeNull();
+    expect(dishDeps.contextStore!.get(main.dish_id)).toEqual({ step_a: 2 });
   });
 });
 
@@ -826,48 +745,19 @@ describe('dish groups (P3)', () => {
     ]);
   });
 
-  it('propagates group and dish overlays with dish precedence over group over install config', async () => {
-    const { makeDishHandlers } = await import('../dish-handler.js');
-    const deps = await makeGroupDeps();
-    const handlers = makeDishHandlers(deps)!.handlers;
-
-    const { group } = await handlers['dish_groups.create']({
-      name: 'pipeline',
-      config_overlay: {
-        shared: 'group',
-        group_only: true,
-        tool: 'group-tool',
+  it('D-319 — a run as a dish takes group ‹ dish ‹ its own values; with no dish, main ‹ its own', () => {
+    // `mergeRecipeConfigLayers` is the ONE merge `handleExecute` and the
+    // pre-approval preparation both apply after their dish checks.
+    expect(mergeRecipeConfigLayers({
+      requested: { shared: 'run', run_only: true },
+      bound_dish: {
+        group_overlay: { shared: 'group', group_only: true, tool: 'group-tool' },
+        config_overlay: { shared: 'dish', dish_only: true, tool: 'dish-tool' },
       },
-    }, undefined as never) as { group: { group_id: string } };
-    const { dish: created } = await handlers['dishes.create']({
-      recipe_id: 'recipe-a',
-      group_id: group.group_id,
-      config_overlay: {
-        shared: 'dish',
-        dish_only: true,
-      },
-    }, undefined as never) as { dish: { dish_id: string } };
-
-    const storedGroup = deps.groupStore.get(group.group_id)!;
-    const storedDish = deps.store.get(created.dish_id)!;
-
-    // No execute-handler harness exists in this suite; assert the
-    // store+handler propagation that feeds its documented merge:
-    // { ...installConfig, ...groupOverlay, ...dishOverlay }.
-    const resolved = {
-      shared: 'install',
-      install_only: true,
-      tool: 'install-tool',
-      ...storedGroup.config_overlay,
-      ...storedDish.config_overlay,
-    };
-
-    expect(resolved).toEqual({
-      shared: 'dish',
-      install_only: true,
-      group_only: true,
-      dish_only: true,
-      tool: 'group-tool',
-    });
+    })).toEqual({ shared: 'run', run_only: true, group_only: true, dish_only: true, tool: 'dish-tool' });
+    // A bound run with no values of its own runs on the dish's.
+    expect(mergeRecipeConfigLayers({ bound_dish: { config_overlay: { a: 1 } } })).toEqual({ a: 1 });
+    // No dish: the main dish's settings under the run's.
+    expect(mergeRecipeConfigLayers({ install: { a: 1, b: 1 }, requested: { b: 2 } })).toEqual({ a: 1, b: 2 });
   });
 });

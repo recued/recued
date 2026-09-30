@@ -31,6 +31,7 @@ export {
 
 // D-115 Phase 2 — auto-run scheduler core.
 export {
+  autoRunKey,
   createAutoRunScheduler,
   rosterAllAutoRun,
   type AutoRunEntry,

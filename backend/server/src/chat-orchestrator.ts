@@ -1232,6 +1232,10 @@ export interface ChatTurnInput {
   /** Server-validated evidence grounding for a guided Data explanation.
    * Persisted on both turn rows; never dispatch or approval authority. */
   data_diagnosis?: ChatDataDiagnosisContext;
+  /** The client asked for a turn that may only read (a Follow this work
+   * investigation). Narrowing only: persisted with the queued turn, so a
+   * retry or a restart keeps it. A diagnosis turn is read-only regardless. */
+  read_only?: boolean;
   model_pref?: {
     current: ChatModelRoutingLayer;
     model_hint?: ChatModelHint;
@@ -2583,19 +2587,23 @@ export const createChatOrchestrator = (
     let tier: ToolTier = resolveTier(deps.registry, tool_name);
     if (rawOpEntry !== null) tier = rawOpEntry.tier;
 
-    // Guided Data diagnosis is an explanation-only turn. Enforce that at the
-    // final tool boundary, before approval lookup/consumption: prompt wording
-    // alone cannot prevent a model-emitted write from matching an unrelated
-    // still-valid approval for the same arguments. Unknown classifications
-    // fail closed; only an explicit `read` may run.
+    // A guided Data diagnosis and a Follow this work investigation are
+    // explanation-only turns. Enforce that at the final tool boundary, before
+    // approval lookup/consumption: prompt wording alone cannot prevent a
+    // model-emitted write from matching an unrelated still-valid approval for
+    // the same arguments, and it cannot stop `unknown` tools that skip the
+    // approval card by design (`memory.write`, `work.create`) when mail being
+    // read asks for them. Unknown classifications fail closed; only an
+    // explicit `read` may run.
     if (read_only === true && entry?.classification !== 'read') {
       const result: ChatDispatchResult = {
         ok: false,
         reason: entry === null ? 'unknown_tool' : 'classification_blocked',
         detail:
           entry === null
-            ? 'Guided diagnosis could not resolve this read-only tool.'
-            : 'Guided diagnosis is read-only; this tool was not executed.',
+            ? 'This read-only turn could not resolve this tool.'
+            : 'This turn can only read; this tool was not executed. '
+              + 'Suggest the action to the user instead.',
       };
       safeBroadcast(deps.broadcast, {
         kind: 'chat.tool_call_completed',
@@ -3399,6 +3407,7 @@ export const createChatOrchestrator = (
 
     const turnExecutor: TurnExecutor = async (ctx): Promise<TurnOutput> => {
       params.assert_active?.();
+      let answerStreamed = false;
       // ENACT (N.9): read the before-turn hooks' decisions. The
       // `correction-learning` hook contributed its flat "recent
       // corrections — …" summary to the prompt draft (filter to its
@@ -3481,7 +3490,7 @@ export const createChatOrchestrator = (
         (ctx.state.get(CHAT_CATALOG_RESULT_STATE_KEY) as
           | ReadonlyArray<ChatMainTurnTool>
           | undefined) ?? [];
-      // Diagnosis turns present only explicitly-read tools. The dispatch
+      // Read-only turns present only explicitly-read tools. The dispatch
       // boundary below remains the authority; this narrower prompt catalog
       // prevents the model from wasting a round attempting a blocked action.
       let readOnlyToolNames: ReadonlySet<string> | null = null;
@@ -3661,6 +3670,13 @@ export const createChatOrchestrator = (
               get_retained_candidates: () => [...retainedCandidates.values()],
             });
           },
+          ...(params.execution_source.channel === 'chat' ? {
+            onAnswerReady: async (text: string) => {
+              params.assert_active?.();
+              await ctx.out.token(ctx.turn_id, text);
+              answerStreamed = true;
+            },
+          } : {}),
           ...(deps.getExecutionCaseProposalCritic
             ? {
                 critiqueProposal: (calls) =>
@@ -3716,10 +3732,10 @@ export const createChatOrchestrator = (
         } satisfies ChatTurnAfterInputs);
       }
 
-      // The GENERIC final delta moves to the framework path: produce it
-      // via `ctx.out.token` (out-stream → channel sink → the single
-      // `chat.token_streamed`). Gate it exactly as the prior in-function
-      // emit was — only on a successful AI turn (`final_ai_output`
+      // Emit through the framework unless onAnswerReady already streamed the
+      // settled answer before its closing brief. This remains one delta via
+      // ctx.out.token → channel sink → chat.token_streamed. Emit the fallback
+      // only on a successful AI turn (`final_ai_output`
       // present) with non-empty content; the conflict / no-executor /
       // provider-failure paths emit no delta. `tool_calls` is NOT mapped
       // onto `TurnOutput.tool_calls` — the framework projects that into
@@ -3731,7 +3747,7 @@ export const createChatOrchestrator = (
       // like the persisted + broadcast message — carries real values. The
       // wrap seam is the single primary restore across all surfaces;
       // `pii-restore` re-verifies the durable text as the final backstop.
-      if (result.final_ai_output !== undefined && result.assistant_content.length > 0) {
+      if (!answerStreamed && result.final_ai_output !== undefined && result.assistant_content.length > 0) {
         await ctx.out.token(ctx.turn_id, result.assistant_content);
       }
       return {
@@ -4018,7 +4034,9 @@ export const createChatOrchestrator = (
         ...(input.retry_of_plan_id !== undefined
           ? { retry_of_plan_id: input.retry_of_plan_id }
           : {}),
-        ...(input.data_diagnosis !== undefined ? { read_only: true } : {}),
+        ...(input.data_diagnosis !== undefined || input.read_only === true
+          ? { read_only: true }
+          : {}),
         picker_target,
         dispatch_peer_name: dispatchPeerName,
         // The same chat source the stream's inbound carries (below) — the

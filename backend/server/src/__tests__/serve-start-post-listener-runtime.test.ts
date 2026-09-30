@@ -156,6 +156,7 @@ const makeOptions = (
       serverTimeZoneStore: {
         read: vi.fn(() => ({ mode: 'fixed', zone: 'Europe/Dublin', updated_at: 1 })),
       },
+      publicAddress: { probeDue: vi.fn(async () => undefined) },
     },
     app: {
       cacheStore: { tag: 'cache-store' },
@@ -619,6 +620,24 @@ describe('D-232 § 24 — the retry sweep is REACHED at boot', () => {
       mock: { calls: Array<[{ name: string }]> };
     }).mock.calls.map((c) => c[0]?.name);
     expect(names).not.toContain('exchange-retry');
+  });
+
+  it('registers the public-address probe round, firing at once, and its tick runs a round', async () => {
+    // ⛔ THE JOIN: the service's own suite drives `probeDue` directly, so it
+    //    stays green whether or not a boot ever schedules it — which is how the
+    //    Pro card's reachability read sat unwired.
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined, tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const options = makeOptions();
+    await startPostListenerRuntime(options);
+    const spec = (options.backgroundServices.registerInterval as unknown as {
+      mock: { calls: Array<[{ name: string; fireImmediate?: boolean; tick: () => unknown }]> };
+    }).mock.calls.map((c) => c[0]).find((s) => s.name === 'public-address-probe');
+    expect(spec?.fireImmediate).toBe(true);
+    await spec?.tick();
+    expect(options.storage.publicAddress.probeDue).toHaveBeenCalledTimes(1);
   });
 
   it('D-235 — registers the custom-domain enrollment service', async () => {

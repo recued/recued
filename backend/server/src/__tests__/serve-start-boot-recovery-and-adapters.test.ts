@@ -528,3 +528,49 @@ describe('startBootRecoveryAndAdapters — D-308 permanent-pass repair', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('retrying next boot: database is locked'));
   });
 });
+
+/** The attachment links two IMAP mailboxes shared, removed once: REACHED at
+ *  boot, before the mailboxes start (their first sync re-files what it unlinked). */
+describe('startBootRecoveryAndAdapters — the shared mail attachment link repair', () => {
+  it('runs it behind the lock claim, before the file and mail adapters start', async () => {
+    const order: string[] = [];
+    const mailAttachmentLinkRepair = vi.fn(() => { order.push('repair'); return { applied: true, unlinked: 0 }; });
+    await startBootRecoveryAndAdapters(makeOptions({
+      bootSigningIdentity: vi.fn(async () => { order.push('identity'); }),
+      fileStack: { startAll: vi.fn(async () => { order.push('file'); }) },
+      collection: { startCollectionAdapters: vi.fn(async () => { order.push('collection'); }) },
+      mailAttachmentLinkRepair,
+    } as never));
+    expect(mailAttachmentLinkRepair).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['identity', 'repair', 'file', 'collection']);
+  });
+
+  it('does not run without the lifecycle lock', async () => {
+    const mailAttachmentLinkRepair = vi.fn(() => ({ applied: true, unlinked: 0 }));
+    await startBootRecoveryAndAdapters(makeOptions({ lifecycle: undefined, mailAttachmentLinkRepair } as never));
+    expect(mailAttachmentLinkRepair).not.toHaveBeenCalled();
+  });
+
+  it('says how many links it removed, nothing when it removed none, and survives a throw', async () => {
+    const warn = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn, mailAttachmentLinkRepair: vi.fn(() => ({ applied: true, unlinked: 3 })),
+    } as never));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[mail] 3 attachment link(s) two IMAP mailboxes shared removed'));
+
+    const quiet = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn: quiet, mailAttachmentLinkRepair: vi.fn(() => ({ applied: false, unlinked: 0 })),
+    } as never));
+    expect(quiet).not.toHaveBeenCalledWith(expect.stringContaining('[mail]'));
+
+    const failed = vi.fn();
+    const startCollectionAdapters = vi.fn(async () => undefined);
+    await expect(startBootRecoveryAndAdapters(makeOptions({
+      warn: failed, collection: { startCollectionAdapters },
+      mailAttachmentLinkRepair: vi.fn(() => { throw new Error('database is locked'); }),
+    } as never))).resolves.toBeUndefined();
+    expect(failed).toHaveBeenCalledWith(expect.stringContaining('retrying next boot: database is locked'));
+    expect(startCollectionAdapters).toHaveBeenCalledTimes(1);
+  });
+});

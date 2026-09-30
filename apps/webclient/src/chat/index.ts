@@ -17,6 +17,7 @@ export {
   prependOlderMessages,
   appendNewerMessages,
   beginInFlightTurn,
+  discardInFlightTurn,
   reduceChatThreadEvent,
   isChatThreadEvent,
   applyPlanResolution,

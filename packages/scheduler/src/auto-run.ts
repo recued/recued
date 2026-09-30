@@ -1,9 +1,14 @@
 /** D-115 Phase 2 — Auto-run scheduler core.
  *
  *  Platform-agnostic orchestrator for reactive recipes. Owns the live
- *  roster (recipe_id → AutoRunEntry), the RAM-only `starting` set
+ *  roster (key → AutoRunEntry), the RAM-only `starting` set
  *  that gates concurrency=1 per process, and the circuit-breaker
- *  counter that auto-disables a recipe after N consecutive failures.
+ *  counter that auto-disables a timer after N consecutive failures.
+ *
+ *  D-319 — the roster is keyed by DISH (`autoRunKey`): each dish of an
+ *  auto-run recipe is the recipe switched on with its own settings and runs
+ *  on its own timer, with its own breaker. An entry with no dish keys by its
+ *  recipe, as before.
  *
  *  The extension wires this to `chrome.alarms` (Phase 3); the server
  *  wires it to `setTimeout` (Phase 4). Neither wiring reaches into
@@ -41,6 +46,8 @@ import { CIRCUIT_BREAKER_THRESHOLD } from '@recued/contracts';
  *  scheduler persistence (Phase 4). */
 export interface AutoRunEntry {
   recipe_id: string;
+  /** D-319 — the dish whose timer this is; the roster key when present. */
+  dish_id?: string;
   publisher_id: string;
   interval_ms: number;
   dynamic: boolean;
@@ -82,11 +89,16 @@ export interface AutoRunEntry {
  *  nothing will ever come back to finish it. */
 export type AutoRunOutcome = 'success' | 'skipped' | 'held' | 'failed';
 
-/** Result of one `tick(now)` call. `fired` names the recipes the
- *  caller should dispatch; the other two fields classify drops so
- *  the UI / audit surface can explain why a tick did nothing. */
+/** The roster key of an entry or install: its dish, else its recipe. */
+export const autoRunKey = (entry: { recipe_id: string; dish_id?: string }): string =>
+  entry.dish_id ?? entry.recipe_id;
+
+/** Result of one `tick(now)` call. `fired` names the timers the
+ *  caller should dispatch; the other two fields classify drops (by
+ *  roster key) so the UI / audit surface can explain why a tick did
+ *  nothing. */
 export interface TickReport {
-  fired: Array<{ recipe_id: string; process_id: string }>;
+  fired: Array<{ key: string; recipe_id: string; dish_id?: string; process_id: string }>;
   /** Dropped because a prior run is still in `starting`. */
   skipped_overlap: string[];
   /** Dropped because the circuit breaker has auto-disabled the entry. */
@@ -105,12 +117,13 @@ export interface AutoRunScheduler {
    *  the same interval are no-ops. Does NOT add to `starting` — the
    *  caller commits to dispatch via `markStarting`. */
   tick(now: number): TickReport;
-  /** Record that a dispatched recipe has started executing. Drops
-   *  stale calls where the passed `process_id` no longer matches the
-   *  live entry (e.g. circuit reset minted a new id after tick). */
-  markStarting(recipe_id: string, process_id: string, now: number): void;
+  /** Record that a dispatched timer has started executing (by roster
+   *  key). Drops stale calls where the passed `process_id` no longer
+   *  matches the live entry (e.g. circuit reset minted a new id after
+   *  tick). */
+  markStarting(key: string, process_id: string, now: number): void;
   markFinished(
-    recipe_id: string,
+    key: string,
     outcome: AutoRunOutcome,
     /** Epoch ms the dynamic recipe wants its next fire at — consumed
      *  only when `entry.dynamic === true`. Ignored otherwise. */
@@ -135,7 +148,7 @@ export interface AutoRunScheduler {
    *  the failure counter, clears the disabled flag, mints a fresh
    *  `process_id` (previous was retired with reason `circuit_broken`),
    *  and sets `next_run_at` so the entry fires on the next tick. */
-  resetCircuit(recipe_id: string, now: number): void;
+  resetCircuit(key: string, now: number): void;
 }
 
 /** D-115 Phase 8 — notification payload emitted once per
@@ -146,6 +159,8 @@ export interface AutoRunScheduler {
  *  resetCircuit (reset → re-trip is a fresh event). */
 export interface CircuitTripEvent {
   recipe_id: string;
+  /** D-319 — the dish whose timer tripped, when it has one. */
+  dish_id?: string;
   publisher_id: string;
   /** The process_id that was retired when the counter crossed. The
    *  scheduler does NOT mint a fresh id on trip — it mints on
@@ -177,6 +192,8 @@ export interface AutoRunSchedulerOptions {
  *  caller extracts the fields it needs. */
 export interface AutoRunInstallInput {
   recipe_id: string;
+  /** D-319 — the dish this timer runs as; its roster key. */
+  dish_id?: string;
   publisher_id: string;
   status: RecipeStatus;
   /** Persisted by the runtime when the recipe first entered the
@@ -223,7 +240,7 @@ export function rosterAllAutoRun(input: RosterBuildInput): AutoRunEntry[] {
     if (!rec.auto_run) continue;
     if (rec.status !== 'enabled') continue;
 
-    const existing = prev.get(rec.recipe_id);
+    const existing = prev.get(autoRunKey(rec));
     if (existing) {
       // Preserve live state; pick up interval / dynamic edits from the
       // fresh install record.
@@ -236,6 +253,7 @@ export function rosterAllAutoRun(input: RosterBuildInput): AutoRunEntry[] {
     } else {
       result.push({
         recipe_id: rec.recipe_id,
+        ...(rec.dish_id !== undefined ? { dish_id: rec.dish_id } : {}),
         publisher_id: rec.publisher_id,
         interval_ms: rec.auto_run.interval_ms,
         dynamic: rec.auto_run.dynamic ?? false,
@@ -263,12 +281,12 @@ export function createAutoRunScheduler(
     },
 
     setRoster(entries) {
-      const keep = new Set(entries.map((e) => e.recipe_id));
+      const keep = new Set(entries.map(autoRunKey));
       for (const id of [...starting]) {
         if (!keep.has(id)) starting.delete(id);
       }
       roster.clear();
-      for (const e of entries) roster.set(e.recipe_id, e);
+      for (const e of entries) roster.set(autoRunKey(e), e);
     },
 
     tick(now) {
@@ -290,26 +308,31 @@ export function createAutoRunScheduler(
         // Preemptive advance — a re-entry inside the same interval is
         // a silent no-op via the `next_run_at > now` check above.
         entry.next_run_at = now + entry.interval_ms;
-        report.fired.push({ recipe_id: id, process_id: entry.process_id });
+        report.fired.push({
+          key: id,
+          recipe_id: entry.recipe_id,
+          ...(entry.dish_id !== undefined ? { dish_id: entry.dish_id } : {}),
+          process_id: entry.process_id,
+        });
       }
       return report;
     },
 
-    markStarting(recipe_id, process_id, now) {
-      const entry = roster.get(recipe_id);
+    markStarting(key, process_id, now) {
+      const entry = roster.get(key);
       if (!entry) return;
       // Stale call: the process_id was retired between tick and
       // dispatch (e.g. user paused, circuit reset minted a new one).
       // Drop so the caller doesn't wedge `starting` against a ghost.
       if (entry.process_id !== process_id) return;
-      starting.add(recipe_id);
+      starting.add(key);
       entry.last_started_at = now;
     },
 
-    markFinished(recipe_id, outcome, nextRunHint, now, failureOpts) {
-      const entry = roster.get(recipe_id);
+    markFinished(key, outcome, nextRunHint, now, failureOpts) {
+      const entry = roster.get(key);
       if (!entry) return;
-      starting.delete(recipe_id);
+      starting.delete(key);
       entry.last_finished_at = now;
 
       // Track auto_disabled edge so we fire the notification exactly
@@ -353,7 +376,8 @@ export function createAutoRunScheduler(
       if (!wasDisabled && entry.auto_disabled && opts.onCircuitTripped) {
         try {
           opts.onCircuitTripped({
-            recipe_id,
+            recipe_id: entry.recipe_id,
+            ...(entry.dish_id !== undefined ? { dish_id: entry.dish_id } : {}),
             publisher_id: entry.publisher_id,
             retired_process_id: entry.process_id,
             consecutive_failures: entry.consecutive_failures,
@@ -365,8 +389,8 @@ export function createAutoRunScheduler(
       }
     },
 
-    resetCircuit(recipe_id, now) {
-      const entry = roster.get(recipe_id);
+    resetCircuit(key, now) {
+      const entry = roster.get(key);
       if (!entry) return;
       entry.consecutive_failures = 0;
       entry.auto_disabled = false;

@@ -88,7 +88,8 @@ export type PostListenerRuntimeStorageContext =
   & StartPostHousekeepingTailOptions['storage']
   // `serverInstanceId` stamps the enrollment row the same way
   // `compose-listeners` stamps rows written by `collection.hostname.*`.
-  & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId'>;
+  // `publicAddress` — its probe rounds run on a timer registered here.
+  & Pick<StorageContext, 'recordsStore' | 'recipeStore' | 'serverInstanceId' | 'publicAddress'>;
 
 export type PostListenerRuntimeAppContext =
   StartHousekeepingStartupOptions['app']
@@ -1124,6 +1125,19 @@ export const startPostListenerRuntime = async (
       },
     });
   }
+
+  // The server's public addresses: ask the cloud probe about each
+  // fleet-issued name when its answer is due, then publish the result for
+  // readers with no listener (the stdio MCP process, the next boot's early
+  // links). Fires at once — the listener and the Exposure grid are up by now —
+  // so a new Pro server's card does not wait a round. A round with nothing due
+  // makes no call.
+  options.backgroundServices.registerInterval({
+    name: 'public-address-probe',
+    intervalMs: 5 * 60_000,
+    fireImmediate: true,
+    tick: () => options.storage.publicAddress.probeDue(),
+  });
 
   if (options.storage.db) {
     composeProCertEnrollment({

@@ -2,9 +2,12 @@
  *
  *  Four methods:
  *    schedules.list               list all (optional recipe_id filter)
- *    schedules.create             { recipe_id, publisher_id?, cron_expression, enabled? }
- *    schedules.update             { cron_expression?, enabled? }
+ *    schedules.create             { recipe_id, publisher_id?, cron_expression, enabled?, dish_id? }
+ *    schedules.update             { cron_expression?, enabled?, dish_id? }
  *    schedules.delete             by schedule_id
+ *
+ *  D-319 — a schedule belongs to a dish and fires as it, with its settings;
+ *  it has none of its own.
  *
  *  Synchronous (`store` is in-process SQLite). Handlers return the
  *  bare response shape and throw `RpcError(code, message, status)` on
@@ -21,7 +24,6 @@ import {
   countMissedCycles,
 } from '@recued/scheduler';
 import {
-  DISH_ID_PREFIX,
   RpcError,
   type Dish,
   type HandlerSlice,
@@ -33,8 +35,6 @@ import { estimateSize, type StorageGate } from '@recued/storage-gate';
 import type { AuditLogStore } from '@recued/storage';
 import type { ScheduleStore } from './schedule-store.js';
 import type { DishStore } from './dish-store.js';
-import type { DishContextStore } from './dish-context-store.js';
-import { reconcileManagedConfigDish } from './managed-config-dish.js';
 import { retireSchedule } from './schedule-retire.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { WsClient } from './ws-server.js';
@@ -69,19 +69,20 @@ export interface ScheduleHandlerDeps {
    *  that cannot enumerate installed packs must not read "cannot tell" as
    *  "nothing works". */
   missingPackDepsForRecipe?: (recipe_id: string) => readonly string[];
-  /** D-179 P2 — standing-dish lookup for create-time binding
-   *  validation (existence + recipe match). D-179 config-on-schedule
-   *  widens to `set`/`delete`: a create with a non-empty `config_overlay`
-   *  mints a managed dish to carry it into headless fires, and delete
-   *  dissolves it. Optional; absent ⇒ binding is type-checked only, the
-   *  fire-time gate owns the rest, and `config_overlay` is a no-op. */
-  dishStore?: Pick<DishStore, 'get' | 'set' | 'delete'>;
-  /** D-179 config-on-schedule — continuity snapshots for the managed
-   *  overlay dish. Cleared alongside the dish on delete so a re-minted
-   *  dish never inherits a dead instance's prior-run state (same
-   *  discipline as `deleteDish` + the declarative reconciler's
-   *  managed-dish dissolution). Optional; absent ⇒ no snapshot clear. */
-  dishContextStore?: Pick<DishContextStore, 'clear'>;
+  /** D-179 P2 / D-319 — dish lookup for create/update-time binding
+   *  validation (existence + recipe match). Optional; absent ⇒ binding is
+   *  type-checked only and the fire-time gate owns the rest. */
+  dishStore?: Pick<DishStore, 'get'>;
+  /** D-319 — the dish a schedule made for a recipe WITHOUT naming one
+   *  belongs to: the recipe's main dish, made (on, with the settings given)
+   *  when it has none (`mainDishFor`). Late-bound by the composition.
+   *  Absent ⇒ such a schedule is dishless and settings are refused (a
+   *  harness without dishes). */
+  mainDish?: (input: {
+    recipe_id: string;
+    publisher_id: string;
+    config_overlay: Record<string, unknown> | null;
+  }) => Dish;
   instanceId: string;
   now?: () => number;
   /** Override for the cron interval floor. Self-hosters can lower this
@@ -110,15 +111,8 @@ const generateScheduleId = (): string => {
   return `sch_${ts}${rnd}`;
 };
 
-// D-179 config-on-schedule — managed-dish id mint (same scheme as
-// `dishes.create` / the trigger handler's `genDishId`).
-const generateDishId = (): string => {
-  const ts = Date.now().toString(36);
-  const rnd = Math.random().toString(36).slice(2, 8);
-  return `${DISH_ID_PREFIX}${ts}${rnd}`;
-};
-
-/** Validate an optional `config_overlay` arg. `undefined` ⇒ null (none);
+/** Validate an optional `config_overlay` arg — D-319: only a schedule that
+ *  makes its recipe's main dish carries settings. `undefined` ⇒ null (none);
  *  a non-object ⇒ reject; an object ⇒ the overlay. */
 const optionalOverlay = (v: unknown): Record<string, unknown> | null => {
   if (v === undefined) return null;
@@ -150,6 +144,26 @@ const optionalMissedPolicy = (v: unknown): MissedSchedulePolicy | null => {
 
 /** D-269 — a schedule's effective zone, or `undefined` when neither the row nor
  *  the server declares one (⇒ host-local, the pre-D-269 behaviour). */
+/** D-319 — the named dish exists and is a dish of this recipe. */
+const requireDishBindsRecipe = (
+  deps: Pick<ScheduleHandlerDeps, 'dishStore'>,
+  dish_id: string,
+  recipe_id: string,
+): void => {
+  if (!deps.dishStore) return;
+  const dish = deps.dishStore.get(dish_id);
+  if (!dish) {
+    throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
+  }
+  if (dish.recipe_id !== recipe_id) {
+    throw new RpcError(
+      'bad_request',
+      `Dish '${dish_id}' instantiates recipe '${dish.recipe_id}', not '${recipe_id}'`,
+      400,
+    );
+  }
+};
+
 const resolveScheduleZone = (
   schedule: { time_zone?: string } | undefined,
   deps: Pick<ScheduleHandlerDeps, 'serverTimeZone'>,
@@ -186,9 +200,9 @@ const oneShotCronExpression = (runAt: number, timeZone?: string): string => {
   return `${d.getUTCMinutes()} ${d.getUTCHours()} ${d.getUTCDate()} ${d.getUTCMonth() + 1} *`;
 };
 
-/** Attach the schedule's config (read from the bound dish) so the run
- *  modal can pre-fill the per-row Config editor. Derived at read time —
- *  the dish is the source of truth; nothing extra is persisted.
+/** Attach the settings of the schedule's dish, shown with the row. Derived
+ *  at read time — the dish is the source of truth; nothing extra is
+ *  persisted, and a schedule has no settings of its own (D-319).
  *
  *  D-266 also attaches the missed-cycle count, but ONLY for a schedule
  *  that is actually behind.
@@ -277,31 +291,24 @@ export const createSchedule = (
       { missing_packs: [...missingPacks] },
     );
   }
-  // D-179 P2 — standing-dish binding. Validated for existence + recipe
-  // match when the dish store is wired; the fire-time gate in the
-  // scheduler owns enabled/vanished handling.
+  // D-319 — the dish the schedule belongs to, validated for existence +
+  // recipe match; the fire-time gate in the scheduler owns switched-off /
+  // vanished handling. A schedule naming no dish joins the recipe's main
+  // dish — resolved below, after the admission gate, because it can make one.
   if (body.dish_id !== undefined
     && (typeof body.dish_id !== 'string' || body.dish_id.length === 0)) {
     throw new RpcError('bad_request', 'dish_id must be a non-empty string', 400);
   }
-  const dish_id = body.dish_id as string | undefined;
-  if (dish_id !== undefined && deps.dishStore) {
-    const dish = deps.dishStore.get(dish_id);
-    if (!dish) {
-      throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
-    }
-    if (dish.recipe_id !== recipe_id) {
-      throw new RpcError(
-        'bad_request',
-        `Dish '${dish_id}' instantiates recipe '${dish.recipe_id}', not '${recipe_id}'`,
-        400,
-      );
-    }
-  }
-  // D-179 config-on-schedule — validate the optional overlay up-front;
-  // the managed dish that carries it is minted below, only after the
-  // admission gate passes (so a rejected create never orphans a dish).
+  const named_dish_id = body.dish_id as string | undefined;
+  if (named_dish_id !== undefined) requireDishBindsRecipe(deps, named_dish_id, recipe_id);
   const overlay = optionalOverlay(body.config_overlay);
+  const hasSettings = overlay !== null && Object.keys(overlay).length > 0;
+  if (named_dish_id !== undefined && hasSettings) {
+    throw new RpcError('bad_request', 'Settings belong to the dish — change them on the dish, not the schedule', 400);
+  }
+  if (named_dish_id === undefined && deps.mainDish === undefined && hasSettings) {
+    throw new RpcError('not_configured', 'Settings need a dish, and this server keeps none', 501);
+  }
   const missed_policy = optionalMissedPolicy(body.missed_policy);
   let finalCronExpression = cron_expression;
   let run_at: number | undefined;
@@ -346,7 +353,7 @@ export const createSchedule = (
     last_error: null,
     instance_id: deps.instanceId,
     ...(missed_policy !== null ? { missed_policy } : {}),
-    ...(dish_id !== undefined ? { dish_id } : {}),
+    ...(named_dish_id !== undefined ? { dish_id: named_dish_id } : {}),
   };
 
   // Phase B admission check. Schedules are user-class — a gate at
@@ -372,33 +379,9 @@ export const createSchedule = (
     }
   }
 
-  // D-179 config-on-schedule — mint a managed dish to carry the overlay
-  // into the headless fires (the scheduler threads `schedule.dish_id`,
-  // and the executor merges the dish overlay over recipe defaults). Only
-  // when the caller gave a non-empty overlay and no explicit dish (an
-  // explicit binding wins). Placed post-admission so a GATE rejection
-  // never mints; `schedules.delete` dissolves it. (A `store.set` failure
-  // after the mint would leave an unreferenced dead dish row — the same
-  // non-atomicity the P5c enable-mints-dish path accepts; an orphan here
-  // is unreachable, so we don't pay a cross-store transaction for it.)
-  if (dish_id === undefined
-    && overlay !== null
-    && Object.keys(overlay).length > 0
-    && deps.dishStore) {
-    const managedDishId = generateDishId();
-    const managedDish: Dish = {
-      dish_id: managedDishId,
-      recipe_id,
-      publisher_id,
-      name: recipe_id,
-      is_default: false,
-      config_overlay: overlay,
-      enabled: true,
-      managed_by_schedule_id: schedule.schedule_id,
-      created_at: now,
-    };
-    deps.dishStore.set(managedDish);
-    schedule.dish_id = managedDishId;
+  // Post-admission, so a GATE rejection never makes a dish.
+  if (named_dish_id === undefined && deps.mainDish !== undefined) {
+    schedule.dish_id = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay }).dish_id;
   }
 
   deps.store.set(schedule);
@@ -414,13 +397,22 @@ export const updateSchedule = (
     enabled?: unknown;
     config_overlay?: unknown;
     missed_policy?: unknown;
+    dish_id?: unknown;
   },
 ): { schedule: Schedule } => {
   const existing = deps.store.get(schedule_id);
   if (!existing) {
     throw new RpcError('not_found', `Schedule '${schedule_id}' not found`, 404);
   }
-  const overlay = optionalOverlay(body.config_overlay);
+  // D-319 — settings belong to the schedule's dish.
+  if (body.config_overlay !== undefined) {
+    throw new RpcError('bad_request', 'A schedule has no settings of its own — change its dish’s settings', 400);
+  }
+  if (body.dish_id !== undefined
+    && (typeof body.dish_id !== 'string' || body.dish_id.length === 0)) {
+    throw new RpcError('bad_request', 'dish_id must be a non-empty string', 400);
+  }
+  if (typeof body.dish_id === 'string') requireDishBindsRecipe(deps, body.dish_id, existing.recipe_id);
 
   const missed_policy = optionalMissedPolicy(body.missed_policy);
   const cron_expression = typeof body.cron_expression === 'string' ? body.cron_expression : existing.cron_expression;
@@ -471,6 +463,7 @@ export const updateSchedule = (
     enabled,
     ...(ownerToggledArm ? { consecutive_failures: 0 } : {}),
     ...(missed_policy !== null ? { missed_policy } : {}),
+    ...(typeof body.dish_id === 'string' ? { dish_id: body.dish_id } : {}),
     next_run_at: existing.mode === 'one_shot'
       ? (existing.run_at ?? existing.next_run_at)
       // ⛔ `undefined`, NOT `''`, when there is no zone at either level.
@@ -508,41 +501,6 @@ export const updateSchedule = (
           507,
         );
       }
-    }
-  }
-
-  // D-179 — reconcile the managed config dish (immutable versioning: a
-  // changed overlay mints a new dish + dissolves the prior, so editing a
-  // schedule's config never mutates a live dish_id). Post-gate so a
-  // rejected update can't mint. `{}` clears; the row repoints.
-  if (overlay !== null && deps.dishStore) {
-    const { nextDishId, changed } = reconcileManagedConfigDish({
-      dishStore: deps.dishStore,
-      ...(deps.dishContextStore ? { dishContextStore: deps.dishContextStore } : {}),
-      recipe_id: existing.recipe_id,
-      publisher_id: existing.publisher_id,
-      marker: 'managed_by_schedule_id',
-      markerValue: schedule_id,
-      currentDishId: existing.dish_id ?? null,
-      overlay,
-      now,
-    });
-    if (changed) {
-      if (nextDishId === null) delete updated.dish_id;
-      else updated.dish_id = nextDishId;
-    }
-  }
-
-  // A skipped one-shot commonly retained a disabled managed dish. Re-arming
-  // the schedule while leaving that dish paused would only produce another
-  // skip, so revive the dish the schedule itself owns. Never touch an assigned
-  // dish or one managed by a different rule.
-  if (rearmingOneShot && updated.dish_id !== undefined && deps.dishStore) {
-    const ownedDish = deps.dishStore.get(updated.dish_id);
-    if (ownedDish !== null
-      && ownedDish.managed_by_schedule_id === schedule_id
-      && !ownedDish.enabled) {
-      deps.dishStore.set({ ...ownedDish, enabled: true });
     }
   }
 
@@ -584,6 +542,7 @@ export const missedRuns = (
       const name = deps.recipeStore?.get(entry.recipe_id)?.metadata?.name;
       return {
         recipe_id: entry.recipe_id,
+        ...(entry.dish_id !== undefined ? { dish_id: entry.dish_id } : {}),
         ...(typeof name === 'string' && name.length > 0 ? { recipe_name: name } : {}),
         schedule_ids: entry.schedule_ids,
         missed_cycles: entry.missed_cycles,
@@ -596,11 +555,12 @@ export const missedRuns = (
 
 /** D-266 — answer the card.
  *
- *  ⛔ `run` GRANTS ONE CATCH-UP PER RECIPE, NOT ONE PER SCHEDULE AND
- *  NOT ONE PER MISSED CYCLE. A brief supersedes a brief: only the
- *  most-recently-run schedule of each recipe is granted, and that
- *  recipe's other waiting schedules are recorded skipped in the same
- *  breath. The missed COUNT stays in the card for as long as the card
+ *  ⛔ `run` GRANTS ONE CATCH-UP PER DISH (D-319 — per recipe before), NOT
+ *  ONE PER SCHEDULE AND NOT ONE PER MISSED CYCLE. A brief supersedes a
+ *  brief: only the most-recently-run schedule of each dish is granted, and
+ *  that dish's other waiting schedules are recorded skipped in the same
+ *  breath. Two dishes of one recipe run with different settings, so each
+ *  catches up. The missed COUNT stays in the card for as long as the card
  *  stands, because it is the record of the outage, not an offer of
  *  that many runs.
  *
@@ -610,25 +570,32 @@ export const missedRuns = (
  *  'backfill'` and the missed-cycle metadata, which a run dispatched
  *  from here would have lost.
  *
- *  Omitting `recipe_ids` answers every entry: that is what the card's
+ *  `recipe_ids` answers every dish of those recipes, `dish_ids` those dishes;
+ *  omitting both answers every entry: that is what the card's
  *  [Run them] / [Skip them] send. Ids naming nothing outstanding are
  *  ignored rather than rejected — the report is recomputed, so a
  *  client answering a card that a regular cycle resolved a second
  *  earlier is racing normally, not sending a bad request. */
 export const answerMissed = (
   deps: AnswerMissedDeps,
-  body: { answer?: unknown; recipe_ids?: unknown },
+  body: { answer?: unknown; recipe_ids?: unknown; dish_ids?: unknown },
 ): { ran: string[]; skipped: string[] } => {
   const answer = body.answer;
   if (answer !== 'run' && answer !== 'skip') {
     throw new RpcError('bad_request', "answer must be 'run' or 'skip'", 400);
   }
-  if (body.recipe_ids !== undefined
-    && (!Array.isArray(body.recipe_ids)
-      || body.recipe_ids.some((id) => typeof id !== 'string'))) {
-    throw new RpcError('bad_request', 'recipe_ids must be an array of strings', 400);
+  for (const field of ['recipe_ids', 'dish_ids'] as const) {
+    const ids = body[field];
+    if (ids !== undefined && (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string'))) {
+      throw new RpcError('bad_request', `${field} must be an array of strings`, 400);
+    }
   }
-  const wanted = body.recipe_ids as string[] | undefined;
+  const wantedRecipes = body.recipe_ids as string[] | undefined;
+  const wantedDishes = body.dish_ids as string[] | undefined;
+  const wanted = (entry: { recipe_id: string; dish_id?: string }): boolean =>
+    (wantedRecipes === undefined && wantedDishes === undefined)
+    || wantedRecipes?.includes(entry.recipe_id) === true
+    || (entry.dish_id !== undefined && wantedDishes?.includes(entry.dish_id) === true);
   const now = deps.now?.() ?? Date.now();
   const report = buildMissedRunReport(deps.store.list(), now);
 
@@ -645,7 +612,7 @@ export const answerMissed = (
   const ran: string[] = [];
   const skipped: string[] = [];
   for (const entry of report.entries) {
-    if (wanted !== undefined && !wanted.includes(entry.recipe_id)) continue;
+    if (!wanted(entry)) continue;
     for (const schedule_id of entry.schedule_ids) {
       const runsThisOne = answer === 'run' && schedule_id === entry.run_schedule_id;
       if (runsThisOne) {
@@ -665,7 +632,7 @@ export const answerMissed = (
           missed_answer: { at: answeredAt, answer: 'skip' },
           last_status: 'skipped',
           last_error: answer === 'run'
-            ? 'Superseded by the newer missed run of this recipe.'
+            ? 'Superseded by the newer missed run of this dish.'
             : 'Missed run skipped — you chose not to run it.',
         });
         skipped.push(schedule_id);
@@ -680,9 +647,8 @@ export const deleteSchedule = (
   deps: ScheduleHandlerDeps,
   schedule_id: string,
 ): { deleted: true } => {
-  // D-215 slice 1 — row delete + managed-dish dissolve now live in
-  // `retireSchedule`, shared with the scheduler's one-shot success path so
-  // the `managed_by_schedule_id` guard is written exactly once.
+  // D-215 slice 1 — `retireSchedule`, shared with the scheduler's one-shot
+  // success path. D-319 — the schedule's dish stays.
   if (!retireSchedule(deps, schedule_id)) {
     throw new RpcError('not_found', `Schedule '${schedule_id}' not found`, 404);
   }

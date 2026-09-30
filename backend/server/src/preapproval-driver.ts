@@ -62,17 +62,18 @@ export const createPreapprovalDriver = (deps: {
     const { candidate, event } = await deps.storage.triggerIngress.read(futureRef);
     await deps.settleRecovered(candidate.trigger_id, event, (observe) => runReviewedTrigger(futureRef, observe));
   };
-  const autoRunActivation = (recipeId: string, enabled: boolean) => {
+  /** D-319 — a timer is one DISH's: activation is keyed by the dish. */
+  const autoRunActivation = (dishId: string, enabled: boolean) => {
     if (!deps.storage.isReady()) return { kind: 'disabled' as const };
     deps.storage.repository.expire();
     for (const managed of deps.activations.listManaged()) {
-      if (managed.target_kind === 'next_auto_run' && managed.target_key === recipeId) {
+      if (managed.target_kind === 'next_auto_run' && managed.target_key === dishId) {
         // Retirement can restore the ordinary row, so return disabled for this
         // stale timer; the next roster refresh reads the restored value.
         if (deps.activations.retire(managed.future_execution_ref)) return { kind: 'disabled' as const };
       }
     }
-    return deps.activations.resolveAutomationActivation('next_auto_run', recipeId, enabled);
+    return deps.activations.resolveAutomationActivation('next_auto_run', dishId, enabled);
   };
   return {
   triggerEligible(triggerId: string, enabled: boolean): boolean {
@@ -126,20 +127,24 @@ export const createPreapprovalDriver = (deps: {
       || checkpoint.preapproval_candidate_ref || checkpoint.preapproval_execution_ref) {
       throw new RpcError('preapproval_stale', 'The checkpoint does not retain its ordinary automatic qualification.', 409);
     }
-    const poll = deps.activations.ordinaryAutoRunPoll(checkpoint.recipe_id!, checkpoint.auto_run_qualification);
+    const poll = deps.activations.ordinaryAutoRunPoll(checkpoint.recipe_id!,
+      checkpoint.auto_run_qualification.dish_id, checkpoint.auto_run_qualification);
     return { after_auto_run_qualification: poll.qualify, auto_run_qualification: poll.qualification };
   },
-  autoRunEligible(recipeId: string, enabled: boolean): boolean {
-    const selected = autoRunActivation(recipeId, enabled);
+  autoRunEligible(dishId: string, enabled: boolean): boolean {
+    const selected = autoRunActivation(dishId, enabled);
     return selected.kind === 'ordinary' || (selected.kind === 'preapproved' && selected.status === 'active');
   },
   async executeAutoRun(request: ExecuteRequest, enabled: boolean): Promise<ExecuteResponse | null> {
     if (!request.recipe_id) throw new RpcError('preapproval_stale', 'An automatic run requires its installed recipe.', 409);
-    const selected = autoRunActivation(request.recipe_id, enabled);
+    // D-319 — an automatic run is one dish's timer.
+    if (!request.dish_id) throw new RpcError('preapproval_stale', 'An automatic run requires the dish whose timer fired.', 409);
+    const dishId = request.dish_id;
+    const selected = autoRunActivation(dishId, enabled);
     if (selected.kind === 'disabled' || (selected.kind === 'preapproved' && selected.status !== 'active')) return null;
     if (selected.kind === 'ordinary') {
       let poll: ReturnType<PreapprovalActivations['ordinaryAutoRunPoll']>;
-      try { poll = deps.activations.ordinaryAutoRunPoll(request.recipe_id); }
+      try { poll = deps.activations.ordinaryAutoRunPoll(request.recipe_id, dishId); }
       catch (error) {
         // Another process can accept a review between selection and capture.
         if (error instanceof RpcError && error.code === 'preapproval_stale') return null;
@@ -169,9 +174,13 @@ export const createPreapprovalDriver = (deps: {
     try {
       const candidate = await deps.runtime.autoRunCandidate(selected.future_execution_ref);
       const plan = candidate.plan;
+      // D-319 — the reviewed run is the dish's run: attributed to it (the
+      // reviewed settings are replayed, never re-merged — a run with a
+      // `run_id` binds its dish for attribution only).
       return await handleExecute(deps.execution, { recipe_id: plan.recipe.recipe_id,
         config: plan.recipe_snapshots[0]!.effective_config, trigger_source: 'auto_run',
         execution_source: plan.origin.source, ...candidate.origin,
+        dish_id: dishId,
         ...(request.process_id ? { process_id: request.process_id } : {}),
       }, { run_id: candidate.run_id, preapproval_candidate: candidate.handle });
     } finally {

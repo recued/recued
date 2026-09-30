@@ -47,14 +47,15 @@
  *  channel. The emailed ask instructs the user to reply with only the
  *  option.
  *
- *  One-link affordance (D-158 P2b-ii): on a *public-reachable* server an
- *  `answerLink` builder is injected. When present, `deliverAsk`
- *  additionally carries a one-click link to the `ask` landing page (a
- *  `body_html` link + a `body_text` line) — structured radio-button
- *  input, no free-text parsing. The reply-by-email path above is ALWAYS
- *  present regardless; the link is purely additive. Absent `answerLink`
- *  (a non-public deployment) → text-only, exactly as before. The landing
- *  page itself is `channels/ask-landing.ts`.
+ *  One-link affordance (D-158 P2b-ii): an `answerLink` builder is
+ *  injected, answering the landing URL while the server has a public
+ *  address. When it answers, `deliverAsk` additionally carries a one-click
+ *  link to the `ask` landing page (a `body_html` link + a `body_text`
+ *  line) — structured radio-button input, no free-text parsing. The
+ *  reply-by-email path above is ALWAYS present regardless; the link is
+ *  purely additive. No builder, or no answer (a non-public deployment) →
+ *  text-only, exactly as before. The landing page itself is
+ *  `channels/ask-landing.ts`.
  *
  *  `closeAsk` is a genuine no-op: email cannot recall or edit a sent
  *  message. A stale reply-request email is harmless — a late reply
@@ -106,13 +107,13 @@ export interface EmailChannelDeps {
   /** Sends a composed email through the BYO mail account. */
   sendEmail: EmailSender;
   /** Builds the public `ask` landing-page URL for an `ask_id` (D-158
-   *  P2b-ii). Injected ONLY on a public-reachable server — when present,
-   *  `deliverAsk` additionally carries a one-click answer link (a
-   *  `body_html` link + a `body_text` line) alongside the always-present
-   *  reply-by-email path. Absent → text-only. The block is a leaf and
-   *  cannot know the server's public base URL or the landing route;
-   *  `backend/server` injects this builder. */
-  answerLink?: (ask_id: string) => string;
+   *  P2b-ii), or `undefined` while the server has no public address. When
+   *  it answers, `deliverAsk` additionally carries a one-click answer link
+   *  (a `body_html` link + a `body_text` line) alongside the always-present
+   *  reply-by-email path. Absent or unanswered → text-only. The block is a
+   *  leaf and cannot know the server's public base URL or the landing
+   *  route; `backend/server` injects this builder. */
+  answerLink?: (ask_id: string) => string | undefined;
 }
 
 /** The minimal inbound shape `parseEmailReply` needs — the subject (it
@@ -351,10 +352,11 @@ export const createEmailChannel = (deps: EmailChannelDeps): Channel => {
       // send a duplicate email.
       delivered.add(ask_id);
       try {
-        // The one-link affordance rides only on a public-reachable
-        // server (an `answerLink` builder was injected); absent → a
-        // text-only ask, exactly as a non-public deployment.
-        const answerUrl = answerLink?.(ask_id);
+        // The one-link affordance rides only while the server has a
+        // public address (the builder answers); otherwise a text-only
+        // ask, exactly as a non-public deployment.
+        const link = answerLink?.(ask_id);
+        const answerUrl = link !== undefined && link.length > 0 ? link : undefined;
         await sendEmail(composeAsk(ask_id, message, options, answerUrl));
       } catch (error) {
         // Failed send — release the reservation so the boot sweep can

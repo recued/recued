@@ -9521,8 +9521,9 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   const records = page.locator(`[${DATA_TAB}="records"]`);
   const search = page.locator(`[${DATA_TAB}="search"]`);
   await expect(tablist).toBeVisible();
-  // D-290 — 17, not 18: Today left this tablist for its own `#today` route.
-  await expect(tabs).toHaveCount(17);
+  // D-290 — Today left this tablist for its own `#today` route (18 → 17), and
+  // D-315 put Mail facts under Received (17 → 18).
+  await expect(tabs).toHaveCount(18);
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
   // ⚠ D-290 — a tabless `#data` lands on Contacts again (D-267 had made it
   // Today, which is no longer a tab here). This test is about the ARROW-KEY
@@ -9571,8 +9572,9 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   const collectionTabs = page.getByRole('tablist', {
     name: 'Data collections',
   }).getByRole('tab');
-  // D-290 — Today is its own route now, not one of these.
-  await expect(collectionTabs).toHaveCount(17);
+  // D-290 — Today is its own route now, not one of these; D-315 added Mail
+  // facts under Received.
+  await expect(collectionTabs).toHaveCount(18);
   const tabHeights = await collectionTabs.evaluateAll((tabs) =>
     tabs.map((tab) => tab.getBoundingClientRect().height)
   );
@@ -13558,43 +13560,52 @@ test('Data returns keyboard focus from record detail to its exact row', async ({
   await expect(record).toBeFocused();
 });
 
-test('Automation keeps keyboard focus on a section tab through its repaint', async ({ page }) => {
+test('Automation keeps keyboard focus on a view tab through its repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#automation'));
 
-  const triggers = page.locator(`[${AUTOMATION_SUBNAV}="triggers"]`);
-  await expect(triggers).toBeVisible();
-  await triggers.focus();
-  await expect(triggers).toBeFocused();
+  // D-319 §5.4 — the nav is the page's two views.
+  const comingUp = page.locator(`[${AUTOMATION_SUBNAV}="coming-up"]`);
+  await expect(comingUp).toBeVisible();
+  await comingUp.focus();
+  await expect(comingUp).toBeFocused();
   await page.keyboard.press('Enter');
 
-  await expect(page).toHaveURL(/#automation\/triggers$/);
-  await expect(triggers).toHaveAttribute('aria-selected', 'true');
-  await expect(triggers).toBeFocused();
+  await expect(page).toHaveURL(/#automation\/coming-up$/);
+  await expect(comingUp).toHaveAttribute('aria-selected', 'true');
+  await expect(comingUp).toBeFocused();
 });
 
-test('Automation contains narrow section navigation and long rule text', async ({ page }) => {
+test('Automation contains narrow navigation, the one list and long rule text', async ({ page }) => {
   await page.setViewportSize({ width: 280, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?automation=rules&automation_text=long#automation/dishes`,
+    `${HARNESS_URL}?automation=rules&automation_text=long#automation/coming-up`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const route = page.locator('[data-recued-automation-route]');
-  const subnav = route.locator('.automation-subnav');
-  const dishes = page.locator(`[${AUTOMATION_SUBNAV}="dishes"]`);
-  await expect(dishes).toHaveAttribute('aria-selected', 'true');
-  expect(await subnav.evaluate(
-    (element) => element.scrollWidth > element.clientWidth,
-  )).toBe(true);
-  expect(await subnav.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-  expect(await dishes.evaluate((element) => {
+  const comingUp = page.locator(`[${AUTOMATION_SUBNAV}="coming-up"]`);
+  await expect(comingUp).toHaveAttribute('aria-selected', 'true');
+  // The selected view's tab is inside the nav, scrolled to if it must be.
+  expect(await comingUp.evaluate((element) => {
     const nav = element.parentElement;
     if (nav === null) return false;
     const navBox = nav.getBoundingClientRect();
     const tabBox = element.getBoundingClientRect();
     return tabBox.left >= navBox.left - 1 && tabBox.right <= navBox.right + 1;
   })).toBe(true);
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  // D-319 §5.4 — the one list, grouped by recipe, holds long rows too.
+  await page.evaluate(() => window.__app.setHash('#automation'));
+  const group = route.locator('[data-recued-automation-recipe]').first();
+  await expect(group).toBeVisible();
+  expect(await route.locator('[data-recued-automation-recipe], [data-recued-automation-row]')
+    .evaluateAll((elements) => elements.every(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ))).toBe(true);
   expect(await route.evaluate(
     (element) => element.scrollWidth <= element.clientWidth,
   )).toBe(true);
@@ -13616,6 +13627,41 @@ test('Automation contains narrow section navigation and long rule text', async (
   expect(await route.evaluate(
     (element) => element.scrollWidth <= element.clientWidth,
   )).toBe(true);
+});
+
+test('Automation is one list by recipe and dish, with filters and a way back from Details', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=dishes`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation'));
+
+  const route = page.locator('[data-recued-automation-route]');
+  const group = route.locator('[data-recued-automation-recipe="daily-brief"]');
+  const line = group.locator('li[data-recued-automation-dish="dish-e2e-1"]');
+  await expect(line).toBeVisible();
+  // A schedule made before D-319 belongs to no dish: it sits under its recipe.
+  await expect(group.locator('[data-recued-automation-row="schedule:schedule-e2e-1"]')).toBeVisible();
+  expect(await route.evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  )).toBe(true);
+
+  const off = route.locator('[data-recued-automation-chip="off"]');
+  await off.click();
+  await expect(off).toHaveAttribute('aria-pressed', 'true');
+  await expect(off).toBeFocused();
+  await expect(line).toHaveCount(0);
+  await off.click();
+  await expect(off).toHaveAttribute('aria-pressed', 'false');
+  await expect(line).toBeVisible();
+
+  const details = line.locator('[data-recued-automation-action="detail:dish"]');
+  await details.click();
+  const back = route.locator('[data-recued-automation-back]');
+  await expect(back).toHaveText('Back to By recipe');
+  await expect(page).toHaveURL(/#automation\/dishes\/dish-e2e-1$/);
+  await back.click();
+  await expect(page).toHaveURL(/#automation\/all$/);
+  await expect(details).toBeFocused();
 });
 
 test('Automation contains long rule facts in narrow detail views', async ({ page }) => {
@@ -13751,57 +13797,65 @@ test('Automation contains long inline poll status and controls', async ({ page }
   )).toBe(true);
 });
 
-test('Automation section tabs form one arrow-key keyboard stop', async ({ page }) => {
+test('Automation view tabs form one arrow-key keyboard stop', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#automation'));
 
+  // D-319 §5.4 — two views: By recipe and Coming up.
   const tabs = page.locator(`[${AUTOMATION_SUBNAV}]`);
-  const autoRun = page.locator(`[${AUTOMATION_SUBNAV}="auto-run"]`);
-  const triggers = page.locator(`[${AUTOMATION_SUBNAV}="triggers"]`);
-  const dishes = page.locator(`[${AUTOMATION_SUBNAV}="dishes"]`);
+  const all = page.locator(`[${AUTOMATION_SUBNAV}="all"]`);
+  const comingUp = page.locator(`[${AUTOMATION_SUBNAV}="coming-up"]`);
   const panel = page.locator(`[${AUTOMATION_SECTION_PANEL}]`);
+  await expect(tabs).toHaveCount(2);
   const tabHeights = await tabs.evaluateAll((nodes) => nodes.map(
     (node) => node.getBoundingClientRect().height,
   ));
   expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
   await expect(panel).toHaveAttribute(
     'aria-labelledby',
-    'recued-automation-section-tab-auto-run',
+    'recued-automation-section-tab-all',
   );
-  await expect(page.getByRole('tabpanel', { name: /Auto-run/ })).toBeVisible();
-  await expect(autoRun).toHaveAttribute('aria-selected', 'true');
-  await expect(autoRun).toHaveAttribute('tabindex', '0');
-  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+  await expect(page.getByRole('tabpanel', { name: /By recipe/ })).toBeVisible();
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toHaveAttribute('tabindex', '0');
+  const stops = () => tabs.evaluateAll((nodes) => nodes.filter(
     (node) => node.getAttribute('tabindex') === '0',
-  ).length)).toBe(1);
+  ).length);
+  expect(await stops()).toBe(1);
 
-  await autoRun.focus();
+  await all.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(triggers).toHaveAttribute('aria-selected', 'true');
-  await expect(triggers).toHaveAttribute('tabindex', '0');
-  await expect(triggers).toBeFocused();
+  await expect(comingUp).toHaveAttribute('aria-selected', 'true');
+  await expect(comingUp).toHaveAttribute('tabindex', '0');
+  await expect(comingUp).toBeFocused();
   await expect(panel).toHaveAttribute(
     'aria-labelledby',
-    'recued-automation-section-tab-triggers',
+    'recued-automation-section-tab-coming-up',
   );
-  await expect(page).toHaveURL(/#automation\/triggers$/);
-
-  await page.keyboard.press('End');
-  await expect(dishes).toHaveAttribute('aria-selected', 'true');
-  await expect(dishes).toBeFocused();
-  await expect(page).toHaveURL(/#automation\/dishes$/);
+  await expect(page).toHaveURL(/#automation\/coming-up$/);
 
   await page.keyboard.press('Home');
-  await expect(autoRun).toHaveAttribute('aria-selected', 'true');
-  await expect(autoRun).toBeFocused();
-  await page.keyboard.press('ArrowLeft');
-  await expect(dishes).toHaveAttribute('aria-selected', 'true');
-  await expect(dishes).toBeFocused();
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(comingUp).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+
+  // A list by kind (a rule's Details, an older link) has no tab of its own:
+  // the nav keeps its one keyboard stop.
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+  await expect(all).toHaveAttribute('aria-selected', 'false');
+  await expect(all).toHaveAttribute('tabindex', '0');
+  expect(await stops()).toBe(1);
 });
 
 test('Automation keeps keyboard focus on its status filter through repaint', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.evaluate(() => window.__app.setHash('#automation'));
+  // D-319 §5.4 — the one list filters by its chips; a list by kind keeps
+  // its Status filter.
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
 
   const status = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
   await expect(status).toBeVisible();
@@ -13864,7 +13918,9 @@ test('Automation keeps a failed Schedules Retry focused and single-flight', asyn
     '[data-recued-automation-action="detail:schedule"]'
     + '[data-rule-id="schedule-e2e-1"]',
   )).toBeVisible();
-  await expect(page.locator(`[${AUTOMATION_SUBNAV}="schedules"]`))
+  // D-319 §5.4 — a list by kind has no tab of its own: focus lands on the
+  // nav's one keyboard stop.
+  await expect(page.locator(`[${AUTOMATION_SUBNAV}="all"]`))
     .toBeFocused();
 });
 
@@ -14408,8 +14464,9 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
     '[data-recued-automation-action="run:watch"]'
     + '[data-rule-id="hubspot/deal/main-crm"]',
   );
+  // D-319 §5.4 — the nav's other view.
   const schedulesTab = page.locator(
-    '[data-recued-automation-subnav="schedules"]',
+    '[data-recued-automation-subnav="coming-up"]',
   );
   const statusFilter = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
 
@@ -14471,7 +14528,7 @@ test('Automation keeps manual watch runs owned through reconciliation', async ({
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
 
   await schedulesTab.click();
-  await expect(page).toHaveURL(/#automation\/schedules$/);
+  await expect(page).toHaveURL(/#automation\/coming-up$/);
 });
 
 test('Automation restores failed manual watch runs for retry', async ({ page }) => {
@@ -14486,8 +14543,9 @@ test('Automation restores failed manual watch runs for retry', async ({ page }) 
     '[data-recued-automation-action="run:watch"]'
     + '[data-rule-id="hubspot/deal/main-crm"]',
   );
+  // D-319 §5.4 — the nav's other view.
   const schedulesTab = page.locator(
-    '[data-recued-automation-subnav="schedules"]',
+    '[data-recued-automation-subnav="coming-up"]',
   );
   await runNow.focus();
   await page.keyboard.press('Enter');
@@ -17406,9 +17464,12 @@ test('Recipes restores the replaced detail Run opener after execution', async ({
   await expect(opener).toBeFocused();
 });
 
-test('Recipes keeps Config owned while loading its editor', async ({ page }) => {
+// D-319 — the Config button is gone: a recipe's settings are its dishes'.
+// This demo's recipe runs when the owner runs it, so "Running as" offers
+// Save settings: it reads what a first dish starts from, then opens the form.
+test('Recipes keeps Save settings owned while reading what a first dish starts from', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&hold_rpc=recipe_config.get`,
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&hold_rpc=dishes.defaults`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -17417,36 +17478,38 @@ test('Recipes keeps Config owned while loading its editor', async ({ page }) => 
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  const config = detail.locator(
-    '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
+  await expect(detail.locator('[data-recued-recipes-action="open-recipe-config"]')).toHaveCount(0);
+  const switchOn = detail.locator(
+    '[data-recued-running-as-action="save-settings"][data-recued-running-as-recipe="autorun-live-1"]',
   );
-  await expect(config).toHaveText('Config');
+  await expect(switchOn).toHaveText('Save settings');
   const readsBefore = await page.evaluate(
-    () => window.__app.rpcCallCount('recipe_config.get'),
+    () => window.__app.rpcCallCount('dishes.defaults'),
   );
-  await config.focus();
+  await switchOn.focus();
   await page.keyboard.press('Enter');
 
-  await expect(config).toHaveText('Loading settings…');
-  await expect(config).toHaveAttribute('aria-disabled', 'true');
-  await expect(config).toHaveAttribute('aria-busy', 'true');
-  await expect(config).not.toHaveAttribute('disabled');
-  await expect(config).toBeFocused();
-  await config.evaluate((button: HTMLElement) => {
+  await expect(switchOn).toHaveText('Saving…');
+  await expect(switchOn).toHaveAttribute('aria-disabled', 'true');
+  await expect(switchOn).toHaveAttribute('aria-busy', 'true');
+  await expect(switchOn).not.toHaveAttribute('disabled');
+  await expect(switchOn).toBeFocused();
+  await switchOn.evaluate((button: HTMLElement) => {
     button.click();
     button.click();
   });
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.get')),
+    () => page.evaluate(() => window.__app.rpcCallCount('dishes.defaults')),
   ).toBe(readsBefore + 1);
-  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('recipe_config.get')))
+  expect(await page.evaluate(() => window.__app.releaseRpcResponses?.('dishes.defaults')))
     .toBe(1);
   const editor = page.getByRole('dialog', { name: 'Edit config' });
   await expect(editor).toBeFocused();
+  await expect(editor).toContainText('Settings for “Watch pipeline”');
   await editor.getByRole('button', { name: 'Close', exact: true }).click();
   await expect(editor).toHaveCount(0);
-  await expect(config).toHaveText('Config');
-  await expect(config).toBeFocused();
+  await expect(switchOn).toHaveText('Save settings');
+  await expect(switchOn).toBeFocused();
 });
 
 test('the shared config editor keeps usable mobile targets', async ({ page }) => {
@@ -17460,8 +17523,8 @@ test('the shared config editor keeps usable mobile targets', async ({ page }) =>
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
   await detail.locator(
-    '[data-recued-recipes-action="open-recipe-config"]'
-    + '[data-recipe-id="autorun-live-1"]',
+    '[data-recued-running-as-action="save-settings"]'
+    + '[data-recued-running-as-recipe="autorun-live-1"]',
   ).click();
 
   const editor = page.getByRole('dialog', { name: 'Edit config' });
@@ -17494,16 +17557,17 @@ test('the shared config editor keeps usable mobile targets', async ({ page }) =>
     const rect = node.getBoundingClientRect();
     return { width: rect.width, height: rect.height };
   }));
-  expect(sizes).toHaveLength(3);
+  // Close, the recipe's one setting, "Also on a schedule", and Save.
+  expect(sizes).toHaveLength(4);
   expect(Math.min(...sizes.map(({ width }) => width)))
     .toBeGreaterThanOrEqual(36);
   expect(Math.min(...sizes.map(({ height }) => height)))
     .toBeGreaterThanOrEqual(36);
 });
 
-test('Recipes returns a failed Config read to its action with a retryable error', async ({ page }) => {
+test('Recipes returns a failed Save settings read to its action with a retryable error', async ({ page }) => {
   await page.goto(
-    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_config_response=fail-slow`,
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&dishes_defaults_response=fail-slow`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -17512,31 +17576,32 @@ test('Recipes returns a failed Config read to its action with a retryable error'
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  const config = detail.locator(
-    '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
+  const switchOn = detail.locator(
+    '[data-recued-running-as-action="save-settings"][data-recued-running-as-recipe="autorun-live-1"]',
   );
-  await config.focus();
+  await switchOn.focus();
   await page.keyboard.press('Enter');
 
-  await expect(config).toHaveText('Loading settings…');
-  await expect(config).toHaveAttribute('aria-disabled', 'true');
-  await expect(config).toHaveAttribute('aria-busy', 'true');
-  await expect(config).toBeFocused();
+  await expect(switchOn).toHaveText('Saving…');
+  await expect(switchOn).toHaveAttribute('aria-disabled', 'true');
+  await expect(switchOn).toHaveAttribute('aria-busy', 'true');
+  await expect(switchOn).toBeFocused();
 
-  await expect(detail.getByRole('alert')).toHaveText(
-    "Recued could not load the settings: Recipe config is temporarily unavailable. Try again.",
-  );
-  await expect(config).toHaveText('Config');
-  await expect(config).not.toHaveAttribute('aria-disabled');
-  await expect(config).not.toHaveAttribute('aria-busy');
-  await expect(config).toBeFocused();
+  const alert = detail.locator('[data-recued-running-as] [role="alert"]');
+  await expect(alert).toContainText('Recued could not read what this recipe starts from');
+  await expect(alert).toContainText('Settings are temporarily unavailable');
+  await expect(switchOn).toHaveText('Save settings');
+  await expect(switchOn).not.toHaveAttribute('aria-disabled');
+  await expect(switchOn).not.toHaveAttribute('aria-busy');
+  await expect(switchOn).toBeFocused();
+  await expect(page.getByRole('dialog', { name: 'Edit config' })).toHaveCount(0);
 });
 
-test('Recipes keeps Config save owned through failure and retry', async ({ page }) => {
+test('Recipes keeps Save settings owned through failure and retry', async ({ page }) => {
   await page.goto(
     `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
-    + '&recipe_config_set_response=fail-once-slow-retry'
-    + '&recipe_config_set_delay_ms=2500',
+    + '&dishes_create_response=fail-once-slow-retry'
+    + '&dishes_create_delay_ms=2500',
   );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#recipes'));
@@ -17545,41 +17610,40 @@ test('Recipes keeps Config save owned through failure and retry', async ({ page 
     .getByRole('button', { name: 'Open Watch pipeline details', exact: true })
     .click();
   const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
-  const config = detail.locator(
-    '[data-recued-recipes-action="open-recipe-config"]'
-    + '[data-recipe-id="autorun-live-1"]',
-  );
-  await config.click();
+  await detail.locator(
+    '[data-recued-running-as-action="save-settings"]'
+    + '[data-recued-running-as-recipe="autorun-live-1"]',
+  ).click();
 
   const editor = page.getByRole('dialog', { name: 'Edit config' });
   const limit = editor.locator('[data-var-key="limit"]');
   await limit.fill('40');
-  const save = editor.locator(
+  const confirm = editor.locator(
     '[data-recued-config-editor-action="confirm"]',
   );
   const close = editor.getByRole('button', { name: 'Close', exact: true });
   const callsBefore = await page.evaluate(
-    () => window.__app.rpcCallCount('recipe_config.set'),
+    () => window.__app.rpcCallCount('dishes.create'),
   );
-  await save.focus();
+  await confirm.focus();
   await page.keyboard.press('Enter');
 
-  await expect(save).toHaveText('Saving…');
-  await expect(save).toHaveAttribute('aria-disabled', 'true');
-  await expect(save).toHaveAttribute('aria-busy', 'true');
-  await expect(save).not.toHaveAttribute('disabled');
-  await expect(save).toBeFocused();
+  await expect(confirm).toHaveText('Saving…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
   await expect(limit).toBeDisabled();
   await expect(close).toHaveAttribute('aria-disabled', 'true');
   await expect(close).not.toHaveAttribute('disabled');
   await page.keyboard.press('Escape');
   await expect(editor).toBeVisible();
-  await save.evaluate((button) => {
+  await confirm.evaluate((button) => {
     (button as HTMLButtonElement).click();
     (button as HTMLButtonElement).click();
   });
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.set')),
+    () => page.evaluate(() => window.__app.rpcCallCount('dishes.create')),
   ).toBe(callsBefore + 1);
 
   await page.evaluate(() => {
@@ -17600,25 +17664,29 @@ test('Recipes keeps Config save owned through failure and retry', async ({ page 
   );
   await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
   await expect(editor).toBeVisible();
-  await expect(save).toBeFocused();
+  await expect(confirm).toBeFocused();
 
   await expect(editor.getByRole('alert')).toHaveText(
     "Recued could not save that. What you typed is still here. Try again.",
   );
   await expect(limit).toHaveValue('40');
   await expect(limit).toBeEnabled();
-  await expect(save).toHaveText('Save');
-  await expect(save).not.toHaveAttribute('aria-disabled');
-  await expect(save).not.toHaveAttribute('aria-busy');
-  await expect(save).toBeFocused();
+  await expect(confirm).toHaveText('Save');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).toBeFocused();
 
   await page.keyboard.press('Enter');
-  await expect(save).toHaveText('Saving…');
+  await expect(confirm).toHaveText('Saving…');
   await expect.poll(
-    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.set')),
+    () => page.evaluate(() => window.__app.rpcCallCount('dishes.create')),
   ).toBe(callsBefore + 2);
   await expect(editor).toHaveCount(0);
-  await expect(config).toBeFocused();
+  // Saved: the dish's line is drawn, and its switch has the focus.
+  const dishSwitch = detail.locator('[data-recued-running-as-dish][role="switch"]');
+  await expect(dishSwitch).toHaveAttribute('aria-checked', 'true');
+  await expect(dishSwitch).toHaveAccessibleName('Watch pipeline');
+  await expect(dishSwitch).toBeFocused();
 
   await page.evaluate(() => window.__app.setHash('#data'));
   await expect(page).toHaveURL(/#data$/);
@@ -17657,11 +17725,14 @@ test('Recipes preserves related auto-run action ownership', async ({ page }) => 
       + '[data-recued-recipes-action="run-defaults"], '
       + '[data-recued-recipes-action="open-schedule"]',
   )).toHaveCount(0);
+  // D-319 — no timer toggle in the header: the recipe runs as its dish,
+  // switched under "Running as".
   await expect(detailHeader.locator(
-    '[data-recued-recipes-action="toggle-auto-run:off"]',
-  )).toHaveAccessibleName(
-    'Pause auto-run Watch pipeline (autorun-live-1)',
-  );
+    '[data-recued-recipes-action^="toggle-auto-run"]',
+  )).toHaveCount(0);
+  await expect(detail.locator(
+    '[data-recued-running-as-dish="dsh_autorun"][role="switch"]',
+  )).toHaveAccessibleName('Watch pipeline');
   await expect(detailHeader.getByRole('link', {
     name: 'Manage automation',
     exact: true,
@@ -18164,7 +18235,10 @@ test('the shared Run modal preserves trigger action ownership', async ({ page })
   await expect(add).toBeFocused();
 });
 
-test('the shared Run modal returns nested trigger config focus', async ({ page }) => {
+// D-319 — a trigger belongs to a dish and has no settings of its own, so the
+// row it adds offers no Config and the tab asks for none. (The settings
+// editor's composing-Escape guard is covered in `config-editor-overlay.test.ts`.)
+test('the shared Run modal adds a trigger with no settings of its own', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?automation=rules`);
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.evaluate(() => window.__app.setHash('#automation/triggers'));
@@ -18176,59 +18250,14 @@ test('the shared Run modal returns nested trigger config focus', async ({ page }
   await page.getByRole('option', { name: /Watch pipeline/ }).click();
 
   const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+  await expect(dialog.getByRole('textbox', { name: 'Topic' })).toHaveCount(0);
+  await expect(dialog).not.toContainText('Config for runs from this trigger');
   await dialog.locator('[data-recued-run-modal-pattern]').fill('data.mail.**');
   await dialog.getByRole('button', { name: 'Add trigger' }).click();
   const row = dialog.locator('.run-modal-rule-row');
   await expect(row).toHaveCount(1);
-  const config = row.locator(
-    '[data-recued-run-modal-action="config-trigger"]',
-  );
-
-  await config.click();
-  const editor = page.getByRole('dialog', { name: 'Edit config' });
-  await expect(editor).toBeFocused();
-  const topic = editor.getByRole('textbox', { name: 'Topic' });
-  await topic.fill('障害対応');
-  await topic.focus();
-  const composingEscape = await topic.evaluate((input) => {
-    const event = new KeyboardEvent('keydown', {
-      key: 'Escape',
-      code: 'Escape',
-      isComposing: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    const dispatched = input.dispatchEvent(event);
-    return { dispatched, defaultPrevented: event.defaultPrevented };
-  });
-  expect(composingEscape).toEqual({
-    dispatched: true,
-    defaultPrevented: false,
-  });
-  await expect(editor).toBeVisible();
-  await expect(topic).toHaveValue('障害対応');
-  await expect(topic).toBeFocused();
-
-  await page.keyboard.press('Escape');
-  await expect(editor).toHaveCount(0);
-  await expect(config).toBeFocused();
-
-  await config.click();
-  await editor.getByRole('textbox', { name: 'Topic' }).fill('Incidents');
-  await editor.getByRole('button', { name: 'Save' }).click();
-  await expect(editor).toHaveCount(0);
-  await expect(config).toHaveAttribute('aria-disabled', 'true');
-  await expect(config).toHaveAttribute('aria-busy', 'true');
-  await expect(config).toBeFocused();
-  await expect(config).not.toHaveAttribute('aria-disabled');
-  await expect(config).not.toHaveAttribute('aria-busy');
-  await expect(config).toBeFocused();
-
-  await config.click();
-  await expect(editor.getByRole('textbox', { name: 'Topic' }))
-    .toHaveValue('Incidents');
-  await editor.getByRole('button', { name: 'Close' }).click();
-  await expect(config).toBeFocused();
+  await expect(row.locator('[data-recued-run-modal-action="config-trigger"]')).toHaveCount(0);
+  await expect(row.getByRole('button', { name: /^Pause trigger/ })).toBeVisible();
 });
 
 test('Recipes preserves installed search focus through a live repaint', async ({ page }) => {
@@ -23479,7 +23508,7 @@ test('Settings AI Models provider controls expose their owning source', async ({
   for (const name of [
     'Slot 1: fast provider name',
     'Slot 2: better, slower thinking provider name',
-    'Embeddings slot provider',
+    'Embeddings slot provider name',
     'New free-pool entry name',
   ]) {
     await expect(page.getByRole('textbox', { name, exact: true })).toHaveCount(1);
@@ -23488,6 +23517,7 @@ test('Settings AI Models provider controls expose their owning source', async ({
   for (const name of [
     'Slot 1: fast protocol',
     'Slot 2: better, slower thinking protocol',
+    'Embeddings slot protocol',
     'New free-pool entry protocol',
   ]) {
     await expect(page.getByRole('combobox', { name, exact: true })).toHaveCount(1);
@@ -24707,13 +24737,13 @@ test('Settings AI Models embeddings draft survives sibling actions and saves', a
   const embeddings = page.locator(
     '[data-recued-ai-models-control="embeddings_slot"]',
   );
-  const provider = embeddings.getByRole('textbox', { name: 'Provider' });
+  const provider = embeddings.getByRole('combobox', { name: 'Embeddings slot protocol' });
   const model = embeddings.getByRole('textbox', { name: 'Model' });
   const key = embeddings.locator(
     '[data-recued-ai-models-embeddings-field="api-key"]',
   );
   const baseUrl = embeddings.getByRole('textbox', { name: 'Base URL' });
-  await provider.fill('openai-compatible');
+  await provider.selectOption('openai-compatible');
   await model.fill('text-embedding-demo');
   await key.fill('embedding-secret');
   await baseUrl.fill('https://embeddings.example.test/v1');
@@ -24761,7 +24791,7 @@ test('Settings AI Models embeddings draft survives sibling actions and saves', a
   await expect(model).toHaveValue('text-embedding-demo');
   await expect(key).toHaveValue('embedding-secret');
   await expect(embeddings).toContainText(
-    'openai-compatible / text-embedding-demo',
+    'OpenAI-compatible / text-embedding-demo',
   );
   await expect(key).toHaveValue('');
   await expect(save).toHaveText('Save slot');
@@ -24783,6 +24813,8 @@ test('Settings AI Models embeddings save failures preserve the exact retry draft
   const key = embeddings.locator(
     '[data-recued-ai-models-embeddings-field="api-key"]',
   );
+  await embeddings.getByRole('combobox', { name: 'Embeddings slot protocol' })
+    .selectOption('openai');
   await model.fill('retry-embedding-model');
   await key.fill('retry-embedding-secret');
   const save = embeddings.locator(
@@ -24793,8 +24825,10 @@ test('Settings AI Models embeddings save failures preserve the exact retry draft
   await expect(save).toHaveText('Saving slot…');
   await expect(save).toBeFocused();
 
-  await expect(page.locator('[data-recued-ai-models-action-error]'))
+  // Under the card's buttons, as on a chat slot, and not the page banner.
+  await expect(embeddings.locator('[data-recued-ai-models-form-error="embeddings_slot:save"]'))
     .toHaveText('Embeddings slot save unavailable.');
+  await expect(page.locator('[data-recued-ai-models-action-error]')).toHaveCount(0);
   await expect(model).toHaveValue('retry-embedding-model');
   await expect(key).toHaveValue('retry-embedding-secret');
   await expect(model).not.toHaveAttribute('readonly');
@@ -24817,7 +24851,8 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   const embeddings = page.locator(
     '[data-recued-ai-models-control="embeddings_slot"]',
   );
-  await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
+  await embeddings.getByRole('combobox', { name: 'Embeddings slot protocol' })
+    .selectOption('openai');
   await embeddings.getByRole('textbox', { name: 'Model' })
     .fill('text-embedding-3-small');
   await embeddings.locator(
@@ -24829,7 +24864,7 @@ test('Settings AI Models embeddings Clear is confirmed and mutation-owned', asyn
   await page.waitForFunction(
     () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 1,
   );
-  await expect(embeddings).toContainText('openai / text-embedding-3-small');
+  await expect(embeddings).toContainText('OpenAI / text-embedding-3-small');
 
   const clear = embeddings.locator(
     '[data-recued-ai-models-slot-clear="embeddings_slot"]',
@@ -24899,7 +24934,8 @@ test('Settings AI Models failed embeddings Clear stays owned and retryable', asy
   const embeddings = page.locator(
     '[data-recued-ai-models-control="embeddings_slot"]',
   );
-  await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
+  await embeddings.getByRole('combobox', { name: 'Embeddings slot protocol' })
+    .selectOption('openai');
   await embeddings.getByRole('textbox', { name: 'Model' })
     .fill('text-embedding-3-small');
   await embeddings.locator(
@@ -26254,6 +26290,36 @@ test('the Run palette guards an in-flight auto-run toggle and route leave', asyn
   await expect(page).toHaveURL(/#data$/);
   await expect(overlay).toHaveCount(0);
   await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('the Run palette switches a recipe on through its settings, never arming it bare', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=not-switched-on`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${GLOBAL_RUN_PALETTE_TRIGGER}]`).click();
+
+  const recipe = page.getByRole('combobox', { name: 'Recipe' });
+  await recipe.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+  await expect(dialog).toContainText('Not switched on');
+  const switchOn = page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Switch on…' });
+  await switchOn.click();
+
+  // D-319 §5.5 — its settings first, in the form the recipe page uses.
+  const form = page.locator('.config-editor-panel[role="dialog"]');
+  await expect(form).toContainText('Switch on “Watch pipeline”');
+  await expect(form).toContainText('It runs every minute.');
+  await page.keyboard.press('Escape');
+  await expect(form).toHaveCount(0);
+  await expect(page.locator(`[${RUN_PALETTE}]`)).toBeVisible();
+  await expect(switchOn).toBeFocused();
+
+  await switchOn.click();
+  await form.locator('[data-recued-config-editor-action="confirm"]').click();
+  await expect(page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Pause' })).toBeVisible();
+  expect(await page.evaluate(() => window.__app.rpcCallCount('dishes.create'))).toBe(1);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('auto_run.update'))).toBe(0);
 });
 
 test('the Run palette retains a pending toggle through its Automation handoff', async ({ page }) => {

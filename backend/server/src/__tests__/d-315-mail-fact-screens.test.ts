@@ -431,7 +431,7 @@ describe('every mail_fact.* method answers the owner’s webclient only (§6)', 
   const methods = SERVER_RPC_METHODS.filter((method) => method.startsWith('mail_fact.'));
 
   it('the handlers are exactly the registered methods', () => {
-    expect(methods).toHaveLength(21);
+    expect(methods).toHaveLength(23);
     expect(Object.keys(rpcWith()).sort()).toEqual([...methods].sort());
   });
 

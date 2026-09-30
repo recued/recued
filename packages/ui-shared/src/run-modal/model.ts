@@ -10,6 +10,7 @@ import {
   assessRunTargets,
   deriveRecipeTargeting,
   DEFAULT_MISSED_SCHEDULE_POLICY,
+  type Dish,
   type EventTrigger,
   type ServerRecipeListEntry,
   type ServerSchedule,
@@ -38,6 +39,32 @@ export const parseRunConfig = (text: string): Record<string, unknown> => {
     throw new Error('Run config must be a JSON object.');
   }
   return parsed;
+};
+
+/** D-319 — the dish a dialog starts on: the one it was opened from, else the
+ *  recipe's main one, else none. */
+export const initialDishId = (
+  dishes: readonly Dish[] | undefined,
+  requested: string | undefined,
+): string | null => {
+  const all = dishes ?? [];
+  if (requested !== undefined && all.some((dish) => dish.dish_id === requested)) return requested;
+  return all.find((dish) => dish.is_default)?.dish_id ?? all[0]?.dish_id ?? null;
+};
+
+/** D-319 — a run as a dish sends only what the owner changed; the dish holds
+ *  the rest. What the dialog shows and checks is both, the changes on top. */
+export const configTextAsDish = (
+  configText: string,
+  dishOverlay: Readonly<Record<string, unknown>> | undefined,
+): string => {
+  if (dishOverlay === undefined || Object.keys(dishOverlay).length === 0) return configText;
+  try {
+    return JSON.stringify({ ...dishOverlay, ...parseRunConfig(configText) });
+  } catch {
+    // The raw field does not parse: shown as typed, refused on Run.
+    return configText;
+  }
 };
 
 /** Targeting guard (design § 8) — the run tab's gate for one snapshot:
@@ -100,8 +127,10 @@ export const EMPTY_MAIL_FACT_DRAFT: RunModalMailFactDraft = {
 export const initialRunModalState = (
   initialTab: RunModalTab,
   presetExpression: string,
+  dishId: string | null = null,
 ): RunModalState => ({
   tab: initialTab,
+  dish_id: dishId,
   missed_policy: DEFAULT_MISSED_SCHEDULE_POLICY,
   config_text: '{}',
   target_values: {},

@@ -74,7 +74,11 @@ export type WidgetType =
   | 'file_ref'
   /** A reference to one of the owner's stored Records rows, chosen from a
    *  search. Carries the entity its picker searches. */
-  | 'record_ref';
+  | 'record_ref'
+  /** D-315 §5.2 — one of the owner's mail templates, chosen from a list of
+   *  them (`mail-template-variable.ts`). A recipe setting, never a per-run
+   *  input: the recipe's trigger is narrowed to the one it holds. */
+  | 'mail_template';
 
 export interface WidgetShape {
   key: string;
@@ -89,6 +93,9 @@ export interface WidgetShape {
   /** Optional equality scope for that entity's picker. This is presentation
    *  narrowing only; the operation remains the authority for the value. */
   entityFilter?: Readonly<Record<string, string>>;
+  /** For a `mail_template` — the kind of email its starter reads, when the
+   *  recipe brings one: the picker offers the owner's templates of that kind. */
+  templateType?: string;
   value: unknown;
   optional?: boolean;
   /** A list setting (`type: 'array'`): still a one-line box, which shows the
@@ -144,9 +151,20 @@ export interface VariableWidgetRenderOptions {
    *  of the fallback text box. Same reason as `fileRefPicker`: the shell is
    *  pure string output, and the host wires the inventory afterwards. */
   recordRefPicker?: boolean;
+  /** D-315 — render the list of the owner's templates for a `mail_template`
+   *  instead of the fallback text box; the host fills it
+   *  (`wireMailTemplateVariables`). */
+  mailTemplatePicker?: boolean;
   /** Unique scope when the same variable widgets coexist in nested overlays. */
   idPrefix?: string;
 }
+
+/** D-315 — marker on a `mail_template` variable row (value = the variable's
+ *  key), and the kind of email its starter reads (empty when it brings none). */
+export const MAIL_TEMPLATE_VARIABLE_ATTR = 'data-recued-mail-template-variable';
+export const MAIL_TEMPLATE_TYPE_ATTR = 'data-recued-mail-template-type';
+/** `open` | `duplicate` on a row's buttons. */
+export const MAIL_TEMPLATE_ACTION_ATTR = 'data-recued-mail-template-action';
 
 /** Marker on a `record_ref` variable row (value = recipe variable key). */
 export const RECORD_REF_VARIABLE_ATTR = 'data-recued-record-ref-variable';
@@ -282,6 +300,9 @@ export const toWidgetShape = (
       ...(typeof def.entity === 'string' ? { entity: def.entity } : {}),
       ...(isStringRecord(def.entity_filter)
         ? { entityFilter: def.entity_filter }
+        : {}),
+      ...(def.type === 'mail_template' && typeof def.starter?.type === 'string'
+        ? { templateType: def.starter.type }
         : {}),
       value,
       optional: def.optional,
@@ -571,6 +592,30 @@ export const renderVariableWidget = (
     `;
   }
 
+  if (w.type === 'mail_template' && options.mailTemplatePicker === true) {
+    // The stored id is its own option until the host lists the owner's
+    // templates: this is a pure string renderer, and a value must never be lost
+    // because the list has not loaded — the same two-step `record_ref` uses.
+    const held = typeof w.value === 'string' && w.value.length > 0 ? w.value : '';
+    return `
+      <div class="var-row" ${MAIL_TEMPLATE_VARIABLE_ATTR}="${e(w.key)}" ${MAIL_TEMPLATE_TYPE_ATTR}="${e(w.templateType ?? '')}">
+        <label for="${e(id)}">${e(w.label)}${
+      w.optional ? ' <span class="var-optional">optional</span>' : ''
+    }</label>
+        ${help}
+        <select id="${e(id)}" data-var-key="${e(w.key)}" data-var-type="mail_template">
+          ${held === ''
+            ? '<option value="" selected>Choose a template</option>'
+            : `<option value="${e(held)}" selected>${e(held)}</option>`}
+        </select>
+        <div class="var-actions">
+          <button type="button" class="config-editor-button" ${MAIL_TEMPLATE_ACTION_ATTR}="open" disabled>Open it</button>
+          <button type="button" class="config-editor-button" ${MAIL_TEMPLATE_ACTION_ATTR}="duplicate" hidden>Duplicate to edit</button>
+        </div>
+      </div>
+    `;
+  }
+
   if (w.type === 'file_ref' && options.fileRefPicker === true) {
     const selected = typeof w.value === 'string' && w.value.length > 0
       ? { id: w.value, label: w.value }
@@ -841,6 +886,10 @@ export const validateWidgetValue = (
     if (typeof value !== 'string' || value.trim() === '') return 'Required';
     return null;
   }
+  if (w.type === 'mail_template') {
+    if (typeof value !== 'string' || value.trim() === '') return 'Choose a template';
+    return null;
+  }
   if (w.type === 'number') {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 'Must be a number';
     return null;
@@ -910,7 +959,15 @@ export const isValidValueHint = (v: VariableDefault): v is ValueHint =>
  *  input so a valid recipe cannot be offered a run path that withholds its
  *  required value. Configure surfaces intentionally do not use this filter. */
 export const isInvocationVariable = (v: VariableDefault): boolean =>
-  v === null || isValidValueHint(v);
+  v === null || (isValidValueHint(v) && !isRecipeSetting(v));
+
+/** D-315 — a setting, never a question a run asks: a `mail_template`.
+ *  D-319 — it is each DISH's (not the recipe's alone): a dish's triggers are
+ *  narrowed to the template its own setting holds, so two dishes can read two
+ *  templates. Shown where a dish's settings are edited; a run changes it only
+ *  through the raw config. */
+export const isRecipeSetting = (v: VariableDefault): boolean =>
+  isValidValueHint(v) && v.type === 'mail_template';
 
 const mapHintType = (hint: ValueHint): WidgetType => {
   // ⛔⛔ COMPARED AS A STRING, DELIBERATELY, AND NOT BY ADDING A UNION MEMBER.
@@ -936,6 +993,8 @@ const mapHintType = (hint: ValueHint): WidgetType => {
       return 'file_ref';
     case 'record_ref':
       return 'record_ref';
+    case 'mail_template':
+      return 'mail_template';
     case 'file_ref[]':
       return 'file_ref_array';
     case 'datetime':

@@ -49,6 +49,8 @@ export interface ComposePackInstallRpcDepsInput {
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
   /** D-296 — late-bound trigger preview; see `PackInstallRpcDeps`. */
   getTriggerPreview?: PackInstallRpcDeps['getTriggerPreview'];
+  /** D-315 §5.2 — the templates recipes bring, late-bound like the views. */
+  getRecipeMailTemplates?: PackInstallRpcDeps['getRecipeMailTemplates'];
   /** D-299 — late-bound Reception pair substrate; see `PackInstallRpcDeps`. */
   getReceptionPairs?: PackInstallRpcDeps['getReceptionPairs'];
   /** D-303 — where the owner's settings are saved, for the update preview. */
@@ -116,6 +118,7 @@ export const composePackInstallRpcDeps = (
     contractStore,
     getSavedDataViewStore,
     getTriggerPreview,
+    getRecipeMailTemplates,
     getReceptionPairs,
     getSavedSettings,
     sellerStore,
@@ -141,6 +144,7 @@ export const composePackInstallRpcDeps = (
     ...(contractStore ? { contractStore } : {}),
     ...(getSavedDataViewStore ? { getSavedDataViewStore } : {}),
     ...(getTriggerPreview ? { getTriggerPreview } : {}),
+    ...(getRecipeMailTemplates ? { getRecipeMailTemplates } : {}),
     ...(getReceptionPairs ? { getReceptionPairs } : {}),
     ...(getSavedSettings ? { getSavedSettings } : {}),
     ...(sellerStore ? { sellerStore } : {}),

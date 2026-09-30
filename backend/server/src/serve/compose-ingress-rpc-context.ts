@@ -59,7 +59,7 @@ export interface ComposeIngressRpcContextOptions {
     | 'receptionRegistryCacheRef'
     | 'receptionRateLimiterRef'
     | 'previewHashStoreRef'
-    | 'hostnameRegistryStore'
+    | 'publicAddress'
     | 'schedulingFormNonceStoreRef'
     | 'intakeRecipePairStoreRef'
     | 'intakeFormSubmissionStoreRef'
@@ -294,7 +294,7 @@ export const composeIngressRpcContext = async (
     addOwnerTokenUsage: (tokens) => { app.llmManager?.addUsage(tokens); },
     llmAdapterRegistry: app.llmAdapterRegistry,
     emptyTabProbe: app.emptyTabProbe,
-    hostnameRegistryStore: storage.hostnameRegistryStore,
+    publicAddress: storage.publicAddress,
     approvalIntentStore: storage.approvalIntentStoreRef,
     statusProjectionStore: storage.statusProjectionStoreRef,
     statusEntitySourceReader,

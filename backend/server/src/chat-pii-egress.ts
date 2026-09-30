@@ -138,6 +138,11 @@ export interface PiiEgressPlan {
    * pass over an escaped alias literal. */
   readonly restoredAssistantText?: {
     value?: string;
+    /** EVERY response restored at the wire seam this turn. ⛔ The latest call
+     * is not always the answer: the turn-end brief runs after it (no
+     * `response`), and matching `value` alone sent the answer the owner had
+     * already seen through a second restore — saved text ≠ shown text. */
+    responses?: Set<string>;
   };
   /** Flat schema-attested values from tool feedback in this staged request.
    * They are published to the assistant source only after send success. */
@@ -461,10 +466,13 @@ export const createPiiRestoreMiddleware = (): Middleware => ({
     // already-restored wire result from an unverified output that still needs
     // the backstop.
     const authority = plan.restoreAuthority?.value;
-    const verified = plan.restoredAssistantText?.value;
+    const verified = plan.restoredAssistantText;
+    const alreadyRestored =
+      (verified?.value !== undefined && verified.value === ctx.output.text)
+      || verified?.responses?.has(ctx.output.text) === true;
     const restored =
-      verified !== undefined && verified === ctx.output.text
-        ? verified
+      alreadyRestored
+        ? ctx.output.text
         : authority === undefined
           ? ctx.output.text
           : piiEgress.restoreForDisplayWithAuthority(
@@ -2014,6 +2022,9 @@ export const wrapExecuteAiCallForPii = (
           ? (body as Record<string, unknown>).response as string
           : undefined;
       plan.restoredAssistantText.value = response;
+      if (response !== undefined) {
+        (plan.restoredAssistantText.responses ??= new Set()).add(response);
+      }
     }
     return restoredResult;
     },

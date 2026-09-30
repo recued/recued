@@ -6,10 +6,10 @@
  *  minted per run for audit attribution only (`ephemeralDishId`).
  *
  *  Persistence mirrors the `@recued/contracts` `Dish` shape so clients
- *  round-trip values without translation. The default-dish invariant
- *  (≤ 1 `is_default` row per recipe) is enforced by a partial unique
- *  index, not application code, so concurrent creates can't race a
- *  second default in.
+ *  round-trip values without translation. The main-dish invariant
+ *  (≤ 1 `is_default` row per recipe — D-319's main dish) is enforced by a
+ *  partial unique index, not application code, so concurrent creates can't
+ *  race a second main in.
  */
 
 import type Database from 'better-sqlite3';
@@ -28,11 +28,11 @@ import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './sto
  *  firing against a paused dish. Removing the field needs a dispatch-time
  *  `dish.enabled` re-check in the driver FIRST.
  *
- *  Scope: on a schedule/trigger-managed dish the owner's pause already clears
- *  the pre-approval through the rule's own row (`notePreapprovalOwnerMutation`
- *  in `schedule-store.ts` / `triggers/store.ts`), and `dishes.update` freezes
- *  `enabled` on those rows regardless. This field carries the rule alone only
- *  for an unmanaged or default dish. */
+ *  D-319 — the dish switch also writes `enabled` on every schedule and trigger
+ *  row of the dish, and each row's own write clears its pre-approval
+ *  (`notePreapprovalOwnerMutation` in `schedule-store.ts` /
+ *  `triggers/store.ts`); this field is what carries the rule for a dishless
+ *  reviewed run of the main dish's settings. */
 export const dishPreapprovalMaterial = (dish: Dish): Record<string, unknown> => ({
   recipe_id: dish.recipe_id, publisher_id: dish.publisher_id, enabled: dish.enabled, config_overlay: dish.config_overlay,
   group_id: dish.group_id ?? null,
@@ -44,8 +44,12 @@ export interface DishStore {
   /** D-179 P3 — member dishes of a group. */
   listByGroup(group_id: string): Dish[];
   get(dish_id: string): Dish | null;
-  /** The recipe's default dish, when one has been minted. */
+  /** The recipe's main dish (D-319), when it has one. */
   getDefault(recipe_id: string): Dish | null;
+  /** D-319 — make this dish its recipe's main one, in one transaction: the
+   *  partial unique index holds one main per recipe, so the old main is
+   *  cleared first. `null` when the dish is gone. */
+  setMain(dish_id: string): Dish | null;
   /** Upsert keyed on `dish_id`. Throws (SQLITE_CONSTRAINT) when the
    *  write would create a second `is_default` row for the same recipe —
    *  deliberately NOT `INSERT OR REPLACE`, which would silently DELETE
@@ -124,7 +128,7 @@ export const createDishStore = (
     return row?.len ?? 0;
   };
 
-  return {
+  const store: DishStore = {
     list() {
       const rows = db.prepare(`SELECT data FROM dishes ORDER BY dish_id`).all() as { data: string }[];
       return rows.map(rowToDish);
@@ -172,6 +176,19 @@ export const createDishStore = (
       }).immediate();
     },
 
+    setMain(dish_id) {
+      return db.transaction((): Dish | null => {
+        const target = store.get(dish_id);
+        if (target === null) return null;
+        if (target.is_default) return target;
+        const current = store.getDefault(target.recipe_id);
+        if (current !== null) store.set({ ...current, is_default: false });
+        const main: Dish = { ...target, is_default: true };
+        store.set(main);
+        return main;
+      }).immediate();
+    },
+
     delete(dish_id) {
       return db.transaction(() => {
         const prior = db.prepare('SELECT recipe_id FROM dishes WHERE dish_id=?').get(dish_id) as { recipe_id: string } | undefined;
@@ -210,4 +227,5 @@ export const createDishStore = (
       return detach(group_id);
     },
   };
+  return store;
 };

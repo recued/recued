@@ -75,6 +75,8 @@ export {
   restoreArgKeysWithAuthority,
   derivePiiRestoreAuthority,
   containsPotentialPiiAliasLiteral,
+  containsPiiAliasToken,
+  holdsPiiAliasToken,
   aliasArgs,
   // D-167 (recall path) — value-walk that aliases a memory.* result against the
   // contact known-value index (seed ⊇ scan) + overlap-decorates each name/org

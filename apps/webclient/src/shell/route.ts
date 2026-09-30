@@ -763,6 +763,7 @@ export const normalizeShellHash = (hash: string): string => {
  *  addressable selection (R16 sequences Connections/Contracts/Data/… in). */
 export const WEBCLIENT_DEEP_LINK_ROUTES: ReadonlySet<WebclientRouteId> =
   new Set<WebclientRouteId>([
+    'mail',
     'recipes',
     'logs',
     'settings',

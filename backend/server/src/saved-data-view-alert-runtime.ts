@@ -25,7 +25,9 @@ export const createSavedDataViewAlertRuntime = (deps: {
   store: SavedDataViewAlertStore;
   auditLog: Pick<AuditLogStore, 'logActivity'>;
   notifier: Pick<NotificationBlock, 'notify'>;
-  publicBaseUrl?: string;
+  /** Read per notice: the server's public address can appear or change while
+   *  it runs. */
+  getPublicBaseUrl?: () => string | null;
   intervalMs?: number;
 }) => {
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -38,7 +40,7 @@ export const createSavedDataViewAlertRuntime = (deps: {
       deps.store.evaluate();
       for (const notice of deps.store.pending()) {
         if (stopped) break;
-        const message = savedViewAlertMessage(notice, deps.publicBaseUrl);
+        const message = savedViewAlertMessage(notice, deps.getPublicBaseUrl?.() ?? undefined);
         const ui_link_url = `#views/${encodeURIComponent(notice.view_id)}`;
         await deps.auditLog.logActivity({ activity_id: notice.id, timestamp: notice.created_at,
           action: 'notification_fired', target: notice.view_id,

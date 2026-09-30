@@ -47,6 +47,25 @@ import type {
   ResolvedTableSelectDescriptor,
 } from '@recued/contracts';
 import { openPreapprovalActivation } from '../approvals/preapproval-activation.js';
+import { mainDishSettings, type MainDishSettings } from './main-dish-settings.js';
+import {
+  dishFormStart,
+  openDishForm as openSharedDishForm,
+  type DishFormMode,
+} from './dish-form.js';
+import {
+  RUNNING_AS_ACTION_ATTR,
+  RUNNING_AS_ACTIONS,
+  RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_FOCUS_AFTER,
+  RUNNING_AS_RECIPE_ATTR,
+  RUNNING_AS_STYLES,
+  renderRunningAs,
+  renderSwitchOnButton,
+  runningAsFocusKey,
+  startsOnItsOwn,
+  type RunningAsAction,
+} from './running-as.js';
 import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
   describeCron,
@@ -106,7 +125,10 @@ import {
   validateOutputFilterDraft,
   RunModal,
   wireConfigEditorOverlay,
+  plainSettingText,
+  type SettingValueText,
   type ConfigEditorOverlayHandle,
+  type MailTemplateVariableCallers,
   type RecipeCardState,
   type RecipeCardTriggerKind,
   type OutputFilterState,
@@ -288,8 +310,6 @@ const RECIPES_LIST_CONTINUITY_KEY = 'recipes:installed';
 /** The per-card "Run" button (the trigger). The Run MODAL it opens is the
  *  shared `@recued/ui-shared` RunModal (its own `RUN_MODAL_*` hooks). */
 export const RECIPES_ROUTE_RUN_BUTTON_ATTR = 'data-recued-recipes-run-button';
-export const RECIPES_ROUTE_CONFIG_ERROR_ATTR =
-  'data-recued-recipes-config-error';
 export const RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR =
   'data-recued-recipes-auto-run-error';
 export const RECIPES_ROUTE_SOURCE_ERROR_ATTR =
@@ -344,10 +364,15 @@ export const RECIPES_ROUTE_DEFINITION_ATTR = 'data-recued-recipes-definition';
 /** The detail's "View runs in Logs" link — deep-links `#logs/recipe/<recipe_id>`
  *  so Logs opens pre-scoped to this recipe's runs (delta 5 · R24 recipe-filter). */
 export const RECIPES_ROUTE_RUNS_LINK_ATTR = 'data-recued-recipes-runs-link';
-/** D-215 slice 3 — the detail's Dishes section (value = recipe_id) + one
- *  row (value = dish_id). Test + future click-delegation handles. */
-export const RECIPES_ROUTE_DISHES_ATTR = 'data-recued-recipes-dishes';
-export const RECIPES_ROUTE_DISH_ROW_ATTR = 'data-recued-recipes-dish-row';
+/** D-319 — the detail's "Running as" section and its controls carry the
+ *  `RUNNING_AS_*` attributes (`running-as.ts`), re-exported for tests. */
+export {
+  RUNNING_AS_ACTION_ATTR,
+  RUNNING_AS_ATTR,
+  RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_RECIPE_ATTR,
+  RUNNING_AS_STATUS_ATTR,
+} from './running-as.js';
 
 /** The detail's "Manage automation" link (-> #automation/<recipe_id>). */
 export const RECIPES_ROUTE_AUTOMATION_LINK_ATTR =
@@ -374,6 +399,12 @@ export const RECIPES_ROUTE_BUNDLE_RETRY_ATTR =
 // `…RESULT_FILE_MODE_ATTR` moved to `recipe-result-panel.ts` (the panel emits
 // them; this route matches on them) and are imported above.
 const RECIPES_ROUTE_RECIPE_ID_ATTR = 'data-recipe-id';
+
+/** D-319 — a setting holds a value a run can use. */
+const hasSettingValue = (value: unknown): boolean =>
+  value !== undefined && value !== null
+  && !(typeof value === 'string' && value.trim() === '')
+  && !(Array.isArray(value) && value.length === 0);
 
 const relatedActionFocusKey = (action: string | null): string | null =>
   action?.startsWith('toggle-auto-run:') === true ? 'toggle-auto-run' : action;
@@ -405,6 +436,9 @@ export type RecipeExecuteCaller = (args: {
    *  `execute` rpc verbatim. */
   context?: Record<string, unknown>;
   invocation?: RecipeInvocation;
+  /** D-319 — run as this dish, with its settings; `config` changes them for
+   *  this run alone. Absent ⇒ the recipe's main dish's settings. */
+  dish_id?: string;
 }) => Promise<ServerExecuteResponse>;
 
 /** D-200 — owner-authenticated file-content read used only after an emitted
@@ -461,6 +495,32 @@ export type RecipesDishesListCaller = () => Promise<{
   dishes: Dish[];
   last_runs?: Record<string, DishLastRun>;
 }>;
+/** D-319 — switching a recipe on: a dish with its settings. The recipe's
+ *  first dish is its main one. `enabled: false` saves without switching on. */
+export type RecipesDishesCreateCaller = (args: {
+  recipe_id: string;
+  publisher_id: string;
+  name?: string;
+  config_overlay?: Record<string, unknown>;
+  enabled?: boolean;
+}) => Promise<{ dish: Dish }>;
+/** D-319 — a dish's switch (every trigger, schedule and timer of it), its
+ *  settings (in place, from its next run), its name, and "Make this the main
+ *  one". */
+export type RecipesDishesUpdateCaller = (args: {
+  dish_id: string;
+  name?: string;
+  config_overlay?: Record<string, unknown>;
+  enabled?: boolean;
+  main?: boolean;
+}) => Promise<{ dish: Dish }>;
+/** D-319 — remove a dish; its triggers and schedules go with it. */
+export type RecipesDishesDeleteCaller = (args: { dish_id: string }) => Promise<{ deleted: true }>;
+/** D-319 — what a new dish starts from beyond the recipe's own defaults:
+ *  the mail template the install chose. */
+export type RecipesDishesDefaultsCaller = (args: {
+  recipe_id: string;
+}) => Promise<{ config_overlay: Record<string, unknown> }>;
 
 export type RecipesSchedulesListCaller = () => Promise<{
   schedules: ServerSchedule[];
@@ -488,7 +548,9 @@ export type RecipesSchedulesCreateCaller = (args: {
   cron_expression?: string;
   /** D-215 slice 5 — one-shot fire time, epoch ms. */
   run_at?: number;
-  config_overlay?: Record<string, unknown>;
+  /** D-319 — the dish it runs as, with the dish's settings. Absent ⇒ the
+   *  recipe's main dish. */
+  dish_id?: string;
 }) => Promise<{ schedule: ServerSchedule }>;
 export type RecipesSchedulesUpdateCaller = (args: {
   schedule_id: string;
@@ -497,16 +559,6 @@ export type RecipesSchedulesUpdateCaller = (args: {
 export type RecipesSchedulesDeleteCaller = (args: {
   schedule_id: string;
 }) => Promise<{ deleted: true }>;
-/** D-179 — read/write a recipe's INSTALL config (its default-dish overlay,
- *  applied as a base to every dishless run). */
-export type RecipeConfigGetCaller = (args: {
-  recipe_id: string;
-}) => Promise<{ config_overlay: Record<string, unknown> }>;
-export type RecipeConfigSetCaller = (args: {
-  recipe_id: string;
-  publisher_id?: string;
-  config_overlay: Record<string, unknown>;
-}) => Promise<{ config_overlay: Record<string, unknown> }>;
 export type RecipesPackRecipeRefsCaller = (
   slug: string,
 ) => Promise<Array<{ slug: string; version: number }>>;
@@ -615,8 +667,17 @@ export interface BootstrapRecipesRouteOptions {
   /** Absent ⇒ the Records + declared-risk disclosures stay in their
    *  "roster unavailable" wording. */
   packsListCaller?: RecipesPacksListCaller;
-  /** D-215 slice 3 — absent ⇒ the detail's Dishes section stays hidden. */
+  /** D-215 slice 3 — absent ⇒ the detail's "Running as" section stays hidden. */
   dishesListCaller?: RecipesDishesListCaller;
+  /** D-319 — Switch on, Save settings, + Add another. Absent ⇒ none is offered. */
+  dishesCreateCaller?: RecipesDishesCreateCaller;
+  /** D-319 — a dish's switch, Settings and "Make this the main one". */
+  dishesUpdateCaller?: RecipesDishesUpdateCaller;
+  /** D-319 — Remove a dish. */
+  dishesDeleteCaller?: RecipesDishesDeleteCaller;
+  /** D-319 — the mail template a new dish starts from. Absent ⇒ the recipe's
+   *  own defaults only. */
+  dishesDefaultsCaller?: RecipesDishesDefaultsCaller;
   schedulesListCaller?: RecipesSchedulesListCaller;
   schedulesCreateCaller?: RecipesSchedulesCreateCaller;
   schedulesUpdateCaller?: RecipesSchedulesUpdateCaller;
@@ -626,8 +687,10 @@ export interface BootstrapRecipesRouteOptions {
   triggersListCaller?: RecipesTriggersListCaller;
   autoRunListCaller?: RecipesAutoRunListCaller;
   autoRunUpdateCaller?: RecipesAutoRunUpdateCaller;
-  recipeConfigGetCaller?: RecipeConfigGetCaller;
-  recipeConfigSetCaller?: RecipeConfigSetCaller;
+  /** D-315 §5.2 — the owner's mail templates, for a `mail_template` setting in
+   *  the Settings editor: pick one, open it, duplicate one to edit. Absent ⇒
+   *  the setting is a text box. */
+  mailTemplateCallers?: MailTemplateVariableCallers;
   /** D-292 — uploads a file for the guided spreadsheet import. Absent ⇒ that
    *  flow offers only files already in Recued. */
   sheetImportUploadCaller?: SheetImportUploader;
@@ -664,6 +727,8 @@ export interface RecipesLoadErrors {
 
 export interface RecipesRunModalSnapshot {
   recipe_id: string;
+  /** D-319 — the dish a run goes as (`null`: the recipe has none). */
+  dish_id: string | null;
   config_text: string;
   /** Targeting guard (design § 8) — values typed into the per-target
    *  context inputs, keyed by target key. Sent as the run's `context`. */
@@ -1372,12 +1437,6 @@ const RECIPES_ROUTE_STYLES = `
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
 
-const recipeConfigLoadError = (err: unknown): string => {
-  const detail = errMessage(err).trim();
-  const sentence = /[.!?]$/.test(detail) ? detail : `${detail}.`;
-  return `Recued could not load the settings: ${sentence} Try again.`;
-};
-
 const recipeDisplayName = (entry: ServerRecipeListEntry): string =>
   entry.recipe.metadata?.name?.trim() || entry.recipe_id;
 
@@ -1972,59 +2031,18 @@ const recipeTriggers = (
 ): EventTrigger[] =>
   (data.triggers ?? []).filter((t) => t.recipe_id === recipe_id);
 
+/** D-319 — a recipe's auto-run rows are one per dish; the recipe page shows
+ *  its MAIN dish's timer (the one Arm / Pause act on — `auto_run.update`
+ *  naming only the recipe), else the recipe's "not switched on" row. */
 const recipeAutoRun = (
   data: RecipesAutomationData,
   recipe_id: string,
-): AutoRunStatusEntry | undefined =>
-  (data.autoRun ?? []).find((a) => a.recipe_id === recipe_id);
-
-/** D-215 slice 3 — this recipe's dishes, read-only.
- *
- *  A dish minted BY a schedule / trigger / auto-run is badged with its
- *  owner and carries no actions: D-179 versions a managed dish immutably
- *  (one `dish_id` = one config), so its edits belong to the owning row.
- *  Slice 4 adds create / rename / remove here.
- *
- *  Hidden entirely when the caller is absent or its read failed (`null`) —
- *  a soft enhancement must not turn into an empty-state claim. `[]` is a
- *  real answer and says so. */
-const renderDishesSection = (
-  data: RecipesAutomationData,
-  recipe_id: string,
-): string => {
-  if (data.dishes === null) return '';
-  const mine = data.dishes.filter((d) => d.recipe_id === recipe_id);
-  const rows = mine.map((d) => {
-    const origin = d.managed_by_schedule_id !== undefined
-      ? { badge: 'schedule', label: `Schedule ${d.managed_by_schedule_id}` }
-      : d.managed_by_trigger_id !== undefined
-        ? { badge: 'trigger', label: `Trigger ${d.managed_by_trigger_id}` }
-        : d.managed_by_auto_run !== undefined
-          ? { badge: 'auto-run', label: 'Auto-run' }
-          : { badge: 'assigned', label: 'Assigned' };
-    const last = data.dishLastRuns[d.dish_id];
-    return `<li ${RECIPES_ROUTE_DISH_ROW_ATTR}="${e(d.dish_id)}" data-enabled="${d.enabled ? 'true' : 'false'}">
-      <span class="recipes-dish-name">${e(d.name !== '' ? d.name : 'Default')}</span>
-      ${renderProvenance({
-        primary: origin.label,
-        kind: 'source',
-        primaryClassName: 'recipes-dish-origin',
-        primaryAttributes: { 'data-dish-origin': origin.badge },
-        ariaLabel: 'Where this dish came from',
-      })}
-      <span class="recipes-dish-last">${e(
-        last === undefined ? 'never run' : `last run ${last.commit_status}`,
-      )}</span>
-      ${d.enabled ? '' : '<span class="recipes-dish-paused">Paused</span>'}
-    </li>`;
-  }).join('');
-  return `
-    <section class="recipes-detail-section" ${RECIPES_ROUTE_DISHES_ATTR}="${e(recipe_id)}">
-      <h2 class="recipes-detail-section-title">Dishes</h2>
-      ${mine.length === 0
-        ? '<p class="recipes-detail-note">No dishes yet — scheduling this recipe mints one.</p>'
-        : `<ul class="recipes-dish-list">${rows}</ul>`}
-    </section>`;
+): AutoRunStatusEntry | undefined => {
+  const rows = (data.autoRun ?? []).filter((a) => a.recipe_id === recipe_id);
+  const main = (data.dishes ?? []).find((d) => d.recipe_id === recipe_id && d.is_default)?.dish_id;
+  return rows.find((a) => a.dish_id === main && main !== undefined)
+    ?? rows.find((a) => (a.dish_id ?? null) !== null)
+    ?? rows[0];
 };
 
 /** One compact line of a recipe's automation state (read-only — management
@@ -2045,11 +2063,14 @@ const recipeAutomationSummaryText = (
   }
   const auto = recipeAutoRun(data, recipe_id);
   if (auto !== undefined) {
-    const state = !auto.enabled
-      ? ' (paused)'
-      : auto.auto_disabled
-        ? ' (tripped)'
-        : '';
+    // D-319 — a recipe with no dish is not paused: nobody switched it on.
+    const state = (auto.dish_id ?? null) === null
+      ? ' (not switched on)'
+      : !auto.enabled
+        ? ' (paused)'
+        : auto.auto_disabled
+          ? ' (tripped)'
+          : '';
     parts.push(`auto-run${state}`);
   }
   return parts.map((p) => e(p)).join(' · ');
@@ -2165,21 +2186,22 @@ const renderRelatedRecipeRow = (
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   canExecute: boolean,
   canCreateSchedules: boolean,
-  canConfig: boolean,
+  /** D-319 — the host can switch a recipe on (`dishes.create`). */
+  canSwitchOn: boolean,
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
   autoRunErrors: ReadonlyMap<string, string>,
-  configBusyRecipeId: string | null,
-  configErrors: ReadonlyMap<string, string>,
 ): string => {
   const name = recipeDisplayName(entry);
   const actionName = (label: string): string =>
     e(`${label} ${name} (${entry.recipe_id})`);
   const automationText = recipeAutomationSummaryText(automation, entry.recipe_id);
   const autoRun = recipeAutoRun(automation, entry.recipe_id);
-  const hasVariables = Object.keys(entry.recipe.variables ?? {}).length > 0;
-  const configError = configErrors.get(entry.recipe_id);
   const autoRunError = autoRunErrors.get(entry.recipe_id);
+  // D-319 — a recipe nobody switched on asks for its settings first: its row
+  // offers the same form as its own page, never a switch that starts it bare.
+  const hasDish = (automation.dishes ?? []).some((dish) => dish.recipe_id === entry.recipe_id)
+    || (autoRun?.dish_id ?? null) !== null;
   const targetRunnability = runnability?.get(entry.recipe_id);
   const actionKind = classifyRecipeAction(entry.recipe);
   const canRun =
@@ -2194,14 +2216,16 @@ const renderRelatedRecipeRow = (
     || entry.recipe.auto_run !== undefined
     || (entry.recipe.event_triggers?.length ?? 0) > 0
     || (entry.recipe.trigger_steps?.length ?? 0) > 0;
-  const autoRunToggle = actionKind === 'autorun' && automation.autoRun !== null
+  const autoRunToggle = hasDish && actionKind === 'autorun' && automation.autoRun !== null
     ? renderAutoRunToggle(
         entry,
         autoRun,
         canAutoRunUpdate,
         autoRunBusy.has(entry.recipe_id),
       )
-    : '';
+    : !hasDish && automation.dishes !== null && canSwitchOn && startsOnItsOwn(entry.recipe)
+      ? renderSwitchOnButton(entry.recipe_id, false)
+      : '';
   return `
     <li ${RECIPES_ROUTE_RELATED_ROW_ATTR}="${e(entry.recipe_id)}">
       <div>
@@ -2219,14 +2243,6 @@ const renderRelatedRecipeRow = (
           ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
           aria-label="${actionName('Run')}"
           ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Run</button>` : ''}
-        ${canConfig && hasVariables
-          ? `<button type="button" class="recipes-button"
-          ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
-          aria-label="${actionName(configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config')}"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
-            ? ' aria-disabled="true" aria-busy="true"'
-            : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config'}</button>`
-          : ''}
         ${canSchedule ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
           aria-label="${actionName('Schedule')}"
@@ -2241,9 +2257,6 @@ const renderRelatedRecipeRow = (
           aria-label="${actionName('Logs for')}"
           ${RECIPES_ROUTE_RUNS_LINK_ATTR}>Logs</a>
       </div>
-      ${configError === undefined
-        ? ''
-        : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
       ${autoRunError === undefined
         ? ''
         : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="${e(entry.recipe_id)}">${e(autoRunError)}</p>`}
@@ -2261,12 +2274,10 @@ const renderRelatedRecipesSection = (
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   canExecute: boolean,
   canCreateSchedules: boolean,
-  canConfig: boolean,
+  canSwitchOn: boolean,
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
   autoRunErrors: ReadonlyMap<string, string>,
-  configBusyRecipeId: string | null,
-  configErrors: ReadonlyMap<string, string>,
 ): string => {
   const related = relatedRecipesFor(selected, installed);
   const bundlePack = relatedBundlePackFor(
@@ -2317,12 +2328,10 @@ const renderRelatedRecipesSection = (
           runnability,
           canExecute,
           canCreateSchedules,
-          canConfig,
+          canSwitchOn,
           canAutoRunUpdate,
           autoRunBusy,
           autoRunErrors,
-          configBusyRecipeId,
-          configErrors,
         )).join('')}
       </ul>`}
     </section>
@@ -2352,12 +2361,12 @@ const renderRecipeDetail = (
   automation: RecipesAutomationData,
   canExecute: boolean,
   canCreateSchedules: boolean,
-  canConfig: boolean,
+  /** D-319 — the "Running as" section, already drawn (it owns its own state),
+   *  and whether the host can switch a recipe on (related rows offer it). */
+  dishes: { readonly markup: string; readonly canSwitchOn: boolean },
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
   autoRunErrors: ReadonlyMap<string, string>,
-  configBusyRecipeId: string | null,
-  configErrors: ReadonlyMap<string, string>,
   resultPanel: RecipesResultPanelSnapshot | null,
   resultActionRegistry: ResultActionRegistry,
   resultFilterStates: ReadonlyMap<string, RecipesResultFilterState>,
@@ -2399,17 +2408,9 @@ const renderRecipeDetail = (
   const automationText = recipeAutomationSummaryText(automation, entry.recipe_id);
   const actionKind = classifyRecipeAction(entry.recipe);
   const isManual = actionKind === 'manual';
+  // D-319 — the recipe's timer is its main dish's; switching it is the dish's
+  // switch, under "Running as".
   const autoRun = recipeAutoRun(automation, entry.recipe_id);
-  const autoRunToggle = actionKind === 'autorun' && automation.autoRun !== null
-    ? renderAutoRunToggle(
-        entry,
-        autoRun,
-        canAutoRunUpdate,
-        autoRunBusy.has(entry.recipe_id),
-        true,
-      )
-    : '';
-  const autoRunError = autoRunErrors.get(entry.recipe_id);
   const emptyAutomationCopy = isManual
     ? 'Nothing sets this off yet. Add a schedule here, or set one up under Automation.'
     : actionKind === 'autorun'
@@ -2418,14 +2419,20 @@ const renderRecipeDetail = (
   const variableDefs = Object.values(entry.recipe.variables ?? {});
   const defaultPrimitiveOnly = variableDefs.length > 0
     && variableDefs.every((definition) => !isInvocationVariable(definition));
+  // D-319 — Run runs as the main dish when the recipe has one, and nothing
+  // needs asking when the dish holds every value a run would ask for.
+  const mainDish = (automation.dishes ?? []).find((dish) =>
+    dish.recipe_id === entry.recipe_id && dish.is_default);
+  const mainDishAnswersAll = mainDish !== undefined
+    && Object.entries(entry.recipe.variables ?? {}).every(([key, definition]) =>
+      !isInvocationVariable(definition) || hasSettingValue(mainDish.config_overlay[key]));
   const targetRunnability = runnability?.get(entry.recipe_id);
   const missingPacks = targetRunnability === undefined
     ? []
     : missingPackRefsFromRunnability(targetRunnability);
-  const canRunDefaultsDirectly = defaultPrimitiveOnly
+  const canRunDefaultsDirectly = (defaultPrimitiveOnly || mainDishAnswersAll)
     && canExecute
     && targetRunnability?.status !== 'blocked';
-  const configError = configErrors.get(entry.recipe_id);
   return `
     <div ${RECIPES_ROUTE_DETAIL_ATTR}="${e(entry.recipe_id)}">
       <a class="recipes-inline-link" href="#recipes" ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-list" ${RECIPES_ROUTE_BACK_ATTR}>← Recipes</a>
@@ -2443,28 +2450,20 @@ const renderRecipeDetail = (
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
               ? ' aria-disabled="true" aria-busy="true"'
               : ''}${missingPackRunAttrs(missingPacks)}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
-          ${defaultPrimitiveOnly ? `<button type="button" class="recipes-button"
+          ${defaultPrimitiveOnly || mainDishAnswersAll ? `<button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${missingPackRunAttrs(missingPacks)}>Run with overrides</button>` : ''}
           <button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Schedule</button>` : ''}
-          ${autoRunToggle}
           ${actionKind === 'autorun' && autoRun?.preapproval
             ? `<a class="recipes-button" href="${e(preapprovalHref(autoRun.preapproval.proposal_id))}">Look at this run</a>`
             : actionKind === 'autorun' && canPreapprove && autoRun?.lifecycle_revision !== undefined && !autoRun.auto_disabled
               ? `<button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="review-auto-run"
                 ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Look at the next run</button>` : ''}
-          ${isManual ? '' : `<a class="recipes-button${autoRunToggle === '' ? ' recipes-button--primary' : ''}"
+          ${isManual ? '' : `<a class="recipes-button recipes-button--primary"
             href="${serializeShellRoute('automation', entry.recipe_id)}"
             ${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}>Manage automation</a>`}
-          ${canConfig && Object.keys(entry.recipe.variables ?? {}).length > 0
-            ? `<button type="button" class="recipes-button"
-            ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
-              ? ' aria-disabled="true" aria-busy="true"'
-              : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading settings…' : 'Config'}</button>`
-            : ''}
           <a class="recipes-button"
             href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
             ${RECIPES_ROUTE_EDIT_LINK_ATTR}>Edit in Kitchen</a>
@@ -2474,14 +2473,8 @@ const renderRecipeDetail = (
           : isManual && defaultRunError !== null
             ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
             : ''}
-        ${configError === undefined
-          ? ''
-          : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
-        ${autoRunError === undefined
-          ? ''
-          : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="${e(entry.recipe_id)}">${e(autoRunError)}</p>`}
       </header>
-      ${renderDishesSection(automation, entry.recipe_id)}
+      ${dishes.markup}
       <section class="recipes-detail-section">
         <h2 class="recipes-detail-section-title">Exposed as a tool</h2>
         <p class="recipes-detail-note">Whether the AI can call this recipe is granted per contract — it can be exposed through one contract and not another. <a class="recipes-inline-link" href="#contracts" ${RECIPES_ROUTE_CONTRACTS_LINK_ATTR}>Manage in Contracts →</a></p>
@@ -2522,12 +2515,10 @@ const renderRecipeDetail = (
         runnability,
         canExecute,
         canCreateSchedules,
-        canConfig,
+        dishes.canSwitchOn,
         canAutoRunUpdate,
         autoRunBusy,
         autoRunErrors,
-        configBusyRecipeId,
-        configErrors,
       )}
       <section class="recipes-detail-section">
         <details ${RECIPES_ROUTE_DEFINITION_ATTR}>
@@ -2561,7 +2552,7 @@ export const bootstrapRecipesRoute = (
     // The panel's own rules travel WITH it now — scoped to
     // `RECIPE_RESULT_HOST_ATTR`, not to this route's host, so the same sheet
     // serves `#packs/<slug>`.
-    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}\n${LIST_PREVIEW_STYLES}`;
+    style.textContent = `${RECIPES_ROUTE_STYLES}\n${RECIPE_RESULT_PANEL_STYLES}\n${PACK_INSTALL_OFFER_STYLES}\n${LIST_PREVIEW_STYLES}\n${RUNNING_AS_STYLES}`;
     doc.head.appendChild(style);
   }
 
@@ -2699,11 +2690,33 @@ export const bootstrapRecipesRoute = (
    *  import; the two share the one-dialog-at-a-time rule. */
   let childSheetImport: SheetImportHandle | null = null;
   let runModalRecipeId: string | null = null;
-  // D-179 — the recipe install-config editor (the shared config overlay).
-  let recipeConfigHandle: ConfigEditorOverlayHandle | null = null;
+  // D-319 — "Running as": the one form for Switch on / Save settings / + Add
+  // another / a dish's Settings, the dishes with a change in flight, the open
+  // menu, the remove being confirmed, and errors per dish (`''` = the
+  // recipe's own). The switch-on form's read of what a first dish starts
+  // from belongs to this visit: leaving retires it (`switchOnToken`).
+  let dishFormHandle: ConfigEditorOverlayHandle | null = null;
+  let switchOnReading: string | null = null;
+  let switchOnToken = 0;
+  /** A dish just made: its switch takes the focus once its line is drawn
+   *  (the Switch on / Add another it came from is gone by then). */
+  let pendingDishFocus: string | null = null;
   let preapprovalActivation: ReturnType<typeof openPreapprovalActivation> | null = null;
-  let configBusyRecipeId: string | null = null;
-  let configErrors = new Map<string, string>();
+  let dishBusy = new Set<string>();
+  let dishMenuOpen: string | null = null;
+  let dishConfirmingRemove: string | null = null;
+  let dishErrors = new Map<string, string>();
+  /** The owner's mail templates by id: a dish's line names its template. */
+  let templateNames: ReadonlyMap<string, string> | null = null;
+  let templateNamesRequested = false;
+  const resetDishState = (): void => {
+    dishMenuOpen = null;
+    dishConfirmingRemove = null;
+    dishErrors = new Map();
+    switchOnReading = null;
+    switchOnToken += 1;
+    pendingDishFocus = null;
+  };
   // Read-only automation status (the per-recipe summary line on the detail).
   let automationData: RecipesAutomationData = {
     dishes: null,
@@ -2757,7 +2770,8 @@ export const bootstrapRecipesRoute = (
     || autoRunBusy.size > 0
     || hasResultGridSaveInFlight()
     || hasResultFilterInFlight()
-    || recipeConfigHandle?.hasInFlightWork() === true
+    || dishBusy.size > 0
+    || dishFormHandle?.hasInFlightWork() === true
     || preapprovalActivation?.hasInFlightWork() === true
     || childRunModal?.hasInFlightWork() === true;
 
@@ -2880,10 +2894,13 @@ export const bootstrapRecipesRoute = (
     ) === 'run-defaults'
       ? activeElement.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
       : null;
-    const focusedConfigRecipeId = activeElement?.getAttribute?.(
-      RECIPES_ROUTE_ACTION_ATTR,
-    ) === 'open-recipe-config'
-      ? activeElement.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+    // D-319 — a "Running as" control keeps the focus its own click moved:
+    // the same control where it survives the repaint, else its line's menu.
+    const focusedRunningAs = activeElement?.hasAttribute?.(RUNNING_AS_ACTION_ATTR) === true
+      ? {
+          key: RUNNING_AS_FOCUS_AFTER[activeElement.getAttribute(RUNNING_AS_ACTION_ATTR) ?? ''] ?? null,
+          dish_id: activeElement.getAttribute(RUNNING_AS_DISH_ATTR),
+        }
       : null;
     const focusedBundleSlug = activeElement?.getAttribute?.(
       RECIPES_ROUTE_BUNDLE_RETRY_ATTR,
@@ -2894,12 +2911,6 @@ export const bootstrapRecipesRoute = (
     const focusedRelatedRecipeId = focusedRelatedRow?.getAttribute?.(
       RECIPES_ROUTE_RELATED_ROW_ATTR,
     ) ?? null;
-    const focusedDetailAutoRunRecipeId = focusedRelatedRecipeId === null
-      && relatedActionFocusKey(activeElement?.getAttribute?.(
-        RECIPES_ROUTE_ACTION_ATTR,
-      ) ?? null) === 'toggle-auto-run'
-        ? activeElement?.getAttribute?.(RECIPES_ROUTE_RECIPE_ID_ATTR) ?? null
-        : null;
     let focusedRelatedControl: {
       recipeId: string;
       kind: 'action' | 'automation' | 'logs';
@@ -3004,12 +3015,10 @@ export const bootstrapRecipesRoute = (
         opts.recipeExecuteCaller !== undefined,
         opts.schedulesListCaller !== undefined
           && opts.schedulesCreateCaller !== undefined,
-        opts.recipeConfigGetCaller !== undefined && opts.recipeConfigSetCaller !== undefined,
+        { markup: runningAsFor(selected), canSwitchOn: opts.dishesCreateCaller !== undefined },
         opts.autoRunUpdateCaller !== undefined,
         autoRunBusy,
         autoRunErrors,
-        configBusyRecipeId,
-        configErrors,
         shownPanel,
         resultActionRegistry,
         resultFilterStates,
@@ -3055,25 +3064,32 @@ export const bootstrapRecipesRoute = (
       if (restoreResultFilterActionFocus(routeRoot, focusedResultFilterAction)) {
         return;
       }
-      const focusedConfig = focusedConfigRecipeId === null
-        ? null
-        : Array.from(routeRoot.querySelectorAll(
-            `[${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"]`,
-          )).find((candidate) =>
-            candidate.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
-              === focusedConfigRecipeId) as HTMLElement | null | undefined;
-      if (focusedConfig !== null && focusedConfig !== undefined) {
-        focusedConfig.focus?.({ preventScroll: true });
-        return;
+      if (pendingDishFocus !== null) {
+        const made = Array.from(routeRoot.querySelectorAll?.(
+          `[${RUNNING_AS_DISH_ATTR}="${pendingDishFocus}"][role="switch"]`,
+        ) ?? []) as HTMLElement[];
+        if (made.length > 0) {
+          pendingDishFocus = null;
+          made[0]!.focus?.({ preventScroll: true });
+          return;
+        }
       }
-      if (focusedDetailAutoRunRecipeId !== null) {
-        const replacement = Array.from(routeRoot.querySelectorAll(
-          `[${RECIPES_ROUTE_ACTION_ATTR}]`,
-        )).find((candidate) =>
-          candidate.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
-            === focusedDetailAutoRunRecipeId
-          && relatedActionFocusKey(candidate.getAttribute(RECIPES_ROUTE_ACTION_ATTR))
-            === 'toggle-auto-run') as HTMLElement | undefined;
+      if (focusedRunningAs !== null && focusedRunningAs.key !== null) {
+        const controls = Array.from(routeRoot.querySelectorAll?.(
+          `[${RUNNING_AS_ACTION_ATTR}]`,
+        ) ?? []) as HTMLElement[];
+        const recipeLevel = (key: string | null): boolean =>
+          key === 'add' || key === 'switch-on' || key === 'save-settings';
+        const onDish = (candidate: HTMLElement): boolean =>
+          candidate.getAttribute(RUNNING_AS_DISH_ATTR) === focusedRunningAs.dish_id;
+        const replacement = controls.find((candidate) => {
+          const key = runningAsFocusKey(candidate.getAttribute(RUNNING_AS_ACTION_ATTR));
+          return key === focusedRunningAs.key && (recipeLevel(key) || onDish(candidate));
+        })
+          ?? controls.find((candidate) =>
+            candidate.getAttribute(RUNNING_AS_ACTION_ATTR) === 'menu' && onDish(candidate))
+          ?? controls.find((candidate) =>
+            recipeLevel(candidate.getAttribute(RUNNING_AS_ACTION_ATTR)));
         if (replacement !== undefined) {
           replacement.focus?.({ preventScroll: true });
           return;
@@ -3625,7 +3641,7 @@ export const bootstrapRecipesRoute = (
       && !recipes.some((r) => r.recipe_id === selectedRecipeId)
     ) {
       detailVisitGeneration += 1;
-      configBusyRecipeId = null;
+      resetDishState();
       selectedRecipeId = null;
       syncRecipeHash();
     }
@@ -3753,7 +3769,7 @@ export const bootstrapRecipesRoute = (
     pendingListControlFocus = null;
     if (selectedRecipeId !== recipe_id) {
       detailVisitGeneration += 1;
-      configBusyRecipeId = null;
+      resetDishState();
       resultPanel = null;
       resetResultFilterStates(null);
       // Grid state belongs to the PANEL, and the paging guard reads this map
@@ -3787,6 +3803,8 @@ export const bootstrapRecipesRoute = (
     if (
       defaultRunBusy
       || autoRunBusy.size > 0
+      || dishBusy.size > 0
+      || dishFormHandle?.hasInFlightWork() === true
       || hasResultGridSaveInFlight()
       || hasResultFilterInFlight()
     ) {
@@ -3813,7 +3831,7 @@ export const bootstrapRecipesRoute = (
     pendingListScrollRestore = remembered?.scroll;
     pendingDetailFocusRecipeId = null;
     detailVisitGeneration += 1;
-    configBusyRecipeId = null;
+    resetDishState();
     selectedRecipeId = null;
     resultPanel = null;
     resetResultFilterStates(null);
@@ -3841,7 +3859,10 @@ export const bootstrapRecipesRoute = (
    *  class question to ask. Their primary Run executes with server-resolved
    *  defaults, while the adjacent explicit override control still opens the
    *  raw config editor. */
-  const runRecipeDefaults = async (recipeId: string): Promise<void> => {
+  /** D-319 — runs as `dish_id`, else the recipe's main dish when it has
+   *  one (a run that names no dish takes its settings anyway; naming it puts
+   *  the run in the dish's history). */
+  const runRecipeDefaults = async (recipeId: string, dish_id?: string): Promise<void> => {
     if (defaultRunBusy || selectedRecipeId !== recipeId) return;
     const visitAtDispatch = detailVisitGeneration;
     const stillOwnsVisit = (): boolean => !disposed
@@ -3859,7 +3880,8 @@ export const bootstrapRecipesRoute = (
     defaultRunMissingPacks = null;
     render();
     try {
-      const result = await execute({ recipe_id: recipeId, config: {} });
+      const runAs = dish_id ?? mainDishOf(recipeId)?.dish_id;
+      const result = await execute({ recipe_id: recipeId, config: {}, ...(runAs !== undefined ? { dish_id: runAs } : {}) });
       if (!stillOwnsVisit()) return;
       const previous = withoutRenderedRecipe(
         panelAtDispatch ?? undefined,
@@ -3900,6 +3922,8 @@ export const bootstrapRecipesRoute = (
     tab: 'run' | 'schedule' = 'run',
     prefill?: RecipesRunModalPrefill,
     origin?: RecipesResultOrigin,
+    /** D-319 — the dish it was opened from (its menu's Run once / Add a schedule). */
+    dish_id?: string,
   ): void => {
     const entry = recipes.find((row) => row.recipe_id === recipe_id);
     if (entry === undefined) return;
@@ -3997,8 +4021,7 @@ export const bootstrapRecipesRoute = (
       : null;
     if (sheet !== null && opts.recipeExecuteCaller !== undefined) {
       ensureSheetImportResultStyles(doc);
-      const configGet = opts.recipeConfigGetCaller;
-      const configSet = opts.recipeConfigSetCaller;
+      const remembered = rememberedSettings();
       childSheetImport = wireSheetImport({
         recipe: entry,
         declaration: sheet,
@@ -4013,8 +4036,8 @@ export const bootstrapRecipesRoute = (
         ...(opts.fileRefSearchCaller !== undefined
           ? { fileRefSearch: opts.fileRefSearchCaller }
           : {}),
-        ...(configGet !== undefined && configSet !== undefined
-          ? { configGet, configSet }
+        ...(remembered !== null
+          ? { configGet: remembered.get, configSet: remembered.set }
           : {}),
         renderResult: renderSheetImportResult,
         ...(prefill?.config !== undefined ? { prefill: prefill.config } : {}),
@@ -4032,6 +4055,11 @@ export const bootstrapRecipesRoute = (
       recipe: entry,
       document: doc,
       initialTab: tab,
+      // D-319 — a run, schedule or trigger made here is a dish's.
+      ...(automationData.dishes !== null
+        ? { dishes: automationData.dishes.filter((dish) => dish.recipe_id === recipe_id) }
+        : {}),
+      ...(dish_id !== undefined ? { dish_id } : {}),
       ...(opts.recipeExecuteCaller !== undefined
         ? { execute: opts.recipeExecuteCaller }
         : {}),
@@ -4100,77 +4128,276 @@ export const bootstrapRecipesRoute = (
     return bindRecordRefSearchToRecipe(opts.recordRefSearchCaller, recipe);
   };
 
-  const openRecipeConfigEditor = async (recipe_id: string): Promise<void> => {
-    const getCaller = opts.recipeConfigGetCaller;
-    const setCaller = opts.recipeConfigSetCaller;
-    if (getCaller === undefined || setCaller === undefined || doc === undefined) return;
-    if (recipeConfigHandle !== null || configBusyRecipeId !== null) return;
-    const entry = recipes.find((row) => row.recipe_id === recipe_id);
-    if (entry === undefined) return;
-    const routeRecipeIdAtDispatch = selectedRecipeId;
-    const visitAtDispatch = detailVisitGeneration;
-    const stillOwnsVisit = (): boolean => !disposed
-      && selectedRecipeId === routeRecipeIdAtDispatch
-      && detailVisitGeneration === visitAtDispatch;
-    const nextErrors = new Map(configErrors);
-    nextErrors.delete(recipe_id);
-    configErrors = nextErrors;
-    configBusyRecipeId = recipe_id;
+  // ── D-319 — "Running as" ────────────────────────────────────────
+
+  /** A dish line names a mail template by the owner's name for it. */
+  const settingValueText: SettingValueText = (key, type, value) =>
+    type === 'mail_template'
+      ? typeof value === 'string' ? templateNames?.get(value) ?? null : null
+      : plainSettingText(key, type, value);
+
+  /** The owner's template names, read once a recipe with a template setting
+   *  shows its dishes; again after a Settings save (it may name a new one). */
+  const ensureTemplateNames = (entry: ServerRecipeListEntry): void => {
+    const callers = opts.mailTemplateCallers;
+    if (callers === undefined || templateNamesRequested) return;
+    const wantsNames = Object.values(entry.recipe.variables ?? {}).some((definition) =>
+      typeof definition === 'object' && definition !== null && !Array.isArray(definition)
+      && (definition as { type?: unknown }).type === 'mail_template');
+    if (!wantsNames) return;
+    templateNamesRequested = true;
+    void callers.list().then(
+      (choices) => {
+        if (disposed) return;
+        templateNames = new Map(choices.map((choice) => [choice.template_id, choice.name]));
+        render();
+      },
+      // The line shows no template name; everything else stands.
+      () => {},
+    );
+  };
+
+  /** The selected recipe's "Running as" section (§5.1). */
+  const runningAsFor = (entry: ServerRecipeListEntry): string => {
+    ensureTemplateNames(entry);
+    return renderRunningAs({
+      recipe_id: entry.recipe_id,
+      recipe_name: recipeDisplayName(entry),
+      recipe: entry.recipe,
+      dishes: automationData.dishes === null
+        ? null
+        : automationData.dishes.filter((dish) => dish.recipe_id === entry.recipe_id),
+      lastRuns: automationData.dishLastRuns,
+      schedules: automationData.schedules,
+      triggers: automationData.triggers,
+      autoRun: automationData.autoRun,
+      can: {
+        create: opts.dishesCreateCaller !== undefined,
+        update: opts.dishesUpdateCaller !== undefined,
+        remove: opts.dishesDeleteCaller !== undefined,
+        run: opts.recipeExecuteCaller !== undefined,
+        schedule: opts.schedulesListCaller !== undefined && opts.schedulesCreateCaller !== undefined,
+      },
+      busy: switchOnReading === entry.recipe_id ? new Set([...dishBusy, '']) : dishBusy,
+      openMenu: dishMenuOpen,
+      confirmingRemove: dishConfirmingRemove,
+      errors: dishErrors,
+      failureHref: serializeShellRoute('automation', entry.recipe_id),
+      valueText: settingValueText,
+    });
+  };
+
+  const dishOf = (dish_id: string): Dish | undefined =>
+    (automationData.dishes ?? []).find((dish) => dish.dish_id === dish_id);
+
+  const mainDishOf = (recipe_id: string): Dish | undefined =>
+    (automationData.dishes ?? []).find((dish) => dish.recipe_id === recipe_id && dish.is_default);
+
+  /** D-319 — "remember these columns" (the guided import): the recipe's
+   *  MAIN dish's settings (`main-dish-settings.ts`), and the lists again. */
+  const rememberedSettings = (): MainDishSettings | null => {
+    const list = opts.dishesListCaller;
+    const update = opts.dishesUpdateCaller;
+    const create = opts.dishesCreateCaller;
+    if (list === undefined || update === undefined || create === undefined) return null;
+    const settings = mainDishSettings({ list, update, create });
+    return {
+      get: settings.get,
+      set: async (args) => {
+        const result = await settings.set(args);
+        if (!disposed) void refreshAutomation();
+        return result;
+      },
+    };
+  };
+
+  /** One dish's change: busy while it runs, its error on its line, then the
+   *  lists again (the server switched its triggers, schedules and timer). */
+  const mutateDish = async (dish_id: string, change: () => Promise<unknown>): Promise<void> => {
+    if (dishBusy.has(dish_id)) return;
+    const nextErrors = new Map(dishErrors);
+    nextErrors.delete(dish_id);
+    dishErrors = nextErrors;
+    dishBusy = new Set(dishBusy).add(dish_id);
     render();
-    let current: Record<string, unknown>;
     try {
-      current = (await getCaller({ recipe_id })).config_overlay;
+      await change();
+      if (!disposed) await refreshAutomation();
     } catch (error) {
-      // A read failure must NOT open an empty editor — saving that empty
-      // overlay would CLEAR the recipe's real install config. Abort; a
-      // retry (re-click Config) re-reads.
-      if (stillOwnsVisit() && configBusyRecipeId === recipe_id) {
-        configBusyRecipeId = null;
-        const next = new Map(configErrors);
-        next.set(recipe_id, recipeConfigLoadError(error));
-        configErrors = next;
+      if (!disposed) dishErrors = new Map(dishErrors).set(dish_id, `Recued could not change that: ${errMessage(error)}`);
+    } finally {
+      if (!disposed) {
+        const next = new Set(dishBusy);
+        next.delete(dish_id);
+        dishBusy = next;
         render();
       }
-      return;
     }
-    if (!stillOwnsVisit() || configBusyRecipeId !== recipe_id) return;
-    configBusyRecipeId = null;
-    const liveEntry = recipes.find((row) => row.recipe_id === recipe_id);
-    const stillOwned = stillOwnsVisit()
-      && liveEntry !== undefined
-      && recipeConfigHandle === null;
-    render();
-    if (!stillOwned || liveEntry === undefined) return;
-    const configRecordRefSearch = recordRefSearchFor(liveEntry.recipe);
-    recipeConfigHandle = wireConfigEditorOverlay({
+  };
+
+  /** D-319 §5.2 — the switch-on form (`dish-form.ts`): Switch on, Save
+   *  settings, + Add another and a dish's Settings. This page reads where a
+   *  first dish starts from, and owns the busy state and errors around it. */
+  const openDishForm = async (
+    mode: DishFormMode,
+    recipe_id: string,
+    dish_id: string | null,
+  ): Promise<void> => {
+    if (dishFormHandle !== null) return;
+    const entry = recipes.find((row) => row.recipe_id === recipe_id);
+    if (entry === undefined) return;
+    const mine = (automationData.dishes ?? []).filter((dish) => dish.recipe_id === recipe_id);
+    const dish = dish_id === null ? undefined : mine.find((candidate) => candidate.dish_id === dish_id);
+    if (mode === 'settings'
+      ? dish === undefined || opts.dishesUpdateCaller === undefined
+      : opts.dishesCreateCaller === undefined) return;
+    let start = dishFormStart(mode, mine, dish);
+    if (start === null) {
+      // The first dish starts from the recipe's defaults (the form shows them)
+      // and whatever the install chose for it (its mail template).
+      start = {};
+      const defaults = opts.dishesDefaultsCaller;
+      if (defaults !== undefined) {
+        if (switchOnReading !== null) return;
+        const token = ++switchOnToken;
+        switchOnReading = recipe_id;
+        const nextErrors = new Map(dishErrors);
+        nextErrors.delete('');
+        dishErrors = nextErrors;
+        render();
+        let read: Record<string, unknown> | null = null;
+        try {
+          read = (await defaults({ recipe_id })).config_overlay;
+        } catch (error) {
+          if (!disposed && token === switchOnToken) {
+            dishErrors = new Map(dishErrors).set('',
+              `Recued could not read what this recipe starts from: ${errMessage(error)}`);
+          }
+        } finally {
+          if (!disposed && token === switchOnToken) {
+            switchOnReading = null;
+            render();
+          }
+        }
+        // Left (or reopened) meanwhile: this read is retired.
+        if (read === null || disposed || token !== switchOnToken || dishFormHandle !== null) return;
+        start = { ...read };
+      }
+    }
+    const recordRefSearch = recordRefSearchFor(entry.recipe);
+    dishFormHandle = openSharedDishForm({
       document: doc,
-      title: liveEntry.recipe.metadata?.name ?? recipe_id,
-      copy: 'These settings are used every time this Recipe runs. You can still change them for one run.',
-      confirmLabel: 'Save',
-      variables: liveEntry.recipe.variables ?? {},
-      currentOverlay: current,
-      ...(opts.fileRefSearchCaller !== undefined
-        ? { fileRefSearch: opts.fileRefSearchCaller }
-        : {}),
-      // A `record_ref` searches ONE pack's entity, and the pack is the
-      // recipe's own bundle — `<publisher>/<pack>`. A recipe with no bundle
-      // (a standalone) has no Records namespace to search, so it keeps the
-      // text box rather than showing a picker over nothing.
-      ...(configRecordRefSearch !== undefined
-        ? { recordRefSearch: configRecordRefSearch }
-        : {}),
-      confirmingLabel: 'Saving…',
-      confirmFailureCopy:
-        "Recued could not save that. What you typed is still here. Try again.",
-      onConfirm: async (config) => {
-        await setCaller({
-          recipe_id,
-          publisher_id: liveEntry.publisher_id,
-          config_overlay: config,
-        });
+      mode,
+      entry,
+      dishes: mine,
+      ...(dish !== undefined ? { dish } : {}),
+      start,
+      callers: {
+        ...(opts.dishesCreateCaller !== undefined ? { create: opts.dishesCreateCaller } : {}),
+        ...(opts.dishesUpdateCaller !== undefined ? { update: opts.dishesUpdateCaller } : {}),
+        ...(opts.schedulesCreateCaller !== undefined ? { schedulesCreate: opts.schedulesCreateCaller } : {}),
       },
-      onClose: () => { recipeConfigHandle = null; },
+      ...(opts.fileRefSearchCaller !== undefined ? { fileRefSearch: opts.fileRefSearchCaller } : {}),
+      ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
+      ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
+      onCreated: (made, scheduleError) => {
+        pendingDishFocus = made.dish_id;
+        if (scheduleError !== null && !disposed) {
+          dishErrors = new Map(dishErrors).set(made.dish_id,
+            `Switched on, but Recued could not add the schedule: ${errMessage(scheduleError)}`);
+        }
+      },
+      onSaved: () => {
+        templateNamesRequested = false;
+        if (!disposed) void refreshAutomation();
+      },
+      onClose: () => { dishFormHandle = null; },
     });
+  };
+
+  /** "Run once as this": straight away when the dish holds every value a run
+   *  would ask for, else the run dialog, running as it. */
+  const runAsDish = (recipe_id: string, dish_id: string): void => {
+    const entry = recipes.find((row) => row.recipe_id === recipe_id);
+    const dish = dishOf(dish_id);
+    if (entry === undefined || dish === undefined) return;
+    const answersAll = Object.entries(entry.recipe.variables ?? {}).every(([key, definition]) =>
+      !isInvocationVariable(definition) || hasSettingValue(dish.config_overlay[key]));
+    if (answersAll) void runRecipeDefaults(recipe_id, dish_id);
+    else openRunModal(recipe_id, 'run', undefined, undefined, dish_id);
+  };
+
+  const onRunningAsAction = (action: RunningAsAction, target: HTMLElement): void => {
+    const dish_id = target.getAttribute(RUNNING_AS_DISH_ATTR);
+    const recipe_id = target.getAttribute(RUNNING_AS_RECIPE_ATTR)
+      ?? (dish_id !== null ? dishOf(dish_id)?.recipe_id ?? null : null)
+      ?? selectedRecipeId;
+    if (recipe_id === null) return;
+    const update = opts.dishesUpdateCaller;
+    switch (action) {
+      case 'switch-on':
+      case 'save-settings':
+      case 'add':
+        // A related recipe's "Switch on…" opens its own page under the form,
+        // so what follows (busy, errors, its new dish) shows where it is.
+        if (recipe_id !== selectedRecipeId) openRecipe(recipe_id);
+        void openDishForm(action, recipe_id, null);
+        return;
+      case 'settings':
+        if (dish_id !== null) void openDishForm('settings', recipe_id, dish_id);
+        return;
+      case 'menu':
+        if (dish_id === null) return;
+        dishMenuOpen = dishMenuOpen === dish_id ? null : dish_id;
+        dishConfirmingRemove = null;
+        render();
+        return;
+      case 'toggle-on':
+      case 'toggle-off':
+      // Switching a dish on again, while it is on, restarts what the server
+      // stopped (its breaker, a disarmed trigger or schedule).
+      case 'rearm':
+        if (dish_id !== null && update !== undefined) {
+          void mutateDish(dish_id, () => update({ dish_id, enabled: action !== 'toggle-off' }));
+        }
+        return;
+      case 'make-main':
+        if (dish_id === null || update === undefined) return;
+        dishMenuOpen = null;
+        void mutateDish(dish_id, () => update({ dish_id, main: true }));
+        return;
+      case 'run':
+        if (dish_id === null) return;
+        dishMenuOpen = null;
+        render();
+        runAsDish(recipe_id, dish_id);
+        return;
+      case 'schedule':
+        if (dish_id === null) return;
+        dishMenuOpen = null;
+        render();
+        openRunModal(recipe_id, 'schedule', undefined, undefined, dish_id);
+        return;
+      case 'remove':
+        if (dish_id === null) return;
+        dishMenuOpen = null;
+        dishConfirmingRemove = dish_id;
+        render();
+        return;
+      case 'remove-cancel':
+        dishConfirmingRemove = null;
+        render();
+        return;
+      case 'remove-confirm': {
+        const remove = opts.dishesDeleteCaller;
+        if (dish_id === null || remove === undefined || dishConfirmingRemove !== dish_id) return;
+        void mutateDish(dish_id, async () => {
+          await remove({ dish_id });
+          dishConfirmingRemove = null;
+        });
+        return;
+      }
+    }
   };
 
   const toggleAutoRun = async (recipe_id: string, enabled: boolean): Promise<void> => {
@@ -4184,10 +4411,13 @@ export const bootstrapRecipesRoute = (
     try {
       const { entry } = await update({ recipe_id, enabled });
       const current = automationData.autoRun ?? [];
+      // D-319 — the row is one dish's timer: it replaces that timer's row (or
+      // the recipe's "not switched on" one), never the recipe's other dishes'.
       automationData = {
         ...automationData,
         autoRun: [
-          ...current.filter((row) => row.recipe_id !== recipe_id),
+          ...current.filter((row) => !(row.recipe_id === recipe_id
+            && ((row.dish_id ?? null) === null || row.dish_id === entry.dish_id))),
           entry,
         ],
       };
@@ -4207,11 +4437,11 @@ export const bootstrapRecipesRoute = (
     const entry = recipes.find(row => row.recipe_id === recipe_id);
     const auto = recipeAutoRun(automationData, recipe_id);
     if (!entry || !auto || auto.lifecycle_revision === undefined || auto.preapproval || auto.auto_disabled
-      || !opts.preapprovalPrepareCaller || !opts.onPreapprovalPrepared) return;
+      || (auto.dish_id ?? null) === null || !opts.preapprovalPrepareCaller || !opts.onPreapprovalPrepared) return;
     preapprovalActivation?.destroy();
     preapprovalActivation = openPreapprovalActivation({ document: doc, recipe_id, publisher_id: entry.publisher_id,
       name: recipeDisplayName(entry), activation: { kind: 'next_auto_run', recipe_id,
-        publisher_id: entry.publisher_id, expected_revision: auto.lifecycle_revision },
+        publisher_id: entry.publisher_id, dish_id: auto.dish_id!, expected_revision: auto.lifecycle_revision },
       prepare: opts.preapprovalPrepareCaller, onPrepared: opts.onPreapprovalPrepared,
       onClose: () => { preapprovalActivation = null; },
     });
@@ -4672,6 +4902,17 @@ export const bootstrapRecipesRoute = (
   };
 
   const onClick = (ev: Event): void => {
+    // D-319 — the "Running as" section names its own actions.
+    const runningAs = typeof (ev.target as HTMLElement | null)?.closest === 'function'
+      ? (ev.target as HTMLElement).closest(`[${RUNNING_AS_ACTION_ATTR}]`) as HTMLElement | null
+      : null;
+    if (runningAs !== null) {
+      const runningAsAction = runningAs.getAttribute(RUNNING_AS_ACTION_ATTR);
+      if (runningAsAction !== null && RUNNING_AS_ACTIONS.has(runningAsAction)) {
+        onRunningAsAction(runningAsAction as RunningAsAction, runningAs);
+      }
+      return;
+    }
     const target = findActionTarget(ev.target);
     if (target === null) return;
     const action =
@@ -4848,11 +5089,6 @@ export const bootstrapRecipesRoute = (
       // the request then rejects and the panel silently never enlarges.
       const host = target.closest?.(`[${RECIPE_RESULT_HOST_ATTR}]`) ?? null;
       if (host !== null) void toggleResultFullscreen(host, domFullscreenApi(doc));
-      return;
-    }
-    if (action === 'open-recipe-config') {
-      const recipeId = target.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR);
-      if (recipeId !== null) void openRecipeConfigEditor(recipeId);
       return;
     }
     if (action === 'toggle-auto-run:on' || action === 'toggle-auto-run:off') {
@@ -5058,6 +5294,7 @@ export const bootstrapRecipesRoute = (
         ? null
         : {
             recipe_id: runModalRecipeId,
+            dish_id: childRunModal.getState().dish_id,
             config_text: childRunModal.getState().config_text,
             target_values: childRunModal.getState().target_values,
             context_values: childRunModal.getState().context_values,
@@ -5123,8 +5360,8 @@ export const bootstrapRecipesRoute = (
       closeRunModal();
       listPreview?.dispose();
       listPreview = null;
-      recipeConfigHandle?.destroy();
-      recipeConfigHandle = null;
+      dishFormHandle?.destroy();
+      dishFormHandle = null;
       preapprovalActivation?.destroy();
       preapprovalActivation = null;
       for (const picker of resultGridRefPickers.splice(0)) picker.destroy();

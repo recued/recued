@@ -2,8 +2,8 @@ import { expect, test } from '@playwright/test';
 
 const BASE = 'http://127.0.0.1:4319/full-app-harness.html?preapproval=1';
 for (const [route, activation, approveButton] of [
-  ['recipes/autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', expected_revision: 7 }, 'Say yes and set it up'],
-  ['automation/auto-run/autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', expected_revision: 7 }, 'Say yes and set it up'],
+  ['recipes/autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', dish_id: 'dsh_autorun-live-1', expected_revision: 7 }, 'Say yes and set it up'],
+  ['automation/auto-run/dsh_autorun-live-1', { kind: 'next_auto_run', recipe_id: 'autorun-live-1', publisher_id: 'recued-core', dish_id: 'dsh_autorun-live-1', expected_revision: 7 }, 'Say yes and set it up'],
   ['automation/triggers/browser-trigger', { kind: 'next_trigger', trigger_id: 'browser-trigger', expected_revision: 7 }, 'Say yes and set it up'],
   ['automation/schedules/browser-schedule', { kind: 'next_schedule', schedule_id: 'browser-schedule', expected_revision: 7 }, 'Say yes and schedule it'],
 ] as const) {

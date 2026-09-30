@@ -211,7 +211,7 @@ const blockerLabel: Record<WebhookIngressReadinessBlocker, string> = {
   paired_connection_unavailable: 'Bring back, or pick, the Connection it needs',
   paired_connection_rebind_required: 'Show it is still the same account, then link it up again',
   listener_unavailable: 'The part that listens for webhooks is not running',
-  public_url_unavailable: 'Set an https RECUED_PUBLIC_BASE_URL',
+  public_url_unavailable: 'Your server needs a public https address for webhooks. See Settings → Server → Hostnames',
   public_reachability_disabled: 'Switch on RECUED_PUBLIC_REACHABLE',
   tls_unavailable: 'You need a trusted public https address',
   clock_unverified: 'Recued has not checked that your clock is right',

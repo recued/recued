@@ -76,6 +76,9 @@ export interface DiscoverInstallOutcome {
    *  card to installed; the eventual `setInstalled` (from a broadcast-driven
    *  re-list once the user confirms) reconciles the real state. */
   handedOff?: boolean;
+  /** Said once the install completes: what it did beside installing (D-315 —
+   *  the mail template a recipe brought). */
+  notice?: string;
 }
 
 export interface DiscoverFilterGroup {
@@ -989,9 +992,11 @@ export const mountDiscoverPanel = <Row>(
     if (st === 'installed') return;
     installing.add(id);
     render();
+    let notice: string | undefined;
     try {
       const runner = st === 'update' ? (opts.upgrade?.run ?? opts.install.run) : opts.install.run;
       const outcome = await runner(row);
+      notice = outcome.ok ? outcome.notice : undefined;
       if (outcome.ok && outcome.handedOff !== true) {
         // Completed inline (e.g. a standalone recipe) — optimistically mark
         // installed at the catalog version so the badge flips immediately; a
@@ -1009,6 +1014,8 @@ export const mountDiscoverPanel = <Row>(
     } finally {
       installing.delete(id);
       if (!disposed) render();
+      // After the repaint, which sets the line for the list.
+      if (!disposed && notice !== undefined) setStatus(notice, 'notice');
     }
   };
 

@@ -296,6 +296,23 @@ describe('D-266 — the rpc surface', () => {
     expect(fired).toEqual(['morning-brief']); // ONE run, not two
   });
 
+  it('D-319 — two dishes of one recipe are two lines, each answered on its own', () => {
+    seed({ schedule_id: 'work', dish_id: 'dsh_work', missed_policy: 'ask', last_run_at: at(6), prev_run_at: at(7) });
+    seed({ schedule_id: 'home', dish_id: 'dsh_home', missed_policy: 'ask', last_run_at: at(4), prev_run_at: at(5) });
+
+    const report = missedRuns(handlerDeps());
+    expect(report.entries.map((entry) => [entry.dish_id, entry.schedule_ids])).toEqual([
+      ['dsh_work', ['work']],
+      ['dsh_home', ['home']],
+    ]);
+    // One dish is answered; the other still waits.
+    expect(answerMissed(handlerDeps(), { answer: 'run', dish_ids: ['dsh_home'] })).toEqual({ ran: ['home'], skipped: [] });
+    expect(missedRuns(handlerDeps()).entries.map((entry) => entry.dish_id)).toEqual(['dsh_work']);
+    // Naming the recipe answers every dish of it.
+    expect(answerMissed(handlerDeps(), { answer: 'skip', recipe_ids: ['morning-brief'] })).toEqual({ ran: [], skipped: ['work'] });
+    expect(() => answerMissed(handlerDeps(), { answer: 'run', dish_ids: 'dsh_home' })).toThrow(/dish_ids must be an array/);
+  });
+
   it('ignores ids naming nothing outstanding rather than rejecting them', () => {
     seed({ missed_policy: 'ask' });
     expect(answerMissed(handlerDeps(), { answer: 'skip', recipe_ids: ['gone'] }))

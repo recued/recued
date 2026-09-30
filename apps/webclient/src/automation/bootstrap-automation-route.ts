@@ -61,9 +61,33 @@ import {
   renderMissedRunsCard,
   RunModal,
   wireConfigEditorOverlay,
+  dishLineName,
+  dishStartsLine,
+  dishStatus,
+  intervalInWords,
+  rowsOfDish,
+  whatStartsIt,
   type ConfigEditorOverlayHandle,
+  type MailTemplateVariableCallers,
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
+import { bindRecordRefSearchToRecipe } from '../record-ref-search.js';
+import {
+  AUTOMATION_ACTION_ATTR as ACTION_ATTR,
+  AUTOMATION_CHIP_ATTR,
+  AUTOMATION_RULE_ID_ATTR as ROW_ID_ATTR,
+  BY_RECIPE_STYLES,
+  chipCounts,
+  isAutomationChip,
+  renderByRecipe,
+  renderChips,
+  renderComingUp,
+  type AutomationChip,
+  type ByRecipeGroup,
+  type ComingUpEntry,
+} from './by-recipe.js';
+import { startsOnItsOwn } from '../recipes/running-as.js';
+import { dishFormStart, openDishForm, type DishFormMode } from '../recipes/dish-form.js';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -166,8 +190,6 @@ const asStatusFilter = (value: unknown): AutomationStatusFilter =>
     : 'all';
 export type AutomationOriginFilter = 'all' | 'user' | 'recipe';
 
-const ACTION_ATTR = 'data-recued-automation-action';
-const ROW_ID_ATTR = 'data-rule-id';
 
 /** Action namespaces for the delegated click handler. `watch` is no
  *  longer a rendered SECTION (R21 dissolved it into the Triggers view)
@@ -193,18 +215,29 @@ interface AutomationDeleteConfirmation {
   rule_id: string;
 }
 
-/** R21 — the three rendered sections, as their HASH tokens (the
+/** R21 — the page's sections, as their HASH tokens (the
  *  `#automation/<section>` segment; R16 deep-link pattern). */
 export type AutomationSectionToken =
+  /** D-319 §5.4 — one list, grouped by recipe then dish: the page. */
+  | 'all'
+  /** D-319 §5.4 — the next runs, by time. */
+  | 'coming-up'
   | 'auto-run' | 'triggers' | 'schedules'
   /** D-215 slice 3 — the cross-recipe dish aggregate. */
   | 'dishes';
+/** D-319 §5.4 — the page's views, its nav. The four lists by kind are no
+ *  longer tabs; they stay reachable by link (a rule's Details, older links). */
+export const AUTOMATION_VIEW_TOKENS: readonly AutomationSectionToken[] = ['all', 'coming-up'];
 export const AUTOMATION_SECTION_TOKENS: readonly AutomationSectionToken[] = [
+  'all',
+  'coming-up',
   'auto-run',
   'triggers',
   'schedules',
   'dishes',
 ];
+const isViewToken = (token: AutomationSectionToken): boolean =>
+  (AUTOMATION_VIEW_TOKENS as readonly string[]).includes(token);
 export const isAutomationSectionToken = (
   v: string,
 ): v is AutomationSectionToken =>
@@ -223,11 +256,8 @@ export type SchedulesListCaller = () => Promise<{ schedules: ServerSchedule[] }>
 export type SchedulesUpdateCaller = (args: {
   schedule_id: string;
   enabled?: boolean;
-  /** D-215 slice 4b — the rpc has always accepted this; the caller type
-   *  simply never exposed it. A one-shot dish's config edit lands here
-   *  (the immutable reconcile: a changed overlay mints a new dish and
-   *  dissolves the prior), because `dishes.update` on a managed dish is
-   *  refused by the slice-0 guard. */
+  /** D-215 slice 4b. ⛔ D-319: settings are a dish's, and the server refuses
+   *  them on a schedule row — nothing here sends this any more. */
   config_overlay?: Record<string, unknown>;
   /** D-266 — the owner's missed-run policy. Declared rather than left
    *  to ride the passthrough: the bootstrap forwards `args` whole, so
@@ -258,11 +288,12 @@ export type TriggersDeleteCaller = (args: {
 }) => Promise<{ ok: true }>;
 export type AutoRunListCaller = () => Promise<{ entries: AutoRunStatusEntry[] }>;
 export type AutoRunUpdateCaller = (args: {
-  recipe_id: string;
+  /** D-319 — one dish's timer. */
+  dish_id?: string;
+  /** D-319 — with no dish: the recipe's main dish, made from
+   *  `config_overlay` when it has none (switching it on). */
+  recipe_id?: string;
   enabled?: boolean;
-  /** D-179 — the config the recipe's headless fires use. Provided ⇒ the
-   *  server versions it on a managed immutable dish (new dish per change,
-   *  superseded one dissolved). `{}` clears it. */
   config_overlay?: Record<string, unknown>;
 }) => Promise<{ entry: AutoRunStatusEntry }>;
 export type WatchListCaller = () => Promise<{
@@ -328,6 +359,11 @@ export interface BootstrapAutomationRouteOptions {
   /** Full `recipe.list` entries (the modal needs the recipe body for
    *  widgets/targeting). Absent → no Add affordance. */
   recipeEntriesCaller?: () => Promise<{ recipes: ServerRecipeListEntry[] }>;
+  /** D-319 — what a first dish starts from (a mail template), for Switch on. */
+  dishesDefaultsCaller?: (args: { recipe_id: string }) => Promise<{ config_overlay: Record<string, unknown> }>;
+  /** D-319 §5.4 — the run dialog's Run tab. Absent, it said "Running is not
+   *  available on this server yet" in a dialog opened to add a rule. */
+  recipeExecuteCaller?: RunModal.RunModalExecuteCaller;
   /** D-215 slice 3 — `dishes.list`. Absent ⇒ the Dishes section renders
    *  its "not wired" error line; every other section is unaffected. */
   dishesListCaller?: DishesListCaller;
@@ -349,8 +385,17 @@ export interface BootstrapAutomationRouteOptions {
   mailFactTypesCaller?: RunModal.RunModalMailFactTypesCaller;
   /** D-200 — owner-file inventory for `file_ref` config fields. */
   fileRefSearchCaller?: RefPicker.RefPickerSearchCaller;
-  /** R21 — `#automation/<section>` deep-link: which of the three
-   *  sections opens. Absent → `auto-run` (the first). */
+  /** D-319 — a `mail_template` setting in the settings form: the owner's
+   *  templates (the recipe page's picker). Absent ⇒ a text box. */
+  mailTemplateCallers?: MailTemplateVariableCallers;
+  /** D-221 record picker for a `record_ref` setting, bound per recipe. */
+  recordRefSearchCaller?: (
+    owner: { publisher: string; pack_slug: string },
+    entity: string,
+    scope?: Readonly<Record<string, string>>,
+  ) => RefPicker.RefPickerSearchCaller;
+  /** R21 — `#automation/<section>` deep-link: which section opens. Absent →
+   *  the one list (D-319 §5.4). */
   initialSection?: AutomationSectionToken;
   /** R21 — `#automation/<section>/<id>` deep-link: one rule's detail
    *  within `initialSection`. */
@@ -534,6 +579,17 @@ const AUTOMATION_ROUTE_STYLES = `
    failed, the schedule is holding for an answer it was told to ask for. */
 [${AUTOMATION_ROUTE_ROW_ATTR}][data-armed="waiting"] {
   border-left-color: var(--accent);
+}
+/* D-319 §5.4 — inside a recipe's group a row needs no card of its own, nor
+   the recipe's name again (its buttons still say it). */
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-recipe [${AUTOMATION_ROUTE_ROW_ATTR}] {
+  border-width: 0 0 0 2px;
+  border-radius: 0;
+  background: none;
+  padding: 4px 0 4px 10px;
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-recipe .automation-row-title {
+  display: none;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-row-title {
   margin: 0;
@@ -844,6 +900,13 @@ const AUTOMATION_ROUTE_STYLES = `
   gap: 6px;
   margin: 4px 0 8px;
 }
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-list-adds {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0 8px;
+  min-width: 0;
+}
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-add-picker {
   box-sizing: border-box;
   width: 100%;
@@ -908,6 +971,8 @@ const recipeHref = (recipe_id: string): string =>
 
 /** R21 sub-nav labels, in render order (treemap §4: Auto-run first). */
 const SECTION_LABEL: Record<AutomationSectionToken, string> = {
+  all: 'By recipe',
+  'coming-up': 'Coming up',
   'auto-run': 'Auto-run',
   triggers: 'Triggers',
   schedules: 'Schedules',
@@ -1137,6 +1202,7 @@ export const bootstrapAutomationRoute = (
     style.textContent = [
       AUTOMATION_ROUTE_STYLES,
       RefPicker.REF_PICKER_STYLES,
+      BY_RECIPE_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -1163,12 +1229,21 @@ export const bootstrapAutomationRoute = (
   let mailFactNamesSeq = 0;
   let watches: ReadonlyArray<WatchStatusEntry> = [];
   let autoRun: ReadonlyArray<AutoRunStatusEntry> = [];
+  /** D-319 — an auto-run row is one dish's timer; a recipe nobody switched on
+   *  is one row with no dish, keyed by the recipe. */
+  const autoRunId = (a: AutoRunStatusEntry): string => a.dish_id ?? a.recipe_id;
   // D-215 slice 3 — the dish aggregate + its last-outcome map. `lastRuns`
   // is keyed by dish_id and a dish that has NEVER run is simply absent
   // (never present-with-nulls), so "unknown" and "never run" stay the
   // same rendering rather than becoming a false failure.
   let dishes: ReadonlyArray<Dish> = [];
   let dishLastRuns: Readonly<Record<string, DishLastRun>> = {};
+  /** D-319 §5.4 — the one list's filter (On / Off / Needs you / Failing), or
+   *  none; the recipes being switched on; and the section a rule's Details
+   *  were opened from, which Back returns to. */
+  let chipFilter: AutomationChip | null = null;
+  let switchOnBusy = new Set<string>();
+  let detailReturnSection: AutomationSectionToken | null = null;
   /** False until a `dishes.list` caller has actually answered — an absent
    *  caller must not render as "no dishes yet". */
   let dishesWired = false;
@@ -1187,7 +1262,7 @@ export const bootstrapAutomationRoute = (
   // R21 — the visible section. A section deep-link seeds it; a legacy
   // recipe deep-link leaves it on the default and the post-load one-shot
   // below repoints it at the first section with rows for that recipe.
-  let activeSection: AutomationSectionToken = opts.initialSection ?? 'auto-run';
+  let activeSection: AutomationSectionToken = opts.initialSection ?? 'all';
   /** R21 detail — the open rule id within `activeSection`, or null (list). */
   let detailId: string | null =
     opts.initialSection !== undefined && opts.initialDetailId !== undefined
@@ -1210,12 +1285,6 @@ export const bootstrapAutomationRoute = (
       ?? (globalThis as { history?: History }).history,
     onCommit: (address) => opts.onHashSync?.(address.hash),
   });
-  // One-shot: only the LEGACY recipe deep-link auto-picks (an explicit
-  // section deep-link or a user tab click must never be overridden).
-  let sectionAutoPickPending =
-    opts.initialSection === undefined
-    && opts.initialRecipeFilter !== undefined
-    && opts.initialRecipeFilter.length > 0;
   // R21.1 — vault lock state. `null` = unknown (caller absent / not yet
   // read). Drives the "automation paused — vault locked" banner.
   let vaultState: 'uninitialized' | 'locked' | 'unlocked' | null = null;
@@ -1387,7 +1456,7 @@ export const bootstrapAutomationRoute = (
       case 'event_trigger':
         return triggers.find((row) => row.trigger_id === rule_id)?.preapproval?.proposal_id ?? null;
       case 'auto_run':
-        return autoRun.find((row) => row.recipe_id === rule_id)?.preapproval?.proposal_id ?? null;
+        return autoRun.find((row) => autoRunId(row) === rule_id)?.preapproval?.proposal_id ?? null;
       case 'watch':
       case 'dish':
         return null;
@@ -1406,7 +1475,7 @@ export const bootstrapAutomationRoute = (
       case 'watch':
         return watches.some((row) => row.watch_key === rule_id);
       case 'auto_run':
-        return autoRun.some((row) => row.recipe_id === rule_id);
+        return autoRun.some((row) => autoRunId(row) === rule_id);
       case 'dish':
         return dishes.some((row) => row.dish_id === rule_id);
     }
@@ -1627,11 +1696,21 @@ export const bootstrapAutomationRoute = (
       }
       if (recipeEntriesRequest !== request) return;
       recipeEntriesRequest = null;
-      // Repaint an open Add disclosure, and the Dishes section whose Config
-      // affordances depend on recipe variable definitions.
-      if (addPickerFor !== null || activeSection === 'dishes') render();
+      // Repaint an open Add disclosure, the Dishes section whose Config
+      // affordances depend on recipe variable definitions, and the one list
+      // (what starts each dish; the recipes nobody switched on).
+      if (addPickerFor !== null || activeSection === 'dishes' || activeSection === 'all') render();
     })();
     return true;
+  };
+
+  /** D-319 — the recipes, read now: Switch on needs one's settings. */
+  const loadRecipeEntriesNow = async (): Promise<void> => {
+    if (recipeEntries !== null || opts.recipeEntriesCaller === undefined) return;
+    const { recipes } = await opts.recipeEntriesCaller();
+    if (disposed) return;
+    recipeEntries = recipes;
+    recipeEntriesError = null;
   };
 
   const allRecipeOptions = (): RefPicker.RefPickerOption[] =>
@@ -1660,6 +1739,11 @@ export const bootstrapAutomationRoute = (
       recipe: entry,
       document: doc,
       initialTab: tab,
+      // D-319 §5.4 — its Run tab runs (it said running was unavailable).
+      ...(opts.recipeExecuteCaller !== undefined ? { execute: opts.recipeExecuteCaller } : {}),
+      // D-319 — a schedule or trigger added here is a dish's: which one, when
+      // the recipe has more than one.
+      ...(dishesWired ? { dishes: dishes.filter((dish) => dish.recipe_id === entry.recipe_id) } : {}),
       ...(opts.schedulesListCaller !== undefined
         ? { schedulesList: opts.schedulesListCaller }
         : {}),
@@ -1729,19 +1813,11 @@ export const bootstrapAutomationRoute = (
           if (addPickerFor === 'dishes') {
             addPickerFor = null;
             pendingRecipeEntriesFocus = null;
-            const create = opts.dishesCreateCaller;
-            if (create !== undefined) {
-              // Named after the recipe by default — the owner renames it
-              // from the row. An unnamed dish would render as "Default",
-              // which is the ONE name that means something else (D-179
-              // fork (c): the invisible default dish).
-              void runMutation(entry.recipe_id, 'dish', () =>
-                create({
-                  recipe_id: entry.recipe_id,
-                  name: entry.recipe.metadata?.name?.trim() || entry.recipe_id,
-                }));
-            }
+            // D-319 — a dish is made with its settings asked, as on the
+            // recipe page: Switch on (or Save settings) for a first one,
+            // Add another after.
             render();
+            void makeDish(entry.recipe_id);
             return;
           }
           const tab = addPickerFor === 'schedules' ? 'schedule' : 'trigger';
@@ -1771,25 +1847,24 @@ export const bootstrapAutomationRoute = (
   const waitingScheduleIds = (): ReadonlySet<string> =>
     new Set((missedRuns?.entries ?? []).flatMap((entry) => entry.schedule_ids));
 
-  const isPrimaryManagedOneShot = (s: ServerSchedule): boolean =>
-    s.mode === 'one_shot'
-    && s.dish_id !== undefined
-    && dishes.some((d) =>
-      d.dish_id === s.dish_id
-      && d.managed_by_schedule_id === s.schedule_id);
+  /** D-319 §5.4 — one rule row, as the lists by kind and the grouped list
+   *  both show it, with what the grouped list needs to place and filter it. */
+  interface RuleItem {
+    readonly html: string;
+    readonly recipe_id: string;
+    readonly dish_id: string | null;
+    readonly armed: ArmedState;
+  }
 
+  // D-319 §5.4 — filtered by the state the row SHOWS. It tested `enabled`
+  // before working out Waiting / Tripped, so "Waiting on you" matched no row.
   const scheduleRows = (): string[] =>
+    scheduleItems().filter((item) => matchesStatus(item.armed)).map((item) => item.html);
+
+  const scheduleItems = (): RuleItem[] =>
     schedules
-      .filter(
-        (s) =>
-          matchesFilter(s.recipe_id)
-          && matchesStatus(s.enabled ? 'on' : 'off')
-          // A one-shot managed dish is the pending act's primary row. Showing
-          // its backing schedule as a second row presents one act twice and
-          // gives the owner two competing lifecycle controls.
-          && !isPrimaryManagedOneShot(s),
-      )
-      .map((s) => {
+      .filter((s) => matchesFilter(s.recipe_id))
+      .map((s): RuleItem => {
       const isWaiting = waitingScheduleIds().has(s.schedule_id);
       // D-268 — a schedule the SERVER stopped is not a schedule the owner
       // paused, and they rendered identically: `off` / "Paused" for both, so
@@ -1808,7 +1883,7 @@ export const bootstrapAutomationRoute = (
       // interval: there is no honest single one for a weekday or
       // alternating cron.
       const lateBy = scheduleLatenessMs(s.next_run_at, opts.now?.() ?? Date.now(), s.enabled);
-      return renderRow({
+      return { recipe_id: s.recipe_id, dish_id: s.dish_id ?? null, armed, html: renderRow({
         section: 'schedule',
         rule_id: s.schedule_id,
         title: nameFor(s.recipe_id),
@@ -1836,7 +1911,7 @@ export const bootstrapAutomationRoute = (
         busyVerb: busyVerbFor('schedule', s.schedule_id),
         confirmingDelete: confirmingDeleteFor('schedule', s.schedule_id),
         ...(s.preapproval ? { preapproval: s.preapproval } : {}),
-      });
+      }) };
     });
 
   /** D-215 slice 3 — where a MANAGED dish's lifecycle actually lives.
@@ -1845,15 +1920,8 @@ export const bootstrapAutomationRoute = (
    *  (D-179 versions a managed dish immutably — one `dish_id` = one
    *  config — so mutating it here would break that silently). */
   const dishOrigin = (d: Dish): { label: string; badge: string } => {
-    if (d.managed_by_schedule_id !== undefined) {
-      return { label: `Schedule ${d.managed_by_schedule_id}`, badge: 'schedule' };
-    }
-    if (d.managed_by_trigger_id !== undefined) {
-      return { label: `Trigger ${d.managed_by_trigger_id}`, badge: 'trigger' };
-    }
-    if (d.managed_by_auto_run !== undefined) {
-      return { label: 'Auto-run', badge: 'auto-run' };
-    }
+    // D-319 — a schedule, trigger or timer belongs to a dish and mints none.
+    if (d.is_default) return { label: 'Main', badge: 'main' };
     return { label: 'Assigned', badge: 'assigned' };
   };
 
@@ -1863,40 +1931,14 @@ export const bootstrapAutomationRoute = (
   const dishTitle = (d: Dish): string =>
     d.name !== '' ? d.name : nameFor(d.recipe_id);
 
-  /** D-215 slice 4 — WHERE a dish's mutations go.
-   *
-   *  Three cases, and the middle one is the § 3 exception:
-   *
-   *   `own`      — a user-assigned dish. Its own `dishes.*` rpcs.
-   *   `one_shot` — a dish minted by a ONE-SHOT schedule. Edits INLINE (no
-   *                bouncing to a rule that exists only to hold it: one row,
-   *                one dish, one pending act, all 1:1) but the writes go to
-   *                `schedules.*`, NOT `dishes.*`. That is not a workaround —
-   *                it is the sanctioned path: `schedules.update` runs the
-   *                immutable reconcile (a changed overlay MINTS a new dish
-   *                and dissolves the prior), and `schedules.delete` retires
-   *                the pair. Writing `dishes.update` here would be refused
-   *                by the slice-0 guard, correctly.
-   *   `owner`    — every other managed dish. It is subordinate to a STANDING
-   *                rule that outlives any single fire, so the row offers a
-   *                link to that rule instead of inline actions.
-   */
+  /** D-215 slice 4 — WHERE a dish's mutations go. D-319 retired the managed
+   *  dishes (a schedule, trigger or timer belongs to a dish and owns none),
+   *  so every dish is the owner's own; the `one_shot` / `owner` branches this
+   *  page still carries are dead until the D-319 Automation rewrite (§ 5.4)
+   *  removes them. */
   const dishWriteTarget = (
     d: Dish,
   ): { kind: 'own' } | { kind: 'one_shot'; schedule_id: string } | { kind: 'owner'; token: AutomationSectionToken; id: string } => {
-    if (d.managed_by_schedule_id !== undefined) {
-      const owning = schedules.find((x) => x.schedule_id === d.managed_by_schedule_id);
-      if (owning?.mode === 'one_shot') {
-        return { kind: 'one_shot', schedule_id: d.managed_by_schedule_id };
-      }
-      return { kind: 'owner', token: 'schedules', id: d.managed_by_schedule_id };
-    }
-    if (d.managed_by_trigger_id !== undefined) {
-      return { kind: 'owner', token: 'triggers', id: d.managed_by_trigger_id };
-    }
-    if (d.managed_by_auto_run !== undefined) {
-      return { kind: 'owner', token: 'auto-run', id: d.managed_by_auto_run };
-    }
     return { kind: 'own' };
   };
 
@@ -2090,9 +2132,12 @@ export const bootstrapAutomationRoute = (
     && (originFilter === 'all' || t.origin === originFilter);
 
   const triggerRows = (): string[] =>
-    triggers
-      .filter(triggerVisible)
-      .map((t) => {
+    triggers.filter(triggerVisible).map((t) => triggerItem(t).html);
+
+  const triggerItems = (): RuleItem[] =>
+    triggers.filter((t) => matchesFilter(t.recipe_id)).map(triggerItem);
+
+  const triggerItem = (t: EventTrigger): RuleItem => {
       const armed: ArmedState = t.enabled
         ? 'on'
         : t.last_error
@@ -2102,7 +2147,7 @@ export const bootstrapAutomationRoute = (
       // D-315 — a trigger on facts read from mail says what it watches in
       // words: its kind, values, "only when" and template.
       const fact = RunModal.describeMailFactTrigger(t, mailFactTemplates, mailFactTypes);
-      return renderRow({
+      return { recipe_id: t.recipe_id, dish_id: t.dish_id ?? null, armed, html: renderRow({
         section: 'event_trigger',
         rule_id: t.trigger_id,
         title: nameFor(t.recipe_id),
@@ -2137,8 +2182,8 @@ export const bootstrapAutomationRoute = (
         busyVerb: busyVerbFor('event_trigger', t.trigger_id),
         confirmingDelete: confirmingDeleteFor('event_trigger', t.trigger_id),
         ...(t.preapproval ? { preapproval: t.preapproval } : {}),
-      });
-    });
+      }) };
+    };
 
   // ── R21: Watches DISSOLVED — a poll loop is runtime infra UNDER a
   // trigger, not a peer section. Each trigger row carries its backing
@@ -2287,13 +2332,12 @@ export const bootstrapAutomationRoute = (
   };
 
   const autoRunRows = (): string[] =>
+    autoRunItems().filter((item) => matchesStatus(item.armed)).map((item) => item.html);
+
+  const autoRunItems = (): RuleItem[] =>
     autoRun
-      .filter(
-        (a) =>
-          matchesFilter(a.recipe_id)
-          && matchesStatus(!a.enabled ? 'off' : a.auto_disabled ? 'tripped' : 'on'),
-      )
-      .map((a) => {
+      .filter((a) => matchesFilter(a.recipe_id))
+      .map((a): RuleItem => {
       const armed: ArmedState = !a.enabled
         ? 'off'
         : a.auto_disabled
@@ -2304,10 +2348,10 @@ export const bootstrapAutomationRoute = (
         : a.auto_disabled
           ? `Tripped (${a.consecutive_failures} failures)`
           : 'On';
-      return renderRow({
+      return { recipe_id: a.recipe_id, dish_id: a.dish_id ?? null, armed, html: renderRow({
         section: 'auto_run',
-        rule_id: a.recipe_id,
-        title: a.recipe_name ?? a.recipe_id,
+        rule_id: autoRunId(a),
+        title: a.dish_name ? `${a.recipe_name ?? a.recipe_id} — ${a.dish_name}` : a.recipe_name ?? a.recipe_id,
         titleHref: recipeHref(a.recipe_id),
         armed,
         stateLabel,
@@ -2327,11 +2371,112 @@ export const bootstrapAutomationRoute = (
         canDelete: false,
         canDetail: true,
         ...(a.preapproval ? { preapproval: a.preapproval } : {}),
-        busy: busy.has(a.recipe_id),
-        busyVerb: busyVerbFor('auto_run', a.recipe_id),
+        busy: busy.has(autoRunId(a)),
+        busyVerb: busyVerbFor('auto_run', autoRunId(a)),
         confirmingDelete: false,
-      });
+      }) };
     });
+
+  // ── D-319 §5.4 — the one list, and "Coming up" ────────────────────
+
+  /** A dish's last run, as its line says it. */
+  const lastRunText = (dish_id: string): string => {
+    const last = dishLastRuns[dish_id];
+    if (last === undefined) return 'never run';
+    const when = formatDateTime(last.started_at);
+    return last.commit_status === 'succeeded' ? `✓ ${when}`
+      : last.commit_status === 'failed' ? `✗ ${when}`
+        : last.commit_status === 'awaiting_approval' ? `waiting for you since ${when}`
+          : `${last.commit_status} ${when}`;
+  };
+
+  /** Grouped by recipe, then by dish; each dish's rows under it. */
+  const byRecipeGroups = (): ByRecipeGroup[] => {
+    const schedule = scheduleItems();
+    const trigger = triggerItems();
+    const timer = autoRunItems();
+    const recipeIds = new Set<string>();
+    for (const dish of dishes) if (matchesFilter(dish.recipe_id)) recipeIds.add(dish.recipe_id);
+    for (const item of [...schedule, ...trigger, ...timer]) recipeIds.add(item.recipe_id);
+    for (const entry of recipeEntries ?? []) {
+      if (matchesFilter(entry.recipe_id) && startsOnItsOwn(entry.recipe)) recipeIds.add(entry.recipe_id);
+    }
+    const groups = [...recipeIds].map((recipe_id): ByRecipeGroup => {
+      const recipe = (recipeEntries ?? []).find((entry) => entry.recipe_id === recipe_id)?.recipe;
+      const mine = dishes.filter((dish) => dish.recipe_id === recipe_id)
+        .sort((a, b) => Number(b.is_default) - Number(a.is_default) || a.created_at - b.created_at);
+      const lines = mine.map((dish) => {
+        const rows = rowsOfDish(dish.dish_id, { triggers, schedules, autoRun });
+        const own = (items: readonly RuleItem[]): RuleItem[] => items.filter((item) => item.dish_id === dish.dish_id);
+        const dishRows = [...own(trigger), ...own(schedule), ...own(timer)];
+        return {
+          dish,
+          name: dishLineName(dish, mine.length),
+          status: dishStatus(dish, rows, dishLastRuns[dish.dish_id]),
+          needsYou: dishRows.some((item) => item.armed === 'waiting'),
+          startsLine: dishStartsLine(recipe ?? {}, rows.schedules),
+          lastRun: lastRunText(dish.dish_id),
+          rows: dishRows.map((item) => item.html),
+          busy: busy.has(dish.dish_id),
+        };
+      });
+      const dishIds = new Set(mine.map((dish) => dish.dish_id));
+      const strays = [...trigger, ...schedule].filter((item) =>
+        item.recipe_id === recipe_id && (item.dish_id === null || !dishIds.has(item.dish_id)));
+      const dishlessTimer = autoRun.find((entry) => entry.recipe_id === recipe_id && (entry.dish_id ?? null) === null);
+      return {
+        recipe_id,
+        name: nameFor(recipe_id),
+        href: recipeHref(recipe_id),
+        lines,
+        strayRows: strays.map((item) => item.html),
+        notSwitchedOn: mine.length === 0
+          && ((recipe !== undefined && startsOnItsOwn(recipe)) || dishlessTimer !== undefined),
+        lead: recipe !== undefined
+          ? whatStartsIt(recipe)
+          : dishlessTimer !== undefined ? `It runs every ${intervalInWords(dishlessTimer.interval_ms)}.` : '',
+        switchOnBusy: switchOnBusy.has(recipe_id),
+      };
+    });
+    return groups.sort((a, b) => a.name.localeCompare(b.name) || a.recipe_id.localeCompare(b.recipe_id));
+  };
+
+  /** The next runs on their own: each schedule's and timer's, of a dish on. */
+  const comingUpEntries = (): ComingUpEntry[] => {
+    const dishById = new Map(dishes.map((dish) => [dish.dish_id, dish]));
+    const dishOf = (dish_id: string | undefined): string | null => {
+      if (dish_id === undefined) return null;
+      const dish = dishById.get(dish_id);
+      if (dish === undefined) return null;
+      const count = dishes.filter((other) => other.recipe_id === dish.recipe_id).length;
+      return dishLineName(dish, count);
+    };
+    const dishOn = (dish_id: string | undefined): boolean =>
+      dish_id === undefined || dishById.get(dish_id)?.enabled !== false;
+    const out: ComingUpEntry[] = [];
+    for (const s of schedules) {
+      if (!matchesFilter(s.recipe_id) || !s.enabled || s.next_run_at === null || !dishOn(s.dish_id)) continue;
+      out.push({
+        at: s.next_run_at,
+        recipe_name: nameFor(s.recipe_id),
+        href: recipeHref(s.recipe_id),
+        dish_name: dishOf(s.dish_id),
+        what: s.mode === 'one_shot' ? 'Once' : describeCron(s.cron_expression),
+      });
+    }
+    for (const a of autoRun) {
+      if (!matchesFilter(a.recipe_id) || (a.dish_id ?? null) === null || !a.enabled || a.auto_disabled
+        || a.next_run_at === null || !dishOn(a.dish_id ?? undefined)) continue;
+      out.push({
+        at: a.next_run_at,
+        recipe_name: nameFor(a.recipe_id),
+        href: recipeHref(a.recipe_id),
+        dish_name: dishOf(a.dish_id ?? undefined),
+        what: `Every ${intervalInWords(a.interval_ms)}`,
+      });
+    }
+    return out;
+  };
 
   // Recipe-filter combobox — names the recipe the view is narrowed to
   // and lets the user change or clear it (× → the full cross-pack view).
@@ -2345,7 +2490,7 @@ export const bootstrapAutomationRoute = (
         RefPicker.initialRefPickerState(resolveRecipeSelection()),
         RECIPE_PICKER_CONFIG,
       )}
-      <label class="automation-filter-label" for="automation-status-filter">Status</label>
+      ${isViewToken(activeSection) ? '' : `<label class="automation-filter-label" for="automation-status-filter">Status</label>
       <select id="automation-status-filter" class="automation-filter-select"
         ${AUTOMATION_ROUTE_STATUS_FILTER_ATTR}>
         <option value="all"${statusFilter === 'all' ? ' selected' : ''}>All</option>
@@ -2353,7 +2498,7 @@ export const bootstrapAutomationRoute = (
         <option value="off"${statusFilter === 'off' ? ' selected' : ''}>Paused</option>
         <option value="tripped"${statusFilter === 'tripped' ? ' selected' : ''}>Tripped</option>
         <option value="waiting"${statusFilter === 'waiting' ? ' selected' : ''}>Waiting on you</option>
-      </select>
+      </select>`}
       ${activeSection === 'triggers'
         ? `<label class="automation-filter-label" for="automation-origin-filter">Origin</label>
       <select id="automation-origin-filter" class="automation-filter-select"
@@ -2386,15 +2531,30 @@ export const bootstrapAutomationRoute = (
   // a remount. Sideways tab changes replace the current entry.
   const sectionCount = (token: AutomationSectionToken): number => {
     switch (token) {
+      case 'all':
+        return byRecipeGroups().reduce((sum, group) =>
+          sum + group.lines.length + (group.notSwitchedOn ? 1 : 0), 0);
+      case 'coming-up':
+        return comingUpEntries().length;
       case 'auto-run':
         return autoRun.filter((a) => matchesFilter(a.recipe_id)).length;
       case 'triggers':
         return triggers.filter((t) => matchesFilter(t.recipe_id)).length;
       case 'schedules':
-        return schedules.filter((s) =>
-          matchesFilter(s.recipe_id) && !isPrimaryManagedOneShot(s)).length;
+        return schedules.filter((s) => matchesFilter(s.recipe_id)).length;
       case 'dishes':
         return dishes.filter((d) => matchesFilter(d.recipe_id)).length;
+    }
+  };
+
+  /** The section a rule's kind lives in (its Details open there). */
+  const sectionTokenForKind = (kind: AutomationSectionKind): AutomationSectionToken | null => {
+    switch (kind) {
+      case 'schedule': return 'schedules';
+      case 'event_trigger': return 'triggers';
+      case 'auto_run': return 'auto-run';
+      case 'dish': return 'dishes';
+      default: return null;
     }
   };
 
@@ -2402,6 +2562,9 @@ export const bootstrapAutomationRoute = (
     token: AutomationSectionToken,
   ): AutomationSectionKind => {
     switch (token) {
+      // The grouped views act on dishes (their rows keep their own kinds).
+      case 'all': return 'dish';
+      case 'coming-up': return 'dish';
       case 'auto-run': return 'auto_run';
       case 'triggers': return 'event_trigger';
       case 'schedules': return 'schedule';
@@ -2418,13 +2581,13 @@ export const bootstrapAutomationRoute = (
   const subNav = (): string => `
     <nav class="automation-subnav" data-recued-scroll-rail role="tablist" aria-label="Automation sections"
       aria-orientation="horizontal">
-      ${AUTOMATION_SECTION_TOKENS.map((token) => `
+      ${AUTOMATION_VIEW_TOKENS.map((token) => `
         <button type="button" class="automation-subnav-tab" role="tab"
           ${AUTOMATION_ROUTE_SUBNAV_ATTR}="${token}"
           id="recued-automation-section-tab-${token}"
           aria-controls="recued-automation-section-panel"
           aria-selected="${activeSection === token ? 'true' : 'false'}"
-          tabindex="${activeSection === token ? '0' : '-1'}"
+          tabindex="${activeSection === token || (!isViewToken(activeSection) && token === 'all') ? '0' : '-1'}"
           ${busy.size > 0 ? 'aria-disabled="true"' : ''}
           data-active="${activeSection === token ? 'true' : 'false'}">
           ${e(SECTION_LABEL[token])}${loading ? '' : ` <span class="automation-subnav-count">${sectionCount(token)}</span>`}
@@ -2489,6 +2652,57 @@ export const bootstrapAutomationRoute = (
   const activeSectionHtml = (): string => {
     const filtered = recipeFilter !== null;
     switch (activeSection) {
+      case 'all': {
+        // D-319 §5.4 — one list. The missed-run card feeds Needs you, so it
+        // heads the page; the poll loops no trigger claims close it.
+        const groups = byRecipeGroups();
+        const list = renderByRecipe({
+          groups,
+          chip: chipFilter,
+          can: {
+            switchDish: opts.dishesUpdateCaller !== undefined,
+            settings: opts.dishesUpdateCaller !== undefined && opts.recipeEntriesCaller !== undefined,
+            switchOn: opts.dishesCreateCaller !== undefined && opts.recipeEntriesCaller !== undefined,
+          },
+        });
+        const residual = residualWatchRows();
+        const loadError = errors.dishes ?? errors.schedules ?? errors.triggers ?? errors.auto_run;
+        const mutationError = mutationErrors.dishes ?? mutationErrors.schedules
+          ?? mutationErrors.triggers ?? mutationErrors.auto_run;
+        const adds = sectionActions('schedules') + sectionActions('triggers');
+        return renderMissedRunsCard(missedRuns, { busy: missedRunsBusy, error: missedRunsError })
+          + renderChips(chipCounts(groups), chipFilter)
+          + (adds.trim() !== '' ? `<div class="automation-list-adds">${adds}</div>` : '')
+          + (loadError !== undefined
+            ? `<div class="automation-load-error" ${AUTOMATION_ROUTE_ERROR_ATTR}="all" role="${loading ? 'status' : 'alert'}">
+                <span>${e(loadError)}</span>
+                <button type="button" class="automation-button" ${AUTOMATION_ROUTE_RETRY_ATTR}="all"
+                  ${loading ? 'aria-disabled="true" aria-busy="true"' : ''}>${loading ? 'Retrying…' : 'Retry'}</button>
+              </div>`
+            : '')
+          + (mutationError !== undefined
+            ? `<p class="automation-row-error" role="alert">${e(mutationError)}</p>` : '')
+          // A re-read keeps the list on screen (and what has focus in it).
+          + (list !== ''
+            ? list
+            : loading
+              ? '<p class="automation-section-hint" role="status">Loading…</p>'
+              : `<p class="automation-section-hint" ${AUTOMATION_ROUTE_EMPTY_ATTR}>${e(chipFilter !== null
+                ? 'Nothing here right now.'
+                : filtered
+                  ? 'This Recipe does not run on its own.'
+                  : 'Nothing runs on its own yet. Switch a Recipe on from its page, or add a schedule.')}</p>`)
+          + (residual.length > 0
+            ? `<section class="automation-recipe"><h3 class="automation-recipe-title">Checking for changes</h3>
+                <ul class="automation-list">${residual.join('')}</ul></section>`
+            : '');
+      }
+      case 'coming-up': {
+        const entries = comingUpEntries();
+        return loading && entries.length === 0
+          ? '<p class="automation-section-hint" role="status">Loading…</p>'
+          : renderComingUp(entries);
+      }
       case 'auto-run':
         return renderSection({
           section: 'auto_run',
@@ -2578,7 +2792,7 @@ export const bootstrapAutomationRoute = (
   // list entries carry everything shown; full run history lives in Logs.
   const renderDetail = (): string => {
     const back = `<button type="button" class="automation-button"
-      data-recued-automation-back>Back to ${e(SECTION_LABEL[activeSection])}</button>`;
+      data-recued-automation-back>Back to ${e(SECTION_LABEL[detailReturnSection ?? activeSection])}</button>`;
     const facts = (pairs: Array<[string, string]>): string =>
       `<dl class="automation-detail-facts">${pairs
         .map(([k, v]) => `<dt>${e(k)}</dt><dd>${v}</dd>`)
@@ -2720,7 +2934,7 @@ export const bootstrapAutomationRoute = (
           </div>`;
       }
     } else {
-      const a = autoRun.find((x) => x.recipe_id === detailId);
+      const a = autoRun.find((x) => autoRunId(x) === detailId);
       if (a !== undefined) {
         const tripped = a.enabled && a.auto_disabled;
         body = `
@@ -2734,13 +2948,13 @@ export const bootstrapAutomationRoute = (
           ${a.last_failure_reason ? `<p class="automation-row-error">${e(a.last_failure_reason)}</p>` : ''}
           <div class="automation-row-actions">
             ${a.enabled && !a.auto_disabled && Object.keys(a.variables ?? {}).length > 0
-              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'configure')}>Configure</button>`
+              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}"${mutationBusyAttrs('auto_run', autoRunId(a), 'configure')}>Configure</button>`
               : ''}
-            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'toggle')}>${e(mutationToggleLabel('auto_run', a.recipe_id, !a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause', !a.enabled || a.auto_disabled))}</button>
-            ${a.preapproval ? renderPreapprovalButtons('auto_run', a.recipe_id, a.preapproval.proposal_id)
+            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(autoRunId(a))}"${mutationBusyAttrs('auto_run', autoRunId(a), 'toggle')}>${e(mutationToggleLabel('auto_run', autoRunId(a), !a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause', !a.enabled || a.auto_disabled))}</button>
+            ${a.preapproval ? renderPreapprovalButtons('auto_run', autoRunId(a), a.preapproval.proposal_id)
               : opts.preapprovalPrepareCaller && opts.onPreapprovalPrepared && a.lifecycle_revision !== undefined && !a.auto_disabled
-                  && canPreapprove('next_auto_run')
-                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}">Look at the next run</button>` : ''}
+                  && (a.dish_id ?? null) !== null && canPreapprove('next_auto_run')
+                ? `<button type="button" class="automation-button" ${ACTION_ATTR}="preapprove:auto_run" ${ROW_ID_ATTR}="${e(autoRunId(a))}">Look at the next run</button>` : ''}
           </div>`;
       }
     }
@@ -2768,6 +2982,12 @@ export const bootstrapAutomationRoute = (
    *  horizontal strip without moving the page vertically. `scrollIntoView`
    *  can also scroll ancestor containers, so adjust only this nav's own
    *  horizontal position from its painted geometry. */
+  /** D-319 §5.4 — where focus lands in the nav: a view's own tab or, from a
+   *  list by kind (it has no tab of its own), the nav's one keyboard stop. */
+  const navTabFor = (token: string): HTMLElement | null | undefined =>
+    (routeRoot.querySelector?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${token}"]`)
+      ?? routeRoot.querySelector?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}][tabindex="0"]`)) as HTMLElement | null | undefined;
+
   const revealActiveSubnav = (): void => {
     const nav = routeRoot.querySelector?.(
       '.automation-subnav',
@@ -2947,9 +3167,9 @@ export const bootstrapAutomationRoute = (
     routeRoot.innerHTML = `
       <header class="automation-header">
         <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
-        <p class="automation-subtitle">Every rule that runs without you — auto-run tickers,
-        event triggers (and the poll loops feeding them), and schedules. Pause or
-        resume any of them here; runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
+        <p class="automation-subtitle">What runs on its own, by Recipe: each Recipe you
+        switched on, what starts it, and when it runs next. Switch any of them on or
+        off here; runs land in <a href="#logs">Logs<span aria-hidden="true">.</span></a></p>
       </header>
       ${lockBanner()}
       ${subNav()}
@@ -2970,9 +3190,7 @@ export const bootstrapAutomationRoute = (
       const replacement = routeRoot.querySelector?.(
         `[${AUTOMATION_ROUTE_RETRY_ATTR}="${retryFocus}"]`,
       ) as HTMLElement | null | undefined;
-      const fallback = routeRoot.querySelector?.(
-        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${retryFocus}"]`,
-      ) as HTMLElement | null | undefined;
+      const fallback = navTabFor(retryFocus);
       (replacement ?? (!loading ? fallback : null))
         ?.focus?.({ preventScroll: true });
     }
@@ -3006,9 +3224,7 @@ export const bootstrapAutomationRoute = (
           || pendingActionFallbackFocus === null
           ? null
           : findActionFocusTarget(pendingActionFallbackFocus));
-      const fallback = routeRoot.querySelector?.(
-        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${activeSection}"]`,
-      ) as HTMLElement | null | undefined;
+      const fallback = navTabFor(activeSection);
       (replacement ?? (busy.has(pendingActionFocus.rule_id) ? null : fallback))
         ?.focus?.({ preventScroll: true });
     }
@@ -3063,9 +3279,7 @@ export const bootstrapAutomationRoute = (
           `[data-ref-picker="${ADD_PICKER_CONFIG.pickerId}"] `
           + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
         ) as HTMLElement | null | undefined;
-        const tab = routeRoot.querySelector?.(
-          `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${recipeEntriesFocus}"]`,
-        ) as HTMLElement | null | undefined;
+        const tab = navTabFor(recipeEntriesFocus);
         const replacement = recipeEntriesError !== null
           ? retry
           : addPickerFor === recipeEntriesFocus && recipeEntries !== null
@@ -3087,9 +3301,7 @@ export const bootstrapAutomationRoute = (
       const replacement = routeRoot.querySelector?.(
         `[${AUTOMATION_ROUTE_ADD_ATTR}="${pendingModalReturnFocus}"]`,
       ) as HTMLElement | null | undefined;
-      const fallback = routeRoot.querySelector?.(
-        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${pendingModalReturnFocus}"]`,
-      ) as HTMLElement | null | undefined;
+      const fallback = navTabFor(pendingModalReturnFocus);
       (replacement ?? fallback)?.focus?.({ preventScroll: true });
       if (!loading && (replacement ?? fallback) != null) {
         pendingModalReturnFocus = null;
@@ -3252,28 +3464,8 @@ export const bootstrapAutomationRoute = (
         recipeFilterLabelSynced = true;
       }
     }
-    // R21 one-shot: a LEGACY recipe deep-link (#automation/<recipe-id>)
-    // lands on the default tab; once the data is in, repoint at the
-    // first section that actually has rows for that recipe (order =
-    // the render order). Never fires for an explicit section deep-link
-    // or after a user tab click.
-    if (sectionAutoPickPending) {
-      sectionAutoPickPending = false;
-      if (recipeFilter !== null) {
-        const first = AUTOMATION_SECTION_TOKENS.find(
-          (token) => sectionCount(token) > 0,
-        );
-        if (first !== undefined && first !== activeSection) {
-          // Deliberately NO syncHash() here (codex R21 MEDIUM): the URL
-          // stays `#automation/<recipe-id>` — the legacy recipe link is
-          // the shareable/refreshable form of this view (a refresh
-          // re-parses it and re-auto-picks); rewriting it to a bare
-          // section hash would lose the recipe focus. A USER tab click
-          // still syncs (explicit navigation supersedes the deep link).
-          activeSection = first;
-        }
-      }
-    }
+    // D-319 — a recipe link (#automation/<recipe-id>) lands on the one list
+    // narrowed to that recipe: every row of it is there, so nothing moves.
     if (
       deleteConfirmation !== null
       && !automationRuleExists(
@@ -3354,13 +3546,13 @@ export const bootstrapAutomationRoute = (
     }
   };
 
-  // D-179 — the auto-run config editor. Renders the recipe's variable
-  // widgets pre-filled from the current overlay; on confirm it sends the
-  // collected config to `auto_run.update` (the server versions it on a
-  // managed immutable dish). `mode: 'resume'` also re-enables the recipe
-  // in the same call (arm-time is a config-adjustment point); `'edit'`
-  // leaves the enable state untouched. Widget values are read on confirm
-  // (native inputs hold their own state), so no re-render / caret dance.
+  // D-179 — the auto-run config editor, for a host that makes no dishes
+  // itself (`switchOnTimerRecipe`). Renders the recipe's variable widgets;
+  // on confirm it sends them to `auto_run.update`, which (D-319) makes the
+  // recipe's main dish from them. `mode: 'resume'` also switches the timer
+  // on in the same call; `'edit'` leaves it as it is. Widget values are read
+  // on confirm (native inputs hold their own state), so no re-render / caret
+  // dance.
   const closeAutoRunConfigModal = (): void => {
     autoRunConfigHandle?.destroy();
   };
@@ -3377,6 +3569,7 @@ export const bootstrapAutomationRoute = (
       title: entry.recipe_name ?? entry.recipe_id,
       copy: 'These settings are used every time it runs on its own.',
       confirmLabel: mode === 'resume' ? 'Resume' : 'Save',
+      // A recipe's own settings (its mail template) are not a dish's (D-315).
       variables: entry.variables ?? {},
       currentOverlay: entry.config_overlay,
       ...(opts.fileRefSearchCaller !== undefined
@@ -3384,8 +3577,11 @@ export const bootstrapAutomationRoute = (
         : {}),
       // `mode: 'resume'` re-enables in the same call (arm-time is a config
       // adjustment point); `'edit'` leaves the enable state untouched.
+      // D-319 — a row with no dish switches the recipe on: its main dish is
+      // made from these settings. A dish's settings are the dish's (its
+      // Settings); a timer has none of its own.
       onConfirm: (config) => {
-        void runMutation(entry.recipe_id, 'auto_run', () =>
+        void runMutation(autoRunId(entry), 'auto_run', () =>
           caller({
             recipe_id: entry.recipe_id,
             ...(mode === 'resume' ? { enabled: true } : {}),
@@ -3394,6 +3590,17 @@ export const bootstrapAutomationRoute = (
       },
       onClose: () => { autoRunConfigHandle = null; },
     });
+  };
+
+  /** The settings form's pickers: files, records of the recipe's pack, and
+   *  the owner's mail templates — as on the recipe page. */
+  const formPickers = (entry: ServerRecipeListEntry) => {
+    const recordRefSearch = bindRecordRefSearchToRecipe(opts.recordRefSearchCaller, entry.recipe);
+    return {
+      ...(opts.fileRefSearchCaller !== undefined ? { fileRefSearch: opts.fileRefSearchCaller } : {}),
+      ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
+      ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
+    };
   };
 
   /** D-215 slice 4b — edit a dish's config.
@@ -3410,35 +3617,94 @@ export const bootstrapAutomationRoute = (
    *  than an editor with no widgets. */
   const openDishConfigModal = (d: Dish): void => {
     if (doc === undefined) return;
-    const target = dishWriteTarget(d);
-    if (target.kind === 'owner') return;
     const entry = (recipeEntries ?? []).find((r) => r.recipe_id === d.recipe_id);
     if (entry === undefined) return;
     closeAutoRunConfigModal();
-    autoRunConfigHandle = wireConfigEditorOverlay({
+    const mine = dishes.filter((dish) => dish.recipe_id === d.recipe_id);
+    // D-319 §5.2 — the same form as the recipe page's Settings: the dish's
+    // settings (a mail template too), in place, from its next run.
+    autoRunConfigHandle = openDishForm({
       document: doc,
-      title: d.name !== '' ? d.name : nameFor(d.recipe_id),
-      copy: target.kind === 'one_shot'
-        ? 'These settings are used for this scheduled run.'
-        : 'These settings are used every time this dish runs.',
-      confirmLabel: 'Save',
-      variables: entry.recipe.variables ?? {},
-      currentOverlay: d.config_overlay,
-      ...(opts.fileRefSearchCaller !== undefined
-        ? { fileRefSearch: opts.fileRefSearchCaller }
-        : {}),
-      onConfirm: (config) => {
-        if (target.kind === 'one_shot' && opts.schedulesUpdateCaller) {
-          void runMutation(d.dish_id, 'dish', () =>
-            opts.schedulesUpdateCaller!({
-              schedule_id: target.schedule_id,
-              config_overlay: config,
-            }));
-        } else if (target.kind === 'own' && opts.dishesUpdateCaller) {
-          void runMutation(d.dish_id, 'dish', () =>
-            opts.dishesUpdateCaller!({ dish_id: d.dish_id, config_overlay: config }));
+      mode: 'settings',
+      entry,
+      dishes: mine,
+      dish: d,
+      start: dishFormStart('settings', mine, d) ?? { ...d.config_overlay },
+      callers: {
+        ...(opts.dishesUpdateCaller !== undefined ? { update: opts.dishesUpdateCaller as never } : {}),
+      },
+      ...formPickers(entry),
+      onSaved: () => { if (!disposed) void loadAll(); },
+      onClose: () => { autoRunConfigHandle = null; },
+    });
+  };
+
+  /** D-319 — a timer's recipe nobody switched on: the switch-on form (from
+   *  what the install chose), where this host makes dishes; else the timer's
+   *  own editor, whose settings make the main dish on the server. */
+  const switchOnTimerRecipe = (entry: AutoRunStatusEntry): void => {
+    if (opts.dishesCreateCaller !== undefined && opts.recipeEntriesCaller !== undefined) void makeDish(entry.recipe_id);
+    else openAutoRunConfigModal(entry, 'resume');
+  };
+
+  /** D-319 §5.4 — make a dish with its settings asked: "Not switched on" →
+   *  Switch on, and the Dishes section's Add dish. A first dish starts from
+   *  what the install chose (Switch on, or Save settings for a recipe the
+   *  owner runs); another starts from the main dish's settings. */
+  const makeDish = async (recipe_id: string): Promise<void> => {
+    if (doc === undefined || switchOnBusy.has(recipe_id) || autoRunConfigHandle !== null) return;
+    const create = opts.dishesCreateCaller;
+    if (create === undefined) return;
+    switchOnBusy = new Set(switchOnBusy).add(recipe_id);
+    const nextErrors = { ...mutationErrors };
+    delete nextErrors.dishes;
+    mutationErrors = nextErrors;
+    render();
+    const mineNow = (): Dish[] => dishes.filter((dish) => dish.recipe_id === recipe_id);
+    let start: Record<string, unknown> | null = mineNow().length > 0 ? dishFormStart('add', mineNow()) : null;
+    try {
+      if (recipeEntries === null) await loadRecipeEntriesNow();
+      if (start === null) {
+        start = opts.dishesDefaultsCaller !== undefined
+          ? { ...(await opts.dishesDefaultsCaller({ recipe_id })).config_overlay }
+          : {};
+      }
+    } catch (error) {
+      if (!disposed) {
+        mutationErrors = { ...mutationErrors, dishes: `Recued could not read what this recipe starts from: ${messageForError(error)}` };
+      }
+      switchOnBusy = new Set([...switchOnBusy].filter((id) => id !== recipe_id));
+      if (!disposed) render();
+      return;
+    }
+    switchOnBusy = new Set([...switchOnBusy].filter((id) => id !== recipe_id));
+    if (disposed) return;
+    render();
+    const entry = (recipeEntries ?? []).find((r) => r.recipe_id === recipe_id);
+    if (entry === undefined || autoRunConfigHandle !== null) return;
+    const mine = mineNow();
+    const mode: DishFormMode = mine.length > 0 ? 'add'
+      : startsOnItsOwn(entry.recipe) ? 'switch-on' : 'save-settings';
+    autoRunConfigHandle = openDishForm({
+      document: doc,
+      mode,
+      entry,
+      dishes: mine,
+      start,
+      callers: {
+        create: create as never,
+        ...(opts.schedulesCreateCaller !== undefined ? { schedulesCreate: opts.schedulesCreateCaller as never } : {}),
+      },
+      ...formPickers(entry),
+      onCreated: (_dish, scheduleError) => {
+        if (scheduleError !== null && !disposed) {
+          mutationErrors = {
+            ...mutationErrors,
+            dishes: `${mode === 'switch-on' ? 'Switched on' : 'Saved'}, but Recued could not add the schedule: ${messageForError(scheduleError)}`,
+          };
         }
       },
+      onSaved: () => { if (!disposed) void loadAll(); },
       onClose: () => { autoRunConfigHandle = null; },
     });
   };
@@ -3492,16 +3758,18 @@ export const bootstrapAutomationRoute = (
           opts.schedulesUpdateCaller!({ schedule_id: target.schedule_id, enabled }), focus, undefined, action);
       }
     } else if (section === 'auto_run' && opts.autoRunUpdateCaller) {
-      const entry = autoRun.find((a) => a.recipe_id === rule_id);
-      // D-179 — resuming a recipe that declares config variables opens the
-      // pre-filled editor (arm-time is a config-adjustment point) rather
-      // than a blind flip; a variable-less recipe just toggles.
-      if (enabled && entry && Object.keys(entry.variables ?? {}).length > 0) {
-        openAutoRunConfigModal(entry, 'resume');
+      const entry = autoRun.find((a) => autoRunId(a) === rule_id);
+      // D-319 — switching on a recipe nobody switched on asks for its settings
+      // first (the switch-on form); a variable-less one just switches on. A
+      // dish's timer switches alone: its settings are the dish's.
+      if (enabled && entry && (entry.dish_id ?? null) === null && Object.keys(entry.variables ?? {}).length > 0) {
+        switchOnTimerRecipe(entry);
         return;
       }
       void runMutation(rule_id, section, () =>
-        opts.autoRunUpdateCaller!({ recipe_id: rule_id, enabled }), focus, undefined, action);
+        opts.autoRunUpdateCaller!(entry?.dish_id
+          ? { dish_id: entry.dish_id, enabled }
+          : { recipe_id: entry?.recipe_id ?? rule_id, enabled }), focus, undefined, action);
     }
   };
 
@@ -3593,13 +3861,13 @@ export const bootstrapAutomationRoute = (
     // state — returning later shouldn't resurrect it; codex R21 LOW),
     // and supersedes a pending legacy auto-pick.
     detailId = null;
+    detailReturnSection = null;
     pendingDishHistoryRetryFocus = null;
     pendingRecipeEntriesFocus = null;
     addPickerFor = null;
     deleteConfirmation = null;
     revokeConfirmation = null;
     pendingModalReturnFocus = null;
-    sectionAutoPickPending = false;
     syncHash('replace');
     render();
     return true;
@@ -3613,22 +3881,22 @@ export const bootstrapAutomationRoute = (
     if (tab === null || tab === undefined) return;
     const token = tab.getAttribute(AUTOMATION_ROUTE_SUBNAV_ATTR);
     if (token === null || !isAutomationSectionToken(token)) return;
-    const currentIndex = AUTOMATION_SECTION_TOKENS.indexOf(token);
+    const currentIndex = Math.max(0, AUTOMATION_VIEW_TOKENS.indexOf(token));
     let nextIndex: number | null = null;
     if (event.key === 'ArrowRight') {
-      nextIndex = (currentIndex + 1) % AUTOMATION_SECTION_TOKENS.length;
+      nextIndex = (currentIndex + 1) % AUTOMATION_VIEW_TOKENS.length;
     } else if (event.key === 'ArrowLeft') {
       nextIndex = (
-        currentIndex - 1 + AUTOMATION_SECTION_TOKENS.length
-      ) % AUTOMATION_SECTION_TOKENS.length;
+        currentIndex - 1 + AUTOMATION_VIEW_TOKENS.length
+      ) % AUTOMATION_VIEW_TOKENS.length;
     } else if (event.key === 'Home') {
       nextIndex = 0;
     } else if (event.key === 'End') {
-      nextIndex = AUTOMATION_SECTION_TOKENS.length - 1;
+      nextIndex = AUTOMATION_VIEW_TOKENS.length - 1;
     }
     if (nextIndex === null) return;
     event.preventDefault();
-    const next = AUTOMATION_SECTION_TOKENS[nextIndex]!;
+    const next = AUTOMATION_VIEW_TOKENS[nextIndex]!;
     if (!activateSection(next)) return;
     const replacement = routeRoot.querySelector?.(
       `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${next}"]`,
@@ -3758,15 +4026,16 @@ export const bootstrapAutomationRoute = (
           } satisfies AutomationActionFocus;
       detailId = null;
       pendingDishHistoryRetryFocus = null;
+      if (detailReturnSection !== null) {
+        activeSection = detailReturnSection;
+        detailReturnSection = null;
+      }
       syncHash('replace');
       render();
       const replacement = returnFocus === null
         ? null
         : findActionFocusTarget(returnFocus);
-      const fallback = routeRoot.querySelector?.(
-        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${activeSection}"]`,
-      ) as HTMLElement | null | undefined;
-      (replacement ?? fallback)?.focus?.({ preventScroll: true });
+      (replacement ?? navTabFor(activeSection))?.focus?.({ preventScroll: true });
       return;
     }
     // R21 create path — the per-section Add disclosure.
@@ -3823,11 +4092,30 @@ export const bootstrapAutomationRoute = (
       }
       return;
     }
+    // D-319 §5.4 — the one list's filter chips (a second press clears it).
+    const chip = (ev.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${AUTOMATION_CHIP_ATTR}]`);
+    if (chip) {
+      const value = chip.getAttribute(AUTOMATION_CHIP_ATTR);
+      if (value !== null && isAutomationChip(value)) {
+        chipFilter = chipFilter === value ? null : value;
+        render();
+        (routeRoot.querySelector?.(`[${AUTOMATION_CHIP_ATTR}="${value}"]`) as HTMLElement | null | undefined)
+          ?.focus?.({ preventScroll: true });
+      }
+      return;
+    }
     const target = targetWithAction(ev);
     if (target === null) return;
     const action = target.getAttribute(ACTION_ATTR);
     const ruleId = target.getAttribute(ROW_ID_ATTR);
     if (action === null || ruleId === null || ruleId.length === 0) return;
+    // D-319 §5.4 — a recipe nobody switched on: the switch-on form.
+    if (action === 'switch-on:recipe') {
+      void makeDish(ruleId);
+      return;
+    }
     const [verb, section, to] = action.split(':') as [
       string,
       AutomationSectionKind,
@@ -3837,6 +4125,13 @@ export const bootstrapAutomationRoute = (
     // LOW: the button renders enabled, so a busy-guard swallow would be
     // a dead click). Mutating verbs stay busy-guarded below.
     if (verb === 'detail') {
+      // D-319 §5.4 — from the one list, a rule's Details open in its own
+      // kind's section; Back returns to the list.
+      const own = sectionTokenForKind(section);
+      if (own !== null && own !== activeSection) {
+        detailReturnSection = activeSection;
+        activeSection = own;
+      }
       detailId = ruleId;
       if (section === 'dish') {
         dishHistory = null;
@@ -3974,15 +4269,18 @@ export const bootstrapAutomationRoute = (
       const d = dishes.find((x) => x.dish_id === ruleId);
       if (d !== undefined) openDishConfigModal(d);
     } else if (verb === 'preapprove' && (section === 'auto_run' || section === 'event_trigger' || section === 'schedule')) {
-      const entry = section === 'auto_run' ? autoRun.find(a => a.recipe_id === ruleId)
+      const entry = section === 'auto_run' ? autoRun.find(a => autoRunId(a) === ruleId)
         : section === 'event_trigger' ? triggers.find(t => t.trigger_id === ruleId) : schedules.find(s => s.schedule_id === ruleId);
       if (!entry || entry.lifecycle_revision === undefined || entry.preapproval || ('auto_disabled' in entry && entry.auto_disabled)
         || !opts.preapprovalPrepareCaller || !opts.onPreapprovalPrepared) return;
+      // D-319 — a timer's next run is one dish's; a recipe with no dish has none.
+      if (section === 'auto_run' && (!('dish_id' in entry) || (entry.dish_id ?? null) === null)) return;
       preapprovalActivation?.destroy();
       preapprovalActivation = openPreapprovalActivation({ document: doc, recipe_id: entry.recipe_id,
         publisher_id: entry.publisher_id, name: ('recipe_name' in entry ? entry.recipe_name : nameFor(entry.recipe_id)) ?? entry.recipe_id,
-        activation: section === 'auto_run' ? { kind: 'next_auto_run', recipe_id: entry.recipe_id,
-          publisher_id: entry.publisher_id, expected_revision: entry.lifecycle_revision }
+        activation: section === 'auto_run'
+          ? { kind: 'next_auto_run', recipe_id: entry.recipe_id,
+            publisher_id: entry.publisher_id, dish_id: entry.dish_id!, expected_revision: entry.lifecycle_revision }
           : section === 'event_trigger' ? { kind: 'next_trigger', trigger_id: ruleId, expected_revision: entry.lifecycle_revision }
             : { kind: 'next_schedule', schedule_id: ruleId, expected_revision: entry.lifecycle_revision },
         scheduledFor: 'next_run_at' in entry ? entry.next_run_at : null,
@@ -3990,10 +4288,12 @@ export const bootstrapAutomationRoute = (
         onClose: () => { preapprovalActivation = null; },
       });
     } else if (verb === 'configure' && section === 'auto_run') {
-      // D-179 — edit config on an already-enabled recipe (no enable-state
-      // change); opens the same editor the resume flow uses, in 'edit'.
-      const entry = autoRun.find((a) => a.recipe_id === ruleId);
-      if (entry) openAutoRunConfigModal(entry, 'edit');
+      // D-319 — a timer's settings are its dish's: edit the dish. A recipe
+      // nobody switched on configures by switching on (its settings form).
+      const entry = autoRun.find((a) => autoRunId(a) === ruleId);
+      const dish = entry?.dish_id ? dishes.find((d) => d.dish_id === entry.dish_id) : undefined;
+      if (dish !== undefined) openDishConfigModal(dish);
+      else if (entry && (entry.dish_id ?? null) === null) switchOnTimerRecipe(entry);
     } else if (verb === 'run') {
       onRunNow(section, ruleId, doc.activeElement === target
         ? { verb, section, rule_id: ruleId }

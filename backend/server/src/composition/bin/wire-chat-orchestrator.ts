@@ -169,6 +169,8 @@ import { runCanonicalWatchPoll } from '../../watch/canonical-poll.js';
 import { deriveChannelSessionId, piiEgress } from '@recued/gateway';
 import type { AuditLogStore, Collection } from '@recued/storage';
 import type { AnnotationRpcDeps } from '../../annotation-handler.js';
+import { createMailAttachmentReader } from '../../mail-attachment-evidence.js';
+import { legacyAttachmentsAmbiguousIn } from '../../collections/mail/mail-attachment-source-id.js';
 import {
   createChatStore,
   ensureChatSchema,
@@ -293,6 +295,7 @@ export interface ComposeChatOrchestratorDeps {
   /** Late-bound late-resolution getters — see module doc. */
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
+  readMailBody?: (record: import('@recued/contracts').CollectionRecord) => Promise<string | null>;
   /** The unified local+remote file view `file.search`'s owner-wide scope reads.
    *  Late-bound because the D-192 meta store is assigned after this wire is
    *  built; absent ⇒ the tool falls back to the single-collection read, which is
@@ -686,6 +689,14 @@ export const composeChatOrchestrator = (
   const chatToolRegistryInputs = buildChatToolRegistryInputs({
     getContactStore,
     getCollectionRegistry,
+    ...(deps.readMailBody ? { readMailBody: deps.readMailBody } : {}),
+    mailAttachments: (record, slug) => {
+      const registry = getCollectionRegistry();
+      return registry
+        ? createMailAttachmentReader(registry, deps.annotationDeps?.store, legacyAttachmentsAmbiguousIn(registry))(record, slug)
+        : { attachments: [], warnings: ['Attachment storage is unavailable.'] };
+    },
+    documentPacks: () => getExecuteDeps()?.contractScan?.('installed_pack', []) ?? [],
     // D-172 P2 — `file.search`'s DEFAULT (session) scope reads this session's
     // own message rows for their attachments. Without it the tool would have
     // only the owner-wide scope, which is the one we deliberately made

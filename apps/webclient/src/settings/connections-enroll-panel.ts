@@ -111,8 +111,8 @@ import {
   OAUTH_CLOUD_CALLBACK_URL,
   buildOpenerRelayRedirectUri,
   isLoopbackOrigin,
-  alternateOAuthCallbackUrl,
-  oauthCallbackUrlForPwa,
+  vendorOAuthAlternateCallbackUrl,
+  vendorOAuthCallbackUrlForPwa,
   CONNECTION_AUTH_TYPES,
   CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX,
   CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX,
@@ -1418,12 +1418,16 @@ const oauthJwksKey = (flow_id: string): string => `oauth_jwks_${flow_id}`;
  *  `127.0.0.1` webclient the printed URI and the used URI disagreed and the
  *  provider answered `redirect_uri_mismatch`.
  *
- *  Falls back to the cloud URL off-browser, which is what a non-loopback PWA
- *  resolves to anyway. */
+ *  ⚠ The VENDOR rule (`vendorOAuthCallbackUrlForPwa`), not the mail one: at the
+ *  server's own https name a vendor goes straight to `<origin>/oauth/complete`
+ *  through `startVendorOAuth`, where mail self-serves its relay page.
+ *
+ *  Falls back to the cloud URL off-browser, which is what a PWA that is neither
+ *  loopback nor the server's own https name resolves to anyway. */
 const resolveOAuthCallbackUrlForThisPwa = (): string => {
   const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
   return typeof origin === 'string' && origin.length > 0
-    ? oauthCallbackUrlForPwa(origin)
+    ? vendorOAuthCallbackUrlForPwa(origin)
     : OAUTH_CLOUD_CALLBACK_URL;
 };
 
@@ -1431,7 +1435,7 @@ const resolveOAuthCallbackUrlForThisPwa = (): string => {
 const resolveOAuthCallbackAlternateForThisPwa = (): string | undefined => {
   const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
   if (typeof origin !== 'string' || origin.length === 0) return undefined;
-  return alternateOAuthCallbackUrl(origin) ?? undefined;
+  return vendorOAuthAlternateCallbackUrl(origin) ?? undefined;
 };
 
 /** Derive the default browser env from `globalThis.window`. Returns undefined

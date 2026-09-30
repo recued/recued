@@ -99,7 +99,9 @@ export const preapprovalDemoReply = (method: string, args: unknown): {
       : { result: { triggers: [{ ...common, trigger_id: 'browser-trigger', pattern: 'data.mail.work.message.created', last_fired_at: null }] } };
   }
   if (method === 'auto_run.list') return { result: { entries: [{
-    recipe_id: 'autorun-live-1', publisher_id: 'recued-core', recipe_name: 'Watch pipeline', interval_ms: 60_000,
+    // D-319 — a timer is one dish's.
+    recipe_id: 'autorun-live-1', publisher_id: 'recued-core', dish_id: 'dsh_autorun-live-1', dish_name: '',
+    recipe_name: 'Watch pipeline', interval_ms: 60_000,
     dynamic: false, enabled: state.decision?.decision === 'approve' && !state.revoked, auto_disabled: false,
     consecutive_failures: 0, last_failure_at: null, last_failure_reason: null, next_run_at: null,
     last_started_at: null, last_finished_at: null, config_overlay: {}, variables: {}, lifecycle_revision: 7,

@@ -31,6 +31,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createBootTrace } from '../cli/boot-trace.js';
 import { composeEventTriggers } from '../composition/bin/wire-event-triggers.js';
+import { composePackInstallRpcDeps } from '../composition/bin/wire-pack-install-rpc-deps.js';
+import { createDishAutomation } from '../dish-automation.js';
+import { createDish, dishDefaults, mainDishFor, updateDish, type DishHandlerDeps } from '../dish-handler.js';
+import { wireRecipeMailTemplates } from '../mail-facts/recipe-templates-wiring.js';
+import { installRecipeBySlug } from '../pack-install-handler.js';
 import { makeMailFactRpcHandlers } from '../mail-facts/mail-fact-rpc-handler.js';
 import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
 import { createLLMConfigManager } from '../llm-config.js';
@@ -131,7 +136,8 @@ const mailRecordId = (sourceId: string): string =>
 // ── The server, composed ───────────────────────────────────────────────
 
 /** The server's real contexts over one SQLite file, with a Gmail account
- *  connected and the given recipes installed, their triggers switched on. */
+ *  connected and the given recipes installed and switched on — each a dish,
+ *  its triggers made for it (D-319). */
 const bootLive = async (
   recipes: readonly RecipeDefinition[],
   templates: readonly MailTemplateDefinition[] = [],
@@ -235,8 +241,8 @@ const bootLive = async (
     await screens['mail_fact.template.create']({ definition }, client);
   }
 
-  // The recipes are installed; their triggers start off, and the owner
-  // switches each on.
+  // The recipes are installed; nothing of them runs until the owner switches
+  // each on (D-319).
   for (const recipe of recipes) storage.recipeStore.save(recipe, 'local', 'inline');
   await opts.beforeTriggers?.({ mailStack: collection.mailStack! });
   const triggers = composeEventTriggers({
@@ -250,11 +256,25 @@ const bootLive = async (
     // As compose-listeners wires it: a row made here knows every kind here.
     mailFactTypes: () => facts.listCustomTypes(),
   })!;
+  // D-319 — the dishes, and the rows that follow them, as compose-listeners
+  // wires them.
+  const dishDeps: DishHandlerDeps = {
+    store: execution.executeDeps.dishStore!,
+    ...(execution.executeDeps.dishContextStore ? { contextStore: execution.executeDeps.dishContextStore } : {}),
+    publisherOf: (recipe_id) => execution.executeDeps.recipeStore.getStored(recipe_id)?.publisher_id ?? null,
+  };
+  dishDeps.automation = createDishAutomation({
+    triggers: { store: triggers.store, reconcile: triggers.reconcile, rebuild: () => triggers.dispatcher.rebuild() },
+    ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
+  });
+  triggers.triggersDeps.mainDish = (input) => mainDishFor(dishDeps, input);
   const rows = new Map<string, string>();
   for (const recipe of recipes) {
+    // Installed, not switched on: no trigger of it exists.
+    expect(triggers.store.list().some((t) => t.recipe_id === recipe.recipe_id)).toBe(false);
+    const { dish } = createDish(dishDeps, { recipe_id: recipe.recipe_id, publisher_id: 'local' });
     const row = triggers.store.list().find((t) => t.recipe_id === recipe.recipe_id);
-    expect(row?.enabled).toBe(false);
-    await handleTriggersUpdate(triggers.triggersDeps, { trigger_id: row!.trigger_id, enabled: true });
+    expect(row).toMatchObject({ enabled: true, dish_id: dish.dish_id });
     rows.set(recipe.recipe_id, row!.trigger_id);
   }
   // As compose-listeners does once the dispatcher (and the pre-approval
@@ -268,7 +288,7 @@ const bootLive = async (
     await collection.mailStack!.disposeAll();
     storage.db?.close();
   };
-  return { storage, collection, facts, screens, client, triggers, mailStack: collection.mailStack!, rows, fired, close };
+  return { storage, collection, execution, facts, screens, client, triggers, dishDeps, mailStack: collection.mailStack!, rows, fired, close };
 };
 
 const recipe = (
@@ -697,6 +717,13 @@ describe('D-315 slice 3, live — what the screens read', () => {
     // Slice 5: a row made here is checked against every kind here, the owner's included.
     expect(source).toContain('mailFactTypes: () => storage.mailFactStoreRef!.listCustomTypes()');
     expect(source).toContain('...(app.privateAiCall ? { privateAiCall: app.privateAiCall } : {})');
+    // D-319 — the rows follow their dish, as these proofs wire them; a
+    // schedule or trigger naming no dish joins the recipe's main one.
+    expect(source).toContain('execution.executeDeps.recipeStore.getStored(recipe_id)?.publisher_id ?? null;');
+    expect(source).toContain('dishDeps.automation = createDishAutomation({');
+    expect(source).toContain('reconcile: eventTriggersBundle.reconcile,');
+    expect(source).toContain('if (eventTriggersBundle) eventTriggersBundle.triggersDeps.mainDish = mainDish;');
+    expect(source).toContain('if (scheduleDeps) scheduleDeps.mainDish = mainDish;');
   });
 });
 
@@ -1011,6 +1038,193 @@ describe('D-315 slice 5, live — a kind of email the owner made', () => {
         [boxShipped.recipe_id, 'completed', `${trigger.trigger_id}|${thing!.thing_id}`],
         [boxWatched.recipe_id, 'completed', `${live.rows.get(boxWatched.recipe_id)!}|${thing!.thing_id}`],
       ]);
+    } finally {
+      await live.close();
+    }
+  }, 60_000);
+});
+
+// ── Slice 6 ────────────────────────────────────────────────────────────
+
+describe('D-315 slice 6, live — a recipe that brings its template', () => {
+  const shopStarter: MailTemplateDefinition = {
+    name: 'Shop parcels',
+    type: 'shipment',
+    entrance: { conditions: [{ field: 'from', op: 'is', value: 'ship@shop.example' }], variables: ['tracking_number'] },
+    rules: [
+      { target: { variable: 'carrier' }, source: 'body', find: { kind: 'after_label', label: 'Carrier:' } },
+      { target: { variable: 'tracking_number' }, source: 'body', find: { kind: 'after_label', label: 'Tracking number:' } },
+      { target: { variable: 'state' }, source: 'subject', find: { kind: 'keyword_map', cases: [{ contains: 'shipped', value: 'in_transit' }] } },
+    ],
+    html: false,
+    ai: { enabled: false },
+  };
+  /** As its author published it: the template it was built with, and a trigger
+   *  narrowed to whichever template its setting holds. It runs only when it
+   *  reads the parcel it was woken for. */
+  const shopParcels = {
+    recipe_id: 'd315-shop-parcels',
+    version: 1,
+    ttl: 0,
+    metadata: { name: 'Shop parcels', description: 'Parcels the shop sends.', author: 'test', supported_platforms: [] },
+    variables: { template: { label: 'Template', type: 'mail_template', starter: shopStarter } },
+    event_triggers: [{ on: 'mail_fact.shipment', template_variable: 'template' }],
+    prefetch_steps: [],
+    steps: [{
+      id: 'parcel',
+      op: 'core.mail.fact.get',
+      args: { id: '{{context.event.payload.record_id}}' },
+      fail_on: '{{step.parcel.thing.variables.tracking_number}} not_equal SHP-4455',
+    }],
+    output: { sidebar: [] },
+  } as unknown as RecipeDefinition;
+
+  const shopNotice = (id: string, at: number, tracking: string): GmailMessage => ({
+    id,
+    at,
+    raw: [
+      'From: "The Shop" <ship@shop.example>',
+      `To: ${OWNER}`,
+      'Subject: Your order has shipped',
+      `Message-ID: <${id}@shop.example>`,
+      `Date: ${new Date(at).toUTCString()}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Carrier: Shop Express',
+      `Tracking number: ${tracking}`,
+      '',
+    ].join('\r\n'),
+  });
+
+  /** The marketplace beside Gmail: the recipe, served as the apex serves it. */
+  const scriptMarketplace = (): void => {
+    const gmail = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith(`/recipes/${shopParcels.recipe_id}.json`)) {
+        return new Response(JSON.stringify({
+          data: { recipe_id: shopParcels.recipe_id, publisher_id: 'shop-author', version: 1, recipe_hash: 'sha256:x', recipe: shopParcels },
+          meta: {},
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return gmail(input, init);
+    });
+  };
+
+  /** Another shop's notice, which only the owner's own template reads. */
+  const otherNotice = (id: string, at: number, tracking: string): GmailMessage => ({
+    id,
+    at,
+    raw: [
+      'From: "Other Shop" <parcels@other.example>',
+      `To: ${OWNER}`,
+      'Subject: Your parcel has shipped',
+      `Message-ID: <${id}@other.example>`,
+      `Date: ${new Date(at).toUTCString()}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Carrier: Other Express',
+      `Tracking number: ${tracking}`,
+      '',
+    ].join('\r\n'),
+  });
+
+  it('install adds its template and switches nothing on; switching on starts from it; a second dish reads another template and runs on its own; a dish’s pick moves its trigger; the template goes with the recipe', async () => {
+    const live = await bootLive([]);
+    try {
+      // As compose-listeners wires it, and as the rpc context hands it to the install.
+      const dishDeps = live.dishDeps;
+      const templates = wireRecipeMailTemplates({
+        store: live.facts,
+        recipeStore: live.execution.executeDeps.recipeStore,
+        dishDeps,
+        triggers: { reconcile: live.triggers.reconcile, triggersDeps: live.triggers.triggersDeps },
+        eventBus: live.storage.eventBus,
+      });
+      const installDeps = composePackInstallRpcDeps({
+        recipeStore: live.storage.recipeStore,
+        getRecipeMailTemplates: () => templates,
+      }).packInstallDeps!;
+      const mailbox: GmailMessage[] = [];
+      scriptGmail(mailbox);
+      scriptMarketplace();
+      const recipe_id = shopParcels.recipe_id;
+      const rowOf = (dish_id: string) => live.triggers.store.list().find((t) => t.recipe_id === recipe_id && t.dish_id === dish_id)!;
+
+      const { result } = await installRecipeBySlug(installDeps, { slug: recipe_id });
+      expect(result.ok).toBe(true);
+      const [template] = live.facts.listTemplates();
+      expect(template).toMatchObject({
+        name: 'Shop parcels',
+        active: true,
+        ai: { enabled: false },
+        origin: { kind: 'recipe', publisher: 'shop-author', recipe: recipe_id, variable: 'template', version: 1 },
+      });
+      // D-319 — installing switches nothing on: no dish, no trigger.
+      expect(dishDeps.store.listByRecipe(recipe_id)).toEqual([]);
+      expect(live.triggers.store.list().some((t) => t.recipe_id === recipe_id)).toBe(false);
+
+      // Switch on: the form starts from the template the install made, and
+      // confirming makes the dish with its trigger narrowed to it, on.
+      const defaults = dishDefaults(dishDeps, { recipe_id }).config_overlay;
+      expect(defaults).toEqual({ template: template!.template_id });
+      const { dish: work } = createDish(dishDeps, { recipe_id, config_overlay: defaults });
+      expect(work).toMatchObject({ is_default: true, publisher_id: 'shop-author', config_overlay: { template: template!.template_id } });
+      expect(rowOf(work.dish_id)).toMatchObject({ filter: { 'record.template': template!.template_id }, enabled: true });
+
+      // A shop notice arrives: the recipe's template reads it, and the dish runs.
+      await live.mailStack.startAll();
+      await live.mailStack.pauseSync();
+      mailbox.push(shopNotice('s1', Date.now() - 180_000, 'SHP-4455'));
+      await live.mailStack.resumeSync();
+      await live.triggers.dispatcher.drained();
+      const [fact] = live.facts.listFacts();
+      expect(fact).toMatchObject({ template_id: template!.template_id, variables: expect.objectContaining({ tracking_number: 'SHP-4455' }) });
+      expect(await live.fired()).toEqual([expect.objectContaining({ recipe_id, detail: 'completed' })]);
+
+      // The bonus: a SECOND dish, reading the owner's own template, runs on
+      // its own — its trigger narrowed to its template, not the first dish's.
+      const { template: mine } = await live.screens['mail_fact.template.create']({
+        definition: {
+          ...shopStarter,
+          name: 'Mine',
+          entrance: { conditions: [{ field: 'subject', op: 'contains', value: 'has shipped' }], variables: ['tracking_number'] },
+        },
+      }, live.client);
+      const { dish: other } = createDish(dishDeps, { recipe_id, name: 'Other shop', config_overlay: { template: mine.template_id } });
+      expect(other.is_default).toBe(false);
+      expect(rowOf(other.dish_id)).toMatchObject({ filter: { 'record.template': mine.template_id }, enabled: true });
+      await live.mailStack.pauseSync();
+      mailbox.push(otherNotice('o1', Date.now() - 120_000, 'SHP-4455'));
+      await live.mailStack.resumeSync();
+      await live.triggers.dispatcher.drained();
+      const afterOther = await live.fired();
+      expect(afterOther).toHaveLength(2);
+      expect(afterOther.map((f) => f.target!.split('|')[0])).toEqual(
+        expect.arrayContaining([rowOf(work.dish_id).trigger_id, rowOf(other.dish_id).trigger_id]),
+      );
+      // Each run is its dish's, with the settings it ran with.
+      const otherRuns = await live.storage.auditLog!.listByDish(other.dish_id, 10);
+      expect(otherRuns).toEqual([expect.objectContaining({ config_snapshot: expect.objectContaining({ template: mine.template_id }) })]);
+      expect(await live.storage.auditLog!.listByDish(work.dish_id, 10)).toHaveLength(1);
+
+      // The first dish picks the owner's template too: its trigger follows —
+      // the same row, still on. The shop's next notice is read by the recipe's
+      // template, the more specific, so it no longer wakes either dish.
+      const before = rowOf(work.dish_id);
+      updateDish(dishDeps, work.dish_id, { config_overlay: { template: mine.template_id } });
+      expect(live.triggers.store.get(before.trigger_id)).toMatchObject({ filter: { 'record.template': mine.template_id }, enabled: true });
+      await live.mailStack.pauseSync();
+      mailbox.push(shopNotice('s2', Date.now() - 60_000, 'SHP-9001'));
+      await live.mailStack.resumeSync();
+      await live.triggers.dispatcher.drained();
+      expect(live.facts.listFacts()).toHaveLength(3);
+      expect(await live.fired()).toHaveLength(2);
+
+      // Uninstalled, the recipe takes its template along; the owner's stays.
+      expect(live.storage.recipeStore.delete(recipe_id)).toBe(true);
+      await vi.waitFor(() => expect(live.facts.getTemplate(template!.template_id)).toBeNull());
+      expect(live.facts.getTemplate(mine.template_id)).not.toBeNull();
     } finally {
       await live.close();
     }

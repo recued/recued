@@ -1225,7 +1225,7 @@ describe('pack app reactive defaults', () => {
     });
 
     expect(rig.root.innerHTML).toContain('Look after the Recipes this Pack starts on its own, below.');
-    expect(rig.root.innerHTML).toContain('These recipes wait for their own triggers.');
+    expect(rig.root.innerHTML).toContain('These recipes start on their own once you switch them on');
     expect(rig.root.innerHTML).toContain(
       `${PACK_APP_AUTOMATION_ATTR}="sync-provider-events"`,
     );

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { RpcError } from '@recued/contracts';
 import type {
   DiagnosticResponse,
+  HostnameAddressUsesResponse,
   HostnameCertSource,
   HostnameOwnershipStatus,
   HostnameProjection,
@@ -12,6 +14,16 @@ import type {
 } from '@recued/contracts';
 
 import {
+  HOSTNAMES_ADDRESSES_ATTR,
+  HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR,
+  HOSTNAMES_ADDRESS_CONFIRM_ATTR,
+  HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR,
+  HOSTNAMES_ADDRESS_ERROR_ATTR,
+  HOSTNAMES_ADDRESS_LINKS_ATTR,
+  HOSTNAMES_ADDRESS_SELECT_ATTR,
+  HOSTNAMES_ADDRESS_STATUS_ATTR,
+  HOSTNAMES_KEPT_WARNING_ATTR,
+  HOSTNAMES_UPDATE_FORM_ATTR,
   HOSTNAMES_LOCAL_URLS_ATTR,
   HOSTNAMES_LOCAL_URL_KIND_ATTR,
   HOSTNAMES_LOCAL_URL_ROW_ATTR,
@@ -34,9 +46,11 @@ import {
   type DdnsSetEnabledCaller,
   type DdnsStatusCaller,
   type HostnamesAddCaller,
+  type HostnamesAddressUsesCaller,
   type HostnamesGetCaller,
   type HostnamesListCaller,
   type HostnamesRemoveCaller,
+  type HostnamesSetAddressUseCaller,
   type HostnamesUpdateCaller,
   type HostnamesVerifyOwnershipCaller,
   type NetworkLocalUrlsCaller,
@@ -265,6 +279,8 @@ const mountPanel = (opts: {
   runDdnsStatus?: DdnsStatusCaller;
   runDdnsSetEnabled?: DdnsSetEnabledCaller;
   runDdnsControlContext?: DdnsControlContextCaller;
+  runAddressUses?: HostnamesAddressUsesCaller;
+  runSetAddressUse?: HostnamesSetAddressUseCaller;
 } = {}) => {
   const doc = makeFakeDocument();
   const host = makeFakeElement('div');
@@ -354,6 +370,8 @@ const mountPanel = (opts: {
     ...(opts.runDdnsControlContext !== undefined
       ? { runDdnsControlContext: opts.runDdnsControlContext }
       : {}),
+    ...(opts.runAddressUses !== undefined ? { runAddressUses: opts.runAddressUses } : {}),
+    ...(opts.runSetAddressUse !== undefined ? { runSetAddressUse: opts.runSetAddressUse } : {}),
   });
   return {
     doc,
@@ -805,6 +823,215 @@ const flushMicrotasks = async (): Promise<void> => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
 };
 
+const addressUses = (
+  over: Partial<HostnameAddressUsesResponse> = {},
+): HostnameAddressUsesResponse => ({
+  uses: [
+    { use: 'webhooks', source: 'first_use', base_url: 'https://alice.recued.net', hostname: 'alice.recued.net' },
+    { use: 'reception', source: 'automatic', base_url: 'https://alice.recued.net' },
+    { use: 'customer_access', source: 'owner', base_url: 'https://shop.example.com', hostname: 'shop.example.com' },
+  ],
+  choices: [
+    { hostname: 'shop.example.com', base_url: 'https://shop.example.com' },
+    { hostname: 'alice.recued.net', base_url: 'https://alice.recued.net' },
+  ],
+  links_now: { app: 'https://alice.recued.net', answers: 'https://alice.recued.net' },
+  registered_webhooks: 0,
+  ...over,
+});
+
+describe('Hostnames — addresses you hand out', () => {
+  const statusText = (host: FakeElement, use: string): string =>
+    textOf(findByAttr(host, HOSTNAMES_ADDRESS_STATUS_ATTR, use)!);
+
+  it('shows who decided each address, and says links in notices are not kept', async () => {
+    const { host, panel } = mountPanel({
+      runAddressUses: async () => addressUses(),
+      runSetAddressUse: async () => addressUses(),
+    });
+    await panel.whenLoaded();
+
+    expect(findByAttr(host, HOSTNAMES_ADDRESSES_ATTR)).not.toBeNull();
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'webhooks')!.value).toBe('alice.recued.net');
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'reception')!.value).toBe('');
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'customer_access')!.value).toBe('shop.example.com');
+    expect(statusText(host, 'webhooks')).toContain('Kept since it was first handed out');
+    expect(statusText(host, 'reception'))
+      .toContain('It will use https://alice.recued.net and then keep it');
+    expect(statusText(host, 'customer_access')).toContain('You picked it');
+    expect(textOf(findByAttr(host, HOSTNAMES_ADDRESS_LINKS_ATTR)!))
+      .toContain('Right now that is https://alice.recued.net.');
+    panel.dispose();
+  });
+
+  it('lets RECUED_PUBLIC_BASE_URL win: the select is read-only and says why', async () => {
+    const { host, panel } = mountPanel({
+      runAddressUses: async () => addressUses({
+        uses: [
+          { use: 'webhooks', source: 'configured', base_url: 'https://mary.example.org' },
+          { use: 'reception', source: 'configured', base_url: 'https://mary.example.org' },
+          { use: 'customer_access', source: 'configured', base_url: 'https://mary.example.org' },
+        ],
+      }),
+      runSetAddressUse: async () => addressUses(),
+    });
+    await panel.whenLoaded();
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'webhooks')!.disabled).toBe(true);
+    expect(statusText(host, 'webhooks')).toContain('Set on the server by RECUED_PUBLIC_BASE_URL');
+    panel.dispose();
+  });
+
+  it('keeps a picked name through setAddressUse and shows the answer', async () => {
+    const picked = addressUses({
+      uses: [
+        { use: 'webhooks', source: 'first_use', base_url: 'https://alice.recued.net', hostname: 'alice.recued.net' },
+        { use: 'reception', source: 'owner', base_url: 'https://shop.example.com', hostname: 'shop.example.com' },
+        { use: 'customer_access', source: 'owner', base_url: 'https://shop.example.com', hostname: 'shop.example.com' },
+      ],
+    });
+    const runSetAddressUse = vi.fn<HostnamesSetAddressUseCaller>(async () => picked);
+    const { host, panel } = mountPanel({ runAddressUses: async () => addressUses(), runSetAddressUse });
+    await panel.whenLoaded();
+
+    const select = findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'reception')!;
+    select.value = 'shop.example.com';
+    select.dispatch('change');
+    await vi.waitFor(() => expect(statusText(host, 'reception')).toContain('You picked it'));
+    expect(runSetAddressUse).toHaveBeenCalledWith({ use: 'reception', hostname: 'shop.example.com' });
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'reception')!.value).toBe('shop.example.com');
+    panel.dispose();
+  });
+
+  it('asks before moving the webhooks address while webhooks are registered', async () => {
+    const runSetAddressUse = vi.fn<HostnamesSetAddressUseCaller>(async () => addressUses());
+    const { host, panel } = mountPanel({
+      runAddressUses: async () => addressUses({ registered_webhooks: 3 }),
+      runSetAddressUse,
+    });
+    await panel.whenLoaded();
+
+    await panel.setAddressUse('webhooks', 'shop.example.com');
+    const confirm = findByAttr(host, HOSTNAMES_ADDRESS_CONFIRM_ATTR, 'webhooks')!;
+    expect(textOf(confirm)).toContain(
+      'Move the webhooks address to https://shop.example.com? 3 webhooks were set up with '
+      + 'https://alice.recued.net. After the move, each one stops taking events',
+    );
+    expect(runSetAddressUse).not.toHaveBeenCalled();
+
+    findByAttr(host, HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR)!.click();
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_CONFIRM_ATTR)).toBeNull();
+    expect(runSetAddressUse).not.toHaveBeenCalled();
+
+    await panel.setAddressUse('webhooks', 'shop.example.com');
+    findByAttr(host, HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR)!.click();
+    await vi.waitFor(() => expect(runSetAddressUse).toHaveBeenCalledWith({
+      use: 'webhooks', hostname: 'shop.example.com',
+    }));
+
+    // A pick that hands out the same address costs nothing and does not ask.
+    runSetAddressUse.mockClear();
+    await panel.setAddressUse('webhooks', 'alice.recued.net');
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_CONFIRM_ATTR)).toBeNull();
+    expect(runSetAddressUse).toHaveBeenCalledWith({ use: 'webhooks', hostname: 'alice.recued.net' });
+    panel.dispose();
+  });
+
+  it('shows a kept name that stopped working, and does not offer it again', async () => {
+    const { host, panel } = mountPanel({
+      runAddressUses: async () => addressUses({
+        uses: [
+          { use: 'webhooks', source: 'owner', base_url: null, hostname: 'gone.example.com', hostname_unusable: true },
+          { use: 'reception', source: 'automatic', base_url: 'https://alice.recued.net' },
+          { use: 'customer_access', source: 'automatic', base_url: null },
+        ],
+      }),
+      runSetAddressUse: async () => addressUses(),
+    });
+    await panel.whenLoaded();
+
+    const select = findByAttr(host, HOSTNAMES_ADDRESS_SELECT_ATTR, 'webhooks')!;
+    expect(select.value).toBe('gone.example.com');
+    const gone = select.children.find((option) => option.value === 'gone.example.com')!;
+    expect(gone.disabled).toBe(true);
+    expect(textOf(gone)).toContain('no longer works');
+    expect(statusText(host, 'webhooks')).toContain('gone.example.com can no longer be used');
+    expect(findByAttr(host, HOSTNAMES_ADDRESS_STATUS_ATTR, 'webhooks')!.className)
+      .toBe('hostnames-address-problem');
+    expect(statusText(host, 'customer_access')).toContain('No address yet');
+    panel.dispose();
+  });
+
+  it('warns on remove and on edit when the name is kept for a use', async () => {
+    const { host, panel } = mountPanel({
+      rows: [
+        hostname('alice.recued.net', { cert_source: 'recued_acme', ownership_status: 'verified' }),
+        hostname('other.example.com', { ownership_status: 'verified' }),
+      ],
+      runAddressUses: async () => addressUses({
+        uses: [
+          { use: 'webhooks', source: 'first_use', base_url: 'https://alice.recued.net', hostname: 'alice.recued.net' },
+          { use: 'reception', source: 'owner', base_url: 'https://alice.recued.net', hostname: 'alice.recued.net' },
+          // Automatic and not yet handed out: nothing is kept on the name.
+          { use: 'customer_access', source: 'automatic', base_url: 'https://alice.recued.net' },
+        ],
+      }),
+      runSetAddressUse: async () => addressUses(),
+    });
+    await panel.whenLoaded();
+
+    panel.openRemove('alice.recued.net');
+    const onRemove = findByAttr(host, HOSTNAMES_KEPT_WARNING_ATTR, 'alice.recued.net')!;
+    expect(textOf(onRemove)).toContain(
+      'alice.recued.net is the address kept for webhooks and Reception links. Removing it stops them',
+    );
+    panel.cancelRemove();
+
+    panel.openRemove('other.example.com');
+    expect(findByAttr(host, HOSTNAMES_KEPT_WARNING_ATTR)).toBeNull();
+    panel.cancelRemove();
+
+    panel.openUpdate('alice.recued.net');
+    const form = findByAttr(host, HOSTNAMES_UPDATE_FORM_ATTR, 'alice.recued.net')!;
+    expect(textOf(findByAttr(form, HOSTNAMES_KEPT_WARNING_ATTR)!)).toContain('Switching it off stops them');
+    panel.dispose();
+  });
+
+  it('leaves the section out on a server without the call, and shows any other failure', async () => {
+    const older = mountPanel({
+      runAddressUses: async () => {
+        throw new RpcError('unknown_method', 'Unknown rpc method: collection.hostname.addressUses', 404);
+      },
+    });
+    await older.panel.whenLoaded();
+    expect(findByAttr(older.host, HOSTNAMES_ADDRESSES_ATTR)).toBeNull();
+    older.panel.dispose();
+
+    const failing = mountPanel({
+      runAddressUses: async () => {
+        throw new RpcError('internal_error', 'the store is busy', 500);
+      },
+    });
+    await failing.panel.whenLoaded();
+    expect(textOf(findByAttr(failing.host, HOSTNAMES_ADDRESS_ERROR_ATTR)!)).toContain('the store is busy');
+    failing.panel.dispose();
+  });
+
+  it('reads the addresses again after a name is removed', async () => {
+    const runAddressUses = vi.fn<HostnamesAddressUsesCaller>(async () => addressUses());
+    const { panel } = mountPanel({
+      rows: [hostname('stale.example')],
+      runAddressUses,
+      runSetAddressUse: async () => addressUses(),
+    });
+    await panel.whenLoaded();
+    expect(runAddressUses).toHaveBeenCalledTimes(1);
+    panel.openRemove('stale.example');
+    await panel.confirmRemove();
+    await vi.waitFor(() => expect(runAddressUses).toHaveBeenCalledTimes(2));
+    panel.dispose();
+  });
+});
+
 describe('R27 delta-B — ddnsPauseWouldSelfDisconnect (fail-closed guard)', () => {
   it('BLOCKS (true) when the dialed host is the handle — incl. case + trailing dot + port', () => {
     expect(ddnsPauseWouldSelfDisconnect('wss://alice.recued.net:8443/ws', 'alice.recued.net')).toBe(true);
@@ -1034,6 +1261,29 @@ describe('D-152 P6 hostnames panel route mount', () => {
       findByAttr(host, HOSTNAMES_LOCAL_URL_ROW_ATTR, 'http://10.0.0.5:8443'),
     ).not.toBeNull();
     expect(findByAttr(host, HOSTNAMES_LOCAL_URL_KIND_ATTR, 'lan')).not.toBeNull();
+    route.dispose();
+  });
+
+  it('forwards the address-use callers into the mounted Hostnames panel', async () => {
+    const doc = makeFakeDocument();
+    const host = makeFakeElement('div');
+    const hostnamesAddressUsesCaller = vi.fn<HostnamesAddressUsesCaller>(async () => addressUses());
+    const hostnamesSetAddressUseCaller = vi.fn<HostnamesSetAddressUseCaller>(async () => addressUses());
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      ...requiredHostnameCallers(),
+      hostnamesAddressUsesCaller,
+      hostnamesSetAddressUseCaller,
+    });
+    const panel = route.hostnamesPanel()!;
+    await panel.whenLoaded();
+    expect(findByAttr(host, HOSTNAMES_ADDRESSES_ATTR)).not.toBeNull();
+    await panel.setAddressUse('reception', 'shop.example.com');
+    expect(hostnamesSetAddressUseCaller).toHaveBeenCalledWith({
+      use: 'reception', hostname: 'shop.example.com',
+    });
     route.dispose();
   });
 

@@ -87,7 +87,7 @@ const mintState = (
 const makeHarness = (
   opts: {
     now?: number;
-    serverPublicUrl?: string | null;
+    serverPublicUrl?: string | readonly string[] | null;
     stateServerUrl?: string;
     stateTs?: number;
     flowId?: string;
@@ -380,6 +380,46 @@ describe('D-165 vendor OAuth complete handler', () => {
     expect(res.status).toBe(400);
     expect(res.outcome).toBe('invalid_state');
     expect(h.flowStore.take('flow-wrong-server')).toEqual(h.flow);
+  });
+
+  /** The start rpc signs the address the provider returns to, and a server
+   *  may have several (a Pro address and a custom domain). Any of ITS OWN is
+   *  this server; anything else still is not. */
+  it('accepts a state minted for any of the server\'s own addresses', async () => {
+    const h = makeHarness({
+      flowId: 'flow-second-address',
+      serverPublicUrl: ['https://alice.recued.net', 'https://recued.example.com'],
+      stateServerUrl: 'https://recued.example.com',
+    });
+
+    const res = await h.complete({
+      method: 'POST',
+      code: 'auth-code',
+      state: h.state,
+      flow_id: 'flow-second-address',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.outcome).toBe('completed');
+  });
+
+  it('still rejects a state for an address the server does not have, without consuming the flow', async () => {
+    const h = makeHarness({
+      flowId: 'flow-not-ours',
+      serverPublicUrl: ['https://alice.recued.net', 'https://recued.example.com'],
+      stateServerUrl: 'https://other.example.com',
+    });
+
+    const res = await h.complete({
+      method: 'POST',
+      code: 'auth-code',
+      state: h.state,
+      flow_id: 'flow-not-ours',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.outcome).toBe('invalid_state');
+    expect(h.flowStore.take('flow-not-ours')).toEqual(h.flow);
   });
 
   it('returns flow_not_found for a valid state when no pending flow exists', async () => {

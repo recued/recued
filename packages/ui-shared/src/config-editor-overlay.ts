@@ -3,6 +3,13 @@
  *  route's auto-run Config editor, the run modal's per-row Schedule/Trigger
  *  Config editor, and the recipe-detail install-config editor.
  *
+ *  D-319 — it is also the switch-on form: a dish is a recipe switched on
+ *  with its settings, so the same editor can ask for the dish's NAME, say in
+ *  one sentence what will start it, offer "also on a schedule", and refuse to
+ *  confirm while a required setting is empty (`name`, `lead`, `schedules`,
+ *  `requireSettings`). Each is optional; a host that passes none gets the
+ *  editor it had.
+ *
  *  Self-contained: injects its own styles, owns a focus trap + Escape, and
  *  reads widget values into a config object (touched widgets only, so an
  *  untouched field never churns a redundant key). The overlay renders ONCE
@@ -20,7 +27,9 @@ import {
   readWidgetValue,
   renderVariableWidget,
   toFileRefIds,
+  isValidValueHint,
   toWidgetShape,
+  validateWidgetValue,
 } from './variable-widgets.js';
 import {
   FILE_REF_ARRAY_STYLES,
@@ -39,9 +48,18 @@ import {
   type RecordRefVariableSearch,
 } from './record-ref-variable.js';
 import { wireFocusTrap, type FocusTrapHandle } from './focus-trap.js';
+import {
+  wireMailTemplateVariables,
+  type MailTemplateVariableCallers,
+  type MailTemplateVariablesHandle,
+} from './mail-template-variable.js';
 
 const STYLES_MARKER = 'data-recued-config-editor-styles';
 const ACTION_ATTR = 'data-recued-config-editor-action';
+/** D-319 — the dish's name box, when the form asks for one. */
+export const CONFIG_EDITOR_NAME_ATTR = 'data-recued-config-editor-name';
+/** D-319 — the "Also on a schedule" choice, when the form offers one. */
+export const CONFIG_EDITOR_SCHEDULE_ATTR = 'data-recued-config-editor-schedule';
 
 const e = (v: unknown): string =>
   String(v)
@@ -169,6 +187,20 @@ const CONFIG_EDITOR_STYLES = `
   width: 36px;
   height: 36px;
 }
+/* D-315 — a template setting's own actions: open it, duplicate it to edit. */
+.config-editor-panel .var-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.config-editor-panel .var-actions [hidden] { display: none; }
+/* D-319 — the switch-on form: the dish's name, what starts it, a schedule. */
+.config-editor-panel .config-editor-name,
+.config-editor-panel .config-editor-schedule { display: grid; gap: 4px; font-size: 12px; font-weight: 600; color: var(--fg); }
+.config-editor-panel .config-editor-name input,
+.config-editor-panel .config-editor-schedule select {
+  box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 9px; background: var(--surface); color: var(--fg); font: inherit; font-weight: 400;
+}
+.config-editor-panel .config-editor-name input:focus,
+.config-editor-panel .config-editor-schedule select:focus { outline: none; border-color: var(--accent); }
+.config-editor-panel .config-editor-lead { margin: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--fg); }
 ${FILE_REF_ARRAY_STYLES}
 `;
 
@@ -178,6 +210,30 @@ const injectStyles = (doc: Document): void => {
   style.setAttribute(STYLES_MARKER, '');
   style.textContent = `${CONFIG_EDITOR_STYLES}\n${REF_PICKER_STYLES}`;
   doc.head.appendChild(style);
+};
+
+/** D-319 — the first required setting left empty, said as the owner would
+ *  fix it; `null` when every one is filled. Required is what the recipe
+ *  DECLARES as asked for: a labelled setting not marked optional (a
+ *  connection, a mail template), or one declared with no value (`null`). A
+ *  plain default — `''`, `0` — is the recipe's own value and never blocks. A
+ *  value not in the form's config is its declared default, as a run would
+ *  take it. */
+export const requiredSettingProblem = (
+  variables: Record<string, VariableDefault>,
+  config: Record<string, unknown>,
+): string | null => {
+  for (const [key, def] of Object.entries(variables)) {
+    const asked = def === null || (isValidValueHint(def) && def.optional !== true);
+    if (!asked) continue;
+    const shape = toWidgetShape(key, def ?? { label: key, type: 'text' } as VariableDefault, config[key]);
+    const value = Object.prototype.hasOwnProperty.call(config, key)
+      ? config[key]
+      : def !== null ? (def as { default?: unknown }).default : undefined;
+    const problem = validateWidgetValue(shape, value ?? '');
+    if (problem !== null) return `${shape.label}: ${problem}`;
+  }
+  return null;
 };
 
 // D-215 § 9e — `MISSING_FILE_PREFIX` / `fileRefDisplayLabel` moved to
@@ -213,9 +269,30 @@ export interface ConfigEditorOverlayOptions {
    *  tenancy names a customer AND a unit), so a single caller would have to
    *  guess which inventory the box means. */
   recordRefSearch?: RecordRefVariableSearch;
-  /** Fired on confirm with a snapshot of the collected config. A returned
-   * promise keeps the editor open, locked, and focus-owned until it settles. */
-  onConfirm: (config: Record<string, unknown>) => void | Promise<void>;
+  /** D-315 — the owner's mail templates. Present, a `mail_template` setting is
+   *  a list of them with "Open it" and "Duplicate to edit"; absent, a text box.
+   *  Opening one closes the editor: it leads away from it. */
+  mailTemplates?: MailTemplateVariableCallers;
+  /** D-319 — ask for the dish's name. `required` refuses an empty one (a
+   *  second dish of a recipe needs one to be told apart); otherwise an empty
+   *  name is `''`. Absent ⇒ no name box. */
+  name?: { readonly value: string; readonly required: boolean };
+  /** D-319 — one sentence under the settings saying what will start it
+   *  ("It starts when a parcel's state changes."). */
+  lead?: string;
+  /** D-319 — "Also on a schedule": the cadences offered, `No schedule` first.
+   *  Absent or empty ⇒ not offered. */
+  schedules?: ReadonlyArray<{ readonly label: string; readonly cron: string }>;
+  /** D-319 — refuse to confirm while a required setting is empty (a
+   *  connection, a mail template) — the dish would run without it. */
+  requireSettings?: boolean;
+  /** Fired on confirm with a snapshot of the collected config — and, for the
+   *  D-319 switch-on form, the name given and the schedule chosen. A returned
+   *  promise keeps the editor open, locked, and focus-owned until it settles. */
+  onConfirm: (
+    config: Record<string, unknown>,
+    extras: { readonly name?: string; readonly cron?: string },
+  ) => void | Promise<void>;
   /** Fired after the overlay detaches (any path) — host cleanup. */
   onClose?: () => void;
 }
@@ -248,6 +325,7 @@ export const wireConfigEditorOverlay = (
         : renderVariableWidget(toWidgetShape(key, def, config[key]), {
             fileRefPicker: opts.fileRefSearch !== undefined,
             recordRefPicker: opts.recordRefSearch !== undefined,
+            mailTemplatePicker: opts.mailTemplates !== undefined,
             idPrefix: 'cfg-edit-var',
           });
     })
@@ -263,7 +341,16 @@ export const wireConfigEditorOverlay = (
         <button type="button" class="config-editor-button" ${ACTION_ATTR}="cancel">Close</button>
       </header>
       ${opts.copy !== undefined ? `<p class="config-editor-copy">${e(opts.copy)}</p>` : ''}
+      ${opts.name !== undefined ? `<label class="config-editor-name">Name
+        <input type="text" ${CONFIG_EDITOR_NAME_ATTR} value="${e(opts.name.value)}" maxlength="120"
+          autocomplete="off"${opts.name.required ? ' required aria-required="true"' : ''}></label>` : ''}
       <div class="config-editor-fields">${widgetRows}</div>
+      ${opts.lead !== undefined ? `<p class="config-editor-lead">${e(opts.lead)}</p>` : ''}
+      ${opts.schedules !== undefined && opts.schedules.length > 0 ? `<label class="config-editor-schedule">Also on a schedule
+        <select ${CONFIG_EDITOR_SCHEDULE_ATTR}>
+          <option value="" selected>No schedule</option>
+          ${opts.schedules.map((option) => `<option value="${e(option.cron)}">${e(option.label)}</option>`).join('')}
+        </select></label>` : ''}
       <p class="config-editor-error" role="alert" hidden></p>
       <div class="config-editor-actions">
         <button type="button" class="config-editor-button config-editor-button--primary"
@@ -274,6 +361,7 @@ export const wireConfigEditorOverlay = (
   let trap: FocusTrapHandle | null = null;
   const refPickers: RefPickerHandle[] = [];
   const fileRefArrays: FileRefArrayHandle[] = [];
+  let mailTemplates: MailTemplateVariablesHandle | null = null;
   let destroyed = false;
   let confirming = false;
 
@@ -284,6 +372,8 @@ export const wireConfigEditorOverlay = (
     refPickers.length = 0;
     for (const list of fileRefArrays) list.destroy();
     fileRefArrays.length = 0;
+    mailTemplates?.destroy();
+    mailTemplates = null;
     trap?.release();
     trap = null;
     overlay.remove();
@@ -379,16 +469,26 @@ export const wireConfigEditorOverlay = (
     // D-314 — a required list with every box unticked is not saved: dropped, its
     // default would come back ticked; kept, the recipe would get no days.
     const listProblem = choiceListProblem(opts.variables, config);
-    if (listProblem !== null) {
+    // D-319 — a dish without a required setting would run without it.
+    const settingProblem = opts.requireSettings === true ? requiredSettingProblem(opts.variables, config) : null;
+    const nameBox = queryOverlay<HTMLInputElement>(`[${CONFIG_EDITOR_NAME_ATTR}]`);
+    const name = nameBox?.value.trim() ?? opts.name?.value.trim() ?? '';
+    const nameProblem = opts.name?.required === true && name === '' ? 'Give it a name to tell it apart.' : null;
+    const problem = listProblem ?? nameProblem ?? settingProblem;
+    if (problem !== null) {
       if (error !== null) {
         error.hidden = false;
-        error.textContent = listProblem;
+        error.textContent = problem;
       }
       return;
     }
+    const cron = queryOverlay<HTMLSelectElement>(`[${CONFIG_EDITOR_SCHEDULE_ATTR}]`)?.value ?? '';
     let outcome: void | Promise<void>;
     try {
-      outcome = opts.onConfirm({ ...config });
+      outcome = opts.onConfirm({ ...config }, {
+        ...(opts.name !== undefined ? { name } : {}),
+        ...(cron !== '' ? { cron } : {}),
+      });
     } catch {
       showConfirmFailure();
       return;
@@ -434,6 +534,19 @@ export const wireConfigEditorOverlay = (
   });
 
   doc.body.appendChild(overlay);
+
+  if (opts.mailTemplates !== undefined) {
+    const callers = opts.mailTemplates;
+    mailTemplates = wireMailTemplateVariables(overlay, {
+      callers: {
+        ...callers,
+        ...(callers.open !== undefined
+          ? { open: (template_id: string) => { destroy(); callers.open!(template_id); } }
+          : {}),
+      },
+      onChange: (key, value) => { config[key] = value; },
+    });
+  }
 
   // `record_ref` is independent of the owner's file inventory. Keep its one
   // upgrade path in the shared helper so a record-only host still gets a live

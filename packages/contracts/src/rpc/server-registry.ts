@@ -12,6 +12,10 @@
  */
 
 import type { RpcMethodSpec } from './types.js';
+import type {
+  MailWorkCreateRequest, MailWorkDeleteRequest, MailWorkDeleteResult, MailWorkDetail, MailWorkListRequest, MailWorkListResult,
+  MailWorkSearchResult, MailWorkUpdateRequest,
+} from '../mail-work.js';
 import type { ListPageFields, ListPageRequest } from './list-page.js';
 import type { MissedSchedulePolicy } from '../missed-schedule-policy.js';
 import type { SpreadsheetImportDeclaration } from '../spreadsheet-import.js';
@@ -32,6 +36,7 @@ import type {
   MailFactTypeSpec,
   MailTemplate,
   MailTemplateCreateRequest,
+  MailTemplateDefinition,
   MailTemplateDraftRequest,
   MailTemplateDraftResult,
   MailTemplatePreviewRequest,
@@ -387,6 +392,8 @@ import type {
 } from '../d148-pro-auth.js';
 import type {
   HostnameAddRequest,
+  HostnameAddressUsesResponse,
+  HostnameSetAddressUseRequest,
   HostnameGetRequest,
   HostnameGetResponse,
   HostnameListResponse,
@@ -743,33 +750,36 @@ export interface ServerSchedule {
    *  (`next_run_at` in the past).
    *
    *  ⚠ Same name as `ServerMissedRunEntry.missed_cycles` and a
-   *  DIFFERENT granularity: that one is per RECIPE (the largest across
+   *  DIFFERENT granularity: that one is per DISH (the largest across
    *  its waiting schedules), this is this schedule alone. */
   missed_cycles?: number | 'unknown';
-  /** D-179 P2 — standing dish this schedule dispatches as. */
+  /** D-319 — the dish this schedule belongs to: it fires as the dish, with
+   *  the dish's settings. Absent only on rows written before D-319. */
   dish_id?: string;
-  /** D-179 — the config the schedule's headless fires use, read from the
-   *  bound dish at list time (absent ⇒ fires on recipe defaults). Surfaced
-   *  so the run modal's per-row Config editor can pre-fill the widgets. */
+  /** The settings of the schedule's dish, read at list time — shown with
+   *  the row. A schedule has no settings of its own (D-319). */
   config_overlay?: Record<string, unknown>;
 }
 
-/** D-266 — one line of the missed-run card. Keyed by RECIPE, not by
- *  schedule: two schedules of one recipe that both missed produce one
- *  line and, on `run`, one fire. */
+/** D-266 — one line of the missed-run card. Keyed by DISH (D-319), not by
+ *  schedule: two schedules of one dish that both missed produce one line
+ *  and, on `run`, one fire. Two dishes of one recipe are two lines. */
 export interface ServerMissedRunEntry {
   recipe_id: string;
+  /** D-319 — the dish its schedules belong to; absent for rows written
+   *  before D-319, which group by recipe. */
+  dish_id?: string;
   /** Display name when the recipe is still installed; absent when it
    *  is not, in which case the card shows the id. */
   recipe_name?: string;
-  /** Every schedule of this recipe waiting on an answer. */
+  /** Every schedule of this dish waiting on an answer. */
   schedule_ids: string[];
   /** Full cycles missed BEYOND the single catch-up on offer. The count
    *  is the record of the outage, not the number of runs offered. */
   missed_cycles: number | 'unknown';
   /** The count stopped at its scan limit — render "N+", never N. */
   missed_cycles_capped?: boolean;
-  /** When this recipe last actually ran. */
+  /** When this dish last actually ran. */
   last_run_at: number;
 }
 
@@ -1468,6 +1478,13 @@ export type ServerRpcRegistry = {
   // D-261 owner control plane. Never exported through the MCP trampoline.
   'preapproval.capabilities': RpcMethodSpec<void, PreapprovalCapabilities>;
   'mail.drafts.create': RpcMethodSpec<MailDraftCreateRequest, MailDraft>;
+  'mail.work.list': RpcMethodSpec<MailWorkListRequest | undefined, MailWorkListResult>;
+  'mail.work.get': RpcMethodSpec<{ id: string }, MailWorkDetail>;
+  'mail.work.create': RpcMethodSpec<MailWorkCreateRequest, MailWorkDetail>;
+  'mail.work.update': RpcMethodSpec<MailWorkUpdateRequest, MailWorkDetail>;
+  'mail.work.review': RpcMethodSpec<{ id: string; expected_revision: number }, MailWorkDetail>;
+  'mail.work.search': RpcMethodSpec<{ query: string }, MailWorkSearchResult>;
+  'mail.work.delete': RpcMethodSpec<MailWorkDeleteRequest, MailWorkDeleteResult>;
   'mail.drafts.get': RpcMethodSpec<{ draft_id: string }, MailDraft>;
   'mail.drafts.list': RpcMethodSpec<{ cursor?: string; limit?: number }, { drafts: MailDraftSummary[]; next_cursor: string | null }>;
   'mail.drafts.update': RpcMethodSpec<MailDraftUpdateRequest, MailDraft>;
@@ -1501,8 +1518,19 @@ export type ServerRpcRegistry = {
   'mail_fact.template.get': RpcMethodSpec<{ template_id: string }, { template: MailTemplate | null }>;
   'mail_fact.template.create': RpcMethodSpec<MailTemplateCreateRequest, { template: MailTemplate }>;
   'mail_fact.template.update': RpcMethodSpec<MailTemplateUpdateRequest, { template: MailTemplate }>;
-  /** Deletes the template only: facts already read stay with their email. */
+  /** Deletes the template only: facts already read stay with their email. A
+   *  template a recipe brought is refused: it goes with the recipe (§5.2). */
   'mail_fact.template.delete': RpcMethodSpec<{ template_id: string }, { deleted: boolean }>;
+  /** §5.2 — "Duplicate to edit": the owner's own copy of a template, never
+   *  updated by a recipe. It reads that mail in the original's place (ruling
+   *  31), and every recipe setting that held the original holds the copy. */
+  'mail_fact.template.duplicate': RpcMethodSpec<{ template_id: string }, { template: MailTemplate }>;
+  /** §5.2 — one of the owner's templates as a recipe's `starter`, for the
+   *  author's side in Kitchen: what belongs to this server dropped (ids,
+   *  health, times), and refused, naming where, if it holds anything of their
+   *  mail — their own addresses, a sender they know, an address, a phone
+   *  number or a long run of digits (`details.problems`). */
+  'mail_fact.template.starter': RpcMethodSpec<{ template_id: string }, { starter: MailTemplateDefinition }>;
   /** The standards pass's per-type switches (ruling 10): every standards type,
    *  on unless the owner switched it off. A switch applies to new mail. */
   'mail_fact.standards.get': RpcMethodSpec<void | undefined, { standards: MailFactStandardsSetting[] }>;
@@ -1615,13 +1643,15 @@ export type ServerRpcRegistry = {
       cron_expression?: string;
       run_at?: number;
       enabled?: boolean;
-      /** D-179 P2 — standing dish this schedule dispatches as. */
+      /** D-319 — the dish this schedule belongs to; it runs with the dish's
+       *  settings. Absent ⇒ the recipe's main dish, made (on, with
+       *  `config_overlay`) when the recipe has none. */
       dish_id?: string;
       /** D-266 — missed-schedule policy. Absent ⇒ `'auto'`. */
       missed_policy?: MissedSchedulePolicy;
-      /** D-179 — config overlay for the headless fires this schedule
-       *  drives. Non-empty + no explicit `dish_id` ⇒ the server mints a
-       *  managed dish to hold it (dissolved on `schedules.delete`). */
+      /** D-319 — only for a schedule that makes its recipe's main dish (no
+       *  `dish_id`, no dish yet): that dish's settings. Refused otherwise —
+       *  settings belong to the dish. */
       config_overlay?: Record<string, unknown>;
       [k: string]: unknown;
     },
@@ -1634,10 +1664,8 @@ export type ServerRpcRegistry = {
       enabled?: unknown;
       /** D-266 — change the missed-schedule policy in place. */
       missed_policy?: unknown;
-      /** D-179 — edit the config the schedule's headless fires use. A
-       *  changed overlay mints a new managed dish + dissolves the prior
-       *  (immutable — one `dish_id` = one config); `{}` clears. */
-      config_overlay?: Record<string, unknown>;
+      /** D-319 — move the schedule to another dish of its recipe. */
+      dish_id?: unknown;
     },
     { schedule: ServerSchedule }
   >;
@@ -1649,13 +1677,14 @@ export type ServerRpcRegistry = {
    *  Lists only schedules whose owner chose `missed_policy: 'ask'`
    *  and whose miss is stale enough to be worth a question. */
   'schedules.missed': RpcMethodSpec<void, ServerMissedRunReport>;
-  /** D-266 — answer the card. `run` fires ONE catch-up per recipe (the
-   *  most recent cycle; a brief supersedes a brief) and records the
-   *  recipe's other waiting schedules as skipped; `skip` records them
-   *  all skipped. Omitting `recipe_ids` answers every entry, which is
-   *  what the card's [Run them] / [Skip them] buttons send. */
+  /** D-266 — answer the card. `run` fires ONE catch-up per dish (D-319;
+   *  the most recent cycle — a brief supersedes a brief) and records the
+   *  dish's other waiting schedules as skipped; `skip` records them all
+   *  skipped. `recipe_ids` answers every dish of those recipes, `dish_ids`
+   *  those dishes; omitting both answers every entry, which is what the
+   *  card's [Run them] / [Skip them] buttons send. */
   'schedules.answerMissed': RpcMethodSpec<
-    { answer: 'run' | 'skip'; recipe_ids?: string[] },
+    { answer: 'run' | 'skip'; recipe_ids?: string[]; dish_ids?: string[] },
     { ran: string[]; skipped: string[] }
   >;
 
@@ -1673,8 +1702,9 @@ export type ServerRpcRegistry = {
     { recipe_id?: string },
     { dishes: Dish[]; last_runs?: Record<string, DishLastRun> }
   >;
-  /** Mint a standing dish. `is_default: true` claims the recipe's
-   *  single default-dish slot (`conflict` when one already exists). */
+  /** D-319 — switch a recipe on: a dish with these settings. The recipe's
+   *  first dish is its main one. The triggers the recipe declares are made
+   *  for it, and switched on with it (`enabled`, default true). */
   'dishes.create': RpcMethodSpec<
     {
       recipe_id: string;
@@ -1682,16 +1712,23 @@ export type ServerRpcRegistry = {
       name?: string;
       config_overlay?: Record<string, unknown>;
       enabled?: boolean;
-      is_default?: boolean;
       group_id?: string;
       [k: string]: unknown;
     },
     { dish: Dish }
   >;
+  /** D-319 — what a new dish of this recipe starts from beyond the recipe's
+   *  own variable defaults: the template each `mail_template` setting holds
+   *  after install (D-315 §5.2 — the recipe's own when it is on, else the
+   *  owner's twin that kept it off). */
+  'dishes.defaults': RpcMethodSpec<
+    { recipe_id: string },
+    { config_overlay: Record<string, unknown> }
+  >;
   /** D-259 §6.1 — owner promotion from a canonical chat/run-log address.
    * The server re-reads recipe_id + config_snapshot from the terminal audit
-   * anchor; neither is accepted from the caller. Always mints a new,
-   * non-default standing dish. */
+   * anchor; neither is accepted from the caller. Always mints a new standing
+   * dish — the recipe's main one when it is its first (D-319). */
   'dishes.createFromRun': RpcMethodSpec<
     {
       run_id: string;
@@ -1700,51 +1737,37 @@ export type ServerRpcRegistry = {
     },
     { dish: Dish }
   >;
+  /** D-319 — settings change in place, from the dish's next run; the
+   *  triggers narrowed to a template setting follow it. `enabled` switches
+   *  every trigger, schedule and timer of the dish — on re-arms any the
+   *  server stopped. `main: true` makes it the recipe's main dish. */
   'dishes.update': RpcMethodSpec<
     {
       dish_id: string;
       name?: unknown;
       config_overlay?: unknown;
       enabled?: unknown;
+      main?: unknown;
       /** `null` detaches the dish from its group. */
       group_id?: unknown;
     },
     { dish: Dish }
   >;
-  /** Delete a standing dish + its continuity snapshot. */
+  /** D-319 — remove a dish: its triggers, schedules and run-to-run memory
+   *  go with it. Removing the main dish makes the oldest remaining one
+   *  main. */
   'dishes.delete': RpcMethodSpec<{ dish_id: string }, { deleted: true }>;
-  /** D-215 slice 5 — one dish's run history, newest first.
+  /** D-215 slice 5 — one dish's run history, newest first, each run with
+   *  the settings it ran with (D-319).
    *
    *  Keyed on `dish_id` ALONE and consulting no dish store, so it keeps
-   *  answering for a RETIRED dish (auto-run versioning dissolves the prior
-   *  dish on every config change; a one-shot retires itself on success).
-   *  An unknown id is an empty list, never an error — "this dish has no
-   *  runs" and "this dish is gone" are both legitimate answers here and
-   *  the caller distinguishes them by whether `dishes.list` still has the
-   *  row. */
+   *  answering for a REMOVED dish. An unknown id is an empty list, never an
+   *  error — "this dish has no runs" and "this dish is gone" are both
+   *  legitimate answers here and the caller distinguishes them by whether
+   *  `dishes.list` still has the row. */
   'dishes.history': RpcMethodSpec<
     { dish_id: string; limit?: number },
     { runs: DishRunRow[] }
-  >;
-
-  // ── Recipe install config (D-179 — the recipe's default-dish overlay)
-  /** Read a recipe's INSTALL config — the overlay on its `is_default`
-   *  dish, applied as a base under per-run config for dishless runs. `{}`
-   *  when unset. */
-  'recipe_config.get': RpcMethodSpec<
-    { recipe_id: string },
-    { config_overlay: Record<string, unknown> }
-  >;
-  /** Set a recipe's install config (mutable — the default dish is a config
-   *  SOURCE, never dispatched-as, so editing in place is audit-safe).
-   *  Find-or-creates the `is_default` dish; an empty `{}` clears it. */
-  'recipe_config.set': RpcMethodSpec<
-    {
-      recipe_id: string;
-      publisher_id?: string;
-      config_overlay: Record<string, unknown>;
-    },
-    { config_overlay: Record<string, unknown> }
   >;
 
   // ── Dish groups (D-179 P3 — workflow containers) ─────────────────
@@ -1782,21 +1805,21 @@ export type ServerRpcRegistry = {
    *  presents the same `enabled` arm/disarm model as event-triggers
    *  and schedules. */
   'auto_run.list': RpcMethodSpec<void, { entries: AutoRunStatusEntry[] }>;
-  /** Flip the per-recipe auto-run user toggle and/or set its config.
-   *  `enabled: true` also clears any tripped circuit (re-arming a recipe
-   *  the breaker shut off is the same user gesture as un-pausing it) and
-   *  refreshes the scheduler roster so the change takes effect without
-   *  restart. `config_overlay`, when provided, is the desired config for
-   *  the headless fires: the server keeps it on a managed IMMUTABLE dish
-   *  (one `dish_id` = one config), minting a new dish + dissolving the
-   *  superseded one whenever it differs — so the audit never shows a
-   *  `dish_id` with drifting results; an empty `{}` clears config (fires
-   *  on recipe defaults). Both fields optional — omit `enabled` for a
-   *  config-only edit. Unknown recipe id or a recipe without `auto_run`
-   *  → `not_found`. */
+  /** D-319 — switch one dish's auto-run timer. `enabled: true` also clears
+   *  a tripped circuit (re-arming a timer the breaker shut off is the same
+   *  gesture as un-pausing it) and refreshes the roster so the change takes
+   *  effect without restart. A dish's switch (`dishes.update`) writes its
+   *  timer too; this is the timer alone.
+   *
+   *  Naming only a `recipe_id` acts on its MAIN dish, made (on, with
+   *  `config_overlay`) when the recipe has none — how the palette's and the
+   *  recipe page's Arm keep working. Settings sent for a recipe whose main
+   *  dish holds others are refused: settings belong to the dish. A recipe
+   *  without `auto_run`, or a dish of another recipe → `not_found`. */
   'auto_run.update': RpcMethodSpec<
     {
-      recipe_id: string;
+      dish_id?: string;
+      recipe_id?: string;
       enabled?: boolean;
       config_overlay?: Record<string, unknown>;
     },
@@ -2607,7 +2630,12 @@ export type ServerRpcRegistry = {
    *  Owner-only / local-UI — off the MCP surface via the `recipe.` reserved
    *  prefix. */
   'recipe.installBySlug': RpcMethodSpec<
-    { slug: string },
+    {
+      slug: string;
+      /** D-315 §5.2 — which template stays on where a starter reads the same
+       *  mail as one already on. Absent ⇒ the recipe's. */
+      mail_template_choices?: ReadonlyArray<import('../mail-facts.js').MailTemplateInstallChoice>;
+    },
     {
       result:
         | {
@@ -2616,6 +2644,9 @@ export type ServerRpcRegistry = {
             version: number;
             name: string;
             publisher_id: string;
+            /** D-315 §5.2 — the templates the recipe brought: created, or
+             *  re-applied on an update. Absent when it brings none. */
+            mail_templates?: import('../mail-facts.js').MailTemplateInstallOutcome[];
             /** Run-time PII posture — same projection `recipe.save` returns.
              *  Present only when the recipe has something to disclose. */
             pii?: {
@@ -4235,6 +4266,23 @@ export type ServerRpcRegistry = {
     CustomDomainIssuanceReadinessResponse
   >;
 
+  /** The addresses this server hands out for things someone keeps — a
+   *  webhook address, a Reception link, a customer's MCP / gateway address —
+   *  who decided each, the names that can be picked, the best address for
+   *  links right now, and how many webhooks a move of the webhooks address
+   *  would affect. */
+  'collection.hostname.addressUses': RpcMethodSpec<
+    void,
+    HostnameAddressUsesResponse
+  >;
+
+  /** Keep one name for a use, or go back to automatic (`hostname: null`).
+   *  Only a name in `choices` is accepted. Returns the new state. */
+  'collection.hostname.setAddressUse': RpcMethodSpec<
+    HostnameSetAddressUseRequest,
+    HostnameAddressUsesResponse
+  >;
+
   /** Probe an existing connection and persist its fresh health snapshot.
    *  API connections run an authenticated HTTP reachability check; MCP
    *  connections initialize + enumerate tools over SSE, WebSocket, or stdio;
@@ -5349,6 +5397,13 @@ export type ServerRpcRegistry = {
        *  if a later version brings the setting back. `recipe` is the recipe's name,
        *  `setting` the label the owner saved it under. Absent when none. */
       settings_no_longer_used?: Array<{ recipe_id: string; recipe: string; setting: string }>;
+      /** D-315 §5.2 — the templates the pack's recipes bring, and where one
+       *  reads the same mail as a template already on, which stays on. Absent
+       *  when none. */
+      mail_templates?: import('../mail-facts.js').MailTemplateInstallPreview[];
+      /** D-315 §5.2 — for each recipe that starts on facts, where they would
+       *  come from here. Absent when none does. */
+      mail_fact_sources?: import('../mail-facts.js').MailFactSourcesPreview[];
     }
   >;
 
@@ -5389,6 +5444,9 @@ export type ServerRpcRegistry = {
        *  pack the install does not bring in, or the pack being installed (its own
        *  choice is `install_scope`), is refused. */
       dependency_install_scopes?: ReadonlyArray<import('../bulk-pack.js').PackDependencyInstallScope>;
+      /** D-315 §5.2 — the owner's answer to each `packs.install_preview`
+       *  `mail_templates[].twin`: which template stays on. Absent ⇒ the recipe's. */
+      mail_template_choices?: ReadonlyArray<import('../mail-facts.js').MailTemplateInstallChoice>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -5436,6 +5494,8 @@ export type ServerRpcRegistry = {
       expected_manifest_hash?: string;
       /** D-310 — forwarded to `packs.install`. See its `dependency_install_scopes`. */
       dependency_install_scopes?: ReadonlyArray<import('../bulk-pack.js').PackDependencyInstallScope>;
+      /** D-315 §5.2 — forwarded to `packs.install`. See its `mail_template_choices`. */
+      mail_template_choices?: ReadonlyArray<import('../mail-facts.js').MailTemplateInstallChoice>;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -6224,12 +6284,13 @@ export type ServerRpcRegistry = {
       on?: string;
       fields?: string[];
       where?: Record<string, string | number | boolean>;
-      /** D-179 P2 — standing dish to dispatch as (replaces the retired
-       *  per-row `config_patch` override). */
+      /** D-319 — the dish this trigger belongs to; it runs with the dish's
+       *  settings. Absent ⇒ the recipe's main dish, made (on, with
+       *  `config_overlay`) when the recipe has none. */
       dish_id?: string;
-      /** D-179 — config overlay for the headless fires this trigger
-       *  drives. Non-empty + no explicit `dish_id` ⇒ the server mints a
-       *  managed dish to hold it (dissolved on `triggers.delete`). */
+      /** D-319 — only for a trigger that makes its recipe's main dish (no
+       *  `dish_id`, no dish yet): that dish's settings. Refused otherwise —
+       *  settings belong to the dish. */
       config_overlay?: Record<string, unknown>;
       watch_interval_ms?: number;
       enabled?: boolean;
@@ -6245,13 +6306,9 @@ export type ServerRpcRegistry = {
       on?: string;
       fields?: string[];
       where?: Record<string, string | number | boolean>;
-      /** D-179 P2 — re-point / detach (null clears) the dish binding. */
-      dish_id?: string | null;
-      /** D-179 — edit the config the trigger's headless fires use. A
-       *  changed overlay mints a new managed dish + dissolves the prior
-       *  (immutable — one `dish_id` = one config); `{}` clears. Ignored
-       *  when an explicit `dish_id` is in the same call (that wins). */
-      config_overlay?: Record<string, unknown>;
+      /** D-319 — move the owner's trigger to another dish of its recipe. A
+       *  recipe's own trigger belongs to the dish it was made for. */
+      dish_id?: string;
       watch_interval_ms?: number | null;
     },
     { trigger: EventTrigger }
@@ -6769,6 +6826,13 @@ export type ServerRpcRegistry = {
        * validates the same-session consumed action and derives run
        * correlation before stamping it on the durable Chat turn. */
       data_diagnosis?: import('../chat.js').ChatDataDiagnosisRequest;
+      /** Ask for a turn that may only read: only `read`-classified tools are
+       * offered, and any other call is refused before dispatch. Narrowing
+       * only — it can never widen what a turn may do. Sent by Follow this
+       * work for its investigation request. ⚠ A server older than this field
+       * ignores it (`chat.send` copies the fields it knows), so the turn runs
+       * with the ordinary tool set there. */
+      read_only?: boolean;
     },
     {
       turn_id: string;
@@ -7843,6 +7907,13 @@ export interface TlsDomainUploadErrorDetails {
 export const SERVER_RPC_METHODS = [
   'preapproval.capabilities',
   'mail.drafts.create',
+  'mail.work.list',
+  'mail.work.get',
+  'mail.work.create',
+  'mail.work.update',
+  'mail.work.review',
+  'mail.work.search',
+  'mail.work.delete',
   'mail.drafts.get',
   'mail.drafts.list',
   'mail.drafts.update',
@@ -7868,6 +7939,8 @@ export const SERVER_RPC_METHODS = [
   'mail_fact.template.create',
   'mail_fact.template.update',
   'mail_fact.template.delete',
+  'mail_fact.template.duplicate',
+  'mail_fact.template.starter',
   'mail_fact.standards.get',
   'mail_fact.standards.set',
   'mail_fact.facts.list',
@@ -7910,8 +7983,7 @@ export const SERVER_RPC_METHODS = [
   'dishes.update',
   'dishes.delete',
   'dishes.history',
-  'recipe_config.get',
-  'recipe_config.set',
+  'dishes.defaults',
   'dish_groups.list',
   'dish_groups.create',
   'dish_groups.update',
@@ -8208,6 +8280,9 @@ export const SERVER_RPC_METHODS = [
   'collection.hostname.preflight',
   // D-235 P2 — the composed issuance gate.
   'collection.hostname.issuanceReadiness',
+  // The addresses handed out for things someone keeps, and the owner's picks.
+  'collection.hostname.addressUses',
+  'collection.hostname.setAddressUse',
   // D-129 Phase 1.2 — vendor OAuth code-exchange.
   'collection.connection.completeVendorOAuth',
   // D-148 § A.12 / D-165 enroll-host #1 — vendor OAuth-start.

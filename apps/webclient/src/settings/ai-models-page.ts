@@ -256,6 +256,8 @@ interface FreePoolAddDraft {
 
 interface EmbeddingsSlotDraft {
   provider: string;
+  /** The provider's NAME; `provider` is the protocol, as on a chat slot. */
+  providerName: string;
   model: string;
   baseUrl: string;
   apiKey: string;
@@ -289,8 +291,32 @@ const SLOT_PROTOCOLS: ReadonlyArray<{ id: string; label: string; short: string }
   { id: 'google', label: 'Google Gemini', short: 'Google Gemini' },
 ];
 
+/** The protocols the embeddings and transcription slots can use. Anthropic
+ *  makes neither an embedding model nor a transcription one, and its adapters
+ *  for both refuse every call, so a slot saved as Anthropic could never
+ *  answer. The OpenAI-compatible label names no services here: not every
+ *  service in the chat list's examples offers these. */
+const DEDICATED_SLOT_PROTOCOLS: ReadonlyArray<{ id: string; label: string; short: string }> = [
+  { id: 'openai', label: 'OpenAI', short: 'OpenAI' },
+  {
+    id: 'openai-compatible',
+    label: 'OpenAI-compatible (another service, or your own server)',
+    short: 'OpenAI-compatible',
+  },
+  { id: 'google', label: 'Google Gemini', short: 'Google Gemini' },
+];
+
 const slotProtocolShortLabel = (id: string): string =>
   SLOT_PROTOCOLS.find((protocol) => protocol.id === id)?.short ?? id;
+
+/** How a saved slot reads on its card: the owner's name for the service, then
+ *  the protocol ("Groq (OpenAI-compatible)"), or the protocol alone. */
+const savedSlotSource = (slot: LlmSlotRecord): string => {
+  const protocol = asString(slot.provider);
+  const name = asString(slot.provider_name);
+  if (name.length > 0) return `${name} (${slotProtocolShortLabel(protocol)})`;
+  return protocol.length > 0 ? slotProtocolShortLabel(protocol) : 'provider?';
+};
 
 /** Said when a blank key would not reach the endpoint: the saved key is bound
  *  to the protocol and base URL it was saved with, and is never sent to a new
@@ -565,6 +591,9 @@ export interface AiModelsPageMount {
    *  A recipe/housekeeping source only — never a chat model-select option. */
   saveEmbeddingsSlot(patch: {
     provider: string;
+    /** As on `saveByokSlot`: present sets it (blank clears it), absent leaves
+     *  the stored one alone. */
+    provider_name?: string;
     model: string;
     api_key?: string;
     base_url?: string;
@@ -575,6 +604,9 @@ export interface AiModelsPageMount {
    *  model, which transcribes itself). Never a chat model-select option. */
   saveTranscriptionSlot(patch: {
     provider: string;
+    /** As on `saveByokSlot`: present sets it (blank clears it), absent leaves
+     *  the stored one alone. */
+    provider_name?: string;
     model: string;
     api_key?: string;
     base_url?: string;
@@ -1002,6 +1034,32 @@ const appendSelect = (
   return select;
 };
 
+/** The Protocol choice. A value that is not one of `protocols` — nothing
+ *  chosen yet, or Anthropic saved on a slot that cannot use it — starts on a
+ *  placeholder, so nothing is chosen for the owner. ⚠ The placeholder is
+ *  also the select's VALUE then: a browser shows a select set to a value no
+ *  option has as blank. */
+const appendProtocolSelect = (
+  doc: Document,
+  parent: HTMLElement,
+  protocols: ReadonlyArray<{ id: string; label: string }>,
+  value: string,
+  attrs: ReadonlyArray<readonly [string, string]>,
+): HTMLSelectElement => {
+  const known = protocols.some((protocol) => protocol.id === value);
+  return appendSelect(
+    doc,
+    parent,
+    'Protocol',
+    known ? value : '',
+    [
+      ...(known ? [] : [{ value: '', label: 'Choose a protocol' }]),
+      ...protocols.map((protocol) => ({ value: protocol.id, label: protocol.label })),
+    ],
+    attrs,
+  );
+};
+
 /** What stops a BYOK slot's or a free-pool entry's draft from working, in the
  *  words the form shows, or null. Checked before Save and before Test so the
  *  answer lands under the button that asked, without a round trip. The server
@@ -1010,8 +1068,9 @@ const appendSelect = (
 const sourceDraftProblem = (
   saved: LlmSlotRecord | null | undefined,
   draft: { protocol: string; model: string; baseUrl: string; apiKey: string },
+  protocols: ReadonlyArray<{ id: string }> = SLOT_PROTOCOLS,
 ): string | null => {
-  if (!SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.protocol)) {
+  if (!protocols.some((protocol) => protocol.id === draft.protocol)) {
     return 'Choose a protocol.';
   }
   if (draft.model.trim().length === 0) return 'Enter a model.';
@@ -1410,6 +1469,7 @@ export const mountAiModelsPage = (
     ) return;
     embeddingsSlotSavePending = true;
     actionError = null;
+    saveErrors.delete('embeddings_slot');
     render();
     try {
       await api.saveEmbeddingsSlot(patch);
@@ -1419,7 +1479,8 @@ export const mountAiModelsPage = (
     } catch (err) {
       if (disposed) return;
       embeddingsSlotSavePending = false;
-      actionError = stringifyError(err);
+      // Under the card's buttons, as on a chat slot — not the page banner.
+      saveErrors.set('embeddings_slot', stringifyError(err));
       render();
     }
   };
@@ -1434,6 +1495,7 @@ export const mountAiModelsPage = (
     ) return;
     transcriptionSlotSavePending = true;
     actionError = null;
+    saveErrors.delete('transcription_slot');
     render();
     try {
       await api.saveTranscriptionSlot(patch);
@@ -1462,7 +1524,8 @@ export const mountAiModelsPage = (
     } catch (err) {
       if (disposed) return;
       transcriptionSlotSavePending = false;
-      actionError = stringifyError(err);
+      // Under the card's buttons, as on a chat slot — not the page banner.
+      saveErrors.set('transcription_slot', stringifyError(err));
       render();
     }
   };
@@ -1798,16 +1861,11 @@ export const mountAiModelsPage = (
     card.setAttribute(AI_MODELS_CONTROL_ATTR, slotKey);
     appendHeading(doc, card, 'h4', title);
     renderUsageLine(card, slotKey);
-    const savedProtocol = asString(slot?.provider);
-    const savedName = asString(slot?.provider_name);
-    const savedSource = savedName.length > 0
-      ? `${savedName} (${slotProtocolShortLabel(savedProtocol)})`
-      : (savedProtocol.length > 0 ? slotProtocolShortLabel(savedProtocol) : 'provider?');
     appendText(
       doc,
       card,
       slot
-        ? ` ${savedSource} / ${asString(slot.model) || 'model?'}`
+        ? ` ${savedSlotSource(slot)} / ${asString(slot.model) || 'model?'}`
         : ' Not set up.',
     );
     // The provider's NAME is free text and display only; it is offered only
@@ -1822,22 +1880,10 @@ export const mountAiModelsPage = (
       : null;
     // The PROTOCOL is a choice: it picks the adapter, so free text here was
     // refused at save for anything but the four ids the server speaks.
-    const provider = appendSelect(
-      doc,
-      card,
-      'Protocol',
-      draft.provider,
-      [
-        ...(SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.provider)
-          ? []
-          : [{ value: '', label: 'Choose a protocol' }]),
-        ...SLOT_PROTOCOLS.map((protocol) => ({ value: protocol.id, label: protocol.label })),
-      ],
-      [
-        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
-        ['aria-label', `${title} protocol`],
-      ],
-    );
+    const provider = appendProtocolSelect(doc, card, SLOT_PROTOCOLS, draft.provider, [
+      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
+      ['aria-label', `${title} protocol`],
+    ]);
     const model = appendInput(doc, card, 'Model', draft.model, [
       [AI_MODELS_SLOT_FIELD_ATTR, fieldId('model')],
       ['aria-label', `${title} model`],
@@ -2211,6 +2257,7 @@ export const mountAiModelsPage = (
     const clearingThis = slotClearPendingKey === 'embeddings_slot';
     const draft = embeddingsSlotDraft ?? {
       provider: asString(slot?.provider),
+      providerName: asString(slot?.provider_name),
       model: asString(slot?.model),
       baseUrl: asString(slot?.base_url),
       apiKey: '',
@@ -2224,13 +2271,30 @@ export const mountAiModelsPage = (
       doc,
       card,
       slot
-        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        ? ` ${savedSlotSource(slot)} / ${asString(slot.model) || 'model?'}`
         : ' Not set up.',
     );
-    const provider = appendInput(doc, card, 'Provider', draft.provider, [
-      [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'],
-      ['aria-label', 'Embeddings slot provider'],
-    ]);
+    // Name and protocol, as on a chat slot. This field took free text the
+    // server refused for anything but its four protocol ids, one of which
+    // (Anthropic) has no embedding model.
+    const providerName = slotProviderNameSupported
+      ? appendInput(doc, card, 'Provider', draft.providerName, [
+        ['placeholder', 'Mistral, my Ollama…'],
+        ['maxlength', '64'],
+        [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider-name'],
+        ['aria-label', 'Embeddings slot provider name'],
+      ])
+      : null;
+    const provider = appendProtocolSelect(
+      doc,
+      card,
+      DEDICATED_SLOT_PROTOCOLS,
+      draft.provider,
+      [
+        [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'],
+        ['aria-label', 'Embeddings slot protocol'],
+      ],
+    );
     const model = appendInput(
       doc,
       card,
@@ -2243,6 +2307,7 @@ export const mountAiModelsPage = (
       ],
     );
     const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+      ['placeholder', 'Needed for OpenAI-compatible'],
       [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'base-url'],
       ['aria-label', 'Embeddings slot base URL'],
     ]);
@@ -2263,22 +2328,44 @@ export const mountAiModelsPage = (
     const syncDraft = (): void => {
       embeddingsSlotDraft = {
         provider: provider.value,
+        providerName: providerName?.value ?? draft.providerName,
         model: model.value,
         baseUrl: baseUrl.value,
         apiKey: apiKey.value,
       };
     };
-    for (const input of [provider, model, baseUrl, apiKey]) {
+    for (const input of [...(providerName !== null ? [providerName] : []), model, baseUrl, apiKey]) {
       input.addEventListener('input', syncDraft);
       if (embeddingsSlotSavePending || clearingThis) input.readOnly = true;
     }
+    provider.addEventListener('change', syncDraft);
+    if (embeddingsSlotSavePending || clearingThis) provider.disabled = true;
+    const draftProblem = (): string | null => sourceDraftProblem(
+      slot,
+      {
+        protocol: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+      },
+      DEDICATED_SLOT_PROTOCOLS,
+    );
     const save = appendButton(
       doc,
       card,
       embeddingsSlotSavePending ? 'Saving slot…' : 'Save slot',
       () => {
+        if (embeddingsSlotSavePending || slotClearPendingKey !== null) return;
+        clearSourceAnswers('embeddings_slot');
+        const problem = draftProblem();
+        if (problem !== null) {
+          saveErrors.set('embeddings_slot', problem);
+          render();
+          return;
+        }
         void submitEmbeddingsSlotSave({
           provider: provider.value,
+          ...(providerName !== null ? { provider_name: providerName.value } : {}),
           model: model.value,
           ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
           base_url: baseUrl.value,
@@ -2323,9 +2410,16 @@ export const mountAiModelsPage = (
         provider: provider.value,
         model: model.value,
         ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
-        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+        // Trimmed as Save trims it, so the server's key guard compares the
+        // address the slot would be saved with.
+        ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value.trim() } : {}),
       }),
+      draftProblem,
     );
+    const saveError = saveErrors.get('embeddings_slot');
+    if (saveError !== undefined) {
+      appendFormError(card, 'embeddings_slot:save', saveError);
+    }
     parent.appendChild(card);
   };
 
@@ -2342,6 +2436,7 @@ export const mountAiModelsPage = (
     const clearingThis = slotClearPendingKey === 'transcription_slot';
     const draft = transcriptionSlotDraft ?? {
       provider: asString(slot?.provider),
+      providerName: asString(slot?.provider_name),
       model: asString(slot?.model),
       baseUrl: asString(slot?.base_url),
       apiKey: '',
@@ -2355,13 +2450,30 @@ export const mountAiModelsPage = (
       doc,
       card,
       slot
-        ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
+        ? ` ${savedSlotSource(slot)} / ${asString(slot.model) || 'model?'}`
         : ' Not set up. Voice notes need this. The microphone stays hidden until you set it.',
     );
-    const provider = appendInput(doc, card, 'Provider', draft.provider, [
-      [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider'],
-      ['aria-label', 'Transcription slot provider'],
-    ]);
+    // Name and protocol, as on a chat slot. This field took free text the
+    // server refused for anything but its four protocol ids, one of which
+    // (Anthropic) cannot transcribe.
+    const providerName = slotProviderNameSupported
+      ? appendInput(doc, card, 'Provider', draft.providerName, [
+        ['placeholder', 'Groq, my own server…'],
+        ['maxlength', '64'],
+        [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider-name'],
+        ['aria-label', 'Transcription slot provider name'],
+      ])
+      : null;
+    const provider = appendProtocolSelect(
+      doc,
+      card,
+      DEDICATED_SLOT_PROTOCOLS,
+      draft.provider,
+      [
+        [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'provider'],
+        ['aria-label', 'Transcription slot protocol'],
+      ],
+    );
     const model = appendInput(doc, card, 'Model', draft.model, [
       ['placeholder', 'e.g. whisper-1, whisper-large-v3'],
       [AI_MODELS_TRANSCRIPTION_FIELD_ATTR, 'model'],
@@ -2421,6 +2533,7 @@ export const mountAiModelsPage = (
     const syncDraft = (): void => {
       transcriptionSlotDraft = {
         provider: provider.value,
+        providerName: providerName?.value ?? draft.providerName,
         model: model.value,
         baseUrl: baseUrl.value,
         apiKey: apiKey.value,
@@ -2428,17 +2541,45 @@ export const mountAiModelsPage = (
       transcriptionLanguageDraft = language.value;
       transcriptionCapDraft = cap.value;
     };
-    for (const input of [provider, model, baseUrl, apiKey, language, cap]) {
+    for (const input of [
+      ...(providerName !== null ? [providerName] : []),
+      model,
+      baseUrl,
+      apiKey,
+      language,
+      cap,
+    ]) {
       input.addEventListener('input', syncDraft);
       if (transcriptionSlotSavePending || clearingThis) input.readOnly = true;
     }
+    provider.addEventListener('change', syncDraft);
+    if (transcriptionSlotSavePending || clearingThis) provider.disabled = true;
+    const draftProblem = (): string | null => sourceDraftProblem(
+      slot,
+      {
+        protocol: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+      },
+      DEDICATED_SLOT_PROTOCOLS,
+    );
     const save = appendButton(
       doc,
       card,
       transcriptionSlotSavePending ? 'Saving slot…' : 'Save slot',
       () => {
+        if (transcriptionSlotSavePending || slotClearPendingKey !== null) return;
+        clearSourceAnswers('transcription_slot');
+        const problem = draftProblem();
+        if (problem !== null) {
+          saveErrors.set('transcription_slot', problem);
+          render();
+          return;
+        }
         void submitTranscriptionSlotSave({
           provider: provider.value,
+          ...(providerName !== null ? { provider_name: providerName.value } : {}),
           model: model.value,
           ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
           base_url: baseUrl.value,
@@ -2484,9 +2625,16 @@ export const mountAiModelsPage = (
         provider: provider.value,
         model: model.value,
         ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
-        ...(baseUrl.value.length > 0 ? { base_url: baseUrl.value } : {}),
+        // Trimmed as Save trims it, so the server's key guard compares the
+        // address the slot would be saved with.
+        ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value.trim() } : {}),
       }),
+      draftProblem,
     );
+    const saveError = saveErrors.get('transcription_slot');
+    if (saveError !== undefined) {
+      appendFormError(card, 'transcription_slot:save', saveError);
+    }
     parent.appendChild(card);
   };
 
@@ -3054,22 +3202,10 @@ export const mountAiModelsPage = (
         ['maxlength', '64'],
       ])
       : null;
-    const provider = appendSelect(
-      doc,
-      form,
-      'Protocol',
-      draft.provider,
-      [
-        ...(SLOT_PROTOCOLS.some((protocol) => protocol.id === draft.provider)
-          ? []
-          : [{ value: '', label: 'Choose a protocol' }]),
-        ...SLOT_PROTOCOLS.map((protocol) => ({ value: protocol.id, label: protocol.label })),
-      ],
-      [
-        [AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'],
-        ['aria-label', `${labelOf} protocol`],
-      ],
-    );
+    const provider = appendProtocolSelect(doc, form, SLOT_PROTOCOLS, draft.provider, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider'],
+      ['aria-label', `${labelOf} protocol`],
+    ]);
     const model = appendInput(doc, form, 'Model', draft.model, [
       [AI_MODELS_POOL_ADD_FIELD_ATTR, 'model'],
       ['aria-label', `${labelOf} model`],
@@ -4755,6 +4891,13 @@ export const mountAiModelsPage = (
             ? patch.api_key
             : '',
       };
+      // `carry` brought the stored name along; a patch that names the field
+      // decides it, so clearing the field in the form clears the name.
+      if (patch.provider_name !== undefined) {
+        const name = patch.provider_name.trim();
+        if (name.length > 0) nextSlot.provider_name = name;
+        else delete nextSlot.provider_name;
+      }
       if (patch.base_url !== undefined) {
         if (patch.base_url.trim().length > 0) {
           nextSlot.base_url = patch.base_url.trim();
@@ -4805,6 +4948,12 @@ export const mountAiModelsPage = (
             ? patch.api_key
             : '',
       };
+      // As on the embeddings slot: a patch that names the field decides it.
+      if (patch.provider_name !== undefined) {
+        const name = patch.provider_name.trim();
+        if (name.length > 0) nextSlot.provider_name = name;
+        else delete nextSlot.provider_name;
+      }
       if (patch.base_url !== undefined) {
         if (patch.base_url.trim().length > 0) nextSlot.base_url = patch.base_url.trim();
         else delete nextSlot.base_url;

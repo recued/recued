@@ -255,6 +255,14 @@ const srv = createServer((req, rep) => {
   if (!name || !existsSync(file) || !resolve(file).startsWith(resolve(name === 'install.ps1' ? INSTALL_PS1 : feedRoot))) {
     rep.statusCode = 404; rep.end('no such artifact'); return;
   }
+  // Hold the candidate body long enough for the guest arm to plant a healthy
+  // current native pair after the installer's initial read but before its late
+  // lease/recheck. HEAD stays immediate, so the "downloading" progress line is
+  // the deterministic signal that the GET is now parked here.
+  if (req.method === 'GET' && /^latecurrent\/recued-windows-(?:arm64|x64)$/.test(name)) {
+    setTimeout(() => rep.end(readFileSync(file)), 3_000);
+    return;
+  }
   rep.end(readFileSync(file));
 });
 await new Promise((r) => srv.listen(0, '127.0.0.1', r));
@@ -404,6 +412,7 @@ await compileFixture('26.9.2', false, true);
 
 await buildFeed('good', '9.9.9', null);
 await buildFeed('v2', '9.9.10', null);
+await buildFeed('latecurrent', '9.9.10', null);
 await buildFeed('legacy', '9.9.8', null);
 await buildFeed('startretry', '26.9.2', null);
 await buildFeed('badsha', '9.9.9', (m) => {

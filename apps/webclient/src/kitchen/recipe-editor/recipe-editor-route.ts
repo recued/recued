@@ -12,6 +12,8 @@ import type {
   Condition,
   ConditionOp,
   MailFactTypeSpec,
+  MailTemplate,
+  MailTemplateDefinition,
   VariableDefault,
   WebhookIngressBindingSelection,
   WebhookIngressView,
@@ -34,7 +36,7 @@ import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.j
 import type { RecipeSimulationResult } from '@recued/contracts';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { RunModal } from '@recued/ui-shared';
+import { intervalInWords, RunModal } from '@recued/ui-shared';
 
 import {
   applyFieldToStep,
@@ -64,6 +66,7 @@ import {
   FORM_RESPONSE_READER_OP,
 } from './form-response-automation-seed.js';
 import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
+import { mailTemplateVariableNames, starterChanged, starterOf, starterSourceOf } from './mail-template-starters.js';
 
 // ────────────────────────────────────────────────────────────────
 // Test/route attribute hooks (mirror INGREDIENT_BUILDER_*_ATTR)
@@ -120,6 +123,15 @@ export const RECIPE_EDITOR_CONN_VAR_NAME_ATTR = 'data-recued-recipe-editor-conn-
 export const RECIPE_EDITOR_CONN_VAR_KIND_ATTR = 'data-recued-recipe-editor-conn-var-kind';
 /** The "Add variable" button. */
 export const RECIPE_EDITOR_CONN_VAR_ADD_ATTR = 'data-recued-recipe-editor-conn-var-add';
+/** D-315 §5.2 — the recipe's mail template settings, each row (value = the
+ *  setting's name), its "copy from" choice, its copy button, and the add
+ *  control's name input and button. */
+export const RECIPE_EDITOR_MAIL_TEMPLATES_ATTR = 'data-recued-recipe-editor-mail-templates';
+export const RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR = 'data-recued-recipe-editor-mail-template';
+export const RECIPE_EDITOR_MAIL_TEMPLATE_SOURCE_ATTR = 'data-recued-recipe-editor-mail-template-source';
+export const RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR = 'data-recued-recipe-editor-mail-template-copy';
+export const RECIPE_EDITOR_MAIL_TEMPLATE_NAME_ATTR = 'data-recued-recipe-editor-mail-template-name';
+export const RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR = 'data-recued-recipe-editor-mail-template-add';
 /** Recipe-level warehouse-event subscriptions. */
 export const RECIPE_EDITOR_TRIGGERS_ATTR = 'data-recued-recipe-editor-triggers';
 /** One event-trigger row — value is its array index. */
@@ -232,6 +244,12 @@ export interface BootstrapRecipeEditorRouteOptions {
    *  mail-fact trigger can watch their variables too. Without it the pickers
    *  offer the built-in kinds' alone. */
   mailFactTypesCaller?: () => Promise<{ readonly types: readonly MailFactTypeSpec[] }>;
+  /** D-315 §5.2 — the author's own mail templates, so a `mail_template`
+   *  setting can bring one as its starter. */
+  mailTemplatesCaller?: () => Promise<{ readonly templates: readonly MailTemplate[] }>;
+  /** D-315 §5.2 — one of them as a starter, checked by the author's server for
+   *  anything of their mail (`mail_fact.template.starter`). */
+  mailTemplateStarterCaller?: (args: { template_id: string }) => Promise<{ readonly starter: MailTemplateDefinition }>;
   initialRecipe?: RecipeDefinition;
   /** A caller-provided draft that has never been persisted. New-recipe entry
    *  points set this so the shell leave guard protects the seeded work even
@@ -1490,6 +1508,12 @@ export const bootstrapRecipeEditorRoute = (
    *  join the mail-fact pickers. */
   let ownedMailFactKinds: readonly MailFactTypeSpec[] = [];
   let ownedMailFactKindsKnown: OwnedMailFactKinds = options.mailFactTypesCaller === undefined ? 'unread' : 'loading';
+  /** D-315 §5.2 — the author's mail templates (null until loaded), the one each
+   *  setting copies from when the author picked it, and what a copy refused. */
+  let authorTemplates: readonly MailTemplate[] | null = null;
+  const starterPicks = new Map<string, string>();
+  const starterProblems = new Map<string, readonly string[]>();
+  let starterCopying: string | null = null;
   let webhookStatus = options.webhookControl?.initialStatus;
   let webhookBusy = false;
   let webhookError: string | null = null;
@@ -2032,6 +2056,9 @@ export const bootstrapRecipeEditorRoute = (
     }
     if (/^output([.\[]|$)/.test(normalized)) return { field: 'output' };
     const variable = /^variables\.([^.\[]+)/.exec(normalized)?.[1];
+    if (variable && mailTemplateVariableNames(state.recipe).includes(variable)) {
+      return { field: `mail_template_label:${variable}` };
+    }
     if (variable) return { field: connectionVarNames(state.recipe).includes(variable)
       ? `${normalized.endsWith('.kind') ? 'conn_var_kind' : 'conn_var_label'}:${variable}`
       : `variables.${variable}` };
@@ -3802,6 +3829,34 @@ export const bootstrapRecipeEditorRoute = (
     );
     kindSelect.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('type'));
     addField(doc, fields, 'Kind of email', kindSelect);
+    // D-315 §5.1 — only the facts the recipe's own template reads: the one its
+    // setting holds on the owner's server.
+    const settings = mailTemplateVariableNames(state.recipe);
+    if (settings.length > 0 || current.template_variable !== undefined) {
+      const readBy = makeLabelledSelect(
+        doc,
+        current.template_variable ?? '',
+        [
+          { value: '', label: 'Any template, or none' },
+          ...settings.map((name) => {
+            const label = (state.recipe.variables[name] as { label?: unknown } | undefined)?.label;
+            return { value: name, label: `The one in the setting “${typeof label === 'string' && label !== '' ? label : name}”` };
+          }),
+          ...(current.template_variable !== undefined && !settings.includes(current.template_variable)
+            ? [{ value: current.template_variable, label: `${current.template_variable} (no such setting)` }]
+            : []),
+        ],
+        `event_trigger_fact_template:${index}`,
+        (value) => {
+          const next: RecipeEventTrigger = { ...current };
+          if (value === '') delete next.template_variable;
+          else next.template_variable = value;
+          patch(next);
+        },
+      );
+      readBy.setAttribute(RECIPE_EDITOR_TRIGGER_FACT_ATTR, part('template'));
+      addField(doc, fields, 'Read by', readBy);
+    }
     const vocabulary = RunModal.mailFactVocabulary(ownedMailFactKinds, type);
     const labelOf = (name: string): string => {
       const choice = vocabulary.find((candidate) => candidate.name === name);
@@ -3958,8 +4013,10 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'Start when something happens. New triggers stay asleep until you switch them on in Automation. '
-        + 'Form answers only start this after you have looked at them. Add a reader to use what people wrote.',
+      // D-319 §5.5 — nothing starts until the Recipe is switched on, with its settings.
+      'Start when something happens. Nothing starts until you switch the Recipe on from its page, '
+        + 'with its settings. Form answers only start this after you have looked at them. '
+        + 'Add a reader to use what people wrote.',
     );
     hint.className = 'recipe-editor-hint';
 
@@ -3967,7 +4024,7 @@ export const bootstrapRecipeEditorRoute = (
       const empty = doc.createElement('div');
       empty.className = 'recipe-editor-empty recipe-editor-trigger-empty';
       appendText(doc, empty, 'strong', state.recipe.auto_run
-        ? `Runs every ${state.recipe.auto_run.interval_ms} ms${state.recipe.auto_run.default_enabled === false ? ' (asleep at first)' : ''}`
+        ? `Runs every ${intervalInWords(state.recipe.auto_run.interval_ms)} once switched on`
         : 'Runs manually');
       appendText(doc, empty, 'span', 'Add a trigger so something can set this Recipe off.');
       section.appendChild(empty);
@@ -4437,6 +4494,200 @@ export const bootstrapRecipeEditorRoute = (
     host2.appendChild(section);
   };
 
+  /** D-315 §5.2 — the recipe's mail template settings. Each may bring the
+   *  template the recipe was built and tested with: one of the author's own,
+   *  copied in by their server, which refuses a copy holding anything of their
+   *  mail. "Update from my template" copies it again once it changed. */
+  const copyStarter = async (name: string, template_id: string): Promise<void> => {
+    const call = options.mailTemplateStarterCaller;
+    if (call === undefined || starterCopying !== null) return;
+    starterCopying = name;
+    starterProblems.delete(name);
+    rerender();
+    try {
+      const { starter } = await call({ template_id });
+      if (disposed) return;
+      starterCopying = null;
+      // Removed while its copy was on the way: nothing to bring it to.
+      if (!mailTemplateVariableNames(state.recipe).includes(name)) {
+        rerender();
+        return;
+      }
+      starterPicks.set(name, template_id);
+      const prev = state.recipe.variables[name] as unknown as Record<string, unknown>;
+      mutateAndRerender({
+        ...state.recipe,
+        variables: { ...state.recipe.variables, [name]: { ...prev, starter } as unknown as VariableDefault },
+      });
+    } catch (error) {
+      if (disposed) return;
+      starterCopying = null;
+      const problems = (error as { details?: { problems?: unknown } }).details?.problems;
+      starterProblems.set(name, Array.isArray(problems) && problems.every((p) => typeof p === 'string')
+        ? problems as string[]
+        : [humanizeRpcError(error)]);
+      rerender();
+    }
+  };
+
+  const renderMailTemplatesSection = (host2: HTMLElement): void => {
+    const names = mailTemplateVariableNames(state.recipe);
+    // Shown where it can matter: a recipe with a template setting, or one that
+    // starts on mail facts — not on every recipe.
+    if (names.length === 0 && !(state.recipe.event_triggers ?? []).some(isMailFactTrigger)) return;
+    const section = doc.createElement('section');
+    section.className = 'recipe-editor-section';
+    section.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATES_ATTR, '');
+    const header = doc.createElement('div');
+    header.className = 'recipe-editor-section-header';
+    appendText(doc, header, 'h2', 'Mail templates');
+    const meta = appendText(doc, header, 'span', plural(names.length, 'setting'));
+    meta.className = 'recipe-editor-section-meta';
+    section.appendChild(header);
+    const hint = appendText(
+      doc,
+      section,
+      'p',
+      'A setting that holds one of the owner’s mail templates, written as {{config.<name>}}. '
+        + 'It can bring the template you built this Recipe with: installing the Recipe adds it, with its AI off.',
+    );
+    hint.className = 'recipe-editor-hint';
+
+    for (const name of names) {
+      const hintDef = state.recipe.variables[name] as { label?: unknown };
+      const starter = starterOf(state.recipe.variables[name]);
+      const row = doc.createElement('div');
+      row.className = 'recipe-editor-conn-var-row';
+      row.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_ROW_ATTR, name);
+      const grid = doc.createElement('div');
+      grid.className = 'recipe-editor-field-grid';
+      addReadonlyField(doc, grid, 'Write it like this', `{{config.${name}}}`);
+      addField(
+        doc,
+        grid,
+        'Label',
+        makeTextInput(doc, String(hintDef.label ?? ''), `mail_template_label:${name}`, (next) => {
+          patchVariable(name, { label: next });
+          markDirty();
+        }),
+      );
+      row.appendChild(grid);
+
+      const brings = appendText(
+        doc,
+        row,
+        'p',
+        starter === null
+          ? 'Brings no template: whoever installs it picks one of theirs.'
+          : `Brings “${starter.name}”, a ${starter.type.replace(/_/g, ' ')} template.`,
+      );
+      brings.className = 'recipe-editor-hint';
+
+      // Copy one of the author's templates in, or again.
+      const templates = authorTemplates ?? [];
+      const found = starter !== null ? starterSourceOf(starter, templates) : null;
+      const picked = starterPicks.get(name) ?? found?.template_id ?? '';
+      const source = templates.find((template) => template.template_id === picked) ?? null;
+      if (options.mailTemplateStarterCaller !== undefined && templates.length > 0) {
+        const copyWrap = doc.createElement('div');
+        copyWrap.className = 'recipe-editor-add recipe-editor-add--compact';
+        const field = doc.createElement('div');
+        field.className = 'recipe-editor-field';
+        appendText(doc, field, 'label', 'From my template');
+        const select = makeLabelledSelect(
+          doc,
+          picked,
+          [
+            { value: '', label: 'Choose one' },
+            ...templates.map((template) => ({ value: template.template_id, label: `${template.name} (${template.type.replace(/_/g, ' ')})` })),
+          ],
+          `mail_template_source:${name}`,
+          (next) => {
+            if (next === '') starterPicks.delete(name);
+            else starterPicks.set(name, next);
+            rerender();
+          },
+        );
+        select.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_SOURCE_ATTR, name);
+        select.setAttribute('aria-label', `The template ${name} brings`);
+        field.appendChild(select);
+        copyWrap.appendChild(field);
+        const again = starter !== null && source !== null && source.template_id === found?.template_id;
+        const copy = makeButton(
+          doc,
+          starterCopying === name ? 'Copying…' : again ? 'Update from my template' : 'Bring this template',
+          'secondary',
+          'sm',
+          () => { if (source !== null) void copyStarter(name, source.template_id); },
+        );
+        copy.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_COPY_ATTR, name);
+        if (source === null || starterCopying !== null) copy.setAttribute('disabled', '');
+        copyWrap.appendChild(copy);
+        row.appendChild(copyWrap);
+        if (starter !== null && source !== null && again && starterChanged(starter, source)) {
+          const changed = appendText(doc, row, 'p', `“${source.name}” changed since this copy. Update from it to bring the change.`);
+          changed.className = 'recipe-editor-hint';
+        }
+      }
+      const make = doc.createElement('a');
+      make.className = 'rx-link';
+      make.setAttribute('href', '#data/mail_fact/templates/new');
+      make.textContent = 'Make a template';
+      row.appendChild(make);
+      for (const problem of starterProblems.get(name) ?? []) {
+        const line = appendText(doc, row, 'p', problem);
+        line.className = 'recipe-editor-field-error';
+        line.setAttribute('role', 'alert');
+      }
+      const remove = makeButton(doc, 'Remove', 'danger-text', 'sm', () => {
+        const nextVars = { ...state.recipe.variables };
+        delete nextVars[name];
+        starterPicks.delete(name);
+        starterProblems.delete(name);
+        mutateAndRerender({ ...state.recipe, variables: nextVars });
+      });
+      remove.setAttribute('aria-label', `Remove the template setting ${name}`);
+      row.appendChild(remove);
+      section.appendChild(row);
+    }
+
+    // Add a template setting.
+    const draft = { name: '' };
+    const addWrap = doc.createElement('div');
+    addWrap.className = 'recipe-editor-add recipe-editor-add--compact';
+    const nameField = doc.createElement('div');
+    nameField.className = 'recipe-editor-field';
+    appendText(doc, nameField, 'label', 'New template setting');
+    const nameInput = makeTextInput(doc, '', 'mail_template_new_name', (next) => { draft.name = next; });
+    nameInput.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_NAME_ATTR, '');
+    nameInput.setAttribute('aria-label', 'New template setting');
+    nameInput.setAttribute('placeholder', 'template');
+    nameField.appendChild(nameInput);
+    addWrap.appendChild(nameField);
+    const add = makeButton(doc, 'Add template setting', 'secondary', 'sm', () => {
+      const name = draft.name.trim();
+      if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) || name in state.recipe.variables) return;
+      pendingFieldFocus = {
+        fieldKey: `mail_template_label:${name}`,
+        occurrence: 0,
+        selectionStart: 0,
+        selectionEnd: name.length,
+        reveal: true,
+      };
+      mutateAndRerender({
+        ...state.recipe,
+        variables: {
+          ...state.recipe.variables,
+          [name]: { label: 'Mail template', type: 'mail_template' } as unknown as VariableDefault,
+        },
+      });
+    });
+    add.setAttribute(RECIPE_EDITOR_MAIL_TEMPLATE_ADD_ATTR, '');
+    addWrap.appendChild(add);
+    section.appendChild(addWrap);
+    host2.appendChild(section);
+  };
+
   // ────────────────────────────────────────────────────────────
   // Status line (sticky topbar) + issues panel (top of content)
   // ────────────────────────────────────────────────────────────
@@ -4663,6 +4914,7 @@ export const bootstrapRecipeEditorRoute = (
     }
     renderStepsSection(body, 'Steps', 'steps', [buildCollapseAllControl(), buildAddStepControl()]);
     renderBindingsSection(body);
+    renderMailTemplatesSection(body);
     body.appendChild(renderTestPanel());
     if (restoreTestFocus) testRunBtn?.focus?.({ preventScroll: true });
     for (const issue of state.issues) {
@@ -4784,6 +5036,15 @@ export const bootstrapRecipeEditorRoute = (
   if (focusHeadingOnMount) {
     routeHeading?.focus?.({ preventScroll: true });
   }
+  void options.mailTemplatesCaller?.().then(({ templates }) => {
+    if (disposed) return;
+    authorTemplates = templates;
+    if (mailTemplateVariableNames(state.recipe).length > 0) rerender();
+  }, () => {
+    // No list: a setting keeps its starter, and offers no copy.
+    if (disposed) return;
+    authorTemplates = [];
+  });
   void options.mailFactTypesCaller?.().then(({ types }) => {
     if (disposed) return;
     ownedMailFactKinds = types;

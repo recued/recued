@@ -276,6 +276,9 @@ export interface MountRecipeEditorRouteOptions {
   webhookDisarmCaller?: RecipeWebhookControl['disarmCaller'];
   /** D-315 §5.1 — the owner's kinds of email, for the mail-fact pickers. */
   mailFactTypesCaller?: BootstrapRecipeEditorRouteOptions['mailFactTypesCaller'];
+  /** D-315 §5.2 — the author's templates, and one as a checked starter. */
+  mailTemplatesCaller?: BootstrapRecipeEditorRouteOptions['mailTemplatesCaller'];
+  mailTemplateStarterCaller?: BootstrapRecipeEditorRouteOptions['mailTemplateStarterCaller'];
   onSaved?: (result: RecipeSaveResult) => void;
 }
 
@@ -314,6 +317,9 @@ export interface MountFormResponseRecipeSeedRouteOptions {
   }) => Promise<RecipeSaveResult>;
   /** D-315 §5.1 — the owner's kinds of email, for the mail-fact pickers. */
   mailFactTypesCaller?: BootstrapRecipeEditorRouteOptions['mailFactTypesCaller'];
+  /** D-315 §5.2 — the author's templates, and one as a checked starter. */
+  mailTemplatesCaller?: BootstrapRecipeEditorRouteOptions['mailTemplatesCaller'];
+  mailTemplateStarterCaller?: BootstrapRecipeEditorRouteOptions['mailTemplateStarterCaller'];
   onSaved?: (result: RecipeSaveResult) => void;
 }
 
@@ -492,6 +498,10 @@ export const mountRecipeEditorRoute = (
         saveCaller: options.saveCaller,
         ...(webhookControl ? { webhookControl } : {}),
         ...(options.mailFactTypesCaller !== undefined ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
+        ...(options.mailTemplatesCaller !== undefined ? { mailTemplatesCaller: options.mailTemplatesCaller } : {}),
+        ...(options.mailTemplateStarterCaller !== undefined
+          ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller }
+          : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });
     } catch (error: unknown) {
@@ -601,6 +611,10 @@ export const mountFormResponseRecipeSeedRoute = (
         simulateCaller: options.simulateCaller,
         saveCaller: options.saveCaller,
         ...(options.mailFactTypesCaller !== undefined ? { mailFactTypesCaller: options.mailFactTypesCaller } : {}),
+        ...(options.mailTemplatesCaller !== undefined ? { mailTemplatesCaller: options.mailTemplatesCaller } : {}),
+        ...(options.mailTemplateStarterCaller !== undefined
+          ? { mailTemplateStarterCaller: options.mailTemplateStarterCaller }
+          : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });
     } catch (error: unknown) {

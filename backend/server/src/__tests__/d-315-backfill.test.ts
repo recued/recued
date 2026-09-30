@@ -653,7 +653,7 @@ describe('an email a move gave a new id (§6.3)', () => {
     await box.sync.start();
     const original = recordIdOf(box, '7@INBOX');
     const bill = () => store.listFacts().find((fact) => fact.type === 'bill');
-    const document = inboundFileRecordId('mail_attachment', `${original}:p1`);
+    const document = inboundFileRecordId('mail_attachment', `work/${original}:p1`);
     expect(bill()?.variables.document).toBe(document);
 
     // Moved by Recued itself: the row takes the id its new place gives it,

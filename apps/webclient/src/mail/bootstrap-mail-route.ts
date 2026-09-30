@@ -124,6 +124,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     <section ${MAIL_ROUTE_HOST_ATTR}>
       <header class="mail-route-header">
         <h1 class="mail-route-title">Mail</h1>
+        <a href="${serializeShellRoute('mail', 'work')}">Work you’re following</a>
         <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="mail-route-compose">New mail</button>
       </header>
       <div class="mail-route-roster"></div>

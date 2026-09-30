@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CRON_PRESETS,
+  type Dish,
   type EventTrigger,
   type PreapprovalResult,
   type PreparePreapproval,
@@ -147,6 +148,24 @@ const triggerRow = (
 });
 
 const CAPS_FULL: RunModalCaps = { canExecute: true, canSchedule: true, canTrigger: true };
+
+/** D-319 — a dish of `daily-brief`. */
+const dishOf = (
+  dish_id: string,
+  is_default: boolean,
+  name = '',
+  config_overlay: Record<string, unknown> = {},
+): Dish => ({
+  dish_id,
+  recipe_id: 'daily-brief',
+  publisher_id: 'recued-core',
+  name,
+  is_default,
+  config_overlay,
+  enabled: true,
+  created_at: is_default ? 1 : 2,
+});
+const TWO_DISHES = [dishOf('dsh_work', true), dishOf('dsh_home', false, 'Home')];
 
 const stateWith = (over: Partial<RunModalState> = {}): RunModalState => ({
   ...initialRunModalState('run', CRON_PRESETS[0]?.expression ?? '0 9 * * *'),
@@ -633,7 +652,6 @@ describe('run-modal render', () => {
       CAPS_FULL,
     );
     for (const action of [
-      'config-schedule',
       'toggle-schedule:off',
       'remove-schedule',
     ]) {
@@ -659,7 +677,6 @@ describe('run-modal render', () => {
     );
     for (const action of [
       'add-trigger',
-      'config-trigger',
       'toggle-trigger:off',
       'remove-trigger',
     ]) {
@@ -672,35 +689,34 @@ describe('run-modal render', () => {
     }
   });
 
-  it('Schedule/Trigger tabs surface the recipe config fields (D-179)', () => {
-    const recipe = recipeEntry('daily-brief', { variables: { topic: 'news' } });
-
-    const sched = renderRunModal(
-      stateWith({ tab: 'schedule', schedules: [] }),
+  it('D-319 — a schedule or trigger has no settings of its own: the tabs ask which dish to add to, never for settings', () => {
+    const recipe = recipeEntry('daily-brief', {
+      variables: { topic: { label: 'Topic', type: 'text', default: 'news' } } as RecipeDefinition['variables'],
+    });
+    for (const tab of ['schedule', 'trigger'] as const) {
+      const html = renderRunModal(
+        stateWith({ tab, schedules: [], triggers: [], dish_id: 'dsh_home' }),
+        recipe,
+        CAPS_FULL,
+        TWO_DISHES,
+      );
+      expect(html, tab).not.toContain('var-topic');
+      expect(html, tab).not.toContain('Config for');
+      expect(html, tab).toContain('Add to');
+      expect(html, tab).toContain('<option value="dsh_home" selected>Home</option>');
+      expect(html, tab).toContain('<option value="dsh_work">Main</option>');
+    }
+    // One dish: nothing to choose.
+    const one = renderRunModal(
+      stateWith({ tab: 'schedule', schedules: [], dish_id: 'dsh_work' }),
       recipe,
       CAPS_FULL,
+      [TWO_DISHES[0]!],
     );
-    expect(sched).toContain('Config for every scheduled run');
-    expect(sched).toContain('var-topic');
-
-    const trig = renderRunModal(
-      stateWith({ tab: 'trigger', triggers: [] }),
-      recipe,
-      CAPS_FULL,
-    );
-    expect(trig).toContain('Config for runs from this trigger');
-    expect(trig).toContain('var-topic');
-
-    // A recipe with no variables shows no config section (nothing to set).
-    const noVars = renderRunModal(
-      stateWith({ tab: 'schedule', schedules: [] }),
-      recipeEntry(),
-      CAPS_FULL,
-    );
-    expect(noVars).not.toContain('Config for every scheduled run');
+    expect(one).not.toContain('Add to');
   });
 
-  it('D-222 keeps invoke fields labeled while configure surfaces stay total', () => {
+  it('D-222 keeps invoke fields labeled; D-319 a schedule asks for none', () => {
     const recipe = recipeEntry('d-222-fields', {
       variables: {
         labeled: { label: 'Labeled input', type: 'text', default: 'shown' },
@@ -714,14 +730,13 @@ describe('run-modal render', () => {
     expect(invoke).toContain('var-required_compatibility');
     expect(invoke).not.toContain('var-bare_default');
 
+    // D-319 — a schedule asks for none: it runs with its dish's settings.
     const schedule = renderRunModal(
       stateWith({ tab: 'schedule', schedules: [] }),
       recipe,
       CAPS_FULL,
     );
-    expect(schedule).toContain('var-labeled');
-    expect(schedule).toContain('var-required_compatibility');
-    expect(schedule).toContain('var-bare_default');
+    expect(schedule).not.toContain('var-');
   });
 
   it('D-222 gives primitive-only recipes an explicit raw override path', () => {
@@ -752,30 +767,35 @@ describe('run-modal render', () => {
     expect(html).toContain('overrides the fields above');
   });
 
-  it('shows a per-row Config button only when the recipe has variables (D-179 edit)', () => {
+  it('D-319 — a row has no Config of its own, and names its dish once there are several', () => {
     const recipe = recipeEntry('daily-brief', { variables: { topic: 'news' } });
 
     const sched = renderRunModal(
-      stateWith({ tab: 'schedule', schedules: [scheduleRow('s1')] }),
+      stateWith({ tab: 'schedule', schedules: [{ ...scheduleRow('s1'), dish_id: 'dsh_home' }] }),
       recipe,
       CAPS_FULL,
+      TWO_DISHES,
     );
-    expect(sched).toContain('config-schedule');
+    expect(sched).not.toContain('config-schedule');
+    expect(sched).toContain(' · for Home');
 
     const trig = renderRunModal(
-      stateWith({ tab: 'trigger', triggers: [triggerRow('t1')] }),
+      stateWith({ tab: 'trigger', triggers: [{ ...triggerRow('t1'), dish_id: 'dsh_work' }] }),
       recipe,
       CAPS_FULL,
+      TWO_DISHES,
     );
-    expect(trig).toContain('config-trigger');
+    expect(trig).not.toContain('config-trigger');
+    expect(trig).toContain(' · for Main');
 
-    // A variable-less recipe has nothing to configure → no Config button.
-    const noVars = renderRunModal(
-      stateWith({ tab: 'schedule', schedules: [scheduleRow('s1')] }),
-      recipeEntry(),
+    // One dish: a row need not say whose it is.
+    const one = renderRunModal(
+      stateWith({ tab: 'schedule', schedules: [{ ...scheduleRow('s1'), dish_id: 'dsh_work' }] }),
+      recipe,
       CAPS_FULL,
+      [TWO_DISHES[0]!],
     );
-    expect(noVars).not.toContain('config-schedule');
+    expect(one).not.toContain(' · for ');
   });
 
   it('hides the Schedule tab for a run-only host (no schedule caller wired)', () => {
@@ -948,12 +968,14 @@ describe('run-modal wire', () => {
     });
   });
 
-  it('addSchedule/addTrigger carry config_overlay from the config buffer (D-179)', async () => {
+  it('D-319 — addSchedule/addTrigger add to the chosen dish and carry no settings, whatever the Run tab holds', async () => {
     const recipe = recipeEntry('daily-brief', { variables: { topic: 'news' } });
 
     const createS = vi.fn(async () => ({ schedule: scheduleRow('s2') }));
     const sHandle = wire({
       recipe,
+      dishes: TWO_DISHES,
+      dish_id: 'dsh_home',
       schedulesList: vi.fn(async () => ({ schedules: [] })),
       schedulesCreate: createS,
       initialTab: 'schedule',
@@ -965,12 +987,14 @@ describe('run-modal wire', () => {
       recipe_id: 'daily-brief',
       publisher_id: 'recued-core',
       cron_expression: '0 9 * * *',
-      config_overlay: { topic: 'pipeline' },
+      dish_id: 'dsh_home',
     });
 
+    // Opened from no dish: the main one.
     const createT = vi.fn(async () => ({ trigger: triggerRow('t2') }));
     const tHandle = wire({
       recipe,
+      dishes: TWO_DISHES,
       triggersList: vi.fn(async () => ({ triggers: [] })),
       triggersCreate: createT,
       initialTab: 'trigger',
@@ -982,11 +1006,11 @@ describe('run-modal wire', () => {
       recipe_id: 'daily-brief',
       publisher_id: 'recued-core',
       pattern: 'data.mail.**',
-      config_overlay: { topic: 'pipeline' },
+      dish_id: 'dsh_work',
     });
   });
 
-  it('addSchedule surfaces invalid config JSON instead of silently arming (D-179)', async () => {
+  it('D-319 — a schedule reads nothing from the Run tab, so a raw config that does not parse does not stop it', async () => {
     const create = vi.fn(async () => ({ schedule: scheduleRow('s2') }));
     const handle = wire({
       recipe: recipeEntry('daily-brief', { variables: { topic: 'news' } }),
@@ -997,8 +1021,60 @@ describe('run-modal wire', () => {
     handle.setPreset('0 9 * * *');
     handle.setConfigText('{not json');
     await handle.addSchedule();
-    expect(create).not.toHaveBeenCalled();
-    expect(handle.getState().schedule_error).not.toBeNull();
+    // A recipe with no dish: the server adds it to the main dish.
+    expect(create).toHaveBeenCalledWith({ recipe_id: 'daily-brief', publisher_id: 'recued-core', cron_expression: '0 9 * * *' });
+    expect(handle.getState().schedule_error).toBeNull();
+  });
+
+  it('D-319 — Run as: the fields show the chosen dish’s settings; a run sends only what changed, as that dish', async () => {
+    const recipe = recipeEntry('daily-brief', {
+      variables: { topic: { label: 'Topic', type: 'text', default: 'news' } } as RecipeDefinition['variables'],
+    });
+    const dishes = [dishOf('dsh_work', true, '', { topic: 'work news' }), dishOf('dsh_home', false, 'Home', { topic: 'home news' })];
+    const execute = vi.fn(async () => executeResponse());
+    const handle = wire({ recipe, dishes, execute });
+    // The main dish, unless opened from another.
+    expect(handle.getState().dish_id).toBe('dsh_work');
+    expect(handle.element.innerHTML).toContain('Run as');
+    expect(handle.element.innerHTML).toContain('work news');
+
+    handle.setDish('dsh_home');
+    expect(handle.element.innerHTML).toContain('home news');
+    expect(handle.element.innerHTML).not.toContain('work news');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenLastCalledWith({ recipe_id: 'daily-brief', config: {}, dish_id: 'dsh_home' });
+
+    // A value changed for this run alone — the field shows the change, not
+    // the dish's value under it.
+    handle.setConfigText('{"topic":"just this once"}');
+    expect(handle.element.innerHTML).toContain('just this once');
+    expect(handle.element.innerHTML).not.toContain('home news');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenLastCalledWith({ recipe_id: 'daily-brief', config: { topic: 'just this once' }, dish_id: 'dsh_home' });
+
+    // Another dish starts from its own settings: the change was that run's.
+    handle.setDish('dsh_work');
+    expect(handle.getState().config_text).toBe('{}');
+    // Not a dish of this recipe: nothing changes.
+    handle.setDish('dsh_elsewhere');
+    expect(handle.getState().dish_id).toBe('dsh_work');
+  });
+
+  it('D-319 — opened from no dish, it runs as the main one, wherever the list has it', async () => {
+    const dishes = [dishOf('dsh_home', false, 'Home'), dishOf('dsh_work', true, 'Work')];
+    const handle = wire({ recipe: recipeEntry(), dishes, execute: vi.fn(async () => executeResponse()) });
+    expect(handle.getState().dish_id).toBe('dsh_work');
+    // Opened from a dish of another recipe: the main one too.
+    expect(wire({ recipe: recipeEntry(), dishes, dish_id: 'dsh_elsewhere' }).getState().dish_id).toBe('dsh_work');
+  });
+
+  it('D-319 — with no dishes, a run names none (the server takes the main dish’s settings)', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    const handle = wire({ recipe: recipeEntry(), execute });
+    expect(handle.getState().dish_id).toBeNull();
+    expect(handle.element.innerHTML).not.toContain('Run as');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledWith({ recipe_id: 'daily-brief', config: {} });
   });
 
   it('imperative setters repaint the visible controls', () => {
@@ -1277,7 +1353,7 @@ describe('run-modal: a mail fact trigger', () => {
     expect(html).not.toContain('<option value="notice">');
   });
 
-  it('adds a trigger from the form, with the config buffer, and lists it in words', async () => {
+  it('adds a trigger from the form and lists it in words — a trigger carries no settings (D-319)', async () => {
     const create = vi.fn(async () => ({ trigger: triggerRow('t9') }));
     const list = vi.fn(async () => ({
       triggers: [{ ...triggerRow('t9'), pattern: 'data.mail_fact.*.thing.*', fields: ['state'], filter: { 'record.state': 'delivered' } }],
@@ -1299,7 +1375,6 @@ describe('run-modal: a mail fact trigger', () => {
       on: 'mail_fact',
       fields: ['state'],
       where: { state: 'delivered', template: 'mtpl_1' },
-      config_overlay: { topic: 'parcels' },
     });
     await vi.waitFor(() => expect(handle.getState().mail_fact_templates).not.toBeNull());
     expect(handle.getState().trigger_error).toBeNull();

@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "5b230d8d8b7e1e2af282cb775a02fa5189798a12",
-    "tree": "7e6d39598c6f22c4011a0297ef20083cbd1d5918",
-    "committed_at": "2026-09-29T05:04:34-07:00"
+    "commit": "320502452573ceafe8189eca61f4d4ed01854ca0",
+    "tree": "2010958b85eeb56b1b4fa3b73a5515f4cba19596",
+    "committed_at": "2026-09-30T10:27:28-07:00"
   },
-  "export_manifest_sha256": "f05128cf324a2895ef0325cdeff32e49e9879290a4529bf6f24166757e6f9e12",
-  "version": "26.9.29",
+  "export_manifest_sha256": "7513cea785024dd660a7470eedd26bd2f7f330d2ef73fe64441dd20582b74093",
+  "version": "26.9.30",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -204,6 +204,7 @@
       "backend/server/src/__tests__/list-settings-typed-in-the-form-are-lists.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
+      "backend/server/src/__tests__/mail-work-readers.test.ts",
       "backend/server/src/__tests__/mcp-listen-source.test.ts",
       "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
       "backend/server/src/__tests__/mcp-subscriptions-probe.test.ts",
@@ -239,6 +240,7 @@
       "backend/server/src/__tests__/recipe-list-handler-shipped-importer.test.ts",
       "backend/server/src/__tests__/records-pack-entry-points.test.ts",
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
+      "backend/server/src/__tests__/release-build-config-validation.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
       "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
@@ -652,7 +654,7 @@
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
       "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
     ],
-    "sha256": "6c3892aca07d234b371b81dc5bacc2a2de86d5c62b969c51a3a712e6c9ecaea1",
+    "sha256": "482e410ec1c16e0b7df5722931f762d8dafef27e0287fe4060a476d470373d3c",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -669,11 +671,11 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1101,
+    "files_changed": 1102,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1030
+        "comments_rewritten": 1031
       },
       {
         "id": "internal-design-document",
@@ -767,7 +769,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6333,
-    "sha256": "bcece555d3e890c168240d13df9063d030164fb1a3908d52efcd1d3acf7ae78e"
+    "file_count": 6395,
+    "sha256": "163f1ed2293b8f11082e818e92783560a1c42616c7517772c1e4b0c5c665fbc4"
   }
 }

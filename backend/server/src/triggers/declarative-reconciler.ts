@@ -26,21 +26,28 @@
  *  now materializes too (the dispatcher evaluates it — the slice-2
  *  "store/dispatcher path has no filter" skip is closed).
  *
- *  Reconcile = diff `(recipe_id, publisher_id, pattern, filter,
- *  fields)` between installed STORED recipes and the store's
+ *  D-319 — ONE SET OF ROWS PER DISH. A dish is a recipe switched on, with
+ *  its own settings, and each of its recipe's declared triggers is made
+ *  once for it, fires as it and runs with its settings. A recipe with no
+ *  dish has no rows: nothing of it is switched on.
+ *
+ *  Reconcile = diff `(recipe_id, publisher_id, dish_id, pattern, filter,
+ *  fields)` between installed STORED recipes × their dishes and the store's
  *  `origin: 'recipe'` rows:
  *
  *  - declared but missing  → create (DISARMED `enabled: false`, `origin:
- *    'recipe'`) — the owner arms it in #automation; installing/saving never
- *    silently starts reactive automation (D-179 P5c; see the create call below)
- *  - present but undeclared → remove (recipe uninstalled / edited)
- *  - present and declared   → UNTOUCHED — the user's `enabled` toggle
- *    and the row's fire bookkeeping survive every reconcile, so
- *    governance disarm sticks (a `triggers.delete` on a recipe-origin
- *    row, by contrast, is undone by the next reconcile — clients hide
- *    Remove for them). Editing an entry's filter/fields changes its
- *    identity (a fresh row, disarmed) — the same posture a pattern edit
- *    has always had.
+ *    'recipe'`). The reconciler never starts anything by itself: a recipe
+ *    update that declares a new trigger, or a dish made before D-319, gets
+ *    its rows OFF; switching the dish on (`dish-automation.ts`) is what
+ *    turns rows on (D-179 P5c's posture, D-319 § 3.3)
+ *  - present but undeclared → remove (recipe uninstalled / edited, or its
+ *    dish removed)
+ *  - present and declared   → UNTOUCHED — the row's `enabled` and its fire
+ *    bookkeeping survive every reconcile (a `triggers.delete` on a
+ *    recipe-origin row, by contrast, is undone by the next reconcile —
+ *    clients hide Remove for them). Editing an entry's filter/fields
+ *    changes its identity (a fresh row, disarmed) — the same posture a
+ *    pattern edit has always had.
  *
  *  Scope guards:
  *  - `composition.*` events are SKIPPED — the reception bridge's
@@ -92,26 +99,26 @@ export interface ReconcileDeclarativeTriggersDeps {
   >;
   now?: () => number;
   mintTriggerId?: () => string;
-  /** D-179 P5c — managed-dish dissolution on uninstall (owner decision
-   *  2026-06-12). When a removed recipe-origin row binds a dish whose
-   *  `managed_by_trigger_id` matches it (the dish the enable path
-   *  auto-minted), the dish + its continuity snapshot dissolve with
-   *  the row. User-assigned dishes are never touched. Optional —
-   *  absent ⇒ rows remove as before and any managed dish lingers
-   *  (harmless; orphaned dishes are user-deletable). */
-  dishStore?: {
-    get(dish_id: string): { managed_by_trigger_id?: string } | null;
-    delete(dish_id: string): boolean;
-    /** D-296 — re-point a carried-over row's managed dish at its new row, so
-     *  removing the old row leaves it and a later uninstall still dissolves it. */
-    set(dish: { dish_id: string; managed_by_trigger_id?: string }): void;
-  };
-  dishContextStore?: { clear(dish_id: string): void };
+  /** D-319 — every dish: a recipe's declared triggers are made once per dish
+   *  of it, and a trigger with `template_variable` (D-315 §5.1) is narrowed
+   *  to the template THAT dish's setting holds — a dish with none chosen
+   *  gets no row for it. Absent ⇒ no dish, so no row. */
+  listDishes?: () => ReadonlyArray<ReconcilerDish>;
+}
+
+/** The slice of a dish the reconciler reads. */
+export interface ReconcilerDish {
+  readonly dish_id: string;
+  readonly recipe_id: string;
+  readonly config_overlay: Readonly<Record<string, unknown>>;
 }
 
 export interface ReconcileResult {
   created: number;
   removed: number;
+  /** D-315 §5.1 — rows re-pointed in place to the template their recipe's
+   *  setting holds now. */
+  repointed: number;
   /** Declared entries skipped (composition.* / schedule.* markers,
    *  unparseable sugar, zero-coverage alias, invalid pattern) —
    *  observability for the boot log. */
@@ -136,24 +143,40 @@ const canonicalFields = (fields: string[] | undefined): string =>
 export interface Declaration {
   recipe_id: string;
   publisher_id: string;
+  /** D-319 — the dish the row is made for. `null` only on a stored row
+   *  written before D-319, which therefore matches no declaration. */
+  dish_id?: string | null;
   pattern: string;
   filter?: Record<string, unknown>;
   fields?: string[];
+  /** D-315 §5.1 — the recipe setting its `record.template` came from. Not
+   *  part of the identity: the row follows the setting (`reconcile…`). */
+  template_variable?: string;
 }
 
 /** Collision-proof identity (JSON-array encoding — filter values may
  *  contain any delimiter a join would pick). Applied identically to
- *  declared entries and stored rows, so pre-sugar rows (no
- *  filter/fields) keep matching their unchanged declarations across
- *  the upgrade — `enabled` stickiness survives. */
+ *  declared entries and stored rows, so a row keeps matching its unchanged
+ *  declaration — `enabled` stickiness survives. */
 export const declarationKey = (d: Declaration): string =>
   JSON.stringify([
     d.publisher_id,
     d.recipe_id,
+    d.dish_id ?? null,
     d.pattern,
     canonicalFilter(d.filter),
     canonicalFields(d.fields),
   ]);
+
+/** A stored row, as a declaration of the dish it was made for. */
+export const rowDeclaration = (row: EventTrigger): Declaration => ({
+  recipe_id: row.recipe_id,
+  publisher_id: row.publisher_id,
+  dish_id: row.dish_id ?? null,
+  pattern: row.pattern,
+  ...(row.filter !== undefined && row.filter !== null ? { filter: row.filter } : {}),
+  ...(row.fields !== undefined && row.fields !== null ? { fields: row.fields } : {}),
+});
 
 const isSyntheticMarker = (pattern: string): boolean =>
   pattern === 'composition' || pattern.startsWith('composition.')
@@ -165,8 +188,9 @@ const isRecordsDurablePointer = (pattern: string): boolean =>
   || pattern === 'record.updated'
   || pattern === 'record.deleted';
 
-/** ⛔ D-296 — the one trigger a recipe's update may CARRY OVER: its single
- *  managed row, when the recipe now declares exactly one DIFFERENT trigger.
+/** ⛔ D-296 — the one trigger a recipe's update may CARRY OVER: a dish's
+ *  single row of it, when the recipe now declares exactly one DIFFERENT
+ *  trigger.
  *
  *  A changed declaration (event, filter or fields) is a new identity, so the
  *  reconcile used to remove the row — with its armed state and its settings
@@ -179,7 +203,8 @@ const isRecordsDurablePointer = (pattern: string): boolean =>
  *  rows, a count that changed) cannot be paired and still switches off — the
  *  update dialog names those (`triggersSwitchedOff`).
  *
- *  `managed` / `declaredKeys` are ONE recipe's rows and declaration keys. */
+ *  `managed` / `declaredKeys` are ONE dish's rows and declaration keys of
+ *  its recipe (D-319 — two dishes of a recipe each carry their own row). */
 export const carriedTriggerFor = (
   managed: ReadonlyArray<{ key: string; row: EventTrigger }>,
   declaredKeys: readonly string[],
@@ -188,14 +213,17 @@ export const carriedTriggerFor = (
     ? { row: managed[0]!.row, newKey: declaredKeys[0]! }
     : null;
 
-/** The trigger declarations one recipe makes — its `event_triggers`, the
- *  authoring sugar compiled against the vendor registry, the markers and
- *  records pointers skipped. Shared by the reconciler and the update preview
- *  (D-296), so a warning about what an update switches off reads the SAME
- *  declarations the reconcile will. */
+/** The trigger declarations one recipe makes for one dish of it — its
+ *  `event_triggers`, the authoring sugar compiled against the vendor
+ *  registry (a `template_variable` narrowed to the template the dish's
+ *  `settings` hold), the markers and records pointers skipped. Shared by the
+ *  reconciler and the update preview (D-296), so a warning about what an
+ *  update switches off reads the SAME declarations the reconcile will. The
+ *  declarations carry no `dish_id`; the caller adds its dish's. */
 export const recipeTriggerDeclarations = (
   recipe: { recipe_id: string; publisher_id: string; definition: RecipeDefinition },
   vendorEntities: ReadonlyArray<Pick<ConnectionVendorEntity, 'vendor' | 'entity' | 'crm_alias'>>,
+  settings: Readonly<Record<string, unknown>> = {},
 ): { declarations: Declaration[]; skipped: number } => {
   const declarations: Declaration[] = [];
   let skipped = 0;
@@ -210,7 +238,12 @@ export const recipeTriggerDeclarations = (
     }
     // SUGAR form — compile against the live registry.
     if (typeof entry.on === 'string') {
-      const compiled = compileTriggerSugarEntry(entry, vendorEntities);
+      const compiled = compileTriggerSugarEntry(entry, vendorEntities, {
+        templateOf: (variable) => {
+          const held = settings[variable];
+          return typeof held === 'string' && held.length > 0 ? held : null;
+        },
+      });
       if (compiled === null || compiled.length === 0) {
         skipped += 1;
         continue;
@@ -224,6 +257,7 @@ export const recipeTriggerDeclarations = (
           pattern: sub.pattern,
           ...(sub.filter !== undefined ? { filter: sub.filter } : {}),
           ...(sub.fields !== undefined ? { fields: sub.fields } : {}),
+          ...(typeof entry.template_variable === 'string' ? { template_variable: entry.template_variable } : {}),
         });
         declaredAny = true;
       }
@@ -269,14 +303,24 @@ export const recipeTriggerDeclarations = (
   return { declarations, skipped };
 };
 
+/** D-319 — the dishes each recipe was switched on as. */
+const dishesByRecipe = (dishes: ReadonlyArray<ReconcilerDish>): Map<string, ReconcilerDish[]> => {
+  const byRecipe = new Map<string, ReconcilerDish[]>();
+  for (const dish of dishes) {
+    byRecipe.set(dish.recipe_id, [...(byRecipe.get(dish.recipe_id) ?? []), dish]);
+  }
+  return byRecipe;
+};
+
 export const reconcileDeclarativeTriggers = (
   deps: ReconcileDeclarativeTriggersDeps,
 ): ReconcileResult => {
   const now = deps.now ?? (() => Date.now());
   const mint = deps.mintTriggerId ?? defaultMint;
   const vendorEntities = deps.getVendorEntities?.() ?? [];
+  const dishes = dishesByRecipe(deps.listDishes?.() ?? []);
 
-  // Declared set from installed recipes.
+  // Declared set: each installed recipe's triggers, once per dish of it.
   const declared = new Map<string, Declaration>();
   let skipped = 0;
   const declare = (d: Declaration): void => {
@@ -284,54 +328,86 @@ export const reconcileDeclarativeTriggers = (
     if (!declared.has(key)) declared.set(key, d);
   };
   for (const row of deps.listStored()) {
+    const ofRecipe = dishes.get(row.recipe_id) ?? [];
+    if (ofRecipe.length === 0) continue;
     let definition: RecipeDefinition;
     try {
       definition = JSON.parse(row.recipe_json) as RecipeDefinition;
     } catch {
       continue;
     }
-    const recipe = recipeTriggerDeclarations(
-      { recipe_id: row.recipe_id, publisher_id: row.publisher_id, definition },
-      vendorEntities,
-    );
-    skipped += recipe.skipped;
-    for (const d of recipe.declarations) declare(d);
+    for (const dish of ofRecipe) {
+      const recipe = recipeTriggerDeclarations(
+        { recipe_id: row.recipe_id, publisher_id: row.publisher_id, definition },
+        vendorEntities,
+        dish.config_overlay,
+      );
+      skipped += recipe.skipped;
+      for (const d of recipe.declarations) declare({ ...d, dish_id: dish.dish_id });
+    }
   }
 
   // Managed rows currently in the store.
   const managed = deps.store.list().filter((t) => t.origin === 'recipe');
-  const managedByKey = new Map(
-    managed.map((t) => [
-      declarationKey({
-        recipe_id: t.recipe_id,
-        publisher_id: t.publisher_id,
-        pattern: t.pattern,
-        ...(t.filter !== undefined ? { filter: t.filter } : {}),
-        ...(t.fields !== undefined ? { fields: t.fields } : {}),
-      }),
-      t,
-    ] as const),
-  );
+  const managedByKey = new Map(managed.map((t) => [declarationKey(rowDeclaration(t)), t] as const));
 
-  // D-296 — per recipe, the single row an update may carry to its single new
-  // declaration (`carriedTriggerFor`).
-  const recipeOf = (d: { publisher_id: string; recipe_id: string }): string =>
-    `${d.publisher_id}\u0000${d.recipe_id}`;
-  const managedByRecipe = new Map<string, Array<{ key: string; row: EventTrigger }>>();
-  for (const [key, row] of managedByKey) {
-    const list = managedByRecipe.get(recipeOf(row)) ?? [];
-    list.push({ key, row });
-    managedByRecipe.set(recipeOf(row), list);
+  // D-315 §5.1 — a row narrowed to its dish's template follows the setting:
+  // when the owner picks another template, the row is re-pointed in place — on
+  // or off as it was, its history kept. Paired only when exactly one row and
+  // one declaration of the dish differ by the template alone; anything else is
+  // left to the rules below.
+  let repointed = 0;
+  const withoutTemplate = (filter: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
+    if (filter === undefined) return undefined;
+    const rest = Object.fromEntries(Object.entries(filter).filter(([path]) => path !== 'record.template'));
+    return Object.keys(rest).length > 0 ? rest : undefined;
+  };
+  const looseKey = (d: Declaration): string => {
+    const filter = withoutTemplate(d.filter);
+    return declarationKey({
+      recipe_id: d.recipe_id,
+      publisher_id: d.publisher_id,
+      dish_id: d.dish_id ?? null,
+      pattern: d.pattern,
+      ...(filter !== undefined ? { filter } : {}),
+      ...(d.fields !== undefined ? { fields: d.fields } : {}),
+    });
+  };
+  const followers = [...declared].filter(([key, d]) => !managedByKey.has(key) && d.template_variable !== undefined);
+  for (const [key, decl] of followers) {
+    const loose = looseKey(decl);
+    const rivals = followers.filter(([, other]) => looseKey(other) === loose);
+    const rows = [...managedByKey].filter(([rowKey, row]) =>
+      !declared.has(rowKey)
+      && typeof row.filter?.['record.template'] === 'string'
+      && looseKey(rowDeclaration(row)) === loose);
+    if (rivals.length !== 1 || rows.length !== 1) continue;
+    const [rowKey, row] = rows[0]!;
+    const updated = deps.store.update(row.trigger_id, { filter: decl.filter ?? null });
+    if (updated === null) continue;
+    managedByKey.delete(rowKey);
+    managedByKey.set(key, updated);
+    repointed += 1;
   }
-  const declaredByRecipe = new Map<string, string[]>();
+
+  // D-296 — per dish, the single row an update may carry to its single new
+  // declaration (`carriedTriggerFor`).
+  const dishOf = (d: Declaration): string =>
+    JSON.stringify([d.publisher_id, d.recipe_id, d.dish_id ?? null]);
+  const managedByDish = new Map<string, Array<{ key: string; row: EventTrigger }>>();
+  for (const [key, row] of managedByKey) {
+    const at = dishOf(rowDeclaration(row));
+    managedByDish.set(at, [...(managedByDish.get(at) ?? []), { key, row }]);
+  }
+  const declaredByDish = new Map<string, string[]>();
   for (const [key, decl] of declared) {
-    declaredByRecipe.set(recipeOf(decl), [...(declaredByRecipe.get(recipeOf(decl)) ?? []), key]);
+    declaredByDish.set(dishOf(decl), [...(declaredByDish.get(dishOf(decl)) ?? []), key]);
   }
   // The owner's state is read before anything is written: a row a reviewed
   // execution parks (D-261) reads `enabled: false` but is on for the owner.
   const carryTo = new Map<string, { row: EventTrigger; enabled: boolean }>();
-  for (const [recipe, rows] of managedByRecipe) {
-    const carried = carriedTriggerFor(rows, declaredByRecipe.get(recipe) ?? []);
+  for (const [dish, rows] of managedByDish) {
+    const carried = carriedTriggerFor(rows, declaredByDish.get(dish) ?? []);
     if (carried !== null) {
       carryTo.set(carried.newKey, { row: carried.row, enabled: deps.store.ownerEnabled(carried.row.trigger_id) });
     }
@@ -347,15 +423,14 @@ export const reconcileDeclarativeTriggers = (
       recipe_id: decl.recipe_id,
       publisher_id: decl.publisher_id,
       pattern: decl.pattern,
-      // D-179 P5c (owner decision 2026-06-12) — recipe-origin triggers
-      // materialize DISARMED. The user arms them in #automation; the
-      // enable path then mints + binds the managed dish. Default-off
-      // matches the trust direction (D-177): installing a pack never
-      // silently starts reactive automation.
+      // D-319 — a row the reconciler makes starts OFF: switching its dish on
+      // is what starts it (`dish-automation.ts`), so neither a recipe update
+      // that declares a new trigger nor a dish made before D-319 starts
+      // anything by itself (D-179 P5c's posture).
       // D-296 — except the one row an update CARRIES OVER, which keeps the
-      // owner's armed state, settings dish and poll interval.
+      // owner's armed state and poll interval.
       enabled: carry?.enabled ?? false,
-      ...(prior?.dish_id !== undefined && prior.dish_id !== null ? { dish_id: prior.dish_id } : {}),
+      dish_id: decl.dish_id ?? null,
       ...(prior?.watch_interval_ms !== undefined && prior.watch_interval_ms !== null
         ? { watch_interval_ms: prior.watch_interval_ms }
         : {}),
@@ -364,14 +439,6 @@ export const reconcileDeclarativeTriggers = (
       ...(decl.filter !== undefined ? { filter: decl.filter } : {}),
       ...(decl.fields !== undefined ? { fields: decl.fields } : {}),
     });
-    // The settings dish moves with the row: re-pointing its manager keeps the
-    // old row's removal below off it, and a later uninstall still dissolves it.
-    if (prior?.dish_id !== undefined && prior.dish_id !== null && deps.dishStore) {
-      const dish = deps.dishStore.get(prior.dish_id);
-      if (dish && dish.managed_by_trigger_id === prior.trigger_id) {
-        deps.dishStore.set({ ...dish, dish_id: prior.dish_id, managed_by_trigger_id: trigger.trigger_id });
-      }
-    }
     // Its last outcome too: Automation shows it ("last fired", tripped).
     if (prior !== undefined && prior.last_fired_at !== null) {
       deps.store.update(trigger.trigger_id, { last_fired_at: prior.last_fired_at, last_error: prior.last_error });
@@ -382,19 +449,8 @@ export const reconcileDeclarativeTriggers = (
   let removed = 0;
   for (const [key, row] of managedByKey) {
     if (declared.has(key)) continue;
-    if (deps.store.remove(row.trigger_id)) {
-      removed += 1;
-      // D-179 P5c — dissolve the row's auto-minted dish (uninstall =
-      // end of the execution instance). Managed-marker match only.
-      if (row.dish_id !== undefined && deps.dishStore) {
-        const dish = deps.dishStore.get(row.dish_id);
-        if (dish && dish.managed_by_trigger_id === row.trigger_id) {
-          deps.dishStore.delete(row.dish_id);
-          deps.dishContextStore?.clear(row.dish_id);
-        }
-      }
-    }
+    if (deps.store.remove(row.trigger_id)) removed += 1;
   }
 
-  return { created, removed, skipped, changed: created > 0 || removed > 0 };
+  return { created, removed, repointed, skipped, changed: created > 0 || removed > 0 || repointed > 0 };
 };

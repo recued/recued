@@ -63,12 +63,14 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
       return { value: triggerPreapprovalMaterial({ ...row, enabled }), enabled,
         recipe_id: row.recipe_id, publisher_id: row.publisher_id };
     }
-    const stored = deps.recipes.getStored(key);
-    const recipe = deps.recipes.get(key);
+    // D-319 — `next_auto_run` is one DISH's timer, keyed by the dish.
+    const timer = deps.autoRun.get(key);
+    if (!timer) return null;
+    const stored = deps.recipes.getStored(timer.recipe_id);
+    const recipe = deps.recipes.get(timer.recipe_id);
     if (!stored || !recipe?.auto_run) return null;
-    const enabled = logical(kind, key, deps.autoRun.isEnabled(key, recipe.auto_run.default_enabled ?? true));
-    return { value: { enabled, dish_id: deps.autoRun.getDishId(key) }, enabled,
-      recipe_id: recipe.recipe_id, publisher_id: stored.publisher_id };
+    const enabled = logical(kind, key, timer.enabled);
+    return { value: { enabled }, enabled, recipe_id: recipe.recipe_id, publisher_id: stored.publisher_id };
   };
   const validate = (plan: PreparedFutureExecution, selecting = false): void => {
     const target = plan.target;
@@ -110,9 +112,10 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
 
   return {
     /** Owner status and preparation revision use the same logical target as
-     * the driver. Physical parked settings must not look like a disarmed job. */
-    describeAutoRun(recipeId: string): Pick<AutoRunStatusEntry, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null {
-      return describeAutomation('next_auto_run', recipeId);
+     * the driver. Physical parked settings must not look like a disarmed job.
+     * D-319 — by the dish whose timer it is. */
+    describeAutoRun(dishId: string): Pick<AutoRunStatusEntry, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null {
+      return describeAutomation('next_auto_run', dishId);
     },
     describeTrigger: (triggerId: string) => describeAutomation('next_trigger', triggerId),
     describeSchedule: (scheduleId: string) => describeAutomation('next_schedule', scheduleId),
@@ -128,7 +131,7 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
             qualifying_sequence: 0, due_at: activation.run_at, was_enabled: false };
         }
         const key = activation.kind === 'next_schedule' ? activation.schedule_id
-          : activation.kind === 'next_trigger' ? activation.trigger_id : activation.recipe_id;
+          : activation.kind === 'next_trigger' ? activation.trigger_id : activation.dish_id;
         if (active(activation.kind, key)) throw new RpcError('preapproval_already_claimed', 'This automation already has a reviewed execution.', 409);
         const current = material(activation.kind, key);
         if (!current || request.subject.kind !== 'recipe' || current.recipe_id !== request.subject.recipe_id
@@ -192,24 +195,25 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
     /** Capture an ordinary poll before entering the engine. The returned host
      * closure cannot be reconstructed from a public recipe/run identifier. A
      * poll begun before owner acceptance must not take that owner's slot. */
-    ordinaryAutoRunPoll(recipeId: string, prior?: NonNullable<Checkpoint['auto_run_qualification']>) {
-      if (prior && prior.recipe_id !== recipeId) stale();
+    ordinaryAutoRunPoll(recipeId: string, dishId: string, prior?: NonNullable<Checkpoint['auto_run_qualification']>) {
+      if (prior && (prior.recipe_id !== recipeId || prior.dish_id !== dishId)) stale();
       const observed = prior ?? db.transaction(() => {
-        const current = material('next_auto_run', recipeId);
-        if (!current?.enabled || active('next_auto_run', recipeId) || deps.circuits.get(recipeId)?.auto_disabled) stale();
-        return synchronizePreapprovalIdentity(db, 'next_auto_run', recipeId, current.value)!;
+        const current = material('next_auto_run', dishId);
+        if (!current?.enabled || current.recipe_id !== recipeId || active('next_auto_run', dishId)
+          || deps.circuits.get(dishId)?.auto_disabled) stale();
+        return synchronizePreapprovalIdentity(db, 'next_auto_run', dishId, current.value)!;
       }).immediate();
       let used = false;
-      const qualification = { recipe_id: recipeId, incarnation: observed.incarnation,
+      const qualification = { recipe_id: recipeId, dish_id: dishId, incarnation: observed.incarnation,
         revision: observed.revision, qualifying_sequence: observed.qualifying_sequence };
       return { qualification, qualify: () => db.transaction(() => {
         if (used) stale();
-        const current = material('next_auto_run', recipeId);
-        if (!current?.enabled || active('next_auto_run', recipeId) || deps.circuits.get(recipeId)?.auto_disabled) stale();
-        const identity = synchronizePreapprovalIdentity(db, 'next_auto_run', recipeId, current.value)!;
+        const current = material('next_auto_run', dishId);
+        if (!current?.enabled || active('next_auto_run', dishId) || deps.circuits.get(dishId)?.auto_disabled) stale();
+        const identity = synchronizePreapprovalIdentity(db, 'next_auto_run', dishId, current.value)!;
         if (identity.incarnation !== observed.incarnation || identity.revision !== observed.revision
           || identity.qualifying_sequence !== observed.qualifying_sequence) stale();
-        advancePreapprovalOccurrence(db, 'next_auto_run', recipeId);
+        advancePreapprovalOccurrence(db, 'next_auto_run', dishId);
         used = true;
       }).immediate() };
     },
@@ -233,7 +237,7 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
         if (target.kind === 'one_shot') deps.schedules.set(oneShotSchedule(plan, record.accepted_at));
         else if (target.kind === 'next_schedule') deps.schedules.updateRun(target.key, { enabled: false });
         else if (target.kind === 'next_trigger') deps.triggers.update(target.key, { enabled: false });
-        else deps.autoRun.setEnabled(target.key, false);
+        else deps.autoRun.setEnabled(target.key, plan.recipe.recipe_id, false);
       });
     },
     /** All scheduler and UI readers use this projection. The physical row
@@ -360,7 +364,7 @@ export const createPreapprovalActivations = (deps: PreapprovalAutomationDeps) =>
                 : nextCronMatch(schedule.cron_expression.trim().split(/\s+/), Math.max(now(), row.due_at ?? 0) + 60_000),
             });
           } else if (row.target_kind === 'next_trigger' && current) deps.triggers.update(row.target_key, { enabled: restore });
-          else if (row.target_kind === 'next_auto_run' && current) deps.autoRun.setEnabled(row.target_key, restore);
+          else if (row.target_kind === 'next_auto_run' && current) deps.autoRun.setEnabled(row.target_key, current.recipe_id, restore);
           else if (row.target_kind === 'one_shot') deps.schedules.updateRun(row.target_key, { enabled: false, next_run_at: null, ...outcome });
         });
         db.prepare('UPDATE preapproval_activations SET retired_at=? WHERE future_ref=? AND retired_at IS NULL').run(now(), futureRef);

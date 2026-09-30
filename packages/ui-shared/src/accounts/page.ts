@@ -31,8 +31,10 @@
 import {
   buildOpenerRelayRedirectUri,
   isLoopbackOrigin,
+  isProDdnsHost,
   OAUTH_CLOUD_CALLBACK_ORIGIN,
   oauthAppIssuerForProvider,
+  selfServesOAuthCallback,
   type CollectionAuthState,
   type OAuthAppConfigSnapshot,
   type OAuthAppIssuer,
@@ -1589,9 +1591,11 @@ const renderOAuthFinishing = (
  *  a free Gmail account without one → IMAP with an app password for mail, and
  *  no Google Calendar (its CalDAV takes no password). Publishing needs Branding
  *  on that verified domain, and every domain the OAuth client uses must be
- *  listed too — so a page whose callback is on recued.com (app.recued.com, or a
- *  LAN address bouncing through it) cannot connect a published app, and says so.
- *  `appOrigin` is the page's own address; absent, the guide names both.
+ *  listed too — so a page whose callback is on a Recued domain cannot connect
+ *  a published app, and says so: app.recued.com and a LAN address (recued.com),
+ *  and a Pro `<handle>.recued.net` address (recued.net). The server at the
+ *  owner's OWN domain takes its callback there, which they can verify.
+ *  `appOrigin` is the page's own address; absent, the guide names them all.
  *
  *  ⛔ MICROSOFT IS THE OTHER WAY AROUND. A personal account makes its own app
  *  (in a directory of its own). A work or school account usually cannot: since
@@ -1602,36 +1606,49 @@ const renderOAuthFinishing = (
  *  fallback: Outlook.com and Microsoft 365 both refuse passwords from other
  *  mail apps.
  *
- *  ⛔ AND ONLY app.recued.com AND `http://localhost` CAN CONNECT IT. An app
- *  that takes personal accounts may not have a query string in its callback.
- *  app.recued.com's is bare (the cloud page relays a `frelay_` state to its
- *  own origin), but a LAN page's names its own address in the query, and the
- *  Azure portal refuses an `http` callback at 127.0.0.1. Either callback is
- *  the same for every owner: app.recued.com's is fixed, and Microsoft ignores
- *  the port of a localhost one, so one registered URL serves an organization. */
+ *  ⛔ AND ONLY THREE KINDS OF PAGE CAN CONNECT IT: app.recued.com,
+ *  `http://localhost`, and the server's own https address (a Pro recued.net
+ *  address or the owner's own domain — added 2026-09-29, as a Pro owner who
+ *  opened Recued there could not connect at all). An app that takes personal
+ *  accounts may not have a query string in its callback. app.recued.com's is
+ *  bare (the cloud page relays a `frelay_` state to its own origin), and the
+ *  other two serve their own bare callback; but a page that bounces through
+ *  app.recued.com (a LAN or bare IP address) names itself in the query, and
+ *  the Azure portal refuses an `http` callback at 127.0.0.1. app.recued.com's
+ *  callback is the same for every owner, and Microsoft ignores the port of a
+ *  localhost one, so one registered URL serves an organization. */
 const oauthAppGuide = (
   issuer: OAuthAppIssuer,
   open = false,
   appOrigin?: string,
 ): string => {
   const loopback = appOrigin !== undefined && isLoopbackOrigin(appOrigin);
+  // The server's own https address takes its callback itself, like loopback
+  // (`selfServesOAuthCallback`). Its domain decides what Google allows: the
+  // owner's own domain can be verified, a Pro recued.net address cannot.
+  const ownHttps = appOrigin !== undefined && !loopback && selfServesOAuthCallback(appOrigin);
+  const proAddress = ownHttps && isProDdnsHost(new URL(appOrigin).hostname);
   const addressStep = appOrigin === undefined
-    ? 'External only — a published app needs this form open at the server&rsquo;s own address, such as <code>http://127.0.0.1:7717/webclient</code>. From app.recued.com or a LAN address the callback is on recued.com, which you cannot verify.'
+    ? 'External only — a published app needs this form open where its callback is on a domain you can verify: Recued on your own domain, or the server&rsquo;s own address, such as <code>http://127.0.0.1:7717/webclient</code>. From app.recued.com, a Pro recued.net address or a LAN address the callback is on a Recued domain, which you cannot verify.'
     : loopback
       ? 'External only — this page is open at the server&rsquo;s own address, so its callback (step 2 below) works with a published app.'
-      : '<strong>External only — this page cannot connect a published app.</strong> Its callback (step 2 below) is on recued.com, which you cannot verify. Open Recued at the server&rsquo;s own address instead: <code>http://127.0.0.1:7717/webclient</code> on the server, or through a tunnel from your computer with <code>ssh -L 7717:127.0.0.1:7717 you@your-server</code>. You connect once. After that the account keeps working here too.';
+      : ownHttps && !proAddress
+        ? 'External only — this page is Recued on your own domain, so its callback (step 2 below) works with a published app. Under Authorized domains in step 4, list this page&rsquo;s domain too if it is not there already, and verify it.'
+        : `<strong>External only — this page cannot connect a published app.</strong> Its callback (step 2 below) is on ${proAddress ? 'recued.net, the domain of your Pro address' : 'recued.com'}, which you cannot verify. Open Recued on your own domain instead, or at the server&rsquo;s own address: <code>http://127.0.0.1:7717/webclient</code> on the server, or through a tunnel from your computer with <code>ssh -L 7717:127.0.0.1:7717 you@your-server</code>. You connect once. After that the account keeps working here too.`;
   const localhostPage = '<code>http://localhost:7717/webclient</code>';
   const tunnel = 'No screen on the server? Make a tunnel from your computer with <code>ssh -L 7717:127.0.0.1:7717 you@your-server</code> and open that address there.';
   const onLocalhost = loopback && new URL(appOrigin).hostname === 'localhost';
   const microsoftAddressStep = appOrigin === undefined
-    ? `Open this form on app.recued.com, or at the server&rsquo;s own address, ${localhostPage}. Microsoft refuses the callback of a LAN address, and an <code>http</code> one at 127.0.0.1. ${tunnel} You connect once. After that the account keeps working from any address.`
+    ? `Open this form on app.recued.com, at the server&rsquo;s own https address (a Pro recued.net address or your own domain), or at ${localhostPage}. Microsoft refuses the callback of a LAN address or a bare IP address, and an <code>http</code> one at 127.0.0.1. ${tunnel} You connect once. After that the account keeps working from any address.`
     : appOrigin === OAUTH_CLOUD_CALLBACK_ORIGIN
       ? 'This page is app.recued.com, so its callback (step 2 below) works.'
       : onLocalhost
         ? 'This page is open at <code>localhost</code>, the server&rsquo;s own address, so its callback (step 2 below) works.'
         : loopback
           ? `<strong>Open this page at ${localhostPage} instead</strong>, or use app.recued.com. Microsoft refuses an <code>http</code> callback at a numbered address like this one: the Azure portal will not take it. <code>localhost</code> is the same server under another name.`
-          : `<strong>This page cannot connect the app these steps make.</strong> Its callback (step 2 below) names this page&rsquo;s address after a <code>?</code>, and Microsoft refuses that for an app that takes personal accounts. Connect from app.recued.com instead, or from the server&rsquo;s own address, ${localhostPage}. ${tunnel} You connect once. After that the account keeps working here too.`;
+          : ownHttps
+            ? 'This page is the server&rsquo;s own https address, so its callback (step 2 below) works.'
+            : `<strong>This page cannot connect the app these steps make.</strong> Its callback (step 2 below) names this page&rsquo;s address after a <code>?</code>, and Microsoft refuses that for an app that takes personal accounts. Connect from app.recued.com instead, from the server&rsquo;s own https address (a Pro recued.net address or your own domain), or from the server&rsquo;s own address, ${localhostPage}. ${tunnel} You connect once. After that the account keeps working here too.`;
   const routes =
     issuer === 'google'
       ? `

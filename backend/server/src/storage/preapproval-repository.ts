@@ -557,9 +557,9 @@ export class PreapprovalRepository {
       const note = siblingAutomationNote(this.db, {
         recipe_id: plan.recipe.recipe_id,
         // Only a clock target has a schedule row to exclude from its own
-        // sweep. `next_auto_run` / `next_trigger` key on recipe / trigger id,
-        // which is not a `schedule_id` — excluding by it would be a no-op
-        // match against an unrelated namespace.
+        // sweep. `next_auto_run` / `next_trigger` key on dish / trigger id
+        // (D-319), which is not a `schedule_id` — excluding by it would be a
+        // no-op match against an unrelated namespace.
         target_schedule_id: plan.target.kind === 'next_schedule' || plan.target.kind === 'one_shot'
           ? plan.target.key : null,
         dish_id: this.boundDishId(plan),

@@ -45,7 +45,7 @@ import {
   type MailFactValue,
   type MailTemplate,
 } from '@recued/contracts';
-import { containsPotentialPiiAliasLiteral } from '@recued/transforms';
+import { holdsPiiAliasToken } from '@recued/transforms';
 
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import type { MailFactAiJob, MailFactStore } from '../storage/mail-fact-store.js';
@@ -298,15 +298,10 @@ export const buildMailFactAiInput = (
 
 /** A string, or any key or string inside a value, still in alias form after
  *  the answer was mapped back (§9): an alias the ledger never issued, or an
- *  aliased key, which mapping back leaves as it is. */
-export const holdsAlias = (value: unknown): boolean => {
-  if (typeof value === 'string') return containsPotentialPiiAliasLiteral(value);
-  if (Array.isArray(value)) return value.some(holdsAlias);
-  if (value !== null && typeof value === 'object') {
-    return Object.entries(value).some(([key, item]) => containsPotentialPiiAliasLiteral(key) || holdsAlias(item));
-  }
-  return false;
-};
+ *  aliased key, which mapping back leaves as it is.
+ *  ⛔ The EXACT alias grammar, not the cheap pre-scan: that one also matches
+ *  "PII." and `pii.csv`, which a faithful value can say, and refused them. */
+export const holdsAlias = (value: unknown): boolean => holdsPiiAliasToken(value);
 
 const ALIAS_NOT_RESTORED = 'alias not restored';
 

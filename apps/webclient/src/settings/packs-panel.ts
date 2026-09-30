@@ -328,6 +328,7 @@ import type {
   InstallAudienceSelection,
   InstallGrantSelection,
   InstallScopeWho,
+  MailTemplateInstallChoice,
   PackDependencyInstallScope,
   PackListEntry,
   PacksResolveResult,
@@ -409,7 +410,7 @@ import {
   resolveInstallDialogAccess,
   resolveInstallDialogAudience,
 } from './packs-install-dialog.js';
-import type { InstallPreview, InstallWebhookChoice } from './packs-install-dialog.js';
+import type { InstallMailTemplateChoice, InstallPreview, InstallWebhookChoice } from './packs-install-dialog.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 // Slice C — cross-pack recipe collision detection. Pure function over
 // the panel's `packs` array; recomputed on every render (cheap: bounded
@@ -709,6 +710,9 @@ export type PacksInstallCaller = (args: {
   /** D-310 — the owner's Access choice for each pack the install brings in.
    *  Omitted when the preview listed none (or predates D-310). */
   dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
+  /** D-315 §5.2 — which template stays on where a recipe's template reads the
+   *  same mail as one already on. Omitted when the preview named none. */
+  mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 /** D-145 PA10 follow-on Slice B — `packs.uninstall` caller seam. The
@@ -791,6 +795,8 @@ export type PacksInstallBySlugCaller = (args: {
   webhook_bindings?: ReadonlyArray<{ pack_slug: string; binding: string; ingress_id: string }>;
   /** D-310 — see {@link PacksInstallCaller}. */
   dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
+  /** D-315 — see {@link PacksInstallCaller}. */
+  mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
 }) => Promise<{ result: BulkPackInstallResultLike }>;
 
 export type PacksPanelState = 'loading' | 'ready' | 'error';
@@ -1307,6 +1313,9 @@ export const mountPacksPanel = (
   const dialogChosenConnection = new Map<string, string | undefined>();
   /** D-295 — the owner's webhook picks for the open dialog: choice key → ingress. */
   const dialogWebhookPicks = new Map<string, Map<string, string>>();
+  /** D-315 §5.2 — the owner's keep choice for each template a recipe brings
+   *  that meets one already on: choice key → which stays on. Absent ⇒ the recipe's. */
+  const dialogMailTemplateKeep = new Map<string, Map<string, 'recipe' | 'existing'>>();
   /** D-310 — the owner's Access pick for each pack the open dialog's install
    *  brings in: pack slug → (brought-in pack slug → tier). Absent ⇒ Read only. */
   const dialogDependencyAccess = new Map<string, Map<string, InstallAccessTier>>();
@@ -1322,6 +1331,7 @@ export const mountPacksPanel = (
     dialogChosenConnection.delete(slug);
     dialogConnectExpanded.delete(slug);
     dialogWebhookPicks.delete(slug);
+    dialogMailTemplateKeep.delete(slug);
     dialogDependencyAccess.delete(slug);
   };
   /** D-247 D15 — the server-resolved install preview, cached against the
@@ -2720,6 +2730,29 @@ export const mountPacksPanel = (
     && opts.runInstallPreview !== undefined
     && installPreviewFor(pack.slug, pack.manifest) === undefined;
 
+  /** D-315 §5.2 — the templates the open install's recipes bring, from the
+   *  preview, each with which stays on where it meets one already on: the
+   *  owner's choice, else the recipe's (the one its author tested). */
+  const mailTemplateChoicesFor = (
+    pack: PackListEntry & { manifest: BulkPackManifest },
+  ): InstallMailTemplateChoice[] | undefined => {
+    const entries = installPreviewFor(pack.slug, pack.manifest)?.mail_templates;
+    if (entries === undefined || entries.length === 0) return undefined;
+    const keeps = dialogMailTemplateKeep.get(pack.slug);
+    return entries.map((entry) => {
+      const key = `${entry.recipe_id}\u0000${entry.variable}`;
+      return { key, entry, keep: keeps?.get(key) ?? 'recipe' };
+    });
+  };
+
+  const pickMailTemplateInternal = (key: string, keep: 'recipe' | 'existing'): void => {
+    if (dialogOpenFor === null || installing) return;
+    const keeps = dialogMailTemplateKeep.get(dialogOpenFor) ?? new Map<string, 'recipe' | 'existing'>();
+    keeps.set(key, keep);
+    dialogMailTemplateKeep.set(dialogOpenFor, keeps);
+    render();
+  };
+
   const pickWebhookInternal = (key: string, ingressId: string): void => {
     if (dialogOpenFor === null || installing) return;
     const picks = dialogWebhookPicks.get(dialogOpenFor) ?? new Map<string, string>();
@@ -2802,6 +2835,12 @@ export const mountPacksPanel = (
       ingress_id: choice.pick!,
     }));
     const dependencyScopes = dependencyInstallScopesFor(target);
+    // D-315 §5.2 — the owner's answer for each template that meets one already on.
+    const mailTemplateChoices = (target.manifest !== undefined
+      ? mailTemplateChoicesFor(target as PackListEntry & { manifest: BulkPackManifest }) ?? []
+      : [])
+      .filter((choice) => choice.entry.twin !== undefined)
+      .map((choice) => ({ recipe_id: choice.entry.recipe_id, variable: choice.entry.variable, keep: choice.keep }));
     installing = true;
     dialogError = null;
     pendingInstallDialogFocus = { kind: 'submit', slug: submittingSlug };
@@ -2826,6 +2865,7 @@ export const mountPacksPanel = (
                 : {}),
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
+              ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
             })
           : await (opts.runInstall as PacksInstallCaller)({
               manifest: target.manifest,
@@ -2839,6 +2879,7 @@ export const mountPacksPanel = (
                 : {}),
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
+              ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
             });
         if (disposed) return;
         if (!response.result.ok) {
@@ -3223,6 +3264,15 @@ export const mountPacksPanel = (
         };
       })(),
       onPickWebhook: (key, ingressId) => pickWebhookInternal(key, ingressId),
+      ...((): { mailTemplates?: InstallMailTemplateChoice[] } => {
+        const choices = mailTemplateChoicesFor(pack);
+        return choices !== undefined ? { mailTemplates: choices } : {};
+      })(),
+      onPickMailTemplate: (key, keep) => pickMailTemplateInternal(key, keep),
+      ...((): { mailFactSources?: InstallPreview['mail_fact_sources'] } => {
+        const sources = installPreviewFor(pack.slug, pack.manifest)?.mail_fact_sources;
+        return sources !== undefined && sources.length > 0 ? { mailFactSources: sources } : {};
+      })(),
       onSubmit: () => {
         void submitInstall();
       },
@@ -5194,6 +5244,36 @@ export const PACKS_PANEL_STYLES = `
   width: 16px;
   height: 16px;
   margin: 0;
+  accent-color: var(--accent);
+}
+/* D-295 webhooks and D-315 mail templates share these: each choice on its own
+   row, its hints quieter than the question. */
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhook {
+  margin: 8px 0 12px;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhook-what,
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhooks-intro,
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhooks-hint {
+  margin: 4px 0;
+  line-height: 1.45;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhooks-hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhook-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-webhook-option input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-dep-needs {

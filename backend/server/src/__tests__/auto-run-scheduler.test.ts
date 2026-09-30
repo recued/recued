@@ -4,9 +4,9 @@ import { CIRCUIT_BREAKER_THRESHOLD } from '@recued/contracts';
 import type { RecipeDefinition } from '@recued/contracts';
 import {
   createCircuitBreakerStore,
-  createServerAutoRunScheduler,
-  type AutoRunSettingsStore,
+  createServerAutoRunScheduler as createServerAutoRunSchedulerBare,
   type CircuitBreakerStore,
+  type ServerAutoRunConfig,
   type ServerAutoRunHandle,
 } from '../auto-run-scheduler.js';
 import type { RecipeStore } from '../recipe-store.js';
@@ -14,6 +14,16 @@ import type { StoredRecipe } from '../types.js';
 import type { ExecuteRequest, ExecuteResponse } from '../types.js';
 
 const SEC = 1000;
+
+/** D-319 — one timer per dish, keyed by the dish. Unless a test says
+ *  otherwise, each recipe here is switched on as ONE dish whose id is the
+ *  recipe's own, so the roster key reads as it always did. */
+const oneDishEach: NonNullable<ServerAutoRunConfig['dishStore']> = {
+  get: (dish_id) => ({ dish_id, recipe_id: dish_id, enabled: true } as never),
+  listByRecipe: (recipe_id) => [{ dish_id: recipe_id, recipe_id, enabled: true } as never],
+};
+const createServerAutoRunScheduler = (config: ServerAutoRunConfig): ServerAutoRunHandle =>
+  createServerAutoRunSchedulerBare({ dishStore: oneDishEach, ...config });
 
 const flush = () => new Promise<void>((r) => setImmediate(r));
 
@@ -172,14 +182,14 @@ describe('createCircuitBreakerStore', () => {
 
   it('roundtrips through SQLite', () => {
     store.set({
-      recipe_id: 'r',
+      dish_id: 'r', recipe_id: 'r',
       consecutive_failures: 3,
       auto_disabled: true,
       last_failure_at: 1_700_000_000_000,
       last_failure_reason: 'boom',
     });
     expect(store.get('r')).toEqual({
-      recipe_id: 'r',
+      dish_id: 'r', recipe_id: 'r',
       consecutive_failures: 3,
       auto_disabled: true,
       last_failure_at: 1_700_000_000_000,
@@ -189,7 +199,7 @@ describe('createCircuitBreakerStore', () => {
 
   it('persists across a simulated restart (new store over same db)', () => {
     store.set({
-      recipe_id: 'r',
+      dish_id: 'r', recipe_id: 'r',
       consecutive_failures: CIRCUIT_BREAKER_THRESHOLD,
       auto_disabled: true,
     });
@@ -201,7 +211,7 @@ describe('createCircuitBreakerStore', () => {
   });
 
   it('clear removes the row', () => {
-    store.set({ recipe_id: 'r', consecutive_failures: 1, auto_disabled: false });
+    store.set({ dish_id: 'r', recipe_id: 'r', consecutive_failures: 1, auto_disabled: false });
     store.clear('r');
     expect(store.get('r')).toBeNull();
   });
@@ -231,24 +241,22 @@ describe('ServerAutoRunHandle — roster build', () => {
     expect([...handle.roster.keys()]).toEqual(['reactive']);
   });
 
-  it('keeps a default-disabled definition out of the roster without a settings store', async () => {
-    const recipe = makeReactiveRecipe('owner-armed');
-    recipe.auto_run = {
-      interval_ms: 15 * 60 * SEC,
-      default_enabled: false,
-    };
+  it('D-319 — a recipe with no dish is not on the roster, whatever `default_enabled` says', async () => {
+    const recipe = makeReactiveRecipe('eager');
+    recipe.auto_run = { interval_ms: 15 * 60 * SEC, default_enabled: true };
     const db = new Database(':memory:');
     const handle = createServerAutoRunScheduler({
       recipeStore: mkRecipeStore([recipe]),
       execute: mkExecutor([true]).execute,
       circuitStore: createCircuitBreakerStore(db),
+      dishStore: { get: () => null, listByRecipe: () => [] },
       now: () => 0,
       setTimer: () => 1,
       clearTimer: () => {},
     });
 
     await handle.refreshRoster();
-    expect(handle.roster.has('owner-armed')).toBe(false);
+    expect(handle.roster.size).toBe(0);
   });
 
   it('rolls back a failed start so the same handle can be retried', async () => {
@@ -324,32 +332,33 @@ describe('ServerAutoRunHandle.tick', () => {
     // stamp fails against the REASON, not just against a shape.
     expect(Object.hasOwn(calls[0].execution_source!, 'contract_id')).toBe(false);
     expect(calls[0].process_id).toBe(handle.roster.get('r')!.process_id);
-    // No config dish set ⇒ a dishless fire (recipe defaults), unchanged.
-    expect(calls[0].dish_id).toBeUndefined();
+    // D-319 — the timer fires AS its dish.
+    expect(calls[0].dish_id).toBe('r');
   });
 
-  it('D-179 — threads the current managed config dish_id into the fire', async () => {
-    const { execute, calls } = mkExecutor([true]);
-    const dishIds = new Map<string, string | null>([['r', 'dsh_cfg1']]);
-    const settingsStore: AutoRunSettingsStore = {
-      isEnabled: () => true,
-      setEnabled: () => {},
-      listDisabled: () => [],
-      getDishId: (id) => dishIds.get(id) ?? null,
-      setDishId: (id, d) => { dishIds.set(id, d); },
-    };
+  it('D-319 — each dish of a recipe is its own timer, fired as that dish', async () => {
+    const { execute, calls } = mkExecutor([true, true]);
+    const dishes = [
+      { dish_id: 'dsh_work', recipe_id: 'r', enabled: true },
+      { dish_id: 'dsh_home', recipe_id: 'r', enabled: true },
+    ];
     const handle = createServerAutoRunScheduler({
       recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
       execute,
       circuitStore: circuit,
-      settingsStore,
+      dishStore: {
+        get: (id) => (dishes.find((d) => d.dish_id === id) ?? null) as never,
+        listByRecipe: (rid) => dishes.filter((d) => d.recipe_id === rid) as never,
+      },
       now: () => 0,
       setTimer: () => 1,
       clearTimer: () => {},
     });
     await handle.refreshRoster();
+    expect([...handle.roster.keys()].sort()).toEqual(['dsh_home', 'dsh_work']);
     await handle.tick();
-    expect(calls[0].dish_id).toBe('dsh_cfg1');
+    expect(calls.map((c) => c.dish_id).sort()).toEqual(['dsh_home', 'dsh_work']);
+    expect(handle.roster.get('dsh_work')!.process_id).not.toBe(handle.roster.get('dsh_home')!.process_id);
   });
 
   it('R21.1 — tick() dispatches nothing while the vault is sealed, then fires the still-due entry on unlock', async () => {
@@ -475,7 +484,7 @@ describe('ServerAutoRunHandle.tick', () => {
     // Seed a non-zero failure state in SQLite so hydration carries it
     // into the scheduler.
     circuit.set({
-      recipe_id: 'r', consecutive_failures: 3, auto_disabled: false,
+      dish_id: 'r', recipe_id: 'r', consecutive_failures: 3, auto_disabled: false,
     });
     const { execute } = mkExecutor([true]);
     const handle = createServerAutoRunScheduler({
@@ -648,7 +657,7 @@ describe('ServerAutoRunHandle — D-115 Phase 5 outcomes', () => {
   });
 
   it('trigger_skipped: counter unchanged, no audit row implied', async () => {
-    circuit.set({ recipe_id: 'r', consecutive_failures: 2, auto_disabled: false });
+    circuit.set({ dish_id: 'r', recipe_id: 'r', consecutive_failures: 2, auto_disabled: false });
     const { execute } = mkExecutor([{ success: true, trigger_skipped: true }]);
     const handle = createServerAutoRunScheduler({
       recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
@@ -753,7 +762,7 @@ describe('ServerAutoRunHandle — restart recovery', () => {
     const db = new Database(':memory:');
     const circuit = createCircuitBreakerStore(db);
     circuit.set({
-      recipe_id: 'r',
+      dish_id: 'r', recipe_id: 'r',
       consecutive_failures: CIRCUIT_BREAKER_THRESHOLD,
       auto_disabled: true,
     });
@@ -883,7 +892,7 @@ describe('ServerAutoRunHandle — setTimer lifecycle', () => {
     await timers.fireAll();
     expect(onBackgroundError).toHaveBeenCalledOnce();
     expect(onBackgroundError).toHaveBeenCalledWith(
-      'timer fire failed for recipe r',
+      'timer fire failed for recipe r (dish r)',
       failure,
     );
     expect(handle.inFlight()).toBe(false);
@@ -958,7 +967,7 @@ describe('ServerAutoRunHandle.resetCircuit', () => {
     const db = new Database(':memory:');
     const circuit = createCircuitBreakerStore(db);
     circuit.set({
-      recipe_id: 'r',
+      dish_id: 'r', recipe_id: 'r',
       consecutive_failures: CIRCUIT_BREAKER_THRESHOLD,
       auto_disabled: true,
     });

@@ -85,6 +85,8 @@ export const isToolTier = (value: unknown): value is ToolTier =>
 export type Tier1ToolName =
   | 'contact.search'
   | 'mail.search'
+  | 'mail.read'
+  | 'document.read'
   | 'calendar.search'
   | 'memory.search'
   | 'memory.write'
@@ -104,6 +106,8 @@ export type Tier1ToolName =
 export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'contact.search',
   'mail.search',
+  'mail.read',
+  'document.read',
   'calendar.search',
   'memory.search',
   'memory.write',
@@ -136,6 +140,8 @@ export const isTier1ToolName = (value: unknown): value is Tier1ToolName =>
 export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<string>>> = {
   'contact.search': ['contact', 'people', 'lookup', 'identity'],
   'mail.search': ['mail', 'email', 'message', 'lookup'],
+  'mail.read': ['mail', 'email', 'body', 'attachment'],
+  'document.read': ['document', 'attachment', 'file', 'markdown', 'ocr'],
   'calendar.search': ['calendar', 'event', 'meeting', 'lookup'],
   'memory.search': ['memory', 'history', 'audit', 'recall'],
   'memory.write': ['memory', 'remember', 'save', 'note'],
@@ -174,6 +180,8 @@ export const TIER1_CLASSIFICATIONS: Readonly<
 > = {
   'contact.search': 'read',
   'mail.search': 'read',
+  'mail.read': 'read',
+  'document.read': 'read',
   'calendar.search': 'read',
   'memory.search': 'read',
   // D-198 — soft, reversible, grant-gated write; `unknown` (no write-risk hint)
@@ -245,6 +253,10 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
 > = {
   'contact.search': true,
   'mail.search': true,
+  'mail.read': true,
+  // Not an identity race: a call can start a local converter process (Docling
+  // allows up to an hour), so a batch of attachments converts one at a time.
+  'document.read': false,
   'calendar.search': true,
   'memory.search': true,
   // D-198 — append-only: each write mints its own `umem_` row, so two writes in
@@ -2058,6 +2070,8 @@ export interface Tier1ToolDescriptor {
 export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'contact.search': 'contact',
   'mail.search': 'mail',
+  'mail.read': 'mail',
+  'document.read': 'file',
   'calendar.search': 'calendar',
   'memory.search': 'memory',
   'memory.write': 'memory',
@@ -2110,6 +2124,26 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     topic_tags: TIER1_TOPIC_TAGS['contact.search'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['contact.search'],
   },
+  'mail.read': {
+    name: 'mail.read',
+    description: 'Read one exact email body and list its linked attachment file references. Use after mail.search or a work entry; previews may omit withdrawals or conditions. Cite the returned source_url for claims this message supports; received_at_iso is the message date as stored, usually the sender\'s Date header: not proof of receipt or of an agreed work date. Continue with both next_offset and read_version from the previous page; restart at offset 0 if the version changed. Attachment metadata is not attachment content: read relevant files with document.read. Missing metadata is explicitly disclosed.',
+    arg_schema: { type: 'object', required: ['slug', 'record_id'], additionalProperties: false,
+      properties: { slug: { type: 'string' }, record_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 },
+        read_version: { type: 'string', description: 'Copy from the previous page. Required when offset is greater than zero.' } } },
+    classification: TIER1_CLASSIFICATIONS['mail.read'], topic_tags: TIER1_TOPIC_TAGS['mail.read'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['mail.read'],
+  },
+  'document.read': {
+    name: 'document.read',
+    description: 'Read text from an exact local file_ref returned by mail.read or file.search. Text files are read directly unless converter is set; other documents use an installed local MarkItDown or Docling pack through normal execution gates. Set converter to docling for OCR or complex PDF layout. Missing support returns a pack suggestion; never install silently. Continue with both next_offset and read_version from the previous page and the same converter; restart at offset 0 if the version changed. Extraction may omit images, layout or tables even when the tool succeeds; keep unsupported conclusions provisional and cite the original file and content_hash.',
+    arg_schema: { type: 'object', required: ['file_ref'], additionalProperties: false, properties: {
+      file_ref: { type: 'string' }, converter: { type: 'string', enum: ['auto', 'markitdown', 'docling'] },
+      offset: { type: 'integer', minimum: 0 },
+      read_version: { type: 'string', description: 'Copy from the previous page. Required when offset is greater than zero.' },
+    } },
+    classification: TIER1_CLASSIFICATIONS['document.read'], topic_tags: TIER1_TOPIC_TAGS['document.read'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['document.read'],
+  },
   'mail.search': {
     name: 'mail.search',
     description:
@@ -2147,11 +2181,19 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
             + 'reaches a reply that BROKE the thread (a forward, or a fresh message '
             + 'sent because replying was inconvenient), and it works where the '
             + 'provider threads badly or not at all. '
+            + 'Equal message dates use record_id order for stable paging; that tie-breaker does not establish chronology. '
+            + 'If more_matches is true, more context may remain: step again from a returned record_id. '
             + 'Reporting a proposal as the outcome without checking the reply is the '
             + 'failure this prevents.',
         },
         next: { type: 'number', description: 'With `near_id`: how many LATER messages (max 10).' },
         prev: { type: 'number', description: 'With `near_id`: how many EARLIER messages (max 10).' },
+        slug: {
+          type: 'string',
+          description:
+            'Search only this mailbox: a `collection_slug` from an earlier result. With `near_id`, '
+            + 'pass the anchor\'s own `collection_slug`; the same record_id can exist in two mailboxes.',
+        },
         limit: { type: 'number', description: 'Max messages to return.' },
       },
     },

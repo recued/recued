@@ -258,9 +258,13 @@ export type ServerEvent =
        *  (pause/resume), on the poll-manager's error-cap auto-disable,
        *  and when a recompute arms or drops a watch key (a new
        *  subscriber demanded a poll loop / the last one left).
-       *  Subscribers re-list via `watch.list`. */
+       *  Subscribers re-list via `watch.list`.
+       *
+       *  D-319 adds `mechanism: 'dish'` — a dish was made, switched, re-set
+       *  or removed (`dishes.*`, and a schedule or trigger that made its
+       *  recipe's main dish). Subscribers re-list via `dishes.list`. */
       kind: 'automation_rule_changed';
-      mechanism: 'event_trigger' | 'auto_run' | 'watch';
+      mechanism: 'event_trigger' | 'auto_run' | 'watch' | 'dish';
       cursor: number;
     }
   | {

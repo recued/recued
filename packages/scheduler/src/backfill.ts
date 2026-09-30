@@ -289,25 +289,30 @@ export function resolveMissedAction(
   return stale ? 'skip' : 'fire';
 }
 
-/** One line of the wake card: a recipe with at least one schedule
- *  waiting on the owner.
+/** One line of the wake card: a dish with at least one schedule waiting
+ *  on the owner.
  *
- *  ⛔ KEYED BY RECIPE, NOT BY SCHEDULE, AND THAT DECIDES HOW MANY RUNS
+ *  ⛔ KEYED BY DISH, NOT BY SCHEDULE, AND THAT DECIDES HOW MANY RUNS
  *  HAPPEN. D-266: "one run per recipe, but the count stays visible" —
- *  a brief supersedes a brief. Two schedules of one recipe that both
- *  missed produce ONE entry and, on `run`, ONE fire; the others are
- *  recorded skipped. `schedule_ids` therefore carries all of them, and
- *  `run_schedule_id` names the single one that would actually fire. */
+ *  a brief supersedes a brief. D-319 made the unit the dish: two dishes of
+ *  one recipe run with different settings, so each is its own brief. Two
+ *  schedules of one dish that both missed produce ONE entry and, on `run`,
+ *  ONE fire; the others are recorded skipped. `schedule_ids` therefore
+ *  carries all of them, and `run_schedule_id` names the single one that
+ *  would actually fire. */
 export interface MissedRunEntry {
   recipe_id: string;
-  /** Every schedule of this recipe currently waiting on an answer,
+  /** D-319 — the dish these schedules belong to. Absent for rows written
+   *  before D-319, which group by recipe. */
+  dish_id?: string;
+  /** Every schedule of this dish currently waiting on an answer,
    *  most-recently-run first. */
   schedule_ids: string[];
   /** The one that fires on `run` — the most recent, since only the
    *  latest cycle is worth running. */
   run_schedule_id: string;
   /** Full cycles missed beyond the single catch-up on offer; the
-   *  largest across this recipe's waiting schedules. `'unknown'` only
+   *  largest across this dish's waiting schedules. `'unknown'` only
    *  when the cron cannot be read. NOT the number of runs offered — it
    *  is the record of the outage, and the only place the owner learns
    *  the machine was off for three days. */
@@ -347,17 +352,21 @@ export function buildMissedRunReport(
   schedules: readonly (Schedule & { enabled: boolean })[],
   now: number,
 ): MissedRunReport {
-  const byRecipe = new Map<string, Schedule[]>();
+  // D-319 — one line per DISH: two dishes of one recipe run independently,
+  // so each catches up on its own. A brief supersedes a brief within a dish.
+  const byDish = new Map<string, Schedule[]>();
   for (const schedule of schedules) {
     if (!schedule.enabled) continue;
     if (resolveMissedAction(schedule, now) !== 'ask') continue;
-    const bucket = byRecipe.get(schedule.recipe_id);
+    const key = JSON.stringify([schedule.recipe_id, schedule.dish_id ?? null]);
+    const bucket = byDish.get(key);
     if (bucket) bucket.push(schedule);
-    else byRecipe.set(schedule.recipe_id, [schedule]);
+    else byDish.set(key, [schedule]);
   }
 
   const entries: MissedRunEntry[] = [];
-  for (const [recipe_id, group] of byRecipe) {
+  for (const group of byDish.values()) {
+    const { recipe_id, dish_id } = group[0]!;
     // Most recent first — the head is the cycle worth running.
     group.sort((a, b) => (b.last_run_at ?? 0) - (a.last_run_at ?? 0));
     let missed: number | 'unknown' = 'unknown';
@@ -375,6 +384,7 @@ export function buildMissedRunReport(
     }
     entries.push({
       recipe_id,
+      ...(dish_id !== undefined ? { dish_id } : {}),
       schedule_ids: group.map((s) => s.schedule_id),
       run_schedule_id: group[0]!.schedule_id,
       missed_cycles: missed,

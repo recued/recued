@@ -19,6 +19,7 @@ import type {
 } from '@recued/contracts';
 import {
   beginInFlightTurn,
+  discardInFlightTurn,
   hydrateThreadFromSnapshot,
   initialChatThreadState,
   isChatThreadEvent,
@@ -813,6 +814,64 @@ describe('route-side scaffold handling — adopt-on-first-event', () => {
     expect(s.inflight).toBeNull();
     expect(s.completed_turn_ids).toEqual([]);
     expect(s.messages.map((m) => m.id)).toEqual(['m1']);
+  });
+
+  /** A stopped turn's scaffold held an answer that was never saved. */
+  describe('discardInFlightTurn', () => {
+    it('removes a stopped turn\'s streamed answer and keeps it from coming back', () => {
+      let s = reduceChatThreadEvent(hydrated(), tokenStreamed('turn-stopped', 'Unsaved answer.'));
+
+      s = discardInFlightTurn(s, 'turn-stopped');
+      expect(s.inflight).toBeNull();
+      expect(s.messages).toEqual([]);
+      expect(s.completed_turn_ids).toEqual(['turn-stopped']);
+
+      // A late or replayed event, or a stale running snapshot, cannot raise it.
+      const settled = s;
+      s = reduceChatThreadEvent(s, tokenStreamed('turn-stopped', 'late', 2));
+      s = beginInFlightTurn(s, 'turn-stopped');
+      expect(s).toBe(settled);
+    });
+
+    it('drops only the stopped turn: a primary\'s sibling is promoted, a sibling leaves the primary', () => {
+      const both = beginInFlightTurn(
+        reduceChatThreadEvent(hydrated(), tokenStreamed('turn-A', 'A')),
+        'turn-B',
+      );
+
+      expect(discardInFlightTurn(both, 'turn-A').inflight)
+        .toEqual({ turn_id: 'turn-B', assistant_content: '', tool_calls: [], transparency: [] });
+      expect(discardInFlightTurn(both, 'turn-B').inflight)
+        .toMatchObject({ turn_id: 'turn-A', assistant_content: 'A' });
+      expect(discardInFlightTurn(both, 'turn-B').inflight?.siblings).toBeUndefined();
+    });
+
+    it('is the identity for a turn with no scaffold, so queue history cannot crowd the memory', () => {
+      const s = reduceChatThreadEvent(hydrated(), tokenStreamed('turn-live', 'Working'));
+      expect(discardInFlightTurn(s, 'turn-from-history')).toBe(s);
+      expect(discardInFlightTurn(hydrated(), 'turn-from-history').completed_turn_ids).toEqual([]);
+    });
+
+    it('moves the turn\'s failure notice to the owner\'s message instead of losing it', () => {
+      let s = hydrateThreadFromSnapshot(initialChatThreadState(), {
+        ...mkSession('sess-1'),
+        messages: [{ ...mkUserMessage('u-stopped', 'sess-1'), turn_id: 'turn-stopped' }],
+      });
+      s = reduceChatThreadEvent(s, {
+        kind: 'chat.transparency',
+        session_id: 'sess-1',
+        turn_id: 'turn-stopped',
+        event: { kind: 'engine.decoder_unavailable', reason: 'no_source', site: 'initial' },
+        cursor: 1,
+      } as unknown as ServerEvent);
+      expect(s.turn_failures[0]?.message_id).toBeUndefined();
+
+      s = discardInFlightTurn(s, 'turn-stopped');
+      expect(s.inflight).toBeNull();
+      expect(s.turn_failures).toMatchObject([
+        { turn_id: 'turn-stopped', message_id: 'u-stopped', settings_link: true },
+      ]);
+    });
   });
 });
 

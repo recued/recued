@@ -64,109 +64,133 @@ const successResponse = (request: ExecuteRequest): ExecuteResponse => ({
   validation_issues: [],
 } as unknown as ExecuteResponse);
 
-describe('createAutoRunSettingsStore', () => {
+/** D-319 — the dishes each recipe is switched on as: one timer per dish. */
+const makeDishes = (dishes: Array<{ dish_id: string; recipe_id: string; enabled?: boolean }>) => ({
+  get: (dish_id: string) => {
+    const dish = dishes.find((d) => d.dish_id === dish_id);
+    return dish ? ({ ...dish, enabled: dish.enabled ?? true } as never) : null;
+  },
+  listByRecipe: (recipe_id: string) =>
+    dishes.filter((d) => d.recipe_id === recipe_id).map((d) => ({ ...d, enabled: d.enabled ?? true }) as never),
+});
+
+describe('createAutoRunSettingsStore — a dish’s timer (D-319)', () => {
   let db: Database.Database;
 
   beforeEach(() => {
     db = new Database(':memory:');
   });
 
-  it('defaults unknown recipes to enabled and roundtrips explicit disabled state idempotently', () => {
+  it('a dish with no timer is off; switching makes its row, idempotently', () => {
     const store = createAutoRunSettingsStore(db);
 
-    expect(store.isEnabled('r')).toBe(true);
-    expect(store.isEnabled('owner-armed', false)).toBe(false);
-    store.setEnabled('r', false);
-    store.setEnabled('r', false);
-    expect(store.isEnabled('r')).toBe(false);
-    expect(store.listDisabled()).toEqual(['r']);
+    expect(store.isEnabled('dsh_a')).toBe(false);
+    expect(store.get('dsh_a')).toBeNull();
+    store.setEnabled('dsh_a', 'r', true);
+    store.setEnabled('dsh_a', 'r', true);
+    expect(store.isEnabled('dsh_a')).toBe(true);
+    expect(store.ownerEnabled('dsh_a')).toBe(true);
+    expect(store.get('dsh_a')).toEqual({ dish_id: 'dsh_a', recipe_id: 'r', enabled: true });
 
-    store.setEnabled('r', true);
-    store.setEnabled('r', true);
-    expect(store.isEnabled('r')).toBe(true);
-    expect(store.listDisabled()).toEqual([]);
+    store.setEnabled('dsh_a', 'r', false);
+    expect(store.isEnabled('dsh_a')).toBe(false);
+    store.setEnabled('dsh_b', 'r', true);
+    store.setEnabled('dsh_c', 'other', true);
+    expect(store.list().map((t) => [t.dish_id, t.enabled])).toEqual([['dsh_a', false], ['dsh_b', true], ['dsh_c', true]]);
   });
 
-  it('keeps a fresh config dish at the recipe default until explicit enable', () => {
+  it('forgets one dish’s timer, or every timer of an uninstalled recipe', () => {
     const store = createAutoRunSettingsStore(db);
+    store.setEnabled('dsh_a', 'r', true);
+    store.setEnabled('dsh_b', 'r', true);
+    store.setEnabled('dsh_c', 'other', true);
+    expect(store.forget!('dsh_a')).toBe(true);
+    expect(store.forget!('dsh_a')).toBe(false);
+    expect(store.forgetRecipe!('r')).toBe(1);
+    expect(store.list().map((t) => t.dish_id)).toEqual(['dsh_c']);
+  });
 
-    store.setDishId('owner-armed', 'dish-1', false);
-    expect(store.getDishId('owner-armed')).toBe('dish-1');
-    expect(store.isEnabled('owner-armed', false)).toBe(false);
-    expect(store.listDisabled()).toEqual(['owner-armed']);
-
-    store.setEnabled('owner-armed', true);
-    store.setDishId('owner-armed', 'dish-2', false);
-    expect(store.getDishId('owner-armed')).toBe('dish-2');
-    expect(store.isEnabled('owner-armed', false)).toBe(true);
+  it('drops the per-recipe table it replaces — a timer the owner never switched on as a dish does not start', () => {
+    db.exec(`CREATE TABLE auto_run_settings (recipe_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
+      INSERT INTO auto_run_settings VALUES ('r', 1, 0);
+      CREATE TABLE auto_run_circuit (recipe_id TEXT PRIMARY KEY, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        auto_disabled INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, last_failure_reason TEXT);`);
+    createAutoRunSettingsStore(db);
+    createCircuitBreakerStore(db);
+    const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((t) => t.name);
+    expect(tables).not.toContain('auto_run_settings');
+    expect(tables).not.toContain('auto_run_circuit');
+    expect(tables).toEqual(expect.arrayContaining(['auto_run_timers', 'auto_run_timer_circuit']));
   });
 });
 
-describe('createServerAutoRunScheduler settingsStore and onFired seams', () => {
+describe('createServerAutoRunScheduler — one timer per dish, and the onFired seam', () => {
   let db: Database.Database;
 
   beforeEach(() => {
     db = new Database(':memory:');
   });
 
-  it('excludes user-disabled auto-run recipes from the roster until re-enabled', async () => {
-    const settingsStore = createAutoRunSettingsStore(db);
-    settingsStore.setEnabled('r', false);
-    const handle = createServerAutoRunScheduler({
-      recipeStore: makeRecipeStore([makeRecipe('r')]),
-      execute: vi.fn(async (request: ExecuteRequest) => successResponse(request)),
-      circuitStore: createCircuitBreakerStore(db),
-      settingsStore,
-      now: () => 0,
-      setTimer: () => 1,
-      clearTimer: () => {},
-    });
-
-    await handle.start();
-    await handle.refreshRoster();
-    expect(handle.roster.has('r')).toBe(false);
-
-    settingsStore.setEnabled('r', true);
-    await handle.refreshRoster();
-    expect(handle.roster.has('r')).toBe(true);
-    await handle.stop();
-  });
-
-  it('excludes a default-disabled recipe from an otherwise empty settings store', async () => {
-    const settingsStore = createAutoRunSettingsStore(db);
-    const recipe = makeRecipe('owner-armed');
-    recipe.auto_run = {
-      interval_ms: 1_000,
-      default_enabled: false,
-    };
+  it('a recipe with no dish runs nothing — installing starts nothing, whatever `default_enabled` says', async () => {
+    const recipe = makeRecipe('r');
+    recipe.auto_run = { interval_ms: 1_000, default_enabled: true };
     const handle = createServerAutoRunScheduler({
       recipeStore: makeRecipeStore([recipe]),
       execute: vi.fn(async (request: ExecuteRequest) => successResponse(request)),
       circuitStore: createCircuitBreakerStore(db),
+      settingsStore: createAutoRunSettingsStore(db),
+      dishStore: makeDishes([]),
+      now: () => 0,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.start();
+    expect(handle.roster.size).toBe(0);
+    await handle.stop();
+  });
+
+  it('keys one timer per dish; a timer switched off, or a dish switched off, is not on the roster', async () => {
+    const settingsStore = createAutoRunSettingsStore(db);
+    const dishes = [
+      { dish_id: 'dsh_work', recipe_id: 'r' },
+      { dish_id: 'dsh_home', recipe_id: 'r' },
+      { dish_id: 'dsh_off', recipe_id: 'r', enabled: false },
+    ];
+    settingsStore.setEnabled('dsh_work', 'r', true);
+    settingsStore.setEnabled('dsh_off', 'r', true);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: makeRecipeStore([makeRecipe('r')]),
+      execute: vi.fn(async (request: ExecuteRequest) => successResponse(request)),
+      circuitStore: createCircuitBreakerStore(db),
       settingsStore,
+      dishStore: makeDishes(dishes),
       now: () => 0,
       setTimer: () => 1,
       clearTimer: () => {},
     });
 
     await handle.start();
-    await handle.refreshRoster();
-    expect(handle.roster.has('owner-armed')).toBe(false);
+    expect([...handle.roster.keys()]).toEqual(['dsh_work']);
+    expect(handle.roster.get('dsh_work')).toMatchObject({ recipe_id: 'r', dish_id: 'dsh_work' });
 
-    settingsStore.setEnabled('owner-armed', true);
+    settingsStore.setEnabled('dsh_home', 'r', true);
     await handle.refreshRoster();
-    expect(handle.roster.has('owner-armed')).toBe(true);
+    expect([...handle.roster.keys()].sort()).toEqual(['dsh_home', 'dsh_work']);
     await handle.stop();
   });
 
-  it('calls onFired after one due tick', async () => {
+  it('fires AS the dish, and calls onFired with its recipe', async () => {
     let clock = 0;
     const onFired = vi.fn();
     const execute = vi.fn(async (request: ExecuteRequest) => successResponse(request));
+    const settingsStore = createAutoRunSettingsStore(db);
+    settingsStore.setEnabled('dsh_a', 'r', true);
     const handle = createServerAutoRunScheduler({
       recipeStore: makeRecipeStore([makeRecipe('r')]),
       execute,
       circuitStore: createCircuitBreakerStore(db),
+      settingsStore,
+      dishStore: makeDishes([{ dish_id: 'dsh_a', recipe_id: 'r' }]),
       onFired,
       now: () => clock,
       setTimer: () => 1,
@@ -174,12 +198,77 @@ describe('createServerAutoRunScheduler settingsStore and onFired seams', () => {
     });
     await handle.refreshRoster();
     clock = 1_000;
-    handle.roster.get('r')!.next_run_at = clock;
+    handle.roster.get('dsh_a')!.next_run_at = clock;
 
     await handle.tick();
 
     expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]![0]).toMatchObject({ recipe_id: 'r', dish_id: 'dsh_a', trigger_source: 'auto_run' });
     expect(onFired).toHaveBeenCalledWith('r');
+  });
+
+  it('⛔ a dish switched off after the roster was built skips the tick — nothing ran, nothing failed', async () => {
+    let clock = 0;
+    const execute = vi.fn(async (request: ExecuteRequest) => successResponse(request));
+    const settingsStore = createAutoRunSettingsStore(db);
+    settingsStore.setEnabled('dsh_a', 'r', true);
+    const dishes = [{ dish_id: 'dsh_a', recipe_id: 'r', enabled: true }];
+    const circuitStore = createCircuitBreakerStore(db);
+    const handle = createServerAutoRunScheduler({
+      recipeStore: makeRecipeStore([makeRecipe('r')]),
+      execute,
+      circuitStore,
+      settingsStore,
+      dishStore: makeDishes(dishes),
+      now: () => clock,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    dishes[0]!.enabled = false;
+    clock = 1_000;
+    handle.roster.get('dsh_a')!.next_run_at = clock;
+
+    await handle.tick();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(circuitStore.get('dsh_a')?.consecutive_failures ?? 0).toBe(0);
+  });
+
+  it('⛔ with no injected executor, a fire rechecks the dish’s own timer before the pre-approval driver decides', async () => {
+    // The roster was built while the timer was on; the owner paused it a
+    // moment later. The server's own executor must hand the driver the
+    // timer's state NOW, not "the recipe runs on a timer".
+    let clock = 0;
+    const settingsStore = createAutoRunSettingsStore(db);
+    settingsStore.setEnabled('dsh_a', 'r', true);
+    const seen: Array<{ dish_id: string | undefined; enabled: boolean }> = [];
+    const driver = {
+      autoRunEligible: (_dish_id: string, enabled: boolean) => enabled,
+      executeAutoRun: vi.fn(async (request: ExecuteRequest, enabled: boolean) => {
+        seen.push({ dish_id: request.dish_id, enabled });
+        return null;
+      }),
+    };
+    const handle = createServerAutoRunScheduler({
+      recipeStore: makeRecipeStore([makeRecipe('r')]),
+      executeDeps: { preapprovalDriver: driver } as never,
+      circuitStore: createCircuitBreakerStore(db),
+      settingsStore,
+      dishStore: makeDishes([{ dish_id: 'dsh_a', recipe_id: 'r' }]),
+      now: () => clock,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+    await handle.refreshRoster();
+    expect(handle.roster.has('dsh_a')).toBe(true);
+    settingsStore.setEnabled('dsh_a', 'r', false);
+    clock = 1_000;
+    handle.roster.get('dsh_a')!.next_run_at = clock;
+
+    await handle.tick();
+
+    expect(seen).toEqual([{ dish_id: 'dsh_a', enabled: false }]);
   });
 
   it('swallows onFired errors so tick still completes', async () => {
@@ -191,6 +280,7 @@ describe('createServerAutoRunScheduler settingsStore and onFired seams', () => {
       recipeStore: makeRecipeStore([makeRecipe('r')]),
       execute: vi.fn(async (request: ExecuteRequest) => successResponse(request)),
       circuitStore: createCircuitBreakerStore(db),
+      dishStore: makeDishes([{ dish_id: 'dsh_a', recipe_id: 'r' }]),
       onFired,
       now: () => clock,
       setTimer: () => 1,
@@ -198,7 +288,7 @@ describe('createServerAutoRunScheduler settingsStore and onFired seams', () => {
     });
     await handle.refreshRoster();
     clock = 1_000;
-    handle.roster.get('r')!.next_run_at = clock;
+    handle.roster.get('dsh_a')!.next_run_at = clock;
 
     await expect(handle.tick()).resolves.toBeDefined();
     expect(onFired).toHaveBeenCalledWith('r');

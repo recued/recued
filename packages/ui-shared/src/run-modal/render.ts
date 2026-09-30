@@ -16,6 +16,7 @@ import {
   MAIL_FACT_BUILTIN_TYPES,
   MISSED_SCHEDULE_POLICIES,
   MISSED_SCHEDULE_POLICY_COPY,
+  type Dish,
   type MissedSchedulePolicy,
   type ServerRecipeListEntry,
   type ServerSchedule,
@@ -38,13 +39,15 @@ import {
   mailFactVocabulary,
   mailFactWhereOptions,
 } from './mail-fact-trigger.js';
-import { parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
+import { configTextAsDish, parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
 import type { RunModalState, RunModalTab } from './types.js';
 
 // ── Attribute namespace (own, NOT the recipes-route `RECIPES_ROUTE_*`) ──
 export const RUN_MODAL_OVERLAY_ATTR = 'data-recued-run-modal';
 export const RUN_MODAL_ACTION_ATTR = 'data-recued-run-modal-action';
 export const RUN_MODAL_TAB_ATTR = 'data-recued-run-modal-tab';
+/** D-319 — the "Run as" / "Add to" dish choice. */
+export const RUN_MODAL_DISH_ATTR = 'data-recued-run-modal-dish';
 export const RUN_MODAL_CONFIG_ATTR = 'data-recued-run-modal-config';
 export const RUN_MODAL_TARGET_ATTR = 'data-recued-run-modal-target';
 export const RUN_MODAL_TARGET_WARNING_ATTR = 'data-recued-run-modal-target-warning';
@@ -91,20 +94,17 @@ export interface RunModalCaps {
   canPickRecords?: boolean;
 }
 
-/** Render one variable widget per `recipe.variables` key, pre-filled
- *  from the current config overrides. Returns '' when the recipe has no
- *  variables. Shared by the Run tab and the Schedule / Trigger config
- *  sections so all three stay in one visual language. */
+/** Render one widget per value a run asks for, pre-filled from the config
+ *  shown (a dish's settings under the owner's changes — D-319). Returns ''
+ *  when the recipe asks for none. A schedule or trigger has no settings of
+ *  its own (they are its dish's), so only the Run tab asks. */
 const renderVariableRows = (
   recipe: ServerRecipeListEntry,
   config_text: string,
   caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
-  surface: 'invoke' | 'configure',
 ): string => {
   const variables = recipe.recipe.variables ?? {};
-  const varKeys = Object.keys(variables).filter((key) =>
-    surface === 'configure' || isInvocationVariable(variables[key]!),
-  );
+  const varKeys = Object.keys(variables).filter((key) => isInvocationVariable(variables[key]!));
   if (varKeys.length === 0) return '';
   let overrides: Record<string, unknown> = {};
   try {
@@ -126,21 +126,30 @@ const renderVariableRows = (
     .join('');
 };
 
-/** The Schedule / Trigger tabs' config block: a labelled variable-widget
- *  form whose edits capture the overlay every headless fire runs with.
- *  Absent when the recipe has no variables (nothing to configure). */
-const renderConfigSection = (
-  recipe: ServerRecipeListEntry,
-  config_text: string,
+/** D-319 — which dish: "Run as" on the Run tab, "Add to" on the others. With
+ *  one dish there is nothing to choose, so nothing shows. */
+const dishChoiceLabel = (dish: Pick<Dish, 'name' | 'is_default'>): string =>
+  dish.name.trim() !== '' ? `${dish.name}${dish.is_default ? ' (main)' : ''}` : dish.is_default ? 'Main' : 'Unnamed';
+
+const renderDishChoice = (
+  state: RunModalState,
+  dishes: readonly Dish[],
   label: string,
-  caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
 ): string => {
-  const rows = renderVariableRows(recipe, config_text, caps, 'configure');
-  if (rows.length === 0) return '';
+  if (dishes.length < 2) return '';
   return `
-      <label class="run-modal-copy">${e(label)}</label>
-      <div class="run-modal-fields">${rows}</div>`;
+      <label class="run-modal-copy" for="run-modal-dish">${e(label)}</label>
+      <select id="run-modal-dish" class="run-modal-select" ${RUN_MODAL_DISH_ATTR}>${dishes.map((dish) =>
+        `<option value="${e(dish.dish_id)}"${dish.dish_id === state.dish_id ? ' selected' : ''}>${e(dishChoiceLabel(dish))}</option>`,
+      ).join('')}</select>`;
 };
+
+/** A row's dish, said on the row once there is more than one. */
+const dishOfRow = (dishes: readonly Dish[], dish_id: string | undefined): string =>
+  dishes.length < 2 || dish_id === undefined
+    ? ''
+    : ` · for ${e(dishChoiceLabel(dishes.find((dish) => dish.dish_id === dish_id)
+      ?? { name: '', is_default: false }))}`;
 
 const runResultStatusLabel = (result: NonNullable<RunModalState['result']>): string => {
   if (result.awaiting_approval === true) return 'Awaiting approval';
@@ -152,15 +161,17 @@ const renderRunTab = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,
   caps: RunModalCaps,
+  dishes: readonly Dish[],
 ): string => {
   const variables = recipe.recipe.variables ?? {};
   const varKeys = Object.keys(variables);
-  const widgetRows = renderVariableRows(
-    recipe,
+  // D-319 — the fields show the dish's settings; what the owner changes
+  // applies to this run alone.
+  const shownConfig = configTextAsDish(
     state.config_text,
-    caps,
-    'invoke',
+    dishes.find((dish) => dish.dish_id === state.dish_id)?.config_overlay,
   );
+  const widgetRows = renderVariableRows(recipe, shownConfig, caps);
   let hasConfigValues = false;
   try {
     hasConfigValues = Object.keys(parseRunConfig(state.config_text)).length > 0;
@@ -198,7 +209,7 @@ const renderRunTab = (
   // the routing guidance visible and Run disabled.
   const gate = runTargetGate(
     recipe.recipe,
-    state.config_text,
+    shownConfig,
     state.target_values,
     state.context_values,
   );
@@ -287,6 +298,7 @@ const renderRunTab = (
     : '<p class="run-modal-meta">Running is not available on this server yet.</p>';
 
   return `
+      ${renderDishChoice(state, dishes, 'Run as')}
       ${targetBody}
       ${configBody}
       ${contextReview}
@@ -380,7 +392,7 @@ const renderScheduleRow = (
   nextRunAt: number | null,
   lastError: string | null,
   mutating: boolean,
-  showConfig: boolean,
+  dishLabel: string,
 ): string => {
   const scheduleId = schedule.schedule_id;
   const busyAttrs = mutating
@@ -389,17 +401,13 @@ const renderScheduleRow = (
   return `
   <li class="run-modal-rule-row">
     <div>
-      <div>${cadenceLine(schedule)}${enabled ? '' : ' — paused'}</div>
+      <div>${cadenceLine(schedule)}${enabled ? '' : ' — paused'}${dishLabel}</div>
       <div class="run-modal-meta">next ${
         enabled && nextRunAt !== null ? e(new Date(nextRunAt).toLocaleString()) : '—'
       }${lastError ? ` · ${e(lastError)}` : ''}</div>
       ${renderMissedPolicy(schedule, mutating)}
     </div>
     <div class="run-modal-actions">
-      ${showConfig ? `<button type="button" class="run-modal-button"
-        aria-label="${scheduleActionName('Config', schedule)}"
-        ${RUN_MODAL_ACTION_ATTR}="config-schedule"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
         aria-label="${scheduleActionName(enabled ? 'Pause' : 'Resume', schedule)}"
         ${RUN_MODAL_ACTION_ATTR}="toggle-schedule:${enabled ? 'off' : 'on'}"
@@ -418,6 +426,7 @@ const renderScheduleTab = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,
   caps: RunModalCaps,
+  dishes: readonly Dish[],
 ): string => {
   if (!caps.canSchedule) {
     return '<p class="run-modal-meta">Scheduling is not available on this server yet.</p>';
@@ -425,15 +434,7 @@ const renderScheduleTab = (
   if (state.schedules === null) {
     return '<p class="run-modal-meta">Loading schedules…</p>';
   }
-  // Config for the headless fires this schedule drives — the variable
-  // edits ride into `config_overlay` on Add (empty ⇒ recipe defaults).
-  const configSection = renderConfigSection(
-    recipe,
-    state.config_text,
-    'Config for every scheduled run',
-    caps,
-  );
-  const hasVars = Object.keys(recipe.recipe.variables ?? {}).length > 0;
+  // D-319 — a schedule runs as its dish, with the dish's settings.
   const rows = state.schedules
     .map((s) =>
       renderScheduleRow(
@@ -442,7 +443,7 @@ const renderScheduleTab = (
         s.next_run_at,
         s.last_error,
         state.mutating,
-        hasVars,
+        dishOfRow(dishes, s.dish_id),
       ),
     )
     .join('');
@@ -455,7 +456,7 @@ const renderScheduleTab = (
   return `
       ${error}
       ${list}
-      ${configSection}
+      ${renderDishChoice(state, dishes, 'Add to')}
       <label class="run-modal-copy" for="run-modal-preset">Run on a schedule</label>
       <div class="run-modal-actions">
         <label class="run-modal-copy">
@@ -507,6 +508,7 @@ const renderTriggerTab = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,
   caps: RunModalCaps,
+  dishes: readonly Dish[],
 ): string => {
   if (!caps.canTrigger) {
     return '<p class="run-modal-meta">This server cannot set things off from events yet.</p>';
@@ -514,15 +516,6 @@ const renderTriggerTab = (
   if (state.triggers === null) {
     return '<p class="run-modal-meta">Loading triggers…</p>';
   }
-  // Config for the headless fires the added trigger drives — the variable
-  // edits ride into `config_overlay` on Add (empty ⇒ recipe defaults).
-  const configSection = renderConfigSection(
-    recipe,
-    state.config_text,
-    'Config for runs from this trigger',
-    caps,
-  );
-  const hasVars = Object.keys(recipe.recipe.variables ?? {}).length > 0;
   const busyAttrs = state.trigger_mutating
     ? ' aria-disabled="true" aria-busy="true"'
     : '';
@@ -534,16 +527,12 @@ const renderTriggerTab = (
       return `
   <li class="run-modal-rule-row">
     <div>
-      <div>${fact !== null ? `on ${e(fact)}` : `on <code>${e(t.pattern)}</code>`}${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}</div>
+      <div>${fact !== null ? `on ${e(fact)}` : `on <code>${e(t.pattern)}</code>`}${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}${dishOfRow(dishes, t.dish_id)}</div>
       <div class="run-modal-meta">last fired ${
         t.last_fired_at !== null ? e(new Date(t.last_fired_at).toLocaleString()) : 'never'
       }${t.last_error ? ` · ${e(t.last_error)}` : ''}</div>
     </div>
     <div class="run-modal-actions">
-      ${hasVars ? `<button type="button" class="run-modal-button"
-        aria-label="${actionName('Config')}"
-        ${RUN_MODAL_ACTION_ATTR}="config-trigger"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
         aria-label="${actionName(t.enabled ? 'Pause' : 'Resume')}"
         ${RUN_MODAL_ACTION_ATTR}="toggle-trigger:${t.enabled ? 'off' : 'on'}"
@@ -588,7 +577,7 @@ const renderTriggerTab = (
   return `
       ${error}
       ${list}
-      ${configSection}
+      ${renderDishChoice(state, dishes, 'Add to')}
       <div class="run-modal-actions" role="group" aria-label="What sets it off">
         ${kindButton('pattern', 'An event pattern')}
         ${kindButton('mail_fact', 'A mail fact')}
@@ -694,6 +683,8 @@ export const renderRunModal = (
   state: RunModalState,
   recipe: ServerRecipeListEntry,
   caps: RunModalCaps,
+  /** D-319 — the recipe's dishes; none ⇒ nothing to choose. */
+  dishes: readonly Dish[] = [],
 ): string => {
   const title = recipeDisplayName(recipe);
   const commandPending =
@@ -709,10 +700,10 @@ export const renderRunModal = (
         ${RUN_MODAL_TAB_ATTR}="${tab}"
         ${RUN_MODAL_ACTION_ATTR}="tab:${tab}">${e(label)}</button>`;
   const body = state.tab === 'schedule'
-    ? renderScheduleTab(state, recipe, caps)
+    ? renderScheduleTab(state, recipe, caps, dishes)
     : state.tab === 'trigger'
-      ? renderTriggerTab(state, recipe, caps)
-      : renderRunTab(state, recipe, caps);
+      ? renderTriggerTab(state, recipe, caps, dishes)
+      : renderRunTab(state, recipe, caps, dishes);
   return `
     <div ${RUN_MODAL_OVERLAY_ATTR}="${e(recipe.recipe_id)}">
       <section class="run-modal-panel" role="dialog" aria-modal="true" aria-label="Run a Recipe" tabindex="-1">

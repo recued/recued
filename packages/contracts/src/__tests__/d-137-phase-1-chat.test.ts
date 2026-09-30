@@ -85,6 +85,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
   const expected: ReadonlyArray<Tier1ToolName> = [
     'contact.search',
     'mail.search',
+    // Follow this work — +2: the exact body of one message, and an attachment's
+    // text. `mail.search` returns previews, which can omit a withdrawal.
+    'mail.read',
+    'document.read',
     'calendar.search',
     'memory.search',
     'memory.write',
@@ -108,7 +112,7 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     'recipe.stop',
   ];
 
-  it('lists exactly seventeen canonical primitives in spec order (P1 six + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop)', () => {
+  it('lists exactly nineteen canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -172,7 +176,11 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // `calendar.create` stays parallel BECAUSE it mints a new id, and
     // `work.create` and `memory.write` are parallel for the same append-only
     // reason. ⇒ the axis is SHARED IDENTITY, not read-vs-write.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'calendar.update', 'work.update']);
+    //
+    // `document.read` is the one exception on a different axis: it can start a
+    // local converter process per call (Docling allows up to an hour), so a
+    // batch of attachments runs one conversion at a time rather than all at once.
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'calendar.update', 'work.update', 'document.read']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }

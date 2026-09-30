@@ -88,7 +88,9 @@ describe('D-261 preparation using dispatch resolution and durable selection', ()
     if (h.fixture.request.subject.kind !== 'recipe') throw new Error('fixture');
     h.fixture.request.subject.config = { subject: 'Request', targets: [{ to: 'same', send: true }, { to: 'skip', send: false }, { to: 'same', send: true }] };
     const plan = h.build();
-    expect(plan.members.map(m => m.input)).toEqual([{ to: 'same', subject: 'Dish' }, { to: 'same', subject: 'Dish' }]);
+    // D-319 — group ‹ dish ‹ the values given for this run, as `handleExecute`
+    // resolves them; the install (main dish) layer is for dishless runs only.
+    expect(plan.members.map(m => m.input)).toEqual([{ to: 'same', subject: 'Request' }, { to: 'same', subject: 'Request' }]);
     expect(plan.members.map(m => m.invocation_path.at(-1))).toEqual([{ kind: 'iteration', index: 0 }, { kind: 'iteration', index: 2 }]);
     expect(plan.members[0]!.effect_hash).toBe(plan.members[1]!.effect_hash);
     // Cause AND remedy, not the literal: a refusal that says only what failed
@@ -96,9 +98,9 @@ describe('D-261 preparation using dispatch resolution and durable selection', ()
     expect(plan.uncovered).toHaveLength(1);
     expect(plan.uncovered[0]!.reason).toContain('arguments depend on a future value');
     expect(plan.uncovered[0]!.reason).toContain('proposal config');
-    expect(plan.recipe_snapshots[0]!.effective_config.subject).toBe('Dish');
+    expect(plan.recipe_snapshots[0]!.effective_config.subject).toBe('Request');
     h.fixture.request.subject.config.subject = 'Edited later';
-    expect(plan.recipe_snapshots[0]!.effective_config.subject).toBe('Dish');
+    expect(plan.recipe_snapshots[0]!.effective_config.subject).toBe('Request');
   });
 
   it('previews the same locked catalog mapping and static body the live gateway dispatches', async () => {
@@ -191,7 +193,7 @@ describe('D-261 preparation using dispatch resolution and durable selection', ()
   it('excludes repeated qualification checks from a next-auto-run approval', () => {
     const h = harness(definition({ auto_run: { interval_ms: 60_000 }, trigger_steps: [{ id: 'watch', ingredient: 'mail-send' }],
       prefetch_steps: [{ id: 'read', ingredient: 'mail-send' }], steps: [{ id: 'send', ingredient: 'mail-send' }] }));
-    h.fixture.request.activation = { kind: 'next_auto_run', recipe_id: fixtureRecipe.recipe_id, publisher_id: 'core', expected_revision: 1 };
+    h.fixture.request.activation = { kind: 'next_auto_run', recipe_id: fixtureRecipe.recipe_id, dish_id: 'dsh_auto', publisher_id: 'core', expected_revision: 1 };
     h.fixture.target = { ...h.fixture.target, kind: 'next_auto_run', due_at: null };
     const plan = h.build();
     expect(plan.members.map(m => m.invocation_path[1])).toEqual([

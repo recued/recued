@@ -70,7 +70,7 @@ const makeStorage = () =>
     receptionRegistryCacheRef: { tag: 'reception-registry-cache' },
     receptionRateLimiterRef: { tag: 'reception-rate-limiter' },
     previewHashStoreRef: { tag: 'preview-hash-store' },
-    hostnameRegistryStore: { tag: 'hostname-registry-store' },
+    publicAddress: { tag: 'public-address' },
     schedulingFormNonceStoreRef: { tag: 'scheduling-form-nonce-store' },
     intakeRecipePairStoreRef: { tag: 'intake-recipe-pair-store' },
     intakeFormSubmissionStoreRef: { tag: 'intake-form-submission-store' },
@@ -238,7 +238,7 @@ describe('composeIngressRpcContext', () => {
       addOwnerTokenUsage: expect.any(Function),
       llmAdapterRegistry: app.llmAdapterRegistry,
       emptyTabProbe: app.emptyTabProbe,
-      hostnameRegistryStore: storage.hostnameRegistryStore,
+      publicAddress: storage.publicAddress,
       approvalIntentStore: storage.approvalIntentStoreRef,
       statusProjectionStore: storage.statusProjectionStoreRef,
       statusEntitySourceReader: expect.objectContaining({

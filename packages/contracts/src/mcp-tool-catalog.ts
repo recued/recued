@@ -87,6 +87,7 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // the separately governed core.preapproval.request kernel operation.
   'preapproval.',
   'mail.drafts.',
+  'mail.work.',
   // D-259 §6.1 — Dishes are the owner's standing-work control plane. An
   // external agent can stop only its own attended run through the narrow
   // recued_stopRecipe capability; it cannot enumerate, mint, or mutate dishes.
@@ -246,10 +247,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   'schedules.',
   'triggers.',
   'auto_run.',
-  // D-179 — a recipe's INSTALL config (its default-dish overlay) is a base
-  // applied to every dishless run. Setting it is owner autonomous-execution
-  // policy (same stance as the automation families above); an MCP-channel
-  // agent must never edit the config every future run inherits.
+  // D-179 — a recipe's INSTALL config was a base applied to every dishless
+  // run; setting it is owner autonomous-execution policy. D-319 retired the
+  // family — those settings are the main dish's, behind `dishes.` above — and
+  // the prefix stays reserved so the name cannot come back reachable here.
   'recipe_config.',
   // Reactive-substrate slice 2 (poll-manager / G6) — the watch surface
   // is the same autonomous-execution-policy class as the three families

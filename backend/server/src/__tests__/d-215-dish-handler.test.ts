@@ -1,22 +1,12 @@
-/** D-215 slice 0 — the managed-dish guard.
+/** D-215 — the dish rpc handlers: delete, update, the list's last-outcome
+ *  cell, and the history that outlives a dish.
  *
- *  A dish minted BY a schedule / trigger / auto-run row carries a
- *  `managed_by_*` marker and its lifecycle belongs to that row. Before
- *  this slice `dishes.delete` deleted it unconditionally, which orphans
- *  the owning schedule: the row survives pointing at a vanished dish and
- *  `scheduler.ts`'s fire-time gate then skips silently, forever, with the
- *  schedule still armed. Unreachable while nothing called the rpc — the
- *  D-215 dish surface makes it reachable, so the guard lands first.
+ *  D-215 slice 0 guarded a MANAGED dish (one an automation row minted) from
+ *  the rpc. D-319 retired managed dishes — a schedule, trigger or auto-run
+ *  timer belongs to a dish and owns none — so every dish is the owner's to
+ *  rename, re-set, switch and delete, and the guard went with them.
  *
- *  The load-bearing test here is the LAST one: the guard must sit on the
- *  HANDLER, never on `DishStore`. Internal lifecycle code writes managed
- *  dishes through the store on purpose (trigger enable/disable flips
- *  `enabled`, auto-run versioning writes replacement rows,
- *  `schedule-handler` dissolves on delete) — a store-level guard would
- *  break all three, and every other assertion in this file would still
- *  pass while it did.
- *
- *  Spec: D-215 § 6.
+ *  Spec: D-215 § 6, D-319 § 3.4.
  */
 
 import Database from 'better-sqlite3';
@@ -66,42 +56,8 @@ const dish = (overrides: Partial<Dish> = {}): Dish => ({
   ...overrides,
 });
 
-/** The three markers, each with the owner value its contract defines —
- *  note `managed_by_auto_run` carries the owning RECIPE id, not a row id. */
-const MANAGED_CASES = [
-  ['managed_by_schedule_id', { managed_by_schedule_id: 'sch_1' }, 'schedule', 'sch_1'],
-  ['managed_by_trigger_id', { managed_by_trigger_id: 'trg_1' }, 'trigger', 'trg_1'],
-  ['managed_by_auto_run', { managed_by_auto_run: 'recipe-a' }, 'auto-run', 'recipe-a'],
-] as const;
-
-describe('D-215 slice 0 — dishes.delete managed guard', () => {
-  it.each(MANAGED_CASES)(
-    'refuses to delete a dish managed by %s, naming the owner',
-    (_marker, patch, surface, owner) => {
-      const deps = makeDeps();
-      deps.store.set(dish(patch));
-
-      expect(() => deleteDish(deps, 'dsh_guard1')).toThrow(
-        new RegExp(`managed by its ${surface} '${owner}'`),
-      );
-      // The refusal must be non-destructive — the row survives.
-      expect(deps.store.get('dsh_guard1')).not.toBeNull();
-    },
-  );
-
-  it('refuses with a `conflict` rpc code, not a generic failure', () => {
-    const deps = makeDeps();
-    deps.store.set(dish({ managed_by_schedule_id: 'sch_1' }));
-    try {
-      deleteDish(deps, 'dsh_guard1');
-      throw new Error('expected the guard to throw');
-    } catch (e) {
-      expect((e as { code?: string }).code).toBe('conflict');
-      expect((e as { status?: number }).status).toBe(409);
-    }
-  });
-
-  it('still deletes a user-assigned dish and clears its continuity snapshot', () => {
+describe('D-319 — every dish is the owner’s: no dish is guarded', () => {
+  it('deletes a dish and clears its continuity snapshot', () => {
     const deps = makeDeps();
     deps.store.set(dish());
     deps.contextStore!.set('dsh_guard1', { some_step: 'prior' } as never);
@@ -112,60 +68,12 @@ describe('D-215 slice 0 — dishes.delete managed guard', () => {
     expect(deps.contextStore!.get('dsh_guard1')).toBeNull();
   });
 
-  it('reports a missing dish as not_found, never as a conflict', () => {
+  it('reports a missing dish as not_found', () => {
     expect(() => deleteDish(makeDeps(), 'dsh_nope')).toThrow(/not found/);
-  });
-});
-
-describe('D-215 slice 0 — dishes.update managed guard', () => {
-  it.each(['config_overlay', 'enabled', 'group_id'] as const)(
-    'refuses to set %s on a managed dish',
-    (field) => {
-      const deps = makeDeps();
-      deps.store.set(dish({ managed_by_schedule_id: 'sch_1' }));
-      const value =
-        field === 'config_overlay' ? { text: 'edited' } : field === 'enabled' ? false : 'dgrp_1';
-
-      expect(() => updateDish(deps, 'dsh_guard1', { [field]: value })).toThrow(
-        new RegExp(`must be changed on that schedule row`),
-      );
-      // Unchanged on disk — a refused update writes nothing.
-      const after = deps.store.get('dsh_guard1')!;
-      expect(after.config_overlay).toEqual({ text: 'hello' });
-      expect(after.enabled).toBe(true);
-      expect(after.group_id).toBeUndefined();
-    },
-  );
-
-  it('names every frozen field the caller attempted, not just the first', () => {
-    const deps = makeDeps();
-    deps.store.set(dish({ managed_by_trigger_id: 'trg_1' }));
-    expect(() =>
-      updateDish(deps, 'dsh_guard1', { config_overlay: {}, enabled: false }),
-    ).toThrow(/config_overlay, enabled/);
+    expect(() => updateDish(makeDeps(), 'dsh_nope', { enabled: false })).toThrow(/not found/);
   });
 
-  it('ALLOWS renaming a managed dish — a label changes no resolution', () => {
-    const deps = makeDeps();
-    deps.store.set(dish({ managed_by_schedule_id: 'sch_1' }));
-
-    const { dish: renamed } = updateDish(deps, 'dsh_guard1', { name: 'Tuesday post' });
-    expect(renamed.name).toBe('Tuesday post');
-    expect(renamed.managed_by_schedule_id).toBe('sch_1');
-    expect(deps.store.get('dsh_guard1')!.name).toBe('Tuesday post');
-  });
-
-  it('ignores an explicit-undefined frozen field rather than refusing', () => {
-    // `{ config_overlay: undefined }` is what a spread of an absent optional
-    // produces; it is not an attempt to write the field.
-    const deps = makeDeps();
-    deps.store.set(dish({ managed_by_schedule_id: 'sch_1' }));
-    expect(() =>
-      updateDish(deps, 'dsh_guard1', { name: 'ok', config_overlay: undefined }),
-    ).not.toThrow();
-  });
-
-  it('leaves a user-assigned dish fully mutable', () => {
+  it('changes a dish’s settings and switch in place', () => {
     const deps = makeDeps();
     deps.store.set(dish());
     const { dish: updated } = updateDish(deps, 'dsh_guard1', {
@@ -174,43 +82,13 @@ describe('D-215 slice 0 — dishes.update managed guard', () => {
     });
     expect(updated.config_overlay).toEqual({ text: 'edited' });
     expect(updated.enabled).toBe(false);
+    expect(deps.store.get('dsh_guard1')!.config_overlay).toEqual({ text: 'edited' });
   });
 
-  it('reports a missing dish as not_found before any guard runs', () => {
-    expect(() => updateDish(makeDeps(), 'dsh_nope', { enabled: false })).toThrow(/not found/);
-  });
-});
-
-describe('D-215 slice 0 — the guard is on the HANDLER, not the store', () => {
-  it('lets internal lifecycle code still write and delete a managed dish directly', () => {
-    // This is the regression that matters. `schedule-handler` dissolves a
-    // managed dish on `schedules.delete`, the trigger flow flips `enabled`
-    // on disable, and auto-run versioning writes replacement rows — all
-    // through `DishStore`. If the guard ever migrates into the store,
-    // every one of those breaks and only THIS test notices.
+  it('lists every dish of a recipe', async () => {
     const deps = makeDeps();
-    const managed = dish({ managed_by_schedule_id: 'sch_1' });
-    deps.store.set(managed);
-
-    // The trigger/auto-run disable path: flip `enabled` straight on the store.
-    deps.store.set({ ...managed, enabled: false });
-    expect(deps.store.get('dsh_guard1')!.enabled).toBe(false);
-
-    // The auto-run versioning path: write a replacement row.
-    deps.store.set({ ...managed, config_overlay: { text: 'v2' } });
-    expect(deps.store.get('dsh_guard1')!.config_overlay).toEqual({ text: 'v2' });
-
-    // The `schedules.delete` dissolution path.
-    expect(deps.store.delete('dsh_guard1')).toBe(true);
-    expect(deps.store.get('dsh_guard1')).toBeNull();
-  });
-
-  it('guards only the rpc surface — listing managed dishes is untouched', async () => {
-    const deps = makeDeps();
-    deps.store.set(dish({ managed_by_schedule_id: 'sch_1' }));
+    deps.store.set(dish());
     deps.store.set(dish({ dish_id: 'dsh_guard2', name: 'assigned' }));
-    // D-215 § 3: managed dishes are VISIBLE. The guard restricts mutation,
-    // never reads.
     expect((await listDishes(deps, { recipe_id: 'recipe-a' })).dishes).toHaveLength(2);
   });
 });
@@ -310,16 +188,15 @@ describe('D-215 slice 5 — dishes.history outlives the dish', () => {
   const run = (over: Partial<AuditEntry>): AuditEntry => ({
     run_id: 'r1', recipe_id: 'recipe-a', recipe_hash: 'h',
     started_at: 1_000, finished_at: 1_100, duration_ms: 100,
-    commit_status: 'succeeded', config_snapshot: { secret: 'do-not-ship' },
+    commit_status: 'succeeded', config_snapshot: { channel: '#ops' },
     errors: [], trigger_url: null, trigger_source: null, instance_id: null,
     ...over,
   });
 
   it('⛔ answers for a RETIRED dish — no dish row is consulted at all', async () => {
-    // The whole point. A one-shot retires itself on success and auto-run
-    // versioning dissolves the prior dish on every config change; if this
-    // validated the id against the dish store, the case it exists for
-    // would be the one case it failed.
+    // The whole point. A dish the owner removed keeps its history; if this
+    // validated the id against the dish store, the case it exists for would
+    // be the one case it failed.
     const deps = withAudit();
     await deps.auditLog.append(run({ run_id: 'gone-1', dish_id: 'dsh_retired' }));
     expect(deps.store.get('dsh_retired')).toBeNull();
@@ -328,18 +205,24 @@ describe('D-215 slice 5 — dishes.history outlives the dish', () => {
     expect(runs.map((r) => r.run_id)).toEqual(['gone-1']);
   });
 
-  it('projects the row WITHOUT config_snapshot', async () => {
+  it('D-319 — carries the settings each run ran with, and nothing else of the audit row', async () => {
+    // A dish's settings are edited in place: what a PAST run used is its
+    // `config_snapshot`, never the dish's settings now.
     const deps = withAudit();
     await deps.auditLog.append(run({
       run_id: 'r9', dish_id: 'dsh_a', trigger_source: 'schedule',
       commit_status: 'failed', errors: [{ code: 'BOOM', message: 'it broke' } as never],
     }));
+    await deps.auditLog.append(run({ run_id: 'r10', dish_id: 'dsh_a', started_at: 2_000, config_snapshot: undefined as never }));
     const { runs } = await dishHistory(deps, { dish_id: 'dsh_a' });
-    expect(Object.keys(runs[0]!).sort()).toEqual(
-      ['commit_status', 'duration_ms', 'error', 'run_id', 'started_at', 'trigger_source'],
+    const r9 = runs.find((r) => r.run_id === 'r9')!;
+    expect(Object.keys(r9).sort()).toEqual(
+      ['commit_status', 'config', 'duration_ms', 'error', 'run_id', 'started_at', 'trigger_source'],
     );
-    expect(runs[0]!.error).toBe('it broke');
-    expect(JSON.stringify(runs)).not.toContain('do-not-ship');
+    expect(r9.error).toBe('it broke');
+    expect(r9.config).toEqual({ channel: '#ops' });
+    // A run that recorded none says so, rather than borrowing the dish's.
+    expect(runs.find((r) => r.run_id === 'r10')!.config).toBeNull();
   });
 
   it('newest first, and honours an explicit limit', async () => {

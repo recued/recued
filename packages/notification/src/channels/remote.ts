@@ -121,10 +121,10 @@ export interface RemoteChannelDeps {
    *
    *  A `landing-page` channel composes its own affordance: `withAnswerLink`
    *  (`index.ts`) deliberately appends only for `inline` channels, so without
-   *  this the ask would arrive with no way to answer it. Absent is the honest
-   *  state on a non-public deployment — the resolver refuses a private hostname
-   *  by design — and the ask then carries the typed-reply hint alone. */
-  answerLink?: (ask_id: string, via?: string) => string;
+   *  this the ask would arrive with no way to answer it. No answer is the
+   *  honest state on a non-public deployment — the resolver refuses a private
+   *  hostname by design — and the ask then carries the typed-reply hint alone. */
+  answerLink?: (ask_id: string, via?: string) => string | undefined;
 }
 
 /** Narrow at the one place it matters. A channel built `inline` MUST have the

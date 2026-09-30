@@ -41,6 +41,7 @@ import {
   collectFormValueRefs,
   collectWholeFormRecordRefs,
   spreadsheetImportProblems,
+  mailTemplateStarterProblems,
   VALUE_HINT_KEYS,
   LIST_VOCABULARIES,
   listSettingChoices,
@@ -379,11 +380,14 @@ export const validateAutoRun = (r: Record<string, unknown>, add: AddFn): void =>
     add('error', 'auto_run_dynamic_shape', 'auto_run.dynamic',
       'auto_run.dynamic must be a boolean (omit for static interval)');
   }
+  // D-319 retired `default_enabled` (nothing starts at install; a recipe
+  // starts when it is switched on). A value is ignored, but a malformed one
+  // is still malformed.
   if ('default_enabled' in a
     && a.default_enabled !== undefined
     && typeof a.default_enabled !== 'boolean') {
     add('error', 'auto_run_default_enabled_shape', 'auto_run.default_enabled',
-      'auto_run.default_enabled must be a boolean (omit for compatibility default true)');
+      'auto_run.default_enabled must be a boolean — and it is ignored: nothing starts at install; a recipe starts when it is switched on');
   }
 };
 
@@ -417,7 +421,33 @@ export const validateEventTriggers = (r: Record<string, unknown>, add: AddFn): v
     for (const note of recipeEventTriggerNotes(r.event_triggers[i])) {
       add('warn', 'event_trigger_mail_fact_unknown', `event_triggers[${i}]`, note);
     }
+    const problem = templateVariableProblem(r.event_triggers[i], r.variables);
+    if (problem !== null) add('error', 'event_trigger_entry_invalid', `event_triggers[${i}].template_variable`, problem);
   }
+};
+
+/** D-315 §5.1 — a trigger's `template_variable` names one of this recipe's
+ *  `mail_template` variables; one that is anything else would never be given
+ *  a template, so the row would never be made. A starter of another kind than
+ *  the trigger watches would never give it a fact. */
+const templateVariableProblem = (entry: unknown, variables: unknown): string | null => {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const name = (entry as { template_variable?: unknown }).template_variable;
+  if (typeof name !== 'string' || name.length === 0) return null;
+  const hint = variables !== null && typeof variables === 'object' && !Array.isArray(variables)
+    && Object.prototype.hasOwnProperty.call(variables, name)
+    ? (variables as Record<string, unknown>)[name]
+    : undefined;
+  if (hint === null || typeof hint !== 'object' || (hint as { type?: unknown }).type !== 'mail_template') {
+    return `'${name}' is not one of this recipe's mail_template variables`;
+  }
+  const on = (entry as { on?: unknown }).on;
+  const starterType = ((hint as { starter?: unknown }).starter as { type?: unknown } | undefined)?.type;
+  if (typeof on === 'string' && on.startsWith('mail_fact.') && typeof starterType === 'string'
+    && on !== `mail_fact.${starterType}`) {
+    return `'${name}' brings a ${starterType} template, and this trigger watches ${on.slice('mail_fact.'.length)} facts — it would never wake`;
+  }
+  return null;
 };
 
 /** D-201 Slice 0 — owner-local webhook requirements and strict binding-aware
@@ -1781,6 +1811,24 @@ const validateValueHint = (
           issue('entity_filter', `entity_filter.${key} must be a non-empty string`);
         }
       }
+    }
+  }
+
+  // D-315 §5.2 — a starter is the template a mail_template variable brings. On
+  // any other type nothing creates it: a binding nothing honours.
+  if (hint.starter !== undefined && hint.type !== 'mail_template') {
+    issue('starter', `ValueHint.starter is only meaningful on a mail_template, not on '${String(hint.type)}'`);
+  }
+  if (hint.type === 'mail_template') {
+    // A template's id is minted on the owner's server: no recipe can name one.
+    if (hint.default !== undefined) {
+      issue('default', "a mail_template has no default: a template's id is minted on the owner's server — bring the template as its starter");
+    }
+    // Checked as the author's server checked it before storing it: the template
+    // check, a kind built in, and nothing of the author's mail (the parts only
+    // that server can see — its own addresses, its contacts — were checked there).
+    if (hint.starter !== undefined) {
+      for (const problem of mailTemplateStarterProblems(hint.starter)) issue('starter', problem);
     }
   }
 };

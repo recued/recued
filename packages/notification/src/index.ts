@@ -250,10 +250,10 @@ export interface NotificationBlockDeps {
    *  channel render its own way to answer".
    *
    *  ⚠ Injected, because the block is a LEAF: the public base URL lives in
-   *  `backend/server`, and resolving it here would be an upward import. Absent
-   *  (the default, and the case on any non-public deployment) → asks stay
-   *  text-only, exactly as they were. */
-  askAnswerLink?: (ask_id: string) => string;
+   *  `backend/server`, and resolving it here would be an upward import. Absent,
+   *  or answering `undefined` (no public address right now) → the ask stays
+   *  text-only, exactly as it was. */
+  askAnswerLink?: (ask_id: string) => string | undefined;
   /** D-269 step 5 — may this ask's DELIVERY be held until quiet hours ends?
    *
    *  ⛔ INJECTED, because the block is a LEAF and must not learn about
@@ -692,7 +692,7 @@ export const createNotificationBlock = (
     message: NotificationMessage,
   ): NotificationMessage => {
     if (deps.askAnswerLink === undefined || channel.capability !== 'inline') return message;
-    let url: string;
+    let url: string | undefined;
     try {
       url = deps.askAnswerLink(ask_id);
     } catch {
@@ -700,7 +700,7 @@ export const createNotificationBlock = (
       // delivery — the buttons still work.
       return message;
     }
-    if (url.length === 0) return message;
+    if (url === undefined || url.length === 0) return message;
     return { ...message, text: `${message.text}\n\nOpen to review or edit: ${url}` };
   };
 

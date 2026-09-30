@@ -19,11 +19,18 @@
  *     (`inboundFileRecordId`), derived the same way, so a `file` variable a
  *     backfill reads points at that file — from the email's id when it was
  *     ingested: a move since gave it a new one (the writer's move ledger).
+ *     The file named with the mailbox first; the one named by the email's id
+ *     alone only where no other mailbox holds that id
+ *     (`mail-attachment-source-id.ts`).
  */
 
 import type { CollectionRecord } from '@recued/contracts';
 
-import { inboundFileRecordId } from '../collections/file/inbound-file-collection.js';
+import {
+  legacyMailAttachmentSourceId,
+  mailAttachmentFileId,
+  scopedMailAttachmentSourceId,
+} from '../collections/mail/mail-attachment-source-id.js';
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import { normalizeRfcMessageId, type CanonicalMessage } from '../collections/mail/provider.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
@@ -65,6 +72,10 @@ export interface StoredEmailDeps {
    *  names an attachment's file by its email's id then, and a move gives the
    *  email a new one: without these, a moved email read again has none. */
   readonly formerRecordIds?: (slug: string, record_id: string) => readonly string[];
+  /** Whether a file named by an email's id alone may be another mailbox's
+   *  (`MailCollection.legacyAttachmentsAmbiguous`). Such a file is offered
+   *  only when this answers false; without it, none is. */
+  readonly legacyAttachmentsAmbiguous?: (slug: string, record_id: string) => boolean;
 }
 
 const hotString = (record: CollectionRecord, key: string): string => {
@@ -80,17 +91,26 @@ const hotStrings = (record: CollectionRecord, key: string): string[] => {
 /** A message's attachments whose files the ingest stored, each by the id it
  *  was stored under: the ingest names a file by its email's id, the first of
  *  `recordIds` that names a stored file — the email's id now, then the ids a
- *  move took it from. */
+ *  move took it from. For each, the name with the mailbox, then the name by
+ *  the id alone where that one cannot be another mailbox's file. */
 const storedAttachments = (
   message: CanonicalMessage,
+  slug: string,
   recordIds: readonly string[],
-  deps: Pick<StoredEmailDeps, 'fileStored' | 'storedFileType'>,
+  deps: Pick<StoredEmailDeps, 'fileStored' | 'storedFileType' | 'legacyAttachmentsAmbiguous'>,
 ): MailFactSourceAttachment[] => {
   const out: MailFactSourceAttachment[] = [];
-  for (const [index, part] of (message.attachments ?? []).entries()) {
+  const parts = message.attachments ?? [];
+  if (parts.length === 0) return out;
+  const legacyTrusted = recordIds.map((record_id) => deps.legacyAttachmentsAmbiguous?.(slug, record_id) === false);
+  for (const [index, part] of parts.entries()) {
     const partId = part.source_part_id || `part-${index}`;
     const file_id = recordIds
-      .map((record_id) => inboundFileRecordId('mail_attachment', `${record_id}:${partId}`))
+      .flatMap((record_id, at) => [
+        scopedMailAttachmentSourceId(slug, record_id, partId),
+        ...(legacyTrusted[at] ? [legacyMailAttachmentSourceId(record_id, partId)] : []),
+      ])
+      .map(mailAttachmentFileId)
       .find((id) => deps.fileStored?.(id) === true);
     if (file_id !== undefined) {
       out.push({ file_id, filename: part.filename, mime_type: deps.storedFileType?.(file_id) ?? part.mime_type });
@@ -106,9 +126,9 @@ export const storedAttachmentsOf = (
   message: CanonicalMessage,
   slug: string,
   record_id: string,
-  deps: Pick<StoredEmailDeps, 'fileStored' | 'storedFileType' | 'formerRecordIds'>,
+  deps: Pick<StoredEmailDeps, 'fileStored' | 'storedFileType' | 'formerRecordIds' | 'legacyAttachmentsAmbiguous'>,
 ): MailFactSourceAttachment[] =>
-  storedAttachments(message, [record_id, ...(deps.formerRecordIds?.(slug, record_id) ?? [])], deps);
+  storedAttachments(message, slug, [record_id, ...(deps.formerRecordIds?.(slug, record_id) ?? [])], deps);
 
 /** A stored email's labels as the passes read them: its labels and its folder. */
 export const storedLabels = (record: CollectionRecord): string[] => {

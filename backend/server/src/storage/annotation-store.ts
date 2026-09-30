@@ -56,7 +56,9 @@ import {
 import type { BlobStore } from './blob-store.js';
 
 const ANNOTATION_TABLE = 'annotation';
-const LINK_TABLE = 'link';
+/** Exported for a one-off repair whose deletes must share its ledger's
+ *  transaction (`mail-attachment-link-repair.ts`); the store's own delete is async. */
+export const LINK_TABLE = 'link';
 const ANNOTATION_FTS_TABLE = 'annotation_fts';
 
 /** Hard cap on rows returned by list / search — protects callers from
@@ -213,6 +215,8 @@ export interface AnnotationStore {
   /** Per-record convenience read. Returns every link with the record
    *  as the `from` side. */
   outboundLinks(collection: string, id: string): Promise<Link[]>;
+  /** Same metadata read, usable inside evidence/version checks that must not yield. */
+  outboundLinksSync?(collection: string, id: string): Link[];
   /** Per-record convenience read. Returns every link with the record
    *  as the `to` side. */
   inboundLinks(collection: string, id: string): Promise<Link[]>;
@@ -1121,10 +1125,10 @@ export const createAnnotationStore = (
     };
   };
 
-  const outboundLinks = async (
+  const outboundLinksSync = (
     collection: string,
     id: string,
-  ): Promise<Link[]> => {
+  ): Link[] => {
     const rows = db
       .prepare(
         `SELECT * FROM ${LINK_TABLE} WHERE from_collection = ? AND from_id = ? ORDER BY role, created_at`,
@@ -1132,6 +1136,7 @@ export const createAnnotationStore = (
       .all(collection, id) as LinkRow[];
     return rows.map(linkFromRow);
   };
+  const outboundLinks = async (collection: string, id: string): Promise<Link[]> => outboundLinksSync(collection, id);
 
   const inboundLinks = async (
     collection: string,
@@ -1421,6 +1426,7 @@ export const createAnnotationStore = (
     annotationsForRecord,
     latestAnnotationProvenance,
     outboundLinks,
+    outboundLinksSync,
     inboundLinks,
     cascadeDelete,
     rewriteRecordId,

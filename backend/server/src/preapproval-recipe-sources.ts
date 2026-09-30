@@ -40,7 +40,8 @@ export const createPreapprovalRecipeSources = (deps: PreapprovalRecipeSourceDeps
     const target = root.target;
     const boundId = recipeId !== root.recipe_id || publisherId !== root.publisher_id ? null
       : target.kind === 'next_schedule' ? deps.schedules.get(target.key)?.dish_id
-      : target.kind === 'next_auto_run' ? deps.autoRun.getDishId(target.key)
+      // D-319 — a timer is keyed by its dish.
+      : target.kind === 'next_auto_run' ? target.key
       : target.kind === 'next_trigger' ? deps.triggers.get(target.key)?.dish_id : null;
     if (boundId) {
       const dish = deps.dishes.get(boundId);

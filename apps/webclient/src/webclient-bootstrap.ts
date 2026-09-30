@@ -320,6 +320,8 @@ import {
   type ApprovalSubscribeCaller,
 } from './approvals/bootstrap-approvals-route.js';
 import { bootstrapMailRoute } from './mail/bootstrap-mail-route.js';
+import { bootstrapMailWorkRoute } from './mail/mail-work-route.js';
+import { MAIL_WORK_REVIEW_TIMEOUT_MS } from '@recued/contracts';
 import { bootstrapPreapprovalRoute, preapprovalHref, removePreapproval } from './approvals/preapproval-route.js';
 import {
   listComposeFiles,
@@ -371,7 +373,6 @@ import type {
 } from './settings/owner-operation-controls.js';
 import {
   bootstrapRecipesRoute,
-  type RecipeConfigSetCaller,
   type RecipeExecuteCaller,
   type RecipesListCaller,
   type RecipesPiiCaller,
@@ -388,6 +389,8 @@ import {
   wireSheetImport,
   type SheetImportHandle,
 } from './recipes/spreadsheet-import/index.js';
+import { mainDishSettings } from './recipes/main-dish-settings.js';
+import { openDishForm } from './recipes/dish-form.js';
 import type { PackInstalledListCaller, RosterPack } from './discover/pack-discovery.js';
 import { mountDiscoverySurface } from './discover/discovery-surface.js';
 import { mountRecipeDiscovery } from './discover/recipe-discovery.js';
@@ -458,6 +461,7 @@ import {
   type WorkEntitySourceListCaller,
 } from './data/bootstrap-data-route.js';
 import type { MailFactCallers } from './data/mail-facts-surface.js';
+import { createMailTemplateVariableCallers } from './data/mail-template-choices.js';
 import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
 import {
   bootstrapLogsRoute,
@@ -555,6 +559,7 @@ import {
   parseChatAnswerAddress,
   parseChatPlanAddress,
   parseChatSessionAddress,
+  serializeChatSessionAddress,
   parseDataEntityVerificationAddress,
   parseLogsRunAddress,
   parseRouteFromHash,
@@ -836,6 +841,8 @@ import type {
   HostnamesGetCaller,
   HostnamesListCaller,
   HostnamesRemoveCaller,
+  HostnamesAddressUsesCaller,
+  HostnamesSetAddressUseCaller,
   HostnamesUpdateCaller,
   HostnamesVerifyOwnershipCaller,
   NetworkLocalUrlsCaller,
@@ -2646,6 +2653,9 @@ export interface WebclientHashSource {
   /** Optional imperative navigation seam. Production and the full-app browser
    * harness provide it; read-only embedders may omit it. */
   setHash?(hash: string): void;
+  /** Like `setHash`, but replaces the current history entry instead of adding
+   * one, and still notifies `onChange`. Without it the shell adds an entry. */
+  replaceHash?(hash: string): void;
 }
 
 /** Mounted webclient handle — tear-down + introspection. */
@@ -2738,7 +2748,7 @@ const buildAad = (pair: HydratedPairState): WebclientTokenAad => ({
 // ════════════════════════════════════════════════════════════════
 
 interface BrowserGlobalShape {
-  location?: { hash?: string; pathname?: string };
+  location?: { hash?: string; pathname?: string; replace?(url: string): void };
   addEventListener?(type: string, listener: (event: unknown) => void): void;
   removeEventListener?(type: string, listener: (event: unknown) => void): void;
 }
@@ -2766,6 +2776,12 @@ const resolveDefaultHashSource = (): WebclientHashSource | null => {
     },
     setHash: (hash) => {
       if (g.location !== undefined) g.location.hash = hash;
+    },
+    // Replacing only the fragment still fires hashchange/popstate, so the
+    // listener above mounts the new route while Back skips the old entry.
+    replaceHash: (hash) => {
+      if (typeof g.location?.replace === 'function') g.location.replace(hash);
+      else if (g.location !== undefined) g.location.hash = hash;
     },
   };
 };
@@ -3294,6 +3310,7 @@ export const bootstrapWebclient = async (
   };
   let pendingChatRecovery = options.reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
+  let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean } | undefined;
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
       hashSource.setHash(hash);
@@ -3301,6 +3318,12 @@ export const bootstrapWebclient = async (
     }
     const location = doc.defaultView?.location;
     if (location !== undefined) location.hash = hash;
+  };
+  /** Navigate from an address that only hands over to another route, so Back
+   * cannot land on it and hand over again. Without the seam, adds an entry. */
+  const navigateHashInPlace = (hash: string): void => {
+    if (hashSource?.replaceHash !== undefined) hashSource.replaceHash(hash);
+    else navigateHash(hash);
   };
   const mailDraftCallers: import('./mail/mail-compose-host.js').MailDraftCallers = {
     create: args => rpcConn.call('mail.drafts.create', args),
@@ -7128,6 +7151,9 @@ export const bootstrapWebclient = async (
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.update', input))(args),
     deleteTemplate: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.delete', input))(args),
+    // D-315 §5.2 — "Duplicate to edit" a template a recipe brought.
+    duplicateTemplate: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.duplicate', input))(args),
     getStandards: () => rpcConn.call('mail_fact.standards.get', undefined),
     setStandards: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.standards.set', input))(args),
@@ -7148,6 +7174,8 @@ export const bootstrapWebclient = async (
     listSenders: (args) => rpcConn.call('mail_fact.senders.list', args),
     emailStatus: (args) => rpcConn.call('mail_fact.email.get', args),
     listRecipes: () => recipesListCaller(),
+    // D-319 §5.5 — "Then run…" asks which dish, when there is a choice.
+    listDishes: () => rpcConn.call('dishes.list', {}),
     createTrigger: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('triggers.create', input))(args),
     getBackfill: () => rpcConn.call('mail_fact.backfill.get', undefined),
@@ -7158,6 +7186,15 @@ export const bootstrapWebclient = async (
     dismissSender: (args) =>
       switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.senders.dismiss', input))(args),
   };
+  // D-315 §5.2 — a recipe setting that is one of the owner's mail templates:
+  // its Settings list them, open one, and duplicate a recipe's to edit it.
+  const mailTemplateVariableCallers = createMailTemplateVariableCallers({
+    listTemplates: () => rpcConn.call('mail_fact.template.list', undefined),
+    listRecipes: () => recipesListCaller(),
+    duplicateTemplate: (args) =>
+      switchWorkTracker.track((input: typeof args) => rpcConn.call('mail_fact.template.duplicate', input))(args),
+    navigate: (hash) => { window.location.hash = hash; },
+  });
   // Wire the §D.L2 drawer "Create" action seat (its shell thunk resolves here)
   // to the shared Create overlay — the same capture targets the L1 composer
   // [✎ Create] button opens, with the same local-write callers as Data. Track
@@ -7542,6 +7579,35 @@ export const bootstrapWebclient = async (
         'Updating recipe auto-run',
         automationAutoRunUpdateCaller,
       ),
+      // D-319 §5.5 — Arm on a recipe nobody switched on opens the switch-on
+      // form: its settings, from what the install chose, then a dish.
+      switchOn: async (entry, onClosed) => {
+        const { dishes } = await automationDishesListCaller();
+        if (dishes.some((dish) => dish.recipe_id === entry.recipe_id)) return null;
+        const { config_overlay } = await rpcConn.call('dishes.defaults', { recipe_id: entry.recipe_id });
+        let notice: string | null = null;
+        const recordRefSearch = bindRecordRefSearchToRecipe(recordRefSearchCaller, entry.recipe);
+        return openDishForm({
+          document: doc,
+          mode: 'switch-on',
+          entry,
+          dishes: [],
+          start: { ...config_overlay },
+          callers: {
+            create: trackGlobalRunWrite('Switching a recipe on', automationDishesCreateCaller),
+            schedulesCreate: trackGlobalRunWrite('Scheduling a recipe', globalRunScheduleCreate),
+          },
+          fileRefSearch: fileRefSearchCaller,
+          ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
+          mailTemplates: mailTemplateVariableCallers,
+          onCreated: (_dish, scheduleError) => {
+            if (scheduleError !== null) {
+              notice = `Switched on, but Recued could not add the schedule: ${humanizeRpcError(scheduleError)}`;
+            }
+          },
+          onClose: () => onClosed(notice),
+        });
+      },
       automationHref: (recipeId) =>
         serializeShellRoute('automation', recipeId),
       packsHref: serializeShellRoute('packs'),
@@ -9365,6 +9431,17 @@ export const bootstrapWebclient = async (
     options.enableHostnamesPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.hostname.issuanceReadiness', args);
+  // "Addresses you hand out" — the address kept per use (webhooks, Reception
+  // links, customer access). ⚠ An older server has neither method; the panel
+  // reads `unknown_method` as "leave the section out".
+  const hostnamesAddressUsesCaller: HostnamesAddressUsesCaller | undefined =
+    options.enableHostnamesPanel === false
+      ? undefined
+      : () => rpcConn.call('collection.hostname.addressUses', undefined);
+  const hostnamesSetAddressUseCaller: HostnamesSetAddressUseCaller | undefined =
+    options.enableHostnamesPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.hostname.setAddressUse', args);
   // LAN-URL kickstart (slice 2) — `network.local_urls` powers the Hostnames
   // panel's read-only "Reachable on your network" section. Built + forwarded
   // unconditionally (not bundled into the all-or-nothing hostname-CRUD group):
@@ -9548,6 +9625,7 @@ export const bootstrapWebclient = async (
   const mountRoute = (
     route: WebclientRouteId,
     chatFile?: import('@recued/contracts').FileAttachmentSelection,
+    workPrompt?: { prompt: string; repeat?: boolean },
   ): RecoveryContextProbe & {
     update?: () => void;
     dispose: () => void;
@@ -10278,6 +10356,11 @@ export const bootstrapWebclient = async (
           const sheet = sheetImportFor(entry);
           if (sheet !== null) {
             ensureSheetImportResultStyles(doc);
+            const packsRemembered = mainDishSettings({
+              list: automationDishesListCaller,
+              update: automationDishesUpdateCaller,
+              create: automationDishesCreateCaller,
+            });
             packsSheetImport = wireSheetImport({
               recipe: entry,
               declaration: sheet,
@@ -10287,10 +10370,9 @@ export const bootstrapWebclient = async (
               uploadFile: sheetImportUploader,
               readFile: (args) => rpcConn.call('data.file.read', args),
               fileRefSearch: fileRefSearchCaller,
-              configGet: (args) => rpcConn.call('recipe_config.get', args),
-              configSet: switchWorkTracker.track((args: {
-                recipe_id: string; publisher_id?: string; config_overlay: Record<string, unknown>;
-              }) => rpcConn.call('recipe_config.set', args)),
+              // D-319 — "remember these columns": the main dish's settings.
+              configGet: packsRemembered.get,
+              configSet: switchWorkTracker.track(packsRemembered.set),
               renderResult: renderSheetImportResult,
               ...(prefill?.config !== undefined ? { prefill: prefill.config } : {}),
               onClose: () => { packsSheetImport = null; },
@@ -10454,8 +10536,6 @@ export const bootstrapWebclient = async (
         : undefined;
       const createRecipeSchedule: RecipesSchedulesCreateCaller = (args) =>
         rpcConn.call('schedules.create', args);
-      const setRecipeConfig: RecipeConfigSetCaller = (args) =>
-        rpcConn.call('recipe_config.set', args);
       // Wrap the run-library route in the [Installed | Discover] tab shell. The
       // route mounts UNCHANGED into the Installed pane; the Discover pane
       // browses the marketplace recipe catalog (lazy-loaded on first open).
@@ -10521,10 +10601,16 @@ export const bootstrapWebclient = async (
           autoRunUpdateCaller: switchWorkTracker.track(
             automationAutoRunUpdateCaller,
           ),
-          // D-179 — the recipe detail's install-config editor (default-dish
-          // overlay applied as a base to every dishless run).
-          recipeConfigGetCaller: (args) => rpcConn.call('recipe_config.get', args),
-          recipeConfigSetCaller: switchWorkTracker.track(setRecipeConfig),
+          // D-319 — "Running as": switching a recipe on, a dish's switch and
+          // Settings, Make this the main one, Remove, and what a new dish
+          // starts from. Also the guided import's "remember these columns"
+          // (the main dish's settings).
+          dishesCreateCaller: switchWorkTracker.track(automationDishesCreateCaller),
+          dishesUpdateCaller: switchWorkTracker.track(automationDishesUpdateCaller),
+          dishesDeleteCaller: switchWorkTracker.track(automationDishesDeleteCaller),
+          dishesDefaultsCaller: (args) => rpcConn.call('dishes.defaults', args),
+          // D-315 §5.2 — a `mail_template` setting: the owner's templates.
+          mailTemplateCallers: mailTemplateVariableCallers,
           fileRefSearchCaller,
           recordRefSearchCaller,
           // D-292 — the guided spreadsheet import's upload (see the Packs host).
@@ -10850,6 +10936,13 @@ export const bootstrapWebclient = async (
           automationDishesCreateCaller,
         ),
         dishesHistoryCaller: automationDishesHistoryCaller,
+        // D-319 §5.4 — "Not switched on" → Switch on reads what a first dish
+        // starts from; the Add dialog's Run tab runs.
+        dishesDefaultsCaller: (args) => rpcConn.call('dishes.defaults', args),
+        // D-319 — the settings form's pickers, as on the recipe page.
+        mailTemplateCallers: mailTemplateVariableCallers,
+        recordRefSearchCaller,
+        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         autoRunListCaller: automationAutoRunListCaller,
         autoRunUpdateCaller: switchWorkTracker.track(
           automationAutoRunUpdateCaller,
@@ -11097,7 +11190,10 @@ export const bootstrapWebclient = async (
         reconnect,
         ...(chatRecovery !== undefined
           ? { initialRecoveryDraft: chatRecovery }
-          : {}),
+          : workPrompt !== undefined && chatSessionId !== undefined ? {
+            initialRecoveryDraft: { text: workPrompt.prompt, protected: true, modelSourceId: null },
+            initialWorkSubmission: { sessionId: chatSessionId, message: workPrompt.prompt, repeat: workPrompt.repeat },
+          } : {}),
         // Shell-frame Step 4 — the [✎ Create] composer overlay reuses the
         // compose route's local-write callers.
         contactUpsertCaller: dataContactUpsertCaller,
@@ -12014,6 +12110,16 @@ export const bootstrapWebclient = async (
         ...(customDomainReadinessCaller !== undefined
           ? { customDomainReadinessCaller }
           : {}),
+        ...(hostnamesAddressUsesCaller !== undefined
+          ? { hostnamesAddressUsesCaller }
+          : {}),
+        ...(hostnamesSetAddressUseCaller !== undefined
+          ? {
+              hostnamesSetAddressUseCaller: switchWorkTracker.track(
+                hostnamesSetAddressUseCaller,
+              ),
+            }
+          : {}),
         // LAN-URL kickstart (slice 2) — forwarded independently of the CRUD
         // bundle above so it reaches the panel even if a future config gates
         // the CRUD callers off. Always defined; the panel renders the section
@@ -12194,6 +12300,30 @@ export const bootstrapWebclient = async (
       }));
     }
     if (route === 'mail') {
+      const address = hashSource ? parseShellRoute(hashSource.getHash()) : null;
+      if (address && address.segments.length > 0) {
+        activeSettingsRoute = null;
+        return bootstrapMailWorkRoute({
+          root: appShell.contentRoot, segments: address.segments,
+          callers: {
+            list: args => rpcConn.call('mail.work.list', args),
+            get: args => rpcConn.call('mail.work.get', args),
+            create: args => rpcConn.call('mail.work.create', args),
+            update: args => rpcConn.call('mail.work.update', args),
+            delete: args => rpcConn.call('mail.work.delete', args),
+            review: args => rpcConn.call('mail.work.review', args, { timeout: MAIL_WORK_REVIEW_TIMEOUT_MS }),
+            search: args => rpcConn.call('mail.work.search', args),
+            openChat: args => rpcConn.call('chat.session.create', args),
+          },
+          explore: ({ sessionId, prompt, repeat, replace }) => {
+            const hash = serializeChatSessionAddress({ sessionId });
+            pendingWorkPrompt = prompt === undefined ? undefined : { hash, prompt, repeat };
+            if (replace === true) navigateHashInPlace(hash);
+            else navigateHash(hash);
+          },
+          navigate: navigateHash,
+        });
+      }
       // D-145 PA7 / D-172 P2 — the compose host.
       //
       // ⛔ SEND IS AN `execute` RUN, NOT AN RPC. D-177 N.12 removed
@@ -12380,6 +12510,9 @@ export const bootstrapWebclient = async (
             (args) => rpcConn.call('recipe.save', args),
           ),
           mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
+          // D-315 §5.2 — a template setting brings one of the author's templates.
+          mailTemplatesCaller: () => rpcConn.call('mail_fact.template.list', undefined),
+          mailTemplateStarterCaller: (args) => rpcConn.call('mail_fact.template.starter', args),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
@@ -12406,6 +12539,9 @@ export const bootstrapWebclient = async (
             (args) => rpcConn.call('recipe.webhook.disarm', args),
           ),
           mailFactTypesCaller: () => rpcConn.call('mail_fact.type.list', undefined),
+          // D-315 §5.2 — a template setting brings one of the author's templates.
+          mailTemplatesCaller: () => rpcConn.call('mail_fact.template.list', undefined),
+          mailTemplateStarterCaller: (args) => rpcConn.call('mail_fact.template.starter', args),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
@@ -14081,6 +14217,8 @@ export const bootstrapWebclient = async (
     ? hashSource.onChange((hash) => {
         const chatFile = pendingChatFile?.hash === hash ? pendingChatFile.file : undefined;
         pendingChatFile = undefined;
+        const workPrompt = pendingWorkPrompt?.hash === hash ? pendingWorkPrompt : undefined;
+        pendingWorkPrompt = undefined;
         if (
           hash !== activeHash
           && recoveryIntentContinuationPhase === 'checking'
@@ -14185,7 +14323,7 @@ export const bootstrapWebclient = async (
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next, parseShellRoute(hash).segments);
-        mountedRouteHandle = mountRoute(next, chatFile);
+        mountedRouteHandle = mountRoute(next, chatFile, workPrompt);
         finishPendingRecoveryReturnAction(hash);
       })
     : (): void => undefined;

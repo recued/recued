@@ -45,3 +45,19 @@ describe('Checkpoint saga fields', () => {
     expect(isCheckpoint(candidate)).toBe(true);
   });
 });
+
+describe('D-319 — an automatic poll names the dish whose timer polled', () => {
+  const polled = (qualification: Record<string, unknown>): unknown => ({
+    ...checkpoint(),
+    execution_phase: 'trigger',
+    auto_run_qualification: {
+      recipe_id: 'recipe-1', incarnation: 'inc-1', revision: 1, qualifying_sequence: 0, ...qualification,
+    },
+  });
+
+  it('keeps a poll with its dish, and refuses one without', () => {
+    expect(isCheckpoint(polled({ dish_id: 'dsh_a' }))).toBe(true);
+    expect(isCheckpoint(polled({}))).toBe(false);
+    expect(isCheckpoint(polled({ dish_id: '' }))).toBe(false);
+  });
+});

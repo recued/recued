@@ -30,6 +30,7 @@ import {
   MAIL_TEMPLATE_SAMPLE_MAX_CHARS,
   RpcError,
   mailTemplateDefinitionOf,
+  mailTemplateStarterProblems,
   validateMailFactCustomType,
   validateMailFactTypeChange,
   validateMailTemplateDefinition,
@@ -43,7 +44,6 @@ import {
   type MailFactThing,
   type MailFactTypeSpec,
   type MailTemplate,
-  type MailTemplateCondition,
   type MailTemplateDefinition,
   type RunAnchorStatus,
   type ServerRpcRegistry,
@@ -67,7 +67,8 @@ import {
 } from './template-preview.js';
 import { mailFactAiFailure, type MailFactAiCall } from './ai-pass.js';
 import { draftMailTemplate, MailTemplateDraftError } from './template-draft.js';
-import type { MailFactSourceEmail } from './rules-pass.js';
+import { conditionSetAsRead, type MailFactSourceEmail } from './rules-pass.js';
+import type { RecipeMailTemplates } from './recipe-templates.js';
 
 const DAY_MS = 86_400_000;
 
@@ -108,6 +109,10 @@ export interface MailFactRpcDeps {
   /** Switch off the rows made on this server that `match` names: a trigger
    *  narrowed to a template or kind that was deleted could never fire. */
   readonly switchOffTriggers?: (match: (trigger: EventTrigger) => boolean) => Promise<number>;
+  /** §5.2 — the templates recipes bring: "Duplicate to edit" re-points the
+   *  recipe settings that held the original. Absent ⇒ it answers
+   *  `not_configured`. */
+  readonly recipeTemplates?: Pick<RecipeMailTemplates, 'duplicate'>;
 }
 
 type Methods =
@@ -116,6 +121,8 @@ type Methods =
   | 'mail_fact.template.create'
   | 'mail_fact.template.update'
   | 'mail_fact.template.delete'
+  | 'mail_fact.template.duplicate'
+  | 'mail_fact.template.starter'
   | 'mail_fact.standards.get'
   | 'mail_fact.standards.set'
   | 'mail_fact.facts.list'
@@ -266,14 +273,6 @@ const checkedDefinition = (store: MailFactStore, definition: unknown): MailTempl
   return mailTemplateDefinitionOf(candidate);
 };
 
-/** A condition set as one comparable key: order does not matter, case does not. */
-const conditionSetKey = (conditions: readonly MailTemplateCondition[]): string =>
-  conditions
-    .map((condition) =>
-      JSON.stringify([condition.field, condition.op, condition.value.toLowerCase(), condition.negate === true]))
-    .sort()
-    .join('\n');
-
 /** Ruling 31: refuse to make a second active template of one type and one set
  *  of conditions. */
 const assertNoActiveTwin = (
@@ -281,11 +280,11 @@ const assertNoActiveTwin = (
   definition: MailTemplateDefinition,
   self: string | null,
 ): void => {
-  const key = conditionSetKey(definition.entrance.conditions);
+  const key = conditionSetAsRead(definition.entrance.conditions);
   const twin = store
     .listTemplates({ type: definition.type, active: true })
     .find((template: MailTemplate) =>
-      template.template_id !== self && conditionSetKey(template.entrance.conditions) === key);
+      template.template_id !== self && conditionSetAsRead(template.entrance.conditions) === key);
   if (twin !== undefined) {
     throw new RpcError(
       'conflict',
@@ -296,6 +295,17 @@ const assertNoActiveTwin = (
     );
   }
 };
+
+/** §5.2 — what a template a recipe brought lets its owner change: whether the
+ *  AI is on, and its pool. The rest is the recipe's, re-applied by its updates. */
+const recipeOwnedPart = (definition: MailTemplateDefinition): string => {
+  const { ai, ...rest } = mailTemplateDefinitionOf(definition);
+  return JSON.stringify({ ...rest, ai: { prompt: ai.prompt ?? null, slots: ai.slots ?? null } });
+};
+
+/** §5.2 — a sender the owner knows, whom a starter must not name: someone in
+ *  their family, work or social network (`NETWORK_DOMAINS`). A shop is none. */
+const PERSONAL_RELATIONSHIPS: ReadonlySet<string> = new Set(['family', 'work', 'social']);
 
 const nonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
@@ -470,6 +480,8 @@ export const makeMailFactRpcHandlers = (
       'mail_fact.template.create',
       'mail_fact.template.update',
       'mail_fact.template.delete',
+      'mail_fact.template.duplicate',
+      'mail_fact.template.starter',
       'mail_fact.standards.get',
       'mail_fact.standards.set',
       'mail_fact.facts.list',
@@ -519,6 +531,19 @@ export const makeMailFactRpcHandlers = (
         if (definition !== undefined && definition.type !== existing.type) {
           throw new RpcError('bad_request', 'A template keeps its type — make a new template for another type', 400);
         }
+        // §5.2 — a recipe's template: its rules are the recipe's, re-applied by
+        // each update; the owner switches it and its AI on or off, and picks the pool.
+        if (definition !== undefined && existing.origin.kind === 'recipe'
+          && recipeOwnedPart(definition) !== recipeOwnedPart(existing)) {
+          const recipe = deps.recipeNameOf?.(existing.origin.recipe) ?? existing.origin.recipe;
+          throw new RpcError(
+            'conflict',
+            `“${existing.name}” comes with the recipe ${recipe}: its rules update with the recipe. Duplicate it to edit.`,
+            409,
+            undefined,
+            { recipe_id: existing.origin.recipe },
+          );
+        }
         const active = args?.active;
         if (active !== undefined && typeof active !== 'boolean') {
           throw new RpcError('bad_request', 'active must be true or false', 400);
@@ -536,6 +561,17 @@ export const makeMailFactRpcHandlers = (
       'mail_fact.template.delete': async (args, client) => {
         requireClient(client);
         const templateId = requireTemplateId(args?.template_id);
+        const existing = store.getTemplate(templateId);
+        if (existing?.origin.kind === 'recipe') {
+          const recipe = deps.recipeNameOf?.(existing.origin.recipe) ?? existing.origin.recipe;
+          throw new RpcError(
+            'conflict',
+            `“${existing.name}” comes with the recipe ${recipe} and goes with it. Switch it off instead, or uninstall the recipe.`,
+            409,
+            undefined,
+            { recipe_id: existing.origin.recipe },
+          );
+        }
         const deleted = store.deleteTemplate(templateId);
         if (deleted) {
           templatesChanged();
@@ -543,6 +579,43 @@ export const makeMailFactRpcHandlers = (
           await deps.switchOffTriggers?.((trigger) => trigger.filter?.['record.template'] === templateId);
         }
         return { deleted };
+      },
+      'mail_fact.template.duplicate': async (args, client) => {
+        requireClient(client);
+        const templateId = requireTemplateId(args?.template_id);
+        if (deps.recipeTemplates === undefined) {
+          throw new RpcError('not_configured', 'Recipes are not set up on this server.', 503);
+        }
+        const template = deps.recipeTemplates.duplicate(templateId);
+        if (template === null) throw new RpcError('not_found', `No mail template '${templateId}'.`, 404);
+        return { template };
+      },
+      'mail_fact.template.starter': async (args, client) => {
+        requireClient(client);
+        const templateId = requireTemplateId(args?.template_id);
+        const template = store.getTemplate(templateId);
+        if (template === null) throw new RpcError('not_found', `No mail template '${templateId}'.`, 404);
+        // Only what a template is: its ids, health and times stay here.
+        const starter = mailTemplateDefinitionOf(template);
+        // What only this server knows: the owner's own addresses, and the
+        // senders they know (someone in their family, work or social network).
+        const words = (deps.editor?.mailboxes() ?? [])
+          .map((mailbox) => mailbox.accountEmail)
+          .filter((address) => address.trim().length > 0);
+        const knows = (address: string): boolean =>
+          (deps.editor?.relationshipsOf?.(address.trim().toLowerCase()) ?? [])
+            .some((relationship) => PERSONAL_RELATIONSHIPS.has(relationship));
+        const senders = starter.entrance.conditions
+          .filter((condition) => condition.field === 'from' && condition.op === 'is' && knows(condition.value))
+          .map((condition) => condition.value);
+        const problems = mailTemplateStarterProblems(starter, { words, senders });
+        if (problems.length > 0) {
+          const more = problems.length > 1 ? ` (and ${problems.length - 1} more)` : '';
+          throw new RpcError('bad_request', `This template cannot travel in a recipe: ${problems[0]}${more}`, 400, undefined, {
+            problems,
+          });
+        }
+        return { starter };
       },
       'mail_fact.type.list': async (_args, client) => {
         requireClient(client);

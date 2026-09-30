@@ -29,6 +29,9 @@ import type {
   InstallAccessTier,
   InstallAudienceSelection,
   InstallScopeWho,
+  MailFactSourcesPreview,
+  MailTemplateCondition,
+  MailTemplateInstallPreview,
   PackListEntry,
   PackWebhookPlanEntry,
 } from '@recued/contracts';
@@ -442,6 +445,12 @@ export interface InstallPreview {
    *  install that need each. The install refuses while one is missing, so the
    *  dialog offers them first and holds Install. Absent from an older server. */
   readonly missing_packs?: ReadonlyArray<InstallMissingPack>;
+  /** D-315 §5.2 — the templates the recipes bring, and where one reads the
+   *  same mail as a template already on. Absent from an older server. */
+  readonly mail_templates?: readonly MailTemplateInstallPreview[];
+  /** D-315 §5.2 — for each recipe that starts on facts, where they would come
+   *  from here. Absent from an older server, or when none does. */
+  readonly mail_fact_sources?: readonly MailFactSourcesPreview[];
   /** D-303 — settings the owner saved that this update stops using. */
   readonly settings_no_longer_used?: ReadonlyArray<{
     readonly recipe_id: string;
@@ -748,6 +757,172 @@ export const PACKS_DIALOG_SETTINGS_OFF_ATTR = 'data-recued-packs-dialog-settings
 
 /** The webhooks section of the install dialog. */
 export const PACKS_DIALOG_WEBHOOKS_ATTR = 'data-recued-packs-dialog-webhooks';
+/** D-315 §5.2 — the "Mail templates" section, and a keep choice (`recipe` /
+ *  `existing`) on its radios. */
+export const PACKS_DIALOG_MAIL_TEMPLATES_ATTR = 'data-recued-packs-dialog-mail-templates';
+export const PACKS_DIALOG_MAIL_TEMPLATE_KEEP_ATTR = 'data-recued-packs-dialog-mail-template-keep';
+/** D-315 §5.2 — the "Where its facts come from" section. */
+export const PACKS_DIALOG_FACT_SOURCES_ATTR = 'data-recued-packs-dialog-fact-sources';
+
+/** What the standards pass reads of each kind, in the owner's words. */
+const STANDARDS_READS: Readonly<Record<string, string>> = {
+  shipment: 'the markup shops and carriers put in their mail, and UPS, USPS, FedEx and DHL tracking numbers',
+  purchase: 'the markup shops put in their order mail',
+  bill: 'the markup on bills',
+  reservation: 'the markup booking sites put in their mail',
+  owner_request: 'the requests you mail to your own +tag address',
+};
+
+/** One kind a recipe starts on, and where its facts would come from. */
+export const describeMailFactSource = (
+  recipe: string,
+  kind: MailFactSourcesPreview['kinds'][number],
+): { readonly line: string; readonly none: boolean } => {
+  const what = kind.variables.length > 0 ? kind.variables.map(words).join(', ') : 'any change';
+  const from = [
+    ...(kind.standards ? [`${STANDARDS_READS[kind.type] ?? 'standard markup'}, read without a template`] : []),
+    ...(kind.templates > 0 ? [`${kind.templates === 1 ? 'one template' : `${kind.templates} templates`} of yours`] : []),
+    ...(kind.brought ? ['the template this install adds'] : []),
+  ];
+  return from.length > 0
+    ? { line: `${recipe} starts on ${what} in ${kind.name.toLowerCase()} facts, which come from ${from.join('; ')}.`, none: false }
+    : { line: `${recipe} starts on ${what} in ${kind.name.toLowerCase()} facts, and nothing reads those from your mail yet.`, none: true };
+};
+
+const renderMailFactSources = (doc: Document, props: PacksInstallDialogProps): HTMLElement => {
+  const section = doc.createElement('section');
+  section.setAttribute(PACKS_DIALOG_FACT_SOURCES_ATTR, '');
+  section.className = 'packs-dialog-webhooks';
+  const heading = doc.createElement('p');
+  heading.className = 'packs-dialog-summary';
+  heading.textContent = 'Where its facts come from';
+  section.appendChild(heading);
+  for (const recipe of props.mailFactSources ?? []) {
+    for (const kind of recipe.kinds) {
+      const { line, none } = describeMailFactSource(recipe.recipe_name, kind);
+      const block = doc.createElement('div');
+      block.className = 'packs-dialog-webhook';
+      const text = doc.createElement('p');
+      text.className = 'packs-dialog-webhook-what';
+      text.textContent = line;
+      block.appendChild(text);
+      if (none) {
+        const make = doc.createElement('p');
+        make.className = 'packs-dialog-webhooks-hint';
+        const link = doc.createElement('a');
+        link.setAttribute('href', '#data/mail_fact/templates/new');
+        link.className = 'rx-link';
+        link.textContent = 'Make one now';
+        make.appendChild(link);
+        const rest = doc.createElement('span');
+        rest.textContent = ' — a template reads them from an email you choose.';
+        make.appendChild(rest);
+        block.appendChild(make);
+      }
+      section.appendChild(block);
+    }
+  }
+  return section;
+};
+
+/** D-315 §5.2 — one template a recipe brings, as the dialog asks about it. */
+export interface InstallMailTemplateChoice {
+  /** `<recipe_id>\u0000<variable>` — unique across the install. */
+  readonly key: string;
+  readonly entry: MailTemplateInstallPreview;
+  readonly keep: 'recipe' | 'existing';
+}
+
+const words = (name: string): string => name.replace(/^data\./, '').replace(/[_.]/g, ' ');
+
+/** What a starter's entrance asks of an email, in words: "from ship@shop.example,
+ *  subject has “shipped”". */
+export const describeMailTemplateConditions = (conditions: readonly MailTemplateCondition[]): string =>
+  conditions.map((condition) => {
+    const not = condition.negate === true ? 'not ' : '';
+    const value = condition.value;
+    switch (`${condition.field}:${condition.op}`) {
+      case 'from:is': return `${not}from ${value}`;
+      case 'from:domain_is': return `${not}from anyone at ${value.replace(/^@/, '')}`;
+      case 'from:contains': return `sender ${not === '' ? 'has' : 'lacks'} “${value}”`;
+      case 'subject:is': return `subject ${not === '' ? 'is' : 'is not'} “${value}”`;
+      case 'subject:contains': return `subject ${not === '' ? 'has' : 'lacks'} “${value}”`;
+      case 'body:contains': return `text ${not === '' ? 'has' : 'lacks'} “${value}”`;
+      case 'label:is': return `${not}labelled ${value}`;
+      case 'attachment:type_is': return `${not === '' ? 'with' : 'without'} a ${value} attachment`;
+      default: return `${condition.field} ${not}matching ${value}`;
+    }
+  }).join(', ');
+
+const renderMailTemplateChoices = (
+  doc: Document,
+  props: PacksInstallDialogProps,
+  installing: boolean,
+): HTMLElement => {
+  const section = doc.createElement('section');
+  section.setAttribute(PACKS_DIALOG_MAIL_TEMPLATES_ATTR, '');
+  section.className = 'packs-dialog-webhooks';
+  const heading = doc.createElement('p');
+  heading.className = 'packs-dialog-summary';
+  heading.textContent = 'Mail templates';
+  section.appendChild(heading);
+  const intro = doc.createElement('p');
+  intro.className = 'packs-dialog-webhooks-intro';
+  intro.textContent = 'These Recipes read your mail with the templates they bring. A template’s AI starts off.';
+  section.appendChild(intro);
+  for (const choice of props.mailTemplates ?? []) {
+    const { entry } = choice;
+    const block = doc.createElement('div');
+    block.className = 'packs-dialog-webhook';
+    block.setAttribute('data-mail-template-key', choice.key);
+    const what = doc.createElement('p');
+    what.className = 'packs-dialog-webhook-what';
+    const reads = entry.reads.map(words).join(', ');
+    what.textContent = `${entry.action === 'add' ? 'Adds' : 'Updates'} “${entry.name}” for ${entry.recipe_name}: reads ${reads} from mail ${describeMailTemplateConditions(entry.conditions)}.`;
+    block.appendChild(what);
+    if (entry.action === 'update') {
+      const kept = doc.createElement('p');
+      kept.className = 'packs-dialog-webhooks-hint';
+      kept.textContent = 'Its rules update; whether it is on, and its AI, stay as you set them.';
+      block.appendChild(kept);
+    }
+    if (entry.twin !== undefined) {
+      const ask = doc.createElement('p');
+      ask.className = 'packs-dialog-webhooks-hint';
+      ask.textContent = `“${entry.twin.name}” already reads this mail. Only one can: which stays on?`;
+      block.appendChild(ask);
+      const options: Array<['recipe' | 'existing', string]> = [
+        ['recipe', `The Recipe’s “${entry.name}” — it updates with the Recipe`],
+        ['existing', `“${entry.twin.name}”, which you have now`],
+      ];
+      for (const [keep, text] of options) {
+        const label = doc.createElement('label');
+        label.className = 'packs-dialog-webhook-option';
+        const radio = doc.createElement('input');
+        radio.setAttribute('type', 'radio');
+        radio.setAttribute('name', `packs-dialog-mail-template-${choice.key}`);
+        radio.setAttribute(PACKS_DIALOG_MAIL_TEMPLATE_KEEP_ATTR, keep);
+        radio.setAttribute('data-mail-template-key', choice.key);
+        radio.checked = choice.keep === keep;
+        if (installing) radio.setAttribute('disabled', '');
+        else radio.addEventListener('change', () => props.onPickMailTemplate?.(choice.key, keep));
+        label.appendChild(radio);
+        const span = doc.createElement('span');
+        span.textContent = text;
+        label.appendChild(span);
+        block.appendChild(label);
+      }
+    }
+    if (entry.trigger) {
+      const off = doc.createElement('p');
+      off.className = 'packs-dialog-webhooks-hint';
+      off.textContent = `${entry.recipe_name} starts on what this template reads. Its trigger stays off until you switch it on in Automation.`;
+      block.appendChild(off);
+    }
+    section.appendChild(block);
+  }
+  return section;
+};
 /** One webhook radio; value = the ingress id, `data-webhook-key` = its choice. */
 export const PACKS_DIALOG_WEBHOOK_OPTION_ATTR = 'data-recued-packs-dialog-webhook-option';
 
@@ -976,6 +1151,13 @@ export interface PacksInstallDialogProps {
   onPickDependencyAccess?(packSlug: string, tier: InstallAccessTier): void;
   /** D-295 — pick a webhook for one choice. */
   onPickWebhook?(key: string, ingressId: string): void;
+  /** D-315 §5.2 — the templates the recipes bring, each with which template
+   *  stays on where one already reads that mail. */
+  mailTemplates?: readonly InstallMailTemplateChoice[];
+  /** D-315 §5.2 — keep the recipe's template on, or the one already there. */
+  onPickMailTemplate?(key: string, keep: 'recipe' | 'existing'): void;
+  /** D-315 §5.2 — where the facts the recipes start on would come from. */
+  mailFactSources?: readonly MailFactSourcesPreview[];
   onSubmit(): void;
   onCancel(): void;
 }
@@ -1468,6 +1650,14 @@ export const renderPacksInstallDialog = (
     || (props.webhookChoices ?? []).some((choice) => choice.pick === undefined);
   if (props.webhooksLoading === true || (props.webhookChoices?.length ?? 0) > 0) {
     container.appendChild(renderWebhookChoices(doc, props, installing));
+  }
+  // D-315 §5.2 — the templates the recipes bring, and which stays on where one
+  // already reads that mail.
+  if ((props.mailTemplates?.length ?? 0) > 0) {
+    container.appendChild(renderMailTemplateChoices(doc, props, installing));
+  }
+  if ((props.mailFactSources?.length ?? 0) > 0) {
+    container.appendChild(renderMailFactSources(doc, props));
   }
 
   // ⛔ Absent or `resolved: false` ⇒ render NOTHING here and fall back to the

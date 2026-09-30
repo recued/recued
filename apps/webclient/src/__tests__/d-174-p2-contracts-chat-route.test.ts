@@ -1,15 +1,27 @@
+import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
+import { createMailWorkFixture } from '../../e2e/harness/mail-work-backend.js';
+import { mailWorkChatPrompt } from '../mail/mail-work-investigation.js';
 import {
   type ChatDataDiagnosisContext,
   type ChatMessage,
   type ChatModelRoutingLayer,
   type ChatPlanRecord,
+  type ChatQueuedTurn,
   type ChatSession,
   type ChatSessionSummary,
+  type ChatTurnQueueSnapshot,
   type ContractDefinitionView,
+  type InternalToolRegistry,
   type ServerEvent,
+  type ToolEntry,
   CHAT_HISTORY_WINDOW,
+  TIER1_TOOL_DESCRIPTORS,
 } from '@recued/contracts';
+import { createChatOrchestrator } from '../../../../backend/server/src/chat-orchestrator.js';
+import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-queue.js';
+import { createChatStore, ensureChatSchema } from '../../../../backend/server/src/storage/chat-store.js';
+import { handleChatQueue, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
 
 import {
   bootstrapContractsRoute,
@@ -193,6 +205,7 @@ interface FakeDoc {
   listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  createTextNode(text: string): FakeEl;
   addEventListener(
     type: string,
     fn: (event?: FakeDomEvent) => void,
@@ -350,6 +363,11 @@ const makeFakeDocument = (): FakeDoc => {
     createElement: (tag) => makeFakeEl(tag, (element) => {
       doc.activeElement = element;
     }),
+    createTextNode: (text) => {
+      const node = makeFakeEl('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener(type, fn) {
       const rows = listeners.get(type) ?? [];
       rows.push(fn);
@@ -2121,6 +2139,43 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
     expect(messageContent(rows[0]!)).toBe('Done.');
     expect(rows.some((row) => messageContent(row).includes('Streaming now'))).toBe(false);
     expectNoEmptyAssistantRows(h.root);
+
+    h.route.dispose();
+  });
+
+  /** An investigation cites mail with `[claim](source_url)`. Painted as plain
+   *  text, the owner saw the raw Markdown and could not open the message. */
+  it('makes record citations links while the answer streams and once it is saved', async () => {
+    const h = mountChatRouteWithStreamingBroadcasts();
+    await tick();
+    await h.route.openSession('chat_1');
+    await tick();
+    const href = '#data/mail/record/work/mail%3Aseed';
+    const links = (row: FakeEl) => collectByTag(row, 'a')
+      .map((a) => ({ label: a.textContent, href: a.getAttribute('href') }));
+
+    // The first delta swaps the placeholder out (a full render); the second
+    // takes the in-flight text-only repaint.
+    h.publish({ kind: 'chat.token_streamed', session_id: 'chat_1', turn_id: 'turn_1',
+      delta: 'The client asked ', cursor: 1 });
+    await tick();
+    h.publish({ kind: 'chat.token_streamed', session_id: 'chat_1', turn_id: 'turn_1',
+      delta: `[for a revised offer](${href}).`, cursor: 2 });
+    await tick();
+    let rows = assistantRows(h.root);
+    expect(rows).toHaveLength(1);
+    expect(links(rows[0]!)).toEqual([{ label: 'for a revised offer', href }]);
+
+    h.publish({ kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_1',
+      final: completedMessage('msg_done',
+        `Requested [in the first mail](${href}); see [the offer](https://example.com/offer).`),
+      cursor: 3 });
+    await tick();
+    rows = assistantRows(h.root);
+    expect(rows).toHaveLength(1);
+    // Only the record address is a link; the external one stays text.
+    expect(links(rows[0]!)).toEqual([{ label: 'in the first mail', href }]);
+    expect(allText(rows[0]!)).toContain('; see [the offer](https://example.com/offer).');
 
     h.route.dispose();
   });
@@ -6650,6 +6705,268 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it('submits an explicit work investigation once in its saved Chat, without replaying on refresh or reconnect', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const reconnect: Array<() => void> = [];
+    const message = 'Follow this work from the closing email; help me report what happened.';
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn: stepConn({ calls, sessions: [sessionSummary()] }), initialSessionId: 'chat_1',
+      initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+      initialWorkSubmission: { sessionId: 'chat_1', message },
+      reconnect: listener => { reconnect.push(listener); return () => {}; },
+    });
+    try {
+      await route.whenLoaded();
+      expect(calls.filter(call => call.method === 'chat.send')).toHaveLength(1);
+      expect(calls.find(call => call.method === 'chat.send')?.payload).toMatchObject({ session_id: 'chat_1', message });
+      expect(calls.some(call => call.method === 'chat.session.create')).toBe(false);
+      await route.refresh(); reconnect[0]?.(); await tick(8);
+      expect(calls.filter(call => call.method === 'chat.send')).toHaveLength(1);
+      expect(route.getRecoveryDraft()).toBeNull();
+    } finally { route.dispose(); }
+  });
+
+  it.each(['edit', 'navigate', 'failed-navigation', 'dispose', 'manual-send'] as const)(
+    'does not auto-submit a work handoff after %s during slow model hydration', async action => {
+      const doc = makeFakeDocument(); const root = doc.createElement('div');
+      const calls: Array<{ method: string; payload?: unknown }> = [];
+      const base = stepConn({ calls, sessions: [sessionSummary()] });
+      let release!: () => void;
+      const gate = new Promise<void>(done => { release = done; });
+      const conn = (async (method: string, payload?: unknown) => {
+        if (method === 'server.getLLMConfig') await gate;
+        if (method === 'chat.session.get' && action === 'failed-navigation'
+          && (payload as { session_id: string }).session_id === 'another') throw new Error('History unavailable.');
+        return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+      }) as ChatRouteConn;
+      const message = 'Follow this work and find later replies.';
+      const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+        conn, initialSessionId: 'chat_1',
+        initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+        initialWorkSubmission: { sessionId: 'chat_1', message },
+      });
+      try {
+        await vi.waitFor(() => expect(route.getThread().session?.id).toBe('chat_1'));
+        if (action === 'edit') fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'Use my revised scope.');
+        if (action === 'navigate' || action === 'failed-navigation') await route.openSession('another');
+        if (action === 'dispose') route.dispose();
+        if (action === 'manual-send') await route.sendMessage(message);
+        release(); await route.whenLoaded();
+        expect(calls.filter(call => call.method === 'chat.send')).toHaveLength(action === 'manual-send' ? 1 : 0);
+        if (action === 'edit') expect(route.getRecoveryDraft()?.text).toBe('Use my revised scope.');
+        if (action === 'failed-navigation') {
+          expect(route.getRecoveryDraft()?.text).toBe(message);
+          await route.sendMessage(message);
+          expect(calls.find(call => call.method === 'chat.send')?.payload).toMatchObject({ message, repeat: true, read_only: true });
+        }
+      } finally { release(); route.dispose(); }
+    },
+  );
+
+  it.each(['missing-model', 'failed-history', 'wrong-session'] as const)(
+    'keeps a work request unsent when %s prevents a safe initial submission', async failure => {
+      const doc = makeFakeDocument(); const root = doc.createElement('div');
+      const calls: Array<{ method: string; payload?: unknown }> = [];
+      const base = stepConn({ calls, sessions: [sessionSummary()], ...(failure === 'missing-model' ? { llmConfig: {} } : {}) });
+      let failed = failure === 'failed-history';
+      const conn = (async (method: string, payload?: unknown) => {
+        if (method === 'chat.session.get' && failed) throw new Error('History unavailable.');
+        return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+      }) as ChatRouteConn;
+      const message = 'Follow the work without reopening its old promise.';
+      const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+        conn, initialSessionId: 'chat_1',
+        initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+        initialWorkSubmission: { sessionId: failure === 'wrong-session' ? 'different' : 'chat_1', message },
+      });
+      try {
+        await route.whenLoaded();
+        expect(route.getRecoveryDraft()?.text).toBe(message);
+        expect(route.hasUnsavedChanges()).toBe(true);
+        failed = false; await route.refresh();
+        expect(calls.some(call => call.method === 'chat.send')).toBe(false);
+        expect(calls.some(call => call.method === 'chat.session.create')).toBe(false);
+      } finally { route.dispose(); }
+    },
+  );
+
+  it('deduplicates simultaneous initial handoffs through the real queue', async () => {
+    const fixture = createMailWorkFixture();
+    const routes: ReturnType<typeof bootstrapChatRoute>[] = [];
+    const receipts: Array<{ turn_id: string; disposition: string }> = [];
+    try {
+      const detail = await fixture.service.create({ request_id: crypto.randomUUID(), email: { slug: 'work', record_id: 'seed' } });
+      await fixture.rpc('chat.session.create', { creation_id: detail.chat_session_id });
+      const message = mailWorkChatPrompt(detail);
+      for (let index = 0; index < 2; index++) {
+        const doc = makeFakeDocument(); const root = doc.createElement('div');
+        const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+          conn: (async (method: string, args: Record<string, unknown>) => {
+            const result = await fixture.rpc(method, args);
+            if (method === 'chat.send') receipts.push(result as typeof receipts[number]);
+            return result;
+          }) as ChatRouteConn, initialSessionId: detail.chat_session_id,
+          initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+          initialWorkSubmission: { sessionId: detail.chat_session_id, message, repeat: false },
+        });
+        routes.push(route); await route.whenLoaded();
+      }
+      expect(receipts).toHaveLength(2);
+      expect(new Set(receipts.map(receipt => receipt.turn_id)).size).toBe(1);
+      expect(receipts[1]!.disposition).toBe('duplicate');
+      await vi.waitFor(async () => {
+        const result = await fixture.rpc('chat.turns.list', { session_id: detail.chat_session_id }) as { turns: Array<{ status: string }> };
+        expect(result.turns.map(turn => turn.status)).toEqual(['completed']);
+      });
+    } finally { for (const route of routes) route.dispose(); fixture.close(); }
+  });
+
+  it('runs a fresh investigation after new mail even when the work prompt is unchanged', async () => {
+    const fixture = createMailWorkFixture();
+    const routes: ReturnType<typeof bootstrapChatRoute>[] = [];
+    const receipts: Array<{ turn_id: string; disposition: string }> = [];
+    try {
+      const detail = await fixture.service.create({ request_id: crypto.randomUUID(), email: { slug: 'work', record_id: 'seed' } });
+      const sessionId = detail.chat_session_id;
+      await fixture.rpc('chat.session.create', { creation_id: sessionId });
+      const message = mailWorkChatPrompt(detail);
+      const mount = async (investigate: boolean) => {
+        const doc = makeFakeDocument(); const root = doc.createElement('div');
+        const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+          conn: (async (method: string, args: Record<string, unknown>) => {
+            const result = await fixture.rpc(method, args);
+            if (method === 'chat.send') {
+              receipts.push(result as typeof receipts[number]);
+              if (receipts.length === 2) throw new Error('Lost acknowledgement after durable admission.');
+            }
+            return result;
+          }) as ChatRouteConn, initialSessionId: sessionId,
+          ...(investigate ? { initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+            initialWorkSubmission: { sessionId, message } } : {}),
+        });
+        routes.push(route); await route.whenLoaded();
+        return route;
+      };
+      const turns = async () => (await fixture.rpc('chat.turns.list', { session_id: sessionId }) as {
+        turns: Array<{ turn_id: string; status: string }>;
+      }).turns;
+      (await mount(true)).dispose();
+      await vi.waitFor(async () => expect((await turns()).map(turn => turn.status)).toEqual(['completed']));
+      fixture.addMail('withdrawal', 'client', 'Withdraw the offer; the client cancelled.');
+      expect(mailWorkChatPrompt(await fixture.service.get(detail.work.id))).toBe(message);
+      const fresh = await mount(true);
+      await vi.waitFor(async () => expect((await turns()).map(turn => turn.status)).toEqual(['completed', 'completed']));
+      expect(new Set((await turns()).map(turn => turn.turn_id)).size).toBe(2);
+      expect(fresh.getRecoveryDraft()?.text).toBe(message);
+      await fresh.sendMessage(message);
+      expect(receipts[2]).toMatchObject({ turn_id: receipts[1]!.turn_id, disposition: 'replayed' });
+      await fresh.sendMessage(message); // Ordinary duplicate protection resumes after the work request succeeds.
+      expect(receipts[3]).toMatchObject({ turn_id: receipts[1]!.turn_id, disposition: 'duplicate' });
+      await fresh.refresh(); fresh.dispose();
+      await mount(false); // Opening the saved investigation must only read it.
+      expect(await turns()).toHaveLength(2);
+      expect((await fixture.service.get(detail.work.id)).work).toEqual(detail.work);
+    } finally { for (const route of routes) route.dispose(); fixture.close(); }
+  });
+
+  it.each(['pending', 'saved'] as const)('retains the work draft after a %s model choice during initial loading', async choice => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const base = stepConn({ calls, sessions: [sessionSummary()], llmConfig: twoSlotConfig });
+    let releasePrefs!: () => void; let releaseModel!: () => void;
+    const prefs = new Promise<void>(done => { releasePrefs = done; });
+    const model = new Promise<void>(done => { releaseModel = done; });
+    let saving = false;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'prefs.get') await prefs;
+      if (method === 'chat.session.set_model_pref') { saving = true; await model; }
+      return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+    }) as ChatRouteConn;
+    const message = 'Check the current state of this work.';
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1',
+      initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+      initialWorkSubmission: { sessionId: 'chat_1', message },
+    });
+    try {
+      await vi.waitFor(() => expect(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]?.disabled).toBe(false));
+      fireEvent(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!, 'change', 'slot_2');
+      await vi.waitFor(() => expect(saving).toBe(true));
+      if (choice === 'saved') {
+        releaseModel(); await vi.waitFor(() => expect(route.getThread().session?.model_routing.source_id).toBe('slot_2'));
+      }
+      releasePrefs(); await route.whenLoaded();
+      expect(calls.filter(call => call.method === 'chat.send')).toHaveLength(0);
+      expect(route.getRecoveryDraft()?.text).toBe(message);
+      if (choice === 'pending') {
+        expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]?.disabled).toBe(true);
+        await route.sendMessage(message);
+        expect(calls.filter(call => call.method === 'chat.send')).toHaveLength(0);
+      }
+      releaseModel(); await vi.waitFor(() => expect(route.getThread().session?.model_routing.source_id).toBe('slot_2'));
+      await route.sendMessage(message);
+      expect(calls.find(call => call.method === 'chat.send')?.payload).toMatchObject({
+        message, repeat: true, read_only: true, model_pref: { source_id: 'slot_2' },
+      });
+    } finally { releasePrefs(); releaseModel(); route.dispose(); }
+  });
+
+  it('retains a failed work submission as a draft and reuses its receipt identity on explicit retry', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const sends: unknown[] = [];
+    const base = stepConn({ sessions: [sessionSummary()] });
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'chat.send') {
+        sends.push(payload);
+        if (sends.length === 1) throw new Error('Lost acknowledgement.');
+      }
+      return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+    }) as ChatRouteConn;
+    const message = 'Follow this work from the latest mail.';
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1',
+      initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+      initialWorkSubmission: { sessionId: 'chat_1', message },
+    });
+    try {
+      await route.whenLoaded();
+      expect(sends).toHaveLength(1); expect(route.getRecoveryDraft()?.text).toBe(message);
+      expect(sends[0]).toMatchObject({ repeat: true, read_only: true });
+      await route.refresh(); expect(sends).toHaveLength(1);
+      await route.sendMessage(message);
+      expect(sends).toHaveLength(2); expect(sends[1]).toEqual(sends[0]);
+      expect(route.getRecoveryDraft()).toBeNull();
+    } finally { route.dispose(); }
+  });
+
+  it('sends an edited work draft as the owner\'s own ordinary turn, not a read-only investigation', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const sends: unknown[] = [];
+    const base = stepConn({ sessions: [sessionSummary()] });
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'chat.send') {
+        sends.push(payload);
+        if (sends.length === 1) throw new Error('Lost acknowledgement.');
+      }
+      return (base as (method: string, payload?: unknown) => Promise<unknown>)(method, payload);
+    }) as ChatRouteConn;
+    const message = 'Follow this work from the latest mail.';
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1',
+      initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
+      initialWorkSubmission: { sessionId: 'chat_1', message },
+    });
+    try {
+      await route.whenLoaded();
+      expect(sends[0]).toMatchObject({ read_only: true });
+      await route.sendMessage(`${message} Then draft the reply to the client.`);
+      expect(sends).toHaveLength(2);
+      expect(sends[1]).not.toHaveProperty('read_only');
+      expect(sends[1]).not.toHaveProperty('repeat');
+    } finally { route.dispose(); }
+  });
+
   it('restores a captured reauth draft into the exact durable session without sending it', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -7054,5 +7371,159 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
     expect(calls.some((c) => c.method === 'chat.session.create')).toBe(false);
     route.dispose();
+  });
+});
+
+/** Chat shows a turn's settled answer before its closing brief, but only a
+ *  completed turn saves it. A turn stopped after that saves nothing and sends
+ *  no retraction; the queue snapshot is all the tab hears. */
+describe('D-174 P2 chat route — an answer shown before its closing brief', () => {
+  const answersOnScreen = (root: FakeEl): string[] => collectByAttr(root, CHAT_ROUTE_MESSAGE_ATTR)
+    .filter((row) => row.getAttribute('data-role') === 'assistant')
+    .map((row) => row.children.find((child) => child.className === 'chat-message-content')?.textContent ?? '');
+  const button = (root: FakeEl, label: string): FakeEl | undefined =>
+    collectByTag(root, 'button').find((candidate) => candidate.textContent === label);
+  const queueStrip = (root: FakeEl): string =>
+    collectByAttr(root, 'data-recued-chat-turn-queue').map((strip) => allText(strip)).join(' ');
+  const subscriber = () => {
+    const listeners = new Map<string, Set<(event: unknown) => void>>();
+    return {
+      subscribe: ((kind: string, listener: (event: unknown) => void) => {
+        const set = listeners.get(kind) ?? new Set();
+        set.add(listener); listeners.set(kind, set);
+        return () => { set.delete(listener); };
+      }) as never,
+      publish: (event: { kind: string }) => {
+        for (const listener of listeners.get(event.kind) ?? []) listener({ ...event, cursor: Date.now() });
+      },
+    };
+  };
+
+  /** The real queue, Chat orchestrator and RPC handlers behind the route. An
+   *  attempt reads a mail, answers, then folds its closing brief; the FIRST
+   *  brief is held, which is the window where the answer is on screen but not
+   *  saved. Broadcasts arrive a task later and in order, as over a socket. */
+  const mountOnRealQueue = () => {
+    const db = new Database(':memory:'); ensureChatSchema(db);
+    const store = createChatStore(db);
+    store.createSession({ id: 'chat_1', title: 'Acme offer' });
+    store.setRollingBriefEnabled(true);
+    const bus = subscriber();
+    const broadcast = { emit: (event: { kind: string }) => { setTimeout(() => bus.publish(event), 0); } };
+    let releaseBrief!: () => void;
+    const firstBrief = new Promise<void>((resolve) => { releaseBrief = resolve; });
+    const calls = { main: 0, brief: 0 };
+    const catalog: ToolEntry[] = [{ ...TIER1_TOOL_DESCRIPTORS['mail.read'], tier: 1 }];
+    const registry: InternalToolRegistry = { list: () => catalog, listByTier: () => catalog,
+      getByName: (name) => catalog.find((tool) => tool.name === name) ?? null, subscribeRefresh: () => () => {},
+      dispatch: async () => ({ ok: true, result: { body: 'Please prepare a revised offer for Acme.' } }) };
+    const selfSignature = { server_kind: 'recued' as const, version: '1', instance_id: 'test' };
+    const orchestrator = withQueuedChatTurns(createChatOrchestrator({ chatStore: store, registry, selfSignature, broadcast,
+      executeAiCall: async (_manifest, input) => {
+        const packet = JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>;
+        if ('tool_results_since' in packet) {
+          calls.brief += 1;
+          if (calls.brief === 1) await firstBrief;
+          return { body: { intent: 'Revised offer', constraints: [], pending: [],
+            findings: ['A revised offer was requested.'], completed: [] } };
+        }
+        calls.main += 1;
+        // Odd calls plan a mail read; even calls answer from it.
+        const answering = calls.main % 2 === 0;
+        return { body: {
+          response: answering ? `Answer ${calls.main / 2}: the client asked for a revised offer.` : 'Planning text.',
+          events: [],
+          tool_calls: answering ? [] : [{ tool: 'mail.read', args: { slug: 'work', record_id: 'mail:seed' } }],
+        } };
+      } }), { db, store, broadcast, pollMs: 5 });
+    const deps = { store, orchestrator, selfSignature };
+    const conn = (async (method: string, args: unknown) => {
+      if (method === 'chat.sessions.list') return handleSessionsList(deps);
+      if (method === 'chat.session.get') return handleSessionGet(deps, args as Parameters<typeof handleSessionGet>[1]);
+      if (method === 'chat.send') return handleSend(deps, args as Parameters<typeof handleSend>[1]);
+      if (method === 'chat.turns.list') return handleChatQueue(deps, 'list', args);
+      if (method === 'chat.turn.cancel') return handleChatQueue(deps, 'cancel', args);
+      if (method === 'chat.turn.retry') return handleChatQueue(deps, 'retry', args);
+      if (method === 'server.getLLMConfig') {
+        return { config: { slot_1: { provider: 'openai', model: 'test-model', has_key: true, speed: 'fast' } } };
+      }
+      if (method === 'chat.default_model_pref.get') return { source_id: null };
+      throw new Error(`${method} is not served here`);
+    }) as ChatRouteConn;
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1', subscribe: bus.subscribe });
+    return { root, route, calls, releaseBrief,
+      saved: async () => (await store.listMessages('chat_1'))
+        .filter((message) => message.role === 'assistant').map((message) => message.content),
+      statuses: async () => (await orchestrator.turnQueue!.snapshot('chat_1')).turns.map((turn) => turn.status),
+      async close() {
+        route.dispose(); releaseBrief(); orchestrator.turnQueue!.close();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        db.close();
+      } };
+  };
+
+  it('removes the answer when Stop lands during the closing brief, and Try again shows one answer', async () => {
+    const h = mountOnRealQueue();
+    const wait = { timeout: 5_000 };
+    try {
+      await h.route.whenLoaded();
+      await h.route.sendMessage('What did the client ask for?');
+      await vi.waitFor(() => expect(answersOnScreen(h.root))
+        .toEqual(['Answer 1: the client asked for a revised offer.']), wait);
+      expect(h.calls.brief).toBe(1);
+      expect(await h.saved()).toEqual([]);
+
+      button(h.root, 'Stop turn')!.click();
+      await vi.waitFor(async () => expect(await h.statuses()).toEqual(['cancelling']), wait);
+      h.releaseBrief();
+      await vi.waitFor(() => expect(queueStrip(h.root)).toContain('Cancelled: What did the client ask for?'), wait);
+      // The screen now matches what was saved: the question, and no answer.
+      expect(await h.saved()).toEqual([]);
+      expect(answersOnScreen(h.root)).toEqual([]);
+
+      button(h.root, 'Try again')!.click();
+      await vi.waitFor(async () => expect(await h.saved())
+        .toEqual(['Answer 2: the client asked for a revised offer.']), wait);
+      await vi.waitFor(() => expect(answersOnScreen(h.root))
+        .toEqual(['Answer 2: the client asked for a revised offer.']), wait);
+      expect(await h.statuses()).toEqual(['cancelled', 'completed']);
+    } finally { await h.close(); }
+  });
+
+  it.each([
+    ['failed', 'Failed'],
+    ['interrupted', 'Interrupted by a restart'],
+  ] as const)('removes a streamed answer whose turn ends %s', async (status, label) => {
+    const bus = subscriber();
+    const running: ChatQueuedTurn = { turn_id: 'turn_1', session_id: 'chat_1', position: 1, status: 'running',
+      message: 'What did the client ask for?', created_at: 1, duplicate_count: 0 };
+    let snapshot: ChatTurnQueueSnapshot = { generation: 'g', revision: 1, turns: [running] };
+    const conn = (async (method: string) => {
+      if (method === 'chat.sessions.list') return { sessions: [sessionSummary()] };
+      if (method === 'chat.session.get') return { ...chatSession(), messages: [] };
+      if (method === 'chat.turns.list') return snapshot;
+      if (method === 'server.getLLMConfig') return { config: { local: { enabled: true } } };
+      throw new Error(`unexpected method ${method}`);
+    }) as ChatRouteConn;
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      conn, initialSessionId: 'chat_1', subscribe: bus.subscribe });
+    try {
+      await route.whenLoaded();
+      await vi.waitFor(() => expect(answersOnScreen(root)).toEqual(['Preparing your answer…']));
+      bus.publish({ kind: 'chat.token_streamed', session_id: 'chat_1', turn_id: 'turn_1',
+        delta: 'The client asked for a revised offer.' } as never);
+      await vi.waitFor(() => expect(answersOnScreen(root)).toEqual(['The client asked for a revised offer.']));
+
+      snapshot = { generation: 'g', revision: 2, turns: [{ ...running, status }] };
+      bus.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'queue', value: true } as never);
+      await vi.waitFor(() => expect(queueStrip(root)).toContain(`${label}: What did the client ask for?`));
+      expect(answersOnScreen(root)).toEqual([]);
+      expect(button(root, 'Try again')).toBeDefined();
+    } finally { route.dispose(); }
   });
 });

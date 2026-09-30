@@ -290,7 +290,9 @@ describe('composeEventTriggers', () => {
     compose({
       executeDeps: {
         recipeStore: { listStored: () => [] },
-        dishStore: { get: () => (dish ? { dish_id: 'dsh_x', enabled: dish.enabled } : null) },
+        // D-319 — the reconcile at compose reads every dish; none here has
+        // declared triggers to make rows for.
+        dishStore: { get: () => (dish ? { dish_id: 'dsh_x', enabled: dish.enabled } : null), list: () => [] },
       } as never,
     })!;
 

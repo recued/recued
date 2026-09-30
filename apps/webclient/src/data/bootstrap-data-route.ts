@@ -218,6 +218,7 @@ import {
   type MailFactCallers,
 } from './mail-facts-surface.js';
 import type { MailFactEmailStatus } from '@recued/contracts';
+import { mailWorkFollowHref } from '../mail/mail-work-route.js';
 import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
@@ -6029,7 +6030,9 @@ export const bootstrapDataRoute = (
           : ''}${mailStatus.fact_count > 0 && opts.mailFactCallers?.listFacts !== undefined
           ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="mail-fact-show-email">Facts from this email (${mailStatus.fact_count})</button>`
           : ''}`;
-    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls;
+    const followWork = collectionName === 'mail' && detail?.record != null && explorerSelectedSlug !== null
+      ? `<a class="data-button" href="${e(mailWorkFollowHref({ slug: explorerSelectedSlug, record_id: detail.record_id }))}">Follow this work</a>` : '';
+    const detailActions = previewControl + (downloadControl !== '' ? downloadControl + lifecycleControl : rescheduleControl + lifecycleControl) + useInChat + mailFactControls + followWork;
     const explorer = renderCollectionExplorer({
       collection: collectionName,
       instances: explorerInstances,

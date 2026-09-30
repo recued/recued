@@ -249,6 +249,12 @@ const assertIdent = (name: string): string => {
   return name;
 };
 
+/** The data table a `(platform, slug)` collection keeps its rows in, named
+ *  without creating it — for a reader that must tell one collection's table
+ *  from another's (`listCollectionDataTables` lists them). */
+export const collectionTableName = (platform: CollectionPlatform, slug: string): string =>
+  assertIdent(`collection_${platform}_${slugHash(slug)}`);
+
 /** Hot-field filter keys are narrowed to simple JS identifiers so
  *  the JSON path stays well-formed after `$.${key}` interpolation.
  *  Recipes that want nested access can always pre-flatten their
@@ -872,8 +878,7 @@ export const createCollectionTable = (
   const { db, platform, slug } = opts;
   const onBytesChanged = opts.onBytesChanged;
 
-  const hash = slugHash(slug);
-  const tableName = assertIdent(`collection_${platform}_${hash}`);
+  const tableName = collectionTableName(platform, slug);
   const ftsName = assertIdent(`${tableName}_fts`);
 
   db.exec(`
@@ -1495,9 +1500,11 @@ const search = (query: CollectionSearchQuery): CollectionSearchMatch[] => {
       if (n <= 0) return;
       const cmp = dir === 'next' ? '>' : '<';
       const order = dir === 'next' ? 'ASC' : 'DESC';
+      // Match the ORDER BY cursor, including its tie-breaker. Message dates
+      // can be identical; comparing only the date silently skips those rows.
       out.push(...db.prepare(`
         SELECT * FROM ${tableName}
-        WHERE ${scope} AND received_at ${cmp} ? AND record_id != ?
+        WHERE ${scope} AND (received_at, record_id) ${cmp} (?, ?)
         ORDER BY received_at ${order}, record_id ${order}
         LIMIT ?
       `).all(...params, anchor.received_at, q.anchor_id, n) as Row[]);

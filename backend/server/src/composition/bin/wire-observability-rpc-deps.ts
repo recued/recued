@@ -245,8 +245,9 @@ export const composeObservabilityRpcDeps = (
                   return r?.metadata?.name ?? null;
                 } catch { return null; }
               },
-              lookupFailureReason: (recipe_id) => {
-                try { return circuitStore.get(recipe_id)?.last_failure_reason; }
+              // D-319 — a breaker is one dish's timer.
+              lookupFailureReason: (recipe_id, _process_id, dish_id) => {
+                try { return circuitStore.get(dish_id ?? recipe_id)?.last_failure_reason; }
                 catch { return undefined; }
               },
             });

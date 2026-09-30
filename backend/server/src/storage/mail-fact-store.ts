@@ -65,6 +65,9 @@ export interface MailTemplateCreateInput {
 export interface MailTemplatePatch {
   readonly definition?: MailTemplateDefinition;
   readonly active?: boolean;
+  /** Where it came from (§5.2): a recipe's new version, or the owner's once
+   *  the recipe is gone. Not a new revision — the rules did not change. */
+  readonly origin?: MailTemplateOrigin;
 }
 
 export type MailTemplateOutcomeKind = 'no_match' | 'not_entered' | 'entered';
@@ -613,7 +616,8 @@ interface ThingRow {
 const EMPTY_HEALTH: MailTemplateHealth = { matched: 0, entered: 0, not_entered: 0 };
 
 const templateFromRow = (row: TemplateRow): MailTemplate => {
-  const definition = parse<MailTemplateDefinition>(row.definition_blob, {} as MailTemplateDefinition);
+  const definition = parse<MailTemplateDefinition | null>(row.definition_blob, null);
+  if (definition === null) throw new Error(`Unreadable definition for mail template ${row.template_id}`);
   return {
     ...definition,
     template_id: row.template_id,
@@ -843,11 +847,21 @@ export const createMailFactStore = (
       // A definition change is a new revision: facts read by the old one are
       // re-read (their source hash includes the template revision).
       const revision = patch.definition === undefined ? current.revision : current.revision + 1;
+      const origin = patch.origin ?? current.origin;
       db.prepare(
         `UPDATE mail_template
-            SET type = ?, name = ?, definition_blob = ?, active = ?, revision = ?, updated_at = ?
+            SET type = ?, name = ?, definition_blob = ?, origin_blob = ?, active = ?, revision = ?, updated_at = ?
           WHERE template_id = ?`,
-      ).run(definition.type, definition.name, JSON.stringify(definition), active ? 1 : 0, revision, now(), template_id);
+      ).run(
+        definition.type,
+        definition.name,
+        JSON.stringify(definition),
+        JSON.stringify(origin),
+        active ? 1 : 0,
+        revision,
+        now(),
+        template_id,
+      );
       return templateFromRow(getTemplateRow.get(template_id)!);
     },
 

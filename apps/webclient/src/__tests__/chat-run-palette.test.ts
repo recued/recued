@@ -277,6 +277,10 @@ const autoRunEntry = (
 ): AutoRunStatusEntry => ({
   recipe_id,
   publisher_id: 'recued-core',
+  // D-319 — a timer that runs is a dish's (a recipe nobody switched on lists
+  // as one row with no dish, and that row runs nothing).
+  dish_id: 'dsh_main',
+  dish_name: '',
   recipe_name: null,
   interval_ms: 60_000,
   dynamic: false,
@@ -582,6 +586,94 @@ describe('run-palette wire', () => {
     handle.selectRecipe('autorun-1');
     const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
     expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.textContent).toBe('Re-arm');
+    handle.destroy();
+  });
+
+  it('D-319 §5.5 — a recipe nobody switched on offers Switch on…, and it opens the switch-on form', async () => {
+    const autoRunUpdate = vi.fn(async () => ({}));
+    let closeForm!: (notice: string | null) => void;
+    const form = { destroy: vi.fn() };
+    const switchOn = vi.fn(async (_entry: ServerRecipeListEntry, onClosed: (notice: string | null) => void) => {
+      closeForm = onClosed;
+      return form;
+    });
+    const autoRunList = vi.fn(async () => ({
+      entries: [autoRunEntry('autorun-1', { dish_id: null, dish_name: null, enabled: false })],
+    }));
+    const { doc, handle } = mount({ autoRunList, autoRunUpdate, switchOn });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(allText(overlay)).toContain('Not switched on');
+    const action = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(action.textContent).toBe('Switch on…');
+
+    action.click();
+    await tick();
+    expect(switchOn).toHaveBeenCalledTimes(1);
+    expect(switchOn.mock.calls[0]![0].recipe_id).toBe('autorun-1');
+    // Its settings first: no timer is started bare.
+    expect(autoRunUpdate).not.toHaveBeenCalled();
+    // The form owns Escape while it is open.
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(1);
+
+    // Switched on: the palette reads the timer again and shows it.
+    autoRunList.mockResolvedValue({ entries: [autoRunEntry('autorun-1')] });
+    const reads = autoRunList.mock.calls.length;
+    closeForm(null);
+    await tick();
+    expect(autoRunList.mock.calls.length).toBeGreaterThan(reads);
+    expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.textContent).toBe('Pause');
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
+    handle.destroy();
+  });
+
+  it('closing the palette closes the switch-on form over it', async () => {
+    const form = { destroy: vi.fn() };
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1', { dish_id: null, enabled: false })] })),
+      switchOn: vi.fn(async () => form),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.click();
+    await tick();
+    handle.destroy();
+    expect(form.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('a read that fails before the form opens says so, and Switch on… stays', async () => {
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1', { dish_id: null, enabled: false })] })),
+      switchOn: vi.fn(async () => { throw new Error('offline'); }),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.click();
+    await tick();
+    expect(collectByAttr(overlay, RUN_PALETTE_RESULT_ATTR)[0]!.textContent)
+      .toBe('Recued could not read this Recipe’s settings. Try again.');
+    expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.textContent).toBe('Switch on…');
+    handle.destroy();
+  });
+
+  it('with no switch-on host, a recipe nobody switched on is sent to Automation — never armed bare', async () => {
+    const autoRunUpdate = vi.fn(async () => ({}));
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1', { dish_id: null, enabled: false })] })),
+      autoRunUpdate,
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const link = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(link.textContent).toBe('Switch on in Automation →');
+    expect(link.getAttribute('href')).toBe('#automation/autorun-1');
+    expect(autoRunUpdate).not.toHaveBeenCalled();
     handle.destroy();
   });
 

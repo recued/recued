@@ -7753,7 +7753,7 @@ describe('D-267 — the built-in local calendar names itself once', () => {
     // The chip exists to tell instances apart; `<adapter> · <slug>` is
     // informative for gcal and pure noise when both words are the same.
     expect(html).not.toContain('local · local');
-    expect(html).toContain('>local<');
+    expect(html).toContain('>local <span class="col-explorer-instance-owned">');
     // ...while a genuinely two-part instance keeps both halves.
     expect(html).toContain('gcal · work-calendar');
     rig.route.dispose();
@@ -7767,6 +7767,8 @@ describe('D-267 — the built-in local calendar names itself once', () => {
     // while ownership is per-INSTANCE: this one needs no credential and lives
     // on the owner's server. The tab cannot express that; the chip can.
     expect(html).toContain('On this server');
+    // Its own word: a chip's name must not run "local" into "On this server".
+    expect(html).not.toMatch(/[^\s>]<span class="col-explorer-instance-owned">/);
     rig.route.dispose();
   });
 });

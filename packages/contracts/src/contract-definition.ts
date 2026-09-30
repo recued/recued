@@ -828,6 +828,8 @@ export interface SessionGrantView {
   readonly uses_remaining?: number;
   /** The grant's total use budget. */
   readonly max_uses?: number;
+  /** The window for the use budget. Absent means a total, non-renewing budget. */
+  readonly use_period?: UsageCapPeriod;
   /** `'batch'` rows — the approved member count (`batch_members.length`). */
   readonly member_count?: number;
   /** Server-resolved lifecycle (`active` in a list response; `revoked` on the

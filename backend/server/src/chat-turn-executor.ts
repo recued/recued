@@ -2010,6 +2010,10 @@ export interface RunChatTurnDeps {
    *  envelope. The turn calls it per tool; it is NOT re-implemented
    *  here. */
   readonly dispatchTool: OrchestratorDispatch['dispatchTool'];
+  /** Optional owner-Chat preview of the settled answer, before the closing
+   * brief. Already restored by the AI boundary; never a planning response.
+   * This does not complete the turn or bypass durable finalization. */
+  readonly onAnswerReady?: (text: string) => Promise<void>;
   /** Optional D-214 experiment seam. It may return advisory evidence for an
    * argument-free consequential proposal. A null result preserves the exact
    * ordinary dispatch path; Gateway remains the only authority either way. */
@@ -2019,9 +2023,8 @@ export interface RunChatTurnDeps {
   /** Null-safe bus emit, bound by the orchestrator to its broadcast
    *  emitter. The RICH tool-call / plan / multi-turn transparency
    *  events emit DIRECTLY here (decision b — NOT through the framework
-   *  out-stream). The GENERIC final `chat.token_streamed` delta does NOT
-   *  emit here — the orchestrator's `TurnExecutor` closure produces it
-   *  via `ctx.out.token` after this function returns. */
+   *  out-stream). The GENERIC `chat.token_streamed` delta uses the
+   *  orchestrator's `ctx.out.token`, via onAnswerReady or after return. */
   readonly emit: (event: BroadcastChatEvent) => void;
   readonly now: () => number;
   /** Re-read the input-token budget AFTER a call has failed.
@@ -4239,11 +4242,14 @@ export const runChatTurn = async (
         },
       });
 
-      // The FINAL synthesised response is streamed as one delta by the
-      // orchestrator's `TurnExecutor` closure (`ctx.out.token`) after
-      // this function returns — not here. The intermediate "planning"
-      // responses from prior rounds stay suppressed (the tool-call
-      // events surfaced that activity visually).
+      // A finished answer can be shown while the closing brief runs. Keep the
+      // queue, persistence, update hooks and carry ordering at their existing
+      // boundary; a token is a preview, never a durable completion receipt.
+      // Aborted, exhausted or unreadable loops keep the normal final path.
+      if (terminationReason === 'completed' && toolLoopFailure === undefined
+        && assistantContent.trim().length > 0) {
+        await deps.onAnswerReady?.(assistantContent);
+      }
       // ⛔⛔ CLOSE THE TURN'S CARRY, OR THE NEXT TURN INHERITS A LIE. A turn's
       //   `prior_tool_calls` is per-turn and discarded at this boundary, while
       //   the SESSION brief persists — so a turn that did tool work but stayed

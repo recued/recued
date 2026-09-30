@@ -2198,6 +2198,57 @@ describe('an update asks once, in the same words for every release', () => {
   });
 });
 
+describe('after an update, the page says how it went', () => {
+  /** ⛔ Reported 2026-09-29: after an update finished, Settings → Updates kept
+   *  "Updating now. The server will restart and be away for a moment." —
+   *  `applyResult` was never reset once the restart was verified. */
+  const accepting = vi.fn(async (args: { operation_id?: string }): Promise<UpdateApplyResponse> => ({
+    status: 'applying',
+    ...(args.operation_id === undefined ? {} : { operation_id: args.operation_id }),
+  }));
+  const target = AVAILABLE.available!.version;
+
+  const runUpdateThroughRestart = async (afterRestart: ReleaseCheckResponse) => {
+    const tabs = sharedServerUpdateTabs();
+    const h = host();
+    let emit!: (e: { phase: string; status?: string; operation_id?: string }) => void;
+    const runCheck = vi.fn().mockResolvedValueOnce(AVAILABLE).mockResolvedValue(afterRestart);
+    const mount = mountUpdatesPage({
+      host: h.asHost, document: fakeDoc(), runCheck, runApply: accepting,
+      serverUpdateTabConvergence: tabs.first,
+      updateProgress: { subscribe: (cb) => { emit = cb as typeof emit; return () => {}; } },
+    });
+    await flush();
+    pressUpdate(h.el);
+    await flush();
+    emit({ phase: 'result', status: 'restarting', operation_id: tabs.read()!.operationId });
+    await flush();
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toContain('Updating now');
+    // The reconnect check verified the receipt and cleared the shared record.
+    tabs.publish(null);
+    await flush();
+    return { h, mount, runCheck };
+  };
+
+  it('the restart message gives way to "Updated to <version>" once the restart is verified', async () => {
+    const { h, mount, runCheck } = await runUpdateThroughRestart(
+      { ...UP_TO_DATE, current_version: target },
+    );
+    expect(runCheck).toHaveBeenCalledTimes(2);
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(`Updated to ${target}.`);
+    expect(find(h.el, UPDATES_VERSION_ATTR)!.textContent).toContain(`Current version ${target}`);
+    mount.dispose();
+  });
+
+  it('a server still on the old version says the update did not take effect', async () => {
+    const { h, mount } = await runUpdateThroughRestart(AVAILABLE);
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(
+      `The server is still on ${AVAILABLE.current_version}. The update to ${target} did not take effect.`,
+    );
+    mount.dispose();
+  });
+});
+
 describe('an update whose final event never reached this tab', () => {
   /** ⛔ Reported 2026-09-28: "Updating…" for 25 minutes over an update a new tab
    *  showed as done (26.9.2 → 26.9.26). The final `update.progress` goes out just
@@ -2232,6 +2283,8 @@ describe('an update whose final event never reached this tab', () => {
     expect(mount.hasInFlightWork(), 'no longer pending').toBe(false);
     expect(runCheck).toHaveBeenCalledTimes(2);
     expect(find(h.el, UPDATES_APPLY_BTN_ATTR), 'the new version is current: nothing to update').toBeNull();
+    // …and "Downloading and verifying the update" gives way to the outcome.
+    expect(find(h.el, UPDATES_APPLY_RESULT_ATTR)!.textContent).toBe(`Updated to ${AVAILABLE.available!.version}.`);
     mount.dispose();
   });
 

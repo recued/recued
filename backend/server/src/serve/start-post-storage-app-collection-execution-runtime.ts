@@ -22,6 +22,7 @@ import {
   type StartPostAppCollectionExecutionRuntimeOptions,
 } from './start-post-app-collection-execution-runtime.js';
 import { resolveReceptionInboxFanoutModeFromStore } from '../ports/reception/handlers/trust-footer.js';
+import { repairSharedMailAttachmentLinks } from '../collections/mail/mail-attachment-link-repair.js';
 import type { KeyManager } from '../key-manager.js';
 import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
 import { createServerBundleStore } from '../server-bundle-store.js';
@@ -370,6 +371,8 @@ export const startPostBaseStorageVaultRuntime = async (
             gatedActionStore: storageContext.gatedActionStore,
             preapprovalStorage: storageContext.preapprovalStorage,
             fileStack: storageContext.fileStack,
+            // The attachment links two IMAP mailboxes shared, removed once.
+            mailAttachmentLinkRepair: () => repairSharedMailAttachmentLinks(storageContext.db, Date.now()),
             // D-210 Phase C — so the boot sweep does not re-raise the
             // actionable ask for a notify-mode reception hold that is
             // ask-less on purpose.

@@ -4,7 +4,10 @@
  *
  *  A recipe whose one trigger changes carries its armed state over
  *  (`carriedTriggerFor`), so it is not named. A changed trigger that cannot be
- *  paired — several rows — and a trigger the update removes are named. */
+ *  paired — several rows — and a trigger the update removes are named.
+ *
+ *  D-319 — rows are made once per dish, and each dish carries its own. Here
+ *  each recipe has one dish, `dsh_<recipe_id>`, unless a test says otherwise. */
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +20,7 @@ import { BULK_PACK_INSTALL_PERMISSION, type RecipeDefinition } from '@recued/con
 import { makePackInstallHandlers } from '../pack-install-handler.js';
 import { triggersSwitchedOff } from '../pack-trigger-preview.js';
 import { createRecipeStore } from '../recipe-store.js';
-import { reconcileDeclarativeTriggers } from '../triggers/declarative-reconciler.js';
+import { reconcileDeclarativeTriggers, type ReconcilerDish } from '../triggers/declarative-reconciler.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
 
 const PUBLISHER = 'recued-core';
@@ -36,25 +39,34 @@ const recipe = (recipe_id: string, event_triggers: Array<{ event: string }>): Re
 let db: Database.Database;
 let store: EventTriggersStore;
 let minted: number;
+/** Extra dishes beyond each recipe's own `dsh_<recipe_id>`. */
+let extraDishes: ReconcilerDish[];
 
 beforeEach(() => {
   db = new Database(':memory:');
   store = createEventTriggersStore(db);
   minted = 0;
+  extraDishes = [];
 });
 afterEach(() => db.close());
 
+const dishesOf = (recipe_id: string): ReconcilerDish[] => [
+  { dish_id: `dsh_${recipe_id}`, recipe_id, config_overlay: {} },
+  ...extraDishes.filter((dish) => dish.recipe_id === recipe_id),
+];
 const installed = (recipes: RecipeDefinition[]) =>
   reconcileDeclarativeTriggers({
     store,
     listStored: () => recipes.map((r) => ({ recipe_id: r.recipe_id, publisher_id: PUBLISHER, recipe_json: JSON.stringify(r) })),
+    listDishes: () => recipes.flatMap((r) => dishesOf(r.recipe_id)),
     now: () => 1,
     mintTriggerId: () => `t-${++minted}`,
   });
 const armAll = () => { for (const row of store.list()) store.update(row.trigger_id, { enabled: true }); };
+const previewDeps = () => ({ store, getVendorEntities: () => [], dishesOf });
 const preview = (recipes: RecipeDefinition[]) =>
   triggersSwitchedOff({
-    preview: { store, getVendorEntities: () => [] },
+    preview: previewDeps(),
     recipes: recipes.map((definition) => ({ recipe_id: definition.recipe_id, publisher_id: PUBLISHER, definition })),
   });
 
@@ -100,6 +112,19 @@ describe('triggersSwitchedOff — what the update dialog warns about', () => {
       .toEqual([{ recipe_id: 'two-triggers', name: 'two-triggers name', reason: 'changed' }]);
   });
 
+  it('D-319 — each dish is read on its own: one dish’s armed row is named, another’s off row is not', () => {
+    extraDishes = [{ dish_id: 'dsh_home', recipe_id: 'two-triggers', config_overlay: {} }];
+    installed([recipe('two-triggers', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }])]);
+    // Only the home dish is on.
+    for (const row of store.list().filter((row) => row.dish_id === 'dsh_home')) store.update(row.trigger_id, { enabled: true });
+    expect(preview([recipe('two-triggers', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.deleted' }])]))
+      .toEqual([{ recipe_id: 'two-triggers', name: 'two-triggers name', reason: 'changed' }]);
+    // A recipe whose one trigger changes is carried on every dish: nothing named.
+    installed([recipe('one', [{ event: 'data.calendar.**.updated' }])]);
+    armAll();
+    expect(preview([recipe('one', [{ event: 'data.work.booking.item.updated' }])])).toEqual([]);
+  });
+
   it('another publisher\'s recipe of the same name is not this update\'s', () => {
     reconcileDeclarativeTriggers({
       store,
@@ -108,6 +133,7 @@ describe('triggersSwitchedOff — what the update dialog warns about', () => {
         publisher_id: 'someone-else',
         recipe_json: JSON.stringify(recipe('two-triggers', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }])),
       }],
+      listDishes: () => dishesOf('two-triggers'),
       now: () => 1,
       mintTriggerId: () => `o-${++minted}`,
     });
@@ -151,7 +177,7 @@ describe('packs.install_preview carries the warning', () => {
       const handlers = makePackInstallHandlers({
         recipeStore: createRecipeStore(dir, db),
         packDir,
-        getTriggerPreview: () => ({ store, getVendorEntities: () => [] }),
+        getTriggerPreview: () => previewDeps(),
       })!.handlers;
       const result = await handlers['packs.install_preview']!({
         manifest: packManifest({
@@ -178,7 +204,7 @@ describe('packs.install_preview carries the warning', () => {
       ));
       const handlers = makePackInstallHandlers({
         recipeStore: createRecipeStore(dir, db),
-        getTriggerPreview: () => ({ store, getVendorEntities: () => [] }),
+        getTriggerPreview: () => previewDeps(),
       })!.handlers;
       const result = await handlers['packs.install_preview']!({
         manifest: packManifest({ slug: 'mail-pack', name: 'Mail pack', recipes: [{ slug: 'two-triggers', version: 1 }] }),

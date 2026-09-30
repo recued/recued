@@ -152,6 +152,13 @@ describe('the ledger (§5, ruling 13)', () => {
 });
 
 describe('templates', () => {
+  it.each(['{broken', 'null'])('rejects an unreadable stored definition (%s) instead of inventing an empty template', (blob) => {
+    const created = store.createTemplate({ definition: definition(), origin: { kind: 'owner' } });
+    db.prepare('UPDATE mail_template SET definition_blob = ? WHERE template_id = ?').run(blob, created.template_id);
+    expect(() => store.getTemplate(created.template_id)).toThrow(`Unreadable definition for mail template ${created.template_id}`);
+    expect(() => store.listTemplates()).toThrow(`Unreadable definition for mail template ${created.template_id}`);
+  });
+
   it('creates, reads, lists, updates (a definition change is a new revision) and deletes', () => {
     const created = store.createTemplate({ definition: definition(), origin: { kind: 'owner' } });
     expect(created.template_id).toBe('mtpl_1');

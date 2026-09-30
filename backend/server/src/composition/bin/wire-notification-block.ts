@@ -121,10 +121,10 @@ export interface ComposeNotificationBlockDeps {
    *  Absent ⇒ that page keeps its note, the behaviour before this. */
   readonly settledRunResults?: SettledRunResults;
   /** D-210 A.8 slice 3d — builds `/ask/<ask_id>` for `inline` channel asks.
-   *  Resolved once in `compose-execution-context` (the only place the public
-   *  base URL is in scope) and shared with the email channel. Absent on a
-   *  non-public deployment → text-only asks, unchanged. */
-  askAnswerLink?: (ask_id: string) => string;
+   *  Built in `compose-execution-context` (where the public address is in
+   *  scope), resolved per ask, and shared with the email channel. No answer on
+   *  a non-public deployment → text-only asks, unchanged. */
+  askAnswerLink?: (ask_id: string) => string | undefined;
   db: Database.Database;
   auditLog: AuditLogStore;
   checkpointStore: CheckpointStore;

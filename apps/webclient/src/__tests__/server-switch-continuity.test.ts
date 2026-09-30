@@ -34,6 +34,10 @@ describe('deliberate server-switch continuity', () => {
       .toBe('#automation/triggers');
     expect(safeServerSwitchLandingHash('#automation/source-recipe-id'))
       .toBe('#automation');
+    // D-319 §5.4 — the page's views survive a switch like its lists do.
+    expect(safeServerSwitchLandingHash('#automation/coming-up'))
+      .toBe('#automation/coming-up');
+    expect(serverSwitchLandingAreaLabel('#automation/coming-up')).toBe('Automation · Coming up');
     expect(safeServerSwitchLandingHash('#settings/source-record-id/detail'))
       .toBe('#settings');
     expect(safeServerSwitchLandingHash('#kitchen/recipe/recipe_1'))

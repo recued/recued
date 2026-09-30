@@ -10,7 +10,12 @@ import {
   canonicalMailFactText,
   mailFactStoredId,
   mailFactStoredText,
+  mailTemplateDefinitionOf,
+  mailTemplateReads,
+  mailTemplateStarterProblems,
+  mailTemplateStarters,
   MAIL_FACT_BUILTIN_TYPES,
+  MAIL_TEMPLATE_LIMITS,
   MAIL_FACT_EVENT_PATTERN,
   MAIL_FACT_LAST_EMAIL_AT,
   MAIL_FACT_RESERVED_VARIABLE_NAMES,
@@ -466,6 +471,127 @@ describe('text read one way (§9)', () => {
     expect(read({ kind: 'keyword_map', cases: [{ contains: 'Delivered', value: 'x' }, { contains: nothing, value: 'y' }] })).toBe(false);
     expect(read({ kind: 'keyword_map', cases: [{ contains: 'Delivered', value: 'x' }] })).toBe(true);
     expect(read({ kind: 'pattern', pattern: `(${nothing})` })).toBe(false);
+  });
+});
+
+describe('a recipe’s starter template (§5.2)', () => {
+  it('takes a built-in kind’s template that holds nothing of its author’s mail', () => {
+    expect(mailTemplateStarterProblems(shipmentTemplate())).toEqual([]);
+    // A number's shape is a pattern, not a number: quantifiers are no digits.
+    expect(mailTemplateStarterProblems(shipmentTemplate({
+      rules: [...shipmentTemplate().rules, { target: { data: 'order' }, source: 'body', find: { kind: 'pattern', pattern: 'Order #(\\d{3}-\\d{7}-\\d{7})' } }],
+    }))).toEqual([]);
+  });
+
+  it('refuses a kind an owner made: it exists only on that server', () => {
+    expect(mailTemplateStarterProblems({ ...shipmentTemplate(), type: 'custom_ticket' })).toEqual([
+      "type 'custom_ticket' is a kind of email made on one server: a starter's kind must be built in",
+    ]);
+  });
+
+  it('refuses what the template check refuses', () => {
+    expect(mailTemplateStarterProblems(shipmentTemplate({ name: ' ' })).join()).toMatch(/name is required/);
+    expect(mailTemplateStarterProblems({ name: 'x' })[0]).toMatch(/must/);
+  });
+
+  it('refuses, where it is, an address, a phone number or a number baked into a rule, the prompt or a condition', () => {
+    const rules = shipmentTemplate().rules;
+    const problems = mailTemplateStarterProblems(shipmentTemplate({
+      entrance: {
+        conditions: [
+          { field: 'from', op: 'is', value: 'pkginfo@ups.com' },
+          { field: 'subject', op: 'contains', value: 'Order 112-3345678' },
+        ],
+        variables: ['carrier', 'tracking_number'],
+      },
+      rules: [
+        rules[0]!,
+        { target: { variable: 'tracking_number' }, source: 'body', find: { kind: 'after_label', label: 'Sent to alex@example.com:' } },
+        { target: { data: 'phone' }, source: 'body', find: { kind: 'constant', value: 'call +1 (555) 123-4567' } },
+        { target: { data: 'order' }, source: 'body', find: { kind: 'pattern', pattern: 'Parcel 1Z999AA10123456784 for (\\w+)' } },
+        { target: { variable: 'state' }, source: 'subject', find: { kind: 'keyword_map', cases: [{ contains: 'Delivered', value: 'delivered' }] } },
+      ],
+      ai: { enabled: true, prompt: 'Mail from bob@example.org about his orders.', slots: ['data.note'], pool: 'free_only' },
+    }));
+    expect(problems).toEqual([
+      'entrance.conditions[1].value: holds a long run of digits (10) — an order or a tracking number baked in',
+      'rules[1].find.label: holds an email address',
+      'rules[2].find.value: holds a phone number',
+      'rules[3].find.pattern: holds a long run of digits (11) — an order or a tracking number baked in',
+      'ai.prompt: holds an email address',
+    ]);
+  });
+
+  it('refuses its author’s own addresses and names anywhere, and a sender in its author’s contacts', () => {
+    const problems = mailTemplateStarterProblems(shipmentTemplate({
+      entrance: {
+        conditions: [{ field: 'from', op: 'is', value: 'Friend@Example.com' }, { field: 'subject', op: 'contains', value: 'for Alex Doe' }],
+        variables: ['carrier', 'tracking_number'],
+      },
+    }), { words: ['Alex Doe', 'alex@home.example'], senders: ['friend@example.com'] });
+    expect(problems).toEqual([
+      'entrance.conditions[0].value: names a sender in its author’s contacts'.replace('’', "'"),
+      "entrance.conditions[1].value: holds its author's own address or name",
+    ]);
+  });
+});
+
+describe('an AI that is off keeps what switching it on needs (§5.2)', () => {
+  const domainOnly = { conditions: [{ field: 'from' as const, op: 'domain_is' as const, value: 'ups.com' }], variables: [] };
+
+  it('is a template the check takes, and the rebuilt definition keeps it', () => {
+    const kept = shipmentTemplate({ ai: { enabled: false, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'free_only' } });
+    expect(validateMailTemplateDefinition(kept, getMailFactBuiltinType('shipment'))).toEqual([]);
+    expect(mailTemplateDefinitionOf(kept).ai).toEqual({ enabled: false, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'free_only' });
+    expect(mailTemplateDefinitionOf(shipmentTemplate({ ai: { enabled: false } })).ai).toEqual({ enabled: false });
+    // What an AI that is on must narrow is asked when it is switched on.
+    expect(validateMailTemplateDefinition(
+      shipmentTemplate({ entrance: domainOnly, ai: { enabled: false, prompt: 'Read the depot.', slots: ['data.depot'] } }),
+      getMailFactBuiltinType('shipment'),
+    )).toEqual([]);
+    expect(validateMailTemplateDefinition(
+      shipmentTemplate({ entrance: domainOnly, ai: { enabled: true, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'free_only' } }),
+      getMailFactBuiltinType('shipment'),
+    ).join()).toMatch(/more than the sender's domain/);
+  });
+
+  it('checks what it keeps as it will be checked when on', () => {
+    const problems = (ai: object) =>
+      validateMailTemplateDefinition(shipmentTemplate({ ai: ai as never }), getMailFactBuiltinType('shipment'));
+    expect(problems({ enabled: false, slots: ['data.depot'] })).toEqual(['an AI that is off keeps a prompt with its slots, or keeps neither']);
+    expect(problems({ enabled: false, prompt: 'Read it.', pool: 'everything' })[0]).toMatch(/ai.pool must be one of/);
+    expect(problems({ enabled: false, prompt: 'Read it.', slots: ['carrier'] })[0]).toMatch(/entrance variable/);
+    expect(problems({ enabled: false, prompt: 'x'.repeat(MAIL_TEMPLATE_LIMITS.maxPromptLength + 1) })[0]).toMatch(/longer than/);
+  });
+
+  it('a starter’s kept prompt travels, so it is checked for its author’s mail', () => {
+    expect(mailTemplateStarterProblems(shipmentTemplate({
+      ai: { enabled: false, prompt: 'Mail from bob@example.org.', slots: [] },
+    }))).toEqual(['ai.prompt: holds an email address']);
+  });
+});
+
+describe('a recipe’s starters, as install reads them (§5.2)', () => {
+  it('finds each mail_template variable that brings one, in the recipe’s order', () => {
+    const starter = shipmentTemplate();
+    expect(mailTemplateStarters({
+      note: { label: 'Note', type: 'text' },
+      ups: { label: 'UPS', type: 'mail_template', starter },
+      pick: { label: 'Pick one', type: 'mail_template' },
+      odd: { label: 'Odd', type: 'text', starter },
+    })).toEqual([{ variable: 'ups', starter }]);
+    expect(mailTemplateStarters(undefined)).toEqual([]);
+    expect(mailTemplateStarters([])).toEqual([]);
+  });
+
+  it('says what a template reads: its variables and data, each once', () => {
+    expect(mailTemplateReads(shipmentTemplate({
+      rules: [
+        ...shipmentTemplate().rules,
+        { target: { data: 'depot' }, source: 'body', find: { kind: 'after_label', label: 'Depot:' } },
+        { target: { variable: 'state' }, source: 'body', find: { kind: 'constant', value: 'in_transit' } },
+      ],
+    }))).toEqual(['carrier', 'tracking_number', 'state', 'data.depot']);
   });
 });
 

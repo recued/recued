@@ -207,6 +207,21 @@ describe('D-266 buildMissedRunReport', () => {
     expect(report.entries.map((entry) => entry.recipe_id)).toEqual(['brief']);
   });
 
+  it('D-319 — ONE entry per DISH: two dishes of one recipe each catch up on their own', () => {
+    // Two dishes run with different settings, so neither's brief supersedes
+    // the other's. Within a dish, a brief still supersedes a brief.
+    const report = buildMissedRunReport([
+      ask({ schedule_id: 'work-am', recipe_id: 'brief', dish_id: 'dsh_work', last_run_at: now - 6 * DAY, prev_run_at: now - 7 * DAY }),
+      ask({ schedule_id: 'work-pm', recipe_id: 'brief', dish_id: 'dsh_work', last_run_at: now - 4 * DAY, prev_run_at: now - 5 * DAY }),
+      ask({ schedule_id: 'home', recipe_id: 'brief', dish_id: 'dsh_home', last_run_at: now - 3 * DAY, prev_run_at: now - 4 * DAY }),
+    ], now);
+    expect(report.entries.map((entry) => [entry.dish_id, entry.run_schedule_id, entry.schedule_ids])).toEqual([
+      ['dsh_work', 'work-pm', ['work-pm', 'work-am']],
+      ['dsh_home', 'home', ['home']],
+    ]);
+    expect(report.entries.every((entry) => entry.recipe_id === 'brief')).toBe(true);
+  });
+
   it('ONE entry and ONE run per recipe, even with two waiting schedules', () => {
     const report = buildMissedRunReport([
       ask({ schedule_id: 'morning', recipe_id: 'brief', last_run_at: now - 6 * DAY, prev_run_at: now - 7 * DAY }),

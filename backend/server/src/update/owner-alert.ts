@@ -141,8 +141,10 @@ export const notifyUpdateOwnerAlert = async (
  * ledger-to-audit replay id. */
 export const createUpdateOwnerAlertSink = (
   block: Pick<NotificationBlock, 'notify'>,
-  updates_link_url?: string,
+  /** Read when the alert fires, not at boot: the server's public address can
+   *  appear (a Pro name gets its certificate) or change while it runs. */
+  updatesLink?: () => string | undefined,
 ): UpdateOwnerAlertSink =>
   (alert) => {
-    void notifyUpdateOwnerAlert(alert, (message) => block.notify(message), updates_link_url);
+    void notifyUpdateOwnerAlert(alert, (message) => block.notify(message), updatesLink?.());
   };

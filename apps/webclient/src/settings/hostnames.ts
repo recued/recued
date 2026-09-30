@@ -5,12 +5,15 @@
  * update, remove, and drive `verifyOwnership`.
  */
 
-import { HOSTNAME_LISTENER_PORTS } from '@recued/contracts';
+import { HOSTNAME_ADDRESS_USES, HOSTNAME_LISTENER_PORTS } from '@recued/contracts';
 import type {
   DdnsEnabledStatus,
   DdnsSetEnabledRequest,
   DiagnosticResponse,
   HostnameAddRequest,
+  HostnameAddressUse,
+  HostnameAddressUseState,
+  HostnameAddressUsesResponse,
   HostnameCertSource,
   HostnameGetRequest,
   HostnameGetResponse,
@@ -24,6 +27,7 @@ import type {
   HostnameProjection,
   HostnameRemoveRequest,
   HostnameRemoveResponse,
+  HostnameSetAddressUseRequest,
   HostnameUpdateRequest,
   HostnameVerificationMethod,
   LocalServerUrl,
@@ -32,7 +36,7 @@ import type {
 } from '@recued/contracts';
 import { formatClientDateTime } from '@recued/ui-shared';
 import type { ReachabilityExternalProbeCaller } from './reachability.js';
-import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ---------------------------------------------------------------------------
 // Stable DOM hooks
@@ -106,6 +110,20 @@ export const HOSTNAMES_PORTS_FIELDSET_ATTR = 'data-recued-hostnames-ports';
 /** Present on a `byo_uploaded` row that has no certificate installed — the
  *  state in which the row can neither serve TLS nor pass `cert_proof`. */
 export const HOSTNAMES_ROW_NEEDS_CERT_ATTR = 'data-recued-hostnames-row-needs-cert';
+/** "Addresses you hand out" — one select per use an address is kept for
+ *  (value = the use), its status line, the webhooks move confirmation, and the
+ *  read-only line about links in notices. */
+export const HOSTNAMES_ADDRESSES_ATTR = 'data-recued-hostnames-addresses';
+export const HOSTNAMES_ADDRESS_SELECT_ATTR = 'data-recued-hostnames-address-select';
+export const HOSTNAMES_ADDRESS_STATUS_ATTR = 'data-recued-hostnames-address-status';
+export const HOSTNAMES_ADDRESS_CONFIRM_ATTR = 'data-recued-hostnames-address-confirm';
+export const HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR = 'data-recued-hostnames-address-confirm-btn';
+export const HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR = 'data-recued-hostnames-address-cancel-btn';
+export const HOSTNAMES_ADDRESS_ERROR_ATTR = 'data-recued-hostnames-address-error';
+export const HOSTNAMES_ADDRESS_LINKS_ATTR = 'data-recued-hostnames-address-links';
+/** On a remove confirmation or an edit form whose name is kept for a use
+ *  (value = the name). */
+export const HOSTNAMES_KEPT_WARNING_ATTR = 'data-recued-hostnames-kept-warning';
 export const portFieldName = (port: HostnameListenerPort): string =>
   `listener_port_${port}`;
 
@@ -397,6 +415,39 @@ export const HOSTNAMES_PANEL_STYLES = `
   background: var(--ok-bg);
   color: var(--ok-fg);
 }
+.hostnames-addresses {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.hostnames-addresses > p {
+  margin: 0;
+}
+.hostnames-address-row {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: 4px 12px;
+  align-items: center;
+}
+.hostnames-address-row > p {
+  grid-column: 2;
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.hostnames-address-problem {
+  color: var(--danger);
+}
+@media (max-width: 640px) {
+  .hostnames-address-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .hostnames-address-row > p {
+    grid-column: 1;
+  }
+}
 @media (max-width: 640px) {
   .hostnames-panel-header,
   .hostnames-row-main {
@@ -435,6 +486,10 @@ export type HostnamesVerifyOwnershipCaller = (
  *  "Reachable on your network" section. Optional: absent → the section is
  *  not rendered. */
 export type NetworkLocalUrlsCaller = () => Promise<NetworkLocalUrlsResponse>;
+export type HostnamesAddressUsesCaller = () => Promise<HostnameAddressUsesResponse>;
+export type HostnamesSetAddressUseCaller = (
+  args: HostnameSetAddressUseRequest,
+) => Promise<HostnameAddressUsesResponse>;
 
 /** D-273 — `network.port_mapping` caller. Optional: absent → the router step
  *  keeps the wording it had before anything asked a router. */
@@ -576,6 +631,16 @@ export interface HostnamesPanelState {
     busy: boolean;
     error: string | null;
   };
+  /** "Addresses you hand out". `response` stays null until loaded — and on a
+   *  server from before this block, which has no such call: the section then
+   *  does not render. */
+  addresses: {
+    response: HostnameAddressUsesResponse | null;
+    error: string | null;
+    saving: HostnameAddressUse | null;
+    /** A webhooks move waiting for the owner to accept what it costs. */
+    confirm: { use: HostnameAddressUse; hostname: string | null } | null;
+  };
 }
 
 export interface MountHostnamesPanelOptions {
@@ -599,6 +664,10 @@ export interface MountHostnamesPanelOptions {
   runDdnsStatus?: DdnsStatusCaller;
   runDdnsSetEnabled?: DdnsSetEnabledCaller;
   runDdnsControlContext?: DdnsControlContextCaller;
+  /** "Addresses you hand out" — read and pick. Absent read → no section;
+   *  absent pick → the selects are read-only. */
+  runAddressUses?: HostnamesAddressUsesCaller;
+  runSetAddressUse?: HostnamesSetAddressUseCaller;
   /** R26.4 Delta 4 — `Date.now`-compatible clock for the cert-expiry
    *  chip's relative copy + near-expiry severity. Defaults to `Date.now`;
    *  tests pin it so "expires in N days" is reproducible. */
@@ -636,7 +705,78 @@ export interface HostnamesPanelMount {
     'method' | 'observed_token_hash' | 'cert_matches_hostname'
   >, value: string | boolean): void;
   submitVerify(): Promise<void>;
+  /** Pick the address kept for a use (`null` = automatic). Moving the
+   *  webhooks address while webhooks are registered asks first. */
+  setAddressUse(use: HostnameAddressUse, hostname: string | null): Promise<void>;
+  confirmAddressUse(): Promise<void>;
+  cancelAddressUse(): void;
 }
+
+const ADDRESS_USE_LABELS: Record<HostnameAddressUse, string> = {
+  webhooks: 'Webhooks',
+  reception: 'Reception links',
+  customer_access: 'Customer access',
+};
+
+/** The same uses, inside a sentence. */
+const ADDRESS_USE_NOUNS: Record<HostnameAddressUse, string> = {
+  webhooks: 'webhooks',
+  reception: 'Reception links',
+  customer_access: 'customer access',
+};
+
+const joinWithAnd = (items: readonly string[]): string =>
+  items.length <= 1
+    ? items.join('')
+    : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+
+/** What a use's status line says. A value from a newer server that this
+ *  client does not know still gets a line — never a blank. */
+const addressStatus = (entry: HostnameAddressUseState): { text: string; problem: boolean } => {
+  if (entry.hostname_unusable === true && entry.hostname !== undefined) {
+    return {
+      text: `${entry.hostname} can no longer be used, so this has stopped. Pick another address.`,
+      problem: true,
+    };
+  }
+  switch (entry.source) {
+    case 'configured':
+      return {
+        text: `Set on the server by RECUED_PUBLIC_BASE_URL: ${entry.base_url ?? ''}. It wins over a pick here.`,
+        problem: false,
+      };
+    case 'owner':
+      return { text: `In use: ${entry.base_url ?? ''}. You picked it.`, problem: false };
+    case 'first_use':
+      return {
+        text: `In use: ${entry.base_url ?? ''}. Kept since it was first handed out.`,
+        problem: false,
+      };
+    case 'automatic':
+      return entry.base_url === null
+        ? {
+            text: 'No address yet. It needs one of your names, verified and with a certificate.',
+            problem: true,
+          }
+        : {
+            text: `Not handed out yet. It will use ${entry.base_url} and then keep it.`,
+            problem: false,
+          };
+  }
+  return { text: entry.base_url ?? 'No address yet.', problem: entry.base_url === null };
+};
+
+/** The address a use would hand out after a pick. */
+const addressAfterPick = (
+  response: HostnameAddressUsesResponse,
+  use: HostnameAddressUse,
+  hostname: string | null,
+): string | null => {
+  const current = response.uses.find((entry) => entry.use === use);
+  if (current?.source === 'configured') return current.base_url;
+  if (hostname === null) return response.choices[0]?.base_url ?? null;
+  return response.choices.find((choice) => choice.hostname === hostname)?.base_url ?? null;
+};
 
 const DEFAULT_ADD_VALUES: AddValues = {
   hostname: '',
@@ -896,6 +1036,7 @@ export const mountHostnamesPanel = (
       busy: false,
       error: null,
     },
+    addresses: { response: null, error: null, saving: null, confirm: null },
   };
   let disposed = false;
   let loadGeneration = 0;
@@ -1382,6 +1523,8 @@ export const mountHostnamesPanel = (
 
     form.appendChild(grid);
     form.appendChild(enabledLabel);
+    const kept = renderKeptWarning(row.hostname, 'Switching it off');
+    if (kept !== null) form.appendChild(kept);
     form.appendChild(actions);
     return form;
   };
@@ -1524,6 +1667,28 @@ export const mountHostnamesPanel = (
     return panel;
   };
 
+  /** The uses this name is kept for — a remove or a switch-off stops them. */
+  const keptUsesFor = (hostname: string): HostnameAddressUse[] =>
+    (state.addresses.response?.uses ?? [])
+      .filter((entry) =>
+        (entry.source === 'owner' || entry.source === 'first_use') && entry.hostname === hostname)
+      .map((entry) => entry.use);
+
+  const renderKeptWarning = (
+    hostname: string,
+    action: 'Removing it' | 'Switching it off',
+  ): HTMLParagraphElement | null => {
+    const uses = keptUsesFor(hostname);
+    if (uses.length === 0) return null;
+    const p = renderError(
+      `${hostname} is the address kept for ${joinWithAnd(uses.map((use) => ADDRESS_USE_NOUNS[use]))}. `
+      + `${action} stops ${uses.length === 1 ? 'it' : 'them'} until you pick another address `
+      + 'under "Addresses you hand out".',
+    );
+    p.setAttribute(HOSTNAMES_KEPT_WARNING_ATTR, hostname);
+    return p;
+  };
+
   const renderRemoveConfirm = (row: HostnameProjection): HTMLElement | null => {
     if (state.remove.hostname !== row.hostname) return null;
     const panel = doc.createElement('div');
@@ -1531,6 +1696,8 @@ export const mountHostnamesPanel = (
     panel.setAttribute(HOSTNAMES_REMOVE_CONFIRM_PANEL_ATTR, row.hostname);
 
     if (state.remove.error !== null) panel.appendChild(renderError(state.remove.error));
+    const kept = renderKeptWarning(row.hostname, 'Removing it');
+    if (kept !== null) panel.appendChild(kept);
     const p = doc.createElement('p');
     p.className = 'hostnames-muted';
     p.textContent = `Remove ${row.hostname} from your list of names?`;
@@ -1951,6 +2118,134 @@ export const mountHostnamesPanel = (
     wrapper.appendChild(section);
   };
 
+  const renderAddresses = (): void => {
+    const response = state.addresses.response;
+    if (opts.runAddressUses === undefined) return;
+    if (response === null && state.addresses.error === null) return;
+    const section = doc.createElement('div');
+    section.className = 'hostnames-addresses';
+    section.setAttribute(HOSTNAMES_ADDRESSES_ATTR, '');
+
+    const title = doc.createElement('h3');
+    title.className = 'hostnames-local-urls-title';
+    title.textContent = 'Addresses you hand out';
+    section.appendChild(title);
+
+    const intro = doc.createElement('p');
+    intro.className = 'hostnames-muted';
+    intro.textContent =
+      'Some addresses are kept by someone else. A vendor stores your webhook address, a '
+      + 'Reception link gets printed, a customer keeps the address they are given. Each one '
+      + 'stays the same until you change it here.';
+    section.appendChild(intro);
+
+    if (state.addresses.error !== null) {
+      const err = renderError(state.addresses.error);
+      err.setAttribute(HOSTNAMES_ADDRESS_ERROR_ATTR, '');
+      section.appendChild(err);
+    }
+
+    if (response !== null) {
+      for (const use of HOSTNAME_ADDRESS_USES) {
+        const entry = response.uses.find((candidate) => candidate.use === use);
+        if (entry === undefined) continue;
+        const row = doc.createElement('div');
+        row.className = 'hostnames-address-row';
+
+        const select = doc.createElement('select');
+        select.className = 'hostnames-select';
+        select.setAttribute(HOSTNAMES_ADDRESS_SELECT_ATTR, use);
+        const addOption = (value: string, text: string, disabled = false): void => {
+          const option = doc.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          option.disabled = disabled;
+          select.appendChild(option);
+        };
+        addOption('', 'Automatic');
+        for (const choice of response.choices) addOption(choice.hostname, choice.base_url);
+        const kept = entry.source === 'owner' || entry.source === 'first_use'
+          ? entry.hostname ?? ''
+          : '';
+        // A kept name that stopped working still shows, so the select tells
+        // the truth about what is kept — it just cannot be picked again.
+        if (kept !== '' && !response.choices.some((choice) => choice.hostname === kept)) {
+          addOption(kept, `${kept} (no longer works)`, true);
+        }
+        select.value = kept;
+        select.disabled = entry.source === 'configured'
+          || opts.runSetAddressUse === undefined
+          || state.addresses.saving !== null
+          || state.addresses.confirm !== null;
+        select.addEventListener('change', () => {
+          void handle.setAddressUse(use, select.value === '' ? null : select.value);
+        });
+        // A grid row, not `makeField`: the label and the select sit in their
+        // own columns, so the select is named for assistive tech directly.
+        select.setAttribute('aria-label', ADDRESS_USE_LABELS[use]);
+        const label = doc.createElement('span');
+        label.className = 'hostnames-field-label';
+        label.textContent = ADDRESS_USE_LABELS[use];
+        row.appendChild(label);
+        row.appendChild(select);
+
+        const status = addressStatus(entry);
+        const line = doc.createElement('p');
+        line.className = status.problem ? 'hostnames-address-problem' : 'hostnames-muted';
+        line.setAttribute(HOSTNAMES_ADDRESS_STATUS_ATTR, use);
+        line.textContent = status.text;
+        row.appendChild(line);
+        section.appendChild(row);
+
+        const pending = state.addresses.confirm;
+        if (pending !== null && pending.use === use) {
+          const count = response.registered_webhooks;
+          const next = addressAfterPick(response, use, pending.hostname);
+          const panel = doc.createElement('div');
+          panel.className = 'hostnames-detail-panel';
+          panel.setAttribute(HOSTNAMES_ADDRESS_CONFIRM_ATTR, use);
+          const warn = doc.createElement('p');
+          warn.className = 'hostnames-muted';
+          warn.textContent =
+            `Move the webhooks address to ${next ?? 'no address'}? `
+            + `${String(count)} webhook${count === 1 ? ' was' : 's were'} set up with `
+            + `${entry.base_url ?? 'the address kept before'}. After the move, each one stops `
+            + 'taking events until you update its address at the other service.';
+          panel.appendChild(warn);
+          const actions = doc.createElement('div');
+          actions.className = 'hostnames-actions';
+          actions.appendChild(
+            makeButton('Cancel', HOSTNAMES_ADDRESS_CANCEL_BTN_ATTR, 'secondary', () => {
+              handle.cancelAddressUse();
+            }),
+          );
+          actions.appendChild(
+            makeButton('Change the address', HOSTNAMES_ADDRESS_CONFIRM_BTN_ATTR, 'danger', () => {
+              void handle.confirmAddressUse();
+            }),
+          );
+          panel.appendChild(actions);
+          section.appendChild(panel);
+        }
+      }
+
+      const { app, answers } = response.links_now;
+      const links = doc.createElement('p');
+      links.className = 'hostnames-muted';
+      links.setAttribute(HOSTNAMES_ADDRESS_LINKS_ATTR, '');
+      links.textContent =
+        'Links in notices and emails are opened soon after they are sent, so they are not kept. '
+        + 'They use whichever address answers best at the time. '
+        + (app === null && answers === null
+          ? 'No address works for them right now.'
+          : app === answers
+            ? `Right now that is ${app ?? ''}.`
+            : `Right now that is ${app ?? 'none'} for links into the app, and ${answers ?? 'none'} for answer links.`);
+      section.appendChild(links);
+    }
+    wrapper.appendChild(section);
+  };
+
   const render = (): void => {
     if (disposed) return;
     clearChildren(wrapper);
@@ -1972,7 +2267,79 @@ export const mountHostnamesPanel = (
     renderProDdns();
     renderAddForm();
     renderRows();
+    renderAddresses();
     renderLocalUrls();
+  };
+
+  /** Read the addresses handed out. `gen` ties a refresh's read to that
+   *  refresh; a read after a hostname change has none. */
+  const loadAddresses = async (gen?: number): Promise<void> => {
+    if (opts.runAddressUses === undefined) return;
+    const stale = (): boolean => disposed || (gen !== undefined && gen !== loadGeneration);
+    try {
+      const response = await opts.runAddressUses();
+      if (stale()) return;
+      state = { ...state, addresses: { ...state.addresses, response, error: null } };
+    } catch (err) {
+      if (stale()) return;
+      // A server from before this block has no such call: leave the section
+      // out, as for the other optional sections. Any other failure is shown.
+      state = {
+        ...state,
+        addresses: classifyRpcError(err).code === 'unknown_method'
+          ? { ...state.addresses, response: null, error: null }
+          : { ...state.addresses, error: errMessage(err) },
+      };
+    }
+    render();
+  };
+
+  const saveAddressUse = async (
+    use: HostnameAddressUse,
+    hostname: string | null,
+  ): Promise<void> => {
+    if (disposed || opts.runSetAddressUse === undefined) return;
+    state = {
+      ...state,
+      addresses: { ...state.addresses, saving: use, confirm: null, error: null },
+    };
+    render();
+    try {
+      const response = await opts.runSetAddressUse({ use, hostname });
+      if (disposed) return;
+      state = { ...state, addresses: { ...state.addresses, response, saving: null } };
+    } catch (err) {
+      if (disposed) return;
+      state = {
+        ...state,
+        addresses: { ...state.addresses, saving: null, error: errMessage(err) },
+      };
+    }
+    render();
+  };
+
+  const setAddressUse = async (
+    use: HostnameAddressUse,
+    hostname: string | null,
+  ): Promise<void> => {
+    const response = state.addresses.response;
+    if (disposed || response === null || state.addresses.saving !== null) return;
+    const current = response.uses.find((entry) => entry.use === use)?.base_url ?? null;
+    if (
+      use === 'webhooks'
+      && response.registered_webhooks > 0
+      && addressAfterPick(response, use, hostname) !== current
+    ) {
+      // Registered webhooks were set up with the current address; moving it
+      // stops every one of them until it is updated at its vendor. Ask first.
+      state = {
+        ...state,
+        addresses: { ...state.addresses, confirm: { use, hostname }, error: null },
+      };
+      render();
+      return;
+    }
+    await saveAddressUse(use, hostname);
   };
 
   const doRefresh = (): Promise<void> => {
@@ -2047,7 +2414,9 @@ export const mountHostnamesPanel = (
       }
       render();
     })();
-    pendingLoad = Promise.all([listLoad, localUrlsLoad, ddnsLoad]).then(() => undefined);
+    const addressesLoad = loadAddresses(gen);
+    pendingLoad = Promise.all([listLoad, localUrlsLoad, ddnsLoad, addressesLoad])
+      .then(() => undefined);
     return pendingLoad;
   };
 
@@ -2134,6 +2503,8 @@ export const mountHostnamesPanel = (
       };
     }
     render();
+    // A new name can change what "automatic" hands out.
+    void loadAddresses();
   };
 
   const selectedUpdateRow = (): HostnameProjection | null => {
@@ -2258,6 +2629,8 @@ export const mountHostnamesPanel = (
       };
     }
     render();
+    // A switched-off or re-ported name changes what can be handed out.
+    void loadAddresses();
   };
 
   const loadDetail = async (hostname: string): Promise<void> => {
@@ -2346,6 +2719,8 @@ export const mountHostnamesPanel = (
       };
     }
     render();
+    // A removed name may have been kept for a use, which now says so.
+    void loadAddresses();
   };
 
   const selectedVerifyRow = (): HostnameProjection | null => {
@@ -2474,6 +2849,8 @@ export const mountHostnamesPanel = (
       };
     }
     render();
+    // A newly verified name can be picked.
+    void loadAddresses();
   };
 
   const handle: HostnamesPanelMount = {
@@ -2689,6 +3066,17 @@ export const mountHostnamesPanel = (
       render();
     },
     submitVerify,
+    setAddressUse,
+    confirmAddressUse: async () => {
+      const pending = state.addresses.confirm;
+      if (disposed || pending === null) return;
+      await saveAddressUse(pending.use, pending.hostname);
+    },
+    cancelAddressUse: () => {
+      if (disposed || state.addresses.confirm === null) return;
+      state = { ...state, addresses: { ...state.addresses, confirm: null } };
+      render();
+    },
   };
 
   render();

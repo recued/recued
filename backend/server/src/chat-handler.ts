@@ -845,6 +845,8 @@ export const handleSend = async (
     continuation_of_turn_id?: string;
     /** Evidence-only grounding for a guided Data explanation or safe check. */
     data_diagnosis?: ChatDataDiagnosisRequest;
+    /** The client asks for a turn that may only read. Narrowing only. */
+    read_only?: boolean;
   },
 ): Promise<ChatTurnAcceptance & {
   turn_id: string;
@@ -859,7 +861,8 @@ export const handleSend = async (
   ensureSession(deps, session_id);
   const submission_id = safe.submission_id === undefined ? undefined
     : ensureNonEmptyString('chat.send', 'submission_id', safe.submission_id);
-  if ((submission_id?.length ?? 0) > 128 || (safe.repeat !== undefined && typeof safe.repeat !== 'boolean')) {
+  if ((submission_id?.length ?? 0) > 128 || (safe.repeat !== undefined && typeof safe.repeat !== 'boolean')
+    || (safe.read_only !== undefined && typeof safe.read_only !== 'boolean')) {
     throw new RpcError('bad_request', 'Invalid conversation submission.', 400);
   }
   const queue_generation = safe.queue_generation === undefined ? undefined
@@ -1020,6 +1023,14 @@ export const handleSend = async (
     throw new RpcError(
       'bad_request',
       'chat.send: data diagnosis cannot also request a retry',
+      400,
+    );
+  }
+  // A retry exists to run a write again; a read-only turn could never run it.
+  if (safe.retry_of_plan_id !== undefined && safe.read_only === true) {
+    throw new RpcError(
+      'bad_request',
+      'chat.send: a read-only turn cannot also request a retry',
       400,
     );
   }
@@ -1192,6 +1203,7 @@ export const handleSend = async (
           : {}),
         ...(retry_of_plan_id ? { retry_of_plan_id } : {}),
         ...(data_diagnosis ? { data_diagnosis } : {}),
+        ...(safe.read_only === true ? { read_only: true } : {}),
         on_accepted: (ack) => {
           acceptedTurnId = ack.turn_id;
           resolve({

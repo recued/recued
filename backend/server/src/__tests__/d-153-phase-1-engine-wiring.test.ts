@@ -488,31 +488,38 @@ describe('D-145 engine-wiring slice 2 — execution_source persistence', () => {
 });
 
 describe('D-179 — install config: the default dish is a source, not a dispatch identity', () => {
-  it('rejects dispatching a run AS the recipe default config dish', async () => {
-    const recipe = buildRecipe({ recipe_id: 'rc-default' });
+  it('D-319 — a run AS the main dish takes its settings (it is a dish like any other)', async () => {
+    await expect(runInstallConfigEcho('rc-main-dish', {
+      defaultOverlay: { threshold: 30, topic: 'x' },
+      dishId: 'dsh_default',
+    })).resolves.toEqual({ threshold: 30, topic: 'x' });
+  });
+
+  it('D-319 — a run as a dish may change a value for that run alone', async () => {
+    await expect(runInstallConfigEcho('rc-dish-run-override', {
+      defaultOverlay: {},
+      namedDishOverlay: { threshold: 77, topic: 'dish' },
+      dishId: 'dsh_named',
+      requestConfig: { threshold: 99 },
+    })).resolves.toEqual({ threshold: 99, topic: 'dish' });
+  });
+
+  it('D-319 — the switch governs what runs on its own: by hand as a dish switched off runs, a schedule of it is refused', async () => {
+    const recipe = installConfigEchoRecipe('rc-dish-off');
     const db = new Database(':memory:');
-    const dishStore = createDishStore(db);
-    dishStore.set({
-      dish_id: 'dsh_default',
-      recipe_id: 'rc-default',
-      publisher_id: 'local',
-      name: '',
-      is_default: true,
-      config_overlay: { threshold: 30 },
-      enabled: true,
-      created_at: 1,
-    });
-    const deps = makeDeps(recipe, [], { dishStore });
-    // Binding a run to the mutable install-config dish would put its
-    // dish_id in the audit — rejected so the invariant holds.
-    await expect(
-      handleExecute(deps, {
-        recipe_id: 'rc-default',
-        dish_id: 'dsh_default',
-        execution_source: userSource,
-      }),
-    ).rejects.toMatchObject({ code: 'bad_request' });
-    db.close();
+    try {
+      const dishStore = createDishStore(db);
+      dishStore.set({ ...makeDish('rc-dish-off', { dish_id: 'dsh_off', is_default: true, config_overlay: { threshold: 5 } }), enabled: false });
+      const deps = makeDeps(recipe, [], { dishStore });
+      const byHand = await handleExecute(deps, { recipe_id: 'rc-dish-off', dish_id: 'dsh_off', execution_source: userSource });
+      expect(byHand.success).toBe(true);
+      expect(sidebarData(byHand, 'threshold')).toBe(5);
+      await expect(handleExecute(deps, {
+        recipe_id: 'rc-dish-off', dish_id: 'dsh_off', trigger_source: 'schedule', execution_source: userSource,
+      })).rejects.toMatchObject({ code: 'dish_disabled' });
+    } finally {
+      db.close();
+    }
   });
 
   it('applies a non-empty default overlay to a dishless fresh run with no request config', async () => {
@@ -553,7 +560,7 @@ describe('D-179 — install config: the default dish is a source, not a dispatch
     });
   });
 
-  it('does not apply install config when an explicit non-default dish is bound', async () => {
+  it('does not apply the main dish’s settings when another dish is bound', async () => {
     await expect(runInstallConfigEcho('rc-install-explicit-non-default', {
       defaultOverlay: { threshold: 30, topic: 'x' },
       namedDishOverlay: { threshold: 77 },

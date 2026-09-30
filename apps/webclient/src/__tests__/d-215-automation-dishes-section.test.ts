@@ -167,10 +167,10 @@ const settle = async (): Promise<void> => {
 
 describe('D-215 slice 3 — the dishes section exists as a fourth token', () => {
   it('is registered in AUTOMATION_SECTION_TOKENS after the original three', () => {
-    // Order matters: it is the sub-nav order and the deep-link vocabulary.
-    // Appending keeps `#automation` (no segment) landing on auto-run.
+    // The deep-link vocabulary. D-319 §5.4 put the page's two views first:
+    // the lists by kind are no longer tabs, but their links still land.
     expect(AUTOMATION_SECTION_TOKENS).toEqual([
-      'auto-run', 'triggers', 'schedules', 'dishes',
+      'all', 'coming-up', 'auto-run', 'triggers', 'schedules', 'dishes',
     ]);
   });
 });
@@ -193,10 +193,10 @@ describe('D-215 slice 3 — dish rows', () => {
   });
 
   it.each([
-    [{ managed_by_schedule_id: 'sch_1' }, 'schedule', 'Schedule sch_1'],
-    [{ managed_by_trigger_id: 'trg_1' }, 'trigger', 'Trigger trg_1'],
-    [{ managed_by_auto_run: 'daily-brief' }, 'auto-run', 'Auto-run'],
-  ] as const)('badges a MANAGED dish with its owner (%j)', async (patch, badge, label) => {
+    // D-319 — a schedule or trigger mints no dish; the main dish is badged.
+    [{ is_default: true }, 'main', 'Main'],
+    [{ is_default: false }, 'assigned', 'Assigned'],
+  ] as const)('badges a dish with where it came from (%j)', async (patch, badge, label) => {
     const rig = mount({
       dishesListCaller: async () => ({ dishes: [dish(patch)] }),
     });
@@ -251,14 +251,14 @@ describe('D-215 slice 3 — dish rows', () => {
     expect(html).toContain('recipe defaults');
   });
 
-  it('renders NO row actions — slice 3 is read-only', async () => {
+  it('renders NO row actions without the dish callers — slice 3 is read-only', async () => {
     const rig = mount({
-      dishesListCaller: async () => ({ dishes: [dish({ managed_by_schedule_id: 'sch_1' })] }),
+      dishesListCaller: async () => ({ dishes: [dish()] }),
     });
     await settle();
     const html = rig.host.innerHTML;
-    // A managed dish must not offer edit/remove at all here; slice 4 routes
-    // those to the owning row instead of wiring them onto the dish.
+    // Positive anchor first — an empty render would satisfy the absences.
+    expect(html).toContain('Tuesday post');
     expect(html).not.toContain('delete:dish');
     expect(html).not.toContain('toggle:dish');
   });
@@ -312,8 +312,8 @@ describe('D-215 slice 3 — dish rows', () => {
 // recipe the dish belongs to. `renderDishesSection` is exercised through
 // the real route so the null/[] distinction is tested where it renders.
 
-describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
-  const recipeEntry = () => ({
+describe('D-215 slice 3 / D-319 — the recipe detail lists its own dishes ("Running as")', () => {
+  const recipeEntry = (recipe: Record<string, unknown> = {}) => ({
     recipe_id: 'daily-brief',
     publisher_id: 'recued-core',
     version: 1,
@@ -329,6 +329,7 @@ describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
       prefetch_steps: [],
       steps: [],
       output: { sidebar: [] },
+      ...recipe,
     },
     source: 'pair-sync' as const,
     installed_at: NOW - 1_000,
@@ -336,6 +337,7 @@ describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
 
   const mountRecipes = async (
     dishesListCaller?: DishesListCaller,
+    recipe: Record<string, unknown> = {},
   ): Promise<{ host: { innerHTML: string } }> => {
     const { bootstrapRecipesRoute } = await import('../recipes/bootstrap-recipes-route.js');
     const doc = makeFakeDocument();
@@ -343,7 +345,7 @@ describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
     bootstrapRecipesRoute({
       root: root as unknown as HTMLElement,
       document: doc as unknown as Document,
-      recipesListCaller: async () => ({ recipes: [recipeEntry()] }),
+      recipesListCaller: async () => ({ recipes: [recipeEntry(recipe)] }),
       toolCatalogCaller: async () => ({ catalog: [] }),
       ...(dishesListCaller !== undefined ? { dishesListCaller } : {}),
       initialRecipeId: 'daily-brief',
@@ -367,8 +369,17 @@ describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
   });
 
   it('says so when the recipe has no dishes — [] is a real answer', async () => {
+    const { host } = await mountRecipes(async () => ({ dishes: [] }), {
+      event_triggers: [{ event: 'data.mail.**.created' }],
+    });
+    expect(host.innerHTML).toContain('Not switched on');
+  });
+
+  it('a recipe run only by hand, with no settings and no dish, has nothing to say', async () => {
     const { host } = await mountRecipes(async () => ({ dishes: [] }));
-    expect(host.innerHTML).toContain('No dishes yet');
+    // Positive anchor first — an empty render would satisfy the absence.
+    expect(host.innerHTML).toContain('Daily brief');
+    expect(host.innerHTML).not.toContain('data-recued-running-as=');
   });
 
   it('HIDES the section entirely when no caller is wired', async () => {
@@ -380,38 +391,30 @@ describe('D-215 slice 3 — the recipe detail lists its own dishes', () => {
     // the detail never renders, and two pure-absence assertions both pass
     // on the wreckage. Verified — that mutation survived until this line.
     expect(host.innerHTML).toContain('Daily brief');
-    expect(host.innerHTML).not.toContain('No dishes yet');
-    expect(host.innerHTML).not.toContain('data-recued-recipes-dishes');
+    expect(host.innerHTML).not.toContain('Not switched on');
+    expect(host.innerHTML).not.toContain('data-recued-running-as=');
   });
 
-  it('badges a managed dish and marks a disabled one paused', async () => {
+  it('a dish switched off says Off', async () => {
     const { host } = await mountRecipes(async () => ({
       dishes: [dish({
-        dish_id: 'dsh_m', recipe_id: 'daily-brief', name: 'Managed',
-        managed_by_schedule_id: 'sch_9', enabled: false,
+        dish_id: 'dsh_m', recipe_id: 'daily-brief', name: 'Second', enabled: false,
       })],
     }));
-    expect(host.innerHTML).toContain('data-dish-origin="schedule"');
-    expect(host.innerHTML).toContain('Schedule sch_9');
-    expect(host.innerHTML).toContain('Paused');
+    expect(host.innerHTML).toContain('data-recued-running-as-status="off"');
+    expect(host.innerHTML).toContain('<span class="running-as-state">Off</span>');
   });
 });
 
 // ── Slice 4: the write surface ──────────────────────────────────
 //
-// The whole slice turns on ONE question per row — where does this dish's
-// write GO? Three answers (§ 3, § 4.8):
+// The whole slice turned on ONE question per row — where does this dish's
+// write GO? D-215 had three answers (its own `dishes.*`; a one-shot's
+// `schedules.*`; a link to the owning rule). D-319 retired the managed
+// dishes, so every dish writes through its own `dishes.*`.
 //
-//   assigned            → its own `dishes.*`
-//   one-shot managed    → INLINE for the owner, but the write lands on
-//                         `schedules.*` (the sanctioned immutable path;
-//                         `dishes.update` would be refused by the slice-0
-//                         guard, correctly)
-//   any other managed   → no inline action at all; a link to the rule that
-//                         owns its lifecycle
-//
-// A test that only checks "a button exists" would pass for all three.
-// These check WHICH rpc fires.
+// A test that only checks "a button exists" cannot tell which rpc a row
+// calls. These check WHICH rpc fires.
 
 const schedule = (over: Record<string, unknown> = {}) => ({
   schedule_id: 'sch_9', recipe_id: 'daily-brief', publisher_id: 'recued-core',
@@ -421,36 +424,29 @@ const schedule = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('D-215 slice 4 — a dish write goes where its lifecycle lives', () => {
-  it('shows a one-shot managed dish as ONE act, not a duplicate schedule row', async () => {
+  it('D-319 — a one-shot schedule is a row of its dish, never a dish of its own', async () => {
     const rig = mount({
       initialSection: 'schedules',
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_1s', managed_by_schedule_id: 'sch_9' })],
-      }),
+      dishesListCaller: async () => ({ dishes: [dish({ dish_id: 'dsh_main', is_default: true })] }),
       schedulesListCaller: async () => ({
-        schedules: [schedule({
-          mode: 'one_shot', run_at: NOW + 5_000, dish_id: 'dsh_1s',
-          cron_expression: '17 4 9 12 *',
-        })],
+        schedules: [schedule({ mode: 'one_shot', run_at: NOW + 5_000, dish_id: 'dsh_main', cron_expression: '17 4 9 12 *' })],
       }),
     });
     await settle();
-    expect(rig.host.innerHTML).not.toContain('data-recued-automation-row="schedule:sch_9"');
-    expect(rig.host.innerHTML).not.toContain('17 4 9 12 *');
-    expect(rig.host.innerHTML).toContain(
-      'Schedules <span class="automation-subnav-count">0</span>',
-    );
+    expect(rig.host.innerHTML).toContain('data-recued-automation-row="schedule:sch_9"');
 
-    const dishes = mount({
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_1s', managed_by_schedule_id: 'sch_9' })],
-      }),
+    // The one list: one line for the dish, the one-shot under it.
+    const list = mount({
+      initialSection: 'all',
+      dishesListCaller: async () => ({ dishes: [dish({ dish_id: 'dsh_main', is_default: true })] }),
       schedulesListCaller: async () => ({
-        schedules: [schedule({ mode: 'one_shot', run_at: NOW + 5_000, dish_id: 'dsh_1s' })],
+        schedules: [schedule({ mode: 'one_shot', run_at: NOW + 5_000, dish_id: 'dsh_main', cron_expression: '17 4 9 12 *' })],
       }),
     });
     await settle();
-    expect(dishes.host.innerHTML).toContain('data-recued-automation-row="dish:dsh_1s"');
+    const html = list.host.innerHTML;
+    expect(html.match(/data-recued-automation-dish="/g)).toHaveLength(1);
+    expect(html).toMatch(/data-recued-automation-dish="dsh_main"[\s\S]*data-recued-automation-row="schedule:sch_9"/);
   });
 
   it('an ASSIGNED dish offers inline actions', async () => {
@@ -466,59 +462,6 @@ describe('D-215 slice 4 — a dish write goes where its lifecycle lives', () => 
     expect(html).not.toContain('data-recued-dish-owner-link');
   });
 
-  it('a ONE-SHOT managed dish edits INLINE (§ 3 exception)', async () => {
-    const rig = mount({
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_1s', managed_by_schedule_id: 'sch_9' })],
-      }),
-      schedulesListCaller: async () => ({
-        schedules: [schedule({ mode: 'one_shot', run_at: NOW + 5_000 })],
-      }),
-      schedulesUpdateCaller: async () => ({ schedule: schedule() }),
-      schedulesDeleteCaller: async () => ({ deleted: true as const }),
-    });
-    await settle();
-    const html = rig.host.innerHTML;
-    // One row, one dish, one pending act — no bouncing to a rule that
-    // exists only to hold it.
-    expect(html).toContain('toggle:dish');
-    expect(html).toContain('delete:dish');
-    expect(html).not.toContain('data-recued-dish-owner-link');
-  });
-
-  it('a RECURRING schedule-managed dish links to its owner instead', async () => {
-    const rig = mount({
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_rec', managed_by_schedule_id: 'sch_9' })],
-      }),
-      schedulesListCaller: async () => ({ schedules: [schedule()] }),
-      schedulesUpdateCaller: async () => ({ schedule: schedule() }),
-      dishesUpdateCaller: async () => ({ dish: dish() }),
-      dishesDeleteCaller: async () => ({ deleted: true as const }),
-    });
-    await settle();
-    const html = rig.host.innerHTML;
-    // Subordinate to a STANDING rule ⇒ no inline mutation, even though
-    // both callers are wired.
-    expect(html).toContain('data-recued-dish-owner-link="sch_9"');
-    expect(html).not.toContain('toggle:dish');
-    expect(html).not.toContain('delete:dish');
-  });
-
-  it.each([
-    [{ managed_by_trigger_id: 'trg_1' }, 'trg_1'],
-    [{ managed_by_auto_run: 'daily-brief' }, 'daily-brief'],
-  ] as const)('a trigger/auto-run managed dish links to its owner (%j)', async (patch, ownerId) => {
-    const rig = mount({
-      dishesListCaller: async () => ({ dishes: [dish(patch)] }),
-      dishesUpdateCaller: async () => ({ dish: dish() }),
-      dishesDeleteCaller: async () => ({ deleted: true as const }),
-    });
-    await settle();
-    expect(rig.host.innerHTML).toContain(`data-recued-dish-owner-link="${ownerId}"`);
-    expect(rig.host.innerHTML).not.toContain('toggle:dish');
-  });
-
   it('stays READ-ONLY when the mutation callers are absent', async () => {
     // A host that has not opted in must render no dead buttons.
     const rig = mount({
@@ -529,22 +472,6 @@ describe('D-215 slice 4 — a dish write goes where its lifecycle lives', () => 
     expect(rig.host.innerHTML).toContain('Tuesday post');
     expect(rig.host.innerHTML).not.toContain('toggle:dish');
     expect(rig.host.innerHTML).not.toContain('delete:dish');
-  });
-
-  it('an UNKNOWN schedule mode is treated as subordinate, not inline', async () => {
-    // Fail-closed: a dish pointing at a schedule the list does not carry
-    // (a stale row, a filtered page) must not get one-shot privileges.
-    const rig = mount({
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_x', managed_by_schedule_id: 'sch_missing' })],
-      }),
-      schedulesListCaller: async () => ({ schedules: [] }),
-      schedulesUpdateCaller: async () => ({ schedule: schedule() }),
-      dishesUpdateCaller: async () => ({ dish: dish() }),
-    });
-    await settle();
-    expect(rig.host.innerHTML).toContain('data-recued-dish-owner-link="sch_missing"');
-    expect(rig.host.innerHTML).not.toContain('toggle:dish');
   });
 });
 
@@ -614,47 +541,6 @@ describe('D-215 slice 4 — the write lands on the RIGHT rpc', () => {
     expect(calls).toEqual(['dishes.delete:dsh_t']);
   });
 
-  it('⛔ a ONE-SHOT dish writes to schedules.update, NEVER dishes.update', async () => {
-    // The slice-0 guard would REFUSE `dishes.update` on a managed dish, and
-    // `schedules.update` is the sanctioned immutable path (a changed
-    // overlay mints a new dish and dissolves the prior). A row that called
-    // `dishes.update` here would look identical in markup and fail at the
-    // server — this is the assertion that catches it.
-    const { rig, calls } = await rig4(
-      { managed_by_schedule_id: 'sch_9' },
-      { mode: 'one_shot', run_at: NOW + 5_000 },
-    );
-    clickAction(rig.root.children[0] as FakeEl, 'toggle:dish:off', 'dsh_t');
-    await settle();
-    expect(calls).toEqual(['schedules.update:sch_9']);
-    expect(calls.some((c) => c.startsWith('dishes.'))).toBe(false);
-  });
-
-  it('⛔ removing a retained ONE-SHOT deletes the SCHEDULE (§ 5.2 disposal)', async () => {
-    // Deleting the schedule is what retires the pair — `retireSchedule`
-    // drops the row and dissolves the dish. `dishes.delete` would both be
-    // refused AND orphan the schedule if it were not.
-    const { rig, calls } = await rig4(
-      { managed_by_schedule_id: 'sch_9' },
-      { mode: 'one_shot', run_at: NOW + 5_000, enabled: false, last_status: 'error' },
-    );
-    clickAction(rig.root.children[0] as FakeEl, 'delete:dish', 'dsh_t');
-    expect(calls).toEqual([]);
-    clickAction(rig.root.children[0] as FakeEl, 'delete-confirm:dish', 'dsh_t');
-    await settle();
-    expect(calls).toEqual(['schedules.delete:sch_9']);
-  });
-
-  it('a RECURRING managed dish fires NOTHING even if the click is forged', async () => {
-    // Defence in depth: the row renders no button, but a stale DOM or a
-    // synthetic event must not reach a caller either.
-    const { rig, calls } = await rig4({ managed_by_schedule_id: 'sch_9' }, { mode: 'recurring' });
-    clickAction(rig.root.children[0] as FakeEl, 'toggle:dish:off', 'dsh_t');
-    clickAction(rig.root.children[0] as FakeEl, 'delete:dish', 'dsh_t');
-    await settle();
-    expect(calls).toEqual([]);
-  });
-
   it('an unknown dish id fires nothing', async () => {
     const { rig, calls } = await rig4({});
     clickAction(rig.root.children[0] as FakeEl, 'toggle:dish:off', 'dsh_ghost');
@@ -700,18 +586,6 @@ describe('D-215 slice 4b — rename, create, config', () => {
     expect(rig.host.innerHTML).toContain(
       'aria-label="Rename Tuesday post (dsh_t)"',
     );
-  });
-
-  it('⚠ offers Rename on a MANAGED dish too — name is a label, not resolution', async () => {
-    // The slice-0 guard freezes config_overlay / enabled / group_id but
-    // deliberately leaves `name` writable: naming the queued item is much
-    // of the point of listing it.
-    const { rig } = await rigB({
-      dishesListCaller: async () => ({
-        dishes: [dish({ dish_id: 'dsh_t', managed_by_trigger_id: 'trg_1' })],
-      }),
-    });
-    expect(rig.host.innerHTML).toContain('rename:dish');
   });
 
   // ⚠ The rename SAVE round-trip is browser-verified, not unit-tested.
@@ -768,7 +642,7 @@ describe('D-215 slice 4b — rename, create, config', () => {
 describe('D-215 slice 5 — the dish detail, and the RETIRED case', () => {
   const runRow = (over: Partial<DishRunRow> = {}): DishRunRow => ({
     run_id: 'r1', started_at: NOW - 60_000, duration_ms: 120,
-    commit_status: 'succeeded', trigger_source: 'schedule', error: null,
+    commit_status: 'succeeded', trigger_source: 'schedule', error: null, config: null,
     ...over,
   });
 

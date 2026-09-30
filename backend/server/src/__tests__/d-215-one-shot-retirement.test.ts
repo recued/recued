@@ -12,11 +12,10 @@
  *    error    → RETAIN   (the owner needs the evidence + the re-fire handle)
  *    skipped  → RETAIN   (it never ran; retiring erases an unfulfilled intent)
  *
- *  And it is safe at that point specifically because `fireSchedule` AWAITS
- *  `handleExecute` — the dish survives the whole run and only dissolves
- *  after it resolves.
+ *  D-319 — a schedule belongs to a dish and owns none: retiring it deletes
+ *  the row and leaves the dish, its settings and its run-to-run memory.
  *
- *  Spec: D-215 § 5.
+ *  Spec: D-215 § 5, D-319 § 4.3.
  */
 
 import Database from 'better-sqlite3';
@@ -56,15 +55,15 @@ const makeStores = (): {
   };
 };
 
-const managedDish = (overrides: Partial<Dish> = {}): Dish => ({
-  dish_id: 'dsh_managed',
+/** The dish the schedule belongs to (D-319). */
+const boundDish = (overrides: Partial<Dish> = {}): Dish => ({
+  dish_id: 'dsh_bound',
   recipe_id: 'test-recipe',
   publisher_id: 'me',
-  name: 'test-recipe',
-  is_default: false,
+  name: '',
+  is_default: true,
   config_overlay: { text: 'queued post' },
   enabled: true,
-  managed_by_schedule_id: 's1',
   created_at: FIRE_AT - 1_000,
   ...overrides,
 });
@@ -140,68 +139,40 @@ const makeExecDeps = (
 });
 
 describe('D-215 slice 1 — retireSchedule (the shared path)', () => {
-  it('deletes the row, dissolves the dish it owns, and clears continuity', () => {
+  it('deletes the row and leaves its dish and the dish’s memory (D-319)', () => {
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish());
-    s.dishContextStore.set('dsh_managed', { prior: 'state' } as never);
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish());
+    s.dishContextStore.set('dsh_bound', { prior: 'state' } as never);
 
     expect(retireSchedule(s, 's1')).toBe(true);
     expect(s.store.get('s1')).toBeNull();
-    expect(s.dishStore.get('dsh_managed')).toBeNull();
-    expect(s.dishContextStore.get('dsh_managed')).toBeNull();
-  });
-
-  it('NEVER dissolves a dish another schedule owns', () => {
-    const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish({ managed_by_schedule_id: 's-other' }));
-
-    expect(retireSchedule(s, 's1')).toBe(true);
-    expect(s.store.get('s1')).toBeNull();
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
-  });
-
-  it('NEVER dissolves a user-assigned dish (no managed marker)', () => {
-    const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    const assigned = managedDish();
-    delete assigned.managed_by_schedule_id;
-    s.dishStore.set(assigned);
-
-    expect(retireSchedule(s, 's1')).toBe(true);
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
+    expect(s.dishContextStore.get('dsh_bound')).toEqual({ prior: 'state' });
   });
 
   it('returns false for a row that is already gone', () => {
     expect(retireSchedule(makeStores(), 's-nope')).toBe(false);
   });
 
-  it('deletes the row when no dish store is wired', () => {
+  it('backs schedules.delete — the rpc retires through the same path', () => {
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    expect(retireSchedule({ store: s.store }, 's1')).toBe(true);
-    expect(s.store.get('s1')).toBeNull();
-  });
-
-  it('backs schedules.delete — the rpc dissolves through the same path', () => {
-    const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish());
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish());
     const deps: ScheduleHandlerDeps = { ...s, instanceId: 'server-test-1' };
 
     expect(deleteSchedule(deps, 's1')).toEqual({ deleted: true });
     expect(s.store.get('s1')).toBeNull();
-    expect(s.dishStore.get('dsh_managed')).toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
     expect(() => deleteSchedule(deps, 's1')).toThrow(/not found/);
   });
 });
 
 describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', () => {
-  it('SUCCESS retires the one-shot row and its managed dish', async () => {
+  it('SUCCESS retires the one-shot row; its dish stays', async () => {
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish());
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish());
 
     await createScheduler({
       store: s.store,
@@ -210,13 +181,13 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     }).tick();
 
     expect(s.store.get('s1')).toBeNull();
-    expect(s.dishStore.get('dsh_managed')).toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
   });
 
   it('ERROR retains the row, disabled, with its last_error and its dish', async () => {
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish());
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish());
 
     await createScheduler({
       store: s.store,
@@ -229,8 +200,7 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     expect(after!.enabled).toBe(false);
     expect(after!.last_status).toBe('error');
     expect(after!.last_error).toBeTruthy();
-    // The evidence includes the dish that carried the failed config.
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
   });
 
   it('an IN-BAND failure (result.success === false) also retains the row', async () => {
@@ -239,8 +209,8 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     // `oneShot && result.success` condition on its false branch. Without it,
     // "retire on every terminal outcome" survives every other assertion here.
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish());
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish());
 
     await createScheduler({
       store: s.store,
@@ -252,13 +222,13 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     expect(after).not.toBeNull();
     expect(after!.enabled).toBe(false);
     expect(after!.last_status).toBe('error');
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
   });
 
-  it('SKIPPED (dish disabled at fire time) retains the row — it never ran', async () => {
+  it('SKIPPED (dish switched off at fire time) retains the row — it never ran', async () => {
     const s = makeStores();
-    s.store.set(oneShotRow('dsh_managed'));
-    s.dishStore.set(managedDish({ enabled: false }));
+    s.store.set(oneShotRow('dsh_bound'));
+    s.dishStore.set(boundDish({ enabled: false }));
 
     await createScheduler({
       store: s.store,
@@ -269,7 +239,7 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     const after = s.store.get('s1');
     expect(after).not.toBeNull();
     expect(after!.last_status).toBe('skipped');
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
   });
 
   it.each(['error', 'skipped'] as const)(
@@ -277,14 +247,17 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     async (terminal) => {
       const s = makeStores();
       s.store.set({
-        ...oneShotRow('dsh_managed'),
+        ...oneShotRow('dsh_bound'),
         enabled: false,
         last_run_at: FIRE_AT,
         next_run_at: null,
         last_status: terminal,
         last_error: terminal === 'error' ? 'network failed' : 'dish disabled',
       });
-      s.dishStore.set(managedDish({ enabled: terminal !== 'skipped' }));
+      // D-319 — the dish is its own switch: a one-shot skipped because its dish
+      // was off runs once the owner switches the dish back on; re-arming the
+      // schedule does not switch the dish.
+      s.dishStore.set(boundDish({ enabled: terminal !== 'skipped' }));
 
       const resumed = updateSchedule(
         { ...s, instanceId: 'server-test-1', now: () => FIRE_AT + 1 },
@@ -299,7 +272,8 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
         last_status: null,
         last_error: null,
       });
-      expect(s.dishStore.get('dsh_managed')?.enabled).toBe(true);
+      expect(s.dishStore.get('dsh_bound')?.enabled).toBe(terminal !== 'skipped');
+      if (terminal === 'skipped') s.dishStore.set(boundDish({ enabled: true }));
 
       await createScheduler({
         store: s.store,
@@ -308,7 +282,7 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
       }).tick();
 
       expect(s.store.get('s1')).toBeNull();
-      expect(s.dishStore.get('dsh_managed')).toBeNull();
+      expect(s.dishStore.get('dsh_bound')).not.toBeNull();
     },
   );
 
@@ -325,9 +299,9 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
       next_run_at: null,
       last_status: null,
       last_error: null,
-      dish_id: 'dsh_managed',
+      dish_id: 'dsh_bound',
     });
-    s.dishStore.set(managedDish());
+    s.dishStore.set(boundDish());
 
     await createScheduler({
       store: s.store,
@@ -340,6 +314,6 @@ describe('D-215 slice 1 — the scheduler terminal path is outcome-dependent', (
     expect(after!.enabled).toBe(true);
     expect(after!.last_status).toBe('success');
     expect(after!.next_run_at).toBeGreaterThan(FIRE_AT);
-    expect(s.dishStore.get('dsh_managed')).not.toBeNull();
+    expect(s.dishStore.get('dsh_bound')).not.toBeNull();
   });
 });

@@ -145,7 +145,7 @@ const makeSqliteStore = () => {
 
 const makeHandlerHarness = (
   opts: {
-    serverPublicUrl?: () => string | null;
+    serverPublicUrl?: () => string | readonly string[] | null;
     flowIds?: string[];
     now?: number;
     installedPackScopeUnion?: (vendor: string) => readonly string[];
@@ -622,6 +622,50 @@ describe('D-165 vendor OAuth-start rpc handler', () => {
     expect(state).toBeTruthy();
     expect(decodeOauthStateToken(state!)!.payload.server_url).toBe('https://h');
     expect(h.flowStore.take('flow-slash')!.redirect_uri).toBe('https://h/oauth/complete');
+  });
+
+  /** ⛔ 2026-09-29: the server's public URL came from RECUED_PUBLIC_BASE_URL
+   *  alone, so a Pro server that never set it refused every vendor sign-in.
+   *  It is now every one of the server's own addresses — and a page at the
+   *  server's https name sends ITS OWN /oauth/complete, so an owner with a Pro
+   *  address and a custom domain must be able to start from either. */
+  describe("the server's own addresses — more than one", () => {
+    const PRO = 'https://alice.recued.net';
+    const OWN = 'https://recued.example.com';
+
+    it('accepts the direct choice at the second address, and the state names that address', async () => {
+      const h = makeHandlerHarness({ serverPublicUrl: () => [PRO, OWN], flowIds: ['flow-own'] });
+      const result = await h.start(validStartArgs({ redirect_uri: `${OWN}/oauth/complete` }));
+      const state = new URL(result.authorize_url).searchParams.get('state')!;
+      expect(decodeOauthStateToken(state)!.payload.server_url).toBe(OWN);
+    });
+
+    it('signs the preferred (first) address for the app.recued.com choice', async () => {
+      const h = makeHandlerHarness({ serverPublicUrl: () => [PRO, OWN], flowIds: ['flow-cloud2'] });
+      const result = await h.start(validStartArgs({ redirect_uri: OAUTH_CLOUD_CALLBACK_URL }));
+      const state = new URL(result.authorize_url).searchParams.get('state')!;
+      expect(decodeOauthStateToken(state)!.payload.server_url).toBe(PRO);
+    });
+
+    it('refuses an address that is none of them, and names every choice', async () => {
+      const h = makeHandlerHarness({ serverPublicUrl: () => [PRO, OWN] });
+      await expect(h.start(validStartArgs({ redirect_uri: 'https://evil.example/oauth/complete' })))
+        .rejects.toMatchObject({
+          code: 'bad_request',
+          message: expect.stringContaining(`${OWN}/oauth/complete`),
+        });
+    });
+
+    it('an unusable address does not block a usable one', async () => {
+      const h = makeHandlerHarness({ serverPublicUrl: () => ['http://h', PRO], flowIds: ['flow-pro'] });
+      const result = await h.start(validStartArgs({ redirect_uri: `${PRO}/oauth/complete` }));
+      expect(result.flow_id).toBe('flow-pro');
+    });
+
+    it('none at all is not_configured', async () => {
+      const h = makeHandlerHarness({ serverPublicUrl: () => [] });
+      await expect(h.start(validStartArgs())).rejects.toMatchObject({ code: 'not_configured' });
+    });
   });
 
   // R14 — form-supplied OAuth config (a generic BYO vendor, no registry entry).

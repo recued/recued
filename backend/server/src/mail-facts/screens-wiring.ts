@@ -19,6 +19,7 @@ import type { AuditLogStore } from '@recued/storage';
 
 import type { CollectionInstanceStore } from '../collections/instance-store.js';
 import { buildMailCollectionConfig } from '../collections/mail/compose.js';
+import { legacyAttachmentsAmbiguousIn } from '../collections/mail/mail-attachment-source-id.js';
 import type { MailCollection } from '../collections/mail/mail-collection.js';
 import type { CollectionRegistry } from '../collections/registry.js';
 import type { EventBus } from '../events/bus.js';
@@ -80,6 +81,8 @@ export interface MailFactScreensDeps {
   readonly privateAiCall?: ExecuteChatAiCall;
   /** Switch off rows made on this server (the triggers rpc's own update). */
   readonly switchOffTriggers?: MailFactRpcDeps['switchOffTriggers'];
+  /** §5.2 — the templates recipes bring, for "Duplicate to edit". */
+  readonly recipeTemplates?: MailFactRpcDeps['recipeTemplates'];
   /** The trigger queue has room: a backfill that runs recipes waits for it. */
   readonly triggerRoom?: () => Promise<void>;
   /** No AI call holding news waits on an email: a backfill that runs recipes
@@ -106,11 +109,15 @@ export const mailFactScreensRpcDeps = (deps: MailFactScreensDeps): MailFactRpcDe
     fileStored: fileStoredIn(mail.registry),
     storedFileType: storedFileTypeIn(mail.registry),
     formerRecordIds: (slug: string, record_id: string) => deps.store.formerEmailIds(slug, record_id),
+    // A file named by an email's id alone may be another mailbox's: asked of
+    // the mailbox, which reads every mail table (`mail-attachment-source-id.ts`).
+    legacyAttachmentsAmbiguous: legacyAttachmentsAmbiguousIn(mail.registry),
     ...(mail.relationshipsOf ? { relationshipsOf: mail.relationshipsOf } : {}),
   });
   return {
     store: deps.store,
     ...(deps.switchOffTriggers !== undefined ? { switchOffTriggers: deps.switchOffTriggers } : {}),
+    ...(deps.recipeTemplates !== undefined ? { recipeTemplates: deps.recipeTemplates } : {}),
     ...(deps.mail ? { mail: createMailFactMailAccess(deps.mail) } : {}),
     ...(deps.mail
       ? {

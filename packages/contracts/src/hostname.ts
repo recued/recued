@@ -245,6 +245,70 @@ export interface HostnameRemoveResponse {
   removed: boolean;
 }
 
+/** What an address is HANDED OUT for — kept by someone else, so it must not
+ *  move unless the owner moves it: a webhook address a vendor stores, a
+ *  Reception link that gets printed or embedded, the MCP / gateway address a
+ *  customer is given.
+ *
+ *  Links in notifications are deliberately NOT here. They are opened soon
+ *  after they are sent, so they follow whichever address answers best at the
+ *  time (the server's probe-ranked resolver); a pin would only make them
+ *  worse. */
+export const HOSTNAME_ADDRESS_USES = ['webhooks', 'reception', 'customer_access'] as const;
+export type HostnameAddressUse = (typeof HOSTNAME_ADDRESS_USES)[number];
+
+export const isHostnameAddressUse = (value: unknown): value is HostnameAddressUse =>
+  typeof value === 'string'
+  && (HOSTNAME_ADDRESS_USES as readonly string[]).includes(value);
+
+/** Who decided a use's address.
+ *  - `configured` — `RECUED_PUBLIC_BASE_URL`, set on the server. It wins.
+ *  - `owner` — picked on the Hostnames screen.
+ *  - `first_use` — the automatic address, kept from the first time it was
+ *    handed out, so adding a name later moves nothing.
+ *  - `automatic` — nothing handed out yet: own domain first, then the Pro
+ *    address, 443 first. */
+export type HostnameAddressSource = 'configured' | 'owner' | 'first_use' | 'automatic';
+
+export interface HostnameAddressUseState {
+  use: HostnameAddressUse;
+  source: HostnameAddressSource;
+  /** The address handed out for this use now; null when there is none —
+   *  including when the kept name no longer works, which is reported and
+   *  never silently replaced. */
+  base_url: string | null;
+  /** The name kept for this use (`owner` / `first_use`), even when it no
+   *  longer works. */
+  hostname?: string;
+  /** The kept name can no longer be used: removed, switched off, not
+   *  verified, or without a certificate. */
+  hostname_unusable?: boolean;
+}
+
+export interface HostnameAddressChoice {
+  hostname: string;
+  base_url: string;
+}
+
+export interface HostnameAddressUsesResponse {
+  uses: HostnameAddressUseState[];
+  /** The names that can be picked — verified, switched on, with a
+   *  certificate — own domain first, then the Pro address. */
+  choices: HostnameAddressChoice[];
+  /** Links opened soon after they are sent — the best address right now, for
+   *  a link into the app and for an answer link. Shown, not chosen. */
+  links_now: { app: string | null; answers: string | null };
+  /** Webhooks set up at their vendor with the current address. If the
+   *  webhooks address moves, each stops until it is updated there. */
+  registered_webhooks: number;
+}
+
+export interface HostnameSetAddressUseRequest {
+  use: HostnameAddressUse;
+  /** A name from `choices`, or null to go back to automatic. */
+  hostname: string | null;
+}
+
 export type HostnameOwnershipProofInput =
   | {
       hostname: string;

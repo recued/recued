@@ -17,8 +17,9 @@
  *    - `process_id`         — UUID grouping every tick of one reactive
  *                             install. Retired on stop / pause /
  *                             uninstall / version_bump / circuit_broken.
- *    - `CircuitBreakerState` — per-recipe consecutive-failure counter
- *                             that auto-disables a runaway ticker.
+ *    - `CircuitBreakerState` — per-timer consecutive-failure counter
+ *                             that auto-disables a runaway ticker (D-319:
+ *                             one timer per dish).
  *
  *  Spec: D-115.
  */
@@ -95,11 +96,11 @@ export interface AutoRunSpec {
    *  and uses that as the next fire time. Falls back to
    *  `interval_ms` when the recipe doesn't write one. Default false. */
   dynamic?: boolean;
-  /** Initial user-intent state when no runtime setting exists yet.
-   *  Defaults to true for compatibility with existing reactive recipes.
-   *  Set false when installation must expose the recipe in Automation
-   *  without putting it in the live scheduler roster until the owner
-   *  explicitly configures and enables it. */
+  /** ⛔ RETIRED BY D-319 — IGNORED. It chose whether an installed recipe's
+   *  timer started at once (true when absent, so 227 of 228 did). Now nothing
+   *  runs until the owner switches the recipe on — a dish with its settings
+   *  — so there is no install-time state left to choose. Still parsed, so a
+   *  recipe that carries it installs unchanged. */
   default_enabled?: boolean;
 }
 
@@ -132,6 +133,9 @@ export interface TriggerOutput {
  *    - `counter ≥ CIRCUIT_BREAKER_THRESHOLD` → auto_disabled = true.
  *  User action `resetCircuit` clears the counter + flag. */
 export interface CircuitBreakerState {
+  /** D-319 — the dish whose timer this is: each dish of an auto-run recipe
+   *  has its own timer, and its own breaker. */
+  dish_id: string;
   recipe_id: string;
   consecutive_failures: number;
   auto_disabled: boolean;
@@ -139,36 +143,42 @@ export interface CircuitBreakerState {
   last_failure_reason?: string;
 }
 
-/** Reactive-substrate slice 1 — merged per-recipe auto-run status row
- *  served by the `auto_run.list` rpc. Joins three server-side sources
- *  over the definitional `recipe.auto_run` roster:
+/** Reactive-substrate slice 1 — merged auto-run status row served by the
+ *  `auto_run.list` rpc. D-319: ONE ROW PER DISH of an installed auto-run
+ *  recipe — each dish is the recipe switched on with its own settings and
+ *  runs on its own timer — plus one row with `dish_id: null` for a recipe
+ *  nobody has switched on yet. Joins:
  *
- *    - the user-intent settings store (`enabled` — the arm/disarm
- *      toggle this rpc surface exists to expose; mirrors the
- *      event-trigger `enabled` model),
+ *    - the timer store (`enabled` — the timer's switch, which the dish's
+ *      switch writes, and which "Pause"/"Re-arm" write alone),
  *    - the persisted circuit-breaker store (`auto_disabled` +
  *      failure provenance),
  *    - the LIVE scheduler roster (`next_run_at` / last-run stamps —
- *      `null` when the entry isn't armed: user-disabled recipes drop
- *      out of the roster entirely, and a just-booted server may not
- *      have armed yet).
+ *      `null` when the timer isn't armed: a switched-off timer drops out
+ *      of the roster entirely, and a just-booted server may not have
+ *      armed yet).
  *
  *  `enabled` (user intent) and `auto_disabled` (failure state) are
  *  deliberately separate axes: the UI presents one effective switch
  *  (`enabled && !auto_disabled`) but re-arming a tripped circuit and
- *  pausing a healthy recipe are different user actions with different
+ *  pausing a healthy timer are different user actions with different
  *  audit meaning. */
 export interface AutoRunStatusEntry {
   recipe_id: string;
   publisher_id: string;
+  /** D-319 — the dish this timer belongs to; `null` for a recipe with no
+   *  dish (not switched on: nothing runs). */
+  dish_id: string | null;
+  /** The dish's name (`''` while it needs none); null with no dish. */
+  dish_name: string | null;
   /** Display name from `recipe.metadata.name`; null when the stored
    *  JSON is unreadable or carries no name. */
   recipe_name: string | null;
   interval_ms: number;
   dynamic: boolean;
-  /** User-intent toggle. An explicit settings row wins; otherwise this
-   *  reflects `recipe.auto_run.default_enabled ?? true`. `false` keeps
-   *  the recipe out of the scheduler roster entirely. */
+  /** The timer's switch. `false` keeps it out of the scheduler roster
+   *  entirely; always `false` with no dish (D-319 — installing starts
+   *  nothing). */
   enabled: boolean;
   /** Material target revision used by owner pre-approval preparation. */
   lifecycle_revision?: number;
@@ -186,13 +196,11 @@ export interface AutoRunStatusEntry {
   next_run_at: number | null;
   last_started_at: number | null;
   last_finished_at: number | null;
-  /** D-179 — the config the recipe's headless auto-run fires use, read
-   *  from the current managed config dish (`auto_run_settings.dish_id`).
-   *  `{}` when no config is set (fires on recipe defaults). Surfaced so
-   *  the arm/resume UI can pre-fill the variable widgets. */
+  /** The settings of the timer's dish, which its fires run with — read at
+   *  list time (D-319; a timer has none of its own). `{}` with no dish. */
   config_overlay: Record<string, unknown>;
-  /** D-179 — the recipe's variable DEFINITIONS (labels/kinds/defaults),
-   *  so the arm/resume config editor can render the widgets without a
-   *  separate recipe fetch. `{}` when the recipe declares none. */
+  /** The recipe's variable DEFINITIONS (labels/kinds/defaults), so a
+   *  settings editor can render the widgets without a separate recipe
+   *  fetch. `{}` when the recipe declares none. */
   variables: Record<string, VariableDefault>;
 }

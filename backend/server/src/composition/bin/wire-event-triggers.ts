@@ -52,7 +52,7 @@ import { handleExecute, type ExecuteHandlerDeps } from '../../execute-handler.js
 import type { ExecuteResponse, InternalExecuteOverrides } from '../../types.js';
 import type { TriggersRpcDeps } from '../../triggers/handler.js';
 import { createBackfillStateLookup } from '../../triggers/backfill-state.js';
-import { reconcileDeclarativeTriggers } from '../../triggers/declarative-reconciler.js';
+import { reconcileDeclarativeTriggers, type ReconcilerDish } from '../../triggers/declarative-reconciler.js';
 import {
   createEventTriggerDispatcher,
   type EventTriggerDispatcher,
@@ -114,6 +114,10 @@ export interface EventTriggersBundle {
   /** D-296 — the vendor registry the reconcile compiles sugar against, so the
    *  pack install preview compiles the SAME declarations. */
   getVendorEntities: () => ReturnType<typeof liveVendorRegistry>;
+  /** D-319 — the dishes a recipe is switched on as, which the reconcile makes
+   *  its rows for (each narrowed by its own template setting — D-315 §5.1).
+   *  Absent without dishes. */
+  dishesOf?: (recipe_id: string) => ReadonlyArray<ReconcilerDish>;
   /** D-315 §6.4 — a reviewed trigger's sealed event the pre-approval recovery
    *  clock runs itself: the run is kept on the dispatcher's books, as a fire
    *  it queued is. */
@@ -231,9 +235,8 @@ export const composeEventTriggers = (
             // into a bound door that would require an impossible snapshot.
           },
           context,
-          // D-179 P2 — the dish overlay resolves INSIDE handleExecute
-          // (dish → install → defaults), replacing the retired
-          // `config_patch` shallow merge.
+          // D-179 P2 / D-319 — the trigger fires as its dish, with its
+          // settings (resolved inside handleExecute).
           ...(dish_id !== null ? { dish_id } : {}),
         };
         // D-315 §6.4 — learn the run's id the moment it exists, so the
@@ -276,12 +279,10 @@ export const composeEventTriggers = (
         return liveVendorRegistry(undefined);
       }
     },
-    // D-179 P5c — managed-dish dissolution when an uninstall removes
-    // the managing recipe-origin row.
-    ...(executeDeps.dishStore ? { dishStore: executeDeps.dishStore } : {}),
-    ...(executeDeps.dishContextStore
-      ? { dishContextStore: executeDeps.dishContextStore }
-      : {}),
+    // D-319 — a recipe's declared triggers are made once per dish of it, and
+    // a `template_variable` trigger narrows to the template THAT dish's
+    // setting holds (D-315 §5.1).
+    ...(executeDeps.dishStore ? { listDishes: () => executeDeps.dishStore!.list() } : {}),
   };
   const reconcile = (): boolean => {
     const result = reconcileDeclarativeTriggers(reconcilerDeps);
@@ -296,17 +297,14 @@ export const composeEventTriggers = (
 
   return {
     getVendorEntities: reconcilerDeps.getVendorEntities,
+    ...(executeDeps.dishStore ? { dishesOf: (recipe_id: string) => executeDeps.dishStore!.listByRecipe(recipe_id) } : {}),
     triggersDeps: {
       store,
       dispatcher,
       ...(eventBus ? { eventBus } : {}),
-      // D-179 P2 — create/update-time dish-binding validation.
+      // D-319 — the dish a trigger belongs to: create/update-time binding
+      // validation, and the recipe's main dish for a trigger that names none.
       ...(executeDeps.dishStore ? { dishStore: executeDeps.dishStore } : {}),
-      // D-179 config-on-trigger — clear the managed dish's continuity
-      // snapshot when a trigger's overlay dish is dissolved on delete.
-      ...(executeDeps.dishContextStore
-        ? { dishContextStore: executeDeps.dishContextStore }
-        : {}),
       ...(input.mailFactTypes ? { mailFactTypes: input.mailFactTypes } : {}),
     },
     dispatcher,

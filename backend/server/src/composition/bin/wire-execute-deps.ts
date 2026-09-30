@@ -151,12 +151,12 @@ export interface ComposeExecuteDepsDeps {
    *  `inline` channel asks carry the `/ask/<ask_id>` link. Pass-through only;
    *  nothing here resolves it (the public base URL is not in scope at this
    *  layer). */
-  askAnswerLink?: (ask_id: string) => string;
+  askAnswerLink?: (ask_id: string) => string | undefined;
   /** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an absolute
    *  webclient link, so the peer-admission entry ask can carry "read it here".
-   *  Same binary presence as `askAnswerLink`: a non-public server has no base
-   *  URL, so the ask goes out with no link rather than an unopenable one. */
-  ownerSurfaceLink?: (recipe_id: string) => string;
+   *  Like `askAnswerLink`, it answers nothing while the server has no public
+   *  address, so the ask goes out with no link rather than an unopenable one. */
+  ownerSurfaceLink?: (recipe_id: string) => string | undefined;
   recipeStore: RecipeStore;
   /** D-221 — server-local Records authority. The engine reaches it only after
    * the ordinary catalog policy, operation-grant, and approval gates admit. */

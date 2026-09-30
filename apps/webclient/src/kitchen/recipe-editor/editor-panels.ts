@@ -42,8 +42,9 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   text(doc, vars, 'h3', 'Inputs');
   text(doc, vars, 'p', 'Set what these start as. Use JSON to say which are needed, or to offer choices.');
   for (const [name, initial] of Object.entries(context.recipe.variables)) {
+    // A connection and a mail template have their own sections (D-315 §5.2).
     if (initial && typeof initial === 'object' && !Array.isArray(initial)
-      && 'type' in initial && String(initial.type) === 'connection') continue;
+      && 'type' in initial && (String(initial.type) === 'connection' || String(initial.type) === 'mail_template')) continue;
     const row = doc.createElement('div'); row.className = 'recipe-editor-variable-row';
     row.appendChild(context.value(name, `variables.${name}`, initial, { type: 'any' }, next => {
       const variables = { ...context.recipe.variables, [name]: (next ?? null) as VariableDefault };
@@ -79,7 +80,7 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
   const label = doc.createElement('label'); label.appendChild(enabled); text(doc, label, 'span', 'Run every so often'); run.appendChild(label);
   enabled.addEventListener('change', () => {
     const next = { ...context.recipe };
-    if (enabled.checked) next.auto_run = { interval_ms: 60_000, default_enabled: false };
+    if (enabled.checked) next.auto_run = { interval_ms: 60_000 };
     else delete next.auto_run;
     context.change(next, true);
   });
@@ -87,9 +88,10 @@ export const renderRecipeSettings = (context: RecipePanelsContext): HTMLElement 
     for (const [key, labelText, schema] of [
       ['interval_ms', 'Interval (milliseconds)', { type: 'number', required: true }],
       ['dynamic', 'Use the next run time the Recipe works out', { type: 'boolean' }],
-      ['default_enabled', 'Switch this on as soon as it is installed', { type: 'boolean' }],
+      // D-319 — no "switch on at install": nothing runs until the owner
+      // switches the Recipe on, with its settings.
     ] as const) {
-      const current = context.recipe.auto_run[key] ?? (key === 'default_enabled' ? true : false);
+      const current = context.recipe.auto_run[key] ?? false;
       run.appendChild(context.value(labelText, `auto_run.${key}`, current, schema, next => {
         context.change({ ...context.recipe, auto_run: { ...context.recipe.auto_run!, [key]: next } });
       }));

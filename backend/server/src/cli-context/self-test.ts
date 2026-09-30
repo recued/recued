@@ -65,18 +65,24 @@ export async function runSelfTestProfile(options: SelfTestProfileOptions): Promi
   const probe = options.probe ?? probeDatabaseRoundTrip;
 
   const dir = mkdtempSync(join(tmpdir(), 'recued-self-test-'));
+  let code = 1;
   try {
     await probe(join(dir, 'probe.db'));
     options.bootTrace.mark('self-test', 'ok');
-    exit(0);
+    code = 0;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     options.bootTrace.mark('self-test', 'failed');
     log(`self-test: this build cannot open a database: ${detail}`);
     log('  the executable runs, so this is usually its native addon —'
       + ' lib/better_sqlite3.node missing, built for another platform, or a different ABI.');
-    exit(1);
   } finally {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
+  // ⛔ EXIT AFTER THE CLEANUP, NEVER INSIDE THE `try`. `process.exit` ends the
+  // process where it stands, and a `finally` still pending never runs: exiting
+  // from the `try` left this folder in the temp dir on every real run, and every
+  // install runs this, while a test whose `exit` RETURNED watched the cleanup
+  // happen.
+  exit(code);
 }

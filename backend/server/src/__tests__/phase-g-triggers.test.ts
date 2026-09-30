@@ -189,152 +189,29 @@ describe('event triggers — rpc handler', () => {
     ]);
   });
 
-  it('enabled recipe-origin rows mint one managed dish and preserve it across disable/re-enable', async () => {
-    const store = createEventTriggersStore(db);
-    const dishStore = createDishStore(db);
-    store.create({
-      trigger_id: 't-recipe',
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      enabled: false,
-      created_at: 1_000,
-      origin: 'recipe',
-    });
-
-    const enabled = await handleTriggersUpdate(
-      { store, dishStore, now: () => 2_000 },
-      { trigger_id: 't-recipe', enabled: true },
-    );
-    const dishId = enabled.trigger.dish_id!;
-    expect(dishId.startsWith('dsh_')).toBe(true);
-    expect(store.get('t-recipe')?.dish_id).toBe(dishId);
-    expect(dishStore.get(dishId)).toMatchObject({
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      name: 'recipe-a',
-      enabled: true,
-      managed_by_trigger_id: 't-recipe',
-    });
-
-    const doubleEnabled = await handleTriggersUpdate(
-      { store, dishStore, now: () => 3_000 },
-      { trigger_id: 't-recipe', enabled: true },
-    );
-    expect(doubleEnabled.trigger.dish_id).toBe(dishId);
-    expect(dishStore.list().map((d) => d.dish_id)).toEqual([dishId]);
-
-    const disabled = await handleTriggersUpdate(
-      { store, dishStore },
-      { trigger_id: 't-recipe', enabled: false },
-    );
-    expect(disabled.trigger.dish_id).toBe(dishId);
-    expect(dishStore.get(dishId)?.enabled).toBe(false);
-
-    const reenabled = await handleTriggersUpdate(
-      { store, dishStore },
-      { trigger_id: 't-recipe', enabled: true },
-    );
-    expect(reenabled.trigger.dish_id).toBe(dishId);
-    expect(dishStore.get(dishId)?.enabled).toBe(true);
-    expect(dishStore.list().map((d) => d.dish_id)).toEqual([dishId]);
-  });
-
-  it('D-179 — an EMPTY config_overlay does not suppress the P5c standing-dish mint on enable', async () => {
-    const store = createEventTriggersStore(db);
-    const dishStore = createDishStore(db);
-    store.create({
-      trigger_id: 't-recipe',
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      enabled: false,
-      created_at: 1_000,
-      origin: 'recipe',
-    });
-    // Enable + an empty overlay: config provides no dish, so P5c must still
-    // mint the standing identity dish (the pre-fix bug enabled with none).
-    const res = await handleTriggersUpdate(
-      { store, dishStore, now: () => 2_000 },
-      { trigger_id: 't-recipe', enabled: true, config_overlay: {} },
-    );
-    expect(res.trigger.dish_id).toBeDefined();
-    expect(dishStore.get(res.trigger.dish_id!)).toMatchObject({
-      managed_by_trigger_id: 't-recipe',
-    });
-  });
-
-  it('D-179 — a NON-EMPTY config_overlay provides the managed dish (supersedes P5c; no double-mint)', async () => {
-    const store = createEventTriggersStore(db);
-    const dishStore = createDishStore(db);
-    store.create({
-      trigger_id: 't-recipe',
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      enabled: false,
-      created_at: 1_000,
-      origin: 'recipe',
-    });
-    const res = await handleTriggersUpdate(
-      { store, dishStore, now: () => 2_000 },
-      { trigger_id: 't-recipe', enabled: true, config_overlay: { threshold: 30 } },
-    );
-    expect(dishStore.get(res.trigger.dish_id!)).toMatchObject({
-      config_overlay: { threshold: 30 },
-      managed_by_trigger_id: 't-recipe',
-    });
-    expect(dishStore.list()).toHaveLength(1); // P5c did not also mint an empty one
-  });
-
-  it('explicit dish_id in an enable patch wins and is binding-validated', async () => {
+  it('D-319 — switching a recipe’s row mints no dish: it switches as it is, on the dish it was made for', async () => {
+    // P5c (switching a recipe's trigger on minted an empty dish) is retired:
+    // the row is made for a dish, and switching the DISH is what starts it.
     const store = createEventTriggersStore(db);
     const dishStore = createDishStore(db);
     dishStore.set({
-      dish_id: 'dsh_explicit',
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      name: 'explicit',
-      is_default: false,
-      config_overlay: {},
-      enabled: true,
-      created_at: 1_000,
-    });
-    dishStore.set({
-      dish_id: 'dsh_other',
-      recipe_id: 'recipe-other',
-      publisher_id: 'local',
-      name: 'other',
-      is_default: false,
-      config_overlay: {},
-      enabled: true,
-      created_at: 1_000,
+      dish_id: 'dsh_work', recipe_id: 'recipe-a', publisher_id: 'local', name: '', is_default: true,
+      config_overlay: { threshold: 30 }, enabled: true, created_at: 1_000,
     });
     store.create({
-      trigger_id: 't-recipe',
-      recipe_id: 'recipe-a',
-      publisher_id: 'local',
-      pattern: 'data.mail.**',
-      enabled: false,
-      created_at: 1_000,
-      origin: 'recipe',
+      trigger_id: 't-recipe', recipe_id: 'recipe-a', publisher_id: 'local', pattern: 'data.mail.**',
+      enabled: false, created_at: 1_000, origin: 'recipe', dish_id: 'dsh_work',
     });
 
-    const enabled = await handleTriggersUpdate(
-      { store, dishStore },
-      { trigger_id: 't-recipe', enabled: true, dish_id: 'dsh_explicit' },
-    );
-    expect(enabled.trigger.dish_id).toBe('dsh_explicit');
-    expect(dishStore.list().map((d) => d.dish_id).sort()).toEqual([
-      'dsh_explicit',
-      'dsh_other',
-    ]);
-    await expect(
-      handleTriggersUpdate(
-        { store, dishStore },
-        { trigger_id: 't-recipe', dish_id: 'dsh_other' },
-      ),
-    ).rejects.toThrow(/instantiates recipe/);
+    const on = await handleTriggersUpdate({ store, dishStore }, { trigger_id: 't-recipe', enabled: true });
+    expect(on.trigger).toMatchObject({ enabled: true, dish_id: 'dsh_work' });
+    const off = await handleTriggersUpdate({ store, dishStore }, { trigger_id: 't-recipe', enabled: false });
+    expect(off.trigger).toMatchObject({ enabled: false, dish_id: 'dsh_work' });
+    // The dish is untouched by its row's switch, and no other was made.
+    expect(dishStore.list()).toEqual([expect.objectContaining({ dish_id: 'dsh_work', enabled: true, config_overlay: { threshold: 30 } })]);
+    // A trigger has no settings of its own.
+    await expect(handleTriggersUpdate({ store, dishStore }, { trigger_id: 't-recipe', enabled: true, config_overlay: {} }))
+      .rejects.toThrow(/no settings of its own/);
   });
 
   it('user-origin rows do not auto-mint dishes when enabled', async () => {

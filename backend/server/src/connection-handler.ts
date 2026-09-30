@@ -51,7 +51,6 @@ import {
   getVendorProvider,
   buildGenericVendorProvider,
   vendorOAuthRedirectChoices,
-  canonicalizeServerPublicUrl,
   canonicalizeSubresourcePath,
   SUBRESOURCE_PATH_MAX_LEN,
   validateHeaderAuthEntries,
@@ -151,6 +150,7 @@ import {
   type VendorOAuthResultStore,
   type VendorOAuthResult,
 } from './connection-vendor-oauth-flow.js';
+import { canonicalServerPublicOrigins } from './public-address.js';
 import type { ServerIdentity } from './identity/index.js';
 import {
   createEnsureFreshAuth,
@@ -384,17 +384,18 @@ export interface ConnectionRpcDeps {
    *  creds + the chosen redirect_uri) in `flowStore`, and returns the
    *  authorize URL + the server-identity public key the webclient caches
    *  for the cloud callback page to verify against. `serverPublicUrl`
-   *  returns the server's configured public base URL (Pro DDNS host /
-   *  BYO domain) — REQUIRED because the signed state carries it (the
-   *  cloud page forwards the code to `<server_url>/oauth/complete`) and
-   *  it forms the direct-redirect choice; null → the rpc rejects
-   *  `not_configured`. Omitted entirely (dbless harness / unwired) →
-   *  same `not_configured`. `newFlowId` defaults to a CSPRNG url-safe id;
-   *  tests inject a deterministic generator. */
+   *  returns the server's own public base URL(s), preferred first — the best
+   *  live one for `/oauth/complete`, then every own address
+   *  (`public-address.ts`); one URL is accepted too. REQUIRED because the signed
+   *  state carries one (the cloud page forwards the code to
+   *  `<server_url>/oauth/complete`) and each forms a direct-redirect choice;
+   *  none → the rpc rejects `not_configured`. Omitted entirely (dbless
+   *  harness / unwired) → same `not_configured`. `newFlowId` defaults to a
+   *  CSPRNG url-safe id; tests inject a deterministic generator. */
   vendorOAuthStart?: {
     identity: ServerIdentity;
     flowStore: VendorOAuthFlowStore;
-    serverPublicUrl: () => string | null;
+    serverPublicUrl: () => string | readonly string[] | null;
     newFlowId?: () => string;
     /** Owner-binding nonce generator (D-165 slice 3). Defaults to a 256-bit
      *  CSPRNG secret; tests inject a deterministic value. Returned ONLY on
@@ -5044,27 +5045,36 @@ const handleConnectionStartVendorOAuth = async (
     );
   }
 
-  const rawServerUrl = wiring.serverPublicUrl();
-  if (typeof rawServerUrl !== 'string' || !rawServerUrl.trim()) {
+  const reported = wiring.serverPublicUrl();
+  const rawServerUrls = (reported === null ? [] : typeof reported === 'string' ? [reported] : [...reported])
+    .filter((url) => url.trim().length > 0);
+  if (rawServerUrls.length === 0) {
     throw new RpcError(
       'not_configured',
       "collection.connection.startVendorOAuth: server public URL not configured — set up your server's reachable HTTPS address (Pro subdomain or your own domain) before vendor OAuth",
     );
   }
-  // Canonicalize to a clean HTTPS origin BEFORE building the redirect
-  // choices or signing it into the state — the cloud callback page POSTs
+  // Canonicalize to clean HTTPS origins BEFORE building the redirect
+  // choices or signing one into the state — the cloud callback page POSTs
   // the code to `<server_url>/oauth/complete`, so a trailing slash,
   // http://, embedded credentials, or a path/query/fragment must never
   // reach that construction. The signed state + the validated choice now
   // share one canonical value.
-  const serverUrl = canonicalizeServerPublicUrl(rawServerUrl);
-  if (!serverUrl) {
+  const serverUrls = canonicalServerPublicOrigins(rawServerUrls);
+  if (serverUrls.length === 0) {
     throw new RpcError(
       'not_configured',
-      `collection.connection.startVendorOAuth: server public URL is not a clean HTTPS origin (got '${rawServerUrl}') — configure it as https://<host>`,
+      `collection.connection.startVendorOAuth: server public URL is not a clean HTTPS origin (got '${rawServerUrls[0]!}') — configure it as https://<host>`,
     );
   }
-  const choices = vendorOAuthRedirectChoices(serverUrl);
+  // Every one of the server's own addresses is a direct choice: a page at the
+  // server's https name sends `<that origin>/oauth/complete`, and an owner
+  // with a Pro address AND a custom domain may be at either. The state then
+  // names the address the provider returns to; the cloud choice names the
+  // preferred one.
+  const choices = [...new Set(serverUrls.flatMap((url) => vendorOAuthRedirectChoices(url)))];
+  const serverUrl = serverUrls.find((url) => `${url}/oauth/complete` === a.redirect_uri)
+    ?? serverUrls[0]!;
   if (!choices.includes(a.redirect_uri)) {
     throw new RpcError(
       'bad_request',

@@ -61,7 +61,10 @@ import type { ApprovalLinkNonceStore } from '../../ports/reception/handlers/appr
 import type { StatusProjectionStore } from '../../storage/reception-status-projection-store.js';
 import type { StatusEntitySourceReader } from '../../ports/reception/handlers/status-link.js';
 import type { ReceptionIpBlockStore } from '../../storage/reception-ip-block-store.js';
-import type { HostnameRegistryStore } from '../../storage/hostname-registry.js';
+import {
+  acceptsReceptionShareBaseUrl,
+  type PublicAddressService,
+} from '../../public-address.js';
 import type Database from 'better-sqlite3';
 import type { BlobStore } from '../../storage/blob-store.js';
 import type { ReceptionUploadService } from '../../upload/reception-upload-service.js';
@@ -142,7 +145,9 @@ export interface ComposeReceptionSubstrateDeps {
   readonly addOwnerTokenUsage?: (tokens: number) => void;
   readonly llmAdapterRegistry: LlmSubstrate['llmAdapterRegistry'] | undefined;
   readonly emptyTabProbe: LlmSubstrate['emptyTabProbe'] | undefined;
-  readonly hostnameRegistryStore?: Pick<HostnameRegistryStore, 'list'> | undefined;
+  /** The server's public addresses — the share base when the configured one
+   *  is unset or not usable. */
+  readonly publicAddress?: Pick<PublicAddressService, 'handOut'> | undefined;
 
   // Optional store refs — caller passes the same let-binding refs it
   // holds today; undefined → field omitted on the produced deps.
@@ -301,13 +306,13 @@ export const composeReceptionSubstrate = async (
   const previewStore = deps.previewHashStore;
   const auditLog = deps.auditLog;
   const eventBus = deps.eventBus;
-  const hostnameRegistryStore = deps.hostnameRegistryStore;
+  const publicAddress = deps.publicAddress;
 
   const { deriveReceptionPepperFromSubDek } = await import(
     '../../ports/reception/server-secret-pepper.js'
   );
   const { RpcError } = await import('@recued/contracts');
-  const { canBindHostname, isProDdnsHost } = await import('@recued/contracts');
+  const { isProDdnsHost } = await import('@recued/contracts');
   const receptionKeyProvider = deps.keys.keyProvider('reception');
 
   // Codex P2 #1 fold (pre-extraction) — surface locked-vault state with
@@ -334,58 +339,35 @@ export const composeReceptionSubstrate = async (
     return null;
   })();
 
-  const localShareHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-
-  const isPublicShareBaseUrl = (raw: string | null): raw is string => {
-    if (raw === null) return false;
-    try {
-      const parsed = new URL(raw);
-      return (
-        (parsed.protocol === 'https:' || parsed.protocol === 'http:') &&
-        parsed.hostname.length > 0 &&
-        !localShareHosts.has(parsed.hostname.toLowerCase())
-      );
-    } catch {
-      return false;
+  // ⚠ The configured URL keeps Reception's OWN rule, which accepts an
+  // intranet address an operator deliberately hands visitors; the resolver
+  // refuses those for every other use. Otherwise the server's HANDED-OUT
+  // address for Reception links: never the probe-ranked one (a share link is
+  // printed, embedded and kept), kept from its first use, moved only on the
+  // Hostnames screen. A kept name that stops working is reported by name.
+  const resolveShareBaseUrl = (): { base_url: string | null; unusable?: string } => {
+    if (acceptsReceptionShareBaseUrl(configuredShareBaseUrl)) {
+      return { base_url: configuredShareBaseUrl };
     }
-  };
-
-  const deriveShareBaseUrlFromHostnameRegistry = (): string | null => {
-    if (!hostnameRegistryStore) return null;
-
-    for (const hostname of hostnameRegistryStore.list()) {
-      if (!canBindHostname(hostname)) continue;
-      const port = hostname.listener_ports.includes(443)
-        ? 443
-        : hostname.listener_ports[0];
-      if (port === undefined) continue;
-
-      const candidate = port === 443
-        ? `https://${hostname.hostname}`
-        : `https://${hostname.hostname}:${port}`;
-      if (isPublicShareBaseUrl(candidate)) return candidate;
-    }
-
-    return null;
-  };
-
-  const resolveShareBaseUrl = (): string | null => {
-    if (isPublicShareBaseUrl(configuredShareBaseUrl)) {
-      return configuredShareBaseUrl;
-    }
-    return deriveShareBaseUrlFromHostnameRegistry();
+    const address = publicAddress?.handOut('reception');
+    if (address === undefined) return { base_url: null };
+    return address.hostname_unusable === true && address.hostname !== undefined
+      ? { base_url: null, unusable: address.hostname }
+      : { base_url: address.base_url };
   };
 
   const getShareBaseUrl = (): string => {
     const shareBaseUrl = resolveShareBaseUrl();
-    if (!shareBaseUrl) {
+    if (shareBaseUrl.base_url === null) {
       throw new RpcError(
         'not_configured',
-        'reception: set RECUED_PUBLIC_BASE_URL or configure a verified public hostname before sharing reception endpoints',
+        shareBaseUrl.unusable !== undefined
+          ? `reception: ${shareBaseUrl.unusable} is kept for Reception links but can no longer be used — pick another address under Settings → Server → Hostnames`
+          : 'reception: set RECUED_PUBLIC_BASE_URL or configure a verified public hostname before sharing reception endpoints',
         503,
       );
     }
-    return shareBaseUrl;
+    return shareBaseUrl.base_url;
   };
 
   // D-149 P12 § A.20.7 — Public Trust Footer deployment mode. A
@@ -449,12 +431,15 @@ export const composeReceptionSubstrate = async (
       // `explicit_windows`, not a live calendar read — so the cold-start
       // null calendar reader (no busy events) is the correct production
       // posture. The only remaining enable requirement is a public URL.
-      if (resolveShareBaseUrl()) {
+      const shareBaseUrl = resolveShareBaseUrl();
+      if (shareBaseUrl.base_url !== null) {
         return { ok: true, passed: ['Public Reception URL is configured'] };
       }
       return {
         ok: false,
-        blocked: ['Set a public URL before enabling Reception endpoints'],
+        blocked: [shareBaseUrl.unusable !== undefined
+          ? `${shareBaseUrl.unusable} is kept for Reception links but can no longer be used. Pick another address under Settings → Server → Hostnames`
+          : 'Set a public URL before enabling Reception endpoints'],
       };
     },
     // D-149 P8 § A.5.5 — seed the per-endpoint approval intent row at

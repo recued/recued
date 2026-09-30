@@ -75,10 +75,10 @@ export interface ComposeRemoteChannelDeps {
    *  propagate to the channel's best-effort fan-out catch. */
   keys?: KeyManager;
   /** D-238 — the `/ask/<ask_id>` builder, threaded to a `landing-page` channel
-   *  so its ask carries a link as well as the typed-reply hint. Absent on a
-   *  non-public deployment (`ask-landing-answer-link.ts` refuses a private
+   *  so its ask carries a link as well as the typed-reply hint. It answers
+   *  nothing on a non-public deployment (the resolver refuses a private
    *  hostname), which is exactly when the typed path is the one that works. */
-  answerLink?: (ask_id: string, via?: string) => string;
+  answerLink?: (ask_id: string, via?: string) => string | undefined;
 }
 
 export interface CreateRemoteCredentialResolverDeps {

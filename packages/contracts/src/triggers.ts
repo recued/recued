@@ -71,19 +71,15 @@ export interface EventTrigger {
    *  after a failure, so a user editing the trigger sees a clean slate
    *  once the fix sticks. */
   last_error: string | null;
-  /** D-179 P2 — standing dish this trigger dispatches as. The per-row
-   *  config override (`config_patch`, retired in this slice — the
-   *  latent dish row that proved the shape) is replaced by the dish's
-   *  `config_overlay`, resolved inside `handleExecute` at dispatch
-   *  (dish → install → defaults). Absent ⇒ the run is dishless
-   *  (ephemeral attribution), exactly like a manual run. Fire-time
-   *  honors `dish.enabled`: a disabled dish SKIPS silently (the
-   *  attachment stays armed; no failed-run noise). */
+  /** D-319 — the dish this trigger belongs to: it fires as the dish, with
+   *  the dish's settings (resolved inside `handleExecute`). A recipe's own
+   *  trigger is made once per dish of its recipe; the owner's belongs to the
+   *  dish it was added to. Fire-time honors `dish.enabled`: a dish switched
+   *  off skips silently. Absent only on rows written before D-319. */
   dish_id?: string;
-  /** D-179 — the config the trigger's headless fires use, read from the
-   *  bound dish at list time (absent ⇒ fires on recipe defaults). Surfaced
-   *  so the run modal's per-row Config editor can pre-fill the widgets.
-   *  Not persisted on the trigger row — the dish is the source of truth. */
+  /** The settings of the trigger's dish, read at list time — shown with the
+   *  row. Not persisted on the trigger row: the dish is the source of truth,
+   *  and a trigger has no settings of its own (D-319). */
   config_overlay?: Record<string, unknown>;
   /** Poll-manager (G6) — this subscriber's poll-interval preference
    *  when the pattern targets a `data.connection.api.<vendor>.
@@ -95,10 +91,10 @@ export interface EventTrigger {
   watch_interval_ms?: number;
   /** Row provenance — `'user'` (authored via `triggers.create`) or
    *  `'recipe'` (materialized from an installed recipe's declarative
-   *  `event_triggers` by the reconciler). Recipe-origin rows are
-   *  lifecycle-managed by the reconciler; clients hide Remove for them
-   *  and show a "from recipe" badge. The `enabled` toggle works the
-   *  same for both. */
+   *  `event_triggers` by the reconciler, one per dish of the recipe).
+   *  Recipe-origin rows are lifecycle-managed by the reconciler; clients
+   *  hide Remove for them and show a "from recipe" badge. The dish switch
+   *  writes `enabled` on both. */
   origin: EventTriggerOrigin;
   /** Authoring-sugar compile-down — dispatch filter: dot-paths into
    *  the dispatch payload → expected scalar (AND). Evaluated read-free

@@ -44,15 +44,36 @@ import {
   resolveRecipeBundleInstallPack,
   type BulkPackManifest,
   type InstallGrantSelection,
+  type MailTemplateInstallOutcome,
 } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
 
 /** `recipe.installBySlug` caller (the registry result shape). */
 export type RecipeInstallBySlugCaller = (slug: string) => Promise<{
   result:
-    | { ok: true; recipe_id: string; version: number }
+    | { ok: true; recipe_id: string; version: number; mail_templates?: readonly MailTemplateInstallOutcome[] }
     | { ok: false; failure: { code: string; message: string; pack_slug?: string } };
 }>;
+
+/** D-315 §5.2 — what a recipe installed on its own did with the templates it
+ *  brings, said once it is installed: there is no dialog on this path to ask
+ *  first. `undefined` when it brings none. */
+export const mailTemplateInstallNotice = (
+  outcomes: readonly MailTemplateInstallOutcome[] | undefined,
+): string | undefined => {
+  const lines = (outcomes ?? []).flatMap((outcome) => {
+    if (outcome.action === 'unchanged') return [];
+    const verb = outcome.action === 'created' ? 'Added' : 'Updated';
+    if (outcome.switched_off !== undefined) {
+      return [`${verb} the mail template “${outcome.name}”. Your “${outcome.switched_off.name}” read the same mail, and is off now: switch it back in Data → Mail facts → Templates.`];
+    }
+    if (!outcome.active && outcome.uses !== undefined) {
+      return [`${verb} the mail template “${outcome.name}”, off: your “${outcome.uses.name}” already reads that mail, and the Recipe uses it.`];
+    }
+    return [`${verb} the mail template “${outcome.name}”; its AI is off.`];
+  });
+  return lines.length > 0 ? lines.join(' ') : undefined;
+};
 
 /** `recipe.list` caller — only the join fields are read. */
 export type RecipeInstalledListCaller = () => Promise<{
@@ -310,7 +331,8 @@ export const mountRecipeDiscovery = (
     const { result } = await opts.installBySlug(recipeId);
     if (result.ok) {
       void refreshInstalled();
-      return { ok: true };
+      const notice = mailTemplateInstallNotice(result.mail_templates);
+      return { ok: true, ...(notice !== undefined ? { notice } : {}) };
     }
     return { ok: false, message: result.failure.message };
   };

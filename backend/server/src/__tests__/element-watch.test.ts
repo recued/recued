@@ -165,25 +165,34 @@ describe('scaffold → reconciler integration', () => {
     db = new Database(':memory:');
   });
 
-  it('materializes exactly one DISARMED origin:recipe dom-watch row (the user arms it in #automation)', () => {
+  it('makes no row until the watch is switched on; then exactly one DISARMED origin:recipe dom-watch row for its dish', () => {
+    // D-319 — saving the watch recipe starts nothing: a recipe's triggers are
+    // made per dish, and a dish is the recipe switched on.
     const store = createEventTriggersStore(db);
     const recipe = buildElementWatchRecipe({ url: URL, selector: SELECTOR });
     let mint = 0;
-    reconcileDeclarativeTriggers({
-      store,
-      listStored: () => [
-        {
-          recipe_id: recipe.recipe_id,
-          publisher_id: ELEMENT_WATCH_PUBLISHER,
-          recipe_json: JSON.stringify(recipe),
-        },
-      ],
-      now: () => 5_000,
-      mintTriggerId: () => `t-${++mint}`,
-    });
+    const reconcile = (dishes: Array<{ dish_id: string; recipe_id: string; config_overlay: Record<string, unknown> }>) =>
+      reconcileDeclarativeTriggers({
+        store,
+        listStored: () => [
+          {
+            recipe_id: recipe.recipe_id,
+            publisher_id: ELEMENT_WATCH_PUBLISHER,
+            recipe_json: JSON.stringify(recipe),
+          },
+        ],
+        listDishes: () => dishes,
+        now: () => 5_000,
+        mintTriggerId: () => `t-${++mint}`,
+      });
+    reconcile([]);
+    expect(store.list()).toEqual([]);
+
+    reconcile([{ dish_id: 'dsh_watch', recipe_id: recipe.recipe_id, config_overlay: {} }]);
     const rows = store.list();
     expect(rows).toHaveLength(1);
     expect(rows[0].origin).toBe('recipe');
+    expect(rows[0].dish_id).toBe('dsh_watch');
     expect(rows[0].enabled).toBe(false);
     expect(rows[0].pattern).toBe(
       `data.dom.element.${encodeDomWatchTarget(URL, SELECTOR)}.updated`,

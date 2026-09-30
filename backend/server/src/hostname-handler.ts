@@ -8,7 +8,9 @@
  */
 
 import {
+  HOSTNAME_ADDRESS_USES,
   RpcError,
+  isHostnameAddressUse,
   isHostnameCertSource,
   isHostnameOwnershipStatus,
   isHostnameVerificationMethod,
@@ -21,6 +23,7 @@ import {
   type CustomDomainPreflightResponse,
   type HandlerSlice,
   type HostnameAddRequest,
+  type HostnameAddressUsesResponse,
   type HostnameCertChainMetadata,
   type HostnameGetRequest,
   type HostnameGetResponse,
@@ -30,9 +33,11 @@ import {
   type HostnameOwnershipProofResult,
   type HostnameRemoveRequest,
   type HostnameRemoveResponse,
+  type HostnameSetAddressUseRequest,
   type HostnameUpdateRequest,
   type ServerRpcRegistry,
 } from '@recued/contracts';
+import { AddressChoiceError, type PublicAddressService } from './public-address.js';
 import type { InitialAcmeDomainIssuer } from './keys/rotation/acme-domain-renewer.js';
 import type { TlsRenewalFailureReason } from './keys/rotation/index.js';
 import { applyHostnameOwnershipProof } from './hostname/ownership-proof.js';
@@ -76,6 +81,13 @@ export interface HostnameRpcDeps {
   /** DNS seam — injected by tests. Production builds a Node resolver lazily so
    *  a server that never opens the Domains panel never constructs one. */
   dnsResolver?: CustomDomainDnsResolver;
+  /** The addresses handed out for things someone keeps
+   *  (`collection.hostname.addressUses` / `setAddressUse`). Absent ⇒ both
+   *  decline `not_configured`. */
+  publicAddress?: Pick<PublicAddressService, 'describeAddressUses' | 'setAddressUse'>;
+  /** Webhooks set up at their vendor with the current address — each stops
+   *  until updated there if the webhooks address moves. Absent ⇒ 0. */
+  countRegisteredWebhooks?: () => number;
 }
 
 type HostnameMethods =
@@ -86,7 +98,9 @@ type HostnameMethods =
   | 'collection.hostname.remove'
   | 'collection.hostname.verifyOwnership'
   | 'collection.hostname.preflight'
-  | 'collection.hostname.issuanceReadiness';
+  | 'collection.hostname.issuanceReadiness'
+  | 'collection.hostname.addressUses'
+  | 'collection.hostname.setAddressUse';
 
 const requireCallerInstance = (
   caller: { instance_id: string | null | undefined } | undefined,
@@ -615,6 +629,55 @@ export const handleHostnameIssuanceReadiness = async (
   return { decision, preflight };
 };
 
+const requirePublicAddress = (
+  deps: HostnameRpcDeps,
+  method: string,
+): NonNullable<HostnameRpcDeps['publicAddress']> => {
+  if (!deps.publicAddress) {
+    throw new RpcError('not_configured', `${method}: public addresses are not wired on this server`, 503);
+  }
+  return deps.publicAddress;
+};
+
+export const handleHostnameAddressUses = async (
+  deps: HostnameRpcDeps,
+  _args: void,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<HostnameAddressUsesResponse> => {
+  const method = 'collection.hostname.addressUses';
+  requireCallerInstance(caller, method);
+  return {
+    ...requirePublicAddress(deps, method).describeAddressUses(),
+    registered_webhooks: deps.countRegisteredWebhooks?.() ?? 0,
+  };
+};
+
+export const handleHostnameSetAddressUse = async (
+  deps: HostnameRpcDeps,
+  args: HostnameSetAddressUseRequest,
+  caller: { instance_id: string | null | undefined } | undefined,
+): Promise<HostnameAddressUsesResponse> => {
+  const method = 'collection.hostname.setAddressUse';
+  requireCallerInstance(caller, method);
+  const a = ensureRecordArgs(method, args);
+  const use = a.use;
+  const hostname = a.hostname;
+  if (!isHostnameAddressUse(use)) {
+    throw badRequest(`${method}: use must be one of ${HOSTNAME_ADDRESS_USES.join(', ')}`);
+  }
+  if (hostname !== null && typeof hostname !== 'string') {
+    throw badRequest(`${method}: hostname must be a string, or null for automatic`);
+  }
+  const publicAddress = requirePublicAddress(deps, method);
+  try {
+    publicAddress.setAddressUse(use, hostname);
+  } catch (err) {
+    if (err instanceof AddressChoiceError) throw badRequest(`${method}: ${err.message}`);
+    throw err;
+  }
+  return handleHostnameAddressUses(deps, undefined, caller);
+};
+
 export const makeHostnameHandlers = (
   deps: HostnameRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, HostnameMethods, WsClient> | undefined => {
@@ -629,6 +692,8 @@ export const makeHostnameHandlers = (
       'collection.hostname.verifyOwnership',
       'collection.hostname.preflight',
       'collection.hostname.issuanceReadiness',
+      'collection.hostname.addressUses',
+      'collection.hostname.setAddressUse',
     ],
     handlers: {
       'collection.hostname.list': async (args, client) =>
@@ -677,6 +742,18 @@ export const makeHostnameHandlers = (
         handleHostnameIssuanceReadiness(
           deps,
           args as CustomDomainIssuanceReadinessRequest,
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+      'collection.hostname.addressUses': async (args, client) =>
+        handleHostnameAddressUses(
+          deps,
+          args as void,
+          client ? { instance_id: client.instance_id ?? null } : undefined,
+        ),
+      'collection.hostname.setAddressUse': async (args, client) =>
+        handleHostnameSetAddressUse(
+          deps,
+          args as HostnameSetAddressUseRequest,
           client ? { instance_id: client.instance_id ?? null } : undefined,
         ),
     },

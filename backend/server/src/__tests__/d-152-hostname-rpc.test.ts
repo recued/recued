@@ -12,7 +12,13 @@ import WebSocket from 'ws';
 import { createServerHandlerSet, type ServerConfig } from '../index.js';
 import { createHostnameSniBindingLookup } from '../hostname/sni-dispatch.js';
 import {
+  createPublicAddressService,
+  createSqlitePublicAddressStore,
+} from '../public-address.js';
+import {
   handleHostnameAdd,
+  handleHostnameAddressUses,
+  handleHostnameSetAddressUse,
   handleHostnameGet,
   handleHostnameList,
   handleHostnameRemove,
@@ -489,6 +495,85 @@ describe('D-152 collection.hostname.* WS wiring', () => {
       ownership_status: 'verified',
       verification_token_hash: 'sha256:expected',
     });
+  });
+
+  it('reads and sets the addresses handed out, over ws, and refuses what cannot be picked', async () => {
+    const db = new Database(':memory:');
+    openDbs.push(db);
+    const store = createHostnameRegistryStore(db, { now: () => NOW });
+    store.upsert({
+      server_identity_id: 'server-1',
+      hostname: 'alice.recued.net',
+      cert_source: 'recued_acme',
+      cert_fingerprint: 'sha256:ab',
+      ownership_status: 'verified',
+      listener_ports: [443],
+      ddns_managed: true,
+      enabled: true,
+    });
+    const deps: HostnameRpcDeps = {
+      store,
+      serverIdentityId: 'server-1',
+      publicAddress: createPublicAddressService({
+        configured: () => undefined,
+        hostnames: store,
+        store: createSqlitePublicAddressStore(db),
+        now: () => NOW,
+      }),
+      countRegisteredWebhooks: () => 2,
+    };
+    const harness = createRpcHarness({ hostnameDeps: deps });
+    openHarnesses.push(harness);
+    const ws = await harness.connect();
+    await registerWs(ws);
+
+    expect(await callRpc(ws, 'collection.hostname.addressUses', {})).toMatchObject({
+      ok: true,
+      result: {
+        uses: [
+          { use: 'webhooks', source: 'automatic', base_url: 'https://alice.recued.net' },
+          { use: 'reception', source: 'automatic', base_url: 'https://alice.recued.net' },
+          { use: 'customer_access', source: 'automatic', base_url: 'https://alice.recued.net' },
+        ],
+        choices: [{ hostname: 'alice.recued.net', base_url: 'https://alice.recued.net' }],
+        registered_webhooks: 2,
+      },
+    });
+    expect(await callRpc(ws, 'collection.hostname.setAddressUse', {
+      use: 'reception',
+      hostname: 'alice.recued.net',
+    })).toMatchObject({
+      ok: true,
+      result: {
+        uses: [
+          { use: 'webhooks', source: 'automatic' },
+          { use: 'reception', source: 'owner', hostname: 'alice.recued.net' },
+          { use: 'customer_access', source: 'automatic' },
+        ],
+      },
+    });
+    expect(await callRpc(ws, 'collection.hostname.setAddressUse', {
+      use: 'reception',
+      hostname: 'other.example.com',
+    })).toMatchObject({ ok: false, error: { code: 'bad_request' } });
+    expect(await callRpc(ws, 'collection.hostname.setAddressUse', {
+      use: 'email',
+      hostname: null,
+    })).toMatchObject({ ok: false, error: { code: 'bad_request' } });
+    expect(await callRpc(ws, 'collection.hostname.setAddressUse', {
+      use: 'reception',
+      hostname: 7,
+    })).toMatchObject({ ok: false, error: { code: 'bad_request' } });
+  });
+
+  it('address uses need a paired caller and a wired resolver', async () => {
+    const deps = makeDeps();
+    await expect(handleHostnameAddressUses(deps, undefined, CALLER))
+      .rejects.toMatchObject({ code: 'not_configured' });
+    await expect(handleHostnameSetAddressUse(deps, { use: 'webhooks', hostname: null }, CALLER))
+      .rejects.toMatchObject({ code: 'not_configured' });
+    await expect(handleHostnameAddressUses(deps, undefined, { instance_id: null }))
+      .rejects.toMatchObject({ code: 'permission_denied' });
   });
 
   it('returns not_configured when the hostname deps are not wired', async () => {

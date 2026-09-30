@@ -56,6 +56,21 @@ const setup = async (browser: Browser, messenger = false) => {
   };
 };
 
+/** Choose Google Drive in Data → Files with its first page held; returns the
+ *  release. It opens by itself beside Saved files (e9886593f), and an opening
+ *  load draws nothing until it lands, so there is nothing to type into; the
+ *  race these tests cover is CHOOSING a source. So: Saved files, then Drive. */
+const chooseDriveWithItsLoadHeld = async (f: Awaited<ReturnType<typeof setup>>): Promise<() => void> => {
+  const drive = f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true });
+  const saved = f.page.getByRole('button', { name: 'Saved files On this server', exact: true });
+  await f.page.evaluate(() => { location.hash = '#data/files'; });
+  await expect(drive).toHaveAttribute('aria-pressed', 'true');
+  await saved.click(); await expect(saved).toHaveAttribute('aria-pressed', 'true');
+  const release = f.holdNext('data.file.attachments.remote.list');
+  await drive.click();
+  return release;
+};
+
 const openDataCloudFile = async (f: Awaited<ReturnType<typeof setup>>, filename = 'Cloud report.pdf') => {
   await f.page.evaluate(() => { location.hash = '#data/files'; });
   await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
@@ -223,21 +238,21 @@ test('Data keeps a search typed while a source is loading when its first page re
   const f = await setup(browser);
   try {
     for (let i = 0; i < 35; i++) f.fixture.cloudSource!.add(`invoice-${String(i).padStart(2, '0')}`, `Invoice ${i}.pdf`);
-    await f.page.evaluate(() => { location.hash = '#data/files'; });
     const search = f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true });
     const rows = f.page.locator('[data-collection-record]');
-    const release = f.holdNext('data.file.attachments.remote.list');
-    await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
+    const release = await chooseDriveWithItsLoadHeld(f);
     await search.click(); await f.page.keyboard.type('clients');
     release(); await expect(rows).toHaveCount(30);
     await expect(search).toBeFocused(); await f.page.keyboard.type(' invoice');
     await expect(search).toHaveValue('clients invoice'); await f.page.keyboard.press('Enter');
-    await expect.poll(() => f.calls.filter(call => call.method === 'data.file.attachments.remote.list').length).toBe(2);
+    // The source's own opening, the held page, and the search.
+    await expect.poll(() => f.calls.filter(call => call.method === 'data.file.attachments.remote.list').length).toBe(3);
     await expect(rows).toHaveCount(30);
     await f.page.getByRole('button', { name: 'Load more files', exact: true }).click();
     await expect(rows).toHaveCount(35);
+    // The source's own opening, then the held page, then the search's two.
     expect(f.calls.filter(call => call.method === 'data.file.attachments.remote.list').map(call => call.args.query))
-      .toEqual(['', 'clients invoice', 'clients invoice']);
+      .toEqual(['', '', 'clients invoice', 'clients invoice']);
   } finally { await f.close(); }
 });
 
@@ -245,17 +260,15 @@ test('Data searches on Enter while a source is still loading instead of dropping
   const f = await setup(browser);
   try {
     for (let i = 0; i < 35; i++) f.fixture.cloudSource!.add(`invoice-${String(i).padStart(2, '0')}`, `Invoice ${i}.pdf`);
-    await f.page.evaluate(() => { location.hash = '#data/files'; });
     const search = f.page.getByRole('searchbox', { name: 'Search cloud files', exact: true });
     const rows = f.page.locator('[data-collection-record]');
-    const release = f.holdNext('data.file.attachments.remote.list');
-    await f.page.getByRole('button', { name: 'Google Drive · Work drive', exact: true }).click();
+    const release = await chooseDriveWithItsLoadHeld(f);
     await search.fill('clients invoice'); await search.press('Enter');
     await expect(rows).toHaveCount(30); release();
     await f.page.getByRole('button', { name: 'Load more files', exact: true }).click();
     await expect(rows).toHaveCount(35);
     expect(f.calls.filter(call => call.method === 'data.file.attachments.remote.list').map(call => call.args.query))
-      .toEqual(['', 'clients invoice', 'clients invoice']);
+      .toEqual(['', '', 'clients invoice', 'clients invoice']);
   } finally { await f.close(); }
 });
 
@@ -266,7 +279,8 @@ test('an exact link to a disconnected file source still offers the remaining sav
     f.fixture.cloudSource!.connections.delete('api', 'work');
     await f.page.reload();
     await expect(f.page.getByRole('alert')).toContainText('source this record came from is gone');
-    await f.page.getByRole('button', { name: 'Saved files', exact: true }).click();
+    // Saved files are on this server, and the chip says so (e9886593f).
+    await f.page.getByRole('button', { name: 'Saved files On this server', exact: true }).click();
     await expect(f.page.locator('[data-collection-record]').filter({ hasText: 'Attachment.pdf' })).toBeVisible();
     expect(f.fixture.cloudSource!.downloads()).toBe(0);
   } finally { await f.close(); }

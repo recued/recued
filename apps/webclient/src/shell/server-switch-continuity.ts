@@ -39,7 +39,7 @@ const SAFE_FIRST_SEGMENTS: Readonly<
     'form_response', 'mail_fact', 'webhook', 'mail', 'calendar', 'crm', 'files',
     'annotation', 'link', 'shared', 'memory',
   ]),
-  automation: new Set(['auto-run', 'triggers', 'schedules', 'dishes']),
+  automation: new Set(['all', 'coming-up', 'auto-run', 'triggers', 'schedules', 'dishes']),
   reception: new Set(['inbox', 'records', 'abuse', 'endpoints']),
 };
 
@@ -204,6 +204,8 @@ const SAFE_SUBVIEW_LABELS: Readonly<Record<string, string>> = {
   link: 'Links',
   shared: 'Shared',
   memory: 'Memory',
+  all: 'By recipe',
+  'coming-up': 'Coming up',
   'auto-run': 'Auto-run',
   triggers: 'Triggers',
   schedules: 'Schedules',

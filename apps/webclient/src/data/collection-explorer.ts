@@ -258,7 +258,7 @@ const renderInstanceBar = (
         : '';
       return `<button type="button" class="col-explorer-instance-chip${active ? ' is-active' : ''}"
         ${actionAttr}="${COLLECTION_SELECT_INSTANCE_ACTION}" ${COLLECTION_INSTANCE_SLUG_ATTR}="${e(inst.slug)}"
-        aria-pressed="${active ? 'true' : 'false'}">${e(label)}${owned}</button>`;
+        aria-pressed="${active ? 'true' : 'false'}">${e(label)}${owned !== '' ? ` ${owned}` : ''}</button>`;
     })
     .join('');
   return `<div class="col-explorer-instances" role="group" aria-label="Choose an instance">${chips}</div>`;
@@ -494,8 +494,11 @@ export const COLLECTION_EXPLORER_STYLES = `
 .col-explorer-instance-chip.is-active { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 /* D-267 — "On this server" rides inside the chip as a quieter second clause;
    a stroke and a size, never a fill, per I-7's fill budget. */
+/* A space precedes it in the markup, so the button's NAME reads "Saved files
+   On this server", not "Saved filesOn this server"; the margin is what is left
+   of the gap. */
 .col-explorer-instance-owned {
-  margin-left: 0.4rem; padding: 0 0.3rem; border-radius: 999px;
+  margin-left: 0.15rem; padding: 0 0.3rem; border-radius: 999px;
   border: 1px solid currentColor; font-size: 0.6875rem; opacity: 0.85;
 }
 .col-explorer-list { min-width: 0; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }

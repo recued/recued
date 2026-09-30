@@ -45,7 +45,11 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, entry
 const comparisonForCommand = (command: QueuedChatCommand): string => canonical(command.comparison
   ? { family: command.family, session_id: command.session_id, comparison: command.comparison }
   : { ...command, input: Object.fromEntries(Object.entries(command.input)
-    .filter(([name]) => name !== 'queue_generation')
+    // A read-only request and an ordinary one with the same message are one
+    // turn to duplicate protection: a duplicate only suppresses a run, it never
+    // grants authority. Otherwise re-sending a finished investigation's text
+    // would start it again as an ordinary turn.
+    .filter(([name]) => name !== 'queue_generation' && name !== 'read_only')
     // Legacy provenance is displayed to the owner; it does not create a new turn.
     .map(([name, value]) => [name, name === 'attachments' && Array.isArray(value)
       ? value.map(file => ({ file_id: file.file_id, media_class: file.media_class })) : value])) });

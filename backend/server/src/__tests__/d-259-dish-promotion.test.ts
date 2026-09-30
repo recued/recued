@@ -37,6 +37,16 @@ const memoryDishStore = (): DishStore => {
     getDefault: (recipe_id) =>
       [...rows.values()].find((d) => d.recipe_id === recipe_id && d.is_default) ?? null,
     set: (dish) => { rows.set(dish.dish_id, structuredClone(dish)); },
+    setMain: (dish_id) => {
+      const target = rows.get(dish_id);
+      if (target === undefined) return null;
+      for (const [id, row] of rows) {
+        if (row.recipe_id === target.recipe_id && row.is_default) rows.set(id, { ...row, is_default: false });
+      }
+      const main = { ...target, is_default: true };
+      rows.set(dish_id, main);
+      return main;
+    },
     delete: (dish_id) => rows.delete(dish_id),
     detachGroup: (group_id) => {
       const detached: string[] = [];
@@ -53,7 +63,7 @@ const memoryDishStore = (): DishStore => {
 };
 
 describe('D-259 run-to-dish promotion', () => {
-  it('reads recipe/config from a succeeded anchor and always mints a new standing dish', async () => {
+  it('reads recipe/config from a succeeded anchor and always mints a new standing dish — the first is main (D-319)', async () => {
     const auditLog = createAuditLogStore(createInMemoryCollection<AuditEntry>());
     await auditLog.append(anchor());
     const store = memoryDishStore();
@@ -70,10 +80,11 @@ describe('D-259 run-to-dish promotion', () => {
       recipe_id: 'recipe-from-anchor',
       name: 'Q3 reconciliation',
       config_overlay: { account: 'acct-live', threshold: 7 },
-      is_default: false,
+      is_default: true,
       enabled: true,
     });
     expect(second.dish.dish_id).not.toBe(first.dish.dish_id);
+    expect(second.dish.is_default).toBe(false);
     expect(store.list()).toHaveLength(2);
   });
 

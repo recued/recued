@@ -355,15 +355,16 @@ export const createEventTriggerDispatcher = (
     // D-179 P4 — direct self-loop guard: the run-outcome event of a
     // run THIS trigger dispatched never re-fires this trigger (a
     // recipe subscribed to its own outcome would otherwise loop
-    // forever with no error to trip the 24h cap). Staged chains are
-    // unaffected — a DIFFERENT trigger consuming the outcome fires
-    // normally.
-    if (
-      event.platform === RUN_OUTCOME_PLATFORM &&
-      (event.record as { origin_trigger_id?: unknown } | undefined)?.origin_trigger_id ===
-        trigger.trigger_id
-    ) {
-      return;
+    // forever with no error to trip the 24h cap).
+    // D-319 — widened to the RECIPE: its triggers are made once per dish, so
+    // with two dishes the copies would fire on each other's outcomes, forever.
+    // A run one of a recipe's triggers started never starts that recipe again
+    // through its own outcome. Staged chains are unaffected — a DIFFERENT
+    // recipe consuming the outcome fires normally.
+    if (event.platform === RUN_OUTCOME_PLATFORM) {
+      const origin = (event.record as { origin_trigger_id?: unknown } | undefined)?.origin_trigger_id;
+      if (origin === trigger.trigger_id) return;
+      if (typeof origin === 'string' && deps.store.get(origin)?.recipe_id === trigger.recipe_id) return;
     }
     await settle(trigger, event, () => deps.runtime.runRecipe({
       recipe_id: trigger.recipe_id,

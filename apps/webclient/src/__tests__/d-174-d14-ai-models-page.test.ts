@@ -68,10 +68,12 @@ import {
   AI_MODELS_SLOT_SAVE_ATTR,
   AI_MODELS_TAB_ATTR,
   AI_MODELS_TAB_PANEL_ATTR,
+  AI_MODELS_TRANSCRIPTION_FIELD_ATTR,
   AI_MODELS_PAGE_STYLES,
   SLOT_KEY_NOT_CARRIED_COPY,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
+import type { AiModelsEmbeddingsSlotSetCaller, AiModelsProbeSourceCaller } from '../settings/ai-models-page.js';
 
 interface FakeElement {
   tagName: string;
@@ -465,7 +467,7 @@ describe('D-174 D14 — AI / Models initial load', () => {
     expect(named(AI_MODELS_SLOT_CLEAR_ATTR, 'slot_2'))
       .toBe('Clear Slot 2: better, slower thinking');
     expect(named(AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'))
-      .toBe('Embeddings slot provider');
+      .toBe('Embeddings slot protocol');
     expect(named(AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot'))
       .toBe('Save Embeddings slot');
     expect(named(AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot'))
@@ -1257,8 +1259,8 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();
 
+    changeSelect(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider', 'openai-compatible');
     const values: ReadonlyArray<readonly [string, string]> = [
-      ['provider', 'openai-compatible'],
       ['model', 'text-embedding-demo'],
       ['api-key', 'embedding-secret'],
       ['base-url', 'https://embeddings.example.test/v1'],
@@ -1314,6 +1316,10 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     const { host, mount } = mountFixture({ runSetEmbeddingsSlot });
     await mount.whenLoaded();
 
+    // A complete draft: an incomplete one is answered without a request.
+    changeSelect(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider', 'openai');
+    typeByAttrValue(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'model', 'text-embedding-3-small');
+    typeByAttrValue(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'api-key', 'sk-embed');
     clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot');
     const pending = findByAttrValue(
       host,
@@ -2124,6 +2130,9 @@ describe('D-174 R28 Slice C — embeddings slot card', () => {
     });
     await mount.whenLoaded();
 
+    // OpenAI-compatible needs an address, as on a chat slot, so the owner who
+    // empties it is going back to OpenAI itself.
+    changeSelect(host, AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider', 'openai');
     const baseUrl = findByAttrValue(
       host,
       AI_MODELS_EMBEDDINGS_FIELD_ATTR,
@@ -2143,6 +2152,7 @@ describe('D-174 R28 Slice C — embeddings slot card', () => {
     await flush();
     const written = vi.mocked(opts.runSetEmbeddingsSlot).mock.calls.at(-1)![0].slot;
     expect(written).not.toHaveProperty('base_url');
+    expect(written!.provider).toBe('openai');
     mount.dispose();
   });
 
@@ -3163,7 +3173,16 @@ describe('Test connection', () => {
       dimensions: 1536,
       elapsed_ms: 88,
     }));
-    const { host, mount } = mountFixture({ runProbeLlmSource });
+    // A saved slot: Test on an empty form is answered without a request.
+    const { host, mount } = mountFixture({
+      runProbeLlmSource,
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          ...llmConfig(),
+          embeddings_slot: { provider: 'openai', model: 'text-embedding-3-small', has_key: true },
+        },
+      })),
+    });
     await mount.whenLoaded();
 
     clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'embeddings_slot');
@@ -3572,6 +3591,190 @@ describe('BYOK slots — protocol, provider name, and errors under the buttons',
   it('styles an error under a button with the danger colour', () => {
     const rule = AI_MODELS_PAGE_STYLES.slice(AI_MODELS_PAGE_STYLES.indexOf('.ai-models-form-error'));
     expect(rule.slice(0, rule.indexOf('}'))).toContain('var(--danger');
+  });
+});
+
+/** Reported 2026-09-29: on the embeddings and transcription slots "Provider"
+ *  was still free text, which the server refuses for anything but its four
+ *  protocol ids. The chat slots got a protocol choice and a name the day
+ *  before; these two cards did not. */
+describe('Embeddings and transcription slots — protocol, provider name, and errors under the buttons', () => {
+  const SLOTS = [
+    { key: 'embeddings_slot', attr: AI_MODELS_EMBEDDINGS_FIELD_ATTR, title: 'Embeddings slot' },
+    { key: 'transcription_slot', attr: AI_MODELS_TRANSCRIPTION_FIELD_ATTR, title: 'Transcription slot' },
+  ] as const;
+  /** Both setters wired — the transcription card renders nothing without its
+   *  own, and its Save also writes the spoken language and the daily limit —
+   *  and, unless told otherwise, a server that keeps `provider_name`. */
+  const mountSlots = (
+    config: Record<string, unknown> = llmConfig(),
+    { keepsNames = true, runProbeLlmSource }: {
+      keepsNames?: boolean;
+      runProbeLlmSource?: AiModelsProbeSourceCaller;
+    } = {},
+  ) => {
+    const setters = {
+      embeddings_slot: vi.fn<AiModelsEmbeddingsSlotSetCaller>(async () => ({ ok: true as const })),
+      transcription_slot: vi.fn<AiModelsEmbeddingsSlotSetCaller>(async () => ({ ok: true as const })),
+    };
+    const fixture = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({
+        config,
+        ...(keepsNames ? { supports: { slot_provider_name: true } } : {}),
+      })),
+      runSetEmbeddingsSlot: setters.embeddings_slot,
+      runSetTranscriptionSlot: setters.transcription_slot,
+      runSetTranscriptionLanguage: vi.fn(async () => ({ ok: true as const })),
+      runSetTranscriptionDailyRequests: vi.fn(async () => ({ ok: true as const })),
+      ...(runProbeLlmSource !== undefined ? { runProbeLlmSource } : {}),
+    });
+    return { ...fixture, setters };
+  };
+  const card = (host: FakeElement, key: string): FakeElement =>
+    findByAttrValue(host, AI_MODELS_CONTROL_ATTR, key)!;
+  const formError = (host: FakeElement, key: string, button: 'save' | 'test'): string | null =>
+    findByAttrValue(card(host, key), AI_MODELS_FORM_ERROR_ATTR, `${key}:${button}`)
+      ?.textContent ?? null;
+
+  it.each(SLOTS)('$title offers only the protocols that can serve it', async (s) => {
+    const { host, mount } = mountSlots();
+    await mount.whenLoaded();
+
+    const protocol = findByAttrValue(host, s.attr, 'provider')!;
+    expect(protocol.tagName).toBe('SELECT');
+    expect(protocol.getAttribute('aria-label')).toBe(`${s.title} protocol`);
+    // Anthropic makes neither an embedding model nor a transcription one.
+    expect(protocol.children.map((option) => option.value))
+      .toEqual(['', 'openai', 'openai-compatible', 'google']);
+    expect(protocol.children[0]?.textContent).toBe('Choose a protocol');
+    expect(protocol.value).toBe('');
+    mount.dispose();
+  });
+
+  it.each(SLOTS)('$title saved as Anthropic starts on the placeholder and is not saved again', async (s) => {
+    const { host, mount, setters } = mountSlots({
+      ...llmConfig(),
+      [s.key]: { provider: 'anthropic', model: 'claude-x', has_key: true },
+    });
+    await mount.whenLoaded();
+
+    // ⚠ Not the saved value: a select set to a value no option has shows
+    // blank in a browser.
+    expect(findByAttrValue(host, s.attr, 'provider')!.value).toBe('');
+    // What is saved still reads as saved.
+    expect(hasText(card(host, s.key), 'Anthropic / claude-x')).toBe(true);
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    expect(formError(host, s.key, 'save')).toBe('Choose a protocol.');
+    expect(setters[s.key]).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it.each(SLOTS)('$title says what is missing under the button that was pressed, and sends nothing', async (s) => {
+    const runProbeLlmSource = vi.fn();
+    const { host, mount, setters } = mountSlots(llmConfig(), { runProbeLlmSource });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    expect(formError(host, s.key, 'save')).toBe('Choose a protocol.');
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, s.key);
+    expect(formError(host, s.key, 'test')).toBe('Choose a protocol.');
+
+    changeSelect(host, s.attr, 'provider', 'openai-compatible');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    expect(formError(host, s.key, 'save')).toBe('Enter a model.');
+
+    typeByAttrValue(host, s.attr, 'model', 'some-model');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    expect(formError(host, s.key, 'save')).toMatch(/^OpenAI-compatible needs a base URL/);
+
+    typeByAttrValue(host, s.attr, 'base-url', 'http://127.0.0.1:8080/v1');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    expect(formError(host, s.key, 'save')).toMatch(/^Enter the API key\./);
+
+    expect(setters[s.key]).not.toHaveBeenCalled();
+    expect(runProbeLlmSource).not.toHaveBeenCalled();
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+
+    typeByAttrValue(host, s.attr, 'api-key', 'none');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    await flush();
+    expect(setters[s.key].mock.calls.at(-1)![0].slot).toEqual(expect.objectContaining({
+      provider: 'openai-compatible',
+      model: 'some-model',
+      base_url: 'http://127.0.0.1:8080/v1',
+      api_key: 'none',
+    }));
+    expect(formError(host, s.key, 'save')).toBeNull();
+    mount.dispose();
+  });
+
+  it.each(SLOTS)('$title keeps a name beside the protocol, and an emptied name clears it', async (s) => {
+    const { host, mount, setters } = mountSlots({
+      ...llmConfig(),
+      [s.key]: {
+        provider: 'openai-compatible',
+        provider_name: 'Home server',
+        model: 'local-model',
+        base_url: 'http://127.0.0.1:8080/v1',
+        has_key: true,
+      },
+    });
+    await mount.whenLoaded();
+
+    const name = findByAttrValue(host, s.attr, 'provider-name')!;
+    expect(name.value).toBe('Home server');
+    expect(name.getAttribute('aria-label')).toBe(`${s.title} provider name`);
+    expect(hasText(card(host, s.key), 'Home server (OpenAI-compatible) / local-model')).toBe(true);
+
+    typeByAttrValue(host, s.attr, 'provider-name', '  Office GPU  ');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    await flush();
+    const named = setters[s.key].mock.calls.at(-1)![0].slot!;
+    expect(named.provider_name).toBe('Office GPU');
+    expect(named.provider).toBe('openai-compatible');
+    // A name is not where the key goes: the blank field keeps the saved key.
+    expect(named.api_key).toBe('');
+    expect(formError(host, s.key, 'save')).toBeNull();
+
+    typeByAttrValue(host, s.attr, 'provider-name', '');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    await flush();
+    expect(setters[s.key].mock.calls.at(-1)![0].slot).not.toHaveProperty('provider_name');
+    mount.dispose();
+  });
+
+  /** ⚠ An older server's slot parser drops a field it does not know, without
+   *  an error — so a name typed against it would look saved and be gone. */
+  it.each(SLOTS)('$title asks for the name only when the server keeps it', async (s) => {
+    const { host, mount, setters } = mountSlots({
+      ...llmConfig(),
+      [s.key]: { provider: 'openai', model: 'some-model', has_key: true },
+    }, { keepsNames: false });
+    await mount.whenLoaded();
+
+    expect(findByAttrValue(host, s.attr, 'provider-name')).toBeNull();
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    await flush();
+    expect(setters[s.key].mock.calls.at(-1)![0].slot).not.toHaveProperty('provider_name');
+    mount.dispose();
+  });
+
+  it.each(SLOTS)('$title puts a refused save under its buttons, not the page banner', async (s) => {
+    const { host, mount, setters } = mountSlots({
+      ...llmConfig(),
+      [s.key]: { provider: 'openai', model: 'some-model', has_key: true },
+    });
+    await mount.whenLoaded();
+    setters[s.key].mockRejectedValueOnce(new Error('the server is locked'));
+
+    typeByAttrValue(host, s.attr, 'model', 'other-model');
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, s.key);
+    await flush();
+    expect(formError(host, s.key, 'save')).toContain('the server is locked');
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+    // The draft survives for the retry.
+    expect(findByAttrValue(host, s.attr, 'model')!.value).toBe('other-model');
+    mount.dispose();
   });
 });
 

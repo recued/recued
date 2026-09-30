@@ -30,10 +30,10 @@ import {
   getVendorProvider,
   buildGenericVendorProvider,
   composeRealmBaseUrl,
-  canonicalizeServerPublicUrl,
   OAUTH_STATE_TOKEN_REPLAY_WINDOW_MS,
 } from '@recued/contracts';
 import { ed25519Verify } from './keys/index.js';
+import { canonicalServerPublicOrigins } from './public-address.js';
 import type { ServerIdentity } from './identity/index.js';
 import {
   decodeOauthStateToken,
@@ -88,10 +88,12 @@ export interface VendorOAuthCompleteDeps {
   identity: ServerIdentity;
   flowStore: VendorOAuthFlowStore;
   resultStore: VendorOAuthResultStore;
-  /** The server's configured public base URL (`RECUED_PUBLIC_BASE_URL`),
-   *  or null when unset. The verified state's `server_url` must equal the
-   *  canonical form of this. */
-  serverPublicUrl: () => string | null;
+  /** The server's own public base URL(s) — every own address, whatever the
+   *  probe says (`public-address.ts`) — or null when there are none. The
+   *  verified state's `server_url` must equal
+   *  the canonical form of one of them: the start rpc signs the address the
+   *  provider returns to, and an owner may have more than one. */
+  serverPublicUrl: () => string | readonly string[] | null;
   /** Defaults to `completeVendorOAuth`; tests inject a fake. */
   exchange?: typeof completeVendorOAuth;
   /** Forwarded to the exchange (token-endpoint + introspection fetch). */
@@ -218,12 +220,13 @@ export const handleVendorOAuthComplete = async (
     return fail(req, 400, 'expired', 'State token expired — restart the OAuth flow.');
   }
   // The state must have been minted for THIS server (defends against a
-  // state replayed at a different server instance).
-  const ownOrigin = canonicalizeServerPublicUrl(deps.serverPublicUrl() ?? '');
-  if (!ownOrigin) {
+  // state replayed at a different server instance) — at any of its own
+  // addresses, since the start rpc signs the one the provider returns to.
+  const ownOrigins = canonicalServerPublicOrigins(deps.serverPublicUrl());
+  if (ownOrigins.length === 0) {
     return fail(req, 503, 'not_configured', 'Server public URL not configured.');
   }
-  if (decoded.payload.server_url !== ownOrigin) {
+  if (!ownOrigins.includes(decoded.payload.server_url)) {
     return fail(req, 400, 'invalid_state', 'State token was not minted for this server.');
   }
 

@@ -390,6 +390,9 @@ export interface UpdatesPageState {
    *  a different release, so consent never carries over to another version. */
   confirmArmed: boolean;
   applyResult: UpdateApplyResponse | null;
+  /** How the last update from this page ended, once a check after it could
+   *  say ("Updated to 26.9.28."). Replaces the in-flight apply message. */
+  updateOutcome: string | null;
   /** D-257 — the latest ledger phase of a run the server accepted, so the page
    *  can say something true while a multi-minute apply is in flight rather than
    *  sitting on one static line. `null` until a phase arrives; irrelevant once
@@ -500,6 +503,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     applying: false,
     confirmArmed: false,
     applyResult: null,
+    updateOutcome: null,
     applyPhase: null,
     applyError: null,
     mode: null,
@@ -2009,6 +2013,9 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         state.applyResult.detail !== undefined && state.applyResult.detail.length > 0
           ? `${base} (${state.applyResult.detail})`
           : base;
+    } else if (state.updateOutcome !== null) {
+      setHidden(applyResultEl, false);
+      applyResultEl.textContent = state.updateOutcome;
     } else {
       setHidden(applyResultEl, true);
       applyResultEl.textContent = '';
@@ -2110,6 +2117,30 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         state.confirmArmed = false;
       }
       state.check = res;
+      // ⛔ THE UPDATE'S OWN MESSAGE OUTLIVED IT. `applyResult` was set by the
+      // apply and never reset, so after an update finished the page showed the
+      // new version under "Updating now. The server will restart and be away for
+      // a moment." for as long as it stayed open (reported 2026-09-29). With the
+      // shared record in use, a check can only run once nothing is on it — after
+      // the restart was verified — so this check is the run's answer: replace the
+      // in-flight message with how it went. Without the record (a page mounted
+      // on its own) a poll could land before the restart, so leave it.
+      const inFlightResult = state.applyResult?.status === 'restarting'
+        || state.applyResult?.status === 'applying';
+      if (
+        inFlightResult
+        && !state.applying
+        && opts.serverUpdateTabConvergence !== undefined
+        && readServerUpdateProgress() === null
+      ) {
+        const target = state.applyResult?.to_version ?? applyingToVersion;
+        state.applyResult = null;
+        state.updateOutcome = target === null
+          ? `The server now runs ${res.current_version}.`
+          : res.current_version === target
+            ? `Updated to ${target}.`
+            : `The server is still on ${res.current_version}. The update to ${target} did not take effect.`;
+      }
       const retryMarker =
         opts.credentialRotationServerUpdateContinuity?.read() ?? null;
       if (retryMarker !== null) {
@@ -2182,6 +2213,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     // outcome, the next attempt starts again from "Update to <version>".
     const ownerConfirmed = state.confirmArmed;
     state.confirmArmed = false;
+    state.updateOutcome = null;
     applyingToVersion = state.check?.available?.version ?? null;
     state.applying = true;
     state.applyError = null;

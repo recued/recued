@@ -18,6 +18,7 @@
  */
 
 import type {
+  Dish,
   EventTrigger,
   MailFactTypeSpec,
   PreparePreapproval,
@@ -46,6 +47,9 @@ export type RunModalExecuteCaller = (args: {
    *  authors this member, but keeping the execute seam exact lets hosts share
    *  one caller without a narrowing adapter. */
   invocation?: RecipeInvocation;
+  /** D-319 — run as this dish, with its settings; `config` changes them for
+   *  this run alone. */
+  dish_id?: string;
 }) => Promise<ServerExecuteResponse>;
 
 /** Lists ALL schedules; the modal filters to this recipe's. */
@@ -62,10 +66,9 @@ export type RunModalSchedulesCreateCaller = (args: {
   cron_expression?: string;
   /** D-215 slice 5 — the one-shot fire time, epoch ms. */
   run_at?: number;
-  /** Config overlay for this schedule's headless fires. The server
-   *  mints a managed dish to hold it (empty ⇒ omitted; fires on
-   *  recipe defaults). */
-  config_overlay?: Record<string, unknown>;
+  /** D-319 — the dish it runs as, with the dish's settings (a schedule has
+   *  none of its own). Absent ⇒ the recipe's main dish. */
+  dish_id?: string;
 }) => Promise<{ schedule: ServerSchedule }>;
 
 export type RunModalSchedulesUpdateCaller = (args: {
@@ -73,9 +76,6 @@ export type RunModalSchedulesUpdateCaller = (args: {
   /** D-266 — the owner's missed-run policy for this schedule. */
   missed_policy?: MissedSchedulePolicy;
   enabled?: boolean;
-  /** D-179 — edit the schedule's headless-fire config (immutably
-   *  re-versioned on a managed dish server-side; `{}` clears). */
-  config_overlay?: Record<string, unknown>;
 }) => Promise<{ schedule: ServerSchedule }>;
 
 export type RunModalSchedulesDeleteCaller = (args: {
@@ -99,18 +99,14 @@ export type RunModalTriggersCreateCaller = (args: {
   on?: string;
   fields?: string[];
   where?: Record<string, string | number | boolean>;
-  /** Config overlay for this trigger's headless fires. The server mints
-   *  a managed dish to hold it (empty ⇒ omitted; fires on recipe
-   *  defaults). */
-  config_overlay?: Record<string, unknown>;
+  /** D-319 — the dish it fires as, with the dish's settings. Absent ⇒ the
+   *  recipe's main dish. */
+  dish_id?: string;
 }) => Promise<{ trigger: EventTrigger }>;
 
 export type RunModalTriggersUpdateCaller = (args: {
   trigger_id: string;
   enabled?: boolean;
-  /** D-179 — edit the trigger's headless-fire config (immutably
-   *  re-versioned on a managed dish server-side; `{}` clears). */
-  config_overlay?: Record<string, unknown>;
 }) => Promise<{ trigger: EventTrigger }>;
 
 export type RunModalTriggersDeleteCaller = (args: {
@@ -153,6 +149,9 @@ export interface RunModalMailFactDraft {
 export interface RunModalState {
   /** Active tab. */
   tab: RunModalTab;
+  /** D-319 — the dish a run goes as, and a new schedule or trigger is added
+   *  to; `null` when the recipe has none (its main dish, once it has one). */
+  dish_id: string | null;
   /** D-269 — the SERVER's resolved zone, so the one-shot field can say what the
    *  picked time means there.
    *
@@ -234,6 +233,13 @@ export interface WireRunModalOptions {
   /** The recipe to run — needs `recipe_id` + `recipe` (for variable
    *  widgets + targeting derivation + the display name). */
   recipe: ServerRecipeListEntry;
+  /** D-319 — this recipe's dishes. With more than one, the Run tab asks which
+   *  to run as (its fields show that dish's settings; a change applies to
+   *  this run alone) and the Schedule and Trigger tabs which to add to.
+   *  Absent ⇒ runs and new rows are the main dish's. */
+  dishes?: readonly Dish[];
+  /** D-319 — the dish it was opened from. Absent ⇒ the main dish. */
+  dish_id?: string;
   /** DOM factory — pass for non-browser (test) environments. */
   document?: Document;
   /** Tab to open on. Default `'run'`. */
@@ -297,6 +303,9 @@ export interface RunModalHandle {
   getState(): Readonly<RunModalState>;
   /** Switch the active tab (re-paints). */
   setTab(tab: RunModalTab): void;
+  /** D-319 — pick the dish a run goes as / a new row is added to. Changes
+   *  typed for a run are that dish's run's alone, so they are cleared. */
+  setDish(dish_id: string | null): void;
   /** Set the raw-JSON config (mirrors a textarea edit). */
   setConfigText(text: string): void;
   /** Set one context-target value (mirrors a target-input edit). */

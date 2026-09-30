@@ -12,3 +12,4 @@ harness/tokens.css
 harness/chat-queue-harness.js
 harness/file-lifecycle-harness.js
 harness/existing-files-harness.js
+harness/mail-work-harness.js

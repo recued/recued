@@ -1294,9 +1294,10 @@ export interface ExecuteHandlerDeps {
    *  in". Nearly every deployment leaves it wired; the dbless harnesses do not. */
   peerAdmissionStore?: PeerAdmissionStore;
   /** D-234 § 234.3 — resolve a recipe's `metadata.owner_surface` to an absolute
-   *  webclient link. ⚠ Absent on a server with no public base URL, exactly like
-   *  `askAnswerLink` — an ask then carries no link rather than a dead one. */
-  ownerSurfaceLink?: (recipe_id: string) => string;
+   *  webclient link. ⚠ Answers nothing while the server has no public address,
+   *  exactly like `askAnswerLink` — an ask then carries no link rather than a
+   *  dead one. */
+  ownerSurfaceLink?: (recipe_id: string) => string | undefined;
   /** D-210 Phase C — the owner's inbox device-fanout mode, read fresh at
    *  each raise off the `reception_page` singleton config.
    *
@@ -2552,12 +2553,13 @@ const handleExecuteInner = async (
   // of a context-targeted run.
   if (internal.resume_from === undefined) assertRunTargets(recipe, request);
 
-  // D-179 P1 — standing-dish resolution. A `dish_id` on the request
-  // binds the run to a persisted dish: its `config_overlay` merges OVER
-  // the caller's install config (dish → install → defaults) BEFORE the
-  // dispatch-resolve / held-action identity / audit snapshot all read
-  // `request.config`, so every downstream consumer — including the
-  // D-177 action-identity hash basis — sees the post-overlay values.
+  // D-179 P1 / D-319 — standing-dish resolution. A `dish_id` on the request
+  // binds the run to a persisted dish: its settings merge UNDER the values
+  // given for this run (group ‹ dish ‹ run) BEFORE the dispatch-resolve /
+  // held-action identity / audit snapshot all read `request.config`, so
+  // every downstream consumer — including the D-177 action-identity hash
+  // basis — sees the post-overlay values, and the audit anchor records the
+  // settings this run used (a dish's are edited in place).
   // No `dish_id` ⇒ ephemeral dish: an id is derived from the run id for
   // audit attribution only (minted below, next to `run_id`).
   // RESUME runs (`internal.run_id` set — the preflight resumer re-enters
@@ -2591,29 +2593,23 @@ const handleExecuteInner = async (
             400,
           );
         }
-      } else if (!dish.enabled && !isResume) {
-        throw new RpcError('dish_disabled', `Dish '${dish.dish_id}' is disabled`, 409);
-      } else if (dish.is_default && !isResume) {
-        // D-179 — the recipe's install-config dish is a MUTABLE config
-        // SOURCE (auto-applied to dishless runs, below), never a dispatch
-        // identity: binding a run to it would put a mutable `dish_id` in the
-        // audit, so a later `recipe_config.set` would rewrite an audited
-        // config. Reject the direct dispatch; the overlay still applies as a
-        // base to this recipe's dishless runs.
-        throw new RpcError(
-          'bad_request',
-          `Dish '${dish.dish_id}' is the recipe's default config — applied automatically, not dispatched directly`,
-          400,
-        );
+      } else if (!dish.enabled && !isResume
+        && runAttentionForTriggerSource(request.trigger_source) === 'unattended') {
+        // D-319 — the switch governs what runs ON ITS OWN. A run by hand (the
+        // owner, chat, MCP) may run as a dish that is off; a trigger, schedule
+        // or timer of a dish switched off may not — their fire-time gates skip
+        // first, and this is the backstop.
+        throw new RpcError('dish_disabled', `Dish '${dish.dish_id}' is switched off`, 409);
       } else {
         boundDish = dish;
         if (!isResume) {
-          // D-179 P3 — group overlay merges under the dish's own:
-          // dish → group → install → defaults.
+          // D-179 P3 — the group's settings merge under the dish's own.
           const groupOverlay = dish.group_id !== undefined
             ? deps.dishGroupStore?.get(dish.group_id)?.config_overlay ?? {}
             : {};
           if (Object.keys(groupOverlay).length > 0 || Object.keys(dish.config_overlay).length > 0) {
+            // D-319 — the values given for this run win: a run by hand as a
+            // dish may change a value for that run alone.
             request = {
               ...request,
               config: mergeRecipeConfigLayers({ requested: request.config,
@@ -2624,12 +2620,12 @@ const handleExecuteInner = async (
       }
     }
   } else if (deps.dishStore && internal.run_id === undefined) {
-    // D-179 — a DISHLESS run (manual, or an automation with no config of
-    // its own) applies the recipe's INSTALL config: the overlay on its
-    // `is_default` dish, merged as a BASE UNDER the caller's per-run config
-    // (defaults < install < request.config). The default dish is a config
-    // SOURCE, not a dispatch identity — attribution stays ephemeral, so
-    // its `dish_id` never lands in this run's audit and it stays mutable.
+    // D-179 / D-319 — a DISHLESS run (chat, MCP, a door, a recipe calling
+    // another, a run by hand that picked no dish) takes the settings of the
+    // recipe's MAIN dish (`is_default`) as a BASE UNDER its own values
+    // (defaults < main dish < request.config). It does not run AS the main
+    // dish: attribution stays ephemeral, and the main dish's switch does not
+    // gate it.
     const installDish = deps.dishStore
       .listByRecipe(recipe.recipe_id)
       .find((d) => d.is_default);

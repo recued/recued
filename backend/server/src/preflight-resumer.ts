@@ -46,7 +46,7 @@ import {
   COMPENSATION_RECIPE_ID_PREFIX,
   hashRecipe,
 } from '@recued/recipes';
-import type { Checkpoint, RecipeDefinition, RecipeError } from '@recued/contracts';
+import type { ChatDispatchResult, Checkpoint, RecipeDefinition, RecipeError } from '@recued/contracts';
 import {
   executionSourceHasContract,
   isGatedActionTerminal,
@@ -68,6 +68,7 @@ import {
   type RawOpResumeOutcome,
 } from './raw-op-dispatch.js';
 import { projectRunResultForAgent } from './run-result-agent-projection.js';
+import { finishResumedRun } from './resumed-run-finishers.js';
 import type { McpActionStore } from './mcp-action-store.js';
 import {
   gatedActionHandoffFromResult,
@@ -540,6 +541,9 @@ const settleRecipeMcpAction = async (
   auditLog: AuditLogStore,
   checkpoint: Checkpoint,
   response: ExecuteResponse,
+  /** The dispatching tool's own result for this run (`resumed-run-finishers`),
+   *  delivered in place of the run's projected response. */
+  finished?: ChatDispatchResult,
 ): Promise<void> => {
   await updateMcpAction(store, checkpoint.run_id, async (actions) => {
     if (response.awaiting_approval === true) {
@@ -559,6 +563,19 @@ const settleRecipeMcpAction = async (
         status: 'cancelled',
         status_message: 'The owner cancelled the resumed action.',
         result: projected,
+      });
+      return;
+    }
+    if (finished !== undefined) {
+      const completed = finished.ok && finished.run_failed === undefined;
+      await actions.finish(checkpoint.run_id, {
+        status: completed ? 'completed' : 'failed',
+        status_message: completed
+          ? 'The approved action completed.'
+          : 'The approved action resumed but did not complete successfully.',
+        result: finished.ok
+          ? finished.result
+          : { status: 'failed', code: finished.reason, ...(finished.detail !== undefined ? { message: finished.detail } : {}) },
       });
       return;
     }
@@ -1666,6 +1683,12 @@ export const createPreflightResumer = (
           'resumed handler returned without a durable terminal receipt and run anchor',
         );
       }
+      // ⛔ A TOOL THAT HELD ITS OWN RUN FINISHES IT. `document.read`'s reader
+      // run returns the file's bytes, which only the reader's checks turn into a
+      // result; delivered raw, an approval handed them to the caller unchecked.
+      // Both deliveries below carry the tool's result instead, and the reader's
+      // run with no finisher left delivers none of its output.
+      const finished = await finishResumedRun(checkpoint, request.config, response);
       // If the resumed run paused again (a second gate downstream),
       // the host has already written a fresh `'awaiting_approval'` row
       // + minted its own checkpoint. Nothing more to do — the new
@@ -1675,6 +1698,7 @@ export const createPreflightResumer = (
         deps.auditLog,
         checkpoint,
         response,
+        finished?.result,
       );
       // ⛔⛔ THE RESULT HALF OF A TWO-EVENT TOOL CALL, AND THIS IS THE ONLY
       //   PLACE THAT CAN WRITE IT. The chat turn that dispatched this run ended
@@ -1696,8 +1720,12 @@ export const createPreflightResumer = (
           deps.onRunSettled?.({
             execution_source: settledSource,
             run_id: checkpoint.run_id,
-            tool_name: checkpoint.recipe_id ?? 'recipe.run',
-            result: response,
+            tool_name: finished?.tool_name ?? checkpoint.recipe_id ?? 'recipe.run',
+            result: finished?.result ?? response,
+            // A tool result carries no `success`; judged as the inline call is.
+            ...(finished !== undefined
+              ? { state: finished.result.ok && finished.result.run_failed === undefined ? 'succeeded' as const : 'failed' as const }
+              : {}),
             ts: Date.now(),
           });
         }

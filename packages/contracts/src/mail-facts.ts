@@ -603,7 +603,15 @@ export const MAIL_FACT_POOL_POLICIES = ['free_only', 'free_then_byok', 'byok_onl
 export type MailFactPoolPolicy = (typeof MAIL_FACT_POOL_POLICIES)[number];
 
 export type MailTemplateAi =
-  | { readonly enabled: false }
+  | {
+      readonly enabled: false;
+      /** An AI that is off may keep its prompt, slots and pool, so switching it
+       *  on finds them: a recipe's template installs with the AI off whatever
+       *  its starter says, and the owner may switch it on (§5.2). */
+      readonly prompt?: string;
+      readonly slots?: readonly string[];
+      readonly pool?: MailFactPoolPolicy;
+    }
   | {
       readonly enabled: true;
       readonly prompt: string;
@@ -697,6 +705,103 @@ export interface MailTemplate extends MailTemplateDefinition {
   readonly health: MailTemplateHealth;
   readonly created_at: number;
   readonly updated_at: number;
+}
+
+// ────────────────────────────────────────────────────────────────
+// A recipe's starter template, installed (§5.2)
+// ────────────────────────────────────────────────────────────────
+
+/** The recipe variable type whose value is one of the owner's templates. */
+export const MAIL_TEMPLATE_VARIABLE_TYPE = 'mail_template';
+
+/** A recipe's `mail_template` variables that bring a starter, in the order
+ *  the recipe declares them. Only the shape is read: the recipe validator
+ *  checked each starter, and the server checks it again before storing it. */
+export const mailTemplateStarters = (
+  variables: unknown,
+): Array<{ readonly variable: string; readonly starter: MailTemplateDefinition }> => {
+  if (variables === null || typeof variables !== 'object' || Array.isArray(variables)) return [];
+  return Object.entries(variables as Record<string, unknown>).flatMap(([variable, hint]) => {
+    if (hint === null || typeof hint !== 'object' || Array.isArray(hint)) return [];
+    const h = hint as { type?: unknown; starter?: unknown };
+    if (h.type !== MAIL_TEMPLATE_VARIABLE_TYPE || h.starter === null || typeof h.starter !== 'object') return [];
+    return [{ variable, starter: h.starter as MailTemplateDefinition }];
+  });
+};
+
+/** What a template's rules fill: its variables and data paths, each once. */
+export const mailTemplateReads = (definition: Pick<MailTemplateDefinition, 'rules'>): string[] => [
+  ...new Set(definition.rules.map((rule) =>
+    'variable' in rule.target ? rule.target.variable : `data.${rule.target.data}`)),
+];
+
+/** §5.2 — a starter an install will add, or re-apply, as the install dialog
+ *  shows it: the sender, the subject, what it reads. */
+export interface MailTemplateInstallPreview {
+  readonly recipe_id: string;
+  readonly recipe_name: string;
+  readonly variable: string;
+  readonly name: string;
+  readonly type: MailFactTypeId;
+  readonly conditions: readonly MailTemplateCondition[];
+  /** What its rules fill (`mailTemplateReads`). */
+  readonly reads: readonly string[];
+  /** `add`: the install creates it. `update`: the recipe's template is here,
+   *  and the install re-applies its rules, keeping the owner's settings. */
+  readonly action: 'add' | 'update';
+  /** An active template of the kind that reads the same mail — the same
+   *  conditions, as they are read (ruling 31). Only one stays on: the owner
+   *  chooses (`MailTemplateInstallChoice`); by default, the recipe's. */
+  readonly twin?: { readonly template_id: string; readonly name: string };
+  /** The recipe starts on facts (§5.1): its trigger stays off until the owner
+   *  switches it on. */
+  readonly trigger: boolean;
+}
+
+/** §5.2 — for any recipe that starts on facts: what its trigger watches, of
+ *  which kinds of email, and where those facts would come from on this server.
+ *  The install dialog says so, and offers to make a template where nothing
+ *  reads them. A trigger narrowed to the recipe's own template is left to the
+ *  starter it brings (`MailTemplateInstallPreview`). */
+export interface MailFactSourcesPreview {
+  readonly recipe_id: string;
+  readonly recipe_name: string;
+  readonly kinds: ReadonlyArray<{
+    readonly type: MailFactTypeId;
+    readonly name: string;
+    /** The variables its trigger watches that this kind has; empty when it
+     *  watches the kind as a whole. */
+    readonly variables: readonly string[];
+    /** The standards pass reads this kind, and the owner has it on. */
+    readonly standards: boolean;
+    /** The owner's templates of this kind that are on. */
+    readonly templates: number;
+    /** This install brings a template of this kind. */
+    readonly brought: boolean;
+  }>;
+}
+
+/** The owner's answer to a `twin`: which template stays on. */
+export interface MailTemplateInstallChoice {
+  readonly recipe_id: string;
+  readonly variable: string;
+  readonly keep: 'recipe' | 'existing';
+}
+
+/** What an install did with one starter. */
+export interface MailTemplateInstallOutcome {
+  readonly recipe_id: string;
+  readonly variable: string;
+  readonly template_id: string;
+  readonly name: string;
+  readonly action: 'created' | 'updated' | 'unchanged';
+  /** Whether the recipe's template reads mail now. */
+  readonly active: boolean;
+  /** The template switched off so this one reads that mail (ruling 31). */
+  readonly switched_off?: { readonly template_id: string; readonly name: string };
+  /** The template the recipe's setting holds, when it is not the recipe's
+   *  own: the owner kept the one already reading that mail, or picked another. */
+  readonly uses?: { readonly template_id: string; readonly name: string };
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1341,6 +1446,9 @@ export const mailTemplateShapeProblems = (raw: unknown): string[] => {
   else if (ai.enabled && (typeof ai.prompt !== 'string' || typeof ai.pool !== 'string'
     || !Array.isArray(ai.slots) || ai.slots.some((slot) => typeof slot !== 'string'))) {
     problems.push('an AI that is on needs a prompt, a pool and a list of slots');
+  } else if (!ai.enabled && (!optionalString(ai.prompt) || !optionalString(ai.pool)
+    || (ai.slots !== undefined && (!Array.isArray(ai.slots) || ai.slots.some((slot) => typeof slot !== 'string'))))) {
+    problems.push('an AI that is off keeps its prompt and pool as text and its slots as a list, when it keeps them');
   }
   return problems;
 };
@@ -1379,7 +1487,12 @@ export const mailTemplateDefinitionOf = (raw: MailTemplateDefinition): MailTempl
   html: raw.html,
   ai: raw.ai.enabled
     ? { enabled: true, prompt: raw.ai.prompt, slots: [...raw.ai.slots], pool: raw.ai.pool }
-    : { enabled: false },
+    : {
+        enabled: false,
+        ...(raw.ai.prompt !== undefined ? { prompt: raw.ai.prompt } : {}),
+        ...(raw.ai.slots !== undefined ? { slots: [...raw.ai.slots] } : {}),
+        ...(raw.ai.pool !== undefined ? { pool: raw.ai.pool } : {}),
+      },
 });
 
 const DATA_PATH_SHAPE_RE = /^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/;
@@ -1640,15 +1753,21 @@ export const validateMailTemplateDefinition = (
 
   // AI.
   const ai = definition.ai;
+  // An AI that is off may keep what switching it on needs (§5.2): what it
+  // keeps is checked as it will be when on, so it can be.
+  const kept = ai !== undefined && ai.enabled === false
+    && (ai.prompt !== undefined || ai.slots !== undefined || ai.pool !== undefined);
   if (ai === undefined || typeof ai.enabled !== 'boolean') {
     problems.push('ai must say enabled: true or false');
-  } else if (ai.enabled) {
+  } else if (ai.enabled || kept) {
     if (typeof ai.prompt !== 'string' || ai.prompt.trim().length === 0) {
-      problems.push('ai.prompt is required when the AI is on');
+      problems.push(ai.enabled
+        ? 'ai.prompt is required when the AI is on'
+        : 'an AI that is off keeps a prompt with its slots, or keeps neither');
     } else if (ai.prompt.length > MAIL_TEMPLATE_LIMITS.maxPromptLength) {
       problems.push(`ai.prompt is longer than ${MAIL_TEMPLATE_LIMITS.maxPromptLength} characters`);
     }
-    if (!(MAIL_FACT_POOL_POLICIES as readonly string[]).includes(ai.pool)) {
+    if ((ai.enabled || ai.pool !== undefined) && !(MAIL_FACT_POOL_POLICIES as readonly string[]).includes(ai.pool as string)) {
       problems.push(`ai.pool must be one of ${MAIL_FACT_POOL_POLICIES.join(', ')}`);
     }
     const entrance = new Set(entranceVariables);
@@ -1664,13 +1783,102 @@ export const validateMailTemplateDefinition = (
       }
     }
     // More than the sender's domain: an exact address, or a subject or content
-    // condition, or an entrance variable read from the email.
-    if (!mailTemplateNarrowsPastDomain({ entrance: { conditions, variables: entranceVariables }, rules })) {
+    // condition, or an entrance variable read from the email. Asked of an AI
+    // that is on; one kept while off is asked when it is switched on.
+    if (ai.enabled && !mailTemplateNarrowsPastDomain({ entrance: { conditions, variables: entranceVariables }, rules })) {
       problems.push(
         "an AI-on template's entrance needs more than the sender's domain: an address, a subject or content condition that not every email meets, or an entrance variable read after a label, by a pattern or by keywords (§4.1)",
       );
     }
   }
+  return problems;
+};
+
+/** An email address written in text. */
+const EMAIL_IN_TEXT_RE = /[^\s@<>"'()[\]{}]+@[^\s@<>"'()[\]{}]+\.[A-Za-z]{2,}/;
+/** Digits written together, whatever parts them as a number is written: a
+ *  space, a dot, a dash, brackets, a plus. */
+const DIGIT_RUN_RE = /\d[\d\s().+-]*\d/g;
+
+/** §5.2 — what in a text would carry its author's mail to every installer: an
+ *  email address, a phone number, or a long run of digits — an order or a
+ *  tracking number baked in. `null` when there is none. */
+const personalIn = (text: string, emails: boolean): string | null => {
+  const read = canonicalMailFactText(text);
+  if (emails && EMAIL_IN_TEXT_RE.test(read)) return 'holds an email address';
+  for (const run of read.match(DIGIT_RUN_RE) ?? []) {
+    const digits = run.replace(/\D/g, '');
+    if (/\d{6,}/.test(run)) return `holds a long run of digits (${digits.length}) — an order or a tracking number baked in`;
+    if (digits.length >= 7) return 'holds a phone number';
+  }
+  return null;
+};
+
+/** §5.2 — why a template cannot travel in a recipe as its `starter`, each named
+ *  where it is:
+ *   - a template of a kind an owner made, which exists only on that server
+ *     (§4.5), or one the template check refuses;
+ *   - what would carry its author's mail to every installer: an email address,
+ *     a phone number or a long run of digits inside a rule, the AI's prompt or
+ *     a repeated block's split, or a phone number or long run of digits in a
+ *     condition on the subject, the content or an attachment. A sender's
+ *     address in a `from` condition is the sender's, and stays;
+ *   - what only the author's server knows, in `personal`: its own addresses and
+ *     names, anywhere, and a condition on a sender in its contact graph.
+ *  Refused, never rewritten: a pattern edited in silence stops matching. */
+export const mailTemplateStarterProblems = (
+  raw: unknown,
+  personal: { readonly words?: readonly string[]; readonly senders?: readonly string[] } = {},
+): string[] => {
+  const shape = mailTemplateShapeProblems(raw);
+  if (shape.length > 0) return shape;
+  const definition = raw as MailTemplateDefinition;
+  const spec = getMailFactBuiltinType(String(definition.type));
+  if (spec === undefined) {
+    return [`type '${String(definition.type)}' is a kind of email made on one server: a starter's kind must be built in`];
+  }
+  const problems = validateMailTemplateDefinition(definition, spec);
+  const words = (personal.words ?? []).map((word) => canonicalMailFactText(word).trim().toLowerCase()).filter((word) => word.length > 0);
+  const senders = new Set((personal.senders ?? []).map((sender) => canonicalMailFactText(sender).trim().toLowerCase()));
+  const check = (path: string, text: string, emails: boolean): void => {
+    const lower = canonicalMailFactText(text).toLowerCase();
+    const own = words.find((word) => lower.includes(word));
+    if (own !== undefined) problems.push(`${path}: holds its author's own address or name`);
+    const found = personalIn(text, emails);
+    if (found !== null) problems.push(`${path}: ${found}`);
+  };
+  definition.entrance.conditions.forEach((condition, i) => {
+    const path = `entrance.conditions[${i}].value`;
+    if (condition.field === 'from') {
+      if (senders.has(canonicalMailFactText(condition.value).trim().toLowerCase())) {
+        problems.push(`${path}: names a sender in its author's contacts`);
+      }
+      if (words.some((word) => canonicalMailFactText(condition.value).toLowerCase().includes(word))) {
+        problems.push(`${path}: holds its author's own address or name`);
+      }
+      return;
+    }
+    if (condition.field === 'subject' || condition.field === 'body' || condition.field === 'attachment') {
+      check(path, condition.value, false);
+    }
+  });
+  definition.rules.forEach((rule, i) => {
+    const find = rule.find;
+    const path = `rules[${i}].find`;
+    if (find.kind === 'after_label') check(`${path}.label`, find.label, true);
+    else if (find.kind === 'pattern') check(`${path}.pattern`, find.pattern, true);
+    else if (find.kind === 'constant') check(`${path}.value`, find.value, true);
+    else if (find.kind === 'attachment') check(`${path}.match`, find.match, true);
+    else if (find.kind === 'keyword_map') {
+      find.cases.forEach((c, j) => {
+        check(`${path}.cases[${j}].contains`, c.contains, true);
+        check(`${path}.cases[${j}].value`, c.value, true);
+      });
+    }
+  });
+  if (definition.repeat !== undefined) check('repeat.split', definition.repeat.split, true);
+  // A prompt kept while the AI is off travels too.
+  if (definition.ai.prompt !== undefined) check('ai.prompt', definition.ai.prompt, true);
   return problems;
 };
 

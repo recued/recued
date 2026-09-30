@@ -10684,6 +10684,44 @@ describe('D-165 slice 3 connections enrollment panel — vendor OAuth popup', ()
     mount.dispose();
   });
 
+  /** ⛔ 2026-09-29: from the server's own https name (a Pro recued.net address)
+   *  this sent the app.recued.com callback, whose page checks the state with a
+   *  key only a dialog AT app.recued.com can leave for it — so it could never
+   *  finish. The § A.12 direct choice goes to the server itself. */
+  it("at the server's own https name, sends and shows <origin>/oauth/complete", async () => {
+    vi.stubGlobal('location', { origin: 'https://alice.recued.net' });
+    try {
+      const popup = makeFakePopup();
+      const oauthEnv = makeFakeOAuthEnv(popup);
+      const sub = makeFakeSubscribe();
+      const runStart = vi.fn<ConnectionsStartVendorOAuthCaller>(async () => ({
+        authorize_url: 'https://app.hubspot.com/oauth/authorize?x=1',
+        flow_id: 'flow-1',
+        server_identity_public_key_b64: 'pubkey-b64',
+        claim_secret: 'secret-1',
+      }));
+      const runTake = vi.fn<ConnectionsTakeVendorOAuthResultCaller>(async () => ({ result: null }));
+      const { mount, click, field, getHtml } = mountPanel({
+        connections: [],
+        oauth: { env: oauthEnv.env, subscribe: sub.subscribe, runStart, runTake },
+      });
+      await mount.whenLoaded();
+      wireVendorForm(click, field);
+      // What the owner is told to register is what is sent.
+      expect(getHtml()).toContain('https://alice.recued.net/oauth/complete');
+      field('auth.client_id', 'my-client-id');
+      field('auth.client_secret', 'my-secret');
+      click({ action: 'connections-authorize-vendor', vendor: 'hubspot' });
+      await flushAsync();
+      expect(runStart).toHaveBeenCalledWith(expect.objectContaining({
+        redirect_uri: 'https://alice.recued.net/oauth/complete',
+      }));
+      mount.dispose();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('does not consume another row recovery receipt from a same-named create OAuth form', async () => {
     const continuity = rotationContinuity();
     expect(continuity.store.write({

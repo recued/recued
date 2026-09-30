@@ -312,6 +312,19 @@ describe('discover-panel — server search', () => {
     panel.dispose();
   });
 
+  it('D-315 — says what an install did beside installing, after the list repaints', async () => {
+    const host = makeEl('div');
+    const search = vi.fn(async () => page([r('cat-1')]));
+    const run = vi.fn(async () => ({ ok: true, notice: 'Added the mail template “Shop parcels”; its AI is off.' }));
+    const panel = mountDiscoverPanel(baseOpts(host, search, { install: { label: 'Install', run } }));
+    await panel.whenIdle();
+    await panel.clickInstall('cat-1');
+    const status = byAttr(host, DISCOVER_PANEL_STATUS_ATTR)[0];
+    expect(status.getAttribute(DISCOVER_PANEL_NOTICE_ATTR)).toBe('notice');
+    expect(statusText(host)).toBe('Added the mail template “Shop parcels”; its AI is off.');
+    panel.dispose();
+  });
+
   it('falls back to the corpus on a search failure — visibly, with a retry', async () => {
     const host = makeEl('div');
     let failNext = true;

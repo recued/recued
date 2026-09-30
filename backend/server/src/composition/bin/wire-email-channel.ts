@@ -59,12 +59,10 @@ export interface ComposeEmailChannelDeps {
    *  `handleCollectionMailSend({ registry })` — the same seam the D-127
    *  connection-notification email subhandler uses. */
   mailRpc: MailRpcDep;
-  /** D-158 P2b-ii — public ask-landing URL builder. DEFERRED in this
-   *  slice (the landing-page HTTP route is a separate follow-on); when a
-   *  later slice serves the route, the boot site injects it here and
-   *  email asks gain the one-click affordance. Absent → text-only asks,
-   *  answerable on the always-on `ui` channel. */
-  answerLink?: (ask_id: string) => string;
+  /** D-158 P2b-ii — public ask-landing URL builder, answering nothing while
+   *  the server has no public address for `/ask`. Absent or unanswered →
+   *  text-only asks, answerable on the always-on `ui` channel. */
+  answerLink?: (ask_id: string) => string | undefined;
 }
 
 /** The two config fields the email channel reads off the

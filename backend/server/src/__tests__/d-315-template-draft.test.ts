@@ -85,6 +85,15 @@ describe('a draft from the AI’s answer', () => {
     ]));
   });
 
+  it('keeps a rule that only mentions PII — words are not an alias', () => {
+    const answer = goodAnswer();
+    const kept = goodAnswer().rules.length;
+    answer.rules.push({ target: { variable: 'merchant' }, source: 'body', find: { kind: 'after_label', label: 'Seller (no PII.):' } } as never);
+    const { definition, dropped } = draftFromAnswer(answer, ups, undefined, specOf);
+    expect(dropped.filter((reason) => reason.includes('privacy alias'))).toEqual([]);
+    expect(definition.rules).toHaveLength(kept + 1);
+  });
+
   it('drops a rule or a condition in a shape it cannot read, and keeps the rest', () => {
     const answer = goodAnswer();
     answer.entrance.conditions.push({ field: 'subject', op: 'contains' } as never);

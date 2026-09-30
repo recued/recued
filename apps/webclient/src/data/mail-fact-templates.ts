@@ -30,8 +30,10 @@ import {
   mailFactEmptyAiSlots,
   mailFactOn,
   mailFactTypeVariables,
+  mailTemplateDefinitionOf,
   mailTemplateNarrowsPastDomain,
   MAIL_FACT_BUILTIN_TYPES,
+  MAIL_FACT_POOL_POLICIES,
   MAIL_FACT_STANDARDS_TYPES,
   MAIL_TEMPLATE_CONDITION_FIELDS,
   MAIL_TEMPLATE_CONDITION_OPS_BY_FIELD,
@@ -59,9 +61,10 @@ import {
   type MailTemplateRule,
   type MailTemplateSample,
   type MailTemplateUpdateRequest,
+  type Dish,
   type ServerRecipeListEntry,
 } from '@recued/contracts';
-import { e } from '@recued/ui-shared';
+import { dishLineName, e } from '@recued/ui-shared';
 
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import {
@@ -92,6 +95,8 @@ export interface MailFactTemplateCallers extends MailFactTypeCallers {
   readonly createTemplate?: (args: MailTemplateCreateRequest) => Promise<{ readonly template: MailTemplate }>;
   readonly updateTemplate?: (args: MailTemplateUpdateRequest) => Promise<{ readonly template: MailTemplate }>;
   readonly deleteTemplate?: (args: { template_id: string }) => Promise<{ readonly deleted: boolean }>;
+  /** §5.2 — "Duplicate to edit" a template a recipe brought: the owner's copy. */
+  readonly duplicateTemplate?: (args: { template_id: string }) => Promise<{ readonly template: MailTemplate }>;
   readonly getStandards?: () => Promise<{ readonly standards: readonly MailFactStandardsSetting[] }>;
   readonly setStandards?: (args: MailFactStandardsSetting) => Promise<MailFactStandardsSetting>;
   readonly readEmail?: (args: MailFactEmailRef) => Promise<MailFactEmailContent>;
@@ -105,7 +110,10 @@ export interface MailFactTemplateCallers extends MailFactTypeCallers {
     publisher_id: string;
     on: string;
     where: Record<string, string>;
+    dish_id?: string;
   }) => Promise<unknown>;
+  /** D-319 §5.5 — the dishes, to ask which one a new trigger runs as. */
+  readonly listDishes?: () => Promise<{ readonly dishes: readonly Dish[] }>;
   readonly getBackfill?: () => Promise<MailFactBackfillState>;
   readonly startBackfill?: (args: MailFactBackfillRequest) => Promise<MailFactBackfillJob>;
   readonly cancelBackfill?: (args: { job_id: string }) => Promise<MailFactBackfillJob>;
@@ -201,6 +209,9 @@ interface Editor {
   readonly baseline: string;
   /** The template the address named no longer exists: only that is shown. */
   readonly missing: boolean;
+  /** §5.2 — the recipe that brought it, whose rules the owner does not edit
+   *  in place: the editor shows it, and offers "Duplicate to edit". */
+  readonly fromRecipe: string | null;
   /** The disclosures, kept open or shut across repaints. */
   readonly advancedOpen: boolean;
   readonly droppedOpen: boolean;
@@ -216,6 +227,8 @@ interface Editor {
 
 interface List {
   readonly templates: readonly MailTemplate[];
+  /** §5.2 — the installed recipes' names, for "From the recipe …". */
+  readonly recipeNames: ReadonlyMap<string, string>;
   readonly standards: readonly MailFactStandardsSetting[];
   readonly loaded: boolean;
   readonly error: string | null;
@@ -236,6 +249,10 @@ interface List {
     readonly recipes: ReadonlyArray<ServerRecipeListEntry> | null;
     /** `publisher/recipe_id`, or '' while none is chosen. */
     readonly choice: string;
+    /** D-319 §5.5 — every dish (soft: none read ⇒ the recipe's main one). */
+    readonly dishes: readonly Dish[];
+    /** The dish it runs as, or '' for the recipe's main one. */
+    readonly dish: string;
     readonly saving: boolean;
     readonly error: string | null;
     readonly done: string | null;
@@ -458,7 +475,7 @@ export interface MailFactTemplates {
 export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTemplates => {
   const { callers, actionAttr } = deps;
   let list: List = {
-    templates: [], standards: [], loaded: false, error: null, confirmDelete: null, busy: null, rowError: null,
+    templates: [], recipeNames: new Map(), standards: [], loaded: false, error: null, confirmDelete: null, busy: null, rowError: null,
     backfill: null, backfillForm: null, thenRun: null, types: [], typeDelete: null, typeError: null,
   };
   /** The kinds of email this server knows: the built-in ones and the owner's (§4.5). */
@@ -501,6 +518,7 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
     session: ++sessions,
     baseline: snapshotOf(draft, source),
     missing: false,
+    fromRecipe: null,
     advancedOpen: false,
     droppedOpen: false,
     pendingType: null,
@@ -561,7 +579,15 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
         callers.listTypes?.().then((r) => r.types).catch(() => list.types) ?? Promise.resolve(list.types),
       ]);
       if (disposed || mine !== seq) return;
-      list = { ...list, templates, standards, backfill, types, loaded: true, error: null };
+      // §5.2 — a template a recipe brought is named by its recipe's name. A
+      // list that cannot load names it by its id, as before.
+      const recipeNames = callers.listRecipes !== undefined && templates.some((t) => t.origin.kind === 'recipe')
+        ? await callers.listRecipes()
+          .then((r) => new Map(r.recipes.map((entry) => [entry.recipe_id, entry.recipe.metadata?.name ?? entry.recipe_id])))
+          .catch(() => list.recipeNames)
+        : list.recipeNames;
+      if (disposed || mine !== seq) return;
+      list = { ...list, templates, recipeNames, standards, backfill, types, loaded: true, error: null };
       typesLoaded = callers.listTypes !== undefined;
     } catch (error) {
       if (disposed || mine !== seq) return;
@@ -653,7 +679,12 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
       if (!stillOpen(session)) return;
       editor = found === null
         ? { ...editor!, loading: false, missing: true, error: 'This template no longer exists.' }
-        : settled({ ...editor!, loading: false, draft: draftOf(found) });
+        : settled({
+          ...editor!,
+          loading: false,
+          draft: draftOf(found),
+          fromRecipe: found.origin.kind === 'recipe' ? found.origin.recipe : null,
+        });
     } catch (error) {
       if (!stillOpen(session)) return;
       editor = { ...editor!, loading: false, error: humanizeRpcError(error) };
@@ -878,6 +909,50 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
     }
   };
 
+  /** §5.2 — "Duplicate to edit": the owner's own copy, opened to edit. It
+   *  reads that mail in the recipe's template's place. */
+  const duplicateTemplate = async (template_id: string): Promise<void> => {
+    if (list.busy !== null || callers.duplicateTemplate === undefined) return;
+    list = { ...list, busy: template_id, rowError: null };
+    deps.render();
+    try {
+      const { template } = await callers.duplicateTemplate({ template_id });
+      if (disposed) return;
+      list = { ...list, busy: null };
+      void loadList(true);
+      await openEditor(template.template_id);
+    } catch (error) {
+      if (disposed) return;
+      list = { ...list, busy: null, rowError: { id: template_id, message: humanizeRpcError(error) } };
+      deps.render();
+    }
+  };
+
+  /** §5.2 — the owner's setting on a recipe's template: its AI on or off, and
+   *  the pool. The rest of the definition goes back as it is. */
+  const setRecipeAi = async (
+    template_id: string,
+    next: (ai: MailTemplate['ai']) => MailTemplate['ai'],
+  ): Promise<void> => {
+    const template = list.templates.find((t) => t.template_id === template_id);
+    if (template === undefined || list.busy !== null || callers.updateTemplate === undefined) return;
+    list = { ...list, busy: template_id, rowError: null };
+    deps.render();
+    try {
+      await callers.updateTemplate({
+        template_id,
+        definition: { ...mailTemplateDefinitionOf(template), ai: next(template.ai) },
+      });
+      if (disposed) return;
+      list = { ...list, busy: null };
+      await loadList(true);
+    } catch (error) {
+      if (disposed) return;
+      list = { ...list, busy: null, rowError: { id: template_id, message: humanizeRpcError(error) } };
+      deps.render();
+    }
+  };
+
   const deleteTemplate = async (template_id: string): Promise<void> => {
     list = { ...list, busy: template_id, rowError: null };
     deps.render();
@@ -919,12 +994,19 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
   };
 
   const openThenRun = async (template_id: string): Promise<void> => {
-    list = { ...list, thenRun: { template_id, recipes: null, choice: '', saving: false, error: null, done: null } };
+    list = {
+      ...list,
+      thenRun: { template_id, recipes: null, choice: '', dishes: [], dish: '', saving: false, error: null, done: null },
+    };
     deps.render();
     try {
-      const recipes = (await callers.listRecipes!()).recipes;
+      const [recipes, dishes] = await Promise.all([
+        callers.listRecipes!().then((result) => result.recipes),
+        // Soft: unread, a new trigger goes to the recipe's main dish.
+        callers.listDishes?.().then((result) => result.dishes, () => []) ?? Promise.resolve([]),
+      ]);
       if (disposed || list.thenRun?.template_id !== template_id) return;
-      list = { ...list, thenRun: { ...list.thenRun, recipes } };
+      list = { ...list, thenRun: { ...list.thenRun, recipes, dishes } };
       deps.focus('tr:recipe');
     } catch (error) {
       if (disposed || list.thenRun?.template_id !== template_id) return;
@@ -949,6 +1031,8 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
     listCalls += 1;
     // Its own form: one opened on another template meanwhile is not its.
     const ownForm = (): boolean => !disposed && list.thenRun !== null && list.thenRun.template_id === template_id;
+    const mine = dishesOf(form, entry);
+    const dish = chosenDish(form, mine);
     try {
       await callers.createTrigger!({
         recipe_id: entry.recipe_id,
@@ -956,10 +1040,13 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
         // On the template's kind (ruling 43), so the check is exact.
         on: mailFactOn(template.type),
         where: { template: template.template_id },
+        // D-319 — it runs as a dish, with that dish's settings.
+        ...(dish !== undefined ? { dish_id: dish.dish_id } : {}),
       });
       if (!ownForm()) return;
       const name = entry.recipe.metadata?.name ?? entry.recipe_id;
-      list = { ...list, thenRun: { ...list.thenRun!, saving: false, done: `“${name}” now runs for what “${template.name}” reads. It is listed in Automation.` } };
+      const as = mine.length > 1 && dish !== undefined ? ` as “${dishLineName(dish, mine.length)}”` : '';
+      list = { ...list, thenRun: { ...list.thenRun!, saving: false, done: `“${name}” now runs${as} for what “${template.name}” reads. It is listed in Automation.` } };
       deps.focus(`tr:open:${template_id}`);
     } catch (error) {
       if (!ownForm()) return;
@@ -1090,6 +1177,31 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
 
   const recipeKey = (entry: ServerRecipeListEntry): string => `${entry.publisher_id}/${entry.recipe_id}`;
 
+  /** A recipe's dishes, the main one first. */
+  const dishesOf = (form: NonNullable<List['thenRun']>, entry: ServerRecipeListEntry): Dish[] =>
+    form.dishes
+      .filter((dish) => dish.recipe_id === entry.recipe_id && dish.publisher_id === entry.publisher_id)
+      .sort((a, b) => Number(b.is_default) - Number(a.is_default) || a.created_at - b.created_at);
+
+  /** The dish chosen — the main one until another is. */
+  const chosenDish = (form: NonNullable<List['thenRun']>, mine: readonly Dish[]): Dish | undefined =>
+    mine.find((dish) => dish.dish_id === form.dish) ?? mine[0];
+
+  const dishChoiceLabel = (dish: Dish, count: number): string =>
+    `${dishLineName(dish, count) ?? 'Main'}${dish.is_default && dish.name.trim() !== '' ? ' (main)' : ''}${dish.enabled ? '' : ' — off'}`;
+
+  /** D-319 §5.5 — which dish it runs as, when the recipe has more than one. */
+  const renderDishChoice = (form: NonNullable<List['thenRun']>): string => {
+    const entry = form.recipes?.find((candidate) => recipeKey(candidate) === form.choice);
+    if (entry === undefined) return '';
+    const mine = dishesOf(form, entry);
+    if (mine.length < 2) return '';
+    const chosen = chosenDish(form, mine);
+    return `<label>Run as <select ${MAIL_FACTS_FIELD_ATTR}="tr:dish" ${FOCUS}="tr:dish">
+        ${mine.map((dish) => option(dish.dish_id, dishChoiceLabel(dish, mine.length), dish === chosen)).join('')}
+      </select></label>`;
+  };
+
   const renderThenRun = (template: MailTemplate): string => {
     const form = list.thenRun;
     if (form === null || form.template_id !== template.template_id) return '';
@@ -1112,6 +1224,7 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
                 ${option('', 'choose a recipe…', form.choice === '')}
                 ${form.recipes.map((entry) => option(recipeKey(entry), entry.recipe.metadata?.name ?? entry.recipe_id, recipeKey(entry) === form.choice)).join('')}
               </select></label>
+              ${renderDishChoice(form)}
               <p class="mail-facts-subtle">It runs for each ${e(typeWords)} this template reads, starting with the next email. You can switch it off in Automation.</p>`}
         ${form.error !== null ? `<p class="mail-facts-error" role="alert">${e(form.error)}</p>` : ''}
         <div class="mail-facts-template-actions">
@@ -1127,7 +1240,8 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
 
   const renderTemplateRow = (template: MailTemplate): string => {
     const spec = specOf(template.type);
-    const origin = template.origin.kind === 'owner' ? 'Yours' : `From the recipe ${template.origin.recipe}`;
+    const fromRecipe = template.origin.kind === 'recipe';
+    const origin = template.origin.kind === 'owner' ? 'Yours' : `From the recipe ${recipeNameOf(template.origin.recipe)}`;
     const busy = list.busy === template.template_id;
     const confirming = list.confirmDelete === template.template_id;
     return `
@@ -1156,8 +1270,14 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
                   ${FOCUS}="tpl:toggle:${e(template.template_id)}"${template.active ? ' checked' : ''}${busy ? ' aria-busy="true"' : ''}${list.busy !== null ? ' aria-disabled="true"' : ''}>
                 <span aria-hidden="true">${template.active ? 'On' : 'Off'}</span>
               </label>
-              <button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-edit" data-template-id="${e(template.template_id)}"
-                ${FOCUS}="tpl:edit:${e(template.template_id)}">Edit</button>
+              ${fromRecipe
+                ? (callers.duplicateTemplate !== undefined
+                  ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-duplicate" data-template-id="${e(template.template_id)}"
+                      ${FOCUS}="tpl:duplicate:${e(template.template_id)}"${busy ? ' aria-disabled="true" aria-busy="true"' : ''}>Duplicate to edit</button>`
+                  : '')
+                : `<button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-edit" data-template-id="${e(template.template_id)}"
+                    ${FOCUS}="tpl:edit:${e(template.template_id)}">Edit</button>`}
+              ${fromRecipe ? renderRecipeAi(template) : ''}
               ${template.active && callers.startBackfill !== undefined && list.backfillForm?.template_id !== template.template_id
                 && !(list.backfill?.job?.status === 'running' && list.backfill.job.template_id === template.template_id)
                 ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-bf-open" data-template-id="${e(template.template_id)}"
@@ -1167,10 +1287,31 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
                 ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-tr-open" data-template-id="${e(template.template_id)}"
                     ${FOCUS}="tr:open:${e(template.template_id)}">Then run…</button>`
                 : ''}
-              <button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-delete" data-template-id="${e(template.template_id)}"
-                ${FOCUS}="tpl:delete:${e(template.template_id)}">Delete</button>
+              ${fromRecipe
+                ? '<span class="mail-facts-subtle">Updates with its recipe, and goes with it</span>'
+                : `<button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-delete" data-template-id="${e(template.template_id)}"
+                    ${FOCUS}="tpl:delete:${e(template.template_id)}">Delete</button>`}
             </div>`}
       </li>`;
+  };
+
+  const recipeNameOf = (recipe_id: string): string => list.recipeNames.get(recipe_id) ?? recipe_id;
+
+  /** §5.2 — the AI of a template a recipe brought: the owner switches it on or
+   *  off and picks its pool; the prompt is the recipe's. Offered only when the
+   *  recipe gave it one. */
+  const renderRecipeAi = (template: MailTemplate): string => {
+    if (template.ai.prompt === undefined || callers.updateTemplate === undefined) return '';
+    const id = e(template.template_id);
+    const busy = list.busy !== null ? ' aria-disabled="true"' : '';
+    return `
+      <button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-ai" data-template-id="${id}"
+        ${FOCUS}="tpl:ai:${id}"${busy}>${template.ai.enabled ? 'Turn AI off' : 'Turn AI on'}</button>
+      ${template.ai.enabled
+        ? `<label class="mail-facts-subtle">AI uses <select ${MAIL_FACTS_FIELD_ATTR}="tpl:pool:${id}" ${FOCUS}="tpl:pool:${id}"${busy}>
+            ${MAIL_FACT_POOL_POLICIES.map((pool) => option(pool, POOL_WORDS[pool], pool === template.ai.pool)).join('')}
+          </select></label>`
+        : ''}`;
   };
 
   const renderList = (): string => `
@@ -1606,7 +1747,9 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
   const renderEditor = (ed: Editor): string => {
     picks = [];
     const spec = specOf(ed.draft.type);
-    const heading = ed.template_id === null ? 'New template' : `Edit “${e(ed.draft.name)}”`;
+    const heading = ed.template_id === null
+      ? 'New template'
+      : ed.fromRecipe !== null ? `“${e(ed.draft.name)}”` : `Edit “${e(ed.draft.name)}”`;
     if (ed.loading) {
       return `<p class="mail-facts-subtle" aria-live="polite">Loading the template…</p>`;
     }
@@ -1623,9 +1766,19 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
       <section class="mail-facts-editor" aria-labelledby="mail-facts-editor-title">
         <button type="button" class="data-button" ${actionAttr}="mail-facts-ed-back" ${FOCUS}="ed:back">← Templates</button>
         <h3 class="mail-facts-subheading" id="mail-facts-editor-title" tabindex="-1" ${FOCUS}="ed:title">${heading}</h3>
+        ${ed.fromRecipe !== null
+          ? `<div class="mail-facts-notice" role="note">
+              <p>This template comes with the recipe ${e(recipeNameOf(ed.fromRecipe))}: its rules update with the recipe, so they are not changed here.</p>
+              ${callers.duplicateTemplate !== undefined && ed.template_id !== null
+                ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-tpl-duplicate" data-template-id="${e(ed.template_id)}"
+                    ${FOCUS}="ed:duplicate">Duplicate to edit</button>`
+                : ''}
+            </div>`
+          : ''}
         ${renderLeaving(ed)}
         ${ed.error !== null ? `<p class="mail-facts-error" role="alert">${e(ed.error)}</p>` : ''}
         ${ed.problems.length > 0 ? `<ul class="mail-facts-problems" role="list">${ed.problems.map((p) => `<li>${e(p)}</li>`).join('')}</ul>` : ''}
+        ${ed.fromRecipe !== null ? '<fieldset class="mail-facts-readonly" disabled>' : ''}
         <div class="mail-facts-editor-top">
           <label>Name <input type="text" ${MAIL_FACTS_FIELD_ATTR}="ed:name" ${FOCUS}="ed:name" value="${e(ed.draft.name)}"
             placeholder="${e(definitionOf(ed.draft, ed.source).name)}"></label>
@@ -1645,9 +1798,12 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
         ${spec !== undefined ? renderEntrance(ed, spec) : ''}
         ${spec !== undefined ? renderAi(ed, spec) : ''}
         ${spec !== undefined ? renderPreview(ed, spec) : ''}
+        ${ed.fromRecipe !== null ? '</fieldset>' : ''}
         <div class="mail-facts-editor-actions">
-          <button type="button" class="data-button" ${actionAttr}="mail-facts-ed-save" ${FOCUS}="ed:save"${ed.saving ? ' aria-disabled="true" aria-busy="true"' : ''}>${ed.saving ? 'Saving…' : 'Save template'}</button>
-          <button type="button" class="data-button" ${actionAttr}="mail-facts-ed-back" ${FOCUS}="ed:cancel">Cancel</button>
+          ${ed.fromRecipe === null
+            ? `<button type="button" class="data-button" ${actionAttr}="mail-facts-ed-save" ${FOCUS}="ed:save"${ed.saving ? ' aria-disabled="true" aria-busy="true"' : ''}>${ed.saving ? 'Saving…' : 'Save template'}</button>`
+            : ''}
+          <button type="button" class="data-button" ${actionAttr}="mail-facts-ed-back" ${FOCUS}="ed:cancel">${ed.fromRecipe === null ? 'Cancel' : 'Close'}</button>
         </div>
         ${ed.saved && unsaved(ed) ? '<p class="mail-facts-subtle" role="status">Saved. Your changes since are not saved yet.</p>' : ''}
         <p class="mail-facts-subtle">A saved template reads the mail that arrives from now on.</p>
@@ -1783,6 +1939,14 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
           return true;
         case 'mail-facts-tpl-edit':
           void openEditor(templateId);
+          return true;
+        case 'mail-facts-tpl-duplicate':
+          void duplicateTemplate(templateId);
+          return true;
+        case 'mail-facts-tpl-ai':
+          void setRecipeAi(templateId, (ai) => ai.enabled
+            ? { enabled: false, prompt: ai.prompt ?? '', slots: [...(ai.slots ?? [])], pool: ai.pool ?? 'free_only' }
+            : { enabled: true, prompt: ai.prompt ?? '', slots: [...(ai.slots ?? [])], pool: ai.pool ?? 'free_only' });
           return true;
         case 'mail-facts-tpl-toggle':
           void toggleTemplate(templateId);
@@ -1987,9 +2151,29 @@ export const createMailFactTemplates = (deps: MailFactTemplatesDeps): MailFactTe
       if (field === null) return false;
       if (field === 'tr:recipe') {
         if (list.thenRun !== null) {
-          list = { ...list, thenRun: { ...list.thenRun, choice: (target as HTMLSelectElement).value ?? '', error: null } };
+          // Another recipe: its own main dish until another is chosen.
+          list = { ...list, thenRun: { ...list.thenRun, choice: (target as HTMLSelectElement).value ?? '', dish: '', error: null } };
           deps.focus(field);
           deps.render();
+        }
+        return true;
+      }
+      if (field === 'tr:dish') {
+        if (list.thenRun !== null) {
+          list = { ...list, thenRun: { ...list.thenRun, dish: (target as HTMLSelectElement).value ?? '', error: null } };
+          deps.focus(field);
+          deps.render();
+        }
+        return true;
+      }
+      // §5.2 — a recipe's template: the pool its AI uses.
+      if (field.startsWith('tpl:pool:')) {
+        const pool = (target as HTMLSelectElement).value as MailFactPoolPolicy;
+        if ((MAIL_FACT_POOL_POLICIES as readonly string[]).includes(pool)) {
+          deps.focus(field);
+          void setRecipeAi(field.slice('tpl:pool:'.length), (ai) => (ai.enabled
+            ? { ...ai, pool }
+            : ai));
         }
         return true;
       }

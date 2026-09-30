@@ -1134,7 +1134,7 @@ export const mountPackAppView = (
     return `<section class="pack-app-operations">
       <header class="pack-app-operations-header">
         <h3 class="pack-app-operations-title">Automation</h3>
-        <p class="pack-app-operations-description">These recipes wait for their own triggers. Review, pause, or arm them in Automation.</p>
+        <p class="pack-app-operations-description">These recipes start on their own once you switch them on, each with its settings. Switch them on, or pause them, in Automation.</p>
       </header>
       <div class="pack-app-operations-grid">${cards}</div>
     </section>`;

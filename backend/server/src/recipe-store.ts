@@ -350,17 +350,18 @@ export const createRecipeStore = (
   /** D-303 — ⛔ AN UPDATE THAT DROPS A VARIABLE MUST NOT STOP THE RECIPE RUNNING.
    *
    *  D-222 refuses every config key a recipe does not declare, including values the
-   *  owner saved earlier: the install config, dishes, groups, and the managed dishes
-   *  behind schedules, triggers and auto-run. Nothing prunes those, so a version that
-   *  drops `x` would answer every run of an owner who ever saved `x` with a refusal.
+   *  owner saved earlier: dishes (D-319: every trigger, schedule and timer runs as
+   *  one, and the main dish holds what was the install config) and groups. Nothing
+   *  prunes those, so a version that drops `x` would answer every run of an owner
+   *  who ever saved `x` with a refusal.
    *
-   *  Deleting the saved values is the wrong fix. A managed dish is immutable (one
-   *  dish id, one config), a pre-approval pins a dish's config, and a group can serve
-   *  more than one recipe. So nothing saved is rewritten. This records the names the
-   *  update dropped, the run drops their values (D-302's mechanism), and a later
-   *  version that declares a name again takes it off the list, so its saved value
-   *  applies again. Called inside the write's transaction, so the list and the stored
-   *  recipe cannot disagree. */
+   *  Deleting the saved values is the wrong fix. A pre-approval pins a dish's config,
+   *  and a group can serve more than one recipe (D-319 edits a dish's settings in
+   *  place, but that is the owner's edit, not an update's). So nothing saved is
+   *  rewritten. This records the names the update dropped, the run drops their values
+   *  (D-302's mechanism), and a later version that declares a name again takes it off
+   *  the list, so its saved value applies again. Called inside the write's
+   *  transaction, so the list and the stored recipe cannot disagree. */
   const recordRetired = (next: RecipeDefinition, priorJson: string | undefined, now: number): void => {
     if (!db) return;
     let prior: RecipeDefinition | null = null;

@@ -96,6 +96,13 @@ export interface RecipeEventTrigger {
    *  and `form_definition_id` narrowing because those paths are guaranteed
    *  on its privacy-minimized routing record. */
   where?: Record<string, string | number | boolean>;
+  /** D-315 §5.1 — a mail-fact trigger narrowed to the recipe's own template:
+   *  the name of one of its `mail_template` variables. A template's id is
+   *  minted on the owner's server, so the recipe names the setting and the
+   *  reconciler writes the id the setting holds into the row, and re-points
+   *  the row, keeping it on or off, when the owner picks another. With no
+   *  template chosen, the row is not made. Not with `where.template`. */
+  template_variable?: string;
   /** DOM-watch SUGAR form (`on: "element.changed"`) — the Chrome match
    *  pattern naming the tab/origin to watch (e.g.
    *  `https://app.hubspot.com/contacts/*`). Literal only; required for the

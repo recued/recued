@@ -1,24 +1,13 @@
 /** D-158 P2b-ii — the email `answerLink` builder for the notification
- *  ask-landing page.
+ *  ask-landing page, and the deep-link builders beside it.
  *
- *  The email channel's `answerLink?: (ask_id) => string` is injected ONLY on
- *  a publicly-reachable server (the leaf header: "on a public-reachable
- *  server an `answerLink` builder is injected"). The leaf's contract is
- *  binary at construction — a PRESENT `answerLink` makes `deliverAsk` always
- *  carry the one-click link; an ABSENT one keeps asks text-only — so
- *  presence is a boot-time decision, resolved here from the public base URL.
- *
- *  Public base URL source: `RECUED_PUBLIC_BASE_URL` — the explicit, documented
- *  public-base-URL env (internal design notes), the same
- *  primary source reception's `getShareBaseUrl` reads first. A non-public
- *  deployment (env unset / local host) yields `null` → no `answerLink` → asks
- *  stay text-only, answerable on the always-on `ui` channel + by email reply.
- *
- *  Follow-on: reception's `getShareBaseUrl` additionally falls back to a
- *  verified DDNS hostname from the hostname registry when the env is unset.
- *  Mirroring that here needs the hostname-registry store threaded to the
- *  email-channel construction site; deferred so this slice stays focused. A
- *  deployment that wants the one-click link sets `RECUED_PUBLIC_BASE_URL`. */
+ *  Each builder takes a resolved public base URL, or null when there is none
+ *  (→ no link: the ask stays text-only, answerable on the always-on `ui`
+ *  channel + by email reply). The base comes from `public-address.ts`, PER
+ *  LINK: `RECUED_PUBLIC_BASE_URL` when set, else the server's own verified
+ *  name that serves the path, ranked by the cloud probe. It used to be the
+ *  variable alone, read once at boot, so a Pro server that never set it sent
+ *  every ask without its link. */
 
 import { PATH_FOR_ROLE } from '@recued/contracts';
 
@@ -79,8 +68,8 @@ const isPrivateOrLocalHost = (rawHost: string): boolean => {
 /** Validate + normalize a candidate public base URL: http/https scheme +
  *  a publicly-reachable host (not loopback / private / link-local / `.local`),
  *  trailing slashes stripped. Returns null when the value is absent /
- *  unparseable / non-http / private — in which case no `answerLink` is built
- *  and emailed asks stay text-only. */
+ *  unparseable / non-http / private. `public-address.ts` runs every candidate
+ *  through it, the configured one and each hostname. */
 export const resolvePublicBaseUrl = (raw: string | undefined | null): string | null => {
   const trimmed = raw?.trim();
   if (!trimmed || trimmed.length === 0) return null;
@@ -125,10 +114,10 @@ export const buildAskLandingAnswerLink = (
  *  recipe that tried to author the URL itself would emit one that resolves for
  *  nobody — every channel carrying `link_url` needs an absolute url (email
  *  appends it raw, remote passes it through, the ask landing runs it through
- *  `safeHttpUrl`), and the only public base URL is a boot-time fact.
+ *  `safeHttpUrl`), and only the host knows its public address.
  *
  *  ⚠ Null on a non-public server, exactly like {@link buildAskLandingAnswerLink}
- *  — same base, same binary presence, so an owner never gets a link that cannot
+ *  — same resolver, same rule, so an owner never gets a link that cannot
  *  be opened from where the notification reached them.
  *
  *  ⚠ The hash route is the webclient's own (`serializeShellRoute('recipes', id)`
@@ -202,7 +191,7 @@ export const buildUpdatesSurfaceLink = (baseUrl: string | null): string | null =
 export const resolveOwnerSurfaceUrl = (
   owner_surface: unknown,
   isInstalled: (recipe_id: string) => boolean,
-  resolveLink: ((recipe_id: string) => string) | undefined,
+  resolveLink: ((recipe_id: string) => string | undefined) | undefined,
 ): string | undefined => {
   if (typeof owner_surface !== 'string' || owner_surface === '') return undefined;
   if (!isInstalled(owner_surface)) return undefined;

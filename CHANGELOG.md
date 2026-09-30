@@ -7,6 +7,72 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.9.30 — 2026-09-30
+
+Switching a workflow on now makes a dish. It asks for the workflow's settings,
+and every trigger and schedule of that dish runs with them. A second dish of the
+same workflow runs on its own settings, and installing a workflow no longer
+starts anything. You can follow the work in a mail conversation and investigate
+it in a chat that only reads. A workflow can bring a mail template for you to
+keep, swap or copy. And releases and installs are harder to break: a release is
+checked where you download it before it is called live, and an interrupted
+install recovers to a matching pair.
+
+⚠ An automatic (auto-run) workflow that ran on 26.9.29 stays stopped after this
+update until you switch it on. The update takes a copy of your database first,
+so rolling back to 26.9.29 restores it, including which workflows you had
+switched off.
+
+### Added
+
+- **Dishes: a workflow runs once you switch it on.** Switch on opens the
+  workflow's settings; confirming makes a dish and turns on every trigger the
+  workflow declares, for that dish. Add another makes a second dish with its own
+  settings, triggers, history and failures. Schedules belong to a dish and use
+  its settings, and each run records the settings it ran with.
+- **Running as**, on a workflow's page, lists its dishes with their state, what
+  starts them, and their last and next run. **Automation** is one list by
+  workflow and dish, with On, Off, Needs you and Failing filters and a Coming up
+  view.
+- **Follow this work.** Follow the work in a mail conversation, with AI briefs
+  you review and correct, related threads, and an explicit resolution.
+  **Investigate in Chat** opens the conversation's chat. The investigation reads
+  the exact mail and its documents through the same privacy controls as the
+  chat, can only read, and links the exact mail and dates in its answer.
+- **Mail templates in workflows.** A workflow's mail template setting can bring a
+  starter template: installing creates it with its AI off, an update re-applies
+  it, and uninstalling removes it. Settings lists your templates of that kind,
+  and Duplicate to edit makes your own copy. The install dialog lists the
+  templates a pack brings and says where each workflow's facts come from.
+
+### Changed
+
+- **Installing a workflow starts nothing**, and an automatic workflow runs on
+  one timer per dish. `auto_run.default_enabled` is ignored.
+- **A release is checked where you download it.** Before a release is called
+  live, every download is fetched from releases.recued.com and compared with the
+  signed files. Publishing also refuses a release that would move you to an
+  older version, or change the files of a version already out.
+- **Sign-in comes back to every address that works**: your server's own https
+  name, and app.recued.com's page again. Signing in to HubSpot, Salesforce or
+  your own OAuth app, and the links in notices, find your server's address
+  without `RECUED_PUBLIC_BASE_URL`.
+
+### Fixed
+
+- An install interrupted mid-swap is kept only if it is complete and is the
+  release that install was bringing; otherwise the previous one comes back. A
+  mixed old and new pair is no longer kept.
+- On Windows, a new install is written to disk before the previous one is
+  deleted, and a webclient update no longer replaces a good bundle with a
+  half-deleted one when a file in it is in use.
+- `recued self-test` no longer leaves a probe folder behind.
+- Two IMAP accounts no longer share an attachment file.
+- An approved document read goes through its reader.
+- After an update, Settings → Updates says how it went. The embeddings and
+  transcription slots choose a protocol. Messenger delivery keeps keyboard
+  focus, and "Saved files" says its name.
+
 ## 26.9.29 — 2026-09-29
 
 A large release. Recued can now learn to read a kind of email — a parcel, a

@@ -355,6 +355,89 @@ describe('then run a recipe (§5.1)', () => {
     await h.view.refresh();
     expect(h.html()).not.toContain('Then run…');
   });
+
+  const dish = (over: Record<string, unknown>) => ({
+    dish_id: 'dsh_work', recipe_id: 'parcel-alert', publisher_id: 'local', name: '',
+    is_default: true, config_overlay: {}, enabled: true, created_at: 1, ...over,
+  });
+
+  it('D-319 §5.5 — with more than one dish it asks which one; the main one until another is chosen', async () => {
+    const createTrigger = vi.fn(async () => ({}));
+    const h = harness({
+      listTemplates: async () => ({ templates: [template()] }),
+      listRecipes: async () => ({ recipes }),
+      listDishes: async () => ({
+        dishes: [
+          dish({ dish_id: 'dsh_home', name: 'Home mailbox', is_default: false, enabled: false, created_at: 2 }),
+          dish({ name: 'Work mailbox' }),
+          // Another recipe's dish is not a choice.
+          dish({ dish_id: 'dsh_other', recipe_id: 'other' }),
+        ],
+      }) as never,
+      createTrigger,
+    });
+    await h.view.refresh();
+    h.act('mail-facts-tr-open', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(h.html()).toContain('Tell me when a parcel arrives'));
+    // No recipe chosen: nothing to ask yet.
+    expect(h.html()).not.toContain('tr:dish');
+
+    h.view.handleChange(el({ [MAIL_FACTS_FIELD_ATTR]: 'tr:recipe' }, 'local/parcel-alert'));
+    const html = h.html();
+    expect(html).toContain('Run as');
+    expect(html).toMatch(/<option value="dsh_work" selected>Work mailbox \(main\)<\/option>/);
+    expect(html).toContain('<option value="dsh_home">Home mailbox — off</option>');
+    expect(html).not.toContain('dsh_other');
+
+    h.view.handleChange(el({ [MAIL_FACTS_FIELD_ATTR]: 'tr:dish' }, 'dsh_home'));
+    h.act('mail-facts-tr-create', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(createTrigger).toHaveBeenCalledWith({
+      recipe_id: 'parcel-alert',
+      publisher_id: 'local',
+      on: 'mail_fact.shipment',
+      where: { template: 'mtpl_1' },
+      dish_id: 'dsh_home',
+    }));
+    await vi.waitFor(() => expect(h.html()).toContain('“Tell me when a parcel arrives” now runs as “Home mailbox” for what “UPS notices” reads.'));
+  });
+
+  it('with one dish there is nothing to ask: it runs as that dish', async () => {
+    const createTrigger = vi.fn(async () => ({}));
+    const h = harness({
+      listTemplates: async () => ({ templates: [template()] }),
+      listRecipes: async () => ({ recipes }),
+      listDishes: async () => ({ dishes: [dish({})] }) as never,
+      createTrigger,
+    });
+    await h.view.refresh();
+    h.act('mail-facts-tr-open', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(h.html()).toContain('Tell me when a parcel arrives'));
+    h.view.handleChange(el({ [MAIL_FACTS_FIELD_ATTR]: 'tr:recipe' }, 'local/parcel-alert'));
+    expect(h.html()).not.toContain('Run as');
+    h.act('mail-facts-tr-create', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(createTrigger).toHaveBeenCalledWith(expect.objectContaining({ dish_id: 'dsh_work' })));
+  });
+
+  it('a failed read of the dishes is soft: the trigger goes to the recipe’s main dish', async () => {
+    const createTrigger = vi.fn(async () => ({}));
+    const h = harness({
+      listTemplates: async () => ({ templates: [template()] }),
+      listRecipes: async () => ({ recipes }),
+      listDishes: async () => { throw new Error('offline'); },
+      createTrigger,
+    });
+    await h.view.refresh();
+    h.act('mail-facts-tr-open', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(h.html()).toContain('Tell me when a parcel arrives'));
+    h.view.handleChange(el({ [MAIL_FACTS_FIELD_ATTR]: 'tr:recipe' }, 'local/parcel-alert'));
+    h.act('mail-facts-tr-create', { 'data-template-id': 'mtpl_1' });
+    await vi.waitFor(() => expect(createTrigger).toHaveBeenCalledWith({
+      recipe_id: 'parcel-alert',
+      publisher_id: 'local',
+      on: 'mail_fact.shipment',
+      where: { template: 'mtpl_1' },
+    }));
+  });
 });
 
 describe('AI on a template (§4.3)', () => {
@@ -1173,5 +1256,89 @@ describe('a template that no longer exists (§6.2)', () => {
     expect(h.view.hasUnsavedChanges()).toBe(false);
     h.act('mail-facts-ed-back');
     expect(h.view.addressSegments()).toEqual([]);
+  });
+});
+
+describe('a template a recipe brought (§5.2)', () => {
+  const brought = (over: Partial<MailTemplate> = {}): MailTemplate => template({
+    template_id: 'mtpl_r',
+    name: 'Shop parcels',
+    origin: { kind: 'recipe', publisher: 'recued-core', recipe: 'shop-parcels', variable: 'template', version: 1 },
+    ai: { enabled: false, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'free_only' },
+    ...over,
+  });
+  const recipes = async () => ({
+    recipes: [{ recipe_id: 'shop-parcels', recipe: { metadata: { name: 'Shop parcels desk' } } }] as never,
+  });
+
+  it('names its recipe, offers "Duplicate to edit" for Edit, and no Delete: it goes with its recipe', async () => {
+    const h = harness({ listTemplates: async () => ({ templates: [brought(), template()] }), listRecipes: recipes, duplicateTemplate: vi.fn() });
+    await h.view.refresh();
+    const row = h.html().split('data-recued-mail-fact-template="mtpl_1"')[0]!;
+    expect(row).toContain('From the recipe Shop parcels desk');
+    expect(row).toContain('Duplicate to edit');
+    expect(row).not.toContain('mail-facts-tpl-edit');
+    expect(row).not.toContain('mail-facts-tpl-delete');
+    expect(row).toContain('Updates with its recipe, and goes with it');
+    // The owner's own keeps its Edit and Delete.
+    const mine = h.html().split('data-recued-mail-fact-template="mtpl_1"')[1]!;
+    expect(mine).toContain('mail-facts-tpl-edit');
+    expect(mine).toContain('mail-facts-tpl-delete');
+  });
+
+  it('duplicates to edit, then opens the copy', async () => {
+    const copy = template({ template_id: 'mtpl_copy', name: 'Shop parcels (copy)' });
+    const duplicateTemplate = vi.fn(async () => ({ template: copy }));
+    const getTemplate = vi.fn(async ({ template_id }: { template_id: string }) => ({ template: template_id === 'mtpl_copy' ? copy : null }));
+    const h = harness({ listTemplates: async () => ({ templates: [brought()] }), listRecipes: recipes, duplicateTemplate, getTemplate });
+    await h.view.refresh();
+    h.act('mail-facts-tpl-duplicate', { 'data-template-id': 'mtpl_r' });
+    await vi.waitFor(() => expect(h.html()).toContain('Edit “Shop parcels (copy)”'));
+    expect(duplicateTemplate).toHaveBeenCalledWith({ template_id: 'mtpl_r' });
+  });
+
+  it('switches its AI on and off, and picks its pool, sending the recipe’s definition back as it is', async () => {
+    let current = brought();
+    const updateTemplate = vi.fn(async ({ definition }: { template_id: string; definition?: MailTemplateDefinition }) => {
+      current = { ...current, ...definition! };
+      return { template: current };
+    });
+    const h = harness({ listTemplates: async () => ({ templates: [current] }), listRecipes: recipes, updateTemplate });
+    await h.view.refresh();
+    expect(h.html()).toContain('Turn AI on');
+    h.act('mail-facts-tpl-ai', { 'data-template-id': 'mtpl_r' });
+    await vi.waitFor(() => expect(h.html()).toContain('Turn AI off'));
+    const { ai, ...rest } = updateTemplate.mock.calls[0]![0].definition!;
+    expect(ai).toEqual({ enabled: true, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'free_only' });
+    expect(rest.rules).toEqual(brought().rules);
+    h.view.handleChange(el({ [MAIL_FACTS_FIELD_ATTR]: 'tpl:pool:mtpl_r' }, 'byok_only'));
+    await vi.waitFor(() => expect(updateTemplate).toHaveBeenCalledTimes(2));
+    expect(updateTemplate.mock.calls[1]![0].definition!.ai).toEqual({
+      enabled: true, prompt: 'Read the depot.', slots: ['data.depot'], pool: 'byok_only',
+    });
+  });
+
+  it('offers no AI switch when the recipe gave its template no prompt', async () => {
+    const h = harness({ listTemplates: async () => ({ templates: [brought({ ai: { enabled: false } })] }), updateTemplate: vi.fn() });
+    await h.view.refresh();
+    expect(h.html()).not.toContain('Turn AI on');
+  });
+
+  it('opens read-only: it says whose rules they are, and offers the copy instead of Save', async () => {
+    const h = harness({
+      listTemplates: async () => ({ templates: [brought()] }),
+      listRecipes: recipes,
+      getTemplate: async () => ({ template: brought() }),
+      duplicateTemplate: vi.fn(),
+    });
+    await h.view.refresh();
+    h.view.openAddress(['mtpl_r']);
+    await h.view.refresh();
+    await vi.waitFor(() => expect(h.html()).toContain('This template comes with the recipe Shop parcels desk'));
+    expect(h.html()).not.toContain('mail-facts-ed-save');
+    expect(h.html()).toContain('Duplicate to edit');
+    // Its fields are shown, not edited: nothing would save them.
+    expect(h.html()).toContain('<fieldset class="mail-facts-readonly" disabled>');
+    expect(h.html()).not.toContain('Edit “Shop parcels”');
   });
 });

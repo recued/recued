@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
   AutoRunStatusEntry,
+  Dish,
   EventTrigger,
   RecipeDefinition,
   ServerRecipeListEntry,
@@ -69,6 +70,8 @@ interface FakeEl {
   hasAttribute(k: string): boolean;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
+  /** An editor removes itself when it closes. */
+  remove(): void;
   addEventListener(type: string, fn: (ev: Event) => void): void;
   removeEventListener(type: string, fn: (ev: Event) => void): void;
 }
@@ -104,6 +107,9 @@ const makeFakeEl = (tag: string): FakeEl => {
       el.children.splice(idx, 1);
       c.parent = null;
       return c;
+    },
+    remove() {
+      el.parent?.removeChild(el);
     },
     addEventListener(type, fn) {
       const arr = el.listeners.get(type) ?? [];
@@ -181,7 +187,7 @@ const clickSubnav = (
 
 const clickRetry = (
   host: FakeEl,
-  token: 'auto-run' | 'triggers' | 'schedules' | 'dishes',
+  token: 'all' | 'auto-run' | 'triggers' | 'schedules' | 'dishes',
 ): void => {
   const target = {
     closest: (selector: string) =>
@@ -272,21 +278,6 @@ const expectOnlySection = (html: string, active: RenderedSection): void => {
   }
 };
 
-const expectSubnavCounts = (
-  html: string,
-  counts: { autoRun: number; triggers: number; schedules: number },
-): void => {
-  expect(html).toContain(
-    `Auto-run <span class="automation-subnav-count">${counts.autoRun}</span>`,
-  );
-  expect(html).toContain(
-    `Triggers <span class="automation-subnav-count">${counts.triggers}</span>`,
-  );
-  expect(html).toContain(
-    `Schedules <span class="automation-subnav-count">${counts.schedules}</span>`,
-  );
-};
-
 // ── Fixtures ────────────────────────────────────────────────────
 
 const NOW = 1_750_000_000_000;
@@ -354,6 +345,8 @@ const autoRunEntry = (
 ): AutoRunStatusEntry => ({
   recipe_id: 'ticker',
   publisher_id: 'recued-core',
+  dish_id: null,
+  dish_name: null,
   recipe_name: 'Ticker recipe',
   interval_ms: 300_000,
   dynamic: false,
@@ -512,9 +505,14 @@ describe('Automation route — rendering', () => {
       '<a href="#logs">Logs<span aria-hidden="true">.</span></a>',
     );
     expect(rig.host.innerHTML).not.toContain('Logs</a>.');
-    expect(rig.route.getActiveSection()).toBe('auto-run');
+    // D-319 §5.4 — the page is one list, grouped by recipe; its nav is the
+    // two views. The lists by kind stay reachable (a rule's Details, links).
+    expect(rig.route.getActiveSection()).toBe('all');
     expect(rig.host.innerHTML).toMatch(
-      /data-recued-automation-subnav="auto-run"[\s\S]*?aria-selected="true"[\s\S]*?tabindex="0"/,
+      /data-recued-automation-subnav="all"[\s\S]*?aria-selected="true"[\s\S]*?tabindex="0"/,
+    );
+    expect(rig.host.innerHTML).toMatch(
+      /data-recued-automation-subnav="coming-up"[\s\S]*?aria-selected="false"[\s\S]*?tabindex="-1"/,
     );
     expect(rig.host.innerHTML).toContain(
       'aria-controls="recued-automation-section-panel"',
@@ -522,25 +520,29 @@ describe('Automation route — rendering', () => {
     expect(rig.host.innerHTML).toMatch(
       new RegExp(
         `${AUTOMATION_ROUTE_SECTION_PANEL_ATTR}[\\s\\S]*?role="tabpanel"`
-          + '[\\s\\S]*?aria-labelledby="recued-automation-section-tab-auto-run"',
+          + '[\\s\\S]*?aria-labelledby="recued-automation-section-tab-all"',
       ),
     );
-    for (const token of ['triggers', 'schedules', 'dishes']) {
-      expect(rig.host.innerHTML).toMatch(
-        new RegExp(
-          `data-recued-automation-subnav="${token}"[\\s\\S]*?`
-          + 'aria-selected="false"[\\s\\S]*?tabindex="-1"',
-        ),
-      );
+    for (const token of ['auto-run', 'triggers', 'schedules', 'dishes']) {
+      expect(rig.host.innerHTML).not.toContain(`data-recued-automation-subnav="${token}"`);
     }
+    // Every recipe with automation is a group; rows made before D-319 (no
+    // dish) sit under their recipe; a recipe on a timer nobody switched on
+    // says so.
+    expect(rig.host.innerHTML).toContain('data-recued-automation-recipe="daily-brief"');
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
+    expect(rig.host.innerHTML).toContain('Not switched on. It runs every 5 minutes.');
+    expect(rig.host.innerHTML).toContain('By recipe <span class="automation-subnav-count">1</span>');
+
+    clickSubnav(rig.host, 'auto-run');
+    expect(rig.route.getActiveSection()).toBe('auto-run');
     expectOnlySection(rig.host.innerHTML, 'auto_run');
-    expectSubnavCounts(rig.host.innerHTML, {
-      autoRun: 1,
-      triggers: 2,
-      schedules: 1,
-    });
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="auto_run:ticker"`);
     expect(rig.host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
+    // Another list by kind leaves the nav reachable by keyboard.
+    expect(rig.host.innerHTML).toMatch(
+      /data-recued-automation-subnav="all"[\s\S]*?aria-selected="false"[\s\S]*?tabindex="0"/,
+    );
 
     clickSubnav(rig.host, 'triggers');
     expect(rig.route.getActiveSection()).toBe('triggers');
@@ -594,6 +596,7 @@ describe('Automation route — rendering', () => {
 
   it('labels disarmed and tripped states distinctly inside their active tabs', async () => {
     const rig = mountRoute({
+      initialSection: 'auto-run',
       schedulesListCaller: async () => ({
         schedules: [schedule({ enabled: false })],
       }),
@@ -665,6 +668,7 @@ describe('Automation route — rendering', () => {
 
   it('degrades per section: one failing caller shows that tab error while others render', async () => {
     const rig = mountRoute({
+      initialSection: 'auto-run',
       triggersListCaller: async () => {
         throw new Error('trigger backend down');
       },
@@ -721,6 +725,7 @@ describe('Automation route — rendering', () => {
       triggersListCaller: async () => ({ triggers: [] }),
       watchListCaller: async () => ({ watches: [] }),
       // autoRunListCaller deliberately absent.
+      initialSection: 'auto-run',
     });
     await route.whenLoaded();
 
@@ -795,7 +800,7 @@ describe('Automation route — hash and tab state', () => {
     }
   });
 
-  it('legacy recipe deep-link auto-pick lands on schedules for a schedule-only recipe', async () => {
+  it('D-319 — a recipe link lands on the one list, narrowed to the recipe: its schedule is there', async () => {
     const rig = mountRoute({
       initialRecipeFilter: 'schedule-only',
       schedulesListCaller: async () => ({
@@ -807,8 +812,8 @@ describe('Automation route — hash and tab state', () => {
     await rig.route.whenLoaded();
 
     expect(rig.route.getRecipeFilter()).toBe('schedule-only');
-    expect(rig.route.getActiveSection()).toBe('schedules');
-    expectOnlySection(rig.host.innerHTML, 'schedule');
+    expect(rig.route.getActiveSection()).toBe('all');
+    expect(rig.host.innerHTML).toContain('data-recued-automation-recipe="schedule-only"');
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
   });
 
@@ -837,6 +842,7 @@ describe('Automation route — hash and tab state', () => {
 describe('Automation route — filters', () => {
   it('filters auto-run rows by tripped and armed status', async () => {
     const rig = mountRoute({
+      initialSection: 'auto-run',
       autoRunListCaller: async () => ({
         entries: [
           autoRunEntry({
@@ -919,6 +925,626 @@ describe('Automation route — filters', () => {
   });
 });
 
+describe('Automation route — D-319: one auto-run timer per dish', () => {
+  const dishRow = (over: Partial<Dish> = {}): Dish => ({
+    dish_id: 'dsh_work',
+    recipe_id: 'ticker',
+    publisher_id: 'recued-core',
+    name: '',
+    is_default: true,
+    config_overlay: {},
+    enabled: true,
+    created_at: 1,
+    ...over,
+  });
+
+  it('two dishes of one recipe are two timers: each row is its dish, and its switch names it', async () => {
+    const autoRunUpdateCaller = vi.fn<AutoRunUpdateCaller>(async (args) => ({
+      entry: autoRunEntry({ dish_id: args.dish_id ?? null, enabled: args.enabled ?? true }),
+    }));
+    const rig = mountRoute({
+      initialSection: 'auto-run',
+      autoRunListCaller: async () => ({
+        entries: [
+          autoRunEntry({ dish_id: 'dsh_work', dish_name: '', variables: { topic: 'news' } }),
+          autoRunEntry({ dish_id: 'dsh_home', dish_name: 'Home', enabled: false, variables: { topic: 'news' } }),
+        ],
+      }),
+      autoRunUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="auto_run:dsh_work"`);
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="auto_run:dsh_home"`);
+    expect(rig.host.innerHTML).toContain('Ticker recipe — Home');
+
+    // A dish's timer switches alone: its settings are the dish's, so no form.
+    clickAction(rig.host, 'toggle:auto_run:on', 'dsh_home');
+    await flush();
+    expect(autoRunUpdateCaller).toHaveBeenLastCalledWith({ dish_id: 'dsh_home', enabled: true });
+    clickAction(rig.host, 'toggle:auto_run:off', 'dsh_work');
+    await flush();
+    expect(autoRunUpdateCaller).toHaveBeenLastCalledWith({ dish_id: 'dsh_work', enabled: false });
+  });
+
+  it('Configure on a dish’s timer opens the DISH’s settings and saves them to the dish, never to the timer', async () => {
+    const dishesUpdateCaller = vi.fn(async (args: { dish_id: string; config_overlay?: Record<string, unknown> }) => ({
+      dish: dishRow({ config_overlay: args.config_overlay ?? {} }),
+    }));
+    const autoRunUpdateCaller = vi.fn<AutoRunUpdateCaller>();
+    const withTopic = recipeEntry('ticker', 'Ticker recipe');
+    withTopic.recipe.variables = { topic: { label: 'Topic', type: 'text', default: 'news' } } as never;
+    const rig = mountRoute({
+      initialSection: 'auto-run',
+      autoRunListCaller: async () => ({
+        entries: [autoRunEntry({ dish_id: 'dsh_work', dish_name: '', variables: withTopic.recipe.variables ?? {} })],
+      }),
+      dishesListCaller: async () => ({ dishes: [dishRow({ config_overlay: { topic: 'sports' } })] }),
+      dishesUpdateCaller: dishesUpdateCaller as never,
+      recipeEntriesCaller: async () => ({ recipes: [withTopic] }),
+      autoRunUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const before = rig.doc.body.children.length;
+
+    clickAction(rig.host, 'configure:auto_run', 'dsh_work');
+
+    const editor = rig.doc.body.children[before];
+    expect(editor, 'the dish’s settings editor opened').toBeDefined();
+    expect(editor!.innerHTML).toContain('sports');
+    for (const fn of editor!.listeners.get('click') ?? []) {
+      fn({ target: { closest: () => ({ getAttribute: () => 'confirm' }) } } as unknown as Event);
+    }
+    await flush();
+    expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_work', config_overlay: { topic: 'sports' } });
+    expect(autoRunUpdateCaller).not.toHaveBeenCalled();
+  });
+
+  it('a dish’s Settings offer its mail template — the template is the dish’s (§3.7), not the recipe’s alone', async () => {
+    const withTemplate = recipeEntry('ticker', 'Ticker recipe');
+    withTemplate.recipe.variables = {
+      template: { label: 'Mail template', type: 'mail_template' },
+      topic: { label: 'Topic', type: 'text', default: 'news' },
+    } as never;
+    const rig = mountRoute({
+      initialSection: 'auto-run',
+      autoRunListCaller: async () => ({
+        entries: [autoRunEntry({ dish_id: 'dsh_work', dish_name: '', variables: withTemplate.recipe.variables ?? {} })],
+      }),
+      dishesListCaller: async () => ({ dishes: [dishRow({ config_overlay: { template: 'mtpl_a' } })] }),
+      dishesUpdateCaller: vi.fn(async () => ({ dish: dishRow() })) as never,
+      recipeEntriesCaller: async () => ({ recipes: [withTemplate] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const before = rig.doc.body.children.length;
+
+    clickAction(rig.host, 'configure:auto_run', 'dsh_work');
+
+    const editor = rig.doc.body.children[before];
+    expect(editor).toBeDefined();
+    expect(editor!.innerHTML).toContain('data-var-key="template"');
+    expect(editor!.innerHTML).toContain('data-var-key="topic"');
+  });
+
+  it('a recipe nobody switched on has no next run to look at: a forged click opens nothing', async () => {
+    const preapprovalPrepareCaller = vi.fn();
+    const rig = mountRoute({
+      initialSection: 'auto-run',
+      autoRunListCaller: async () => ({
+        entries: [autoRunEntry({ dish_id: null, enabled: false, lifecycle_revision: 1 })],
+      }),
+      preapprovalPrepareCaller: preapprovalPrepareCaller as never,
+      onPreapprovalPrepared: () => {},
+    });
+    await rig.route.whenLoaded();
+    expect(rig.host.innerHTML).not.toContain('preapprove:auto_run');
+    const before = rig.doc.body.children.length;
+
+    expect(() => clickAction(rig.host, 'preapprove:auto_run', 'ticker')).not.toThrow();
+
+    expect(rig.doc.body.children.length).toBe(before);
+    expect(preapprovalPrepareCaller).not.toHaveBeenCalled();
+  });
+});
+
+describe('Automation route — D-319 §5.4: one list, by recipe then dish', () => {
+  const dishOf = (over: Partial<Dish> = {}): Dish => ({
+    dish_id: 'dsh_work',
+    recipe_id: 'parcels',
+    publisher_id: 'recued-core',
+    name: '',
+    is_default: true,
+    config_overlay: {},
+    enabled: true,
+    created_at: 1,
+    ...over,
+  });
+
+  const clickChip = (host: FakeEl, chip: string): void => {
+    const target = {
+      closest: (selector: string) =>
+        selector.includes('data-recued-automation-chip')
+          ? { getAttribute: (name: string) => (name === 'data-recued-automation-chip' ? chip : null) }
+          : null,
+    };
+    for (const fn of host.listeners.get('click') ?? []) fn({ target } as unknown as Event);
+  };
+
+  /** Confirm an open settings form. */
+  const confirmForm = (form: FakeEl): void => {
+    for (const fn of form.listeners.get('click') ?? []) {
+      fn({ target: { closest: () => ({ getAttribute: () => 'confirm' }) } } as unknown as Event);
+    }
+  };
+
+  /** One dish's line: from its marker to the next line or its group's end. */
+  const lineOf = (html: string, dish_id: string): string => {
+    const start = html.indexOf(`data-recued-automation-dish="${dish_id}"`);
+    expect(start, `the line of ${dish_id}`).toBeGreaterThanOrEqual(0);
+    const ends = [
+      html.indexOf('data-recued-automation-dish="', start + 1),
+      html.indexOf('</section>', start),
+    ].filter((at) => at >= 0);
+    return html.slice(start, Math.min(...ends));
+  };
+
+  /** The page names recipes from its names read, as the app wires it. */
+  const recipeNamesCaller = async () => ({
+    recipes: [
+      { recipe_id: 'parcels', name: 'Shop parcels watch' },
+      { recipe_id: 'invoices', name: 'Invoice intake' },
+      { recipe_id: 'ticker', name: 'Ticker recipe' },
+    ],
+  });
+
+  const chipCount = (html: string, chip: string, label: string, count: number): void => {
+    expect(html).toMatch(new RegExp(
+      `data-recued-automation-chip="${chip}"[^>]*>${label} <span class="automation-chip-count">${count}</span>`,
+    ));
+  };
+
+  it('groups by recipe, then by dish: each dish its line, its rows under it', async () => {
+    const rig = mountRoute({
+      dishesListCaller: async () => ({
+        dishes: [
+          dishOf({ dish_id: 'dsh_home', name: 'Home mailbox', is_default: false, enabled: false, created_at: 2 }),
+          // Made the main one after Home was made: the main one still leads.
+          dishOf({ dish_id: 'dsh_work', name: 'Work mailbox', created_at: 3 }),
+          dishOf({ dish_id: 'dsh_inv', recipe_id: 'invoices' }),
+        ],
+      }),
+      recipeEntriesCaller: async () => ({
+        recipes: [recipeEntry('parcels', 'Shop parcels watch'), recipeEntry('invoices', 'Invoice intake')],
+      }),
+      recipeNamesCaller,
+      schedulesListCaller: async () => ({
+        schedules: [
+          schedule({ schedule_id: 'sch_work', recipe_id: 'parcels', dish_id: 'dsh_work' }),
+          schedule({ schedule_id: 'sch_inv', recipe_id: 'invoices', dish_id: 'dsh_inv' }),
+        ],
+      }),
+      triggersListCaller: async () => ({
+        triggers: [trigger({ trigger_id: 't-home', recipe_id: 'parcels', dish_id: 'dsh_home', enabled: false })],
+      }),
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    const html = rig.host.innerHTML;
+
+    // Recipes by name; within one, the main dish first.
+    expect(html.indexOf('data-recued-automation-recipe="invoices"'))
+      .toBeLessThan(html.indexOf('data-recued-automation-recipe="parcels"'));
+    expect(html.indexOf('data-recued-automation-dish="dsh_work"'))
+      .toBeLessThan(html.indexOf('data-recued-automation-dish="dsh_home"'));
+    expect(html).toContain('Shop parcels watch</a> <span class="automation-recipe-summary">· 1 on · 1 off</span>');
+
+    const work = lineOf(html, 'dsh_work');
+    expect(work).toContain('<span class="automation-dish-name">Work mailbox</span>');
+    expect(work).toContain('<span class="automation-dish-main">Main</span>');
+    expect(work).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_work"`);
+    expect(work).not.toContain('event_trigger:t-home');
+    expect(lineOf(html, 'dsh_home')).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="event_trigger:t-home"`);
+    // A recipe's only dish has no name to invent: its dot (and switch) say On.
+    const invoices = lineOf(html, 'dsh_inv');
+    expect(invoices).not.toContain('automation-dish-name');
+    expect(invoices).toContain('automation-dish-dot--on');
+    expect(invoices).not.toContain('automation-dish-main');
+    expect(html).toContain('>Invoice intake</a></h3>');
+  });
+
+  it('a dish’s switch on the list is the dish’s own: it writes the dish', async () => {
+    const dishesUpdateCaller = vi.fn(async (args: { dish_id: string; enabled?: boolean }) => ({
+      dish: dishOf({ enabled: args.enabled ?? true }),
+    }));
+    const rig = mountRoute({
+      dishesListCaller: async () => ({ dishes: [dishOf()] }),
+      dishesUpdateCaller: dishesUpdateCaller as never,
+      recipeEntriesCaller: async () => ({ recipes: [recipeEntry('parcels', 'Shop parcels watch')] }),
+      recipeNamesCaller,
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    const line = lineOf(rig.host.innerHTML, 'dsh_work');
+    expect(line).toMatch(
+      /toggle:dish:off"\s+data-rule-id="dsh_work" role="switch" aria-checked="true" aria-label="Shop parcels watch">On</,
+    );
+    // Its only dish has no name to invent; the switch says On.
+    expect(line).not.toContain('automation-dish-name');
+
+    clickAction(rig.host, 'toggle:dish:off', 'dsh_work');
+    await flush();
+    expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_work', enabled: false });
+  });
+
+  it('a dish the server stopped a row of offers Start again: switching it on again restarts it', async () => {
+    const dishesUpdateCaller = vi.fn(async (args: { dish_id: string; enabled?: boolean }) => ({
+      dish: dishOf({ enabled: args.enabled ?? true }),
+    }));
+    const rig = mountRoute({
+      dishesListCaller: async () => ({ dishes: [dishOf(), dishOf({ dish_id: 'dsh_bad', name: 'Home', is_default: false, created_at: 2 })] }),
+      dishesUpdateCaller: dishesUpdateCaller as never,
+      triggersListCaller: async () => ({
+        triggers: [
+          // Off with an error: the server stopped it.
+          trigger({ trigger_id: 't-stopped', recipe_id: 'parcels', dish_id: 'dsh_work', enabled: false, last_error: 'Slack refused' }),
+          // On with an error: its last fire failed, nothing is stopped.
+          trigger({ trigger_id: 't-failed', recipe_id: 'parcels', dish_id: 'dsh_bad', last_error: 'Slack refused' }),
+        ],
+      }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(lineOf(rig.host.innerHTML, 'dsh_work')).toMatch(
+      /<p class="automation-dish-reason">Slack refused <button[^>]*"toggle:dish:on"\s+data-rule-id="dsh_work" aria-label="Start Main again">Start again<\/button>/,
+    );
+    expect(lineOf(rig.host.innerHTML, 'dsh_bad')).not.toContain('Start again');
+
+    clickAction(rig.host, 'toggle:dish:on', 'dsh_work');
+    await flush();
+    expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_work', enabled: true });
+  });
+
+  it('filters: On, Off, Needs you, Failing — each line answers to one; a second press clears', async () => {
+    const rig = mountRoute({
+      dishesListCaller: async () => ({
+        dishes: [
+          dishOf({ dish_id: 'dsh_ok', recipe_id: 'a' }),
+          dishOf({ dish_id: 'dsh_off', recipe_id: 'b', enabled: false }),
+          dishOf({ dish_id: 'dsh_bad', recipe_id: 'c' }),
+          dishOf({ dish_id: 'dsh_wait', recipe_id: 'd' }),
+        ],
+        last_runs: { dsh_wait: { run_id: 'r1', started_at: NOW - 1_000, commit_status: 'awaiting_approval' } },
+      }),
+      triggersListCaller: async () => ({
+        triggers: [trigger({ trigger_id: 't-bad', recipe_id: 'c', dish_id: 'dsh_bad', last_error: 'Slack refused the connection' })],
+      }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      // A recipe on a timer that nobody switched on: it counts as Off.
+      autoRunListCaller: async () => ({ entries: [autoRunEntry({ recipe_id: 'e', dish_id: null, enabled: false })] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    let html = rig.host.innerHTML;
+    chipCount(html, 'on', 'On', 1);
+    chipCount(html, 'off', 'Off', 2);
+    chipCount(html, 'needs-you', 'Needs you', 1);
+    chipCount(html, 'failing', 'Failing', 1);
+    expect(lineOf(html, 'dsh_bad')).toContain('<p class="automation-dish-reason">Slack refused the connection</p>');
+    expect(lineOf(html, 'dsh_wait')).toContain('automation-dish-status--needs-you">Needs you</span>');
+
+    clickChip(rig.host, 'failing');
+    html = rig.host.innerHTML;
+    expect(html).toMatch(/data-recued-automation-chip="failing"\s+aria-pressed="true"/);
+    expect(html).toContain('data-recued-automation-dish="dsh_bad"');
+    for (const other of ['dsh_ok', 'dsh_off', 'dsh_wait']) {
+      expect(html).not.toContain(`data-recued-automation-dish="${other}"`);
+    }
+    expect(html).not.toContain('Not switched on');
+
+    clickChip(rig.host, 'off');
+    html = rig.host.innerHTML;
+    expect(html).toContain('data-recued-automation-dish="dsh_off"');
+    expect(html).toContain('Not switched on');
+    expect(html).not.toContain('data-recued-automation-dish="dsh_bad"');
+
+    clickChip(rig.host, 'off');
+    html = rig.host.innerHTML;
+    for (const every of ['dsh_ok', 'dsh_off', 'dsh_bad', 'dsh_wait']) {
+      expect(html).toContain(`data-recued-automation-dish="${every}"`);
+    }
+  });
+
+  it('a recipe that starts on its own and has no dish says so; Switch on asks its settings, from what the install chose', async () => {
+    const ticker = recipeEntry('ticker', 'Ticker recipe');
+    ticker.recipe.auto_run = { interval_ms: 300_000 };
+    ticker.recipe.variables = { topic: { label: 'Topic', type: 'text', default: 'news' } } as never;
+    const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: { topic: 'install-pick' } }));
+    const dishesCreateCaller = vi.fn(async (args: { recipe_id: string; config_overlay?: Record<string, unknown> }) => ({
+      dish: dishOf({ recipe_id: args.recipe_id, config_overlay: args.config_overlay ?? {} }),
+    }));
+    const dishesListCaller = vi.fn(async () => ({ dishes: [] as Dish[] }));
+    const rig = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      triggersListCaller: async () => ({ triggers: [] }),
+      dishesListCaller,
+      dishesCreateCaller: dishesCreateCaller as never,
+      dishesDefaultsCaller,
+      recipeEntriesCaller: async () => ({ recipes: [ticker] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    expect(rig.host.innerHTML).toContain('data-recued-automation-recipe="ticker"');
+    expect(rig.host.innerHTML).toContain('Not switched on. It runs every 5 minutes.');
+    expect(rig.host.innerHTML).toMatch(/switch-on:recipe"\s+data-rule-id="ticker"[^>]*>Switch on</);
+
+    const before = rig.doc.body.children.length;
+    clickAction(rig.host, 'switch-on:recipe', 'ticker');
+    await flush();
+    await flush();
+    expect(dishesDefaultsCaller).toHaveBeenCalledWith({ recipe_id: 'ticker' });
+    const form = rig.doc.body.children[before];
+    expect(form, 'the switch-on form opened').toBeDefined();
+    expect(form!.innerHTML).toContain('Switch on “Ticker recipe”');
+    expect(form!.innerHTML).toContain('install-pick');
+
+    const reads = dishesListCaller.mock.calls.length;
+    confirmForm(form!);
+    await flush();
+    await flush();
+    expect(dishesCreateCaller).toHaveBeenCalledWith({
+      recipe_id: 'ticker',
+      publisher_id: 'recued-core',
+      config_overlay: { topic: 'install-pick' },
+    });
+    expect(dishesListCaller.mock.calls.length, 'the list re-read').toBeGreaterThan(reads);
+  });
+
+  it('the settings form picks a mail template as on the recipe page, when the host wires the picker', async () => {
+    const ticker = recipeEntry('ticker', 'Ticker recipe');
+    ticker.recipe.auto_run = { interval_ms: 300_000 };
+    ticker.recipe.variables = { template: { label: 'Mail template', type: 'mail_template' } } as never;
+    const mount = (withPicker: boolean) => mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      dishesListCaller: async () => ({ dishes: [] }),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf() })) as never,
+      dishesDefaultsCaller: async () => ({ config_overlay: {} }),
+      recipeEntriesCaller: async () => ({ recipes: [ticker] }),
+      ...(withPicker ? { mailTemplateCallers: { list: async () => [] } as never } : {}),
+    });
+    for (const withPicker of [true, false]) {
+      const rig = mount(withPicker);
+      await rig.route.whenLoaded();
+      await flush();
+      await flush();
+      const before = rig.doc.body.children.length;
+      clickAction(rig.host, 'switch-on:recipe', 'ticker');
+      await flush();
+      await flush();
+      const form = rig.doc.body.children[before];
+      expect(form, 'the switch-on form opened').toBeDefined();
+      if (withPicker) expect(form!.innerHTML).toContain('data-recued-mail-template-variable="template"');
+      else expect(form!.innerHTML).not.toContain('data-recued-mail-template-variable');
+      rig.route.dispose();
+    }
+  });
+
+  it('another dish of a recipe starts from its main dish’s settings and asks a name; a manual recipe’s first is saved, not switched on', async () => {
+    const parcels = recipeEntry('parcels', 'Shop parcels watch');
+    parcels.recipe.event_triggers = [{ pattern: 'data.mail.**' }] as never;
+    parcels.recipe.variables = { topic: { label: 'Topic', type: 'text', default: 'news' } } as never;
+    const brief = recipeEntry('daily-brief', 'Daily brief');
+    brief.recipe.variables = { topic: { label: 'Topic', type: 'text', default: 'news' } } as never;
+    const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: {} }));
+    const rig = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      dishesListCaller: async () => ({ dishes: [dishOf({ config_overlay: { topic: 'work' } })] }),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf() })) as never,
+      dishesDefaultsCaller,
+      recipeEntriesCaller: async () => ({ recipes: [parcels, brief] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    // It starts on its own and has a dish: it is switched on.
+    expect(rig.host.innerHTML).toContain('data-recued-automation-dish="dsh_work"');
+    expect(rig.host.innerHTML).not.toContain('Not switched on');
+
+    // The Dishes section's Add dish and "Not switched on" share one path.
+    let before = rig.doc.body.children.length;
+    clickAction(rig.host, 'switch-on:recipe', 'parcels');
+    await flush();
+    await flush();
+    const another = rig.doc.body.children[before];
+    expect(another).toBeDefined();
+    expect(another!.innerHTML).toContain('Add another “Shop parcels watch”');
+    expect(another!.innerHTML).toContain('work');
+    expect(dishesDefaultsCaller, 'another dish needs no install read').not.toHaveBeenCalled();
+    another!.remove();
+    // The form's own close hook never ran here; a fresh mount opens the next.
+
+    const rig2 = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      dishesListCaller: async () => ({ dishes: [] }),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf() })) as never,
+      dishesDefaultsCaller,
+      recipeEntriesCaller: async () => ({ recipes: [parcels, brief] }),
+    });
+    await rig2.route.whenLoaded();
+    await flush();
+    await flush();
+    before = rig2.doc.body.children.length;
+    clickAction(rig2.host, 'switch-on:recipe', 'daily-brief');
+    await flush();
+    await flush();
+    const first = rig2.doc.body.children[before];
+    expect(first).toBeDefined();
+    expect(first!.innerHTML).toContain('Settings for “Daily brief”');
+    expect(first!.innerHTML).not.toContain('Switch on');
+  });
+
+  it('a dish’s Details open in its own section; Back returns to the list', async () => {
+    const rig = mountRoute({
+      dishesListCaller: async () => ({ dishes: [dishOf({ name: 'Work mailbox' })] }),
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(lineOf(rig.host.innerHTML, 'dsh_work')).toContain('aria-label="Details of Work mailbox"');
+
+    clickAction(rig.host, 'detail:dish', 'dsh_work');
+    expect(rig.route.getActiveSection()).toBe('dishes');
+    expect(rig.host.innerHTML).toContain('Back to By recipe');
+
+    clickBack(rig.host);
+    expect(rig.route.getActiveSection()).toBe('all');
+    expect(rig.host.innerHTML).toContain('data-recued-automation-dish="dsh_work"');
+  });
+
+  it('Coming up: the next runs of dishes that are on, soonest first', async () => {
+    const rig = mountRoute({
+      initialSection: 'coming-up',
+      dishesListCaller: async () => ({
+        dishes: [
+          dishOf({ dish_id: 'dsh_work', name: 'Work mailbox' }),
+          dishOf({ dish_id: 'dsh_home', name: 'Home mailbox', is_default: false, created_at: 2 }),
+          dishOf({ dish_id: 'dsh_off', recipe_id: 'quiet', enabled: false }),
+        ],
+      }),
+      schedulesListCaller: async () => ({
+        schedules: [
+          schedule({ schedule_id: 'sch_late', recipe_id: 'parcels', dish_id: 'dsh_work', next_run_at: NOW + 90_000 }),
+          schedule({ schedule_id: 'sch_paused', recipe_id: 'parcels', dish_id: 'dsh_home', enabled: false, next_run_at: NOW + 10_000 }),
+          schedule({ schedule_id: 'sch_off', recipe_id: 'quiet', dish_id: 'dsh_off', next_run_at: NOW + 20_000 }),
+        ],
+      }),
+      autoRunListCaller: async () => ({
+        entries: [
+          autoRunEntry({ recipe_id: 'parcels', dish_id: 'dsh_home', next_run_at: NOW + 30_000 }),
+          // Nobody switched this one on: nothing of it is coming up.
+          autoRunEntry({ recipe_id: 'ticker', dish_id: null, next_run_at: NOW + 5_000 }),
+        ],
+      }),
+      recipeEntriesCaller: async () => ({ recipes: [recipeEntry('parcels', 'Shop parcels watch')] }),
+      recipeNamesCaller,
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    const html = rig.host.innerHTML;
+    const list = html.slice(html.indexOf('data-recued-automation-coming-up'));
+    expect(list.match(/<li>/g)).toHaveLength(2);
+    expect(list.indexOf('Home mailbox')).toBeGreaterThan(0);
+    expect(list.indexOf('Home mailbox')).toBeLessThan(list.indexOf('Work mailbox'));
+    expect(list).toContain('Every 5 minutes');
+    expect(list).toContain('Daily at 9:00 AM');
+    expect(list).not.toContain('Ticker recipe');
+    expect(html).toContain('Coming up <span class="automation-subnav-count">2</span>');
+  });
+
+  it('a re-read keeps the list on screen; it does not blank to Loading…', async () => {
+    const second = deferred<{ dishes: Dish[] }>();
+    const dishesListCaller = vi.fn()
+      .mockResolvedValueOnce({ dishes: [dishOf()] })
+      .mockImplementationOnce(() => second.promise);
+    const rig = mountRoute({
+      dishesListCaller: dishesListCaller as never,
+      dishesUpdateCaller: vi.fn(async () => ({ dish: dishOf({ enabled: false }) })) as never,
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+
+    clickAction(rig.host, 'toggle:dish:off', 'dsh_work');
+    await flush();
+    await flush();
+    expect(dishesListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.host.innerHTML).toContain('data-recued-automation-dish="dsh_work"');
+    expect(rig.host.innerHTML).not.toContain('Loading…');
+
+    second.resolve({ dishes: [dishOf({ enabled: false })] });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(lineOf(rig.host.innerHTML, 'dsh_work')).toContain('aria-checked="false"');
+  });
+
+  it('a failed read on the list says so, with a Retry that reads again', async () => {
+    const dishesListCaller = vi.fn()
+      .mockRejectedValueOnce(new Error('dishes down'))
+      .mockResolvedValue({ dishes: [dishOf()] });
+    const rig = mountRoute({
+      dishesListCaller: dishesListCaller as never,
+      autoRunListCaller: async () => ({ entries: [] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(rig.host.innerHTML).toMatch(
+      /data-recued-automation-error="all" role="alert">\s*<span>dishes down<\/span>[\s\S]*?data-recued-automation-retry="all"/,
+    );
+
+    clickRetry(rig.host, 'all');
+    await rig.route.whenLoaded();
+    await flush();
+    expect(dishesListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.host.innerHTML).not.toContain('data-recued-automation-error="all"');
+    expect(rig.host.innerHTML).toContain('data-recued-automation-dish="dsh_work"');
+  });
+
+  it('Coming up keeps its entries on screen while it re-reads', async () => {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const subscribe: Subscribe = ((kind: string, fn: (event: never) => void) => {
+      listeners.set(kind, fn as (event: unknown) => void);
+      return () => { listeners.delete(kind); };
+    }) as unknown as Subscribe;
+    const second = deferred<{ schedules: ServerSchedule[] }>();
+    const schedulesListCaller = vi.fn<SchedulesListCaller>()
+      .mockResolvedValueOnce({ schedules: [schedule({ dish_id: 'dsh_work', recipe_id: 'parcels' })] })
+      .mockImplementationOnce(() => second.promise);
+    const rig = mountRoute({
+      initialSection: 'coming-up',
+      subscribe,
+      schedulesListCaller,
+      dishesListCaller: async () => ({ dishes: [dishOf()] }),
+      autoRunListCaller: async () => ({ entries: [] }),
+      recipeNamesCaller,
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    expect(rig.host.innerHTML).toContain('Shop parcels watch</a>');
+
+    listeners.get('automation_rule_changed')!({ kind: 'automation_rule_changed', mechanism: 'schedule', cursor: 1 });
+    await flush();
+    expect(schedulesListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.host.innerHTML).toContain('Shop parcels watch</a>');
+    expect(rig.host.innerHTML).not.toContain('Loading…');
+    second.resolve({ schedules: [] });
+    await rig.route.whenLoaded();
+  });
+
+  it('keeps the create path the tabs held: Add schedule and Add trigger', async () => {
+    const rig = mountRoute({
+      recipeEntriesCaller: async () => ({ recipes: [recipeEntry()] }),
+      schedulesCreateCaller: vi.fn() as never,
+      triggersCreateCaller: vi.fn() as never,
+    });
+    await rig.route.whenLoaded();
+    expect(rig.route.getActiveSection()).toBe('all');
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ADD_ATTR}="schedules"`);
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ADD_ATTR}="triggers"`);
+
+    clickAdd(rig.host, 'schedules');
+    await flush();
+    expect(rig.host.innerHTML).toContain('data-ref-picker="automation-add-recipe"');
+  });
+});
+
 describe('Automation route — mutations', () => {
   it('toggle clicks invoke the matching caller with exact args, then re-list', async () => {
     const schedulesUpdateCaller = vi.fn<SchedulesUpdateCaller>(async (args) => ({
@@ -992,6 +1618,42 @@ describe('Automation route — mutations', () => {
     clickAction(rig.host, 'toggle:auto_run:on', 'no-vars');
     await flush();
     expect(autoRunUpdateCaller).toHaveBeenCalledWith({ recipe_id: 'no-vars', enabled: true });
+  });
+
+  it('D-319 — where the host makes dishes, switching on a timer nobody switched on is the switch-on form', async () => {
+    const ticker = recipeEntry('ticker', 'Ticker recipe');
+    ticker.recipe.auto_run = { interval_ms: 300_000 };
+    ticker.recipe.variables = { topic: { label: 'Topic', type: 'text', default: 'news' } } as never;
+    // Resume and Configure on the row both ask for its settings first.
+    for (const action of ['toggle:auto_run:on', 'configure:auto_run']) {
+      const autoRunUpdateCaller = vi.fn<AutoRunUpdateCaller>();
+      const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: { topic: 'install-pick' } }));
+      const rig = mountRoute({
+        initialSection: 'auto-run',
+        autoRunListCaller: async () => ({
+          entries: [autoRunEntry({ dish_id: null, enabled: false, variables: ticker.recipe.variables ?? {} })],
+        }),
+        autoRunUpdateCaller,
+        dishesListCaller: async () => ({ dishes: [] }),
+        dishesCreateCaller: vi.fn(async () => ({ dish: {} as Dish })) as never,
+        dishesDefaultsCaller,
+        recipeEntriesCaller: async () => ({ recipes: [ticker] }),
+      });
+      await rig.route.whenLoaded();
+      await flush();
+      await flush();
+      const before = rig.doc.body.children.length;
+      clickAction(rig.host, action, 'ticker');
+      await flush();
+      await flush();
+      const form = rig.doc.body.children[before];
+      expect(form, `${action} opened the switch-on form`).toBeDefined();
+      expect(form!.innerHTML).toContain('Switch on “Ticker recipe”');
+      expect(form!.innerHTML).toContain('install-pick');
+      expect(dishesDefaultsCaller).toHaveBeenCalledWith({ recipe_id: 'ticker' });
+      expect(autoRunUpdateCaller).not.toHaveBeenCalled();
+      rig.route.dispose();
+    }
   });
 
   it('delete clicks require confirmation before invoking schedule and trigger callers', async () => {
@@ -1086,7 +1748,7 @@ describe('Automation route — mutations', () => {
     expect(rig.host.innerHTML).not.toContain('data-rule-id="sch_1" disabled');
     expect(rig.host.innerHTML).toMatch(
       new RegExp(
-        `${AUTOMATION_ROUTE_SUBNAV_ATTR}="triggers"[\\s\\S]*?`
+        `${AUTOMATION_ROUTE_SUBNAV_ATTR}="coming-up"[\\s\\S]*?`
           + 'aria-selected="false"[\\s\\S]*?tabindex="-1"[\\s\\S]*?'
           + 'aria-disabled="true"',
       ),
@@ -1328,7 +1990,7 @@ describe('Automation route — recipe-focus deep-link', () => {
     const html = rig.host.innerHTML;
 
     expect(rig.route.getRecipeFilter()).toBe('deal-watch');
-    expect(rig.route.getActiveSection()).toBe('triggers');
+    expect(rig.route.getActiveSection()).toBe('all');
     // The ref-picker shell renders, its input showing the resolved name
     // once recipe.list has loaded.
     expect(html).toContain('data-ref-picker="automation-recipe-filter"');
@@ -1362,7 +2024,8 @@ describe('Automation route — recipe-focus deep-link', () => {
     // The combobox is present but empty, so its clear button stays hidden.
     expect(html).toContain('data-ref-picker="automation-recipe-filter"');
     expect(html).toMatch(/ref-picker-clear[^>]*hidden/);
-    expect(html).toContain(`${AUTOMATION_ROUTE_SECTION_ATTR}="auto_run"`);
+    // D-319 — the full view is the one list, with its filters.
+    expect(html).toContain('data-recued-automation-chip="on"');
   });
 });
 

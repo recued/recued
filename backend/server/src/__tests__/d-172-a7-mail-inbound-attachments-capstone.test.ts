@@ -262,8 +262,10 @@ describe('D-172 A.7 mail inbound attachment capstone', () => {
 
     const mail = mailRecord(h);
     expect(mail.hot_fields.has_attachments).toBe(true);
-    const fileAId = inboundFileRecordId('mail_attachment', `${mail.record_id}:att-a`);
-    const fileBId = inboundFileRecordId('mail_attachment', `${mail.record_id}:att-b`);
+    // An IMAP message's attachments are named with their mailbox: another
+    // IMAP account can hold a message under the same `uid@folder` id.
+    const fileAId = inboundFileRecordId('mail_attachment', `work/${mail.record_id}:att-a`);
+    const fileBId = inboundFileRecordId('mail_attachment', `work/${mail.record_id}:att-b`);
     const fileA = h.fileColl.get(fileAId)!;
     const fileB = h.fileColl.get(fileBId)!;
     expect(fileA.hot_fields).toMatchObject({
@@ -333,7 +335,7 @@ describe('D-172 A.7 mail inbound attachment capstone', () => {
     await h.collection.sync.start();
 
     const mail = mailRecord(h);
-    const goodId = inboundFileRecordId('mail_attachment', `${mail.record_id}:good`);
+    const goodId = inboundFileRecordId('mail_attachment', `work/${mail.record_id}:good`);
     expect(h.collection.get(mail.record_id)).not.toBeNull();
     expect(listFiles(h).map((f) => f.record_id)).toEqual([goodId]);
     expect(await h.store.outboundLinks('mail', mail.record_id)).toHaveLength(1);

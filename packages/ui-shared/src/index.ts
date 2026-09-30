@@ -23,7 +23,11 @@ export * from './variable-widgets.js';
 export * from './output-filter.js';
 export * from './file-ref-array.js';
 export * from './record-ref-variable.js';
+export * from './mail-template-variable.js';
 export * from './config-editor-overlay.js';
+// D-319 — a dish said as a line: what starts it, what tells it apart, its status.
+export * from './dish-lead.js';
+export * from './dish-line.js';
 export * as Primitives from './primitives/index.js';
 export * as TopBar from './top-bar/index.js';
 export * as ServerPill from './server-pill/index.js';

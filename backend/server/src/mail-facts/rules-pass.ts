@@ -19,6 +19,7 @@
  */
 
 import {
+  canonicalMailFactPattern,
   canonicalMailFactText,
   isMailFactDataPath,
   MAIL_TEMPLATE_LIMITS,
@@ -195,6 +196,25 @@ const conditionHolds = (
   }
   return condition.negate === true ? !holds : holds;
 };
+
+/** A condition as `conditionHolds` reads it: its field, op, value and whether
+ *  it is negated, the value read exactly as it is compared. Two conditions
+ *  with one reading hold for the same emails. */
+export const conditionAsRead = (condition: MailTemplateCondition): string => {
+  const wanted = canonicalMailFactText(condition.value);
+  let value: string;
+  if (condition.op === 'matches' || condition.op === 'name_matches') value = canonicalMailFactPattern(condition.value);
+  else if (condition.field === 'label' || condition.field === 'relationship') value = labelAsRead(condition.value);
+  else if (condition.op === 'domain_is') value = lower(wanted).replace(/^@/, '');
+  else if (condition.field === 'subject' && condition.op === 'is') value = lower(wanted.trim());
+  else value = lower(wanted);
+  return JSON.stringify([condition.field, condition.op, value, condition.negate === true]);
+};
+
+/** A set of conditions as one comparable key (ruling 31): each read as it
+ *  is compared, in no order, each once. */
+export const conditionSetAsRead = (conditions: readonly MailTemplateCondition[]): string =>
+  [...new Set(conditions.map(conditionAsRead))].sort().join('\n');
 
 /** `application/pdf` matches exactly; `image/` matches any image. */
 const mimeMatches = (mime: string, wanted: string): boolean => {

@@ -52,6 +52,8 @@
  *
  *  (Superseded text named `'service_ref'`, which no recipe authors, and
  *  omitted `'string'` — the largest gap, by 2×.) */
+import type { MailTemplateDefinition } from './mail-facts.js';
+
 export type ValueHintType =
   | 'secret' | 'url' | 'text' | 'number' | 'boolean' | 'enum' | 'oauth'
   | 'file_slug'
@@ -98,7 +100,13 @@ export type ValueHintType =
    *  find the row in a list, press an action, and let a `recipe.run` button
    *  carry the id into the form. That works and stays valid; this removes the
    *  need for it. */
-  | 'record_ref';
+  | 'record_ref'
+  /** D-315 §5.2 — one of the owner's mail-fact templates: the value is its id,
+   *  chosen from the owner's templates. With a `starter`, install creates the
+   *  template the recipe was built and tested with, and the variable holds its
+   *  id; `{{config.<name>}}` resolves to it, and a fact trigger narrows to it by
+   *  `template_variable`. */
+  | 'mail_template';
 
 export interface ValueHint {
   label: string;
@@ -154,6 +162,12 @@ export interface ValueHint {
    *  operation admits, and a caller that ignores the picker entirely is gated
    *  by the op's binding exactly as before. */
   entity_filter?: Readonly<Record<string, string>>;
+  /** D-315 §5.2 — for `type: 'mail_template'`: the template the recipe was built
+   *  and tested with, as its author's server sanitized it (no ids, health or
+   *  samples; nothing of the author's mail — `mailTemplateStarterProblems`).
+   *  Install creates it as the recipe's template, AI off, and each update
+   *  re-applies it. A template's kind here must be built in. */
+  starter?: MailTemplateDefinition;
 }
 
 /** Every admitted key on the object form. The fence derives from this, so adding
@@ -167,7 +181,7 @@ export interface ValueHint {
 export const VALUE_HINT_KEYS = [
   'label', 'type', 'optional', 'default', 'help', 'link',
   'options', 'provider', 'scopes', 'accept_mime_types', 'connection_kind',
-  'entity', 'entity_filter',
+  'entity', 'entity_filter', 'starter',
 ] as const satisfies ReadonlyArray<keyof ValueHint>;
 
 /** `satisfies` above proves the list contains only REAL members. It does not

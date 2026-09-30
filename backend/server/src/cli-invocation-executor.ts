@@ -1407,7 +1407,7 @@ const captureToolOutputToCas = async (
 const captureToolOutputToTemp = (
   selected: { filePath: string; filename: string },
   capture: CliOutputCaptureSpec,
-): { file_ref: TempFileRef; filename: string; mime_type: string } => {
+): { file_ref: TempFileRef; filename: string; mime_type: string; size_bytes?: number } => {
   const { filePath, filename } = selected;
   const file_ref: TempFileRef = {
     backing: 'temp',

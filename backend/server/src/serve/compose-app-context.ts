@@ -66,6 +66,7 @@ import {
 } from '../pairing/client-tokens.js';
 import type { RecipeStore } from '../recipe-store.js';
 import type { AnnotationRpcDeps } from '../annotation-handler.js';
+import { materializeMailBody } from '../mail-body-read-handler.js';
 import type { SharedRpcDeps } from '../shared-handler.js';
 import { createServerStateStore, type ServerStateStore } from '../server-state.js';
 import {
@@ -850,6 +851,7 @@ export const composeAppContext = (
   if (db) {
     chatBundle = composeChatOrchestrator({
       db,
+      readMailBody: record => cacheBlobs ? materializeMailBody(record, cacheBlobs) : Promise.resolve(record.body_inline ?? null),
       keys,
       eventBus,
       // D-192 Fork B — `file.search`'s owner-wide scope reads the UNIFIED file

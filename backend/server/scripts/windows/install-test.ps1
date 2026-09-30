@@ -153,6 +153,57 @@ $secondHash = Sha $exe1
 $ok = ($r.Code -eq 0) -and ($firstHash -ne 'absent') -and ($secondHash -ne $firstHash)
 Report 'rerun-replaces' $ok "code=$($r.Code) changed=$($secondHash -ne $firstHash)"
 
+# -- 3a. A late-current pair still repairs the separately committed UI -------
+# Start from an empty prefix. The feed driver parks the first binary GET for
+# three seconds; once the progress line proves the installer's initial read has
+# already happened, plant the exact current executable/addon pair but no UI.
+# This models another installer committing the native pair and then dying before
+# its webclient swap. The waiting installer must finish all three parts before it
+# reports that the concurrent install completed.
+$pLate = Join-Path $root 'plate'
+$lateLog = Join-Path $root 'latecurrent.log'
+$lateJob = Start-Job -ScriptBlock {
+  param($Installer, $Log, $BaseUrl, $Key, $Prefix)
+  $env:RECUED_BASE_URL = "$BaseUrl/latecurrent"
+  $env:RECUED_PREFIX = $Prefix
+  $env:RECUED_AUTOSTART = '0'
+  $env:RECUED_RELEASE_PUBKEY = $Key
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $Installer *> $Log
+  return $LASTEXITCODE
+} -ArgumentList $installer, $lateLog, $Base, $PubKey, $pLate
+
+$downloadSeen = $false
+$deadline = (Get-Date).AddSeconds(20)
+while ((Get-Date) -lt $deadline -and $lateJob.State -eq 'Running') {
+  if (Test-Path $lateLog) {
+    $partial = ''
+    try { $partial = Get-Content $lateLog -Raw -ErrorAction Stop } catch { $partial = '' }
+    if ($partial -match 'downloading recued-windows-') { $downloadSeen = $true; break }
+  }
+  Start-Sleep -Milliseconds 100
+}
+if ($downloadSeen) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $pLate 'lib') | Out-Null
+  Copy-Item -Force $exe1 (Join-Path $pLate 'recued.exe')
+  Copy-Item -Force $addon1 (Join-Path $pLate 'lib\better_sqlite3.node')
+}
+[void](Wait-Job -Job $lateJob -Timeout 90)
+$lateCode = -1
+if ($lateJob.State -eq 'Completed') {
+  $lateCode = [int](Receive-Job -Job $lateJob | Select-Object -Last 1)
+} else {
+  Stop-Job -Job $lateJob -ErrorAction SilentlyContinue
+}
+Remove-Job -Job $lateJob -Force -ErrorAction SilentlyContinue
+$lateOut = ''
+if (Test-Path $lateLog) { $lateOut = Get-Content $lateLog -Raw }
+$lateWebclient = Join-Path $pLate 'webclient\index.html'
+$lateUiOk = (Test-Path $lateWebclient) -and ((Get-Content $lateWebclient -Raw) -match '9.9.10')
+$lateSaidCurrent = (($lateOut -replace '\s+', ' ') -match 'another installer completed 9.9.10')
+$lateLockGone = -not (Test-Path (Join-Path $pLate 'recued-update.lock'))
+$ok = $downloadSeen -and ($lateCode -eq 0) -and $lateUiOk -and $lateSaidCurrent -and $lateLockGone
+Report 'late-current-repairs-webclient' $ok "signal=$downloadSeen code=$lateCode ui=$lateUiOk said_current=$lateSaidCurrent lock_released=$lateLockGone"
+
 # -- 4. A sha256 mismatch installs nothing ---------------------------------
 # The manifest here is VALIDLY SIGNED and declares a hash that does not match the
 # object it names, which isolates the hash check from the signature check.
@@ -461,6 +512,308 @@ $r = Invoke-Install 'v2' $pUnsafe
 $saidUnsafe = (($r.Out -replace '\s+', ' ') -match 'unreadable or unsafe')
 $ok = ($r.Code -ne 0) -and (Test-Path $victim) -and (Test-Path (Join-Path $pUnsafe '.swap-in-progress'))
 Report 'unsafe-swap-marker-refused' $ok "code=$($r.Code) said=$saidUnsafe victim=$((Test-Path $victim)) marker=$((Test-Path (Join-Path $pUnsafe '.swap-in-progress')))"
+
+# -- 12. NOTHING THE WAY BACK DEPENDS ON GOES BEFORE THE NEW PAIR IS ON DISK --
+# !!! NO HARNESS CAN PULL THE PLUG, BUT IT CAN DENY THE FLUSH. FlushFileBuffers
+# needs a handle opened for write, so a handle held here WITHOUT write sharing
+# makes the flush impossible. For a NEW pair (12a commit, 12c recovery keeping
+# a candidate) that must stop the run before the parked pair or the marker goes.
+# For a RESTORED previous pair (12b, 12d) the flush is best effort -- those bytes
+# were on disk before the run -- so the restore completes, warns, and retires
+# the marker. 12e/12f: a committed marker is recognised. Each arm fails against
+# an installer without its rule.
+#
+# 12a/12b drive the SHIPPED transaction functions, extracted via the AST as in
+# arm 9: a commit-time failure cannot be staged through a whole install without
+# racing it. The recovery arms after them run the real installer end to end.
+$swapToks = $null; $swapErrs = $null
+$swapAst = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$swapToks, [ref]$swapErrs)
+$swapWant = @('Get-RecuedSwapMarker', 'Write-RecuedDurableFile', 'Sync-RecuedInstallPair',
+              'Write-RecuedCommittedSwapMarker', 'Restore-RecuedInstallFile',
+              'Undo-RecuedInstallSwap', 'Complete-RecuedInstallSwap')
+$swapFns = @($swapAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+             Where-Object { $swapWant -contains $_.Name })
+foreach ($swapFn in $swapFns) { . ([scriptblock]::Create($swapFn.Extent.Text)) }
+
+# A mid-swap prefix: new pair live, previous pair parked, schema-1 marker, and
+# the in-memory transaction state Begin-RecuedInstallSwap leaves behind.
+function New-SwapFixture($Name) {
+  $dir = Join-Path $root $Name
+  New-Item -ItemType Directory -Force -Path (Join-Path $dir 'lib') | Out-Null
+  $nonce = 'abcdef0123456789abcdef0123456789'
+  $fx = @{
+    Exe = Join-Path $dir 'recued.exe'
+    Lib = Join-Path $dir 'lib\better_sqlite3.node'
+    PrevExe = Join-Path $dir "recued.exe.prev.$nonce"
+    PrevLib = Join-Path $dir "lib\better_sqlite3.node.prev.$nonce"
+    Marker = Join-Path $dir '.swap-in-progress'
+  }
+  Set-Content -Path $fx.Exe -Value 'new-exe' -Encoding ASCII
+  Set-Content -Path $fx.Lib -Value 'new-lib' -Encoding ASCII
+  Set-Content -Path $fx.PrevExe -Value 'old-exe' -Encoding ASCII
+  Set-Content -Path $fx.PrevLib -Value 'old-lib' -Encoding ASCII
+  $fxMarker = @{
+    schema_version = 1; expected_version = '9.9.10'; had_prev_exe = $true; had_prev_lib = $true
+    prev_exe = $fx.PrevExe; prev_lib = $fx.PrevLib
+  } | ConvertTo-Json -Compress
+  Set-Content -Path $fx.Marker -Value $fxMarker -Encoding ASCII
+  $script:InstallSwapInProgress = $true
+  $script:InstallSwapPrefix = $dir
+  $script:InstallSwapPrevExe = $fx.PrevExe
+  $script:InstallSwapPrevLib = $fx.PrevLib
+  $script:InstallSwapExpectedVersion = '9.9.10'
+  return $fx
+}
+function Read-Text($p) { if (Test-Path $p) { return (Get-Content $p -Raw).Trim() } return 'absent' }
+
+# -- 12a. Commit flushes the new pair before it drops the parked one --------
+$c = New-SwapFixture 'pcommitflush'
+$hold = [IO.File]::Open($c.Lib, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$priorEap = $ErrorActionPreference
+$commitThrew = $false
+try {
+  $ErrorActionPreference = 'Stop'
+  Complete-RecuedInstallSwap
+} catch {
+  $commitThrew = $true
+} finally {
+  $ErrorActionPreference = $priorEap
+  $hold.Dispose()
+}
+$wayBackKept = (Test-Path $c.PrevExe) -and (Test-Path $c.PrevLib) -and (Test-Path $c.Marker) -and `
+               ((Read-Text $c.Marker) -notmatch 'committed') -and $script:InstallSwapInProgress
+# With the handle gone, the same armed transaction commits and cleans up.
+$retryThrew = $false
+try { $ErrorActionPreference = 'Stop'; Complete-RecuedInstallSwap } catch { $retryThrew = $true } finally { $ErrorActionPreference = $priorEap }
+$committedClean = (-not $retryThrew) -and (-not (Test-Path $c.PrevExe)) -and (-not (Test-Path $c.PrevLib)) -and `
+                  (-not (Test-Path $c.Marker)) -and (-not $script:InstallSwapInProgress) -and ((Read-Text $c.Exe) -eq 'new-exe')
+$ok = ($swapFns.Count -eq $swapWant.Count) -and $commitThrew -and $wayBackKept -and $committedClean
+Report 'commit-flushes-before-dropping-rollback' $ok "found=$($swapFns.Count) of $($swapWant.Count) refused_unflushable=$commitThrew way_back_kept=$wayBackKept retry_committed=$committedClean"
+
+# -- 12b. A rollback completes even when the restored pair cannot be flushed --
+# The shape of a forced reinstall over a RUNNING server: its recued.exe is
+# renamed aside and back, and nothing can open it for write. The restore must
+# still finish -- previous pair live, marker retired -- with a warning, not a
+# report that a finished restore was incomplete. The holder shares DELETE so the
+# renames go through, and denies the write access the flush needs.
+$u = New-SwapFixture 'pundoflush'
+$hold = [IO.File]::Open($u.PrevLib, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+try { $undoOut = @(Undo-RecuedInstallSwap 3>&1) } finally { $hold.Dispose() }
+$undoReturned = @($undoOut | Where-Object { $_ -is [bool] })
+$undoWarned = @($undoOut | Where-Object {
+  $_ -is [System.Management.Automation.WarningRecord] -and $_.Message -match 'restored previous pair could not be flushed'
+}).Count -gt 0
+$undoDone = ($undoReturned.Count -eq 1) -and ($undoReturned[0] -eq $true) -and (-not $script:InstallSwapInProgress) -and `
+            (-not (Test-Path $u.Marker)) -and (-not (Test-Path $u.PrevExe)) -and (-not (Test-Path $u.PrevLib)) -and `
+            ((Read-Text $u.Exe) -eq 'old-exe') -and ((Read-Text $u.Lib) -eq 'old-lib')
+$ok = $undoWarned -and $undoDone
+Report 'undo-restored-pair-flush-best-effort' $ok "returned=$($undoReturned -join ',') warned=$undoWarned restored_and_retired=$undoDone"
+
+# Real fixture pairs for the end-to-end recovery arms: 9.9.10 from p1 (arm 3)
+# and 9.9.9 from p7 (arm 7).
+$exe9 = Join-Path $p7 'recued.exe'
+$addon9 = Join-Path $p7 'lib\better_sqlite3.node'
+$hash9 = Sha $exe9
+function New-RecoveryPrefix($Name, $Nonce) {
+  $dir = Join-Path $root $Name
+  New-Item -ItemType Directory -Force -Path (Join-Path $dir 'lib') | Out-Null
+  return @{
+    Dir = $dir
+    Exe = Join-Path $dir 'recued.exe'
+    Lib = Join-Path $dir 'lib\better_sqlite3.node'
+    PrevExe = Join-Path $dir "recued.exe.prev.$Nonce"
+    PrevLib = Join-Path $dir "lib\better_sqlite3.node.prev.$Nonce"
+    Marker = Join-Path $dir '.swap-in-progress'
+    Lock = Join-Path $dir 'recued-update.lock'
+  }
+}
+function Write-TestMarker($Path, $Schema, $PrevExe, $PrevLib) {
+  $body = @{
+    schema_version = $Schema; expected_version = '9.9.10'
+    had_prev_exe = (-not [string]::IsNullOrEmpty($PrevExe)); had_prev_lib = (-not [string]::IsNullOrEmpty($PrevLib))
+    prev_exe = $PrevExe; prev_lib = $PrevLib
+  }
+  if ($Schema -eq 2) { $body.phase = 'committed' }
+  Set-Content -Path $Path -Value ($body | ConvertTo-Json -Compress) -Encoding ASCII
+}
+
+# -- 12c. Recovery keeps an interrupted candidate only once it is on disk ---
+# Healthy 9.9.10 candidate, parked 9.9.9 pair, schema-1 marker. While the
+# candidate cannot be flushed, the recovery must refuse and keep everything; the
+# next run, with the handle gone, keeps the candidate and clears the debris.
+$k = New-RecoveryPrefix 'pkeepflush' '11111111111111111111111111111111'
+Copy-Item -Force $exe1 $k.Exe
+Copy-Item -Force $addon1 $k.Lib
+Copy-Item -Force $exe9 $k.PrevExe
+Copy-Item -Force $addon9 $k.PrevLib
+Write-TestMarker $k.Marker 1 $k.PrevExe $k.PrevLib
+$hold = [IO.File]::Open($k.Lib, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try { $r = Invoke-Install 'v2' $k.Dir } finally { $hold.Dispose() }
+$saidKeepFlush = (($r.Out -replace '\s+', ' ') -match 'passes self-test but could not be flushed')
+$keptAll = (Test-Path $k.PrevExe) -and (Test-Path $k.PrevLib) -and (Test-Path $k.Marker) -and `
+           ((Read-Text $k.Marker) -notmatch 'committed') -and (-not (Test-Path $k.Lock))
+$r2 = Invoke-Install 'v2' $k.Dir
+$keepCleaned = ($r2.Code -eq 0) -and (-not (Test-Path $k.PrevExe)) -and (-not (Test-Path $k.PrevLib)) -and `
+               (-not (Test-Path $k.Marker)) -and ((Sha $k.Exe) -eq $secondHash)
+$ok = ($r.Code -ne 0) -and $saidKeepFlush -and $keptAll -and $keepCleaned
+Report 'recovery-keeps-candidate-only-once-flushed' $ok "code=$($r.Code) said_flush=$saidKeepFlush way_back_kept=$keptAll then_code=$($r2.Code) cleaned=$keepCleaned"
+
+# -- 12d. Recovery completes a restore even when that pair cannot be flushed --
+# Unhealthy candidate (9.9.10 exe, no addon), parked 9.9.9 pair, the restored
+# addon held without write sharing for the WHOLE run. The restore goes through,
+# the failed flush only warns, and the marker is retired in the same run; the
+# rest of the run then finds 9.9.9 current, so it exits 0.
+$d = New-RecoveryPrefix 'prestoreflush' '22222222222222222222222222222222'
+Copy-Item -Force $exe1 $d.Exe
+Copy-Item -Force $exe9 $d.PrevExe
+Copy-Item -Force $addon9 $d.PrevLib
+Write-TestMarker $d.Marker 1 $d.PrevExe $d.PrevLib
+$hold = [IO.File]::Open($d.PrevLib, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+try { $r = Invoke-Install 'good' $d.Dir } finally { $hold.Dispose() }
+$restoreWarned = (($r.Out -replace '\s+', ' ') -match 'restored previous pair could not be flushed')
+$restoreDone = ((Sha $d.Exe) -eq $hash9) -and ((Sha $d.Lib) -eq (Sha $addon9)) -and (-not (Test-Path $d.PrevExe)) -and `
+               (-not (Test-Path $d.PrevLib)) -and (-not (Test-Path $d.Marker)) -and (-not (Test-Path $d.Lock))
+$ok = ($r.Code -eq 0) -and $restoreWarned -and $restoreDone
+Report 'recovery-restored-pair-flush-best-effort' $ok "code=$($r.Code) warned=$restoreWarned restored_and_retired=$restoreDone"
+
+# -- 12e. A committed marker is recognised: a healthy candidate is kept ------
+# Death after the commit record, before cleanup finished. An installer that
+# only knows schema 1 refuses this marker outright.
+$e = New-RecoveryPrefix 'pcommittedkeep' '33333333333333333333333333333333'
+Copy-Item -Force $exe1 $e.Exe
+Copy-Item -Force $addon1 $e.Lib
+Copy-Item -Force $exe9 $e.PrevExe
+Copy-Item -Force $addon9 $e.PrevLib
+Write-TestMarker $e.Marker 2 $e.PrevExe $e.PrevLib
+$r = Invoke-Install 'v2' $e.Dir
+$saidKept = (($r.Out -replace '\s+', ' ') -match 'passes self-test; keeping it')
+$committedKept = (-not (Test-Path $e.Marker)) -and (-not (Test-Path $e.PrevExe)) -and (-not (Test-Path $e.PrevLib)) -and `
+                 ((Sha $e.Exe) -eq $secondHash) -and (-not (Test-Path $e.Lock))
+$ok = ($r.Code -eq 0) -and $saidKept -and $committedKept
+Report 'committed-marker-candidate-kept' $ok "code=$($r.Code) said_kept=$saidKept clean=$committedKept"
+
+# -- 12f. A COMMITTED MARKER NEVER TREATS A DELETED BACKUP AS UNMOVED -------
+# Model a power cut after the durable commit record and after cleanup deleted
+# one rollback witness, followed by damage to the live candidate. The schema-1
+# rule (named but absent means displacement never happened) would keep or delete
+# the wrong generation here. Schema 2 must preserve all evidence and refuse to
+# delete either live file because the named backup is already gone.
+$g = New-RecoveryPrefix 'pcommittedgone' 'fedcba9876543210fedcba9876543210'
+Set-Content -Path $g.Lib -Value 'committed-live-addon' -Encoding ASCII
+Write-TestMarker $g.Marker 2 $g.PrevExe ''
+$beforeCommittedLib = Sha $g.Lib
+$r = Invoke-Install 'v2' $g.Dir
+$saidCommitted = (($r.Out -replace '\s+', ' ') -match 'committed candidate is unhealthy.*rollback witness is already gone')
+$evidenceKept = (Test-Path $g.Marker) -and ((Sha $g.Lib) -eq $beforeCommittedLib) -and (-not (Test-Path $g.Exe))
+$ok = ($r.Code -ne 0) -and $saidCommitted -and $evidenceKept
+Report 'committed-missing-witness-refused' $ok "code=$($r.Code) said=$saidCommitted evidence_kept=$evidenceKept"
+
+# -- 13. THE WEBCLIENT SWAP NEVER TRADES A VERIFIED BUNDLE FOR DEBRIS ---------
+# !!! MEASURED ON THIS HOST, NOT ASSUMED. A file held open WITHOUT delete sharing
+# blocks renaming its directory too (the swap then fails before promotion), and
+# one held WITH delete sharing is unlinked anyway (POSIX delete semantics), so
+# no share mode gives "the directory renames, the delete fails". A RUNNING image
+# does: the loader shares delete, so its directory renames, but Windows refuses
+# to delete an image while it runs. These arms run a copy of PING.EXE where a
+# scanner or indexer would hold a file. Verification uses the SHIPPED
+# Test-RecuedWebclientBundle, extracted via the AST as in arm 9.
+$wcToks = $null; $wcErrs = $null
+$wcAst = [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$wcToks, [ref]$wcErrs)
+$wcWant = @('Test-RecuedWebclientPath', 'Get-RecuedContainedWebclientPath', 'Test-RecuedWebclientBundle')
+$wcFns = @($wcAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+           Where-Object { $wcWant -contains $_.Name })
+foreach ($wcFn in $wcFns) { . ([scriptblock]::Create($wcFn.Extent.Text)) }
+$wcVerifierOk = ($wcFns.Count -eq $wcWant.Count)
+
+function Start-Holder($Exe) {
+  Copy-Item -Force (Join-Path $env:WINDIR 'System32\PING.EXE') $Exe
+  $proc = Start-Process -FilePath $Exe -ArgumentList '-n 300 127.0.0.1' -WindowStyle Hidden -PassThru
+  Start-Sleep -Milliseconds 1500
+  return $proc
+}
+function Stop-Holder($Proc) {
+  if ($null -eq $Proc) { return }
+  Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+  [void]$Proc.WaitForExit(15000)
+}
+# Every file under a directory, by relative path and hash: "untouched" and
+# "identical to a fresh install" are both exact comparisons of this string.
+function Get-TreePrint($Dir) {
+  if (-not (Test-Path -LiteralPath $Dir)) { return 'absent' }
+  $prints = @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+    $_.FullName.Substring($Dir.Length) + '=' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+  })
+  return ($prints -join '|')
+}
+function Read-Stamp($Dir) { return (Read-Text (Join-Path $Dir '.recued-installed-version')) }
+
+# -- 13a. A promoted bundle survives a displaced one that cannot be deleted --
+# Fresh 9.9.9 install, then mark its bundle stale so the same-version run
+# replaces it, with the holder running INSIDE the bundle being displaced. The
+# new bundle must go live and stay live; the displaced one is left as debris
+# with a warning, and the next run retires it without restoring it.
+$wa = Join-Path $root 'pwchold'
+$r = Invoke-Install 'good' $wa
+$waDir = Join-Path $wa 'webclient'
+$waBackup = "$waDir.install-old"
+$waFresh = Get-TreePrint $waDir
+Set-Content -Path (Join-Path $waDir '.recued-installed-version') -Value '9.9.8' -Encoding ASCII
+$holder = Start-Holder (Join-Path $waDir 'holder.exe')
+try { $r = Invoke-Install 'good' $wa } finally { $holderAlive = -not $holder.HasExited; Stop-Holder $holder }
+$waWarned = (($r.Out -replace '\s+', ' ') -match 'webclient 9.9.9 is installed, but the previous bundle')
+$waLive = $wcVerifierOk -and (Test-RecuedWebclientBundle $waDir) -and ((Read-Stamp $waDir) -eq '9.9.9') -and `
+          ($waFresh -ne 'absent') -and ((Get-TreePrint $waDir) -eq $waFresh)
+$waDebris = Test-Path (Join-Path $waBackup 'holder.exe')
+$r2 = Invoke-Install 'good' $wa
+$waRetired = ($r2.Code -eq 0) -and (-not (Test-Path $waBackup)) -and ((Get-TreePrint $waDir) -eq $waFresh)
+$ok = $holderAlive -and ($r.Code -eq 0) -and $waWarned -and $waLive -and $waDebris -and $waRetired
+Report 'webclient-promotion-survives-undeletable-backup' $ok "holder_alive=$holderAlive code=$($r.Code) warned=$waWarned new_live_verifies=$waLive debris_left=$waDebris then_code=$($r2.Code) retired_not_restored=$waRetired"
+
+# -- 13b. A leftover backup beside an intact OLDER bundle is debris -----------
+# The reconcile judged the live bundle against the release being installed NOW,
+# so an intact 9.9.8 bundle under a 9.9.9 run read as a broken swap: it was
+# deleted and the leftover restored over it. The nowebclient feed makes the run
+# touch nothing else in the bundle directory.
+$wb = Join-Path $root 'pwcdebris'
+$r = Invoke-Install 'nowebclient' $wb
+$wbDir = Join-Path $wb 'webclient'
+$wbBackup = "$wbDir.install-old"
+$olderBundle = Join-Path $pLegacy 'webclient'
+$wbSetup = ($r.Code -eq 0) -and (-not (Test-Path $wbDir)) -and (Test-Path (Join-Path $olderBundle 'webclient-bundle-manifest.json'))
+if ($wbSetup) { Copy-Item -Recurse -Force $olderBundle $wbDir }
+New-Item -ItemType Directory -Force -Path $wbBackup | Out-Null
+Set-Content -Path (Join-Path $wbBackup 'index.html') -Value 'half-deleted debris' -Encoding ASCII
+$wbBefore = Get-TreePrint $wbDir
+$wbOlder = $wbSetup -and ((Read-Stamp $wbDir) -eq '9.9.8') -and $wcVerifierOk -and (Test-RecuedWebclientBundle $wbDir)
+$r = Invoke-Install 'nowebclient' $wb
+$wbUntouched = ($wbBefore -ne 'absent') -and ((Get-TreePrint $wbDir) -eq $wbBefore)
+$wbDebrisGone = -not (Test-Path $wbBackup)
+$ok = $wbOlder -and ($r.Code -eq 0) -and $wbUntouched -and $wbDebrisGone
+Report 'webclient-debris-beside-older-bundle-removed' $ok "setup_older_verifies=$wbOlder code=$($r.Code) live_untouched=$wbUntouched debris_gone=$wbDebrisGone"
+
+# -- 13c. An uncleared backup name skips the update instead of nesting into it --
+# Move-Item onto an EXISTING directory moves the source INSIDE it (measured on
+# this host, with and without -Force). With the holder running inside a leftover
+# backup, the stale 9.9.8 bundle must stay exactly as it is, the update be
+# skipped with a warning, and nothing nested; with the holder gone, the next
+# run retires the leftover and updates normally.
+$wn = Join-Path $root 'pwcnest'
+$r = Invoke-Install 'good' $wn
+$wnDir = Join-Path $wn 'webclient'
+$wnBackup = "$wnDir.install-old"
+Set-Content -Path (Join-Path $wnDir '.recued-installed-version') -Value '9.9.8' -Encoding ASCII
+$wnBefore = Get-TreePrint $wnDir
+New-Item -ItemType Directory -Force -Path $wnBackup | Out-Null
+$holder = Start-Holder (Join-Path $wnBackup 'holder.exe')
+try { $r = Invoke-Install 'good' $wn } finally { $holderAlive = -not $holder.HasExited; Stop-Holder $holder }
+$wnWarned = (($r.Out -replace '\s+', ' ') -match 'skipping the webclient 9.9.9 update this run')
+$wnUntouched = ($wnBefore -ne 'absent') -and ((Get-TreePrint $wnDir) -eq $wnBefore) -and ((Read-Stamp $wnDir) -eq '9.9.8')
+$wnNotNested = (-not (Test-Path (Join-Path $wnBackup 'webclient'))) -and (Test-Path (Join-Path $wnBackup 'holder.exe'))
+$r2 = Invoke-Install 'good' $wn
+$wnHealed = ($r2.Code -eq 0) -and (-not (Test-Path $wnBackup)) -and ((Read-Stamp $wnDir) -eq '9.9.9') -and `
+            $wcVerifierOk -and (Test-RecuedWebclientBundle $wnDir)
+$ok = $holderAlive -and ($r.Code -eq 0) -and $wnWarned -and $wnUntouched -and $wnNotNested -and $wnHealed
+Report 'webclient-update-skipped-while-backup-name-held' $ok "holder_alive=$holderAlive code=$($r.Code) warned=$wnWarned live_untouched=$wnUntouched not_nested=$wnNotNested then_code=$($r2.Code) healed=$wnHealed"
 
 # -- cleanup: leave the host as we found it --------------------------------
 Remove-Item -Force $startupLnk, $programsLnk -ErrorAction SilentlyContinue

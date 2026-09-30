@@ -55,6 +55,8 @@ import {
   type HandlerSlice,
   type InstallAccessTier,
   type InstallGrantSelection,
+  type MailTemplateInstallChoice,
+  type MailTemplateInstallOutcome,
   type PackContentRef,
   type PackDependencyInstallScope,
   type PackInstallPlan,
@@ -130,6 +132,7 @@ import {
 } from './webhook-declaration-gate.js';
 import type { ContractStore } from './storage/contract-store.js';
 import type { SavedDataViewStore } from './saved-data-view-store.js';
+import type { RecipeMailTemplates } from './mail-facts/recipe-templates.js';
 import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
@@ -289,6 +292,10 @@ export interface PackInstallRpcDeps {
    *  `saved_view` contents install nothing and the pack still succeeds: a view
    *  is a convenience surface, never a capability. */
   getSavedDataViewStore?: () => SavedDataViewStore | undefined;
+  /** D-315 §5.2 — late-bound, like the saved views: the templates recipes
+   *  bring. An install creates or re-applies each recipe's starter once its
+   *  recipes are saved, and the preview lists them. Absent ⇒ none are made. */
+  getRecipeMailTemplates?: () => RecipeMailTemplates | undefined;
   /** D-296 — late-bound: the trigger store and the vendor registry the
    *  reconcile compiles against, so the update preview can name an armed
    *  automation the update switches off. Absent ⇒ no warning. */
@@ -369,6 +376,10 @@ type PacksInstallArgs = {
    *  recursion below installs it; a pack not named installs at its authored
    *  defaults, as every dependency did before. */
   dependency_install_scopes?: ReadonlyArray<PackDependencyInstallScope>;
+  /** D-315 §5.2 — which template stays on where a recipe's starter reads the
+   *  same mail as one already on (`packs.install_preview` `mail_templates`).
+   *  Absent ⇒ the recipe's. Travels down to the packs an install brings in. */
+  mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice>;
 };
 
 type InternalInstallOutcome = {
@@ -415,6 +426,31 @@ const assertDependencyInstallScopes = (method: string, value: unknown): void => 
   });
 };
 
+/** D-315 §5.2 — a present-but-malformed `mail_template_choices` is a client bug:
+ *  refused, not read as "the recipe's", which would switch off a template the
+ *  owner chose to keep. */
+export const assertMailTemplateChoices = (method: string, value: unknown): void => {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new RpcError('bad_request', `${method}: mail_template_choices must be an array`);
+  const seen = new Set<string>();
+  value.forEach((entry: unknown, index) => {
+    const choice = entry as { recipe_id?: unknown; variable?: unknown; keep?: unknown } | null;
+    if (choice === null
+      || typeof choice !== 'object'
+      || Object.keys(choice).sort().join(',') !== 'keep,recipe_id,variable'
+      || typeof choice.recipe_id !== 'string' || choice.recipe_id.length === 0
+      || typeof choice.variable !== 'string' || choice.variable.length === 0
+      || (choice.keep !== 'recipe' && choice.keep !== 'existing')) {
+      throw new RpcError('bad_request', `${method}: mail_template_choices[${index}] is invalid`);
+    }
+    const key = JSON.stringify([choice.recipe_id, choice.variable]);
+    if (seen.has(key)) {
+      throw new RpcError('bad_request', `${method}: mail_template_choices names ${choice.recipe_id} ${choice.variable} twice`);
+    }
+    seen.add(key);
+  });
+};
+
 const recipeRefKey = (ref: { slug: string; version: number }): string => `${ref.slug}@${ref.version}`;
 
 const declaredRecipeKeys = (manifest: BulkPackManifest): Set<string> =>
@@ -435,6 +471,7 @@ const mergeSuccessResults = (
   const born_blocked = results.flatMap((r) => r.born_blocked ?? []);
   const born_degraded = results.flatMap((r) => r.born_degraded ?? []);
   const pii_disclosure = results.flatMap((r) => r.pii_disclosure ?? []);
+  const mail_templates = results.flatMap((r) => r.mail_templates ?? []);
   return {
     ok: true,
     installed,
@@ -443,6 +480,7 @@ const mergeSuccessResults = (
     ...(born_blocked.length > 0 ? { born_blocked } : {}),
     ...(born_degraded.length > 0 ? { born_degraded } : {}),
     ...(pii_disclosure.length > 0 ? { pii_disclosure } : {}),
+    ...(mail_templates.length > 0 ? { mail_templates } : {}),
   };
 };
 
@@ -818,6 +856,7 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
     );
   }
   assertDependencyInstallScopes('packs.install', args.dependency_install_scopes);
+  assertMailTemplateChoices('packs.install', args.mail_template_choices);
   if (args.expected_manifest_hash !== undefined
     && !/^[0-9a-f]{64}$/.test(args.expected_manifest_hash)) {
     throw new RpcError(
@@ -1754,6 +1793,31 @@ const installSinglePack = async (
     }
   }
 
+  // D-315 §5.2 — the templates the pack's recipes bring: created from each
+  // starter, or re-applied on an update, once the recipes are saved. Best-
+  // effort like the views: a recipe runs without its template (it reads no
+  // facts until one is chosen), and the next install repairs it.
+  const mailTemplateOutcomes: MailTemplateInstallOutcome[] = [];
+  const recipeMailTemplates = deps.getRecipeMailTemplates?.();
+  if (result.ok && recipeMailTemplates) {
+    for (const entry of resolved) {
+      if (entry.recipe === null) continue;
+      try {
+        mailTemplateOutcomes.push(...recipeMailTemplates.sync({
+          recipe: entry.recipe.recipe,
+          publisher_id: entry.recipe.publisher_id,
+          version: entry.recipe.version,
+          pack: manifest.slug,
+        }, args.mail_template_choices));
+      } catch (e) {
+        console.warn(
+          `[d-315] failed to sync the mail templates of recipe ${JSON.stringify(entry.recipe.recipe_id)}: `
+            + ((e as Error).message ?? String(e)),
+        );
+      }
+    }
+  }
+
   // D-196 R6 — recipe tools are grantable even when the pack carries no
   // composition. Apply the same install checklist to their authoritative
   // `<publisher>/<recipe_id>` names. A successfully provisioned composition
@@ -1886,6 +1950,7 @@ const installSinglePack = async (
     ...(born_blocked.length > 0 ? { born_blocked } : {}),
     ...(born_degraded.length > 0 ? { born_degraded } : {}),
     ...(pii_disclosure.length > 0 ? { pii_disclosure } : {}),
+    ...(mailTemplateOutcomes.length > 0 ? { mail_templates: mailTemplateOutcomes } : {}),
   };
 
   // D-170 (packs.install composition branch) — finalize `deferred_contents`: drop
@@ -2032,6 +2097,9 @@ const handlePacksInstallInternal = async (
           : {}),
         ...(args.dependency_install_scopes !== undefined
           ? { dependency_install_scopes: args.dependency_install_scopes }
+          : {}),
+        ...(args.mail_template_choices !== undefined
+          ? { mail_template_choices: args.mail_template_choices }
           : {}),
       },
       context,
@@ -2590,6 +2658,8 @@ type PacksInstallBySlugArgs = {
   webhook_bindings?: PacksInstallArgs['webhook_bindings'];
   /** D-310 — forwarded verbatim to the by-value install. */
   dependency_install_scopes?: PacksInstallArgs['dependency_install_scopes'];
+  /** D-315 §5.2 — forwarded verbatim to the by-value install. */
+  mail_template_choices?: PacksInstallArgs['mail_template_choices'];
 };
 
 const marketplaceManifestReviewHash = (
@@ -2956,6 +3026,7 @@ export const installPackBySlug = async (
     );
   }
   assertDependencyInstallScopes('packs.installBySlug', args.dependency_install_scopes);
+  assertMailTemplateChoices('packs.installBySlug', args.mail_template_choices);
 
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
@@ -3105,6 +3176,9 @@ export const installPackBySlug = async (
           : {}),
         ...(args.dependency_install_scopes !== undefined
           ? { dependency_install_scopes: args.dependency_install_scopes }
+          : {}),
+        ...(args.mail_template_choices !== undefined
+          ? { mail_template_choices: args.mail_template_choices }
           : {}),
       },
       manifest.publisher,
@@ -3376,6 +3450,7 @@ type RecipeInstallBySlugResult =
       version: number;
       name: string;
       publisher_id: string;
+      mail_templates?: MailTemplateInstallOutcome[];
       pii?: {
         headline?: string;
         auto_protected?: string[];
@@ -3400,11 +3475,12 @@ type RecipeInstallBySlugResult =
  *  pack grants (a standalone recipe carries no pack `requires[]`). */
 export const installRecipeBySlug = async (
   deps: PackInstallRpcDeps,
-  args: { slug: string },
+  args: { slug: string; mail_template_choices?: ReadonlyArray<MailTemplateInstallChoice> },
 ): Promise<{ result: RecipeInstallBySlugResult }> => {
   if (args == null || typeof args !== 'object' || typeof args.slug !== 'string' || args.slug.length === 0) {
     throw new RpcError('bad_request', 'recipe.installBySlug: slug must be a non-empty string');
   }
+  assertMailTemplateChoices('recipe.installBySlug', args.mail_template_choices);
 
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let row: MarketplaceRecipeResult | null;
@@ -3539,6 +3615,24 @@ export const installRecipeBySlug = async (
   // hook so trigger reconciliation runs exactly as for `recipe.save`.
   deps.recipeStore.save(row.recipe, row.publisher_id, 'pair-sync', now);
 
+  // D-315 §5.2 — the template the recipe brings, created or re-applied now it
+  // is saved. Best-effort, as in a pack install. With no dialog on this path,
+  // a starter that reads the same mail as a template already on follows the
+  // caller's choice, or the recipe's, and the result says what it switched off.
+  let mailTemplates: MailTemplateInstallOutcome[] = [];
+  try {
+    mailTemplates = deps.getRecipeMailTemplates?.()?.sync({
+      recipe: row.recipe,
+      publisher_id: row.publisher_id,
+      version: row.version,
+    }, args.mail_template_choices) ?? [];
+  } catch (e) {
+    console.warn(
+      `[d-315] failed to sync the mail templates of recipe ${JSON.stringify(row.recipe_id)}: `
+        + ((e as Error).message ?? String(e)),
+    );
+  }
+
   // § 7 surfacing — disclose the recipe's run-time PII posture (same projection
   // `recipe.save` returns). Fail-safe (null when nothing to disclose).
   const pii = assessRecipePiiPosture(row.recipe);
@@ -3549,6 +3643,7 @@ export const installRecipeBySlug = async (
       version: row.version,
       name: row.recipe.metadata?.name ?? row.recipe_id,
       publisher_id: row.publisher_id,
+      ...(mailTemplates.length > 0 ? { mail_templates: mailTemplates } : {}),
       ...(pii !== null
         ? {
             pii: {
@@ -3635,9 +3730,15 @@ export const makePackInstallHandlers = (
         const triggerPreview = deps.getTriggerPreview?.();
         const receptionPairs = deps.getReceptionPairs?.();
         const savedSettings = deps.getSavedSettings?.();
+        const recipeMailTemplates = deps.getRecipeMailTemplates?.();
         const incoming = triggerPreview === undefined && receptionPairs === undefined && savedSettings === undefined
+          && recipeMailTemplates === undefined
           ? []
           : await installIncomingRecipes(previewDeps, manifest);
+        // D-315 §5.2 — the templates the recipes bring, and which already-on
+        // template each would meet.
+        const mailTemplates = recipeMailTemplates?.preview(incoming.map((recipe) => recipe.definition)) ?? [];
+        const mailFactSources = recipeMailTemplates?.factSources(incoming.map((recipe) => recipe.definition)) ?? [];
         const switchedOff = triggerPreview === undefined
           ? []
           : triggersSwitchedOff({ preview: triggerPreview, recipes: incoming });
@@ -3675,6 +3776,8 @@ export const makePackInstallHandlers = (
           ...(switchedOff.length > 0 ? { triggers_switched_off: switchedOff } : {}),
           ...(receptionsOff.length > 0 ? { receptions_switched_off: receptionsOff } : {}),
           ...(settingsDropped.length > 0 ? { settings_no_longer_used: settingsDropped } : {}),
+          ...(mailTemplates.length > 0 ? { mail_templates: mailTemplates } : {}),
+          ...(mailFactSources.length > 0 ? { mail_fact_sources: mailFactSources } : {}),
           will_enable: preview.will_enable.map((r) => ({
             publisher_id: r.publisher_id,
             recipe_id: r.recipe_id,

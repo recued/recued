@@ -403,7 +403,8 @@ export interface Checkpoint {
   /** Ordinary automatic poll captured before any owner acceptance. Its
    * qualification must still match this target revision and sequence. */
   auto_run_qualification?: {
-    recipe_id: string; incarnation: string; revision: number; qualifying_sequence: number;
+    /** D-319 — the dish whose timer polled: a timer is keyed by its dish. */
+    recipe_id: string; dish_id: string; incarnation: string; revision: number; qualifying_sequence: number;
   };
   /** The actual host entry tool, retained across a hold. This is provenance,
    * never a grant supplied by a recipe or by a resume request. */
@@ -510,7 +511,7 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
     const poll = v.auto_run_qualification as Record<string, unknown> | null;
     if (!poll || typeof poll !== 'object' || Array.isArray(poll) || v.execution_phase !== 'trigger'
       || v.preapproval_candidate_ref !== undefined || v.preapproval_execution_ref !== undefined || v.raw_op !== undefined
-      || poll.recipe_id !== v.recipe_id || !nonEmpty(poll.incarnation)
+      || poll.recipe_id !== v.recipe_id || !nonEmpty(poll.dish_id) || !nonEmpty(poll.incarnation)
       || !Number.isSafeInteger(poll.revision) || (poll.revision as number) < 1
       || !Number.isSafeInteger(poll.qualifying_sequence) || (poll.qualifying_sequence as number) < 0) return false;
   }

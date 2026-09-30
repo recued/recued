@@ -12,6 +12,7 @@ import {
 } from '@recued/contracts';
 import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
+import { renderAnswerText } from './answer-text.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
 /** D-174 P2 — top-level Chat route.
  *
@@ -76,6 +77,7 @@ import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import {
   applyPlanResolution,
   beginInFlightTurn,
+  discardInFlightTurn,
   buildChatModelSourceOptions,
   matchChatModelSource,
   hydrateThreadFromSnapshot,
@@ -2688,6 +2690,10 @@ export interface BootstrapChatRouteOptions {
    * only after the exact durable session has rehydrated, then focused without
    * sending. Nothing is persisted to browser storage. */
   initialRecoveryDraft?: ChatRouteRecoveryDraft;
+  /** A transient, explicit Follow this work submission. Consumed once after
+   * hydration in its exact session; never reconstructed from a URL/reconnect.
+   * Failed/unavailable sends remain an ordinary protected composer draft. */
+  initialWorkSubmission?: { sessionId: string; message: string; repeat?: boolean };
   filePreviewCallers?: FilePreviewCallers;
   fileListCaller?: ChatFileListCaller;
   cloudFileCallers?: CloudFileCallers;
@@ -3560,6 +3566,11 @@ export const bootstrapChatRoute = (
     && (opts.initialRecoveryDraft.text.trim().length > 0 || opts.initialRecoveryDraft.replyTo !== undefined || (opts.initialRecoveryDraft.attachments?.length ?? 0) > 0)
       ? opts.initialRecoveryDraft
       : null;
+  let initialWorkSubmission = opts.initialWorkSubmission;
+  // An explicit investigation asks for a fresh read even when its prompt is
+  // unchanged. Keep that intent through model selection and a lost send ack;
+  // the ordinary submission ID still makes an identical retry idempotent.
+  let workInvestigationDraft = opts.initialWorkSubmission;
   const initialDraftSessionId = opts.initialSessionId?.trim() || null;
   const hasPendingInitialDraft = (): boolean => pendingInitialFiles.length > 0 || pendingRecoveryDraft !== null;
   const conversationFiles = opts.conversationFilesCaller && opts.fileSelectionCaller
@@ -3690,6 +3701,17 @@ export const bootstrapChatRoute = (
       ?? controls.find(control => control.getAttribute('data-delivery-control') === (messageId ? `message:${messageId}:details` : 'history:toggle')))
       ?.focus({ preventScroll: true });
   };
+  /** Focus the Messenger delivery panel. A section is not focusable, so it is
+   *  made programmatically focusable (never a tab stop). `false` when there is
+   *  no panel to focus. */
+  const focusDeliveryPanel = (scroll: boolean): boolean => {
+    const panel = coordinationHost?.querySelector<HTMLElement>('[data-chat-delivery]');
+    if (!panel) return false;
+    panel.setAttribute('tabindex', '-1');
+    panel.focus({ preventScroll: true });
+    if (scroll) panel.scrollIntoView?.({ block: 'nearest' });
+    return true;
+  };
   const renderCoordination = (): void => {
     if (disposed || !coordinationHost || !state.thread.session) return;
     const session = state.thread.session.id;
@@ -3698,6 +3720,11 @@ export const bootstrapChatRoute = (
     const focusedWithdrawal = doc.activeElement?.getAttribute('data-chat-withdraw');
     const focusedMessage = focused
       ? doc.activeElement?.closest?.('[data-chat-message-delivery]')?.getAttribute('data-chat-message-delivery') : null;
+    // ⛔ The panel ITSELF holds focus once a row's Delivery opened it
+    // (`focusMessengerDelivery`), and this repaint replaces it with a new one:
+    // the details that arrive after opening repaint it, and focus fell to the
+    // page (39a0a744d). Put it back on the new panel.
+    const panelFocused = doc.activeElement?.hasAttribute?.('data-chat-delivery') === true;
     // Snapshot invalidation must not repaint the composer or retire unrelated
     // one-shot accessibility announcements elsewhere in the conversation.
     clearChildren(coordinationHost);
@@ -3713,6 +3740,7 @@ export const bootstrapChatRoute = (
       if (detail) host.appendChild(detail);
     }
     if (focused) restoreDeliveryFocus(focused, focusedMessage);
+    else if (panelFocused) focusDeliveryPanel(false);
     if (focusedWithdrawal) Array.from(coordinationHost.querySelectorAll?.<HTMLElement>('[data-chat-withdraw]') ?? [])
       .find(control => control.getAttribute('data-chat-withdraw') === focusedWithdrawal)?.focus({ preventScroll: true });
   };
@@ -3761,6 +3789,22 @@ export const bootstrapChatRoute = (
           changed = true;
         }
         continue;
+      }
+      // ⛔ A stopped turn — Stop, a failure, a restart — saved no answer, yet
+      // its bubble can already hold one: Chat streams the settled answer
+      // before the closing brief. The server sends no retraction, so this
+      // snapshot is the only word the tab gets. Kept, the bubble read as a
+      // saved reply until a reload, and "Try again" showed the new answer with
+      // the old copy beneath it. The strip already says the turn stopped.
+      if ((turn.status === 'cancelled' || turn.status === 'failed' || turn.status === 'interrupted')
+        && state.thread.session?.id === session) {
+        const thread = discardInFlightTurn(state.thread, turn.turn_id);
+        if (thread !== state.thread) {
+          state = settlePendingSend({ ...state, thread });
+          rememberSettledTurn(session, turn.turn_id);
+          settleTrackedTurn(session, turn.turn_id);
+          changed = true;
+        }
       }
       if (turn.status !== 'withdrawn' && turn.failure_reason !== 'attachment_deleted') continue;
       rememberSettledTurn(session, turn.turn_id);
@@ -4958,6 +5002,9 @@ export const bootstrapChatRoute = (
       content.setAttribute('role', 'status');
       content.setAttribute('aria-live', 'polite');
       content.textContent = pendingText;
+    } else if (message.role === 'assistant') {
+      // Record citations become in-app links; everything else stays text.
+      renderAnswerText(doc, content, message.content);
     } else {
       content.textContent = message.content;
     }
@@ -7602,10 +7649,12 @@ export const bootstrapChatRoute = (
     (input as { value: string }).value = pendingRecoveryDraft?.text ?? composerDraft;
     input.addEventListener('input', () => {
       if (hasPendingInitialDraft()) return;
+      initialWorkSubmission = undefined;
       composerDraft = (input as { value?: string }).value ?? '';
       composerDraftProtected = composerDraft.trim().length > 0;
       send.disabled =
         state.sending
+        || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
         || state.aiAvailable === false
         || composerAttachments.hasInFlight()
         || hasPendingInitialDraft()
@@ -7808,6 +7857,7 @@ export const bootstrapChatRoute = (
     const hasAttached = (composerAttachments?.payload().length ?? 0) > 0;
     if (
       state.sending
+      || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || aiUnavailable
       || uploadInFlight
       || hasPendingInitialDraft()
@@ -7817,6 +7867,9 @@ export const bootstrapChatRoute = (
     }
     if (uploadInFlight && !state.sending && !aiUnavailable) {
       send.setAttribute('title', 'Waiting for your file to finish uploading.');
+    }
+    if (modelSourceWriteSessions.has(state.thread.session?.id ?? '')) {
+      send.setAttribute('title', 'Waiting for your AI choice to finish saving.');
     }
     if (aiUnavailable) {
       // Accessible disabled reason: tooltip for sighted users + an
@@ -9300,8 +9353,9 @@ export const bootstrapChatRoute = (
 
     const activity = projectInFlightActivity(inflight, state.transparency);
     if (activity.length === 0) {
-      // Text only — the cheap path.
-      content.textContent = inflight.assistant_content;
+      // Text only — the cheap path. Same painter as a completed answer, so a
+      // citation is a link while the turn runs too.
+      renderAnswerText(doc, content, inflight.assistant_content);
     } else {
       // Structure moved. Build with the SAME renderMessage the full render
       // uses, into a detached host, then move the result into the live row so
@@ -9378,6 +9432,7 @@ export const bootstrapChatRoute = (
       && active === historySearch;
     const focusedHistoryFilter = active?.getAttribute?.(HISTORY_FILTER_ATTR) ?? null;
     const focusedDelivery = active?.getAttribute?.('data-delivery-control');
+    const focusedDeliveryPanel = active?.hasAttribute?.('data-chat-delivery') === true;
     const focusedDeliveryMessage = focusedDelivery
       ? active?.closest?.('[data-chat-message-delivery]')?.getAttribute('data-chat-message-delivery') : null;
     const historyContinueFocused = historyContinue !== null
@@ -9509,6 +9564,8 @@ export const bootstrapChatRoute = (
       if (control) control.focus?.({ preventScroll: true }); else focusComposer(true);
     } else if (focusedDelivery) {
       restoreDeliveryFocus(focusedDelivery, focusedDeliveryMessage);
+    } else if (focusedDeliveryPanel) {
+      focusDeliveryPanel(false);
     } else if (focusedHistoryFilter !== null) {
       routeRoot.querySelector<HTMLElement>(`[${HISTORY_FILTER_ATTR}="${focusedHistoryFilter}"]`)?.focus?.({ preventScroll: true });
     } else if (historySearchFocused) {
@@ -9938,6 +9995,9 @@ export const bootstrapChatRoute = (
       focusHistoryActionOwner();
       return false;
     }
+    if (workInvestigationDraft !== undefined && sessionId !== workInvestigationDraft.sessionId) {
+      initialWorkSubmission = undefined;
+    }
     if (hasPendingInitialDraft() && sessionId !== initialDraftSessionId) {
       pendingInitialFiles = []; pendingRecoveryDraft = null;
       initialSessionIdOnLoad = null;
@@ -10012,6 +10072,7 @@ export const bootstrapChatRoute = (
       if (state.activeSessionId !== sessionId && composerDraft === draftAtSwitch) {
         composerDraft = '';
         composerDraftProtected = false;
+        if (workInvestigationDraft?.sessionId !== sessionId) workInvestigationDraft = undefined;
       }
       if (state.activeSessionId !== sessionId) {
         composerReply = null;
@@ -10313,9 +10374,7 @@ export const bootstrapChatRoute = (
     await deliveryView.ready(sessionId);
     if (disposed || request !== navigationRequest || state.thread.session?.id !== sessionId || composerHasFocus()) return;
     if (doc.activeElement !== focusOwner && doc.activeElement !== doc.body && doc.activeElement?.isConnected) return;
-    const panel = coordinationHost?.querySelector<HTMLElement>('[data-chat-delivery]');
-    if (panel) { panel.setAttribute('tabindex', '-1'); panel.focus({ preventScroll: true }); panel.scrollIntoView?.({ block: 'nearest' }); }
-    else focusOpenThread();
+    if (!focusDeliveryPanel(true)) focusOpenThread();
   };
 
   const openPlanLanding = (address: ChatPlanAddress): boolean => {
@@ -10651,6 +10710,8 @@ export const bootstrapChatRoute = (
     composerDraft = '';
     composerDraftProtected = false;
     pendingSubmission = null;
+    initialWorkSubmission = undefined;
+    workInvestigationDraft = undefined;
     composerReply = null;
     filePickerAbort?.abort(); pendingInitialFiles = []; pendingRecoveryDraft = null;
     conversationFiles?.close();
@@ -10836,6 +10897,9 @@ export const bootstrapChatRoute = (
     const source =
       state.modelSources?.find((s) => s.id === sourceId) ?? null;
     if (source === null) return;
+    // The owner has taken over this draft. A slow initial read must not send
+    // it with the old routing while their selected model is still being saved.
+    initialWorkSubmission = undefined;
     const session = state.thread.session;
     if (session === null) {
       if (state.draftSourceId === source.id) return;
@@ -10981,6 +11045,9 @@ export const bootstrapChatRoute = (
   };
 
   const sendMessage = async (message: string): Promise<void> => {
+    // A manual send (including a failed attempt) consumes the entry intent.
+    // Slow hydration must not subsequently dispatch it a second time.
+    initialWorkSubmission = undefined;
     const trimmed = message.trim();
     const replyAtSend = composerReply;
     const attachmentsAtSend = composerAttachments.rows().flatMap(row => row.phase === 'attached' && row.file_id !== undefined
@@ -10992,6 +11059,7 @@ export const bootstrapChatRoute = (
       (trimmed.length === 0
         && (composerAttachments?.payload().length ?? 0) === 0)
       || state.sending
+      || modelSourceWriteSessions.has(state.thread.session?.id ?? '')
       || hasPendingInitialDraft()
     ) return;
     // ⛔⛔ D-262 — VOICE ORIGIN IS ATTRIBUTED HERE, where BOTH send paths meet.
@@ -11109,6 +11177,12 @@ export const bootstrapChatRoute = (
         ...(queueGeneration ? { queue_generation: queueGeneration } : {}),
         session_id: session.id,
         message,
+        // The prepared investigation reads mail other people wrote, so it runs
+        // read-only: nothing in that mail can make the turn act. An edited
+        // draft is the owner's own request and runs as an ordinary turn.
+        ...(workInvestigationDraft?.sessionId === session.id && workInvestigationDraft.message === message
+          && replyAtSend === null && attachmentsAtSend.length === 0
+          ? { repeat: workInvestigationDraft.repeat !== false, read_only: true } : {}),
         ...(replyAtSend ? { reply_to_message_id: replyAtSend.messageId } : {}),
         picker_state: session.picker_state,
         // D-172 P2 — finalized ids only; a climbing file cannot reach here
@@ -11161,6 +11235,7 @@ export const bootstrapChatRoute = (
       if (pendingSubmission?.key !== submissionKey) pendingSubmission = { key: submissionKey, id: crypto.randomUUID() };
       const sendAck = await opts.conn('chat.send', { ...sendPayload, submission_id: pendingSubmission.id });
       pendingSubmission = null;
+      workInvestigationDraft = undefined;
       draftCreationId = null;
       void queueView.refresh(session.id);
 
@@ -11744,6 +11819,18 @@ export const bootstrapChatRoute = (
     loadTransparencySettings(),
     refreshConnectedSourceStatus(true),
   ]).then(() => {
+    const submission = initialWorkSubmission;
+    initialWorkSubmission = undefined;
+    if (!disposed && submission !== undefined && state.phase === 'ready'
+      && state.aiAvailable === true && !hasPendingInitialDraft()
+      && openingSessionId === null && !state.sending
+      && !modelSourceWriteSessions.has(submission.sessionId)
+      && state.activeSessionId === submission.sessionId
+      && state.thread.session?.id === submission.sessionId
+      && composerDraft === submission.message && composerReply === null
+      && composerAttachments.rows().length === 0) {
+      return sendMessage(submission.message);
+    }
     // Session and composer reads can rebuild the textarea on different ticks.
     // Restore focus after they settle; the optional activation read preserves
     // focus if it later repaints its suggestions.

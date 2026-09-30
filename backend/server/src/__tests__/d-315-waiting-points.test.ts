@@ -287,6 +287,7 @@ describe('a backfill, changed at each of its waits (§6.3)', () => {
       relationshipsOf: () => world.state.relationships,
       fileStored: (file_id) => world.files.has(file_id),
       formerRecordIds: (slug, record_id) => world.store.formerEmailIds(slug, record_id),
+      legacyAttachmentsAmbiguous: (_slug, record_id) => world.box.legacyAttachmentsAmbiguous(record_id),
       triggerRoom: async () => {
         const wait = world.at.room;
         delete world.at.room;

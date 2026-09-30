@@ -191,6 +191,6 @@ describe('a list setting with choices (D-314)', () => {
 
     fire('change', { target: weekdayGrid(['6', '7']) });
     save();
-    expect(onConfirm).toHaveBeenCalledWith({ weekdays: [6, 7] });
+    expect(onConfirm).toHaveBeenCalledWith({ weekdays: [6, 7] }, {});
   });
 });

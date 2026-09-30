@@ -11,11 +11,18 @@
  *
  *  The projections are computed by the SAME contracts helpers the server's
  *  `recipe-list-handler.ts` uses, so the harness cannot drift from it. A
- *  projection a fixture sets itself wins. `provably_read_only` is left out: it
- *  needs the installed pack roster, and a row without it reads as a server that
- *  does not project it. */
+ *  projection a fixture sets itself wins.
+ *
+ *  ⛔ `provably_read_only` TOO, AS A SERVER WITH A PACK ROSTER SENDS IT. It was
+ *  left out here, and once the client stopped judging a trimmed row for itself
+ *  (7255ddf3c) a row without it was never proven read-only: no harness pack
+ *  recipe could be a view any more, and every Pack Use e2e test that opens one
+ *  failed. The roster this harness has ships no pack operations, so a pack op
+ *  resolves to nothing and fails closed — as on a server without that pack. */
 
 import {
+  buildPackOperationIndex,
+  isProvablyReadOnly,
   recipeConsumedEnrichments,
   recipeNotificationChannels,
   recipeRequiredConnections,
@@ -25,6 +32,9 @@ import {
 } from '@recued/contracts';
 
 type Row = Record<string, unknown> & { recipe_id?: unknown; recipe?: unknown };
+
+/** The harness's pack roster, as operations: none. */
+const NO_PACK_OPS = buildPackOperationIndex([]);
 
 const hasBody = (recipe: unknown): recipe is RecipeDefinition =>
   recipe !== null && typeof recipe === 'object' && Array.isArray((recipe as { steps?: unknown }).steps);
@@ -42,6 +52,7 @@ export const toServerListRow = (row: Row): Row => {
     notification_channels: recipeNotificationChannels(row.recipe),
     consumed_enrichments: recipeConsumedEnrichments(row.recipe),
     spends_per_run: recipeSpendsPerRun(row.recipe),
+    provably_read_only: isProvablyReadOnly(row.recipe, NO_PACK_OPS),
     ...(declaration === null ? {} : { spreadsheet_import: declaration }),
     ...row,
     recipe: view,

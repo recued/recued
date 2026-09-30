@@ -12,18 +12,21 @@
  *  against the injected vendor registry into pattern + dispatch-filter
  *  rows; raw entries' `filter` now materializes onto the row (the
  *  dispatcher evaluates it — the slice-2 wholesale filter-skip is
- *  closed). */
+ *  closed).
+ *
+ *  D-319 — one set of rows per DISH: a recipe's declared triggers are made
+ *  once for each dish it is switched on as, bound to it and narrowed by its
+ *  own template setting; a recipe with no dish has none. Unless a test says
+ *  otherwise, each recipe here has one dish, `dsh_<recipe_id>`. */
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { Dish } from '@recued/contracts';
 import {
   reconcileDeclarativeTriggers,
+  type ReconcilerDish,
   type StoredRecipeRowLike,
 } from '../triggers/declarative-reconciler.js';
 import { createEventTriggersStore, type EventTriggersStore } from '../triggers/store.js';
-import { createDishStore } from '../dish-store.js';
-import { createDishContextStore } from '../dish-context-store.js';
 import { registerPreapprovalInvalidator } from '../storage/preapproval-lifecycle.js';
 
 const storedRecipe = (
@@ -36,42 +39,39 @@ const storedRecipe = (
   recipe_json: JSON.stringify({ recipe_id, version: 1, event_triggers }),
 });
 
-const dish = (overrides: Partial<Dish> = {}): Dish => ({
-  dish_id: 'dsh_test',
-  recipe_id: 'r1',
-  publisher_id: 'recued-core',
-  name: 'test dish',
-  is_default: false,
-  config_overlay: {},
-  enabled: true,
-  created_at: 1_000,
-  ...overrides,
-});
+const dishOf = (recipe_id: string, config_overlay: Record<string, unknown> = {}, dish_id = `dsh_${recipe_id}`): ReconcilerDish =>
+  ({ dish_id, recipe_id, config_overlay });
 
 describe('reconcileDeclarativeTriggers', () => {
   let db: Database.Database;
   let store: EventTriggersStore;
   let mintCounter: number;
+  /** The dishes the reconcile sees; `null` ⇒ one per recipe it is given. */
+  let dishes: ReconcilerDish[] | null;
 
   beforeEach(() => {
     db = new Database(':memory:');
     store = createEventTriggersStore(db);
     mintCounter = 0;
+    dishes = null;
   });
 
   afterEach(() => {
     db.close();
   });
 
+  const listDishes = (rows: StoredRecipeRowLike[]) => () => dishes ?? rows.map((row) => dishOf(row.recipe_id));
+
   const reconcile = (rows: StoredRecipeRowLike[]) =>
     reconcileDeclarativeTriggers({
       store,
       listStored: () => rows,
+      listDishes: listDishes(rows),
       now: () => 5_000,
       mintTriggerId: () => `t-test-${++mintCounter}`,
     });
 
-  it('materializes declared entries as DISARMED origin:recipe rows (D-179 P5c default-off)', () => {
+  it('materializes declared entries as DISARMED origin:recipe rows of the recipe’s dish (D-179 P5c default-off)', () => {
     const result = reconcile([
       storedRecipe('trio-hubspot', [
         { event: 'data.connection.api.hubspot.deal.**.updated' },
@@ -84,11 +84,62 @@ describe('reconcileDeclarativeTriggers', () => {
     expect(rows[0]).toMatchObject({
       recipe_id: 'trio-hubspot',
       publisher_id: 'recued-core',
+      dish_id: 'dsh_trio-hubspot',
       pattern: 'data.connection.api.hubspot.deal.**.updated',
-      // Owner decision 2026-06-12: installing a pack never silently
-      // arms reactive automation — the user enables in #automation.
+      // The reconciler never starts anything by itself: switching the dish
+      // on does (D-319 § 3.3; owner decision 2026-06-12 for P5c).
       enabled: false,
       origin: 'recipe',
+    });
+  });
+
+  describe('D-319 — one set of rows per dish', () => {
+    const watcher = () => storedRecipe('watcher', [
+      { event: 'data.mail.**.created' },
+      { event: 'data.mail.**.updated' },
+    ]);
+
+    it('a recipe with no dish has no rows: nothing of it is switched on', () => {
+      dishes = [];
+      expect(reconcile([watcher()])).toMatchObject({ created: 0, changed: false });
+      expect(store.list()).toEqual([]);
+    });
+
+    it('each dish gets its own copy of every trigger, bound to it; a second dish adds its own, off', () => {
+      dishes = [dishOf('watcher', {}, 'dsh_work')];
+      reconcile([watcher()]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+
+      dishes = [dishOf('watcher', {}, 'dsh_work'), dishOf('watcher', {}, 'dsh_home')];
+      expect(reconcile([watcher()])).toMatchObject({ created: 2, removed: 0 });
+      expect(store.list().map((row) => [row.dish_id, row.pattern, row.enabled]).sort()).toEqual([
+        ['dsh_home', 'data.mail.**.created', false],
+        ['dsh_home', 'data.mail.**.updated', false],
+        ['dsh_work', 'data.mail.**.created', true],
+        ['dsh_work', 'data.mail.**.updated', true],
+      ]);
+    });
+
+    it('a dish removed takes its rows; the other dish keeps its own, on as they were', () => {
+      dishes = [dishOf('watcher', {}, 'dsh_work'), dishOf('watcher', {}, 'dsh_home')];
+      reconcile([watcher()]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      const work = store.list().filter((row) => row.dish_id === 'dsh_work').map((row) => row.trigger_id).sort();
+
+      dishes = [dishOf('watcher', {}, 'dsh_work')];
+      expect(reconcile([watcher()])).toMatchObject({ created: 0, removed: 2 });
+      expect(store.list().map((row) => row.trigger_id).sort()).toEqual(work);
+      expect(store.list().every((row) => row.enabled)).toBe(true);
+    });
+
+    it('⛔ a row made before D-319, with no dish, matches no dish and is removed', () => {
+      store.create({
+        trigger_id: 't-legacy', recipe_id: 'watcher', publisher_id: 'recued-core', pattern: 'data.mail.**.created',
+        enabled: true, created_at: 1, origin: 'recipe',
+      });
+      reconcile([watcher()]);
+      expect(store.get('t-legacy')).toBeNull();
+      expect(store.list().every((row) => row.dish_id === 'dsh_watcher' && !row.enabled)).toBe(true);
     });
   });
 
@@ -136,56 +187,6 @@ describe('reconcileDeclarativeTriggers', () => {
     expect(rows[0]!.trigger_id).toBe('t-user-1');
   });
 
-  it('dissolves managed dishes on declaration removal but leaves user dishes intact', () => {
-    const dishStore = createDishStore(db);
-    const dishContextStore = createDishContextStore(db);
-
-    reconcile([storedRecipe('managed-recipe', [{ event: 'data.mail.**.created' }])]);
-    const managedRow = store.list()[0]!;
-    dishStore.set(dish({
-      dish_id: 'dsh_managed',
-      recipe_id: managedRow.recipe_id,
-      publisher_id: managedRow.publisher_id,
-      managed_by_trigger_id: managedRow.trigger_id,
-    }));
-    dishContextStore.set('dsh_managed', { step1: { total: 7 } });
-    store.update(managedRow.trigger_id, { dish_id: 'dsh_managed' });
-
-    const removedManaged = reconcileDeclarativeTriggers({
-      store,
-      listStored: () => [],
-      dishStore,
-      dishContextStore,
-      now: () => 5_000,
-      mintTriggerId: () => 't-unused',
-    });
-    expect(removedManaged).toMatchObject({ removed: 1, changed: true });
-    expect(dishStore.get('dsh_managed')).toBeNull();
-    expect(dishContextStore.get('dsh_managed')).toBeNull();
-
-    reconcile([storedRecipe('user-dish-recipe', [{ event: 'data.mail.**.updated' }])]);
-    const userBoundRow = store.list()[0]!;
-    dishStore.set(dish({
-      dish_id: 'dsh_user',
-      recipe_id: userBoundRow.recipe_id,
-      publisher_id: userBoundRow.publisher_id,
-    }));
-    dishContextStore.set('dsh_user', { step1: { total: 9 } });
-    store.update(userBoundRow.trigger_id, { dish_id: 'dsh_user' });
-
-    const removedUserBound = reconcileDeclarativeTriggers({
-      store,
-      listStored: () => [],
-      dishStore,
-      dishContextStore,
-      now: () => 5_000,
-      mintTriggerId: () => 't-unused-2',
-    });
-    expect(removedUserBound).toMatchObject({ removed: 1, changed: true });
-    expect(dishStore.get('dsh_user')).not.toBeNull();
-    expect(dishContextStore.get('dsh_user')).toEqual({ step1: { total: 9 } });
-  });
-
   it('skips synthetic markers (composition.* / schedule.*) + invalid patterns, materializes filtered entries, and dedupes within a recipe', () => {
     const result = reconcile([
       storedRecipe('mixed', [
@@ -207,12 +208,14 @@ describe('reconcileDeclarativeTriggers', () => {
   });
 
   it('a recipe row with unparseable JSON is skipped cleanly', () => {
+    const rows = [
+      { recipe_id: 'bad', publisher_id: 'p', recipe_json: '{nope' },
+      storedRecipe('good', [{ event: 'data.connection.api.salesforce.opportunity.**.updated' }]),
+    ];
     const result = reconcileDeclarativeTriggers({
       store,
-      listStored: () => [
-        { recipe_id: 'bad', publisher_id: 'p', recipe_json: '{nope' },
-        storedRecipe('good', [{ event: 'data.connection.api.salesforce.opportunity.**.updated' }]),
-      ],
+      listStored: () => rows,
+      listDishes: listDishes(rows),
       now: () => 1,
       mintTriggerId: () => 't-x',
     });
@@ -240,6 +243,7 @@ describe('reconcileDeclarativeTriggers', () => {
     reconcileDeclarativeTriggers({
       store,
       listStored: () => rows,
+      listDishes: listDishes(rows),
       getVendorEntities: () => REGISTRY,
       now: () => 5_000,
       mintTriggerId: () => `t-test-${++mintCounter}`,
@@ -322,6 +326,7 @@ describe('reconcileDeclarativeTriggers', () => {
     const grown = reconcileDeclarativeTriggers({
       store,
       listStored: () => rows,
+      listDishes: listDishes(rows),
       getVendorEntities: () => [
         ...REGISTRY,
         { vendor: 'hubspot', entity: 'company', crm_alias: 'account' as const },
@@ -380,50 +385,39 @@ describe('reconcileDeclarativeTriggers', () => {
   });
 
   describe('⛔ D-296 — an update that changes a recipe\'s trigger', () => {
-    const withDishes = (rows: StoredRecipeRowLike[], dishStore = createDishStore(db), dishContextStore = createDishContextStore(db)) =>
-      reconcileDeclarativeTriggers({
-        store,
-        listStored: () => rows,
-        dishStore,
-        dishContextStore,
-        now: () => 5_000,
-        mintTriggerId: () => `t-test-${++mintCounter}`,
-      });
+    const withDishes = (rows: StoredRecipeRowLike[]) => reconcile(rows);
 
-    /** One armed trigger with its managed settings dish + continuity, as the
-     *  enable path leaves it. */
-    const armWithSettings = (dishStore: ReturnType<typeof createDishStore>, contexts: ReturnType<typeof createDishContextStore>) => {
+    /** One armed trigger with a poll interval, as switching its dish on leaves it. */
+    const arm = () => {
       const row = store.list()[0]!;
-      dishStore.set(dish({
-        dish_id: 'dsh_settings', recipe_id: row.recipe_id, publisher_id: row.publisher_id,
-        config_overlay: { sender_mail_instance: 'work' }, managed_by_trigger_id: row.trigger_id,
-      }));
-      contexts.set('dsh_settings', { last: { seen: 3 } });
-      store.update(row.trigger_id, { enabled: true, dish_id: 'dsh_settings', watch_interval_ms: 60_000 });
+      store.update(row.trigger_id, { enabled: true, watch_interval_ms: 60_000 });
       return row;
     };
 
-    it('a recipe whose ONE trigger changes keeps it armed, with its settings, interval and continuity', () => {
-      const dishStore = createDishStore(db);
-      const contexts = createDishContextStore(db);
-      withDishes([storedRecipe('notify-visitor', [{ event: 'data.calendar.**.updated' }])], dishStore, contexts);
-      const before = armWithSettings(dishStore, contexts);
+    it('a recipe whose ONE trigger changes keeps it armed, on its dish, with its interval', () => {
+      withDishes([storedRecipe('notify-visitor', [{ event: 'data.calendar.**.updated' }])]);
+      const before = arm();
 
-      const result = withDishes([storedRecipe('notify-visitor', [{ event: 'data.work.booking.item.updated' }])], dishStore, contexts);
+      const result = withDishes([storedRecipe('notify-visitor', [{ event: 'data.work.booking.item.updated' }])]);
       expect(result).toMatchObject({ created: 1, removed: 1 });
       const after = store.list()[0]!;
       expect(after.trigger_id).not.toBe(before.trigger_id);
       expect(after).toMatchObject({
-        pattern: 'data.work.booking.item.updated', enabled: true, dish_id: 'dsh_settings', watch_interval_ms: 60_000,
+        pattern: 'data.work.booking.item.updated', enabled: true, dish_id: 'dsh_notify-visitor', watch_interval_ms: 60_000,
       });
-      // The dish moved with it — and now answers to the new row…
-      expect(dishStore.get('dsh_settings')).toMatchObject({
-        config_overlay: { sender_mail_instance: 'work' }, managed_by_trigger_id: after.trigger_id,
-      });
-      expect(contexts.get('dsh_settings')).toEqual({ last: { seen: 3 } });
-      // …so an uninstall still dissolves it.
-      withDishes([], dishStore, contexts);
-      expect(dishStore.get('dsh_settings')).toBeNull();
+    });
+
+    it('D-319 — each dish carries its own row, by the same rule', () => {
+      dishes = [dishOf('notify-visitor', {}, 'dsh_a'), dishOf('notify-visitor', {}, 'dsh_b')];
+      withDishes([storedRecipe('notify-visitor', [{ event: 'data.calendar.**.updated' }])]);
+      const a = store.list().find((row) => row.dish_id === 'dsh_a')!;
+      store.update(a.trigger_id, { enabled: true });
+
+      withDishes([storedRecipe('notify-visitor', [{ event: 'data.work.booking.item.updated' }])]);
+      expect(store.list().map((row) => [row.dish_id, row.pattern, row.enabled]).sort()).toEqual([
+        ['dsh_a', 'data.work.booking.item.updated', true],
+        ['dsh_b', 'data.work.booking.item.updated', false],
+      ]);
     });
 
     it('carries its last outcome too — Automation shows it', () => {
@@ -478,15 +472,117 @@ describe('reconcileDeclarativeTriggers', () => {
     });
 
     it('a recipe with SEVERAL triggers cannot be paired: the changed one is switched off, the rest untouched', () => {
-      const dishStore = createDishStore(db);
-      const contexts = createDishContextStore(db);
-      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }])], dishStore, contexts);
+      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.updated' }])]);
       for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
-      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.deleted' }])], dishStore, contexts);
+      withDishes([storedRecipe('two', [{ event: 'data.mail.**.created' }, { event: 'data.mail.**.deleted' }])]);
       expect(store.list().map((row) => [row.pattern, row.enabled]).sort()).toEqual([
         ['data.mail.**.created', true],
         ['data.mail.**.deleted', false],
       ]);
+    });
+  });
+
+  describe('D-315 §5.1 — a trigger narrowed to its dish’s template (D-319: per dish)', () => {
+    /** The dish's settings: its `mail_template` settings hold template ids. */
+    let held: Record<string, string>;
+    beforeEach(() => { held = {}; });
+    const withTemplates = (rows: StoredRecipeRowLike[]) => {
+      dishes = [dishOf('parcels', { ...held })];
+      return reconcile(rows);
+    };
+    const parcels = (triggers: Array<Record<string, unknown>> = [
+      { on: 'mail_fact.shipment', fields: ['state'], template_variable: 'template' },
+    ]) => storedRecipe('parcels', triggers);
+
+    it('makes no row until the setting holds a template, then one narrowed to it, off', () => {
+      expect(withTemplates([parcels()])).toMatchObject({ created: 0, skipped: 1 });
+      expect(store.list()).toEqual([]);
+      held['template'] = 'mtpl_a';
+      expect(withTemplates([parcels()])).toMatchObject({ created: 1 });
+      expect(store.list()).toEqual([expect.objectContaining({
+        pattern: 'data.mail_fact.shipment.thing.*', filter: { 'record.template': 'mtpl_a' }, fields: ['state'],
+        enabled: false, dish_id: 'dsh_parcels',
+      })]);
+    });
+
+    it('⛔ follows the dish’s pick in place: the same row, on as it was, its history kept', () => {
+      held['template'] = 'mtpl_a';
+      withTemplates([parcels()]);
+      const before = store.list()[0]!;
+      store.update(before.trigger_id, { enabled: true, last_fired_at: 4_000 });
+
+      held['template'] = 'mtpl_b';
+      expect(withTemplates([parcels()])).toMatchObject({ created: 0, removed: 0, repointed: 1, changed: true });
+      expect(store.list()).toEqual([expect.objectContaining({
+        trigger_id: before.trigger_id, filter: { 'record.template': 'mtpl_b' }, enabled: true, dish_id: 'dsh_parcels', last_fired_at: 4_000,
+      })]);
+      // Nothing moved: nothing to do.
+      expect(withTemplates([parcels()])).toMatchObject({ repointed: 0, changed: false });
+    });
+
+    it('two dishes of one recipe read two templates: each dish’s row narrowed to its own', () => {
+      dishes = [dishOf('parcels', { template: 'mtpl_work' }, 'dsh_work'), dishOf('parcels', { template: 'mtpl_home' }, 'dsh_home')];
+      reconcile([parcels()]);
+      expect(store.list().map((row) => [row.dish_id, row.filter?.['record.template']]).sort()).toEqual([
+        ['dsh_home', 'mtpl_home'],
+        ['dsh_work', 'mtpl_work'],
+      ]);
+      // One dish picks another: only its row moves.
+      const work = store.list().find((row) => row.dish_id === 'dsh_work')!;
+      dishes = [dishOf('parcels', { template: 'mtpl_new' }, 'dsh_work'), dishOf('parcels', { template: 'mtpl_home' }, 'dsh_home')];
+      expect(reconcile([parcels()])).toMatchObject({ repointed: 1, created: 0, removed: 0 });
+      expect(store.get(work.trigger_id)!.filter).toEqual({ 'record.template': 'mtpl_new' });
+    });
+
+    it('keeps the rest of its narrowing', () => {
+      held['template'] = 'mtpl_a';
+      const narrowed = parcels([{ on: 'mail_fact.shipment', where: { state: 'delivered' }, template_variable: 'template' }]);
+      withTemplates([narrowed]);
+      held['template'] = 'mtpl_b';
+      withTemplates([narrowed]);
+      expect(store.list().map((row) => row.filter)).toEqual([{ 'record.state': 'delivered', 'record.template': 'mtpl_b' }]);
+    });
+
+    it('re-points the one whose setting moved, beside another that did not', () => {
+      held['a'] = 'mtpl_1';
+      held['b'] = 'mtpl_2';
+      const two = parcels([
+        { on: 'mail_fact.shipment', template_variable: 'a' },
+        { on: 'mail_fact.shipment', template_variable: 'b' },
+      ]);
+      withTemplates([two]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      const ids = store.list().map((row) => row.trigger_id).sort();
+      held['a'] = 'mtpl_3';
+      expect(withTemplates([two])).toMatchObject({ repointed: 1, created: 0, removed: 0 });
+      expect(store.list().map((row) => row.trigger_id).sort()).toEqual(ids);
+      expect(store.list().map((row) => [row.filter?.['record.template'], row.enabled]).sort()).toEqual([
+        ['mtpl_2', true],
+        ['mtpl_3', true],
+      ]);
+    });
+
+    it('does not guess when two moved at once: they are made again, off, as any unpaired change', () => {
+      held['a'] = 'mtpl_1';
+      held['b'] = 'mtpl_2';
+      const two = parcels([
+        { on: 'mail_fact.shipment', template_variable: 'a' },
+        { on: 'mail_fact.shipment', template_variable: 'b' },
+      ]);
+      withTemplates([two]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      held['a'] = 'mtpl_3';
+      held['b'] = 'mtpl_4';
+      expect(withTemplates([two])).toMatchObject({ repointed: 0, created: 2, removed: 2 });
+      expect(store.list().every((row) => !row.enabled)).toBe(true);
+    });
+
+    it('removes the row when the setting no longer holds a template', () => {
+      held['template'] = 'mtpl_a';
+      withTemplates([parcels()]);
+      delete held['template'];
+      expect(withTemplates([parcels()])).toMatchObject({ removed: 1 });
+      expect(store.list()).toEqual([]);
     });
   });
 

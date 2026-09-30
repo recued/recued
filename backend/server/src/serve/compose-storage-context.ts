@@ -19,6 +19,8 @@ import {
   type VaultStore,
 } from '@recued/storage';
 import type Database from 'better-sqlite3';
+import { createMailWorkStore, type MailWorkStore } from '../storage/mail-work-store.js';
+import { createPreapprovalCodec } from '../storage/preapproval-codec.js';
 import {
   MCP_ACTION_TABLE,
   createMcpActionStore,
@@ -167,6 +169,13 @@ import {
   createHostnameRegistryStore,
   type HostnameRegistryStore,
 } from '../storage/hostname-registry.js';
+import {
+  createCloudReachabilityProber,
+  createPublicAddressService,
+  createSqlitePublicAddressStore,
+  type PublicAddressService,
+} from '../public-address.js';
+import { resolveCloudApex } from '../account-binding/exchange-url.js';
 import type { BaseVaultQuotas } from './compose-base-context.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import {
@@ -200,6 +209,7 @@ export interface ComposeStorageContextOptions {
 export interface StorageContext {
   db: Database.Database;
   preapprovalStorage: PreapprovalStorage;
+  mailWorkStore: MailWorkStore;
   manifests: ManifestRegistry;
   /** D-170 — persistent body store for locally-authored (decomposed)
    *  catalog / ingredient / entity-schema manifests. Boot re-registers its
@@ -299,6 +309,10 @@ export interface StorageContext {
   ipBlockStoreRef: PerPairStore<'ipBlockStore'>;
   accountStore: ServerAccountStore | undefined;
   hostnameRegistryStore: HostnameRegistryStore;
+  /** The addresses the internet reaches this server at — every link, vendor
+   *  sign-in and claim reads them here (`public-address.ts`). The listener
+   *  binds its facts; the post-listener runtime runs the probe rounds. */
+  publicAddress: PublicAddressService;
   /** D-269 step 1 — the server's own timezone (mode + declared zone). Read by
    *  every wall-clock surface when no live client supplies one. */
   serverTimeZoneStore: import('../storage/server-timezone-store.js').ServerTimeZoneStore;
@@ -610,6 +624,15 @@ export const composeStorageContext = async (
   const { createRecoveryKeyCheckStore } = await import('../recovery-key-store.js');
   const recoveryKeyCheck = createRecoveryKeyCheckStore(db);
   const hostnameRegistryStore = createHostnameRegistryStore(db);
+  const publicAddress = createPublicAddressService({
+    configured: () => process.env.RECUED_PUBLIC_BASE_URL,
+    hostnames: hostnameRegistryStore,
+    store: createSqlitePublicAddressStore(db),
+    prober: createCloudReachabilityProber({
+      endpoint: () => `https://probe.${resolveCloudApex()}/v1/reachability/probe`,
+    }),
+    log: (message) => console.warn(`[public-address] ${message}`),
+  });
   const { createServerTimeZoneStore } = await import('../storage/server-timezone-store.js');
   const serverTimeZoneStore = createServerTimeZoneStore(db);
   const { createNotificationKindPolicyStore } = await import('../storage/notification-kind-policy-store.js');
@@ -828,6 +851,11 @@ export const composeStorageContext = async (
       readBinding: () => accountBindingManager.status(),
       readHandleState: readHandleStateForZone,
       readProvisioned: readProvisionedConveniences,
+      // ⛔ Unwired until 2026-09-29, so every entitled card said "Waiting until
+      // your server can be reached" forever. The cloud probe's answer for the
+      // Pro address — its port, not its certificate, which the card shows as
+      // its own item.
+      readReachability: async () => publicAddress.proReachability(),
       entitlement: createHttpProEntitlementSource({
         loadBinding: () => requireSigningIdentityForBinding().keyStore.loadAccountBinding(),
         getEndpointUrl: () =>
@@ -926,6 +954,7 @@ export const composeStorageContext = async (
   const settledRunResults = createSettledRunResults();
   const preapprovalStorage = createPreapprovalStorage(db, gatedActionChangeClock, () => getVaultKey?.() ?? null,
     { limits: preapprovalLimitsFromEnvironment(process.env) });
+  const mailWorkStore = createMailWorkStore(db, createPreapprovalCodec(() => getVaultKey?.() ?? null));
   // Receipt content stays in the owner-only RPC. The bus frame only wakes
   // paired surfaces so reconnect/replay remains safe and bounded.
   gatedActionStore.subscribe(({ record }) => {
@@ -1101,6 +1130,7 @@ export const composeStorageContext = async (
   return {
     db,
     preapprovalStorage,
+    mailWorkStore,
     manifests,
     localManifestStore,
     draftStore,
@@ -1153,6 +1183,7 @@ export const composeStorageContext = async (
     ipBlockStoreRef,
     accountStore,
     hostnameRegistryStore,
+    publicAddress,
     serverTimeZoneStore,
     notificationKindPolicyStore,
     quietHoursStore,

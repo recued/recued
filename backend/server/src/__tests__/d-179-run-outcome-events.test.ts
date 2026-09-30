@@ -241,6 +241,22 @@ describe('dispatcher self-loop guard', () => {
     expect(runRecipe.mock.calls[0]![0].trigger_id).toBe('trigger-other');
   });
 
+  it('⛔ D-319 — two dishes of one recipe do not start each other through its own outcome', async () => {
+    // A recipe's triggers are made once per dish: a run one copy started
+    // would otherwise fire the other copy, whose run fires the first, forever.
+    const { store, bus, runRecipe, dispatcher } = createDispatcherHarness();
+    createTrigger(store, { trigger_id: 'work-copy', pattern: 'run.**', recipe_id: 'watcher', dish_id: 'dsh_work' });
+    createTrigger(store, { trigger_id: 'home-copy', pattern: 'run.**', recipe_id: 'watcher', dish_id: 'dsh_home' });
+    createTrigger(store, { trigger_id: 'another-recipe', pattern: 'run.**', recipe_id: 'notifier' });
+    dispatcher.rebuild();
+
+    bus.emit(runOutcomeEvent({ origin_trigger_id: 'work-copy' }));
+    await flushDispatcher(dispatcher);
+
+    // Only another recipe reacts to it — a staged chain still works.
+    expect(runRecipe.mock.calls.map((call) => call[0].trigger_id)).toEqual(['another-recipe']);
+  });
+
   it('fires both run triggers when origin_trigger_id is absent', async () => {
     const { store, bus, runRecipe, dispatcher } = createDispatcherHarness();
     createTrigger(store, { trigger_id: 'trigger-one', pattern: 'run.**' });

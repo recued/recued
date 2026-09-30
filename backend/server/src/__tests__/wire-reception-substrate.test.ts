@@ -144,18 +144,6 @@ const makeDeps = (overrides: Record<string, any> = {}) => {
   };
 };
 
-const makeHostnameProjection = (overrides: Record<string, any> = {}) => ({
-  hostname_id: 'host-1',
-  hostname: 'alice.recued.net',
-  cert_source: 'recued_acme',
-  ownership_status: 'verified',
-  listener_ports: [443],
-  ddns_managed: true,
-  enabled: true,
-  tls_topology: 'server_terminated',
-  ...overrides,
-});
-
 const composeFromDeps = async (deps: Record<string, any>) =>
   composeReceptionSubstrate(deps as any) as any;
 
@@ -364,23 +352,20 @@ describe('composeReceptionSubstrate env-driven constants', () => {
     expect(bundle.receptionRpcDeps.getShareBaseUrl()).toBe('https://example.com');
   });
 
-  it('derives shareBaseUrl from the hostname registry when env is unset', async () => {
-    const hostnameRegistryStore = {
-      list: vi.fn(() => [
-        makeHostnameProjection({
-          hostname_id: 'disabled-host',
-          hostname: 'disabled.recued.net',
-          enabled: false,
-        }),
-        makeHostnameProjection({
-          hostname_id: 'ready-host',
-          hostname: 'ready.recued.net',
-          listener_ports: [8446],
-        }),
-      ]),
+  it('hands out the server\'s kept Reception address when env is unset, per share', async () => {
+    // A HANDED-OUT address: a share link is printed and kept, so it must not
+    // follow the probe the way a notification link does, and it is kept from
+    // its first use (`public-address.ts` → `handOut`).
+    const publicAddress = {
+      handOut: vi.fn(() => ({
+        use: 'reception' as const,
+        source: 'first_use' as const,
+        base_url: 'https://ready.recued.net:8446',
+        hostname: 'ready.recued.net',
+      })),
     };
 
-    const { bundle } = await composeDefined({ hostnameRegistryStore });
+    const { bundle } = await composeDefined({ publicAddress });
 
     expect(bundle.receptionRpcDeps.getShareBaseUrl()).toBe(
       'https://ready.recued.net:8446',
@@ -392,23 +377,53 @@ describe('composeReceptionSubstrate env-driven constants', () => {
       ok: true,
       passed: ['Public Reception URL is configured'],
     });
-    expect(hostnameRegistryStore.list).toHaveBeenCalledTimes(2);
+    expect(publicAddress.handOut.mock.calls).toEqual([['reception'], ['reception']]);
   });
 
-  it('keeps a public env shareBaseUrl ahead of the hostname registry fallback', async () => {
-    process.env.RECUED_PUBLIC_BASE_URL = 'https://env.example';
-    const hostnameRegistryStore = {
-      list: vi.fn(() => [
-        makeHostnameProjection({
-          hostname: 'ready.recued.net',
-        }),
-      ]),
+  it('names a kept Reception address that can no longer be used, and does not replace it', async () => {
+    const publicAddress = {
+      handOut: vi.fn(() => ({
+        use: 'reception' as const,
+        source: 'owner' as const,
+        base_url: null,
+        hostname: 'shop.example.com',
+        hostname_unusable: true,
+      })),
     };
 
-    const { bundle } = await composeDefined({ hostnameRegistryStore });
+    const { bundle } = await composeDefined({ publicAddress });
+
+    expectNotConfigured(
+      () => bundle.receptionRpcDeps.getShareBaseUrl(),
+      'shop.example.com is kept for Reception links but can no longer be used',
+    );
+    expect(bundle.receptionRpcDeps.preflightEnable?.({
+      endpoint: { endpoint_id: 'ep-1' } as unknown as EndpointSummary,
+      now: 1_700_000_000_000,
+    })).toMatchObject({
+      ok: false,
+      blocked: [expect.stringContaining('shop.example.com is kept for Reception links')],
+    });
+  });
+
+  it('keeps a public env shareBaseUrl ahead of the resolver', async () => {
+    process.env.RECUED_PUBLIC_BASE_URL = 'https://env.example';
+    const publicAddress = { handOut: vi.fn() };
+
+    const { bundle } = await composeDefined({ publicAddress });
 
     expect(bundle.receptionRpcDeps.getShareBaseUrl()).toBe('https://env.example');
-    expect(hostnameRegistryStore.list).not.toHaveBeenCalled();
+    expect(publicAddress.handOut).not.toHaveBeenCalled();
+  });
+
+  it('keeps an intranet env shareBaseUrl the resolver would refuse', async () => {
+    process.env.RECUED_PUBLIC_BASE_URL = 'http://192.168.1.20:7717';
+    const publicAddress = { handOut: vi.fn() };
+
+    const { bundle } = await composeDefined({ publicAddress });
+
+    expect(bundle.receptionRpcDeps.getShareBaseUrl()).toBe('http://192.168.1.20:7717');
+    expect(publicAddress.handOut).not.toHaveBeenCalled();
   });
 
   it('requires a public shareBaseUrl for an empty env value', async () => {

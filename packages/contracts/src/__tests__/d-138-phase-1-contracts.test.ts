@@ -653,6 +653,8 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // a proposal, nor enumerate drafts across contracts. The request and the
       // decision are deliberately on opposite sides of this fence.
       'mail.drafts.',
+      // Work tracking and its AI reviews stay under the paired owner's control.
+      'mail.work.',
       // D-315 — a mail template decides what is read from the owner's mail and,
       // later, what an AI pass is shown. Agents read facts through
       // `core.mail.fact.*` under the mail grant; only the owner writes templates.

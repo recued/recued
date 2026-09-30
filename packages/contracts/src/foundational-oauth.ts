@@ -253,15 +253,25 @@ export const buildCalendarAuthorizeUrl = (
 // runs on `http(s)://localhost` / `127.0.0.1` / `[::1]` (a self-hosted server
 // the user reaches on the same machine), `pickOAuthCallbackHost` selects the
 // PWA's OWN origin as the callback host and the server serves the relay page
-// itself, from its LAN-only webclient bundle (D-152), at
-// `WEBCLIENT_OAUTH_CALLBACK_PATH`. The whole OAuth round-trip then stays on the
-// user's machine — no cloud hop, no `opener_origin` (it's same-origin). Why
-// loopback only: providers ACCEPT a `http://localhost` redirect (so no bounce
-// is needed), and the bundle that serves the page is LAN-listener-only, so a
-// LAN-IP PWA (`192.168.x.x`, provider-rejected redirect) still needs Option A
-// and an own-https PWA uses the cloud-hosted app.recued.com PWA. The opener
-// trusts the callback by deriving `expectedSenderOrigin` from the redirect
-// host, which here equals the PWA's own origin.
+// itself, from its webclient bundle (D-152), at `WEBCLIENT_OAUTH_CALLBACK_PATH`.
+// The whole OAuth round-trip then stays on the user's machine — no cloud hop,
+// no `opener_origin` (it's same-origin). The opener trusts the callback by
+// deriving `expectedSenderOrigin` from the redirect host, which here equals
+// the PWA's own origin.
+//
+// ⛔ WIDENED 2026-09-29 to the server's own HTTPS NAME (`selfServesOAuthCallback`):
+// a Pro `<handle>.recued.net` address, the owner's own domain, or a proxy
+// holding the certificate. This comment used to send an own-https PWA to
+// Option A on the grounds that the webclient bundle is LAN-listener-only; it
+// is not (the public listener serves it once `/webclient` is opened there),
+// and Option A could not deliver: since the webclient took over
+// app.recued.com (2026-07-01) the page there was the webclient's relay, which
+// never read `opener_origin`. For Microsoft it could never have worked — the
+// bounce needs `opener_origin` in the query, which an app that takes personal
+// accounts may not register. An https NAME is a callback both providers
+// accept, so the code now stays on the owner's server there too. Option A is
+// kept for what cannot self-serve: an https IP literal, a single-label name,
+// and a Recued-hosted webclient other than app.recued.com (staging).
 
 /** Query-param the foundational redirect_uri carries to select opener-relay
  *  mode on the callback page. */
@@ -290,9 +300,8 @@ export const OAUTH_OPENER_ORIGIN_PARAM = 'opener_origin';
  *  for the foundational flow — a stable public-https target every provider
  *  accepts (a self-served PWA's own LAN-IP/http origin is not). Mirrors the
  *  origin of `OAUTH_CLOUD_CALLBACK_URL` (asserted equal in the contract test).
- *  R26.2 Option B carves out ONE exception: a loopback PWA self-serves the
- *  callback (see `pickOAuthCallbackHost`) and skips this hop; every other
- *  self-served PWA (LAN-IP / own-https) still bounces here. */
+ *  A PWA that `selfServesOAuthCallback` — loopback, or the server's own https
+ *  name — skips this hop; any other self-served PWA bounces here. */
 export const OAUTH_CLOUD_CALLBACK_ORIGIN = 'https://app.recued.com' as const;
 
 /** R26.2 Option B — path the server's LAN-only webclient bundle (D-152) serves
@@ -331,16 +340,57 @@ export const isLoopbackOrigin = (origin: string): boolean => {
   }
 };
 
+/** The webclient origins Recued itself hosts. They serve the callback page at
+ *  `/oauth-callback`, not under `/webclient/`, so they never self-serve.
+ *  `app.recued2.com` is staging: it keeps bouncing through the production
+ *  callback page (Option A), as it did before own-https self-serve. */
+const RECUED_HOSTED_WEBCLIENT_ORIGINS: ReadonlySet<string> = new Set([
+  OAUTH_CLOUD_CALLBACK_ORIGIN,
+  'https://app.recued2.com',
+]);
+
+/** An IPv4 dotted quad, or an IPv6 literal (bracketed, as `URL.hostname` gives it). */
+const isIpLiteralHostname = (hostname: string): boolean =>
+  hostname.startsWith('[') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname);
+
+/** True when a PWA at `origin` takes the provider's code at its OWN origin: the
+ *  owner's Recued server serves the relay page there, at
+ *  `WEBCLIENT_OAUTH_CALLBACK_PATH`, and the code never crosses app.recued.com.
+ *
+ *    - loopback (`isLoopbackOrigin`) — R26.2 Option B;
+ *    - an https NAME — the server's own address: a Pro `<handle>.recued.net`
+ *      name, the owner's own domain, or a proxy that holds the certificate.
+ *      Both providers accept an https name as a callback, and it is the only
+ *      route from such a page that Microsoft can take at all.
+ *
+ *  Not self-served, so bounced through app.recued.com (Option A): an https IP
+ *  literal (Google refuses a raw IP as a callback host), a single-label name
+ *  (no public top-level domain), plain http beyond loopback (providers refuse
+ *  it, and the webclient cannot run there — not a secure context), and a
+ *  Recued-hosted webclient. Malformed or non-canonical input → false. */
+export const selfServesOAuthCallback = (origin: string): boolean => {
+  if (isLoopbackOrigin(origin)) return true;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== 'https:') return false;
+    if (u.origin !== origin) return false; // canonical bare origin only
+    if (RECUED_HOSTED_WEBCLIENT_ORIGINS.has(origin)) return false;
+    if (isIpLiteralHostname(u.hostname)) return false;
+    return u.hostname.includes('.');
+  } catch {
+    return false;
+  }
+};
+
 /** R26.2 — choose the host that serves the OAuth callback for a PWA running at
- *  `pwaOrigin`. A loopback PWA self-serves (returns its OWN origin — the server
- *  serves the relay page same-origin, no cloud hop); everything else
- *  (the cloud PWA, a LAN-IP PWA, an own-https PWA) resolves to
+ *  `pwaOrigin`: its OWN origin when it `selfServesOAuthCallback` (the server
+ *  serves the relay page same-origin, no cloud hop), else
  *  `OAUTH_CLOUD_CALLBACK_ORIGIN`. So `pickOAuthCallbackHost(o) !== OAUTH_CLOUD_
- *  CALLBACK_ORIGIN` is exactly "self-serve loopback". `buildOpenerRelayRedirectUri`
- *  is the consumer; the opener's `expectedSenderOrigin` is derived from the
+ *  CALLBACK_ORIGIN` is exactly "self-served". `buildOpenerRelayRedirectUri` is
+ *  the consumer; the opener's `expectedSenderOrigin` is derived from the
  *  resulting redirect host so it always matches the page that posts the code. */
 export const pickOAuthCallbackHost = (pwaOrigin: string): string =>
-  isLoopbackOrigin(pwaOrigin) ? pwaOrigin : OAUTH_CLOUD_CALLBACK_ORIGIN;
+  selfServesOAuthCallback(pwaOrigin) ? pwaOrigin : OAUTH_CLOUD_CALLBACK_ORIGIN;
 
 /** The EXACT callback URL a user must register in their provider app, for a PWA
  *  served from `pwaOrigin`.
@@ -356,12 +406,17 @@ export const pickOAuthCallbackHost = (pwaOrigin: string): string =>
  *  driver uses, so the printed value cannot drift from the value sent. A second
  *  hand-rolled copy of this rule is exactly how the two disagreed in the first
  *  place. */
+export const oauthCallbackUrlForPwa = (pwaOrigin: string): string =>
+  selfServesOAuthCallback(pwaOrigin)
+    ? `${pickOAuthCallbackHost(pwaOrigin)}${WEBCLIENT_OAUTH_CALLBACK_PATH}`
+    : OAUTH_CLOUD_CALLBACK_URL;
+
 /** The callback URL a DIFFERENT usable origin would need, or `null` when there
  *  is no second one to name.
  *
  *  ⛔ Exists because the two are NOT guessable from each other. The cloud PWA
- *  serves the callback top-level at `/oauth-callback`; a loopback PWA serves it
- *  from the webclient bundle at `/webclient/oauth-callback.html` — different
+ *  serves the callback top-level at `/oauth-callback`; a self-served PWA serves
+ *  it from the webclient bundle at `/webclient/oauth-callback.html` — different
  *  path AND different extension (verified against a live server: the two
  *  "obvious" guesses, `/oauth-callback` and `/webclient/oauth-callback`, both
  *  404). So an owner who registers one and later opens Recued from the other
@@ -371,12 +426,37 @@ export const pickOAuthCallbackHost = (pwaOrigin: string): string =>
  *  "register both if you use both" — which the form can only give if it knows
  *  the other one. */
 export const alternateOAuthCallbackUrl = (pwaOrigin: string): string | null =>
-  isLoopbackOrigin(pwaOrigin) ? OAUTH_CLOUD_CALLBACK_URL : null;
+  selfServesOAuthCallback(pwaOrigin) ? OAUTH_CLOUD_CALLBACK_URL : null;
 
-export const oauthCallbackUrlForPwa = (pwaOrigin: string): string =>
-  isLoopbackOrigin(pwaOrigin)
-    ? `${pickOAuthCallbackHost(pwaOrigin)}${WEBCLIENT_OAUTH_CALLBACK_PATH}`
-    : OAUTH_CLOUD_CALLBACK_URL;
+/** The callback a VENDOR connection (HubSpot, Salesforce, a BYO OAuth app)
+ *  registers and sends from a PWA at `pwaOrigin` — not the mail/calendar one:
+ *
+ *    - loopback → the self-served relay page, as `oauthCallbackUrlForPwa`
+ *      (R26.2 Option B for vendors; `completeVendorOAuth` finishes it);
+ *    - the server's own https name → `<pwaOrigin>/oauth/complete`, the
+ *      D-148 § A.12 DIRECT choice (`vendorOAuthRedirectChoices`): the provider
+ *      sends the popup straight to the server, which checks the signed state
+ *      and exchanges the code itself;
+ *    - anything else → the app.recued.com callback, whose page checks the
+ *      signed state and POSTs the code to `<server_url>/oauth/complete`.
+ *
+ *  ⛔ Not the self-served relay for an https name: a registered vendor's
+ *  authorize URL, scopes, PKCE and sandbox live on the server, which only
+ *  `startVendorOAuth` uses, and that rpc accepts exactly the two § A.12
+ *  choices. And not app.recued.com's either: the page there checks the state
+ *  with a key the dialog leaves in the popup's storage for app.recued.com's
+ *  origin, which a dialog at another origin cannot write — so from anywhere
+ *  but app.recued.com that choice can never finish. */
+export const vendorOAuthCallbackUrlForPwa = (pwaOrigin: string): string => {
+  if (isLoopbackOrigin(pwaOrigin)) return oauthCallbackUrlForPwa(pwaOrigin);
+  if (selfServesOAuthCallback(pwaOrigin)) return `${pwaOrigin}/oauth/complete`;
+  return OAUTH_CLOUD_CALLBACK_URL;
+};
+
+/** The vendor callback a DIFFERENT usable address would need: app.recued.com's,
+ *  when this page is loopback or the server's own https name; else `null`. */
+export const vendorOAuthAlternateCallbackUrl = (pwaOrigin: string): string | null =>
+  selfServesOAuthCallback(pwaOrigin) ? OAUTH_CLOUD_CALLBACK_URL : null;
 
 /** True when a parsed callback query selects opener-relay mode. */
 export const isOpenerRelayCallback = (search: URLSearchParams): boolean =>
@@ -409,7 +489,8 @@ export const readOpenerRelayTarget = (search: URLSearchParams): string | null =>
 /** Build the foundational-lane redirect_uri for a PWA running at `openerOrigin`.
  *  Routes through `pickOAuthCallbackHost`, giving three shapes:
  *
- *   - LOOPBACK PWA (R26.2 Option B) → same-origin self-serve:
+ *   - a PWA that `selfServesOAuthCallback` — loopback (R26.2 Option B) or the
+ *     server's own https name → same-origin self-serve:
  *       `<openerOrigin>/webclient/oauth-callback.html?recued_relay=opener`
  *     The server serves the relay page from its own webclient bundle; no cloud
  *     hop, no `opener_origin` (it's same-origin).
@@ -417,9 +498,9 @@ export const readOpenerRelayTarget = (search: URLSearchParams): string | null =>
  *       `https://app.recued.com/oauth-callback?recued_relay=opener`
  *     …except for Microsoft (`noQueryMarker`), which gets the BARE
  *       `https://app.recued.com/oauth-callback` (see below).
- *   - any other self-served PWA (LAN-IP / own-https; R26.2 Option A) → cloud
- *     bounce with the PWA origin riding as `opener_origin` for cross-origin
- *     relay:
+ *   - any other PWA (an https IP literal, a single-label name, staging;
+ *     R26.2 Option A) → cloud bounce with the PWA origin riding as
+ *     `opener_origin` for cross-origin relay:
  *       `https://app.recued.com/oauth-callback?recued_relay=opener&opener_origin=…`
  *
  *  The SAME returned value MUST be used to build the authorize URL AND passed
@@ -431,17 +512,17 @@ export const buildOpenerRelayRedirectUri = (
   noQueryMarker = false,
 ): string => {
   const host = pickOAuthCallbackHost(openerOrigin);
-  // Self-serve loopback: pickOAuthCallbackHost returns the PWA origin itself
-  // (it only ever returns either the cloud origin or a loopback origin, so
-  // "not the cloud origin" ⇒ loopback self-serve). The server serves the relay
-  // page from its bundle at WEBCLIENT_OAUTH_CALLBACK_PATH, same-origin.
+  // Self-serve: pickOAuthCallbackHost returns the PWA origin itself (it only
+  // ever returns either the cloud origin or a self-served origin, so "not the
+  // cloud origin" ⇒ self-serve). The server serves the relay page from its
+  // bundle at WEBCLIENT_OAUTH_CALLBACK_PATH, same-origin.
   if (host !== OAUTH_CLOUD_CALLBACK_ORIGIN) {
     // `noQueryMarker` — Microsoft Entra REJECTS query strings in registered
     // redirect URIs ("URL may not contain a query string"), so the Microsoft
     // flow omits the `recued_relay=opener` marker. It's safe to omit on the
-    // loopback page: that page (`oauth-callback-relay.ts`) is opener-relay-only
-    // and discriminates via the `frelay_` state prefix (the opener still
-    // verifies the FULL state for CSRF), so the query marker is redundant there.
+    // self-served page: it (`oauth-callback-relay.ts`) discriminates via the
+    // `frelay_` state prefix (the opener still verifies the FULL state for
+    // CSRF), so the query marker is redundant there.
     if (noQueryMarker) return host + WEBCLIENT_OAUTH_CALLBACK_PATH;
     return (
       host +
@@ -457,15 +538,15 @@ export const buildOpenerRelayRedirectUri = (
   // marker made app.recued.com unusable for one. The callback page selects the
   // foundational relay by the `frelay_` state prefix alone and, with no marker,
   // posts the code only to its OWN origin — which is exactly this opener. A
-  // LAN-IP / own-https PWA still needs `opener_origin` in the query (below),
-  // so an app that takes personal accounts cannot be reached from one; the
-  // guide sends those owners to app.recued.com or http://localhost.
+  // PWA that bounces (an https IP literal, a single-label name) still needs
+  // `opener_origin` in the query (below), so an app that takes personal
+  // accounts cannot be reached from one; the guide says so and names the
+  // addresses that work.
   if (noQueryMarker && openerOrigin === OAUTH_CLOUD_CALLBACK_ORIGIN) {
     return OAUTH_CLOUD_CALLBACK_URL;
   }
-  // Cloud bounce (default). A non-cloud opener (LAN-IP / own-https self-served
-  // PWA) rides as opener_origin for cross-origin relay; the same-origin cloud
-  // PWA omits it.
+  // Cloud bounce (default). A non-cloud opener that cannot self-serve rides as
+  // opener_origin for cross-origin relay; the same-origin cloud PWA omits it.
   let uri =
     OAUTH_CLOUD_CALLBACK_ORIGIN +
     '/oauth-callback?' +

@@ -534,6 +534,12 @@ const bootToAdapters = async () => {
     caps: {}, auth_state: 'healthy', last_synced_at: null,
   } as never);
   storage.recipeStore.save(onNewMail, 'local', 'inline');
+  // D-319 — the recipe was switched on before the restart: it has a dish, and
+  // its trigger is made for that dish.
+  execution.executeDeps.dishStore!.set({
+    dish_id: 'dsh_boot', recipe_id: onNewMail.recipe_id, publisher_id: 'local', name: '', is_default: true,
+    config_overlay: {}, enabled: true, created_at: 1,
+  });
 
   /** What `composeListeners` does, in its order: compose the dispatcher (which
    *  subscribes it), seal the recorder at once, and — once the pre-approval

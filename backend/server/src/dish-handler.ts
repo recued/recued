@@ -1,11 +1,18 @@
 /** Dish rpc handlers — D-179 P1, dispatched from the WS registry.
  *
- *  Six methods:
+ *  D-319 — a dish is a recipe switched on: its settings, a name and an
+ *  On/Off switch, and the triggers and schedules that start it on its own.
  *    dishes.list      list all (optional recipe_id filter)
- *    dishes.create    { recipe_id, name?, config_overlay?, enabled?, is_default? }
+ *    dishes.create    { recipe_id, name?, config_overlay?, enabled? } — switch on
  *    dishes.createFromRun { run_id, name?, enabled? } — owner promotion
- *    dishes.update    { dish_id, name?, config_overlay?, enabled? }
- *    dishes.delete    by dish_id (also clears the continuity snapshot)
+ *    dishes.update    { dish_id, name?, config_overlay?, enabled?, main? }
+ *    dishes.delete    by dish_id — its rows and continuity snapshot go too
+ *    dishes.defaults  { recipe_id } — what a new dish starts from
+ *    dishes.history   a dish's runs, each with the settings it ran with
+ *
+ *  A recipe's first dish is its MAIN dish (`is_default`); the server sets
+ *  it, never the caller. What each change does to the dish's rows lives in
+ *  `dish-automation.ts`.
  *
  *  Synchronous (`store` is in-process SQLite). Standing dishes only —
  *  ephemeral (manual-run) dish ids are minted inside the execute
@@ -30,6 +37,7 @@ import type { AuditLogStore } from '@recued/storage';
 import type { DishStore } from './dish-store.js';
 import type { DishGroupStore } from './dish-group-store.js';
 import type { DishContextStore } from './dish-context-store.js';
+import type { DishAutomation } from './dish-automation.js';
 import type { WsClient } from './ws-server.js';
 
 export interface DishHandlerDeps {
@@ -48,6 +56,16 @@ export interface DishHandlerDeps {
   /** Audit log — admission rejections emit `quota_exceeded` keyed to
    *  `dishes`. */
   auditLog?: AuditLogStore;
+  /** D-319 — the rows that follow a dish (its triggers and schedules).
+   *  Late-bound by the stage that composes triggers. Absent ⇒ dishes change
+   *  and no row follows. */
+  automation?: DishAutomation;
+  /** D-319 — what a new dish of a recipe starts from beyond its variable
+   *  defaults (D-315's mail templates). Late-bound. */
+  defaultsFor?: (recipe_id: string) => Record<string, unknown>;
+  /** The publisher a recipe is installed under — the one its dishes carry.
+   *  Absent, or null for a recipe that is gone ⇒ `'local'`. */
+  publisherOf?: (recipe_id: string) => string | null;
 }
 
 /** Page size for `dishes.history` when the caller names none. Bounded
@@ -93,82 +111,10 @@ const requireOverlay = (
   return value as Record<string, unknown>;
 };
 
-/** D-215 slice 0 — the owning row of a MANAGED dish, or null when the dish
- *  is user-assigned.
- *
- *  A managed dish's lifecycle belongs to the schedule / trigger / auto-run
- *  row that minted it (D-179): auto-run config is versioned immutably — a
- *  config change mints a NEW dish and dissolves the prior — so that one
- *  `dish_id` always means one config and the audit never shows a `dish_id`
- *  with drifting results. Mutating one through this rpc breaks that
- *  invariant silently, and DELETING one orphans its owner: the schedule
- *  row survives pointing at a vanished dish, and the fire-time gate in
- *  `scheduler.ts` then treats it exactly like a disabled dish — skipping
- *  silently, forever, with the schedule still armed and no failed-run
- *  noise. The sanctioned edit path is the owning row's own config editor
- *  (D-179 "edit config on existing schedule/trigger rows (immutable)").
- *
- *  ⚠ This is a HANDLER guard on purpose — never push it into `DishStore`.
- *  Internal lifecycle code legitimately writes managed dishes through the
- *  store: the trigger-enable/disable flow flips `enabled`, auto-run
- *  versioning writes replacement rows, and `schedule-handler` dissolves on
- *  delete. A store-level guard would break all three. */
-const managedOwner = (
-  dish: Dish,
-): { field: string; owner: string; surface: string } | null => {
-  if (dish.managed_by_schedule_id !== undefined) {
-    return {
-      field: 'managed_by_schedule_id',
-      owner: dish.managed_by_schedule_id,
-      surface: 'schedule',
-    };
-  }
-  if (dish.managed_by_trigger_id !== undefined) {
-    return {
-      field: 'managed_by_trigger_id',
-      owner: dish.managed_by_trigger_id,
-      surface: 'trigger',
-    };
-  }
-  // `managed_by_auto_run` carries the owning RECIPE id, not a row id.
-  if (dish.managed_by_auto_run !== undefined) {
-    return {
-      field: 'managed_by_auto_run',
-      owner: dish.managed_by_auto_run,
-      surface: 'auto-run',
-    };
-  }
-  return null;
-};
-
-/** Fields whose write changes a dish's RESOLVED config or its lifecycle,
- *  and so must not be set on a managed dish through this rpc. `group_id`
- *  is included because group membership merges UNDER the dish overlay
- *  (dish → group → install → defaults), so re-binding a group silently
- *  redefines what the dish runs with — the same invariant `config_overlay`
- *  protects. `name` is deliberately absent: it is a label, it changes no
- *  resolution, and letting the owner rename a managed dish is the whole
- *  point of listing them (D-215 § 3). */
-const MANAGED_DISH_FROZEN_FIELDS = ['config_overlay', 'enabled', 'group_id'] as const;
-
-const refuseManagedMutation = (
-  dish: Dish,
-  body: Record<string, unknown>,
-): void => {
-  const managed = managedOwner(dish);
-  if (!managed) return;
-  const attempted = MANAGED_DISH_FROZEN_FIELDS.filter((f) =>
-    Object.hasOwn(body, f) && body[f] !== undefined,
-  );
-  if (attempted.length === 0) return;
-  throw new RpcError(
-    'conflict',
-    `Dish '${dish.dish_id}' is managed by its ${managed.surface} '${managed.owner}' `
-      + `(${managed.field}) — ${attempted.join(', ')} must be changed on that `
-      + `${managed.surface} row, not on the dish.`,
-    409,
-  );
-};
+/** D-319 — there are no managed dishes any more. A schedule, trigger or
+ *  auto-run timer belongs to a dish and owns none (the per-row config dishes
+ *  D-179 minted and D-215 guarded are retired), so every dish is the owner's
+ *  to edit, switch and remove through this rpc. */
 
 const checkAdmission = (
   deps: DishHandlerDeps,
@@ -254,10 +200,33 @@ export const dishHistory = async (
       commit_status: entry.commit_status,
       trigger_source: entry.trigger_source,
       error: ((entry.errors ?? [])[0] as { message?: string } | undefined)?.message ?? null,
+      // D-319 — a dish's settings are edited in place: what THIS run used.
+      config: entry.config_snapshot !== undefined && entry.config_snapshot !== null
+        ? { ...entry.config_snapshot }
+        : null,
     })),
   };
 };
 
+/** Store a new dish. The recipe's first is its MAIN dish; a concurrent
+ *  create that loses the race for main is stored as an ordinary one. */
+const storeNewDish = (deps: DishHandlerDeps, dish: Dish, now: number): Dish => {
+  checkAdmission(deps, estimateSize(dish), 'creation', now);
+  try {
+    deps.store.set(dish);
+    return dish;
+  } catch (e) {
+    if (!dish.is_default || !(e instanceof Error) || !e.message.includes('UNIQUE')) throw e;
+    const ordinary: Dish = { ...dish, is_default: false };
+    deps.store.set(ordinary);
+    return ordinary;
+  }
+};
+
+/** D-319 — switch a recipe on: a dish with these settings. `switchOn`
+ *  (default: the dish's own `enabled`) turns on every row it starts with —
+ *  the recipe's declared triggers; a dish made only to hold a schedule's or
+ *  a trigger's settings passes `false`, and only that row runs. */
 export const createDish = (
   deps: DishHandlerDeps,
   body: {
@@ -266,15 +235,17 @@ export const createDish = (
     name?: unknown;
     config_overlay?: unknown;
     enabled?: unknown;
-    is_default?: unknown;
     group_id?: unknown;
   },
+  opts: { readonly switchOn?: boolean } = {},
 ): { dish: Dish } => {
   const recipe_id = typeof body.recipe_id === 'string' ? body.recipe_id : null;
   if (!recipe_id) {
     throw new RpcError('bad_request', 'recipe_id is required', 400);
   }
-  const publisher_id = typeof body.publisher_id === 'string' ? body.publisher_id : 'local';
+  const publisher_id = typeof body.publisher_id === 'string'
+    ? body.publisher_id
+    : deps.publisherOf?.(recipe_id) ?? 'local';
   if (body.name !== undefined && typeof body.name !== 'string') {
     throw new RpcError('bad_request', 'name must be a string', 400);
   }
@@ -282,16 +253,12 @@ export const createDish = (
   const config_overlay = body.config_overlay === undefined
     ? {}
     : requireOverlay(body.config_overlay, 'config_overlay');
-  // `enabled` / `is_default` gate dish lifecycle — malformed input is
-  // rejected, never silently defaulted (codex LOW fold).
+  // `enabled` gates dish lifecycle — malformed input is rejected, never
+  // silently defaulted (codex LOW fold).
   if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
     throw new RpcError('bad_request', 'enabled must be a boolean', 400);
   }
-  if (body.is_default !== undefined && typeof body.is_default !== 'boolean') {
-    throw new RpcError('bad_request', 'is_default must be a boolean', 400);
-  }
   const enabled = body.enabled ?? true;
-  const is_default = body.is_default ?? false;
   if (body.group_id !== undefined && typeof body.group_id !== 'string') {
     throw new RpcError('bad_request', 'group_id must be a string', 400);
   }
@@ -299,43 +266,68 @@ export const createDish = (
     ? requireGroupBinding(deps, body.group_id)
     : undefined;
 
-  if (is_default && deps.store.getDefault(recipe_id) !== null) {
-    throw new RpcError(
-      'conflict',
-      `Recipe '${recipe_id}' already has a default dish`,
-      409,
-    );
-  }
-
   const now = deps.now?.() ?? Date.now();
-  const dish: Dish = {
+  const dish = storeNewDish(deps, {
     dish_id: generateDishId(),
     recipe_id,
     publisher_id,
     name,
-    is_default,
+    is_default: deps.store.getDefault(recipe_id) === null,
     config_overlay,
     enabled,
     ...(group_id !== undefined ? { group_id } : {}),
     created_at: now,
-  };
+  }, now);
+  deps.automation?.created(dish, { switchOn: opts.switchOn ?? enabled });
+  return { dish };
+};
 
-  checkAdmission(deps, estimateSize(dish), 'creation', now);
-  try {
-    deps.store.set(dish);
-  } catch (e) {
-    // Default-dish unique-index race backstop — the pre-check above can
-    // lose to a concurrent create; the partial index then raises here.
-    if (is_default && e instanceof Error && e.message.includes('UNIQUE')) {
+/** D-319 — the dish a schedule or trigger made for a recipe WITHOUT naming
+ *  one belongs to: the recipe's main dish. With none, one is made, on, from
+ *  the settings given — the caller asked for them (the run dialog's
+ *  "Config for every scheduled run"). It is not switched on as a whole: only
+ *  the row being made runs, and the recipe's own triggers wait for the
+ *  switch (§ 3.3).
+ *
+ *  Settings given for a recipe that HAS a main dish are refused unless they
+ *  are its settings already: settings belong to the dish, and quietly
+ *  dropping them would run the row with values the owner did not choose. */
+export const mainDishFor = (
+  deps: DishHandlerDeps,
+  input: { recipe_id: string; publisher_id: string; config_overlay: Record<string, unknown> | null },
+): Dish => {
+  const main = deps.store.getDefault(input.recipe_id);
+  if (main !== null) {
+    const given = input.config_overlay ?? {};
+    if (Object.keys(given).length > 0 && !sameSettings(given, main.config_overlay)) {
       throw new RpcError(
         'conflict',
-        `Recipe '${recipe_id}' already has a default dish`,
+        `Settings belong to the dish: '${input.recipe_id}' runs with the settings of its dish `
+          + `'${main.dish_id}' — change them there, or add another dish with these.`,
         409,
       );
     }
-    throw e;
+    return main;
   }
-  return { dish };
+  return createDish(deps, {
+    recipe_id: input.recipe_id,
+    publisher_id: input.publisher_id,
+    config_overlay: input.config_overlay ?? {},
+    enabled: true,
+  }, { switchOn: false }).dish;
+};
+
+/** Key-order-independent equality of two settings overlays. */
+const sameSettings = (a: Record<string, unknown>, b: Record<string, unknown>): boolean => {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value).sort()
+        .map((key) => [key, canonical((value as Record<string, unknown>)[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 };
 
 /** D-259 §6.1 — promote one proven successful ad-hoc run into a NEW standing
@@ -380,34 +372,34 @@ export const createDishFromRun = async (
   }
   return createDish(deps, {
     recipe_id: anchor.recipe_id,
-    publisher_id: 'local',
     config_overlay: { ...anchor.config_snapshot },
     ...(body.name !== undefined ? { name: body.name } : {}),
     ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-    is_default: false,
   });
 };
 
+/** D-319 — settings change in place, from the dish's next run (each run
+ *  records what it used); `enabled` switches every row of the dish, and is
+ *  acted on even when unchanged — "switch on" is also how the owner re-arms
+ *  a dish some of whose rows the server stopped; `main: true` makes it the
+ *  recipe's main dish. */
 export const updateDish = (
   deps: DishHandlerDeps,
   dish_id: string,
-  body: { name?: unknown; config_overlay?: unknown; enabled?: unknown; group_id?: unknown },
+  body: { name?: unknown; config_overlay?: unknown; enabled?: unknown; group_id?: unknown; main?: unknown },
 ): { dish: Dish } => {
   const existing = deps.store.get(dish_id);
   if (!existing) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
   }
-  // D-215 slice 0 — a managed dish is renameable but not reconfigurable
-  // here. Checked BEFORE shape validation so a managed dish reports the
-  // ownership conflict rather than a field-type complaint about a write
-  // it was never going to accept.
-  refuseManagedMutation(existing, body as Record<string, unknown>);
-
   if (body.name !== undefined && typeof body.name !== 'string') {
     throw new RpcError('bad_request', 'name must be a string', 400);
   }
   if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
     throw new RpcError('bad_request', 'enabled must be a boolean', 400);
+  }
+  if (body.main !== undefined && body.main !== true) {
+    throw new RpcError('bad_request', 'main must be true — make another dish main instead', 400);
   }
   // `group_id: null` detaches; a string re-binds (validated); absent
   // leaves membership untouched.
@@ -436,35 +428,38 @@ export const updateDish = (
   const projected = Math.max(0, estimateSize(updated) - estimateSize(existing));
   checkAdmission(deps, projected, 'update', now);
   deps.store.set(updated);
-  return { dish: updated };
+  const stored = body.main === true ? deps.store.setMain(dish_id) ?? updated : updated;
+
+  // A switch re-makes the recipe's rows before writing them, so settings
+  // changed in the same call are followed by it too.
+  if (body.enabled !== undefined) deps.automation?.switched(stored);
+  else if (body.config_overlay !== undefined || body.group_id !== undefined) deps.automation?.settingsChanged(stored);
+  else deps.automation?.touched();
+  return { dish: stored };
 };
 
+/** D-319 — remove a dish: its triggers and schedules go with it, and its
+ *  run-to-run memory. Removing the main dish makes the oldest remaining one
+ *  main, so the runs that name no dish keep settings to run with. */
 export const deleteDish = (
   deps: DishHandlerDeps,
   dish_id: string,
 ): { deleted: true } => {
-  // D-215 slice 0 — read BEFORE deleting so a managed dish can be refused.
-  // The pre-D-215 shape deleted first and inferred `not_found` from the
-  // return; a guard cannot run after the row is gone.
+  // Read BEFORE deleting: the rows are found by the dish's id.
   const existing = deps.store.get(dish_id);
   if (!existing) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
-  }
-  const managed = managedOwner(existing);
-  if (managed) {
-    throw new RpcError(
-      'conflict',
-      `Dish '${dish_id}' is managed by its ${managed.surface} '${managed.owner}' `
-        + `(${managed.field}) — delete that ${managed.surface} instead. Removing the `
-        + `dish directly would leave the ${managed.surface} armed against a dish that `
-        + `no longer exists, skipping every fire silently.`,
-      409,
-    );
   }
   if (!deps.store.delete(dish_id)) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
   }
   deps.contextStore?.clear(dish_id);
+  if (existing.is_default) {
+    const next = deps.store.listByRecipe(existing.recipe_id)
+      .sort((a, b) => a.created_at - b.created_at || (a.dish_id < b.dish_id ? -1 : 1))[0];
+    if (next !== undefined) deps.store.setMain(next.dish_id);
+  }
+  deps.automation?.deleted(existing);
   return { deleted: true };
 };
 
@@ -559,67 +554,16 @@ export const deleteDishGroup = (
   return { deleted: true, detached_dish_ids };
 };
 
-// ────────────────────────────────────────────────────────────────
-// Recipe install config — the recipe's `is_default` dish overlay
-// (D-179). Applied as a base under per-run config for dishless runs
-// (execute-handler). MUTABLE: the default dish is a config SOURCE, not a
-// dispatch identity — its `dish_id` never lands in a run's audit — so
-// editing in place is audit-safe (no immutable versioning needed).
-// ────────────────────────────────────────────────────────────────
-
-const findDefaultDish = (deps: DishHandlerDeps, recipe_id: string): Dish | null =>
-  deps.store.listByRecipe(recipe_id).find((d) => d.is_default) ?? null;
-
-export const getRecipeConfig = (
+/** D-319 — what a new dish of this recipe starts from beyond its variable
+ *  defaults. */
+export const dishDefaults = (
   deps: DishHandlerDeps,
   query: { recipe_id?: unknown },
 ): { config_overlay: Record<string, unknown> } => {
   if (typeof query.recipe_id !== 'string' || query.recipe_id.length === 0) {
     throw new RpcError('bad_request', 'recipe_id is required', 400);
   }
-  const dish = findDefaultDish(deps, query.recipe_id);
-  return { config_overlay: dish?.config_overlay ?? {} };
-};
-
-export const setRecipeConfig = (
-  deps: DishHandlerDeps,
-  body: { recipe_id?: unknown; publisher_id?: unknown; config_overlay?: unknown },
-): { config_overlay: Record<string, unknown> } => {
-  if (typeof body.recipe_id !== 'string' || body.recipe_id.length === 0) {
-    throw new RpcError('bad_request', 'recipe_id is required', 400);
-  }
-  const recipe_id = body.recipe_id;
-  const overlay = requireOverlay(body.config_overlay, 'config_overlay');
-  const existing = findDefaultDish(deps, recipe_id);
-  const now = deps.now?.() ?? Date.now();
-  if (Object.keys(overlay).length === 0) {
-    // Empty clears install config — drop the default dish + its snapshot.
-    if (existing) {
-      deps.store.delete(existing.dish_id);
-      deps.contextStore?.clear(existing.dish_id);
-    }
-    return { config_overlay: overlay };
-  }
-  if (existing) {
-    // In-place update (mutable config source — see the block header).
-    const updated: Dish = { ...existing, config_overlay: overlay };
-    checkAdmission(deps, Math.max(0, estimateSize(updated) - estimateSize(existing)), 'recipe config update', now);
-    deps.store.set(updated);
-  } else {
-    const dish: Dish = {
-      dish_id: generateDishId(),
-      recipe_id,
-      publisher_id: typeof body.publisher_id === 'string' ? body.publisher_id : 'local',
-      name: '', // the default dish renders under the recipe's own name (fork c)
-      is_default: true,
-      config_overlay: overlay,
-      enabled: true,
-      created_at: now,
-    };
-    checkAdmission(deps, estimateSize(dish), 'recipe config creation', now);
-    deps.store.set(dish);
-  }
-  return { config_overlay: overlay };
+  return { config_overlay: deps.defaultsFor?.(query.recipe_id) ?? {} };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -633,12 +577,11 @@ export type DishMethods =
   | 'dishes.update'
   | 'dishes.delete'
   | 'dishes.history'
+  | 'dishes.defaults'
   | 'dish_groups.list'
   | 'dish_groups.create'
   | 'dish_groups.update'
-  | 'dish_groups.delete'
-  | 'recipe_config.get'
-  | 'recipe_config.set';
+  | 'dish_groups.delete';
 
 export const makeDishHandlers = (
   deps: DishHandlerDeps | undefined,
@@ -647,13 +590,10 @@ export const makeDishHandlers = (
   return {
     methods: [
       'dishes.list', 'dishes.create', 'dishes.createFromRun', 'dishes.update', 'dishes.delete',
-      'dishes.history',
+      'dishes.history', 'dishes.defaults',
       'dish_groups.list', 'dish_groups.create', 'dish_groups.update', 'dish_groups.delete',
-      'recipe_config.get', 'recipe_config.set',
     ],
     handlers: {
-      'recipe_config.get': async (args) => getRecipeConfig(deps, args),
-      'recipe_config.set': async (args) => setRecipeConfig(deps, args),
       'dishes.list': async (args) =>
         listDishes(deps, args as { recipe_id?: string }),
       'dishes.create': async (args) => createDish(deps, args),
@@ -672,6 +612,7 @@ export const makeDishHandlers = (
       },
       'dishes.history': async (args) =>
         dishHistory(deps, args as { dish_id?: unknown; limit?: unknown }),
+      'dishes.defaults': async (args) => dishDefaults(deps, args),
       'dish_groups.list': async () => listDishGroups(deps),
       'dish_groups.create': async (args) => createDishGroup(deps, args),
       'dish_groups.update': async (args) => {

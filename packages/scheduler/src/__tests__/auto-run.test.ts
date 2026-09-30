@@ -287,7 +287,8 @@ describe('scheduler.tick', () => {
     const s = createAutoRunScheduler();
     s.setRoster(seed());
     const report = s.tick(5_000);
-    expect(report.fired[0]).toEqual({ recipe_id: 'due', process_id: 'pid-due' });
+    // The roster key rides along: an entry with no dish keys by its recipe.
+    expect(report.fired[0]).toEqual({ key: 'due', recipe_id: 'due', process_id: 'pid-due' });
   });
 
   it('preemptively advances next_run_at by interval_ms', () => {
@@ -705,7 +706,7 @@ describe('scheduler lifecycle', () => {
 
     // First tick fires at now=0.
     const t1 = s.tick(0);
-    expect(t1.fired).toEqual([{ recipe_id: 'detect-deal-risk', process_id: pid }]);
+    expect(t1.fired).toEqual([{ key: 'detect-deal-risk', recipe_id: 'detect-deal-risk', process_id: pid }]);
 
     // Caller dispatches + marks starting.
     s.markStarting('detect-deal-risk', pid, 100);
@@ -749,7 +750,66 @@ describe('scheduler lifecycle', () => {
 
     const rearmed = s.tick(1_000_000);
     expect(rearmed.fired).toEqual([
-      { recipe_id: 'detect-deal-risk', process_id: newPid },
+      { key: 'detect-deal-risk', recipe_id: 'detect-deal-risk', process_id: newPid },
+    ]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// D-319 — one timer per dish
+// ────────────────────────────────────────────────────────────────
+
+describe('D-319 — a roster keyed by dish', () => {
+  const dishInstall = (dish_id: string): AutoRunInstallInput => ({
+    ...mkInstall({ recipe_id: 'watch-repo', auto_run: mkAutoRun() }),
+    dish_id,
+  });
+
+  it('two dishes of one recipe are two entries, keyed by dish, each with its own process', () => {
+    const entries = rosterAllAutoRun({
+      installs: [dishInstall('dsh_a'), dishInstall('dsh_b')],
+      now: 0,
+      mintProcessId: mkMinter(),
+    });
+    const scheduler = createAutoRunScheduler();
+    scheduler.setRoster(entries);
+    expect([...scheduler.roster.keys()]).toEqual(['dsh_a', 'dsh_b']);
+    expect(scheduler.roster.get('dsh_a')).toMatchObject({ recipe_id: 'watch-repo', dish_id: 'dsh_a', process_id: 'pid-1' });
+
+    const report = scheduler.tick(0);
+    expect(report.fired).toEqual([
+      { key: 'dsh_a', recipe_id: 'watch-repo', dish_id: 'dsh_a', process_id: 'pid-1' },
+      { key: 'dsh_b', recipe_id: 'watch-repo', dish_id: 'dsh_b', process_id: 'pid-2' },
+    ]);
+  });
+
+  it('one dish’s failures trip only its own breaker; the other keeps firing', () => {
+    const scheduler = createAutoRunScheduler({ mintProcessId: mkMinter() });
+    scheduler.setRoster(rosterAllAutoRun({ installs: [dishInstall('dsh_a'), dishInstall('dsh_b')], now: 0, mintProcessId: mkMinter() }));
+    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
+      scheduler.markStarting('dsh_a', scheduler.roster.get('dsh_a')!.process_id, 0);
+      scheduler.markFinished('dsh_a', 'failed', undefined, 0);
+    }
+    expect(scheduler.roster.get('dsh_a')!.auto_disabled).toBe(true);
+    expect(scheduler.roster.get('dsh_b')!.auto_disabled).toBe(false);
+    const report = scheduler.tick(120 * SEC);
+    expect(report.fired.map((f) => f.key)).toEqual(['dsh_b']);
+    expect(report.skipped_circuit).toEqual(['dsh_a']);
+  });
+
+  it('a rebuild keeps each dish’s live state by its key', () => {
+    const scheduler = createAutoRunScheduler();
+    scheduler.setRoster(rosterAllAutoRun({ installs: [dishInstall('dsh_a')], now: 0, mintProcessId: mkMinter() }));
+    scheduler.roster.get('dsh_a')!.consecutive_failures = 2;
+    const rebuilt = rosterAllAutoRun({
+      installs: [dishInstall('dsh_a'), dishInstall('dsh_b')],
+      previousRoster: scheduler.roster,
+      now: 0,
+      mintProcessId: mkMinter('fresh'),
+    });
+    expect(rebuilt.map((e) => [e.dish_id, e.consecutive_failures, e.process_id])).toEqual([
+      ['dsh_a', 2, 'pid-1'],
+      ['dsh_b', 0, 'fresh-1'],
     ]);
   });
 });

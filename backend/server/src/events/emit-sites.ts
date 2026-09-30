@@ -273,7 +273,7 @@ export const emitReactiveFire = (bus: EventBus | undefined, recipe_id: string): 
  *  re-list via `watch.list`). */
 export const emitAutomationRule = (
   bus: EventBus | undefined,
-  mechanism: 'event_trigger' | 'auto_run' | 'watch',
+  mechanism: 'event_trigger' | 'auto_run' | 'watch' | 'dish',
 ): void => {
   if (!bus) return;
   try { bus.emit({ kind: 'automation_rule_changed', mechanism }); }

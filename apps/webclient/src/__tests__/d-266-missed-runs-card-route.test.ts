@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ServerSchedule } from '@recued/contracts';
 import { MISSED_RUNS_ACTION_ATTR } from '@recued/ui-shared';
 import {
+  AUTOMATION_ROUTE_STATUS_FILTER_ATTR,
   bootstrapAutomationRoute,
   type BootstrapAutomationRouteOptions,
   type SchedulesAnswerMissedCaller,
@@ -188,6 +189,48 @@ describe('D-266 — the schedule ROW, not just the card', () => {
     });
     await rig.route.whenLoaded();
     expect(rig.host.innerHTML).not.toContain('late');
+  });
+});
+
+describe('D-319 §5.4 — what is waiting is findable', () => {
+  it('⛔ the "Waiting on you" filter keeps the waiting row (it matched none)', async () => {
+    // The filter tested `enabled` before the row worked out it was
+    // waiting, so the one state it exists to find was never shown.
+    const rig = mountRoute({
+      schedulesListCaller: async () => ({
+        schedules: [schedule(), schedule({ schedule_id: 'sch_2', recipe_id: 'other' })],
+      }),
+      schedulesMissedCaller: async () => waitingReport(),
+    });
+    await rig.route.whenLoaded();
+    for (const fn of rig.host.listeners.get('change') ?? []) {
+      fn({
+        target: { value: 'waiting', hasAttribute: (name: string) => name === AUTOMATION_ROUTE_STATUS_FILTER_ATTR },
+      });
+    }
+    expect(rig.host.innerHTML).toContain('data-recued-automation-row="schedule:sch_1"');
+    expect(rig.host.innerHTML).not.toContain('data-recued-automation-row="schedule:sch_2"');
+  });
+
+  it('on the one list, a waiting schedule puts its dish under Needs you', async () => {
+    const rig = mountRoute({
+      initialSection: 'all',
+      schedulesListCaller: async () => ({ schedules: [schedule({ dish_id: 'dsh_main' })] }),
+      dishesListCaller: async () => ({
+        dishes: [{
+          dish_id: 'dsh_main', recipe_id: 'daily-brief', publisher_id: 'recued-core', name: '',
+          is_default: true, config_overlay: {}, enabled: true, created_at: 1,
+        }],
+      }),
+      schedulesMissedCaller: async () => waitingReport(),
+    });
+    await rig.route.whenLoaded();
+    const html = rig.host.innerHTML;
+    // The card heads the list: it is what the owner answers.
+    expect(html).toContain('While I was off');
+    expect(html.indexOf('While I was off')).toBeLessThan(html.indexOf('data-recued-automation-dish="dsh_main"'));
+    expect(html).toMatch(/data-recued-automation-chip="needs-you"[^>]*>Needs you <span class="automation-chip-count">1<\/span>/);
+    expect(html).toContain('automation-dish-status--needs-you">Needs you</span>');
   });
 });
 

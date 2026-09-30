@@ -6,13 +6,13 @@
  *  or `recipe.delete`), what belongs to the recipe goes with it:
  *
  *    - its schedules, and the automations the owner set up on it (owner-made event
- *      triggers and its auto-run row). The triggers it DECLARED are the reconciler's,
- *      which removes them on the same deletion;
+ *      triggers and each dish's auto-run timer — D-319). The triggers it DECLARED are
+ *      the reconciler's, which removes them on the same deletion;
  *    - its auto-run failure trip. That is run health, not something the owner set up,
  *      so the Delete confirmation does not count it. Left behind, it tripped the
  *      reinstalled recipe before it ever ran (found driving a live server, 2026-09-24);
- *    - every saved setting: the install config, named setups, and the managed dishes
- *      behind those automations, with their prior-run continuity;
+ *    - every saved setting: its dishes (D-319 — the main one, formerly the install
+ *      config, and every other), with their prior-run continuity;
  *    - its retired-name list (D-303), which described those settings.
  *
  *  What does NOT belong to the recipe stays: connections and their credentials
@@ -42,19 +42,18 @@ export interface RecipeOwnedStateDeps {
   readonly dishes?: Pick<DishStore, 'listByRecipe' | 'delete'>;
   readonly dishContext?: Pick<DishContextStore, 'clear'>;
   readonly schedules?: Pick<ScheduleStore, 'listByRecipe' | 'delete'>;
-  readonly autoRun?: Pick<AutoRunSettingsStore, 'getDishId' | 'isEnabled' | 'forget'> & {
-    readonly listDisabled?: () => string[];
-  };
+  /** D-319 — each dish's auto-run timer. */
+  readonly autoRun?: Pick<AutoRunSettingsStore, 'list' | 'forgetRecipe'>;
   readonly triggers?: Pick<EventTriggersStore, 'list' | 'remove'>;
-  /** The auto-run failure trip. The live roster holds it in memory too, so the
-   *  caller also rebuilds the roster when the recipe was on it. */
-  readonly autoRunCircuit?: Pick<CircuitBreakerStore, 'clear'>;
+  /** The auto-run failure trips (one per dish's timer). The live roster holds them
+   *  in memory too, so the caller also rebuilds the roster when the recipe was on it. */
+  readonly autoRunCircuit?: Pick<CircuitBreakerStore, 'clearRecipe'>;
 }
 
 /** What a recipe's uninstall removes (or would remove). */
 export interface RecipeOwnedState {
   readonly schedules: number;
-  /** Owner-made event triggers, plus the auto-run row when there is one. */
+  /** Owner-made event triggers, plus each dish's auto-run timer. */
   readonly automations: number;
   /** Saved settings: dishes of every kind. */
   readonly settings: number;
@@ -85,27 +84,26 @@ export const removeRecipeOwnedState = (recipe_id: string, deps: RecipeOwnedState
   for (const schedule of schedules) deps.schedules!.delete(schedule.schedule_id);
   const triggers = ownerMadeTriggers(recipe_id, deps);
   for (const trigger of triggers) deps.triggers!.remove(trigger.trigger_id);
-  const autoRun = deps.autoRun?.forget?.(recipe_id) ?? false;
-  deps.autoRunCircuit?.clear(recipe_id);
+  const timers = deps.autoRun?.forgetRecipe?.(recipe_id) ?? 0;
+  deps.autoRunCircuit?.clearRecipe?.(recipe_id);
   const dishes = deps.dishes?.listByRecipe(recipe_id) ?? [];
   for (const dish of dishes) {
     deps.dishes!.delete(dish.dish_id);
     deps.dishContext?.clear(dish.dish_id);
   }
   deps.recipes?.forgetRetiredVariables?.(recipe_id);
-  return { schedules: schedules.length, automations: triggers.length + (autoRun ? 1 : 0), settings: dishes.length };
+  return { schedules: schedules.length, automations: triggers.length + timers, settings: dishes.length };
 };
 
 /** What `removeRecipeOwnedState` would remove, read-only: the Delete confirmation's
- *  "also removes …". An auto-run row counts only when the owner set it up (a config
- *  dish, or switched off): a default row changes nothing the owner would miss. */
+ *  "also removes …". Each dish's auto-run timer counts: a timer exists only when the
+ *  owner switched its dish on (D-319). */
 export const recipeOwnedStateOf = (recipe_id: string, deps: RecipeOwnedStateDeps): RecipeOwnedState => {
   if (stillInstalled(recipe_id, deps)) return NOTHING;
-  const autoRunSetUp = deps.autoRun !== undefined
-    && (deps.autoRun.getDishId(recipe_id) !== null || (deps.autoRun.listDisabled?.() ?? []).includes(recipe_id));
+  const timers = (deps.autoRun?.list() ?? []).filter((timer) => timer.recipe_id === recipe_id).length;
   return {
     schedules: deps.schedules?.listByRecipe(recipe_id).length ?? 0,
-    automations: ownerMadeTriggers(recipe_id, deps).length + (autoRunSetUp ? 1 : 0),
+    automations: ownerMadeTriggers(recipe_id, deps).length + timers,
     settings: deps.dishes?.listByRecipe(recipe_id).length ?? 0,
   };
 };

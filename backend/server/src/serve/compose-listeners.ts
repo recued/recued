@@ -17,6 +17,9 @@ import { composePreapproval } from '../composition/bin/wire-preapproval.js';
 import { composeInboundEmailAnswer } from '../composition/bin/wire-inbound-email-answer.js';
 import { materializeMailBody } from '../mail-body-read-handler.js';
 import { linkMailFactRuns, mailFactScreensRpcDeps } from '../mail-facts/screens-wiring.js';
+import { createMailWorkService, MAIL_WORK_MANIFEST } from '../mail-work-service.js';
+import { mailFactAiCallThrough } from '../mail-facts/ai-pass.js';
+import { wireRecipeMailTemplates } from '../mail-facts/recipe-templates-wiring.js';
 import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-turn.js';
 import { composeMessengerLiveControl } from '../composition/bin/wire-messenger-live-control.js';
 import { getMessengerNotificationRefresher } from '../composition/bin/wire-messenger-refresher.js';
@@ -36,8 +39,8 @@ import {
 import {
   buildPacksSurfaceLink,
   buildUpdatesSurfaceLink,
-  resolvePublicBaseUrl,
 } from '../ask-landing-answer-link.js';
+import { createListenerPublicAddressFacts } from '../public-address.js';
 import { createWebhookProfileListener } from '../webhook-profile-listener.js';
 import { createWebhookProfileRuntimeRegistry } from '../webhook-profile-runtime.js';
 import {
@@ -166,6 +169,9 @@ import {
 } from '../watch/source-registry.js';
 import { emitAutomationRule, emitSchedule } from '../events/emit-sites.js';
 import { removeRecipeOwnedState, type RecipeOwnedStateDeps } from '../recipe-owned-state.js';
+import { createDishAutomation } from '../dish-automation.js';
+import { mainDishFor } from '../dish-handler.js';
+import { deleteSchedule, listSchedules, updateSchedule } from '../schedule-handler.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import { switchOffUserTriggers } from '../triggers/handler.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
@@ -184,7 +190,9 @@ import {
   getMessengerVendorDeclaration,
   listMessengerVendors,
   GENERATED_PACK_PUBLISHER,
+  DEFAULT_ROOT_APEX_MODE,
   type FormFieldContractFormView,
+  type RootApexMode,
 } from '@recued/contracts';
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
@@ -294,6 +302,7 @@ export interface ComposeListenersOptions {
     | 'signingIdentity'
     | 'auditLog'
     | 'preapprovalStorage'
+    | 'mailWorkStore'
     // D-175 P5 — account-binding manager backs the `account.*` pair-RPC.
     | 'accountBindingManager'
     // D-175 P8 — Pro convenience provisioner backs `pro_convenience.status`.
@@ -314,6 +323,9 @@ export interface ComposeListenersOptions {
     | 'draftStore'
     | 'recipeStore'
     | 'hostnameRegistryStore'
+    // The server's public addresses — every link and vendor sign-in below
+    // reads them; the facts are bound once the listener exists.
+    | 'publicAddress'
     | 'serverTimeZoneStore'
     | 'notificationKindPolicyStore'
     | 'quietHoursStore'
@@ -489,6 +501,7 @@ export interface ComposeListenersOptions {
     | 'publishTriggerPreview'
     | 'publishReceptionPairs'
     | 'publishRecipeOwnedState'
+    | 'publishRecipeMailTemplates'
     | 'packListDeps'
     | 'packUninstallDeps'
     | 'observabilityBundle'
@@ -675,9 +688,7 @@ export const composeListeners = async (
       // the list. `buildPacksSurfaceLink` returns null on a non-public server
       // and the ping then carries no link at all — deliberately, per
       // `execute-handler.ts:3014`.
-      const packsLink = buildPacksSurfaceLink(
-        resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL),
-      );
+      const packsLink = buildPacksSurfaceLink(storage.publicAddress.baseUrl('root'));
       const linkUrl =
         packsLink === null
           ? undefined
@@ -1271,9 +1282,7 @@ export const composeListeners = async (
   const updateOwnerAlert = execution.notificationBlock
     ? createUpdateOwnerAlertSink(
         execution.notificationBlock,
-        buildUpdatesSurfaceLink(
-          resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL),
-        ) ?? undefined,
+        () => buildUpdatesSurfaceLink(storage.publicAddress.baseUrl('root')) ?? undefined,
       )
     : undefined;
   const runUpdateBootReconcile =
@@ -1773,12 +1782,20 @@ export const composeListeners = async (
         identity: vendorOAuthIdentity,
         flowStore: createVendorOAuthFlowStore(),
         resultStore: createVendorOAuthResultStore(),
-        // The signed state carries this; the cloud callback page forwards
-        // the code to `<server_url>/oauth/complete`, and it forms the
-        // direct-redirect choice. Read live per-call so a mid-run env
-        // change is honoured; canonicalisation happens in the rpc / core.
-        serverPublicUrl: (): string | null =>
-          process.env.RECUED_PUBLIC_BASE_URL?.trim() || null,
+        // The signed state carries one of these; the cloud callback page
+        // forwards the code to `<server_url>/oauth/complete`, and each forms a
+        // direct-redirect choice. ⛔ Not the variable alone: a Pro server
+        // without it refused every vendor sign-in. Read live per call;
+        // canonicalisation happens in the rpc / core.
+        //
+        // The best live address for `/oauth/complete` first — the default the
+        // state names — then EVERY own address: a page open at one the probe
+        // cannot reach (the owner's LAN resolving the name locally) still
+        // signs in directly, and `/oauth/complete` still recognises it.
+        serverPublicUrl: (): readonly string[] => [...new Set([
+          ...storage.publicAddress.baseUrls('oauth'),
+          ...storage.publicAddress.ownBaseUrls(),
+        ])],
       }
     : undefined;
 
@@ -1918,6 +1935,7 @@ export const composeListeners = async (
     rpc.publishTriggerPreview({
       store: eventTriggersBundle.store,
       getVendorEntities: eventTriggersBundle.getVendorEntities,
+      ...(eventTriggersBundle.dishesOf ? { dishesOf: eventTriggersBundle.dishesOf } : {}),
     });
   }
   // D-299 — the Reception pairs a pack's recipes back: an update keeps the ones whose
@@ -1959,7 +1977,7 @@ export const composeListeners = async (
         registry: collection.collectionRegistry, instances: collection.mailStack.instances, blobs: app.cacheBlobs,
       } } : {}),
       reviewLink: proposalId => {
-        const base = resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL);
+        const base = storage.publicAddress.baseUrl('root');
         return base ? `${base}/#approvals/preapproval/${encodeURIComponent(proposalId)}` : null;
       },
     }) : undefined;
@@ -2026,9 +2044,10 @@ export const composeListeners = async (
   };
   rpc.publishRecipeOwnedState(() => recipeOwnedState);
   execution.executeDeps.recipeStore.addOnDeleted?.((recipe_id) => {
-    // Read first: the live roster still holds the recipe, with its failure trip.
+    // Read first: the live roster still holds the recipe's timers (one per
+    // dish — D-319), with their failure trips.
     const autoRun = rpc.autoRunDeps?.getHandle();
-    const onRoster = autoRun?.roster.has(recipe_id) === true;
+    const onRoster = [...(autoRun?.roster.values() ?? [])].some((entry) => entry.recipe_id === recipe_id);
     const removed = removeRecipeOwnedState(recipe_id, recipeOwnedState);
     if (removed.schedules > 0) emitSchedule(storage.eventBus, 'updated');
     if (removed.automations > 0) {
@@ -2048,6 +2067,72 @@ export const composeListeners = async (
       eventTriggersBundle?.reconcile();
       watchBundle?.manager.recompute();
     });
+  }
+  // D-315 §5.2 — the templates recipes bring. An install creates or re-applies
+  // each recipe's starter (the pack install reads this late, like the saved
+  // views), an uninstall removes it, "Duplicate to edit" re-points the settings
+  // that held it, and the owner's pick of another re-points the recipe's
+  // `template_variable` triggers (`wireRecipeMailTemplates`).
+  const recipeMailTemplates = storage.mailFactStoreRef && dishDeps
+    ? wireRecipeMailTemplates({
+        store: storage.mailFactStoreRef,
+        recipeStore: execution.executeDeps.recipeStore,
+        dishDeps,
+        ...(eventTriggersBundle
+          ? { triggers: { reconcile: eventTriggersBundle.reconcile, triggersDeps: eventTriggersBundle.triggersDeps } }
+          : {}),
+        ...(watchBundle ? { afterTriggersChanged: () => watchBundle.manager.recompute() } : {}),
+        ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
+      })
+    : undefined;
+  if (recipeMailTemplates) rpc.publishRecipeMailTemplates(() => recipeMailTemplates);
+  // D-319 — a dish is a recipe switched on: its triggers (the recipe's own,
+  // one set per dish, and the owner's) and schedules follow it — made with
+  // it, switched with it, re-pointed with its template setting, removed with
+  // it. A schedule or trigger made for a recipe without naming a dish joins
+  // its main dish. Bound before listeners start, like the trigger preview.
+  if (dishDeps) {
+    dishDeps.publisherOf = (recipe_id) =>
+      execution.executeDeps.recipeStore.getStored(recipe_id)?.publisher_id ?? null;
+    dishDeps.automation = createDishAutomation({
+      ...(eventTriggersBundle
+        ? {
+            triggers: {
+              store: eventTriggersBundle.store,
+              reconcile: eventTriggersBundle.reconcile,
+              rebuild: () => {
+                eventTriggersBundle.dispatcher.rebuild();
+                watchBundle?.manager.recompute();
+              },
+            },
+          }
+        : {}),
+      ...(scheduleDeps
+        ? {
+            schedules: {
+              list: () => listSchedules(scheduleDeps, {}).schedules,
+              setEnabled: (schedule_id, enabled) => { updateSchedule(scheduleDeps, schedule_id, { enabled }); },
+              remove: (schedule_id) => { deleteSchedule(scheduleDeps, schedule_id); },
+            },
+          }
+        : {}),
+      ...(rpc.autoRunDeps
+        ? {
+            autoRun: {
+              isAutoRun: (recipe_id: string) => execution.executeDeps.recipeStore.get(recipe_id)?.auto_run !== undefined,
+              timers: rpc.autoRunDeps.settingsStore,
+              circuits: rpc.autoRunDeps.circuitStore,
+              refresh: () => rpc.autoRunDeps!.getHandle()?.refreshRoster(),
+              resetCircuit: (dish_id: string) => rpc.autoRunDeps!.getHandle()?.resetCircuit(dish_id),
+            },
+          }
+        : {}),
+      ...(storage.eventBus ? { eventBus: storage.eventBus } : {}),
+    });
+    const mainDish = (input: Parameters<typeof mainDishFor>[1]) => mainDishFor(dishDeps, input);
+    if (eventTriggersBundle) eventTriggersBundle.triggersDeps.mainDish = mainDish;
+    if (scheduleDeps) scheduleDeps.mainDish = mainDish;
+    if (rpc.autoRunDeps) rpc.autoRunDeps.mainDish = mainDish;
   }
   if (watchBundle && execution.executeDeps.connectionStore) {
     execution.executeDeps.connectionStore.addOnUpsert(() => watchBundle.manager.recompute());
@@ -2456,9 +2541,7 @@ export const composeListeners = async (
     const raw = process.env.RECUED_PUBLIC_REACHABLE;
     return raw === 'true' || raw === '1';
   };
-  const webhookPublicBaseUrl = (): string | null => {
-    const base = resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL);
-    if (base === null) return null;
+  const webhookBaseFrom = (base: string): string | null => {
     try {
       const parsed = new URL(base);
       if (parsed.protocol !== 'https:'
@@ -2477,6 +2560,14 @@ export const composeListeners = async (
     } catch {
       return null;
     }
+  };
+  const webhookPublicBaseUrl = (): string | null => {
+    // ⚠ A HANDED-OUT address, never the probe-ranked one: it is registered
+    // with vendors and matched against confirmed registrations. Kept from its
+    // first use, so adding a name later moves nothing; the owner moves it on
+    // the Hostnames screen (`public-address.ts` → `handOut`).
+    const address = storage.publicAddress.handOut('webhooks').base_url;
+    return address === null ? null : webhookBaseFrom(address);
   };
   const webhookEndpointUrl = (publicId: string): string | null => {
     const base = webhookPublicBaseUrl();
@@ -2711,7 +2802,7 @@ export const composeListeners = async (
   const savedDataViewAlerts = execution.notificationBlock && storage.auditLog
     ? createSavedDataViewAlertRuntime({ store: savedDataViewStore.alerts, auditLog: storage.auditLog,
       notifier: execution.notificationBlock,
-      publicBaseUrl: resolvePublicBaseUrl(process.env.RECUED_PUBLIC_BASE_URL) ?? undefined,
+      getPublicBaseUrl: () => storage.publicAddress.baseUrl('root'),
     }) : undefined;
 
   // D-174 #22 + slice 1 — built ONCE, used TWICE: the `work_entity.{upsert,
@@ -3309,6 +3400,15 @@ export const composeListeners = async (
       // before boot has created `server_config`, and a `db.prepare` at compose
       // time would throw on a fresh install.
       proDdnsBinding: readProDdnsBinding,
+      // The addresses handed out for things someone keeps, and the owner's
+      // picks (Settings → Server → Hostnames).
+      publicAddress: storage.publicAddress,
+      // Webhooks registered at their vendor with the address the webhooks
+      // pick moves. An operation-bound one carries its address per call.
+      countRegisteredWebhooks: () =>
+        (app.webhookIngressStoreRef?.list() ?? []).filter((ingress) =>
+          ingress.confirmed_endpoint_url !== null
+          && ingress.registration_mode !== 'operation_bound').length,
     },
     // LAN-URL kickstart — `network.local_urls` reports the loopback + LAN URLs.
     // `getPort` reads the LIVE listener port at call time via the `server`
@@ -3738,6 +3838,7 @@ export const composeListeners = async (
       ? {
           mailFactRpcDeps: mailFactScreensRpcDeps({
             store: storage.mailFactStoreRef,
+            ...(recipeMailTemplates ? { recipeTemplates: recipeMailTemplates } : {}),
             ...(collection.mailStack && app.cacheBlobs
               ? {
                   mail: {
@@ -3775,6 +3876,13 @@ export const composeListeners = async (
     // D-221 — #data Records uses this owner-pair control plane, never a
     // `data.records.*` resolver or the agent-facing Tier-P executor.
     recordsRpcDeps: { store: storage.recordsStore },
+    ...(storage.mailWorkStore && app.cacheBlobs ? { mailWorkService: createMailWorkService({
+      store: storage.mailWorkStore,
+      registry: collection.collectionRegistry,
+      body: record => materializeMailBody(record, app.cacheBlobs!),
+      ...(app.chatDeps ? { hasInvestigation: async sessionId => (await app.chatDeps!.store.listRecentConversational(sessionId, 1)).length > 0 } : {}),
+      ...(app.privateAiCall ? { ai: mailFactAiCallThrough(app.privateAiCall, MAIL_WORK_MANIFEST) } : {}),
+    }) } : {}),
     savedDataViewStore,
     // D-198 — `memory.*` owner-trusted pair-RPCs (Memory lens). Slice 1
     // `memory.list` reuses the audit store's `listRecent` origin filter; Slice
@@ -4316,6 +4424,37 @@ export const composeListeners = async (
     },
   });
 
+  // ── the public address's facts ──────────────────────────────────────────
+  //
+  // How this listener serves, for the links built from here on: whether the
+  // public listener is up, which paths the Exposure grid makes Public, the
+  // apex mode, whether a webclient bundle loaded. The grid is read on each
+  // probe round and pushed here on every change; the rest is read live.
+  const publicAddressFacts = createListenerPublicAddressFacts({
+    readResolution: async () => {
+      const machine = exposureDeps?.getMachine();
+      if (machine === undefined) throw new Error('exposure machine not wired');
+      return (await machine.current()).resolution;
+    },
+    apexMode: () =>
+      (runtimeConfig?.get('network.apex_mode') as RootApexMode | undefined)
+      ?? DEFAULT_ROOT_APEX_MODE,
+    webclientBundleLoaded: webclientBundle != null,
+    publicListenerBound: webhookPublicListenerBound,
+  });
+  storage.publicAddress.bindFacts(publicAddressFacts);
+  // An object, not a string: its identity cannot collide with a client's id.
+  const publicAddressSubscriber = { subscriber: 'public-address' };
+  storage.eventBus?.subscribe(
+    publicAddressSubscriber,
+    { kinds: ['exposure_changed'] },
+    (event) => {
+      if (event.kind !== 'exposure_changed') return;
+      publicAddressFacts.setResolution(event.resolution);
+      storage.publicAddress.publish();
+    },
+  );
+
   // ── a live `public_port` edit moves the listener ────────────────────────
   //
   // ⛔⛔ THE PORT IS THE ONE SETTING WHOSE WHOLE POINT IS TO MOVE. A self-hoster
@@ -4391,6 +4530,7 @@ export const composeListeners = async (
         ? [begin(() => messengerIngressSupervisor.stop())]
         : []),
       begin(() => inboundEmailAnswer.dispose()),
+      begin(() => { storage.eventBus?.unsubscribe(publicAddressSubscriber); }),
       begin(() => serverHandlerSet.close()),
       begin(() => listenerCoordinator.stop()),
       // ⛔⛔ THE PORT-MAPPING SUPERVISOR WAS STARTED AND NEVER STOPPED. Its

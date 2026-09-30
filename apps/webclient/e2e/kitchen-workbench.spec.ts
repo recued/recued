@@ -128,7 +128,9 @@ test('settings author variables, complete output definitions, and automatic runs
   await save(page);
   const saved = await page.evaluate(() => window.__harness.recipeSaveBodies.at(-1));
   expect(saved?.variables).toEqual({ threshold: 20, label: 'Total' });
-  expect(saved?.auto_run).toEqual({ interval_ms: 120000, default_enabled: false });
+  // D-319 — `default_enabled` is retired: nothing starts at install, so the
+  // editor no longer writes it.
+  expect(saved?.auto_run).toEqual({ interval_ms: 120000 });
   expect(saved?.output).toEqual({ render: [{ type: 'text', source: 'step.count' }] });
 });
 

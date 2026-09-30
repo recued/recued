@@ -122,6 +122,52 @@ describe('composeStorageContext', () => {
     }
   });
 
+  it('composes the public address over this server\'s hostname registry', async () => {
+    const dir = makeTmp();
+    const original = process.env.RECUED_PUBLIC_BASE_URL;
+    delete process.env.RECUED_PUBLIC_BASE_URL;
+    const context = await composeStorageContext({
+      dbPath: join(dir, 'server.db'),
+      bootTrace: createBootTrace({
+        entrypoint: 'serve-entry', profile: 'serve', command: 'serve', env: {}, now: () => 1000,
+        sink: () => undefined,
+      }),
+      runtimeConfig: createRuntimeConfigStore({}),
+      vaultQuotas: { perPublisherBytes: 1_234_000, totalBytes: 5_678_000 },
+    });
+    try {
+      expect(context.publicAddress.ownBaseUrls()).toEqual([]);
+      context.hostnameRegistryStore.upsert({
+        server_identity_id: context.serverInstanceId,
+        hostname: 'alice.recued.net',
+        cert_source: 'recued_acme',
+        cert_fingerprint: 'sha256:ab',
+        ownership_status: 'verified',
+        listener_ports: [443],
+        ddns_managed: true,
+        enabled: true,
+      });
+      expect(context.publicAddress.ownBaseUrls()).toEqual(['https://alice.recued.net']);
+      // No probe answer yet: the Pro card cannot say either way.
+      expect(context.publicAddress.proReachability()).toBeNull();
+    } finally {
+      context.db.close();
+      if (original === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = original;
+    }
+  });
+
+  it('hands the Pro card the public address\'s probe answer', () => {
+    // ⛔ Unwired until 2026-09-29, so every entitled card said "Waiting until
+    // your server can be reached" forever. The provisioner's own suite injects
+    // this read, so only the composition shows it is supplied — and the
+    // status path cannot reach the gate without a bound, entitled account.
+    const source = readFileSync(storageContextPath, 'utf8');
+    expect(source).toMatch(
+      /createProConvenienceProvisioner\(\{[\s\S]*?readReachability: async \(\) => publicAddress\.proReachability\(\)/,
+    );
+  });
+
   it('keeps storage context out of listener, scheduler, and MCP imports', () => {
     const source = readFileSync(storageContextPath, 'utf8');
 

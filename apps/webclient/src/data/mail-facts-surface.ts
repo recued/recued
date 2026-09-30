@@ -868,6 +868,11 @@ export const MAIL_FACTS_STYLES = `
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-run-state[data-tone="bad"] { color: var(--danger); }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-run-state[data-tone="wait"] { color: var(--muted); }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--danger); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-notice p { margin: 0; flex: 1 1 240px; }
+/* A recipe's template, shown and not edited: its rules update with the recipe. */
+[${MAIL_FACTS_HOST_ATTR}] .mail-facts-readonly { margin: 0; padding: 0; border: 0; min-width: 0; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-empty { color: var(--muted); max-width: 60ch; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-views { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
 [${MAIL_FACTS_HOST_ATTR}] .mail-facts-views .data-button[aria-pressed="true"] {

@@ -14,9 +14,13 @@
  *      has_attachments, labels?, message_id, rfc_message_id?,
  *      reconciliation_id? }
  *
- *  `record_id` hashes the provider's `source_id`; two accounts
- *  sharing a Message-ID won't collide because each `(platform, slug)`
- *  gets its own SQLite table.
+ *  `record_id` hashes the provider's `source_id`, and ⛔ two accounts CAN
+ *  share one: an IMAP `source_id` is `uid@folder`, and every IMAP account has
+ *  a UID 7 in INBOX. Their ROWS never meet — each `(platform, slug)` gets its
+ *  own SQLite table — but whatever else is keyed by the bare `record_id` is
+ *  shared between them. Attachment files are named with their mailbox for that
+ *  reason (`mail-attachment-source-id.ts`); links, annotations and
+ *  enrichments are still keyed by the bare id.
  */
 
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
@@ -35,6 +39,7 @@ import type {
   CollectionSearchMatch,
   CollectionSearchQuery,
   CollectionState,
+  Link,
   MailSendAuditDetail,
 } from '@recued/contracts';
 import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD } from '@recued/contracts';
@@ -113,6 +118,12 @@ import {
   normalizeRfcMessageId,
   type MailProvider,
 } from './provider.js';
+import {
+  legacyMailAttachmentSourceId,
+  mailAttachmentFileId,
+  mailRecordIdHeldByAnotherMailbox,
+  scopedMailAttachmentSourceId,
+} from './mail-attachment-source-id.js';
 
 export interface MailCollectionConfig {
   /** Number of days to backfill on first boot. */
@@ -613,6 +624,12 @@ export interface MailCollection extends Collection {
    *  bare provider-normalised address, so the count is precise + exact
    *  regardless of mailbox size. READ-ONLY. */
   countFrom(email: string): number;
+  /** Whether a file named by this email's id alone — the legacy attachment
+   *  source id (`mail-attachment-source-id.ts`) — may hold another mailbox's
+   *  attachment: this mailbox is IMAP and another mailbox's table holds a row
+   *  under the same id. False for Gmail and Graph: their ids are the
+   *  provider's own, so one held twice is one message enrolled twice. */
+  legacyAttachmentsAmbiguous(record_id: string): boolean;
 }
 
 /** D-127 P1.6 — extract the bare email from an RFC 5322 mailbox
@@ -685,6 +702,9 @@ export const createMailCollection = (
   // by Message-ID with NO limit. Exact-match index, because Message-IDs are
   // case-sensitive and must not fold.
   table.ensureHotFieldIndex(MAIL_RFC_MESSAGE_ID_HOT_FIELD);
+
+  const legacyAttachmentsAmbiguous = (record_id: string): boolean =>
+    provider.kind === 'imap' && mailRecordIdHeldByAnotherMailbox(db, table.tableName, record_id);
 
   const emitter = createCollectionEmitter({
     bus,
@@ -845,10 +865,30 @@ export const createMailCollection = (
     reportSyncOutcome('healthy', now);
   };
 
-  /** Returns the attachments it materialized, for the upsert hook (D-315). */
+  /** The email's attachment links to files. `[]` where no link store is wired:
+   *  every part is then named with the mailbox, the name that is always right. */
+  const attachmentLinksOf = async (deps: MailInboundAttachmentDeps, mailRecordId: string): Promise<Link[]> => {
+    const store = deps.attachDeps.annotationDeps?.store;
+    if (!store) return [];
+    return (await store.outboundLinks('mail', mailRecordId))
+      .filter((link) => link.role === 'attachment' && link.to_collection === 'file');
+  };
+
+  const attachmentFileStored = (deps: MailInboundAttachmentDeps, file_id: string): boolean => {
+    try {
+      const files = deps.attachDeps.registry?.get('file', deps.attachDeps.fileSlug ?? DATA_FILE_RECEIVED_SLUG);
+      return files !== undefined && files.get(file_id) !== null;
+    } catch {
+      return false;
+    }
+  };
+
+  /** Returns the attachments it materialized, for the upsert hook (D-315).
+   *  `existed`: the email's row was here before this upsert. */
   const materializeInboundAttachments = async (
     msg: CanonicalMessage,
     mailRecordId: string,
+    existed: boolean,
     shouldContinue: () => boolean,
   ): Promise<MailUpsertAttachment[]> => {
     const materialized: MailUpsertAttachment[] = [];
@@ -864,6 +904,25 @@ export const createMailCollection = (
       return materialized;
     }
 
+    // ⛔ An IMAP id is `uid@folder`, which another IMAP account holds too: named
+    // by the id alone, both accounts' attachments were ONE file, each re-ingest
+    // overwriting the other's. An IMAP part is named with this mailbox, except
+    // where the legacy name is unambiguous and already in use — no other
+    // mailbox holds the id, and its file is stored and linked — so an upgrade
+    // renames no single-account file (`mail-attachment-source-id.ts`).
+    const imap = provider.kind === 'imap';
+    let shared = false;
+    let links: Link[] = [];
+    if (imap) {
+      try {
+        shared = legacyAttachmentsAmbiguous(mailRecordId);
+        links = await attachmentLinksOf(deps, mailRecordId);
+      } catch (err) {
+        bumpError(`mail attachment links unreadable for ${msg.source_id}`, err);
+      }
+      if (!shouldContinue()) return materialized;
+    }
+
     for (const [idx, part] of attachments.entries()) {
       if (!shouldContinue()) return materialized;
       const sourcePartId = part.source_part_id || `part-${idx}`;
@@ -871,15 +930,25 @@ export const createMailCollection = (
         const bytes = await part.fetchBytes();
         if (!shouldContinue()) return materialized;
         const mimeType = detectMailAttachmentMimeType(bytes, part.mime_type);
+        const legacySourceId = legacyMailAttachmentSourceId(mailRecordId, sourcePartId);
+        const legacyFileId = mailAttachmentFileId(legacySourceId);
+        const legacyLinks = links.filter((link) => link.to_id === legacyFileId);
+        const keepLegacy = !imap
+          || (!shared && legacyLinks.length > 0 && attachmentFileStored(deps, legacyFileId));
         const fileRecord = await deps.fileIngestor.ingest({
           bytes,
           filename: part.filename,
           mime_type: mimeType,
           origin: 'mail_attachment',
-          source_id: `${mailRecordId}:${sourcePartId}`,
+          source_id: keepLegacy ? legacySourceId : scopedMailAttachmentSourceId(slug, mailRecordId, sourcePartId),
           // D-124 — an old email's attachment, stored by the mailbox's first
-          // scan, is past mail's: it starts no received-file trigger.
-          ...(backfillComplete() ? {} : { in_drain: true }),
+          // scan, is past mail's: it starts no received-file trigger. Nor does
+          // an attachment already stored under its legacy name and now renamed
+          // with its mailbox: a trigger saw that file, and would run twice.
+          // ⚠ An attachment first stored late — its email landed, the fetch
+          // failed — still tells the trigger: no trigger has seen it yet.
+          ...(!backfillComplete() || (existed && !keepLegacy && attachmentFileStored(deps, legacyFileId))
+            ? { in_drain: true } : {}),
           now: nowOf(),
         });
         if (!shouldContinue()) return materialized;
@@ -893,6 +962,15 @@ export const createMailCollection = (
           deps.attachDeps,
         );
         materialized.push({ file_id: fileRecord.record_id, filename: part.filename, mime_type: mimeType });
+        // The mailbox's own file now stands for this part: the legacy link
+        // goes, the legacy FILE stays — other stores may still name it.
+        if (!keepLegacy && legacyLinks.length > 0) {
+          try {
+            for (const link of legacyLinks) await deps.attachDeps.annotationDeps.store.deleteLink(link._id);
+          } catch (err) {
+            bumpError(`mail legacy attachment link removal failed for ${msg.source_id}:${sourcePartId}`, err);
+          }
+        }
       } catch (err) {
         bumpError(`mail attachment ingest failed for ${msg.source_id}:${sourcePartId}`, err);
       }
@@ -973,7 +1051,7 @@ export const createMailCollection = (
         // old one. Throttled, because this runs once per ingested message and a
         // 30-day backfill is thousands of them.
         touchSyncClock();
-        const attachments = await materializeInboundAttachments(msg, record.record_id, shouldContinue);
+        const attachments = await materializeInboundAttachments(msg, record.record_id, prev !== null, shouldContinue);
         // The row may already be durable here; rejecting still matters because a
         // provider that outlived stop must not persist a newer checkpoint. Replay
         // is idempotent and will converge attachments/hooks under the next owner.
@@ -2019,6 +2097,7 @@ export const createMailCollection = (
     // an empty result, then reported the PROPOSAL as the outcome.
     neighbours: (query: Parameters<typeof table.neighbours>[0]) => table.neighbours(query),
     countFrom: (email: string): number => table.countByAddress('from', email),
+    legacyAttachmentsAmbiguous,
     health,
     runRetention,
     send,

@@ -205,6 +205,7 @@ describe('InstalledRecipeRecord — D-115 process_id', () => {
 describe('CircuitBreakerState shape', () => {
   it('admits a healthy entry — counter zero, not disabled', () => {
     const st: CircuitBreakerState = {
+      dish_id: 'dsh_mail_watcher',
       recipe_id: 'reactive-mail-watcher',
       consecutive_failures: 0,
       auto_disabled: false,
@@ -215,6 +216,7 @@ describe('CircuitBreakerState shape', () => {
 
   it('admits a tripped entry with failure context', () => {
     const st: CircuitBreakerState = {
+      dish_id: 'dsh_mail_watcher',
       recipe_id: 'reactive-mail-watcher',
       consecutive_failures: CIRCUIT_BREAKER_THRESHOLD,
       auto_disabled: true,

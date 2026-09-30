@@ -1,27 +1,34 @@
-/** D-179 P1 — Dishes: execution instances.
+/** D-179 P1 — Dishes: execution instances. D-319 — a dish is a recipe
+ *  switched on.
  *
  *  A recipe is a paper record — pure JSON, infinitely instantiable. A
- *  **dish** is the named execution instance minted when a recipe is
- *  assigned to execution: it carries the long-life identity that audit
- *  attribution, `prefs.<dish_id>` run-to-run continuity, attachment
- *  rows (P2), and config-overlay resolution key on.
+ *  **dish** is one set of its settings, a name and an On/Off switch:
+ *  "I have 10 repos on the same recipe" = ten named dishes of one template.
+ *  Everything that starts the recipe on its own belongs to one dish and runs
+ *  with its settings — each trigger the recipe declares (one copy per dish),
+ *  each trigger the owner adds, each schedule, and its auto-run timer (one
+ *  per dish). The switch governs only those: a run by hand is never
+ *  gated by it. Settings are edited in place; each run records the settings
+ *  it ran with (`config_snapshot` on its audit anchor, beside `dish_id`).
  *
- *  Overlay resolution order (spec § 2.4): dish overlay → install
- *  config → recipe variable defaults. The D-177 action-identity hash
- *  basis is post-resolution, so dishes compose with grants / held-
- *  action identity with no new key-space — grants need NOTHING
- *  (spec § 2.5).
+ *  A recipe's first dish is its MAIN dish (`is_default`, formerly the
+ *  install-config dish). A run that names no dish — chat, MCP, a door, a
+ *  recipe calling another — uses its settings under the run's own values.
+ *
+ *  Which settings a run uses, lowest first:
+ *  - as a dish: its group's ‹ the dish's ‹ the values given for this run;
+ *  - with no dish: the main dish's ‹ the values given for this run;
+ *  - resumed or reviewed: the settings it was approved with, replayed.
+ *  The D-177 action-identity hash basis is post-resolution, so grants need
+ *  nothing (D-179 spec § 2.5).
  *
  *  Two lifetimes:
- *  - **Standing dish** — a persisted row (this shape), created via
- *    `dishes.create` or implicitly as the recipe's invisible DEFAULT
- *    dish (fork (c): surfaces in UI only once a second dish of the
- *    same recipe exists).
- *  - **Ephemeral dish** — a manual run with no `dish_id` mints an
+ *  - **Standing dish** — a persisted row (this shape).
+ *  - **Ephemeral dish** — a run with no `dish_id` mints an
  *    `dsh:eph:<run_id>` id for audit attribution only; nothing is
  *    persisted and no continuity state attaches.
  *
- *  Spec: D-179 (RATIFIED 2026-06-12).
+ *  Spec: D-179 (RATIFIED 2026-06-12), D-319.
  */
 
 /** Prefix for standing dish ids. */
@@ -48,48 +55,22 @@ export interface Dish {
   /** The recipe template this dish instantiates. */
   recipe_id: string;
   publisher_id: string;
-  /** User-facing name ("repo: recued-dev"). The default dish carries
-   *  `''` — it renders under the recipe's own name (fork (c)). */
+  /** User-facing name ("repo: recued-dev"). `''` while it needs none: a
+   *  recipe with one dish shows it under the recipe's own name (D-319). */
   name: string;
-  /** Exactly one default dish per recipe — minted lazily so today's
-   *  single-instance installs stay byte-identical until a second dish
-   *  appears. */
+  /** D-319 — the recipe's MAIN dish: its first, and the one a run that names
+   *  no dish takes its settings from. At most one per recipe (a partial
+   *  unique index); the server sets it — never the caller. */
   is_default: boolean;
-  /** Per-dish config overlay, merged OVER install config at dispatch
-   *  (dish → install → defaults). */
+  /** The dish's settings, edited in place (D-319). */
   config_overlay: Record<string, unknown>;
-  /** Disabled dishes refuse dispatch (standing dishes only; P2 wires
-   *  attachments to honor this at fire time). */
+  /** D-319 — the switch. Off, none of the dish's triggers, schedules or its
+   *  auto-run timer fire; a run by hand is not gated by it. */
   enabled: boolean;
   /** D-179 P3 — dish-group membership (≤ 1 group per dish). The group's
-   *  shared `config_overlay` merges UNDER this dish's own overlay at
-   *  dispatch: dish → group → install → defaults. Absent ⇒ free dish. */
+   *  shared `config_overlay` merges UNDER this dish's own overlay. Absent ⇒
+   *  free dish. */
   group_id?: string;
-  /** D-179 P5c (owner decision 2026-06-12) — set when this dish was
-   *  AUTO-MINTED by enabling a recipe-origin event trigger; carries
-   *  the managing trigger row's id. Lifecycle: enable mints (or
-   *  re-enables), disable flips `enabled: false` (identity +
-   *  continuity survive a disable/enable cycle), recipe uninstall
-   *  dissolves (the reconciler deletes the dish + its continuity
-   *  snapshot when it removes the managing row). User-assigned dishes
-   *  never carry this and are never auto-dissolved. */
-  managed_by_trigger_id?: string;
-  /** D-179 — set when this dish carries a recipe's AUTO-RUN config; the
-   *  value is the owning `recipe_id`. Auto-run config is versioned
-   *  immutably: a config change mints a NEW dish and dissolves the prior
-   *  (one `dish_id` = one config, so the audit never shows a `dish_id`
-   *  with drifting results). `auto_run_settings.dish_id` points at the
-   *  current one; superseded dishes are dissolved, never mutated. Managed
-   *  ⇒ hidden from the dishes surface + dissolved on recipe uninstall. */
-  managed_by_auto_run?: string;
-  /** D-179 — set when this dish was AUTO-MINTED to carry the config
-   *  overlay a headless SCHEDULE fires with (the schedule/trigger enable
-   *  flow has no per-run prompt, so the overlay lives on a managed dish);
-   *  carries the managing `schedules.*` row id. Lifecycle mirrors
-   *  `managed_by_trigger_id`: `schedules.create` with a non-empty
-   *  `config_overlay` mints it, `schedules.delete` dissolves it. A
-   *  user-assigned dish never carries this and is never auto-dissolved. */
-  managed_by_schedule_id?: string;
   created_at: number; // epoch ms
 }
 
@@ -116,15 +97,12 @@ export interface DishLastRun {
 /** D-215 slice 5 — one run in a dish's history.
  *
  *  A wider projection than `DishLastRun` (which is a single list cell) but
- *  still deliberately NOT the whole `AuditEntry`: `config_snapshot` and the
- *  full error payloads stay server-side. History answers "what has this
- *  queued item done", not "replay the run".
+ *  still NOT the whole `AuditEntry`: the full error payloads stay
+ *  server-side. History answers "what has this dish done, and with what".
  *
  *  🔑 A dish's history OUTLIVES the dish. `dish_id` is only an audit-row
- *  field — auto-run config versioning dissolves the prior dish on every
- *  change, and a one-shot retires itself on success (§ 5) — so these rows
- *  keep answering for a `dish_id` that no longer resolves. That is the
- *  RETIRED case, and a surface must render it as retired, never as an
+ *  field, so these rows keep answering for a dish that was removed. That is
+ *  the RETIRED case, and a surface must render it as retired, never as an
  *  error or an empty state. */
 export interface DishRunRow {
   run_id: string;
@@ -140,6 +118,10 @@ export interface DishRunRow {
   trigger_source: string | null;
   /** First error message, when the run failed. */
   error: string | null;
+  /** D-319 — the settings the run ran with (its `config_snapshot`). A dish's
+   *  settings are edited in place, so this — not the dish — is what a past
+   *  run used. `null` when the audit row recorded none. */
+  config: Record<string, unknown> | null;
 }
 
 /** Prefix for dish-group ids. */
@@ -149,8 +131,8 @@ export const DISH_GROUP_ID_PREFIX = 'dgrp_';
  *  one workflow instance ("this repo's issue pipeline"). Deliberately
  *  CROSS-pack (spec § 3): the pack stays the distribution / grant
  *  unit; the group is the workflow container. It carries one shared
- *  config overlay member dishes inherit (resolution: dish overlay →
- *  group overlay → install config → variable defaults) and is the
+ *  config overlay member dishes inherit (a run as a member takes the
+ *  group's ‹ the dish's ‹ its own values — D-319) and is the
  *  unit the UI presents as a pipeline (the wiring graph is derived
  *  from member recipes, never authored — spec § 7). */
 export interface DishGroup {

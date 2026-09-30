@@ -108,10 +108,12 @@ import type { ServerExecutorConfig } from '../server-executor.js';
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
 import { composeChatOrchestrator } from '../composition/bin/wire-chat-orchestrator.js';
 import { composeExecuteDeps } from '../composition/bin/wire-execute-deps.js';
+import { buildOwnerSurfaceLink } from '../ask-landing-answer-link.js';
 import {
-  buildOwnerSurfaceLink,
-  resolvePublicBaseUrl,
-} from '../ask-landing-answer-link.js';
+  createPublicAddressService,
+  createSqlitePublicAddressStore,
+} from '../public-address.js';
+import { createHostnameRegistryStore } from '../storage/hostname-registry.js';
 import { composeExecutorConfig } from '../composition/bin/wire-executor-config.js';
 import { composeHousekeepingStores } from '../composition/bin/wire-housekeeping-substrate.js';
 import { composeLlmSubstrate } from '../composition/bin/wire-llm-substrate.js';
@@ -162,6 +164,14 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const eventBus = createEventBus();
   const serverInstanceId = await ensureServerInstanceId(db);
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
+  // This process has no listener, Exposure grid or apex mode of its own: its
+  // links use its configured address, then the serving process's last
+  // published answer. It never probes.
+  const publicAddress = createPublicAddressService({
+    configured: () => env.RECUED_PUBLIC_BASE_URL,
+    hostnames: createHostnameRegistryStore(db),
+    store: createSqlitePublicAddressStore(db),
+  });
 
   const auditLog = createAuditLogStore(
     createSQLiteCollection<AuditEntry>(db, 'audit_entries'),
@@ -475,15 +485,11 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
 
   const executeDepsBundle = composeExecuteDeps({
     clientTokens,
-    // D-234 § 234.3 — the stdio profile resolves its own link from the same env
-    // var the serving root uses. Wired here too so a peer-admission ask raised
-    // on this path is not silently the one without a "read it here" link.
-    ...((): { ownerSurfaceLink?: (recipe_id: string) => string } => {
-      const link = buildOwnerSurfaceLink(
-        resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL),
-      );
-      return link !== null ? { ownerSurfaceLink: link } : {};
-    })(),
+    // D-234 § 234.3 — the stdio profile resolves its own link, from the same
+    // resolver the serving root uses. Wired here too so a peer-admission ask
+    // raised on this path is not silently the one without a "read it here" link.
+    ownerSurfaceLink: (recipe_id: string): string | undefined =>
+      buildOwnerSurfaceLink(publicAddress.baseUrl('root'))?.(recipe_id),
     recipeStore,
     recordsStore,
     executorConfig,
@@ -570,7 +576,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
       clientTokens, definitions: executeDepsBundle.contractDefinitionStore, inboundTokens: chatBundle.inboundTokenStore,
       notifications: executeDepsBundle.notificationBlock, keys,
       reviewLink: proposalId => {
-        const base = resolvePublicBaseUrl(env.RECUED_PUBLIC_BASE_URL);
+        const base = publicAddress.baseUrl('root');
         return base ? `${base}/#approvals/preapproval/${encodeURIComponent(proposalId)}` : null;
       },
     });

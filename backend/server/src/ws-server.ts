@@ -425,6 +425,8 @@ import {
 import { makePrefsHandlers } from './prefs-handler.js';
 import { makeSavedDataViewHandlers } from './saved-data-view-handler.js';
 import { makeMailFactRpcHandlers, type MailFactRpcDeps } from './mail-facts/mail-fact-rpc-handler.js';
+import { makeMailWorkRpcHandlers } from './mail-work-rpc-handler.js';
+import type { MailWorkService } from './mail-work-service.js';
 import { makePreapprovalHandlers, type PreapprovalHandlerDeps } from './preapproval-handler.js';
 import type { SavedDataViewStore } from './saved-data-view-store.js';
 import { makePairHandlers } from './pair-handler.js';
@@ -1405,6 +1407,7 @@ export interface AttachWebSocketOptions {
    *  The slice requires a registered paired client, and `mail_fact.` is
    *  MCP-reserved. */
   mailFactRpcDeps?: MailFactRpcDeps;
+  mailWorkService?: MailWorkService;
   /** D-221 owner-only `records.*` explorer/lifecycle control plane. */
   recordsRpcDeps?: RecordsRpcDeps;
   savedDataViewStore?: SavedDataViewStore;
@@ -1605,6 +1608,7 @@ const buildWsBinding = (
     workEntityCrudDeps,
     formResponseDeps,
     mailFactRpcDeps,
+    mailWorkService,
     recordsRpcDeps,
     savedDataViewStore,
     preapprovalDeps,
@@ -2181,6 +2185,7 @@ const buildWsBinding = (
     // D-315 — the owner's mail templates and standards switches; paired-owner
     // only, MCP-reserved.
     makeMailFactRpcHandlers(mailFactRpcDeps),
+    makeMailWorkRpcHandlers(mailWorkService),
     // D-221 — full-ref Records explorer and lifecycle controls. Every arrow
     // enforces a registered paired client and `records.` is MCP-reserved.
     makeRecordsRpcHandlers(recordsRpcDeps),

@@ -347,6 +347,94 @@ describe('D-137 Trio #A — mail.search / calendar.search handlers', () => {
     }
   });
 
+  it('reports neighbours omitted by the result limit and clears the flag when below every quota', async () => {
+    const later = { record_id: 'later', hot_fields: { subject: 'Offer withdrawn' }, received_at: 3 };
+    const earlier = { record_id: 'earlier', hot_fields: { subject: 'Original terms' }, received_at: 1 };
+    const gmail = {
+      platform: 'mail', slug: 'gmail',
+      get: vi.fn().mockReturnValue({ record_id: 'seed' }),
+      // Like the store: `next` walks later mail, `prev` earlier mail.
+      neighbours: vi.fn((q: { next?: number; prev?: number }) => [
+        ...(q.next ? [later] : []), ...(q.prev ? [earlier] : []),
+      ]),
+    };
+    const handlers = buildChatTier1Handlers(buildDepsStub({
+      getCollectionRegistry: () => ({ list: () => [gmail] }) as never,
+    }));
+    const clipped = await handlers['mail.search']!({ near_id: 'seed', next: 1, prev: 1, limit: 1 }, ctxInternal());
+    expect(clipped).toMatchObject({ ok: true, result: { matches: [{ record_id: 'later' }], more_matches: true } });
+    const full = await handlers['mail.search']!({ near_id: 'seed', next: 3, prev: 3, limit: 2 }, ctxInternal());
+    expect(full).toMatchObject({ ok: true, result: { matches: [{ record_id: 'later' }, { record_id: 'earlier' }], more_matches: false } });
+  });
+
+  it.each([{ next: 2 }, { prev: 2 }, { next: 2, prev: 10 }])('discloses a neighbour direction with more mail beyond the requested count: %j', async direction => {
+    // Three messages on each side of the anchor; the store returns up to the count asked.
+    const side = (name: string) => [1, 2, 3].map(n => ({ record_id: `${name}-${n}`, hot_fields: {}, received_at: n }));
+    const mail = { platform: 'mail', slug: 'work', get: () => ({ record_id: 'seed' }),
+      neighbours: (q: { next?: number; prev?: number }) => [
+        ...side('later').slice(0, q.next ?? 0), ...side('earlier').slice(0, q.prev ?? 0),
+      ],
+    };
+    const handlers = buildChatTier1Handlers(buildDepsStub({
+      getCollectionRegistry: () => ({ list: () => [mail] }) as never,
+    }));
+    const result = await handlers['mail.search']!({ near_id: 'seed', ...direction, limit: 20 }, ctxInternal());
+    expect(result).toMatchObject({ ok: true, result: { more_matches: true } });
+  });
+
+  it('reports more_matches only when a direction has more mail than it returned', async () => {
+    const later = ['l1', 'l2', 'l3', 'l4', 'l5'];
+    const earlier = ['e1', 'e2', 'e3'];
+    const row = (record_id: string) => ({ record_id, hot_fields: {}, received_at: 1 });
+    const mail = { platform: 'mail', slug: 'work', get: () => ({ record_id: 'seed' }),
+      neighbours: (q: { next?: number; prev?: number }) => [
+        ...later.slice(0, q.next ?? 0).map(row), ...earlier.slice(0, q.prev ?? 0).map(row),
+      ],
+    };
+    const handlers = buildChatTier1Handlers(buildDepsStub({
+      getCollectionRegistry: () => ({ list: () => [mail] }) as never,
+    }));
+    // Five of five later messages and three earlier ones: that is everything.
+    const all = await handlers['mail.search']!({ near_id: 'seed', prev: 5, next: 5 }, ctxInternal());
+    expect(all).toMatchObject({ ok: true, result: { more_matches: false } });
+    expect((all as { result: { matches: unknown[] } }).result.matches).toHaveLength(8);
+    later.push('l6');
+    const more = await handlers['mail.search']!({ near_id: 'seed', prev: 5, next: 5 }, ctxInternal());
+    expect(more).toMatchObject({ ok: true, result: { more_matches: true } });
+    expect((more as { result: { matches: Array<{ record_id: string }> } }).result.matches.map(match => match.record_id))
+      .toEqual(['l1', 'l2', 'l3', 'l4', 'l5', 'e1', 'e2', 'e3']);
+  });
+
+  it('follows near_id only in the named mailbox, and refuses an anchor id that two mailboxes share', async () => {
+    // Two IMAP accounts can store different messages under the same record_id.
+    const mailbox = (slug: string) => ({
+      platform: 'mail', slug,
+      search: vi.fn().mockReturnValue([]),
+      list: vi.fn().mockReturnValue([]),
+      get: vi.fn((id: string) => (id === 'shared' ? { record_id: 'shared' } : null)),
+      neighbours: vi.fn((q: { next?: number }) => (q.next ? [{ record_id: `${slug}-reply`, hot_fields: {}, received_at: 2 }] : [])),
+    });
+    const work = mailbox('work');
+    const personal = mailbox('personal');
+    const handlers = buildChatTier1Handlers(buildDepsStub({
+      getCollectionRegistry: () => ({ list: () => [work, personal] }) as never,
+    }));
+    const scoped = await handlers['mail.search']!({ near_id: 'shared', slug: 'work', next: 2 }, ctxInternal());
+    expect(scoped).toMatchObject({ ok: true, result: {
+      matches: [{ collection_slug: 'work', record_id: 'work-reply' }], collections: ['work'] } });
+    expect(personal.neighbours).not.toHaveBeenCalled();
+    const ambiguous = await handlers['mail.search']!({ near_id: 'shared', next: 2 }, ctxInternal());
+    expect(ambiguous).toMatchObject({ ok: true, result: {
+      matches: [], more_matches: false, anchor_ambiguous: 'shared', mailboxes: ['work', 'personal'] } });
+    expect(personal.neighbours).not.toHaveBeenCalled();
+    // The slug scopes ordinary searches too, and an unknown one is named.
+    await handlers['mail.search']!({ query: 'terms', slug: 'personal' }, ctxInternal());
+    expect(personal.search).toHaveBeenCalled();
+    expect(work.search).not.toHaveBeenCalled();
+    const unknown = await handlers['mail.search']!({ near_id: 'shared', slug: 'archive', next: 2 }, ctxInternal());
+    expect(unknown).toMatchObject({ ok: true, result: { matches: [], mailbox_not_found: 'archive', collections: ['work', 'personal'] } });
+  });
+
   it('uses list() instead of search() when query is empty', async () => {
     const gmail = mockCollection(
       'mail',

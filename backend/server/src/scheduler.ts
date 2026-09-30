@@ -281,11 +281,12 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     // emit separately from execute-handler; viewers see schedule-fired
     // first, then the matching execution chain in cursor order.
     emitSchedule(config.executeDeps.eventBus, 'fired');
-    // D-179 P2 — fire-time dish gate. A disabled (or vanished) standing
-    // dish SKIPS the fire silently: the schedule stays armed and ticks
-    // forward (`last_status: 'skipped'`), no failed-run noise. Lookup
-    // is best-effort — an unwired dish store degrades to a dishless
-    // dispatch via handleExecute's own resolution.
+    // D-179 P2 / D-319 — fire-time dish gate. A dish switched off (or gone)
+    // SKIPS the fire silently: the schedule ticks forward (`last_status:
+    // 'skipped'`), no failed-run noise. The dish switch also writes the
+    // schedule's own `enabled`, so this is the backstop. Lookup is
+    // best-effort — an unwired dish store degrades to a dishless dispatch
+    // via handleExecute's own resolution.
     if (schedule.dish_id !== undefined && config.executeDeps.dishStore) {
       const dish = config.executeDeps.dishStore.get(schedule.dish_id);
       if (!dish || !dish.enabled) {
@@ -385,26 +386,17 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
           // `undefined` (contract-free)".
         },
         ...(backfill ? { backfill } : {}),
-        // D-179 P2 — standing-dish dispatch: the dish overlay resolves
-        // inside handleExecute (dish → install → defaults).
+        // D-179 P2 / D-319 — the schedule fires as its dish, with its
+        // settings (resolved inside handleExecute).
         ...(schedule.dish_id !== undefined ? { dish_id: schedule.dish_id } : {}),
       });
       // D-215 § 5.2 — a ONE-SHOT that SUCCEEDED has fulfilled its intent:
-      // retire the row and dissolve the managed dish behind it. The run
-      // record lives in audit, so the pending-intent row is noise, and
-      // nothing else would ever clean it up (there is no reaper). This is
-      // safe here specifically because `handleExecute` is AWAITED above —
-      // the dish survives the whole run and only dissolves after it
-      // resolves. Errors and skips deliberately do NOT retire (below).
+      // retire the row. The run record lives in audit, so the pending-intent
+      // row is noise, and nothing else would ever clean it up (there is no
+      // reaper). Its dish stays (D-319: a schedule owns no dish). Errors and
+      // skips deliberately do NOT retire (below).
       if (oneShot && result.success) {
-        retireSchedule(
-          {
-            store: config.store,
-            dishStore: config.executeDeps.dishStore,
-            dishContextStore: config.executeDeps.dishContextStore,
-          },
-          schedule.schedule_id,
-        );
+        retireSchedule({ store: config.store }, schedule.schedule_id);
         emitSchedule(config.executeDeps.eventBus, 'updated');
         return true;
       }

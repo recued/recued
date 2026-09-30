@@ -325,6 +325,16 @@ describe('filling a fact', () => {
     expect(read.reading.refused).toEqual([{ variable: 'data.items', reason: 'alias not restored' }]);
     expect(read.ai).toMatchObject({ state: 'read', filled: [] });
   });
+
+  it('keeps a value that only mentions PII — words are not an alias', () => {
+    expect(holdsAlias({ note: 'The export must not contain any PII.' })).toBe(false);
+    expect(holdsAlias('Attach the redacted pii.csv')).toBe(false);
+    expect(holdsAlias({ note: 'Sent by cap_pii.Org2' })).toBe(true);
+    expect(holdsAlias({ note: 'Reply to m7@d9.invalid' })).toBe(true);
+    const read = fillFromAi(spec, waiting(), ['data.items'], { 'data.items': { note: 'No PII.' } }, 7);
+    expect(read.reading.refused).toEqual([]);
+    expect(read.ai).toMatchObject({ state: 'read', filled: ['data.items'] });
+  });
 });
 
 describe('the AI pass on new mail', () => {

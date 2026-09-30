@@ -204,9 +204,9 @@ export const buildMessengerRemoteChannels = (deps: {
   transportOptions?: MessengerTransportOptions;
   /** D-238 — the `/ask/<id>` builder for a `landing-page` channel, which
    *  composes its OWN answer affordance (`withAnswerLink` skips it precisely so
-   *  the URL is not appended twice). Absent on a non-public deployment; the ask
-   *  then carries the typed-reply hint alone. */
-  answerLink?: (ask_id: string, via?: string) => string;
+   *  the URL is not appended twice). It answers nothing on a non-public
+   *  deployment; the ask then carries the typed-reply hint alone. */
+  answerLink?: (ask_id: string, via?: string) => string | undefined;
   /** D-238 — see `buildMessengerCredentialResolvers`. */
   refreshAuth?: MessengerNotificationRefresher;
 }): Record<string, RemoteChannel> => {

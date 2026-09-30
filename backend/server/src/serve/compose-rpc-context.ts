@@ -153,6 +153,11 @@ export interface RpcContext {
   publishRecipeOwnedState: (
     get: () => import('../recipe-owned-state.js').RecipeOwnedStateDeps | undefined,
   ) => void;
+  /** D-315 §5.2 — hand the templates recipes bring to the pack install and its
+   *  preview. Called ONCE, by the stage that composes triggers and dishes. */
+  publishRecipeMailTemplates: (
+    get: () => import('../mail-facts/recipe-templates.js').RecipeMailTemplates | undefined,
+  ) => void;
   packInstallDeps: PackInstallRpcDeps | undefined;
   /** D-145 PA10 follow-on — `packs.list` rpc deps. Composed off the
    *  per-pair `RecipeStore` (required for the `installed` join);
@@ -205,14 +210,10 @@ export const composeRpcContext = (
           circuitStore,
           getHandle: getAutoRunHandle,
           eventBus: storage.eventBus,
-          // D-179 — the managed auto-run config dish rides the SAME dish +
-          // continuity stores the executor/scheduler use, so a config set
-          // here is exactly what `executeFired` dispatches as.
+          // D-319 — one timer per dish: the SAME dish store the scheduler
+          // rosters from, so a row listed here is a timer that ticks.
           ...(execution.executeDeps.dishStore
             ? { dishStore: execution.executeDeps.dishStore }
-            : {}),
-          ...(execution.executeDeps.dishContextStore
-            ? { dishContextStore: execution.executeDeps.dishContextStore }
             : {}),
         }
       : undefined;
@@ -304,6 +305,10 @@ export const composeRpcContext = (
   // the listeners), which the uninstall preview counts.
   let recipeOwnedStateRef: (() => import('../recipe-owned-state.js').RecipeOwnedStateDeps | undefined) | undefined;
   const getRecipeOwnedState = () => recipeOwnedStateRef?.();
+  // D-315 §5.2 — and for the templates recipes bring (their settings live on
+  // dishes, their triggers with the listeners).
+  let recipeMailTemplatesRef: (() => import('../mail-facts/recipe-templates.js').RecipeMailTemplates | undefined) | undefined;
+  const getRecipeMailTemplates = () => recipeMailTemplatesRef?.();
 
   // D-303 — where the owner's settings are saved (every dish, and the groups they
   // share), so the update preview can name the saved ones an update stops using.
@@ -328,6 +333,7 @@ export const composeRpcContext = (
   const packInstallBundle = composePackInstallRpcDeps({
     getSavedDataViewStore,
     getTriggerPreview,
+    getRecipeMailTemplates,
     getReceptionPairs,
     getSavedSettings,
     recipeStore: storage.recipeStore,
@@ -478,6 +484,9 @@ export const composeRpcContext = (
     },
     publishRecipeOwnedState: (get): void => {
       recipeOwnedStateRef = get;
+    },
+    publishRecipeMailTemplates: (get): void => {
+      recipeMailTemplatesRef = get;
     },
     packInstallDeps: packInstallBundle.packInstallDeps,
     packListDeps: packListBundle.packListDeps,

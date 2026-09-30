@@ -283,10 +283,12 @@ import {
   type DdnsSetEnabledCaller,
   type DdnsStatusCaller,
   type HostnamesAddCaller,
+  type HostnamesAddressUsesCaller,
   type HostnamesGetCaller,
   type HostnamesListCaller,
   type HostnamesPanelMount,
   type HostnamesRemoveCaller,
+  type HostnamesSetAddressUseCaller,
   type HostnamesUpdateCaller,
   type HostnamesVerifyOwnershipCaller,
   type NetworkLocalUrlsCaller,
@@ -896,6 +898,12 @@ export interface BootstrapSettingsRouteOptions {
    *  available even on a surface where the CRUD callers are gated off. */
   customDomainPreflightCaller?: CustomDomainPreflightCaller;
   customDomainReadinessCaller?: CustomDomainReadinessCaller;
+  /** "Addresses you hand out" under Settings → Server → Hostnames —
+   *  `collection.hostname.addressUses` / `setAddressUse`. Absent read → no
+   *  section; absent pick → read-only selects. An older server answers
+   *  `unknown_method` and the section stays out. */
+  hostnamesAddressUsesCaller?: HostnamesAddressUsesCaller;
+  hostnamesSetAddressUseCaller?: HostnamesSetAddressUseCaller;
   /** LAN-URL kickstart (slice 2) — `network.local_urls` rpc caller for the
    *  Hostnames panel's read-only "Reachable on your network" section. Forwarded
    *  independently of the hostname CRUD caller group (the section is a separate
@@ -2978,6 +2986,12 @@ export const bootstrapSettingsRoute = (
           opts.hostnamesVerifyOwnershipCaller as HostnamesVerifyOwnershipCaller,
         ...(opts.networkLocalUrlsCaller !== undefined
           ? { runLocalUrls: opts.networkLocalUrlsCaller }
+          : {}),
+        ...(opts.hostnamesAddressUsesCaller !== undefined
+          ? { runAddressUses: opts.hostnamesAddressUsesCaller }
+          : {}),
+        ...(opts.hostnamesSetAddressUseCaller !== undefined
+          ? { runSetAddressUse: opts.hostnamesSetAddressUseCaller }
           : {}),
         ...(opts.reachabilityExternalProbeCaller !== undefined
           ? { runExternalProbe: opts.reachabilityExternalProbeCaller }

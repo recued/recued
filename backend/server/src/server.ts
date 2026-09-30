@@ -409,6 +409,7 @@ export interface ServerConfig {
   formResponseDeps?: import('./form-response-handler.js').FormResponseRpcDeps;
   /** D-315 — the owner's mail templates and standards switches (`mail_fact.*`). */
   mailFactRpcDeps?: import('./mail-facts/mail-fact-rpc-handler.js').MailFactRpcDeps;
+  mailWorkService?: import('./mail-work-service.js').MailWorkService;
   /** D-221 owner-only pack Records explorer and lifecycle rpc deps. */
   recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
   savedDataViewStore?: import('./saved-data-view-store.js').SavedDataViewStore;
@@ -1609,6 +1610,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     workEntityCrudDeps: config.workEntityCrudDeps,
     formResponseDeps: config.formResponseDeps,
     mailFactRpcDeps: config.mailFactRpcDeps,
+    mailWorkService: config.mailWorkService,
     recordsRpcDeps: config.recordsRpcDeps,
     savedDataViewStore: config.savedDataViewStore,
     preapprovalDeps: config.preapprovalDeps,

@@ -128,6 +128,11 @@ import {
   webhookPrefixedPositiveDecimalRegistrationRemoteIdProfilePreset,
 } from '../webhook-shared-profile-parser-presets.js';
 import { webhookProfile } from '@recued/contracts';
+import {
+  createPublicAddressService,
+  createSqlitePublicAddressStore,
+  type PublicHostnameRow,
+} from '../public-address.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -238,6 +243,13 @@ const makeOptions = (
     draftStore: { tag: 'draft-store' },
     recipeStore: { tag: 'recipe-store' },
     hostnameRegistryStore: { tag: 'hostname-registry-store' },
+    // Real, over no hostnames: every link reads `RECUED_PUBLIC_BASE_URL` live
+    // through it, as in production.
+    publicAddress: createPublicAddressService({
+      configured: () => process.env.RECUED_PUBLIC_BASE_URL,
+      hostnames: { list: () => [] },
+      store: createSqlitePublicAddressStore(storageDb),
+    }),
     checkpointStore: undefined,
     eventBus: undefined,
   },
@@ -1802,6 +1814,98 @@ describe('composeListeners', () => {
     }
   });
 
+  /** ⛔ A vendor keeps this address and a confirmed registration is matched
+   *  against it, so it must not follow the probe: a Pro server without
+   *  `RECUED_PUBLIC_BASE_URL` gets its own name, and keeps it through a probe
+   *  that found nothing answering. */
+  it('gives a webhook the server\'s own name, whatever the probe says', async () => {
+    const originalBase = process.env.RECUED_PUBLIC_BASE_URL;
+    const originalReachable = process.env.RECUED_PUBLIC_REACHABLE;
+    const base = makeOptions();
+    const ingressStore = createWebhookIngressStore(storageDb, {
+      getEncryptionKey: () => new Uint8Array(32).fill(4),
+    });
+    const consumerStore = createWebhookConsumerStore(storageDb, { ingressStore });
+    const deliveryStore = createWebhookDeliveryStore(storageDb, {
+      getEncryptionKey: () => new Uint8Array(32).fill(5),
+      hasDispatchTarget: (ingressId, eventType) =>
+        consumerStore.hasDispatchTarget(ingressId, eventType),
+    });
+    const addressStore = createSqlitePublicAddressStore(storageDb);
+    const publicAddress = createPublicAddressService({
+      configured: () => process.env.RECUED_PUBLIC_BASE_URL,
+      hostnames: {
+        list: () => [{
+          hostname: 'alice.recued.net', listener_ports: [443], enabled: true,
+          ownership_status: 'verified', tls_topology: 'server_terminated',
+          cert_source: 'recued_acme', cert_fingerprint: 'sha256:ab',
+        }],
+      },
+      store: addressStore,
+    });
+    delete process.env.RECUED_PUBLIC_BASE_URL;
+    process.env.RECUED_PUBLIC_REACHABLE = 'true';
+    try {
+      const result = await composeListeners(makeOptions({
+        storage: { ...base.storage, auditLog: { get: vi.fn(async () => null) }, publicAddress },
+        app: {
+          ...base.app,
+          webhookIngressStoreRef: ingressStore,
+          webhookDeliveryStoreRef: deliveryStore,
+          webhookConsumerStoreRef: consumerStore,
+          connectionStoreRef: { get: vi.fn(() => null) },
+          isVaultUnlocked: () => true,
+        },
+      }));
+      const config = (
+        listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+          Record<string, unknown>,
+        ]>
+      )[0]![0];
+      const runtimeReadiness = (
+        config.webhookIngressDeps as {
+          runtimeReadiness: (
+            ingress: ReturnType<typeof ingressStore.create>,
+            profile: NonNullable<ReturnType<typeof webhookProfile>>,
+          ) => Promise<Record<string, unknown>>;
+        }
+      ).runtimeReadiness;
+      const raw = ingressStore.create({
+        display_name: 'Raw HMAC',
+        profile_id: 'generic.raw-body-hmac-sha256.v1',
+        environment: 'live',
+        paired_connection_id: null,
+        registration_mode: 'manual',
+        selected_event_types: ['delivery'],
+      });
+      const endpoint = `https://alice.recued.net/v1/webhooks/${raw.public_id}`;
+      await expect(runtimeReadiness(raw, webhookProfile(raw.profile_id)!))
+        .resolves.toMatchObject({ endpoint_url: endpoint });
+      // Handing it out keeps it: a name added later moves nothing.
+      expect(publicAddress.addressUse('webhooks'))
+        .toMatchObject({ source: 'first_use', hostname: 'alice.recued.net' });
+
+      addressStore.putVerdict({
+        hostname: 'alice.recued.net', port: 443, probed_at: Date.now(),
+        port_open: false, https_ok: false, last_error: 'timeout',
+      });
+      expect(publicAddress.ownBaseUrls()).toEqual(['https://alice.recued.net']);
+      await expect(runtimeReadiness(raw, webhookProfile(raw.profile_id)!))
+        .resolves.toMatchObject({ endpoint_url: endpoint });
+
+      // A configured address a vendor may not be given is skipped, not fatal.
+      process.env.RECUED_PUBLIC_BASE_URL = 'https://operator:secret@hooks.example.test';
+      await expect(runtimeReadiness(raw, webhookProfile(raw.profile_id)!))
+        .resolves.toMatchObject({ endpoint_url: endpoint });
+      await result.server.close();
+    } finally {
+      if (originalBase === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = originalBase;
+      if (originalReachable === undefined) delete process.env.RECUED_PUBLIC_REACHABLE;
+      else process.env.RECUED_PUBLIC_REACHABLE = originalReachable;
+    }
+  });
+
   it('mounts timestamped HMAC only with a healthy boot-pinned HTTPS clock authority', async () => {
     const originalBase = process.env.RECUED_PUBLIC_BASE_URL;
     const originalReachable = process.env.RECUED_PUBLIC_REACHABLE;
@@ -2372,29 +2476,145 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
     }
   });
 
-  it('serverPublicUrl reads RECUED_PUBLIC_BASE_URL live (trimmed; null when unset)', async () => {
+  /** ⛔ It read ONLY the variable, so a Pro server that never set it — the
+   *  variable is terminal-only, and Pro exists so nobody needs one — refused
+   *  every vendor sign-in "server public URL not configured". */
+  it('serverPublicUrl reads RECUED_PUBLIC_BASE_URL live, then every own verified name', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const original = process.env.RECUED_PUBLIC_BASE_URL;
+    const rows: PublicHostnameRow[] = [];
+    const base = makeOptions();
     try {
       await composeListeners(
         makeOptions({
           signingIdentity: SIGNING_IDENTITY,
           app: appWith({ connectionStoreRef: { tag: 'connection-store' } }),
+          storage: {
+            ...base.storage,
+            publicAddress: createPublicAddressService({
+              configured: () => process.env.RECUED_PUBLIC_BASE_URL,
+              hostnames: { list: () => rows },
+              store: createSqlitePublicAddressStore(storageDb),
+            }),
+          },
         }),
       );
       const serverPublicUrl = (
         configFromCall().oauthCompletePortDeps as {
-          serverPublicUrl: () => string | null;
+          serverPublicUrl: () => readonly string[];
         }
       ).serverPublicUrl;
 
       process.env.RECUED_PUBLIC_BASE_URL = '  https://mary.recued.cloud  ';
-      expect(serverPublicUrl()).toBe('https://mary.recued.cloud');
+      expect(serverPublicUrl()).toEqual(['https://mary.recued.cloud']);
       delete process.env.RECUED_PUBLIC_BASE_URL;
-      expect(serverPublicUrl()).toBeNull();
+      expect(serverPublicUrl()).toEqual([]);
+
+      // A Pro server with no variable: its verified hostname answers, read
+      // live; a name not yet verified does not.
+      rows.push(
+        { hostname: 'alice.recued.net', listener_ports: [443], enabled: true, ownership_status: 'verified', tls_topology: 'server_terminated', cert_source: 'recued_acme', cert_fingerprint: 'sha256:ab' },
+        { hostname: 'pending.example.com', listener_ports: [443], enabled: true, ownership_status: 'pending', tls_topology: 'server_terminated', cert_source: 'byo_uploaded', cert_fingerprint: 'sha256:cd' },
+      );
+      expect(serverPublicUrl()).toEqual(['https://alice.recued.net']);
+      // The variable still comes first.
+      process.env.RECUED_PUBLIC_BASE_URL = 'https://mary.recued.cloud';
+      expect(serverPublicUrl()).toEqual(['https://mary.recued.cloud', 'https://alice.recued.net']);
     } finally {
       if (original === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
       else process.env.RECUED_PUBLIC_BASE_URL = original;
+      logSpy.mockRestore();
+    }
+  });
+
+  /** ⛔ THE JOIN: the resolver's suite binds its own facts, so it stays green
+   *  whether or not the listener ever binds the real ones — and unbound, no
+   *  hostname reaches a live link. */
+  it('binds the listener\'s facts to the public address: grid on a round, pushed on change', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const original = process.env.RECUED_PUBLIC_BASE_URL;
+    delete process.env.RECUED_PUBLIC_BASE_URL;
+    listenerMocks.coordinator.status.mockReturnValue([
+      { listener: 'lan', listening: true, port: 4711, bind_address: '192.168.1.10' },
+      { listener: 'public', listening: true, port: 443, bind_address: '0.0.0.0' },
+    ]);
+    const publicAll = { lan: true, public: true };
+    const resolution = {
+      health: publicAll, ws: publicAll, mcp: publicAll, llm_gateway: publicAll, webhooks: publicAll,
+      reception: publicAll, oauth: publicAll, ask: publicAll, webclient: publicAll,
+    };
+    let push: ((event: Record<string, unknown>) => void) | undefined;
+    const eventBus = {
+      subscribe: vi.fn((_id: unknown, _req: unknown, onEvent: (event: Record<string, unknown>) => void) => {
+        push = onEvent;
+        return { cursor: 0, replayed: 0 };
+      }),
+      unsubscribe: vi.fn(),
+      emit: vi.fn(),
+    };
+    const publicAddress = createPublicAddressService({
+      configured: () => process.env.RECUED_PUBLIC_BASE_URL,
+      hostnames: {
+        list: () => [{
+          hostname: 'alice.recued.net', listener_ports: [443], enabled: true,
+          ownership_status: 'verified', tls_topology: 'server_terminated',
+          cert_source: 'recued_acme', cert_fingerprint: 'sha256:ab',
+        }],
+      },
+      store: createSqlitePublicAddressStore(storageDb),
+    });
+    const base = makeOptions();
+    try {
+      const composed = await composeListeners(makeOptions({
+        storage: { ...base.storage, publicAddress, eventBus },
+        exposureDeps: { getMachine: () => ({ current: async () => ({ resolution }) }) },
+      }));
+      // The grid is not read at compose (the machine is published later).
+      expect(publicAddress.baseUrl('ask')).toBeNull();
+      await publicAddress.probeDue();
+      expect(publicAddress.baseUrl('ask')).toBe('https://alice.recued.net');
+      // `redirect` apex: a Pro address's root lands on the webclient.
+      expect(publicAddress.baseUrl('root')).toBe('https://alice.recued.net');
+
+      expect(eventBus.subscribe).toHaveBeenCalledWith(
+        expect.anything(), { kinds: ['exposure_changed'] }, expect.any(Function),
+      );
+      push?.({ kind: 'exposure_changed', resolution: { ...resolution, ask: { lan: true, public: false } } });
+      expect(publicAddress.baseUrl('ask')).toBeNull();
+
+      await composed.server.close();
+      expect(eventBus.unsubscribe).toHaveBeenCalledWith(eventBus.subscribe.mock.calls[0]![0]);
+    } finally {
+      if (original === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = original;
+      logSpy.mockRestore();
+    }
+  });
+
+  it('counts the webhooks a move of the webhooks address would stop', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const base = makeOptions();
+    const list = vi.fn(() => [
+      { confirmed_endpoint_url: 'https://alice.recued.net/v1/webhooks/a', registration_mode: 'manual' },
+      { confirmed_endpoint_url: 'https://alice.recued.net/v1/webhooks/b', registration_mode: 'managed_endpoint' },
+      // Carries its address per call, so a move cannot stop it.
+      { confirmed_endpoint_url: 'https://alice.recued.net/v1/webhooks/c', registration_mode: 'operation_bound' },
+      // Never set up at a vendor.
+      { confirmed_endpoint_url: null, registration_mode: 'manual' },
+    ]);
+    try {
+      const options = makeOptions({
+        app: { ...base.app, webhookIngressStoreRef: { list } },
+      });
+      await composeListeners(options);
+      const hostnameDeps = configFromCall().hostnameDeps as {
+        countRegisteredWebhooks: () => number;
+        publicAddress: unknown;
+      };
+      expect(hostnameDeps.publicAddress).toBe(options.storage.publicAddress);
+      expect(hostnameDeps.countRegisteredWebhooks()).toBe(2);
+      expect(list).toHaveBeenCalledWith();
+    } finally {
       logSpy.mockRestore();
     }
   });

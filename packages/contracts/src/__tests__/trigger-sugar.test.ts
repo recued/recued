@@ -349,10 +349,44 @@ describe('mail facts — `mail_fact` (D-315 §5.1)', () => {
   it('refuses a key that is no part of a mail-fact trigger, rather than leaving it wider than written', () => {
     // Ignored, `typ` would have watched every kind.
     expect(valid({ on: 'mail_fact', typ: 'shipment', fields: ['state'] })).toEqual([
-      "'typ' is not part of a mail-fact trigger — it takes 'on', 'fields' and 'where'",
+      "'typ' is not part of a mail-fact trigger — it takes 'on', 'fields', 'where' and 'template_variable'",
     ]);
     expect(valid({ on: 'mail_fact.shipment', feilds: ['state'] })[0]).toContain("'feilds' is not part of a mail-fact trigger");
     expect(compileTriggerSugarEntry({ on: 'mail_fact', typ: 'shipment' } as never, [])).toEqual([]);
+  });
+
+  it('narrows to the recipe’s own template by its setting: the id only the reconciler knows (§5.1, §5.2)', () => {
+    const entry = { on: 'mail_fact.shipment', fields: ['state'], template_variable: 'template' };
+    expect(valid(entry)).toEqual([]);
+    // Without the setting, or with no template chosen: no row, which would
+    // otherwise wake for every template's facts.
+    expect(compileTriggerSugarEntry(entry, [])).toEqual([]);
+    expect(compileTriggerSugarEntry(entry, [], { templateOf: () => null })).toEqual([]);
+    expect(compileTriggerSugarEntry(entry, [], { templateOf: (name) => (name === 'template' ? 'mtpl_1' : null) })).toEqual([{
+      pattern: 'data.mail_fact.shipment.thing.*',
+      filter: { 'record.template': 'mtpl_1' },
+      fields: ['state'],
+    }]);
+    expect(compileTriggerSugarEntry(
+      { on: 'mail_fact', where: { state: 'delivered' }, template_variable: 'template' },
+      [],
+      { templateOf: () => 'mtpl_1' },
+    )).toEqual([{ pattern: 'data.mail_fact.*.thing.*', filter: { 'record.state': 'delivered', 'record.template': 'mtpl_1' } }]);
+  });
+
+  it('⛔ refuses a template_variable that names nothing, sits beside where.template, or narrows anything but a mail fact', () => {
+    expect(valid({ on: 'mail_fact.shipment', template_variable: '' })).toEqual([
+      "'template_variable' must name one of the recipe's mail_template variables",
+    ]);
+    const both = { on: 'mail_fact.shipment', template_variable: 'template', where: { template: 'mtpl_1' } };
+    expect(valid(both)).toEqual(["'template_variable' and 'where.template' each name the template — keep one"]);
+    expect(compileTriggerSugarEntry(both, [], { templateOf: () => 'mtpl_2' })).toEqual([]);
+    expect(valid({ on: 'form_response.accepted', template_variable: 'template' })).toContain(
+      "'template_variable' applies only to a mail-fact trigger — it names the template whose facts wake it",
+    );
+    expect(valid({ event: 'data.mail_fact.*.thing.*', template_variable: 'template' })).toContain(
+      "'template_variable' requires the 'on' form — a raw 'event' entry narrows via its pattern / 'filter'",
+    );
   });
 
   it('materializes nothing for what no fact can match (an unvalidated import)', () => {

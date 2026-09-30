@@ -49,7 +49,7 @@ export const readAutoDisabledFromDb = async (dbPath: string): Promise<AutoDisabl
   const db = await openDatabase(dbPath, { readonly: true, fileMustExist: true });
   try {
     const tableExists = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auto_run_circuit'")
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='auto_run_timer_circuit'")
       .get();
     if (!tableExists) return [];
 
@@ -62,7 +62,7 @@ export const readAutoDisabledFromDb = async (dbPath: string): Promise<AutoDisabl
           c.last_failure_reason,
           r.publisher_id,
           r.recipe_json
-        FROM auto_run_circuit c
+        FROM auto_run_timer_circuit c
         LEFT JOIN recipes r ON r.recipe_id = c.recipe_id
         WHERE c.auto_disabled = 1
         ORDER BY c.recipe_id ASC

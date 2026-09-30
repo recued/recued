@@ -200,7 +200,9 @@ export interface ChatThreadState {
    * the anchored window reaches it; broadcasts alone cannot prove that gap. */
   latest_window_start: ChatHistoryCursor | null;
   /** Route-side scaffold handling — turn ids whose
-   *  `chat.message_complete` already landed. In production the
+   *  `chat.message_complete` already landed, or whose scaffold was
+   *  discarded because the queue stopped the turn without an answer
+   *  (`discardInFlightTurn`). In production the
    *  `chat.send` ack resolves only AFTER the whole turn broadcast, so
    *  without this memory the post-ack `beginInFlightTurn` would
    *  scaffold an already-finished turn and render a dangling empty
@@ -974,29 +976,82 @@ const applyMessageComplete = (
   // turn, and clear the scaffold TURN-MATCHED: a completion broadcast
   // for some other turn (multi-tab session) must not tear down the
   // slot owner's live scaffold.
-  const completed_turn_ids = state.completed_turn_ids.includes(event.turn_id)
-    ? state.completed_turn_ids
-    : [...state.completed_turn_ids, event.turn_id].slice(-COMPLETED_TURN_MEMORY);
   return {
     ...state,
     messages: nextMessages,
-    inflight: (() => {
-      if (state.inflight === null) return null;
-      const siblings = state.inflight.siblings ?? [];
-      if (state.inflight.turn_id === event.turn_id) {
-        const [promoted, ...rest] = siblings;
-        if (!promoted) return null;
-        return rest.length > 0 ? { ...promoted, siblings: rest } : promoted;
-      }
-      const remaining = siblings.filter((turn) => turn.turn_id !== event.turn_id);
-      if (remaining.length === siblings.length) return state.inflight;
-      const { siblings: _drop, ...primary } = state.inflight;
-      void _drop;
-      return remaining.length > 0 ? { ...primary, siblings: remaining } : primary;
-    })(),
+    inflight: withoutInflightTurn(state.inflight, event.turn_id),
     turn_failures,
     plan_cards,
-    completed_turn_ids,
+    completed_turn_ids: rememberCompletedTurn(state.completed_turn_ids, event.turn_id),
+  };
+};
+
+/** Deduped, capped FIFO: newest kept, oldest dropped. */
+const rememberCompletedTurn = (
+  ids: ReadonlyArray<string>,
+  turn_id: string,
+): ReadonlyArray<string> =>
+  ids.includes(turn_id) ? ids : [...ids, turn_id].slice(-COMPLETED_TURN_MEMORY);
+
+/** The scaffolds without one turn's. A sibling is promoted when the primary
+ *  goes; the SAME object comes back when the turn has no scaffold. */
+const withoutInflightTurn = (
+  inflight: InFlightTurn | null,
+  turn_id: string,
+): InFlightTurn | null => {
+  if (inflight === null) return null;
+  const siblings = inflight.siblings ?? [];
+  if (inflight.turn_id === turn_id) {
+    const [promoted, ...rest] = siblings;
+    if (!promoted) return null;
+    return rest.length > 0 ? { ...promoted, siblings: rest } : promoted;
+  }
+  const remaining = siblings.filter((turn) => turn.turn_id !== turn_id);
+  if (remaining.length === siblings.length) return inflight;
+  const { siblings: _drop, ...primary } = inflight;
+  void _drop;
+  return remaining.length > 0 ? { ...primary, siblings: remaining } : primary;
+};
+
+/** Retire the scaffold of a turn the queue stopped without an answer
+ *  (`cancelled`, `failed`, `interrupted`).
+ *
+ *  ⛔ WHAT IT SHOWED WAS NEVER SAVED. Chat streams the settled answer before
+ *  the closing brief, but only a completed turn writes the assistant row, and
+ *  a stopped one sends no `chat.message_complete` and no retraction. Kept, the
+ *  scaffold read as a normal reply until a reload removed it, and "Try again"
+ *  then showed the new saved answer with the old copy beneath it.
+ *
+ *  Remembered like a completion, so a late or replayed event for the turn
+ *  cannot raise it again. Its failure notice, if one painted under the
+ *  scaffold, moves to the turn's own message: failure notices are
+ *  user-must-see, and with the scaffold gone nothing else would paint it.
+ *
+ *  Identity when the turn has no scaffold. A queue snapshot lists the latest
+ *  64 turns, and old stopped turns must not crowd the completed-turn memory. */
+export const discardInFlightTurn = (
+  state: ChatThreadState,
+  turn_id: string,
+): ChatThreadState => {
+  const inflight = withoutInflightTurn(state.inflight, turn_id);
+  if (inflight === state.inflight) return state;
+  const asked = state.messages.find(
+    (message) => message.role === 'user' && message.turn_id === turn_id,
+  );
+  const turn_failures = asked !== undefined && state.turn_failures.some(
+    (f) => f.turn_id === turn_id && f.message_id === undefined,
+  )
+    ? state.turn_failures.map((f) =>
+        f.turn_id === turn_id && f.message_id === undefined
+          ? { ...f, message_id: asked.id }
+          : f,
+      )
+    : state.turn_failures;
+  return {
+    ...state,
+    inflight,
+    turn_failures,
+    completed_turn_ids: rememberCompletedTurn(state.completed_turn_ids, turn_id),
   };
 };
 

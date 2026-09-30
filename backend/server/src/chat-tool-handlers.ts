@@ -119,6 +119,10 @@ import {
   runCancellationMessage,
 } from './run-result-agent-projection.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
+import { createMailReadHandler } from './mail-read-tool.js';
+import { mailEvidenceMetadata } from './mail-evidence.js';
+import { createDocumentReadHandler } from './document-read-tool.js';
+import type { MailAttachmentReader } from './mail-attachment-evidence.js';
 
 import type { ServerExecutorConfig } from './server-executor.js';
 import {
@@ -200,6 +204,9 @@ export type ChatRecipeExecutor = (request: ExecuteRequest) => Promise<ExecuteRes
  *  stores wired after the chat orchestrator (enrichment, the enrichment-
  *  visibility resolver, the executor composite) are picked up live. */
 export interface ChatToolHandlerDeps {
+  readMailBody?: (record: import('@recued/contracts').CollectionRecord) => Promise<string | null>;
+  mailAttachments?: MailAttachmentReader;
+  documentPacks?: InstalledPackScan;
   /** D-259 § 7.4.3 — the live in-flight registry, for `recipe.stop`. Late-bound
    *  like the executor: `bin.ts` composes the handler table before the
    *  registry exists. Absent ⇒ `recipe.stop` reports the registry unavailable
@@ -771,7 +778,7 @@ const mcpPrivateRejection = (
  *  ⚠ Callers pass a `CanonicalCollectionName`; a collection outside `READABLE_COLLECTIONS`
  *  is out of this fence's jurisdiction (`memory` / enrichment topics / sidecars keep their
  *  own gates — see `read-collection-grant.ts`). */
-const isCollectionReadGrantedForDispatch = (
+export const isCollectionReadGrantedForDispatch = (
   deps: ChatToolHandlerDeps,
   ctx: ChatDispatchContext,
   collection: ReadableCollection,
@@ -1204,12 +1211,29 @@ const createMailSearchHandler =
       ? Math.min(10, Math.floor(args.next)) : 0;
     const prevN = typeof args.prev === 'number' && args.prev > 0
       ? Math.min(10, Math.floor(args.prev)) : 0;
-    const collections = registry.list().filter((c) => c.platform === 'mail');
-    if (collections.length === 0) {
+    // One mailbox, when named. Record ids are only unique within a mailbox.
+    const slug = typeof args.slug === 'string' && args.slug.length ? args.slug : undefined;
+    const enrolled = registry.list().filter((c) => c.platform === 'mail');
+    if (enrolled.length === 0) {
       // D-237 P1 — no mailbox is enrolled. `collections: []` is the fact, and
       // `source_freshness: []` must not be read as "the sources are fine": the
       // two empties answer different questions and the descriptor says so.
       return { ok: true, result: { matches: [], collections: [], source_freshness: [] } };
+    }
+    const collections = slug === undefined ? enrolled : enrolled.filter((c) => c.slug === slug);
+    if (collections.length === 0) {
+      // Named, not emptied: `collections: []` would claim no mailbox is enrolled.
+      return {
+        ok: true,
+        result: {
+          matches: [],
+          more_matches: false,
+          collections: enrolled.map((c) => c.slug),
+          mailbox_not_found: slug,
+          note: `No enrolled mailbox has slug ${JSON.stringify(slug)}. Use a collection_slug returned by an earlier search.`,
+          source_freshness: collectionSourceFreshnessFanOut(enrolled, (deps.now ?? Date.now)()),
+        },
+      };
     }
     try {
       // FTS5 path when the agent supplied a free-text query. Hot-field
@@ -1245,14 +1269,14 @@ const createMailSearchHandler =
         // failing, because `ok` is the anti-loop signal and an `ok: false` here
         // re-opens the agent retry loop over a caller error that retrying
         // cannot fix.
-        const anchorFound = collections.some((c) => {
+        const anchored = collections.filter((c) => {
           try {
             return c.get(nearId) !== null;
           } catch {
             return false;
           }
         });
-        if (!anchorFound) {
+        if (anchored.length === 0) {
           return {
             ok: true,
             result: {
@@ -1262,7 +1286,7 @@ const createMailSearchHandler =
               anchor_not_found: nearId,
               note:
                 `No message with record_id ${JSON.stringify(nearId)} exists in `
-                + `the enrolled mailboxes, so there is nothing to step from. `
+                + `${slug === undefined ? 'the enrolled mailboxes' : `mailbox ${JSON.stringify(slug)}`}, so there is nothing to step from. `
                 + `Pass a record_id returned by an earlier search — ids cannot `
                 + `be constructed or guessed.`,
               source_freshness: collectionSourceFreshnessFanOut(
@@ -1271,7 +1295,29 @@ const createMailSearchHandler =
             },
           };
         }
-        for (const c of collections) {
+        // Two mailboxes can hold different messages under one record_id (an
+        // IMAP `uid@folder` repeats across accounts). Walking both would mix
+        // two conversations, so an unscoped anchor must be unique.
+        if (anchored.length > 1) {
+          return {
+            ok: true,
+            result: {
+              matches: [],
+              more_matches: false,
+              collections: collections.map((c) => c.slug),
+              anchor_ambiguous: nearId,
+              mailboxes: anchored.map((c) => c.slug),
+              note:
+                `record_id ${JSON.stringify(nearId)} exists in more than one mailbox, so its `
+                + `neighbours would mix different messages. Pass slug with near_id: the `
+                + `collection_slug of the result you are stepping from.`,
+              source_freshness: collectionSourceFreshnessFanOut(
+                collections, (deps.now ?? Date.now)(),
+              ),
+            },
+          };
+        }
+        for (const c of anchored) {
           const near = (c as unknown as {
             neighbours?: (q: { anchor_id: string; next?: number; prev?: number }) => Array<{
               record_id: string; hot_fields: Record<string, unknown>;
@@ -1279,12 +1325,22 @@ const createMailSearchHandler =
             }>;
           }).neighbours;
           if (typeof near !== 'function') continue;
-          for (const r of near.call(c, { anchor_id: nearId, next: nextN, prev: prevN })) {
+          // One direction at a time, asking for one message more than wanted:
+          // only a message beyond the page means more context remains there.
+          const side = (q: { next: number } | { prev: number }, wanted: number) => {
+            if (wanted <= 0) return [];
+            const rows = near.call(c, { anchor_id: nearId, ...q });
+            if (rows.length > wanted) moreAvailable = true;
+            return rows.slice(0, wanted);
+          };
+          const neighbours = [...side({ next: nextN + 1 }, nextN), ...side({ prev: prevN + 1 }, prevN)];
+          for (const r of neighbours) {
             aggregated.push({
               collection_slug: c.slug,
               record_id: r.record_id,
               hot_fields: r.hot_fields,
               received_at: r.received_at,
+              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at),
               ...(typeof r.body_inline === 'string' && r.body_inline.length > 0
                 ? { preview: r.body_inline.slice(0, LIST_PREVIEW_CHARS) }
                 : {}),
@@ -1295,7 +1351,7 @@ const createMailSearchHandler =
           ok: true,
           result: {
             matches: aggregated.slice(0, limit),
-            more_matches: false,
+            more_matches: moreAvailable || aggregated.length > limit,
             collections: collections.map((c) => c.slug),
             source_freshness: collectionSourceFreshnessFanOut(
               collections, (deps.now ?? Date.now)(),
@@ -1322,6 +1378,7 @@ const createMailSearchHandler =
               // the reader cannot tell a refusal from the acceptance that
               // followed it. The list path carried this all along.
               ...(typeof m.received_at === 'number' ? { received_at: m.received_at } : {}),
+              ...mailEvidenceMetadata(c.slug, m.record_id, m.received_at),
               rank: m.rank,
               // ⛔⛔ THE BODY MUST SURVIVE THIS PROJECTION, and it is the reason
               // the row is worth anything. `snippet` is a window centred on the
@@ -1329,8 +1386,8 @@ const createMailSearchHandler =
               // model is back to computing from a fragment — bench 276 reached
               // the right mail 11/11 and answered 0/11 that way, because the
               // window stopped one token before the rates the sum needed. There
-              // is no `mail.read` to recover it with: search IS the content
-              // surface, so what this projection omits is gone for the turn.
+              // is also a `mail.read` for exact/full reads, but retaining this
+              // text avoids forcing another tool call for each search match.
               ...(typeof m.body === 'string' ? { body: m.body } : {}),
               ...(m.body_truncated ? { body_truncated: true } : {}),
               // ⛔ The label MUST survive this projection. Dropped here, the row
@@ -1356,6 +1413,7 @@ const createMailSearchHandler =
               record_id: r.record_id,
               hot_fields: r.hot_fields,
               received_at: r.received_at,
+              ...mailEvidenceMetadata(c.slug, r.record_id, r.received_at),
               // ⛔⛔ THE LIST PATH RETURNED NO BODY, WHICH MADE THREAD-FOLLOWING
               // USELESS. Measured: told how to follow a conversation, the model
               // did it correctly — `query: null, filters: { thread_id }` — and
@@ -4191,6 +4249,8 @@ const FAN_OUT_TOOLS: ReadonlySet<string> = new Set(['contact.search']);
  *  throws. */
 export const FENCED_EMPTY_CONTAINER: Readonly<Record<string, string>> = {
   'mail.search': 'matches',
+  'mail.read': 'messages',
+  'document.read': 'documents',
   'calendar.search': 'matches',
   'file.search': 'files',
 };
@@ -4281,6 +4341,8 @@ export const buildChatTier1Handlers = (
 ): Record<string, Tier1Handler> => wrapCollectionFence(wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
   'mail.search': createMailSearchHandler(deps),
+  'mail.read': createMailReadHandler(deps),
+  'document.read': createDocumentReadHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
   'memory.search': createMemorySearchHandler(deps),
   'memory.write': createMemoryWriteHandler(deps),

@@ -20,6 +20,8 @@
  *  own SQLite schema) decoupled from full `AutoRunEntry`. */
 export interface AutoRunEntryLike {
   recipe_id: string;
+  /** D-319 — the dish whose timer this is (the server keys its breaker by it). */
+  dish_id?: string;
   publisher_id: string;
   auto_disabled: boolean;
   consecutive_failures: number;
@@ -50,8 +52,9 @@ export interface SummarizeInput {
    *  to the caller's registry. */
   lookupName?: (recipe_id: string) => string | null;
   /** Most recent failure reason for the given (recipe_id, process_id)
-   *  pair. Optional; absent means "no recorded reason". */
-  lookupFailureReason?: (recipe_id: string, process_id: string) => string | undefined;
+   *  pair — and, on the server, the dish whose timer it is (D-319).
+   *  Optional; absent means "no recorded reason". */
+  lookupFailureReason?: (recipe_id: string, process_id: string, dish_id?: string) => string | undefined;
 }
 
 /** Project an iterable of roster entries into UI-friendly summaries.
@@ -68,7 +71,7 @@ export const summarizeAutoDisabled = (input: SummarizeInput): AutoDisabledSummar
       consecutive_failures: entry.consecutive_failures,
       last_process_id: entry.process_id,
       last_finished_at: entry.last_finished_at ?? null,
-      last_failure_reason: input.lookupFailureReason?.(entry.recipe_id, entry.process_id),
+      last_failure_reason: input.lookupFailureReason?.(entry.recipe_id, entry.process_id, entry.dish_id),
     });
   }
   out.sort((a, b) => a.recipe_id.localeCompare(b.recipe_id));

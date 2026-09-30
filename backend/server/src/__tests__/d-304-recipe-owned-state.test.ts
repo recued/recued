@@ -87,7 +87,7 @@ const dish = (dish_id: string, recipe_id: string, over: Partial<Dish> = {}): Dis
 const setUp = (s: Server, recipe_id: string) => {
   s.dishes.set(dish(`dsh_install_${recipe_id}`, recipe_id, { is_default: true }));
   s.dishes.set(dish(`dsh_weekly_${recipe_id}`, recipe_id, { group_id: 'dgrp_team' }));
-  s.dishes.set(dish(`dsh_sched_${recipe_id}`, recipe_id, { managed_by_schedule_id: `sch_${recipe_id}` } as never));
+  s.dishes.set(dish(`dsh_sched_${recipe_id}`, recipe_id));
   s.dishes.set(dish(`dsh_auto_${recipe_id}`, recipe_id));
   s.dishContext.set(`dsh_weekly_${recipe_id}`, { last: 1 } as never);
   s.schedules.set({
@@ -102,20 +102,20 @@ const setUp = (s: Server, recipe_id: string) => {
     trigger_id: `trg_decl_${recipe_id}`, recipe_id, publisher_id: 'recued-core', pattern: 'mail.message.created',
     enabled: false, created_at: 1, origin: 'recipe',
   });
-  s.autoRun.setEnabled(recipe_id, false);
-  s.autoRun.setDishId(recipe_id, `dsh_auto_${recipe_id}`);
-  // Its auto-run tripped after failing: run health, not an owner's setting.
-  s.circuit.set({ recipe_id, consecutive_failures: 3, auto_disabled: true, last_failure_at: 1, last_failure_reason: 'boom' });
+  // D-319 — a dish's auto-run timer, switched off.
+  s.autoRun.setEnabled(`dsh_auto_${recipe_id}`, recipe_id, false);
+  // Its timer tripped after failing: run health, not an owner's setting.
+  s.circuit.set({ dish_id: `dsh_auto_${recipe_id}`, recipe_id, consecutive_failures: 3, auto_disabled: true,
+    last_failure_at: 1, last_failure_reason: 'boom' });
 };
 
 const stateOf = (s: Server, recipe_id: string) => ({
   dishes: s.dishes.listByRecipe(recipe_id).map((d) => d.dish_id).sort(),
   schedules: s.schedules.listByRecipe(recipe_id).map((x) => x.schedule_id),
   triggers: s.triggers.list().filter((t) => t.recipe_id === recipe_id).map((t) => t.trigger_id).sort(),
-  autoRunDish: s.autoRun.getDishId(recipe_id),
-  autoRunOff: s.autoRun.listDisabled().includes(recipe_id),
+  timers: s.autoRun.list().filter((t) => t.recipe_id === recipe_id).map((t) => t.dish_id),
   continuity: s.dishContext.get(`dsh_weekly_${recipe_id}`),
-  tripped: s.circuit.get(recipe_id) !== null,
+  tripped: s.circuit.list().some((c) => c.recipe_id === recipe_id),
 });
 
 describe('removeRecipeOwnedState — what belongs to the recipe, and nothing else', () => {
@@ -130,7 +130,7 @@ describe('removeRecipeOwnedState — what belongs to the recipe, and nothing els
       dishes: [], schedules: [],
       // The declared trigger is the reconciler's: it removes it on the same deletion.
       triggers: ['trg_decl_mail-digest'],
-      autoRunDish: null, autoRunOff: false, continuity: null,
+      timers: [], continuity: null,
       // ⛔ Found driving a live server: left behind, the trip made the reinstalled
       // recipe start out tripped, before it had ever run.
       tripped: false,
@@ -142,14 +142,13 @@ describe('removeRecipeOwnedState — what belongs to the recipe, and nothing els
     expect(s.groups.get('dgrp_team')).not.toBeNull();
   });
 
-  it('an auto-run row counts only when the owner set it up — a failure trip never does', () => {
+  it('each dish’s timer counts — one exists only once its dish was switched on — and a failure trip never does', () => {
     const s = server(false);
-    s.circuit.set({ recipe_id: 'plain', consecutive_failures: 1, auto_disabled: true });
+    s.circuit.set({ dish_id: 'dsh_plain', recipe_id: 'plain', consecutive_failures: 1, auto_disabled: true });
     expect(recipeOwnedStateOf('plain', s.owned)).toEqual({ schedules: 0, automations: 0, settings: 0 });
-    s.autoRun.setEnabled('plain', true);
-    expect(recipeOwnedStateOf('plain', s.owned).automations).toBe(0);
-    s.autoRun.setEnabled('plain', false);
-    expect(recipeOwnedStateOf('plain', s.owned).automations).toBe(1);
+    s.autoRun.setEnabled('dsh_plain', 'plain', true);
+    s.autoRun.setEnabled('dsh_plain_2', 'plain', false);
+    expect(recipeOwnedStateOf('plain', s.owned).automations).toBe(2);
   });
 
   it('a server without a store has nothing of that kind to remove', () => {
@@ -204,7 +203,7 @@ describe('deleting a pack removes what belongs to its recipes', () => {
     const { result } = await handlePacksUninstall(deps, { pack_slug: 'mail-pack' });
     expect(result.ok).toBe(true);
     expect([...result.removed.recipes].sort()).toEqual(['mail-digest', 'mail-quiet']);
-    expect(stateOf(s, 'mail-digest')).toMatchObject({ dishes: [], schedules: [], autoRunDish: null, autoRunOff: false, tripped: false });
+    expect(stateOf(s, 'mail-digest')).toMatchObject({ dishes: [], schedules: [], timers: [], tripped: false });
     expect(stateOf(s, 'other-recipe')).toMatchObject({ tripped: true });
     expect(stateOf(s, 'other-recipe').dishes).toHaveLength(4);
     expect(stateOf(s, 'other-recipe').schedules).toEqual(['sch_other-recipe']);
@@ -248,7 +247,7 @@ describe('deleting a pack removes what belongs to its recipes', () => {
     s.recipes.save(recipe('mine'), 'local', 'inline');
     setUp(s, 'mine');
     expect(await deleteRecipe({ store: s.recipes }, 'mine')).toEqual({ deleted: true });
-    expect(stateOf(s, 'mine')).toMatchObject({ dishes: [], schedules: [], autoRunDish: null });
+    expect(stateOf(s, 'mine')).toMatchObject({ dishes: [], schedules: [], timers: [] });
   });
 
   it('a Records pack\'s recipes, keyed by its catalog id, are counted too', async () => {
@@ -302,7 +301,7 @@ describe('the composition registers it on the one seam every uninstall reaches',
     // whether the recipe was on the roster BEFORE removing, and rebuilds when it was,
     // even with no owner-made automation (the live drive's case).
     expect(source).toMatch(/autoRunCircuit: rpc\.autoRunDeps\.circuitStore/);
-    expect(hook).toMatch(/const onRoster = autoRun\?\.roster\.has\(recipe_id\) === true;[\s\S]*removeRecipeOwnedState\(/);
+    expect(hook).toMatch(/const onRoster = \[\.\.\.\(autoRun\?\.roster\.values\(\) \?\? \[\]\)\]\.some\(\(entry\) => entry\.recipe_id === recipe_id\);[\s\S]*removeRecipeOwnedState\(/);
     expect(hook).toMatch(/if \(removed\.automations > 0 \|\| onRoster\) \{[^}]*autoRun\?\.refreshRoster\(\)/);
   });
 

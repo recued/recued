@@ -14,7 +14,6 @@ import { randomUUID } from 'node:crypto';
 import { isValidPattern } from '@recued/warehouse-events';
 import {
   compileTriggerSugarEntry,
-  DISH_ID_PREFIX,
   RpcError,
   validateRecipeEventTriggerEntry,
   type CompiledTriggerSubscription,
@@ -32,8 +31,6 @@ import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggersStore } from './store.js';
 import type { EventTriggerDispatcher } from './dispatcher.js';
 import type { DishStore } from '../dish-store.js';
-import type { DishContextStore } from '../dish-context-store.js';
-import { reconcileManagedConfigDish } from '../managed-config-dish.js';
 
 export interface TriggersRpcDeps {
   store: EventTriggersStore;
@@ -56,23 +53,20 @@ export interface TriggersRpcDeps {
    *  already-built deps object (the `getHandle` posture). Optional;
    *  best-effort. */
   onRulesChanged?: () => void;
-  /** D-179 P2 — standing-dish lookup for create/update-time binding
-   *  validation (existence + recipe match). P5c widens to `set` for
-   *  the enable-mints-dish lifecycle on recipe-origin rows (owner
-   *  decision 2026-06-12): enabling an unbound recipe-origin trigger
-   *  mints a managed dish and binds it; disabling flips the managed
-   *  dish's `enabled` off (identity + continuity survive); uninstall
-   *  dissolution lives in the declarative reconciler. Optional;
-   *  absent ⇒ binding is type-checked only and the fire-time gate
-   *  owns the rest. D-179 config-on-trigger widens to `delete`: a
-   *  create with a non-empty `config_overlay` mints a managed dish to
-   *  carry it into headless fires, and `triggers.delete` dissolves it. */
-  dishStore?: Pick<DishStore, 'get' | 'set' | 'delete'>;
-  /** D-179 config-on-trigger — continuity snapshots for the managed
-   *  overlay dish. Cleared alongside the dish on delete (same discipline
-   *  as the declarative reconciler's managed-dish dissolution) so a
-   *  re-minted dish never inherits a dead instance's state. Optional. */
-  dishContextStore?: Pick<DishContextStore, 'clear'>;
+  /** D-179 P2 / D-319 — dish lookup for create/update-time binding
+   *  validation (existence + recipe match). Optional; absent ⇒ binding is
+   *  type-checked only and the fire-time gate owns the rest. */
+  dishStore?: Pick<DishStore, 'get'>;
+  /** D-319 — the dish a trigger made for a recipe WITHOUT naming one belongs
+   *  to: the recipe's main dish, made (on, with the settings given) when it
+   *  has none (`mainDishFor`). Late-bound by the composition, because the
+   *  dish rpc deps compose apart. Absent ⇒ such a trigger is dishless and
+   *  settings are refused (a harness without dishes). */
+  mainDish?: (input: {
+    recipe_id: string;
+    publisher_id: string;
+    config_overlay: Record<string, unknown> | null;
+  }) => Dish;
   /** D-315 §5.1 — the kinds of email the owner made on this server. A row made
    *  here is checked against every kind a fact here can have, so what no kind
    *  has is refused while the owner is there to fix it; a recipe's own trigger
@@ -83,13 +77,6 @@ export interface TriggersRpcDeps {
   /** Override the id generator (tests). */
   genId?: () => string;
 }
-
-// D-179 P5c — managed-dish id mint (same scheme as `dishes.create`).
-const genDishId = (deps: TriggersRpcDeps): string => {
-  const now = deps.now?.() ?? Date.now();
-  const rnd = Math.random().toString(36).slice(2, 8);
-  return `${DISH_ID_PREFIX}${now.toString(36)}${rnd}`;
-};
 
 const genTriggerId = (): string => {
   // ULID-ish: 26 chars of base32 is close enough for uniqueness; we
@@ -149,12 +136,11 @@ const requireNonEmptyString = (v: unknown, field: string): string => {
   return v;
 };
 
-// D-179 P2 — dish binding + lifted poll-interval knob (the retired
-// `config_patch` override's replacements). Null clears; undefined leaves.
-const requireDishId = (v: unknown): string | null => {
-  if (v === null) return null;
+// D-179 P2 / D-319 — the dish a trigger belongs to. A trigger always has
+// one: there is no clearing it.
+const requireDishId = (v: unknown): string => {
   if (typeof v !== 'string' || v.length === 0) {
-    throw new RpcError('bad_request', 'dish_id must be a non-empty string or null', 400);
+    throw new RpcError('bad_request', 'dish_id must be a non-empty string', 400);
   }
   return v;
 };
@@ -189,8 +175,9 @@ const requireWatchInterval = (v: unknown): number | null => {
   return v;
 };
 
-// D-179 config-on-trigger — validate the optional overlay. `undefined` ⇒
-// null (none); a non-object ⇒ reject; an object ⇒ the overlay.
+// D-319 — validate the optional overlay: only a trigger that makes its
+// recipe's main dish carries settings. `undefined` ⇒ null (none); a
+// non-object ⇒ reject; an object ⇒ the overlay.
 const optionalOverlay = (v: unknown): Record<string, unknown> | null => {
   if (v === undefined) return null;
   if (typeof v !== 'object' || v === null || Array.isArray(v)) {
@@ -203,9 +190,9 @@ const optionalOverlay = (v: unknown): Record<string, unknown> | null => {
 // triggers.list
 // ────────────────────────────────────────────────────────────────
 
-/** Attach the trigger's config (read from the bound dish) so the run
- *  modal can pre-fill the per-row Config editor. Derived at read time —
- *  the dish is the source of truth; nothing extra is persisted. */
+/** Attach the settings of the trigger's dish, shown with the row. Derived
+ *  at read time — the dish is the source of truth; nothing extra is
+ *  persisted, and a trigger has no settings of its own (D-319). */
 const triggerWithConfig = (deps: TriggersRpcDeps, t: EventTrigger): EventTrigger => {
   const overlay = t.dish_id !== undefined ? deps.dishStore?.get(t.dish_id)?.config_overlay : undefined;
   return { ...t, ...deps.preapprovalStatus?.(t.trigger_id), ...(overlay !== undefined ? { config_overlay: overlay } : {}) };
@@ -244,42 +231,32 @@ export const handleTriggersCreate = async (
   }
   const pattern = shorthand?.pattern ?? requireNonEmptyString(args.pattern, 'pattern');
   requirePatternValid(pattern);
-  const dish_id = args.dish_id === undefined ? null : requireDishId(args.dish_id);
   const overlay = optionalOverlay(args.config_overlay);
   const watch_interval_ms = args.watch_interval_ms === undefined
     ? null
     : requireWatchInterval(args.watch_interval_ms);
   const enabled = args.enabled === undefined ? true : args.enabled === true;
-  if (dish_id !== null) requireDishBindsRecipe(deps, dish_id, recipe_id);
+  const hasSettings = overlay !== null && Object.keys(overlay).length > 0;
+
+  // D-319 — the dish the trigger belongs to, whose settings it runs with.
+  let dish_id: string | null;
+  if (args.dish_id !== undefined) {
+    dish_id = requireDishId(args.dish_id);
+    if (hasSettings) {
+      throw new RpcError('bad_request', 'Settings belong to the dish — change them on the dish, not the trigger', 400);
+    }
+    requireDishBindsRecipe(deps, dish_id, recipe_id);
+  } else if (deps.mainDish) {
+    dish_id = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay }).dish_id;
+  } else {
+    if (hasSettings) {
+      throw new RpcError('not_configured', 'Settings need a dish, and this server keeps none', 501);
+    }
+    dish_id = null;
+  }
 
   const trigger_id = (deps.genId ?? genTriggerId)();
   const now = (deps.now ?? Date.now)();
-
-  // D-179 config-on-trigger — mint a managed dish to carry the overlay
-  // into the headless fires (the dispatcher threads `trigger.dish_id`,
-  // the executor merges the dish overlay over recipe defaults). Only when
-  // a non-empty overlay is given and no explicit dish binding (which
-  // wins); `triggers.delete` dissolves it.
-  let boundDishId = dish_id;
-  if (dish_id === null
-    && overlay !== null
-    && Object.keys(overlay).length > 0
-    && deps.dishStore) {
-    const managedDishId = genDishId(deps);
-    const managedDish: Dish = {
-      dish_id: managedDishId,
-      recipe_id,
-      publisher_id,
-      name: recipe_id,
-      is_default: false,
-      config_overlay: overlay,
-      enabled: true,
-      managed_by_trigger_id: trigger_id,
-      created_at: now,
-    };
-    deps.dishStore.set(managedDish);
-    boundDishId = managedDishId;
-  }
 
   const trigger = deps.store.create({
     trigger_id,
@@ -287,7 +264,7 @@ export const handleTriggersCreate = async (
     publisher_id,
     pattern,
     enabled,
-    dish_id: boundDishId,
+    dish_id,
     watch_interval_ms,
     created_at: now,
     ...(shorthand?.filter !== undefined ? { filter: shorthand.filter } : {}),
@@ -305,8 +282,8 @@ export const handleTriggersCreate = async (
 
 /** D-315 §5.1 — rows the owner made on this server that can never fire again,
  *  because the template or kind of email they are narrowed to was deleted, are
- *  switched off as the owner would switch them off (their dish follows). A
- *  recipe's own rows are its recipe's to change. */
+ *  switched off as the owner would switch them off. Their dish stays on: its
+ *  other rows still run. A recipe's own rows are its recipe's to change. */
 export const switchOffUserTriggers = async (
   deps: TriggersRpcDeps,
   match: (trigger: EventTrigger) => boolean,
@@ -335,11 +312,14 @@ export const handleTriggersUpdate = async (
   },
 ): Promise<{ trigger: EventTrigger }> => {
   const trigger_id = requireNonEmptyString(args.trigger_id, 'trigger_id');
-  const overlay = optionalOverlay(args.config_overlay);
+  // D-319 — settings belong to the trigger's dish.
+  if (args.config_overlay !== undefined) {
+    throw new RpcError('bad_request', 'A trigger has no settings of its own — change its dish’s settings', 400);
+  }
   const patch: {
     enabled?: boolean;
     pattern?: string;
-    dish_id?: string | null;
+    dish_id?: string;
     watch_interval_ms?: number | null;
     filter?: Record<string, unknown> | null;
     fields?: string[] | null;
@@ -367,83 +347,18 @@ export const handleTriggersUpdate = async (
   }
   if (args.dish_id !== undefined) {
     patch.dish_id = requireDishId(args.dish_id);
-    if (patch.dish_id !== null) {
-      const existing = deps.store.get(trigger_id);
-      if (!existing) {
-        throw new RpcError('not_found', `trigger ${trigger_id} not found`, 404);
-      }
-      requireDishBindsRecipe(deps, patch.dish_id, existing.recipe_id);
-    }
-  }
-  if (args.watch_interval_ms !== undefined) {
-    patch.watch_interval_ms = requireWatchInterval(args.watch_interval_ms);
-  }
-
-  // D-179 — config edit: reconcile the managed config dish immutably (a
-  // changed overlay mints a new dish + dissolves the prior, so editing a
-  // trigger's config never mutates a live dish_id). Only when no explicit
-  // `dish_id` (that wins). A NON-EMPTY overlay provides the managed dish
-  // and supersedes the P5c empty-mint below; an empty `{}` only CLEARS
-  // config, so P5c must still run (e.g. enabling a recipe-origin trigger
-  // still needs its standing identity dish).
-  let configProvidesDish = false;
-  if (overlay !== null && args.dish_id === undefined && deps.dishStore) {
     const existing = deps.store.get(trigger_id);
     if (!existing) {
       throw new RpcError('not_found', `trigger ${trigger_id} not found`, 404);
     }
-    const { nextDishId, changed } = reconcileManagedConfigDish({
-      dishStore: deps.dishStore,
-      ...(deps.dishContextStore ? { dishContextStore: deps.dishContextStore } : {}),
-      recipe_id: existing.recipe_id,
-      publisher_id: existing.publisher_id,
-      marker: 'managed_by_trigger_id',
-      markerValue: trigger_id,
-      currentDishId: existing.dish_id ?? null,
-      overlay,
-      now: deps.now?.() ?? Date.now(),
-    });
-    if (changed) patch.dish_id = nextDishId;
-    configProvidesDish = Object.keys(overlay).length > 0;
-  }
-
-  // D-179 P5c — enable-mints-dish lifecycle for RECIPE-ORIGIN rows
-  // (owner decision 2026-06-12). Arming an unbound recipe-origin
-  // trigger mints a managed dish and binds it (so reactive fires get
-  // standing identity: overlay slot, audit attribution, continuity);
-  // disarming flips the managed dish's `enabled` off WITHOUT deleting
-  // it, so a disable/enable cycle keeps run-to-run state and history.
-  // User-assigned bindings (no `managed_by_trigger_id` match) are
-  // never touched. Explicit `dish_id` in the same patch wins; a non-empty
-  // config edit (above) already provided the managed dish.
-  if (!configProvidesDish
-    && patch.enabled !== undefined && args.dish_id === undefined && deps.dishStore) {
-    const existing = deps.store.get(trigger_id);
-    if (existing && existing.origin === 'recipe') {
-      const bound = existing.dish_id !== undefined
-        ? deps.dishStore.get(existing.dish_id)
-        : null;
-      const managed = bound !== null && bound !== undefined
-        && bound.managed_by_trigger_id === trigger_id;
-      if (patch.enabled && existing.dish_id === undefined) {
-        const now = deps.now?.() ?? Date.now();
-        const dish = {
-          dish_id: genDishId(deps),
-          recipe_id: existing.recipe_id,
-          publisher_id: existing.publisher_id,
-          name: existing.recipe_id,
-          is_default: false,
-          config_overlay: {},
-          enabled: true,
-          managed_by_trigger_id: trigger_id,
-          created_at: now,
-        };
-        deps.dishStore.set(dish);
-        patch.dish_id = dish.dish_id;
-      } else if (managed && bound) {
-        deps.dishStore.set({ ...bound, enabled: patch.enabled });
-      }
+    // A recipe's trigger is made once per dish: a reconcile would put it back.
+    if (existing.origin === 'recipe' && existing.dish_id !== patch.dish_id) {
+      throw new RpcError('bad_request', 'This trigger comes from its recipe and belongs to the dish it was made for', 400);
     }
+    requireDishBindsRecipe(deps, patch.dish_id, existing.recipe_id);
+  }
+  if (args.watch_interval_ms !== undefined) {
+    patch.watch_interval_ms = requireWatchInterval(args.watch_interval_ms);
   }
 
   const updated = deps.store.update(trigger_id, patch);
@@ -465,24 +380,9 @@ export const handleTriggersDelete = async (
   args: { trigger_id?: unknown },
 ): Promise<{ ok: true }> => {
   const trigger_id = requireNonEmptyString(args.trigger_id, 'trigger_id');
-  // Read the row before removal so we can dissolve the dish this trigger
-  // auto-minted for its overlay (D-179 config-on-trigger).
-  const existing = deps.store.get(trigger_id);
-  const removed = deps.store.remove(trigger_id);
-  if (!removed) {
+  // D-319 — the trigger's dish stays: its settings and other rows go on.
+  if (!deps.store.remove(trigger_id)) {
     throw new RpcError('not_found', `trigger ${trigger_id} not found`, 404);
-  }
-  // Dissolve only the managed overlay dish this trigger owns
-  // (`managed_by_trigger_id` match); a user-assigned binding is never
-  // touched. Mirrors the declarative reconciler's uninstall cleanup.
-  if (existing?.dish_id !== undefined && deps.dishStore) {
-    const dish = deps.dishStore.get(existing.dish_id);
-    if (dish && dish.managed_by_trigger_id === trigger_id) {
-      deps.dishStore.delete(existing.dish_id);
-      // Clear the dish's continuity snapshot too (mirrors the reconciler's
-      // managed-dish dissolution) so nothing orphans.
-      deps.dishContextStore?.clear(existing.dish_id);
-    }
   }
   deps.dispatcher?.rebuild();
   deps.onRulesChanged?.();

@@ -966,6 +966,26 @@ describe('renderAccountsPanel', () => {
       expect(html).not.toContain('this page cannot connect a published app');
     });
 
+    /** ⛔ 2026-09-29: the server's own https address used to bounce through
+     *  app.recued.com, and that page never delivered. It takes its callback
+     *  itself now, so what Google allows turns on WHOSE domain it is. */
+    it('at a Pro recued.net address: cannot connect a published app, and says why and where can', () => {
+      const html = googleSetup('https://alice.recued.net');
+      expect(html).toContain('this page cannot connect a published app');
+      expect(html).toContain('recued.net, the domain of your Pro address');
+      expect(html).toContain('Open Recued on your own domain instead');
+      // Its callback is its own, on the server — not app.recued.com's.
+      expect(html).toContain(e('https://alice.recued.net/webclient/oauth-callback.html?recued_relay=opener'));
+    });
+
+    it('on your own domain: its callback works with a published app once the domain is verified', () => {
+      const html = googleSetup('https://recued.example.com');
+      expect(html).toContain('this page is Recued on your own domain, so its callback (step 2 below) works with a published app');
+      expect(html).toContain('Under Authorized domains in step 4');
+      expect(html).not.toContain('this page cannot connect a published app');
+      expect(html).toContain(e('https://recued.example.com/webclient/oauth-callback.html?recued_relay=opener'));
+    });
+
     it('carries none of the Microsoft guide', () => {
       const html = googleSetup('https://app.recued.com');
       expect(html).not.toContain('admin consent');
@@ -1047,6 +1067,24 @@ describe('renderAccountsPanel', () => {
       expect(html).toContain('Open this page at <code>http://localhost:7717/webclient</code> instead');
       expect(html).toContain('or use app.recued.com');
       expect(html).not.toContain('This page cannot connect the app');
+    });
+
+    /** ⛔ 2026-09-29: a Pro owner at their own address could not connect at
+     *  all — the bounce through app.recued.com needs a query string. The
+     *  server's own https address now takes a bare callback of its own. */
+    it("at the server's own https address: its callback works, and it is bare", () => {
+      for (const origin of ['https://alice.recued.net', 'https://recued.example.com']) {
+        const html = microsoftSetup(origin);
+        expect(html, origin).toContain('This page is the server&rsquo;s own https address, so its callback (step 2 below) works.');
+        expect(html, origin).not.toContain('This page cannot connect the app');
+        expect(html, origin).toContain(`<code class="accounts-oauth-redirect">${origin}/webclient/oauth-callback.html</code>`);
+      }
+    });
+
+    it('a bare IP address cannot connect it either, and the answer names the https address that can', () => {
+      const html = microsoftSetup('https://192.168.1.20:8443');
+      expect(html).toContain('This page cannot connect the app these steps make.');
+      expect(html).toContain('the server&rsquo;s own https address (a Pro recued.net address or your own domain)');
     });
 
     it('at localhost: its callback works', () => {

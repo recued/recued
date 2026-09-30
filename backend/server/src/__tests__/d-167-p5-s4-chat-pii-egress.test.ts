@@ -1001,6 +1001,45 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     expect((result.body as AIOutput).response).not.toBe('alice@acme.com');
   });
 
+  it('keeps the verified answer when a later call on the turn (the closing brief) returns no answer', async () => {
+    // The answer is restored at the wire seam and shown. The turn-end brief is
+    // a SECOND call through the same wrapper, and its body has no `response`.
+    // The saved text must still be the answer the owner saw — not the answer
+    // restored again with the brief's authority, which turns the owner's own
+    // literal `m1@d1.invalid` into the real address it happens to collide with.
+    const plan = makePlan({ resolver: userMessageEmailResolver });
+    piiEgress.aliasPacketForEgress({
+      ledger: plan.ledger,
+      packet: { user_message: 'alice@acme.com' },
+      resolver: userMessageEmailResolver,
+    });
+    const real: ExecuteChatAiCall = async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>;
+      if ('tool_results_since' in packet) {
+        expect(JSON.stringify(packet)).toContain('m1@d1.invalid');
+        return { body: { intent: 'Explain the address', constraints: [], pending: [], findings: [], completed: [] } };
+      }
+      return {
+        body: { response: `You asked about ${String(packet.user_message)}.`, events: [], tool_calls: [] } satisfies AIOutput,
+      };
+    };
+    const wrapped = wrapExecuteAiCallForPii(real, plan);
+    const answer = await wrapped(MANIFEST, {
+      'llm.prompt': JSON.stringify({ user_message: 'm1@d1.invalid' }),
+    });
+    const shown = (answer.body as AIOutput).response;
+    expect(shown).toBe('You asked about m1@d1.invalid.');
+    await wrapped(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        user_request: 'What does it mean?',
+        tool_results_since: [{ tool_name: 'mail.read', status: 'ok', result: { from: 'alice@acme.com' } }],
+      }),
+    });
+    const state = new Map<string, unknown>([[CHAT_PII_EGRESS_PLAN_STATE_KEY, plan]]);
+    createPiiRestoreMiddleware().update!(updateCtx(state, shown));
+    expect(readPiiRestoredText(state)).toBe(shown);
+  });
+
   it('discards staged mappings and capture authority when the provider fails', async () => {
     const plan = makePlan({ resolver: userMessageEmailResolver });
     let captured = 0;
@@ -1532,6 +1571,85 @@ describe('D-167 P5 S4 — end-to-end through the orchestrator', () => {
         { value: 'alice@acme.com', kind: 'email' },
         { value: 'bob@acme.com', kind: 'email' },
       ]));
+    } finally {
+      db.close();
+    }
+  });
+
+  it('saves the answer the owner was shown when the closing brief runs after it', async () => {
+    const db = new Database(':memory:');
+    try {
+      ensureChatSchema(db);
+      const chatStore = createChatStore(db);
+      chatStore.createSession({ id: 'sess-1', now: NOW - 1_000 });
+      chatStore.setRollingBriefEnabled(true);
+      const sender = 'new.sender@outside.example';
+      const broadcasts: Array<Record<string, unknown>> = [];
+      const leaked: string[] = [];
+      const registry: InternalToolRegistry = {
+        list: () => [],
+        listByTier: () => [],
+        getByName: (name) => name === 'lookup'
+          ? ({ name: 'lookup', tier: 2, classification: 'read', arg_schema: {}, concurrency_safe: true } as unknown as ToolEntry)
+          : null,
+        dispatch: vi.fn(async () => ({ ok: true, result: { from: sender } }) as const),
+        subscribeRefresh: () => () => undefined,
+      };
+      let briefCalls = 0;
+      const executeAiCall = vi.fn<ExecuteChatAiCall>(async (_m, input) => {
+        const packet = JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>;
+        if (JSON.stringify(packet).includes(sender)) leaked.push(JSON.stringify(packet));
+        if (packet.tool_results_since !== undefined) {
+          briefCalls += 1;
+          return { body: { intent: 'Identify the sender', constraints: [], pending: [], findings: [], completed: [] } };
+        }
+        // A carried brief also rides in `prior_tool_calls`, so key on the lookup.
+        const looked = (packet.prior_tool_calls as Array<{ tool_name?: string; result?: { from?: string } }> | undefined)
+          ?.find((c) => c.tool_name === 'lookup');
+        if (looked === undefined) {
+          return { body: { response: 'Looking.', events: [], tool_calls: [{ tool: 'lookup', args: {} }] } satisfies AIOutput };
+        }
+        const asked = String(packet.user_message);
+        return {
+          body: {
+            response: asked.includes('.invalid') ? `You asked about ${asked}.` : `The mail is from ${String(looked.result?.from)}.`,
+            events: [],
+            tool_calls: [],
+          } satisfies AIOutput,
+        };
+      });
+      let idSeq = 0;
+      const orchestrator = createChatOrchestrator({
+        chatStore,
+        registry,
+        broadcast: { emit: (e) => broadcasts.push(e as Record<string, unknown>) },
+        selfSignature,
+        executeAiCall,
+        piiLedgerStore: piiEgress.createSessionLedgerStore(),
+        fieldPrivacyResolver: (packet) => {
+          const p = packet as Record<string, unknown>;
+          return (Array.isArray(p.prior_tool_calls) ? p.prior_tool_calls : [])
+            .map((_c, i) => ({ path: `prior_tool_calls.${i}.result.from`, kind: 'email' as const }));
+        },
+        now: () => NOW,
+        mintId: () => `id-${++idSeq}`,
+      });
+
+      // Turn 1 issues `m1@d1.invalid` for the sender.
+      await orchestrator.runTurn({ session_id: 'sess-1', message: 'Who sent it?', picker_state: { current: 'self' } });
+      // Turn 2: the owner types that alias as a LITERAL; the model quotes it back.
+      await orchestrator.runTurn({ session_id: 'sess-1', message: 'm1@d1.invalid', picker_state: { current: 'self' } });
+
+      expect(leaked).toEqual([]);
+      expect(briefCalls).toBe(2);
+      const expected = 'You asked about m1@d1.invalid.';
+      const shown = broadcasts.filter((b) => b.kind === 'chat.token_streamed').map((b) => b.delta);
+      const completed = broadcasts.filter((b) => b.kind === 'chat.message_complete')
+        .map((b) => (b.final as { content?: string } | undefined)?.content);
+      expect(shown.at(-1)).toBe(expected);
+      expect(completed.at(-1)).toBe(expected);
+      const saved = (await chatStore.listMessages('sess-1')).filter((m) => m.role === 'assistant');
+      expect(saved.at(-1)?.content).toBe(expected);
     } finally {
       db.close();
     }

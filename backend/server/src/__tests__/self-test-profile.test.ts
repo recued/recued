@@ -6,9 +6,10 @@
  *  would prove exactly as little as the check it replaces. Only the FAILURE path
  *  is injected, because what is under test there is the exit-code mapping.
  */
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { probeDatabaseRoundTrip, runSelfTestProfile } from '../cli-context/self-test.js';
@@ -93,15 +94,64 @@ describe('runSelfTestProfile', () => {
     expect(out).toMatch(/native addon|better_sqlite3/);
   });
 
-  it('leaves no probe realm behind, on either path', async () => {
-    const before = readdirSync(tmpdir()).filter((n) => n.startsWith('recued-self-test-'));
-    await run();
-    await run(() => { throw new Error('boom'); });
-    const after = readdirSync(tmpdir()).filter((n) => n.startsWith('recued-self-test-'));
-    // ⚠ Compared as a SET, not a count: a concurrent run of this suite would make
-    // a bare count flake, and a flaky cleanup assertion gets deleted.
-    expect(after.filter((n) => !before.includes(n))).toEqual([]);
+  // ⛔⛔ `process.exit` ENDS THE PROCESS WHERE IT STANDS, and a `finally` still
+  // pending never runs. The profile used to exit inside its `try`, so every REAL
+  // run left `recued-self-test-*/probe.db` behind (eight on one machine, one per
+  // install), while this file stayed green: its `exit` RETURNED, the `finally`
+  // ran, and the folder was gone before anything looked. So this stub records the
+  // folder at the moment of the call, which is all `process.exit` leaves. The
+  // success path still runs the real driver; the probe is wrapped only to learn
+  // the folder.
+  it('removes its probe folder BEFORE it exits, on either path', async () => {
+    for (const path of ['success', 'failure'] as const) {
+      let folder = '';
+      let presentAtExit: boolean | undefined;
+      await runSelfTestProfile({
+        args: ['self-test'],
+        bootTrace: trace,
+        exit: () => { presentAtExit = existsSync(folder); },
+        log: () => {},
+        probe: async (dbPath) => {
+          folder = dirname(dbPath);
+          if (path === 'failure') throw new Error('boom');
+          await probeDatabaseRoundTrip(dbPath);
+        },
+      });
+      expect(folder, path).toContain('recued-self-test-');
+      expect(presentAtExit, `the ${path} path exited with its probe folder on disk`).toBe(false);
+    }
   });
+
+  // ⛔ AND THE REAL `process.exit`, THROUGH THE REAL ENTRY POINT. `bin.ts` passes
+  // no `exit`, so production gets the one thing every stub above replaces. The
+  // child gets a temp dir of its own, so nothing else on the machine can make
+  // this pass or fail.
+  it('leaves nothing in the temp dir when run as `recued self-test`', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'recued-selftest-tmpdir-'));
+    try {
+      const repoRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
+      const r = spawnSync(
+        'npx',
+        ['--no-install', 'tsx', join(repoRoot, 'backend/server/src/bin.ts'), 'self-test'],
+        {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            TSX_TSCONFIG_PATH: join(repoRoot, 'backend/server/tsconfig.json'),
+            TMPDIR: tmp,
+            TEMP: tmp,
+            TMP: tmp,
+          },
+          timeout: 30_000,
+        },
+      );
+      expect(r.status, `recued self-test failed: ${r.stderr}`).toBe(0);
+      expect(readdirSync(tmp).filter((n) => n.startsWith('recued-self-test-'))).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 45_000);
 
   it('never touches a real realm — the probe path is a fresh temp dir', async () => {
     let seen = '';

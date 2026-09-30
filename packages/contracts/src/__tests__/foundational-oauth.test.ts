@@ -10,6 +10,10 @@ import {
   readOpenerRelayTarget,
   pickOAuthCallbackHost,
   isLoopbackOrigin,
+  selfServesOAuthCallback,
+  vendorOAuthCallbackUrlForPwa,
+  vendorOAuthAlternateCallbackUrl,
+  vendorOAuthRedirectChoices,
   gmailScopes,
   graphMailScopes,
   gcalScopes,
@@ -157,8 +161,10 @@ describe('buildOpenerRelayRedirectUri', () => {
   });
 
   it('round-trips: readOpenerRelayTarget recovers the PWA origin the builder embedded', () => {
-    const uri = buildOpenerRelayRedirectUri('https://my.server.example');
-    expect(readOpenerRelayTarget(new URL(uri).searchParams)).toBe('https://my.server.example');
+    // An https IP literal cannot self-serve (Google refuses a raw IP callback),
+    // so it is one of the origins that still bounces with opener_origin.
+    const uri = buildOpenerRelayRedirectUri('https://192.168.1.50:8443');
+    expect(readOpenerRelayTarget(new URL(uri).searchParams)).toBe('https://192.168.1.50:8443');
   });
 
   it('byte-matches the redirect_uri embedded in the authorize URL (both origin modes)', () => {
@@ -227,23 +233,52 @@ describe('buildOpenerRelayRedirectUri', () => {
     );
   });
 
-  it('a LAN / own-https PWA + noQueryMarker still needs the marker and opener_origin', () => {
+  it('a bouncing PWA + noQueryMarker still needs the marker and opener_origin', () => {
     // Its code must reach a cross-origin opener, which only a registered
     // opener_origin can name; an app that takes personal accounts cannot
     // register it, and the guide says so.
-    for (const origin of ['http://192.168.1.50', 'https://my.server.example']) {
+    for (const origin of ['http://192.168.1.50', 'https://192.168.1.50:8443', 'https://myserver']) {
       const params = new URL(buildOpenerRelayRedirectUri(origin, true)).searchParams;
       expect(params.get(OAUTH_OPENER_RELAY_PARAM)).toBe(OAUTH_OPENER_RELAY_VALUE);
       expect(params.get(OAUTH_OPENER_ORIGIN_PARAM)).toBe(origin);
     }
   });
 
-  it('LAN-IP / own-https self-served PWAs still bounce through the cloud (Option A)', () => {
-    // Neither is loopback → cloud host + opener_origin (unchanged by Option B).
-    for (const origin of ['http://192.168.1.50', 'https://my.server.example']) {
+  it('what cannot self-serve still bounces through the cloud (Option A)', () => {
+    // A LAN IP, an https IP literal, a single-label name, and staging.
+    for (const origin of [
+      'http://192.168.1.50',
+      'https://192.168.1.50:8443',
+      'https://[fd00::5]:8443',
+      'https://myserver',
+      'https://app.recued2.com',
+    ]) {
       const uri = buildOpenerRelayRedirectUri(origin);
-      expect(uri.startsWith(`${OAUTH_CLOUD_CALLBACK_ORIGIN}/oauth-callback?`)).toBe(true);
-      expect(new URL(uri).searchParams.get(OAUTH_OPENER_ORIGIN_PARAM)).toBe(origin);
+      expect(uri.startsWith(`${OAUTH_CLOUD_CALLBACK_ORIGIN}/oauth-callback?`), origin).toBe(true);
+      expect(new URL(uri).searchParams.get(OAUTH_OPENER_ORIGIN_PARAM), origin).toBe(origin);
+    }
+  });
+
+  /** ⛔ 2026-09-29: these bounced through app.recued.com, whose page never read
+   *  `opener_origin`, so a Pro owner at their own address could not connect
+   *  Gmail or Outlook. For Microsoft the bounce could never work: it needs
+   *  `opener_origin` in the query, which an app that takes personal accounts
+   *  may not register. The server's own https name takes the code itself. */
+  it("the server's own https name self-serves, for Google and Microsoft", () => {
+    for (const origin of [
+      'https://alice.recued.net',
+      'https://recued.example.com',
+      'https://recued.example.com:8443',
+    ]) {
+      const google = buildOpenerRelayRedirectUri(origin);
+      expect(google, origin).toBe(
+        `${origin}${WEBCLIENT_OAUTH_CALLBACK_PATH}?${OAUTH_OPENER_RELAY_PARAM}=${OAUTH_OPENER_RELAY_VALUE}`,
+      );
+      expect(new URL(google).searchParams.get(OAUTH_OPENER_ORIGIN_PARAM)).toBeNull();
+      // Microsoft: bare — no query string for Entra to refuse.
+      const microsoft = buildOpenerRelayRedirectUri(origin, true);
+      expect(microsoft, origin).toBe(`${origin}${WEBCLIENT_OAUTH_CALLBACK_PATH}`);
+      expect(microsoft.includes('?')).toBe(false);
     }
   });
 });
@@ -263,11 +298,38 @@ describe('pickOAuthCallbackHost + isLoopbackOrigin (R26.2 Option B)', () => {
     for (const other of [
       OAUTH_CLOUD_CALLBACK_ORIGIN, // the cloud PWA is NOT self-serve
       'http://192.168.1.50',
-      'https://my.server.example',
       'http://127.0.0.2:3000', // only 127.0.0.1 is loopback, not the /8
     ]) {
       expect(isLoopbackOrigin(other)).toBe(false);
       expect(pickOAuthCallbackHost(other)).toBe(OAUTH_CLOUD_CALLBACK_ORIGIN);
+    }
+  });
+
+  it("selfServesOAuthCallback: loopback and the server's own https name, nothing else", () => {
+    for (const yes of [
+      'http://localhost:7717',
+      'http://127.0.0.1:7717',
+      'https://alice.recued.net', // a Pro address
+      'https://recued.example.com', // the owner's own domain
+      'https://recued.example.com:8443',
+    ]) {
+      expect(selfServesOAuthCallback(yes), yes).toBe(true);
+      expect(pickOAuthCallbackHost(yes), yes).toBe(yes);
+    }
+    for (const no of [
+      OAUTH_CLOUD_CALLBACK_ORIGIN, // serves its callback at /oauth-callback
+      'https://app.recued2.com', // staging, likewise
+      'http://recued.example.com', // plain http is refused as a callback
+      'http://192.168.1.50:7717',
+      'https://192.168.1.50:8443', // Google refuses a raw IP callback host
+      'https://[fd00::5]:8443',
+      'https://myserver', // single label: no public top-level domain
+      'https://alice.recued.net/', // not a bare origin
+      'https://alice.recued.net/webclient',
+      'not-a-url',
+      '',
+    ]) {
+      expect(selfServesOAuthCallback(no), no).toBe(false);
     }
   });
 
@@ -344,8 +406,15 @@ describe('oauthCallbackUrlForPwa — the URL the form tells you to REGISTER', ()
     }
   });
 
-  it('a non-loopback PWA still registers the cloud URL', () => {
-    for (const origin of ['https://app.recued.com', 'http://192.168.1.10:7841', 'https://recued.example.com']) {
+  it('the server\'s own https name registers its OWN origin too', () => {
+    for (const origin of ['https://alice.recued.net', 'https://recued.example.com']) {
+      expect(oauthCallbackUrlForPwa(origin), origin)
+        .toBe(`${origin}${WEBCLIENT_OAUTH_CALLBACK_PATH}`);
+    }
+  });
+
+  it('a PWA that cannot self-serve registers the cloud URL', () => {
+    for (const origin of ['https://app.recued.com', 'http://192.168.1.10:7841', 'https://192.168.1.10:8443']) {
       expect(oauthCallbackUrlForPwa(origin), origin).toBe(OAUTH_CLOUD_CALLBACK_URL);
     }
   });
@@ -359,6 +428,8 @@ describe('oauthCallbackUrlForPwa — the URL the form tells you to REGISTER', ()
       'http://localhost:3000',
       'https://app.recued.com',
       'http://192.168.1.10:7841',
+      'https://alice.recued.net',
+      'https://192.168.1.10:8443',
     ]) {
       expect(oauthCallbackUrlForPwa(origin).startsWith(pickOAuthCallbackHost(origin)), origin)
         .toBe(true);
@@ -375,13 +446,14 @@ describe('alternateOAuthCallbackUrl — the URL the OTHER address needs', () => 
     // `redirect_uri_mismatch` with nothing on screen to explain it.
     expect(alternateOAuthCallbackUrl('http://127.0.0.1:7841')).toBe(OAUTH_CLOUD_CALLBACK_URL);
     expect(alternateOAuthCallbackUrl('http://localhost:3000')).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    // …and at the server's own https name, which self-serves the same way.
+    expect(alternateOAuthCallbackUrl('https://alice.recued.net')).toBe(OAUTH_CLOUD_CALLBACK_URL);
   });
 
   it('names nothing when the cloud URL is ALREADY the one shown', () => {
-    // On any non-loopback origin `oauthCallbackUrlForPwa` already resolves to
-    // the cloud URL, so a "register this too" note would point at the value
-    // directly above it.
-    for (const origin of ['https://app.recued.com', 'https://recued.example.com']) {
+    // Where `oauthCallbackUrlForPwa` already resolves to the cloud URL, a
+    // "register this too" note would point at the value directly above it.
+    for (const origin of ['https://app.recued.com', 'https://192.168.1.10:8443']) {
       expect(alternateOAuthCallbackUrl(origin), origin).toBeNull();
       expect(oauthCallbackUrlForPwa(origin), origin).toBe(OAUTH_CLOUD_CALLBACK_URL);
     }
@@ -391,5 +463,38 @@ describe('alternateOAuthCallbackUrl — the URL the OTHER address needs', () => 
     // The note only earns its space if it says something new.
     const origin = 'http://127.0.0.1:7841';
     expect(alternateOAuthCallbackUrl(origin)).not.toBe(oauthCallbackUrlForPwa(origin));
+  });
+});
+
+/** A vendor connection's callback is NOT the mail one. From the server's own
+ *  https name the self-served relay cannot carry a registered vendor's
+ *  scopes / PKCE / sandbox, which only `startVendorOAuth` knows; and
+ *  app.recued.com's page cannot check a state whose key the dialog wrote into
+ *  another origin's storage. The § A.12 direct choice is the one that works. */
+describe('vendorOAuthCallbackUrlForPwa — the callback a vendor connection sends', () => {
+  it('loopback keeps the self-served relay page', () => {
+    expect(vendorOAuthCallbackUrlForPwa('http://127.0.0.1:7841'))
+      .toBe(`http://127.0.0.1:7841${WEBCLIENT_OAUTH_CALLBACK_PATH}`);
+  });
+
+  it("the server's own https name goes straight to its /oauth/complete — a choice startVendorOAuth accepts", () => {
+    for (const origin of ['https://alice.recued.net', 'https://recued.example.com:8443']) {
+      const uri = vendorOAuthCallbackUrlForPwa(origin);
+      expect(uri, origin).toBe(`${origin}/oauth/complete`);
+      // The server's allow-list for that same public URL contains it verbatim.
+      expect(vendorOAuthRedirectChoices(origin), origin).toContain(uri);
+    }
+  });
+
+  it('everything else uses the app.recued.com callback', () => {
+    for (const origin of ['https://app.recued.com', 'https://192.168.1.10:8443', 'https://app.recued2.com']) {
+      expect(vendorOAuthCallbackUrlForPwa(origin), origin).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    }
+  });
+
+  it('names app.recued.com as the other address to register, from loopback and an own https name', () => {
+    expect(vendorOAuthAlternateCallbackUrl('http://localhost:7841')).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    expect(vendorOAuthAlternateCallbackUrl('https://alice.recued.net')).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    expect(vendorOAuthAlternateCallbackUrl('https://app.recued.com')).toBeNull();
   });
 });

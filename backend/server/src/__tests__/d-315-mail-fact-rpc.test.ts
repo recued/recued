@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MailTemplateDefinition } from '@recued/contracts';
 
@@ -194,6 +194,131 @@ describe('update and delete', () => {
     expect(await rpc['mail_fact.template.delete']({ template_id: template.template_id }, owner)).toEqual({ deleted: true });
     expect(await rpc['mail_fact.template.delete']({ template_id: template.template_id }, owner)).toEqual({ deleted: false });
     expect(store.listFacts()).toHaveLength(1);
+  });
+});
+
+describe('a template a recipe brought (§5.2)', () => {
+  const recipeOrigin = { kind: 'recipe' as const, publisher: 'recued-core', recipe: 'shop-parcels', variable: 'template', version: 1 };
+  const brought = (): string => store.createTemplate({
+    definition: ups({ ai: { enabled: false, prompt: 'Read the delivery window.', slots: ['data.window'], pool: 'free_only' } }),
+    origin: recipeOrigin,
+  }).template_id;
+
+  beforeEach(() => {
+    rpc = makeMailFactRpcHandlers({ store, recipeNameOf: (id) => (id === 'shop-parcels' ? 'Shop parcels' : null) })!.handlers;
+  });
+
+  it('⛔ refuses a change to its rules, naming the recipe: they update with the recipe', async () => {
+    const id = brought();
+    await expect(rpc['mail_fact.template.update']({ template_id: id, definition: ups({ name: 'Mine now' }) }, owner))
+      .rejects.toMatchObject({
+        code: 'conflict',
+        message: '“UPS” comes with the recipe Shop parcels: its rules update with the recipe. Duplicate it to edit.',
+        details: { recipe_id: 'shop-parcels' },
+      });
+    // Nor its AI's prompt, which is the recipe's too.
+    await expect(rpc['mail_fact.template.update']({
+      template_id: id,
+      definition: ups({ ai: { enabled: true, prompt: 'Something else.', slots: ['data.window'], pool: 'free_only' } }),
+    }, owner)).rejects.toMatchObject({ code: 'conflict' });
+    expect(store.getTemplate(id)!.revision).toBe(1);
+  });
+
+  it('lets the owner switch it and its AI on or off, and pick the pool', async () => {
+    const id = brought();
+    const on = await rpc['mail_fact.template.update']({
+      template_id: id,
+      definition: ups({ ai: { enabled: true, prompt: 'Read the delivery window.', slots: ['data.window'], pool: 'byok_only' } }),
+    }, owner);
+    expect(on.template.ai).toEqual({ enabled: true, prompt: 'Read the delivery window.', slots: ['data.window'], pool: 'byok_only' });
+    expect((await rpc['mail_fact.template.update']({ template_id: id, active: false }, owner)).template.active).toBe(false);
+  });
+
+  it('⛔ refuses to delete it: it goes with the recipe', async () => {
+    const id = brought();
+    await expect(rpc['mail_fact.template.delete']({ template_id: id }, owner)).rejects.toMatchObject({
+      code: 'conflict',
+      message: '“UPS” comes with the recipe Shop parcels and goes with it. Switch it off instead, or uninstall the recipe.',
+    });
+    expect(store.getTemplate(id)).not.toBeNull();
+  });
+
+  it('duplicates to edit through the recipe templates, and says so when there are none', async () => {
+    const id = brought();
+    await expect(rpc['mail_fact.template.duplicate']({ template_id: id }, owner)).rejects.toMatchObject({ code: 'not_configured' });
+    const copy = { ...store.getTemplate(id)!, template_id: 'mtpl_copy', origin: { kind: 'owner' as const } };
+    const duplicate = vi.fn((template_id: string) => (template_id === id ? copy : null));
+    rpc = makeMailFactRpcHandlers({ store, recipeTemplates: { duplicate } })!.handlers;
+    expect(await rpc['mail_fact.template.duplicate']({ template_id: id }, owner)).toEqual({ template: copy });
+    await expect(rpc['mail_fact.template.duplicate']({ template_id: 'mtpl_nope' }, owner)).rejects.toMatchObject({ code: 'not_found' });
+    await expect(rpc['mail_fact.template.duplicate']({ template_id: id }, stranger)).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+});
+
+describe('a template as a recipe’s starter, for its author (§5.2)', () => {
+  const withEditor = () => makeMailFactRpcHandlers({
+    store,
+    editor: {
+      mailboxes: () => [{ accountEmail: 'me@owner.example' }] as never,
+      standardsOff: () => new Set(),
+      blobs: {} as never,
+      relationshipsOf: (address) => (address === 'friend@example.com' ? ['family'] : address === 'shop@example.com' ? ['other'] : []),
+    },
+  })!.handlers;
+
+  it('drops what belongs to this server, and keeps the rest — the AI’s prompt included', async () => {
+    const { template } = await rpc['mail_fact.template.create']({ definition: ups() }, owner);
+    const { starter } = await withEditor()['mail_fact.template.starter']({ template_id: template.template_id }, owner);
+    expect(starter).toEqual(ups());
+    expect(starter).not.toHaveProperty('template_id');
+    expect(starter).not.toHaveProperty('health');
+    expect(starter).not.toHaveProperty('origin');
+  });
+
+  it('⛔ refuses, naming where, the owner’s own address and a sender they know — a shop is fine', async () => {
+    const own = (await rpc['mail_fact.template.create']({
+      definition: ups({ rules: [...ups().rules, { target: { data: 'to' }, source: 'body', find: { kind: 'after_label', label: 'For me@owner.example:' } }] }),
+    }, owner)).template;
+    await expect(withEditor()['mail_fact.template.starter']({ template_id: own.template_id }, owner)).rejects.toMatchObject({
+      code: 'bad_request',
+      details: { problems: expect.arrayContaining([expect.stringMatching(/^rules\[2\]\.find\.label: /)]) },
+    });
+    // A sender's address is no leak in itself — a shop's is the point — but the
+    // owner's own is: only their server knows it is theirs.
+    const mine = (await rpc['mail_fact.template.create']({
+      definition: ups({ name: 'To myself', entrance: { conditions: [{ field: 'from', op: 'is', value: 'Me@Owner.Example' }], variables: ['tracking_number'] } }),
+    }, owner)).template;
+    await expect(withEditor()['mail_fact.template.starter']({ template_id: mine.template_id }, owner)).rejects.toMatchObject({
+      details: { problems: ["entrance.conditions[0].value: holds its author's own address or name"] },
+    });
+    const friend = (await rpc['mail_fact.template.create']({
+      definition: ups({ name: 'Friend', entrance: { conditions: [{ field: 'from', op: 'is', value: 'Friend@Example.com' }], variables: ['tracking_number'] } }),
+    }, owner)).template;
+    await expect(withEditor()['mail_fact.template.starter']({ template_id: friend.template_id }, owner)).rejects.toMatchObject({
+      message: expect.stringContaining('names a sender in its author'),
+    });
+    const shop = (await rpc['mail_fact.template.create']({
+      definition: ups({ name: 'Shop', entrance: { conditions: [{ field: 'from', op: 'is', value: 'shop@example.com' }], variables: ['tracking_number'] } }),
+    }, owner)).template;
+    await expect(withEditor()['mail_fact.template.starter']({ template_id: shop.template_id }, owner)).resolves.toBeDefined();
+    await expect(withEditor()['mail_fact.template.starter']({ template_id: 'mtpl_nope' }, owner)).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('twins are read as the entrance reads them (ruling 31)', () => {
+  it('⛔ fullwidth letters and a leading @ are the same conditions', async () => {
+    await rpc['mail_fact.template.create']({ definition: ups() }, owner);
+    const twin = ups({
+      name: 'UPS again',
+      entrance: {
+        conditions: [
+          { field: 'from', op: 'domain_is', value: '@ＵＰＳ.com' },
+          { field: 'subject', op: 'contains', value: 'ＵＰＳ Update' },
+        ],
+        variables: ['tracking_number'],
+      },
+    });
+    await expect(rpc['mail_fact.template.create']({ definition: twin }, owner)).rejects.toMatchObject({ code: 'conflict' });
   });
 });
 

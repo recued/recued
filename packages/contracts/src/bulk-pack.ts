@@ -1054,6 +1054,10 @@ export interface BulkPackInstallResultLike {
    *  omitted; a fully-clean pack omits the field). Best-effort — an
    *  assessment failure never fails the committed install. */
   pii_disclosure?: ReadonlyArray<RecipePiiDisclosureEntry>;
+  /** D-315 §5.2 — the templates this install's recipes brought: created, or
+   *  re-applied on an update. Handler-added on success, present non-empty
+   *  only, like the fields above. */
+  mail_templates?: ReadonlyArray<import('./mail-facts.js').MailTemplateInstallOutcome>;
   /** Populated when `ok === false`. The closed-list `code` lets the
    *  Settings UI render targeted failure copy. */
   failure?: {

@@ -320,6 +320,13 @@ export const CANONICAL_PII_ENTITY_SCHEMAS: readonly EntitySchemaIngredientInput[
 export const CANONICAL_PII_ENTITY_PRIVACY_TAGS: readonly EntityPrivacyTag[] =
   Object.freeze([
     {
+      // Exact mail reads stamp their hot_fields envelope. Derive its address
+      // and subject tags from the same canonical schema used by mail producers.
+      entity_id: 'mail',
+      fields: (MAIL_SCHEMA.meta_fields ?? []).flatMap(field => field.privacy
+        ? [{ path: field.key, kind: field.privacy }] : []),
+    },
+    {
       entity_id: 'contact',
       fields: [
         { path: 'email', kind: 'email' },

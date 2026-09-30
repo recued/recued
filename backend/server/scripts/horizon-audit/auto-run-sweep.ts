@@ -67,11 +67,11 @@ const circuitCounts = (
 ): { rows: number; disabled: number } => {
   try {
     const rows = (
-      db.prepare(`SELECT COUNT(*) c FROM auto_run_circuit`).get() as { c: number }
+      db.prepare(`SELECT COUNT(*) c FROM auto_run_timer_circuit`).get() as { c: number }
     ).c;
     const disabled = (
       db
-        .prepare(`SELECT COUNT(*) c FROM auto_run_circuit WHERE auto_disabled = 1`)
+        .prepare(`SELECT COUNT(*) c FROM auto_run_timer_circuit WHERE auto_disabled = 1`)
         .get() as { c: number }
     ).c;
     return { rows, disabled };

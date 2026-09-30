@@ -29,6 +29,7 @@ import type { PreapprovalStorage } from '../storage/preapproval-storage.js';
 import type { TornSagaSweepResult } from '@recued/gateway';
 import type { PermanentPassRepairBootResult } from '../seller/permanent-pass-repair.js';
 import type { WorkEntityTextDatesNoticeResult } from '../work-entity-date-repair-notice.js';
+import type { MailAttachmentLinkRepairResult } from '../collections/mail/mail-attachment-link-repair.js';
 
 export interface StartBootRecoveryAndAdaptersOptions {
   readonly lifecycle: Lifecycle | undefined;
@@ -53,6 +54,11 @@ export interface StartBootRecoveryAndAdaptersOptions {
    *  (`WORK_ENTITY_TEXT_DATES_REPAIR_ID`), pre-bound by the composition root.
    *  Absent without a notifier ⇒ it waits for a boot that has one. */
   readonly workEntityTextDatesNotice?: () => Promise<WorkEntityTextDatesNoticeResult>;
+  /** The one-off removal of the attachment links two IMAP mailboxes shared
+   *  (`MAIL_ATTACHMENT_SHARED_ID_REPAIR_ID`), pre-bound over the db. Runs
+   *  before the mailboxes start, so their first sync re-files those
+   *  attachments under each mailbox. */
+  readonly mailAttachmentLinkRepair?: () => MailAttachmentLinkRepairResult;
   readonly getBatch?: PreflightBootSweepDeps['getBatch'];
   readonly reconcileOpenBatch?: PreflightBootSweepDeps['reconcileOpenBatch'];
   /** Exact peer-delivery journal recovery runs before generic dispatch-claim
@@ -297,6 +303,25 @@ export const startBootRecoveryAndAdapters = async (
       } catch (error) {
         warn(
           '[work-entities] text-dates repair notice failed, retrying next boot: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    // Behind the lock claim (it deletes links) and before the mailboxes start.
+    // It commits all or nothing, so a failure is retried by the next boot.
+    if (options.mailAttachmentLinkRepair) {
+      try {
+        const repair = options.mailAttachmentLinkRepair();
+        if (repair.applied && repair.unlinked > 0) {
+          warn(
+            `[mail] ${repair.unlinked} attachment link(s) two IMAP mailboxes shared `
+              + "removed — the next sync files recent emails' attachments under each mailbox",
+          );
+        }
+      } catch (error) {
+        warn(
+          '[mail] shared attachment link repair failed, retrying next boot: '
             + (error instanceof Error ? error.message : String(error)),
         );
       }

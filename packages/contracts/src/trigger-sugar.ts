@@ -162,11 +162,16 @@ export interface TriggerSugarOptions {
    *  them has is a note (`recipeEventTriggerNotes`), not a refusal: a kind
    *  made on the owner's server may have it. */
   readonly mailFactTypes?: () => readonly MailFactTypeSpec[];
+  /** D-315 §5.1 — the template a recipe's `template_variable` names: the id
+   *  its setting holds on this server, or null when none is chosen. Only the
+   *  reconciler knows it; without it, an entry that names one compiles to
+   *  nothing, as a narrowing no fact can be shown to match does. */
+  readonly templateOf?: (variable: string) => string | null;
 }
 
 /** The keys a mail-fact entry takes. Any other key is refused, not ignored: an
  *  ignored `"feilds"` or `"typ"` would leave the trigger wider than written. */
-const MAIL_FACT_ENTRY_KEYS: ReadonlySet<string> = new Set(['on', 'fields', 'where']);
+const MAIL_FACT_ENTRY_KEYS: ReadonlySet<string> = new Set(['on', 'fields', 'where', 'template_variable']);
 /** Keys refused with a reason of their own elsewhere in the check. */
 const ENTRY_KEYS_REFUSED_ELSEWHERE: ReadonlySet<string> = new Set(['event', 'filter', 'connection', 'url', 'selector']);
 
@@ -450,7 +455,7 @@ const platformReferencePattern = (
  *  the full fan. Reception endpoints are not connections — the validator
  *  rejects that combination too; the compile ignores `connection` there. */
 export const compileTriggerSugarEntry = (
-  entry: Pick<RecipeEventTrigger, 'on' | 'connection' | 'fields' | 'where' | 'url' | 'selector'>,
+  entry: Pick<RecipeEventTrigger, 'on' | 'connection' | 'fields' | 'where' | 'url' | 'selector' | 'template_variable'>,
   vendorEntities: ReadonlyArray<Pick<ConnectionVendorEntity, 'vendor' | 'entity' | 'crm_alias'>>,
   options: TriggerSugarOptions = {},
 ): CompiledTriggerSubscription[] | null => {
@@ -529,7 +534,17 @@ export const compileTriggerSugarEntry = (
         .some((value) => !isScalar(value) || (typeof value === 'string' && value.includes('{{')))) return [];
       const { errors, unknown } = mailFactEntryProblems(parsed.type, entry.fields, entry.where, options);
       if (errors.length > 0 || (options.mailFactTypes !== undefined && unknown.length > 0)) return [];
-      return [decorate(mailFactEventPattern(parsed.type))];
+      if (entry.template_variable === undefined) return [decorate(mailFactEventPattern(parsed.type))];
+      // The recipe's own template (§5.1): the id its setting holds here. None
+      // chosen, or a name that is no setting, and the row is not made — it
+      // would wake for every template's facts, wider than written.
+      if (typeof entry.template_variable !== 'string' || whereRecord?.template !== undefined) return [];
+      const template = options.templateOf?.(entry.template_variable) ?? null;
+      if (typeof template !== 'string' || template.length === 0) return [];
+      return [{
+        ...decorate(mailFactEventPattern(parsed.type)),
+        filter: { ...(filter ?? {}), 'record.template': template },
+      }];
     }
     case 'dom': {
       // url + selector are validator-required for the dom form; guard
@@ -696,7 +711,7 @@ export const validateRecipeEventTriggerEntry = (entry: unknown, options: Trigger
         `'event' targets a dom watch but can never match an emitted 'data.dom.element.<target>.updated' event (use '.updated', '.*', or a spanning '.**' tail); got ${JSON.stringify(e.event)}`,
       );
     }
-    for (const sugarOnly of ['connection', 'fields', 'where'] as const) {
+    for (const sugarOnly of ['connection', 'fields', 'where', 'template_variable'] as const) {
       if (e[sugarOnly] !== undefined) {
         problems.push(`'${sugarOnly}' requires the 'on' form — a raw 'event' entry narrows via its pattern / 'filter'`);
       }
@@ -738,6 +753,9 @@ export const validateRecipeEventTriggerEntry = (entry: unknown, options: Trigger
   }
   if (e.filter !== undefined) {
     problems.push("'filter' belongs to the raw 'event' form — the 'on' form narrows via 'where'");
+  }
+  if (e.template_variable !== undefined && parsed.kind !== 'mail_fact') {
+    problems.push("'template_variable' applies only to a mail-fact trigger — it names the template whose facts wake it");
   }
   // url / selector are the dom-watch sugar's REQUIRED target, and apply to
   // NO other form.
@@ -831,7 +849,15 @@ export const validateRecipeEventTriggerEntry = (entry: unknown, options: Trigger
   }
   if (parsed.kind === 'mail_fact') {
     for (const key of unknownMailFactKeys(e)) {
-      problems.push(`'${key}' is not part of a mail-fact trigger — it takes 'on', 'fields' and 'where'`);
+      problems.push(`'${key}' is not part of a mail-fact trigger — it takes 'on', 'fields', 'where' and 'template_variable'`);
+    }
+    if (e.template_variable !== undefined) {
+      if (typeof e.template_variable !== 'string' || e.template_variable.length === 0) {
+        problems.push("'template_variable' must name one of the recipe's mail_template variables");
+      } else if (e.where !== null && typeof e.where === 'object' && !Array.isArray(e.where)
+        && (e.where as Record<string, unknown>).template !== undefined) {
+        problems.push("'template_variable' and 'where.template' each name the template — keep one");
+      }
     }
     const { errors, unknown } = mailFactEntryProblems(parsed.type, e.fields, e.where, options);
     problems.push(...errors);
