@@ -71,7 +71,7 @@ Only if you want to run from a clone — the released binary needs none of this.
 
 ### Requirements
 
-- Node.js 20 or newer.
+- Node.js 24.
 - npm with lockfile v3 support.
 - Platform build tools supported by `better-sqlite3` when a prebuilt binary is unavailable.
 

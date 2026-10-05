@@ -6,7 +6,7 @@ fit together, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Prerequisites
 
-- Node.js 20 or newer
+- Node.js 24
 - npm with lockfile v3 support
 - A toolchain `better-sqlite3` can build against, when no prebuilt binary exists
   for your platform
