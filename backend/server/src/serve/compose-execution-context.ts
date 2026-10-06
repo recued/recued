@@ -21,6 +21,7 @@ import {
   composeExecutorConfig,
 } from '../composition/bin/wire-executor-config.js';
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
+import { createContactKnownValueIndexBuilder } from '../chat-recall-index.js';
 import {
   buildAskLandingAnswerLink,
   buildOwnerSurfaceLink,
@@ -41,6 +42,14 @@ import {
   noticeWorkEntityTextDatesRepairAtBoot,
   type WorkEntityTextDatesNoticeResult,
 } from '../work-entity-date-repair-notice.js';
+import {
+  noticeAutoRunSwitchOnAtBoot,
+  type AutoRunSwitchOnNoticeResult,
+} from '../auto-run-switch-on-notice.js';
+import {
+  rearmAutoRunTimersAtBoot,
+  type AutoRunTimerRearmResult,
+} from '../auto-run-timer-rearm.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -75,10 +84,11 @@ export interface ExecutionLateBoundRefs extends AppContextChatLateBoundGetters {
   publishCollectionRegistry: (registry: CollectionRegistry) => void;
   publishExecutorConfig: (config: ServerExecutorConfig) => void;
   publishExecuteDeps: (deps: ExecuteHandlerDeps) => void;
-  /** D-193 — schedule_recipe is wired in the executor config before
+  /** D-193 amendment — chat's `recipe.schedule` is composed before
    *  maintenance constructs the real schedule store. This live ref is
-   *  published immediately after maintenance composition so the kernel
-   *  dispatcher can create schedules without boot-order inversion. */
+   *  published immediately after maintenance composition so the chat tool
+   *  can create schedules without boot-order inversion. (It once fed the
+   *  `schedule-recipe` kernel step, retired 2026-10-05.) */
   publishScheduleDeps: (deps: ScheduleHandlerDeps | undefined) => void;
   getScheduleDeps: () => ScheduleHandlerDeps | undefined;
   /** D-169 P0 follow-on — published by the boot site once
@@ -266,6 +276,14 @@ export interface ExecutionContext {
   /** The owner's notice for the dates the work-entity store repaired as it
    *  opened. Absent without the notifier and audit log it reports through. */
   workEntityTextDatesNotice?: () => Promise<WorkEntityTextDatesNoticeResult>;
+  /** D-319 — the one-time notice naming the recipes on a timer the update
+   *  left switched off. Absent without the audit log it writes to or the dish
+   *  store it reads; bound without a notifier, it waits and records nothing. */
+  autoRunSwitchOnNotice?: () => Promise<AutoRunSwitchOnNoticeResult>;
+  /** D-319 — the one-shot repair giving each recipe's auto-run timer back to
+   *  the dish it ran as (`auto-run-timer-rearm.ts`). Bound whenever the notice
+   *  is, which reads what it did; boot recovery runs it first. */
+  autoRunTimerRearm?: () => AutoRunTimerRearmResult;
   /** Narrow LIVE batch-membership read — see `ExecuteDepsBundle.getBatch`. The
    *  `/ask` landing gates its detail rendering on the CURRENT member count. */
   getBatch:
@@ -337,7 +355,19 @@ export const composeExecutionContext = async (
   // same late-bound behavior they had in serve-entry.
   lateBound.publishCollectionRegistry(collection.collectionRegistry);
 
+  // D-316 amendment — the chat's whole-warehouse known-value matcher, lent to a
+  // recipe's own `content` PII tags: the same builder and the same three sources
+  // the chat egress uses (`wire-chat-orchestrator`), the vendor registry LIVE so a
+  // pack CRM's mirrored contacts are matched too. Each call reads the warehouse;
+  // the PII functions call it only for a step that tags present content.
+  const piiKnownValues = createContactKnownValueIndexBuilder(
+    () => app.contactStoreRef,
+    () => app.crmRecordMirrorStoreRef,
+    () => liveVendorRegistry(storage.localManifestStore),
+  );
+
   const executorConfig = await composeExecutorConfig({
+    piiKnownValues,
     // D-234 § 234.4 — the inbound peer door needs the notification block, which
     // is composed after this config. Same late-binding seam the container-pick
     // and saga wirings use. ⚠ `lateBound` already publishes this exact getter,
@@ -387,8 +417,6 @@ export const composeExecutionContext = async (
     // D-192 remote byte-fetch — the recipe `data-file-read` + ai-* multimodal
     // channels resolve a `file:remote:*` id through the shared bundle.
     getRemoteFileReadDeps: app.getRemoteFileReadDeps,
-    recipeStore: storage.recipeStore,
-    getScheduleDeps: lateBound.getScheduleDeps,
     sellerStore: app.sellerStoreRef,
     sellerOrderStore: app.sellerOrderStoreRef,
     contractStore: app.contractStoreRef,
@@ -929,6 +957,48 @@ export const composeExecutionContext = async (
             ledger: createDataRepairLedger(storage.db),
             auditLog,
             notifier,
+            now: () => Date.now(),
+          });
+        })(),
+      }
+      : {}),
+    // D-319 — each recipe's timer back on the dish it ran as, once. Needs no
+    // notifier (it only writes timers); bound on the notice's dish store and
+    // under a condition the notice's implies, so whenever the notice runs this
+    // ran first and the notice can name what it switched on.
+    ...(executeDeps.dishStore
+      ? {
+        autoRunTimerRearm: (() => {
+          const dishStore = executeDeps.dishStore;
+          return () => rearmAutoRunTimersAtBoot({
+            db: storage.db,
+            ledger: createDataRepairLedger(storage.db),
+            recipeStore: storage.recipeStore,
+            dishStore,
+            now: () => Date.now(),
+          });
+        })(),
+      }
+      : {}),
+    // D-319 — the recipes on a timer the update left switched off, told once.
+    // ⛔ Bound WITHOUT waiting for the notifier, unlike the two above: the
+    // notice owns that rule (no notifier ⇒ it records nothing), so a boot
+    // with none cannot spend the one shot. The dish store is the one the
+    // timer roster and Automation's rpcs read.
+    ...(storage.auditLog && executeDeps.dishStore
+      ? {
+        autoRunSwitchOnNotice: (() => {
+          const auditLog = storage.auditLog;
+          const dishStore = executeDeps.dishStore;
+          const notifier = executeDepsBundle.notificationBlock;
+          return () => noticeAutoRunSwitchOnAtBoot({
+            ledger: createDataRepairLedger(storage.db),
+            recipeStore: storage.recipeStore,
+            dishStore,
+            auditLog,
+            notifier,
+            // Runs before the listener: the server's last published answer.
+            publicBaseUrl: storage.publicAddress.baseUrl('root'),
             now: () => Date.now(),
           });
         })(),

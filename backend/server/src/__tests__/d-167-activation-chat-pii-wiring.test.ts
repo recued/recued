@@ -58,6 +58,7 @@ type LateGetters = Pick<
   | 'getConnectionStore'
   | 'getExecutorConfig'
   | 'getExecuteDeps'
+  | 'getScheduleDeps'
 >;
 
 const cleanups: Array<() => void> = [];
@@ -93,6 +94,7 @@ const inertLateGetters = (): LateGetters => ({
   getConnectionStore: vi.fn(() => undefined),
   getExecutorConfig: vi.fn(() => undefined),
   getExecuteDeps: vi.fn(() => undefined),
+  getScheduleDeps: vi.fn(() => undefined),
 });
 
 const buildDeps = (

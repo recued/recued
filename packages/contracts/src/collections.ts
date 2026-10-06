@@ -103,11 +103,10 @@ export interface CollectionListQuery {
    *  row, where a bound on the time alone repeats the burst or skips past it. */
   before?: { readonly received_at: number; readonly record_id: string };
   /** Lower bound on `modified_at` (inclusive, unix-ms). Distinct from
-   *  `since`: authors of the `file-watcher` kernel ingredient want to
-   *  detect records whose underlying source was touched after a
-   *  cursor — `received_at` only captures the first insert, whereas
-   *  `modified_at` tracks re-syncs + local edits. Combines with
-   *  `since` via AND when both are present. */
+   *  `since`: a reader detecting records whose underlying source was
+   *  touched after a cursor — `received_at` only captures the first
+   *  insert, whereas `modified_at` tracks re-syncs + local edits.
+   *  Combines with `since` via AND when both are present. */
   modified_since?: number;
   /** Calendar-only event overlap window: start_at < before and end_at > from.
    * Uses event time, not warehouse arrival time; includes ongoing events. */

@@ -193,7 +193,7 @@ describe('executeRecipe — trigger_steps phase', () => {
       ({ should_run: true, items: [{ subject: 'hi' }], last_seen_at: 1234 });
     const recipe = makeRecipe({
       auto_run: { interval_ms: 60_000 },
-      trigger_steps: [{ id: 'mail', ingredient: 'mail-watcher' }],
+      trigger_steps: [{ id: 'mail', ingredient: 'http-watcher' }],
       steps: [{ id: 'passthrough', transform: 'concat', strings: ['done'] }],
     });
     const ctx = makeCtx(recipe, executor);
@@ -207,12 +207,12 @@ describe('executeRecipe — trigger_steps phase', () => {
 
   it('exposes {{trigger.*}} to downstream sequential steps (transform)', async () => {
     const executor: IngredientExecutor = async (slug) => {
-      if (slug === 'mail-watcher') return { should_run: true, last_seen_at: 9999 };
+      if (slug === 'http-watcher') return { should_run: true, last_seen_at: 9999 };
       return null;
     };
     const recipe = makeRecipe({
       auto_run: { interval_ms: 60_000 },
-      trigger_steps: [{ id: 'mail', ingredient: 'mail-watcher' }],
+      trigger_steps: [{ id: 'mail', ingredient: 'http-watcher' }],
       steps: [
         // Transform steps get params deep-resolved by step-runner before
         // dispatch — verifies the trigger namespace is readable via the

@@ -86,6 +86,12 @@ export interface AIOutput {
    *  ⚠ ABSENT MEANS "WORK CONTINUES", never "closed". A model that omits the
    *  field must not be read as signalling completion — the fail-safe direction
    *  is to keep carrying. */
+  /** Follow this work only. Untrusted model-selected source excerpts; the host
+   * validates their shape and exact source match before rendering any of them. */
+  readonly mail_work_recap?: unknown;
+  /** Follow this work source plan. Host-owned rendering validates source
+   * references, quotes, bounds and permission declarations after restoration. */
+  readonly mail_work_plan?: unknown;
   readonly nothing_outstanding?: boolean;
 }
 

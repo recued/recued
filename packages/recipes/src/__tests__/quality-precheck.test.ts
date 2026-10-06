@@ -100,6 +100,41 @@ describe('qualityPrecheck — AI checks', () => {
   });
 });
 
+/** Every shipped AI step is `op: "core.ai.*"` with its payload in `args`; the AI
+ *  checks found AI steps by `ingredient` alone and ran on none of them. */
+describe('qualityPrecheck — the AI checks see an op step', () => {
+  const summarize = (args: Record<string, unknown> = {}) => ({
+    id: 'brief', op: 'core.ai.summarize', args: { 'llm.data': '{{step.deal}}', ...args },
+  });
+
+  it('guard before AI, no PII declaration, the AI TTL floor', () => {
+    const f = qualityPrecheck(mkRecipe({ ttl: 120, steps: [summarize()] }));
+    expect(codes(f)).toEqual(expect.arrayContaining(['no_guard_before_ai', 'no_hash_before_ai', 'ttl_below_floor']));
+    expect(f.find((x) => x.check === 'ttl_below_floor')?.detail).toBe('TTL 120s below floor 300s for AI recipes');
+    const tagged = qualityPrecheck(mkRecipe({ steps: [summarize({ 'llm.pii_fields': { owner_email: 'email' } })] }));
+    expect(codes(tagged)).not.toContain('no_hash_before_ai');
+  });
+
+  it('the ai-prompt system prompt', () => {
+    const f = qualityPrecheck(mkRecipe({ steps: [{ id: 'ask', op: 'core.ai.prompt', args: { 'llm.prompt': '{{step.deal}}' } }] }));
+    expect(f.filter((x) => x.check === 'ai_prompt_missing_system')).toEqual([{
+      severity: 'review', check: 'ai_prompt_missing_system', detail: "step 'ask' core.ai.prompt has no llm.system_prompt",
+    }]);
+  });
+
+  it('an unknown model hint is a review on an op step, critical on an ingredient step', () => {
+    const hintSeverities = (step: Record<string, unknown>) => qualityPrecheck(mkRecipe({ steps: [step] }))
+      .filter((x) => x.check === 'invalid_model_hint').map((x) => x.severity);
+    expect(hintSeverities(summarize({ 'llm.model_hint': 'turbo' }))).toEqual(['review']);
+    expect(hintSeverities({ id: 'ai', ingredient: 'ai-classify', input: { 'llm.model_hint': 'turbo' } })).toEqual(['critical']);
+  });
+
+  it('a non-AI op is not an AI step', () => {
+    const f = qualityPrecheck(mkRecipe({ ttl: 120, steps: [{ id: 'ping', op: 'core.notification.send', args: { text: 'hi' } }] }));
+    expect(codes(f).filter((c) => ['no_guard_before_ai', 'no_hash_before_ai', 'ttl_below_floor'].includes(c))).toEqual([]);
+  });
+});
+
 describe('qualityPrecheck — nested templates', () => {
   it('critical on nested template', () => {
     const r = mkRecipe({
@@ -225,6 +260,42 @@ describe('qualityPrecheck — AI hash + prompt hygiene', () => {
       }],
     });
     expect(codes(qualityPrecheck(r))).toContain('no_hash_before_ai');
+  });
+
+  // ⛔ It counted only hash_replace and the step-level pii_fields list, and told
+  // authors (models too, through recued_saveRecipe) to add one: both turn free text
+  // into tokens, and a recipe protected another way was told it had nothing.
+  it('the notice points to llm.pii_fields and pii-protect, never to hash_replace or a pii_fields list', () => {
+    const r = mkRecipe({
+      steps: [{
+        id: 'ai', ingredient: 'ai-classify',
+        input: { 'llm.data': '{{step.deal}}', 'llm.categories': ['x'] },
+        skip_when: '{{step.deal}} is_null',
+      }],
+    });
+    const detail = qualityPrecheck(r).find((f) => f.check === 'no_hash_before_ai')?.detail ?? '';
+    expect(detail).toContain("AI step's llm.pii_fields");
+    expect(detail).toContain('pii-protect / pii-restore');
+    expect(detail).not.toContain('hash_replace');
+    expect(detail).not.toMatch(/(?<!llm\.)pii_fields/); // only ever llm.pii_fields
+  });
+
+  it('llm.pii_fields, in an input or an op-step\'s args, or a pii-protect bracket suppresses no_hash_before_ai', () => {
+    const ai = {
+      id: 'ai', ingredient: 'ai-classify',
+      input: { 'llm.data': '{{step.deal}}', 'llm.categories': ['x'] },
+      skip_when: '{{step.deal}} is_null',
+    };
+    const tagged = mkRecipe({ steps: [{ ...ai, input: { ...ai.input, 'llm.pii_fields': { email: 'email' } } }] });
+    const viaOp = mkRecipe({ steps: [
+      ai,
+      { id: 'brief', op: 'core.ai.summarize', args: { 'llm.data': '{{step.deal}}', 'llm.pii_fields': { notes: 'content' } } },
+    ] });
+    const bracketed = mkRecipe({ steps: [
+      { id: 'protect', transform: 'pii-protect', data: '{{step.deal}}', fields: [{ path: 'email', kind: 'email' }] },
+      ai,
+    ] });
+    for (const r of [tagged, viaOp, bracketed]) expect(codes(qualityPrecheck(r))).not.toContain('no_hash_before_ai');
   });
 
   it('pii_fields on any step suppresses no_hash_before_ai', () => {

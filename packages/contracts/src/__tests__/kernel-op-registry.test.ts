@@ -91,7 +91,8 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // writer — an invoice-keyed renewal order cannot satisfy the session-shaped
   // confirm's correlation honestly).
   seller: 22,
-  watch: 8,
+  // mail / file / calendar / webhook / recipe retired 2026-10-05.
+  watch: 3,
   dom: 2,
 };
 
@@ -292,7 +293,9 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // view, so no door gains it. Adding it to `TIER1_TOOL_NAMES` would have bought
       // the row by also exposing it, which inverts D-213.
       'core.recall.search|recall|(native)|read',
-      'core.schedule.recipe|schedule|schedule-recipe|write',
+      // NATIVE since 2026-10-05 — no recipe step may schedule another recipe; chat
+      // schedules through its own Tier-1 `recipe.schedule` tool, granted by this id.
+      'core.schedule.recipe|schedule|(native)|write',
       // D-207 §4.5 — the op path moved under `seller`; the backing capability
       // slug (`customer-access-*`) is deliberately unchanged.
       'core.seller.customer-access.close|seller|customer-access-close|write',
@@ -356,14 +359,9 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.shared.read|storage|shared-read|read',
       'core.storage.shared.search|storage|shared-search|read',
       'core.storage.shared.write|storage|shared-write|write',
-      'core.watch.calendar|watch|calendar-watcher|read',
-      'core.watch.file|watch|file-watcher|read',
       'core.watch.http|watch|http-watcher|read',
-      'core.watch.mail|watch|mail-watcher|read',
-      'core.watch.recipe|watch|recipe-watcher|read',
       'core.watch.time-relative|watch|time-relative-watcher|read',
       'core.watch.time|watch|time-watcher|read',
-      'core.watch.webhook|watch|webhook-watcher|read',
       'core.webhook.event.get|webhook|webhook-event-get|read',
       'core.work-entity.booking.create|work-entity|booking-create|write',
       'core.work-entity.booking.delete|work-entity|booking-delete|destructive',

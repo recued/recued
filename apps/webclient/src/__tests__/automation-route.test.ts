@@ -22,6 +22,25 @@ import {
   MCP_RESOURCE_POLL_SOURCE_ID,
 } from '@recued/contracts';
 
+// The Add picker mounts inert on the fake document, so its search is read off
+// the real `wireRefPicker` call. Pass-through: every export is the real one.
+const addPicker = vi.hoisted(() => ({
+  searches: [] as Array<(query: string) => Promise<ReadonlyArray<{ id: string }>>>,
+}));
+vi.mock('@recued/ui-shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@recued/ui-shared')>();
+  return {
+    ...actual,
+    RefPicker: {
+      ...actual.RefPicker,
+      wireRefPicker: (...args: Parameters<typeof actual.RefPicker.wireRefPicker>) => {
+        addPicker.searches.push(args[1].search as (typeof addPicker.searches)[number]);
+        return actual.RefPicker.wireRefPicker(...args);
+      },
+    },
+  };
+});
+
 import {
   AUTOMATION_ROUTE_ADD_ATTR,
   AUTOMATION_ROUTE_ADD_ERROR_ATTR,
@@ -203,7 +222,7 @@ const clickRetry = (
   }
 };
 
-const clickAdd = (host: FakeEl, section: 'triggers' | 'schedules'): void => {
+const clickAdd = (host: FakeEl, section: 'triggers' | 'schedules' | 'dishes'): void => {
   const target = {
     closest: (selector: string) =>
       selector === `[${AUTOMATION_ROUTE_ADD_ATTR}]`
@@ -1308,6 +1327,121 @@ describe('Automation route — D-319 §5.4: one list, by recipe then dish', () =
     expect(dishesListCaller.mock.calls.length, 'the list re-read').toBeGreaterThan(reads);
   });
 
+  it('a recipe the server only ships is not offered to switch on — its timer would never run', async () => {
+    const shipped = recipeEntry('today', 'Today');
+    shipped.source = 'bundled';
+    shipped.recipe.auto_run = { interval_ms: 300_000 };
+    const ticker = recipeEntry('ticker', 'Ticker recipe');
+    ticker.recipe.auto_run = { interval_ms: 300_000 };
+    const dishesCreateCaller = vi.fn(async () => ({ dish: dishOf() }));
+    const dishesDefaultsCaller = vi.fn(async () => ({ config_overlay: {} }));
+    const rig = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      triggersListCaller: async () => ({ triggers: [] }),
+      dishesListCaller: async () => ({ dishes: [] }),
+      dishesCreateCaller: dishesCreateCaller as never,
+      dishesDefaultsCaller,
+      recipeEntriesCaller: async () => ({ recipes: [shipped, ticker] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const html = rig.host.innerHTML;
+    expect(html).toContain('data-recued-automation-recipe="ticker"');
+    expect(html).not.toContain('data-recued-automation-recipe="today"');
+    // Off counts the one recipe nobody switched on, not the uninstalled one.
+    chipCount(html, 'off', 'Off', 1);
+
+    // A control painted before the list said so asks nothing and says why.
+    const before = rig.doc.body.children.length;
+    clickAction(rig.host, 'switch-on:recipe', 'today');
+    await flush();
+    await flush();
+    expect(rig.doc.body.children.length, 'no form opened').toBe(before);
+    expect(dishesCreateCaller).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).toContain('Its pack is not installed, so it does not start on its own.');
+  });
+
+  it('a dish of a recipe the server only ships keeps its line, with its pack named as the reason and no Switch on', async () => {
+    const shipped = recipeEntry('today', 'Today');
+    shipped.source = 'bundled';
+    shipped.recipe.auto_run = { interval_ms: 300_000 };
+    const rig = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      triggersListCaller: async () => ({ triggers: [] }),
+      dishesListCaller: async () => ({ dishes: [dishOf({ dish_id: 'dsh_early', recipe_id: 'today' })] }),
+      dishesCreateCaller: vi.fn() as never,
+      dishesDefaultsCaller: async () => ({ config_overlay: {} }),
+      recipeEntriesCaller: async () => ({ recipes: [shipped] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const html = rig.host.innerHTML;
+    expect(html).toContain('data-recued-automation-dish="dsh_early"');
+    expect(html).toContain('data-recued-automation-not-installed="today"');
+    expect(html).toContain('<a href="#packs">Install it from Packs</a> to switch it on.');
+    expect(html).not.toContain('Not switched on');
+    expect(html).not.toContain('switch-on:recipe');
+  });
+
+  it('a recipe the server only ships, listed for a row with no dish, is not "Not switched on"', async () => {
+    const shipped = recipeEntry('today', 'Today');
+    shipped.source = 'bundled';
+    shipped.recipe.auto_run = { interval_ms: 300_000 };
+    const rig = mountRoute({
+      autoRunListCaller: async () => ({ entries: [] }),
+      // A schedule made before D-319 belongs to no dish.
+      schedulesListCaller: async () => ({ schedules: [schedule({ schedule_id: 'sch_today', recipe_id: 'today' })] }),
+      triggersListCaller: async () => ({ triggers: [] }),
+      dishesListCaller: async () => ({ dishes: [] }),
+      dishesCreateCaller: vi.fn() as never,
+      dishesDefaultsCaller: async () => ({ config_overlay: {} }),
+      recipeEntriesCaller: async () => ({ recipes: [shipped] }),
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const html = rig.host.innerHTML;
+    expect(html).toContain('data-recued-automation-recipe="today"');
+    expect(html).toContain('data-recued-automation-not-installed="today"');
+    expect(html).not.toContain('Not switched on');
+    chipCount(html, 'off', 'Off', 0);
+  });
+
+  it('the Dishes section’s Add lists no recipe the server only ships that starts on its own; Add schedule still does', async () => {
+    const shippedTimer = recipeEntry('today', 'Today');
+    shippedTimer.source = 'bundled';
+    shippedTimer.recipe.auto_run = { interval_ms: 300_000 };
+    const shippedManual = recipeEntry('remind-me-of', 'Remind me');
+    shippedManual.source = 'bundled';
+    const ticker = recipeEntry('ticker', 'Ticker recipe');
+    ticker.recipe.auto_run = { interval_ms: 300_000 };
+    const options = async (section: 'dishes' | 'schedules'): Promise<string[]> => {
+      addPicker.searches.length = 0;
+      const rig = mountRoute({
+        initialSection: section,
+        dishesListCaller: async () => ({ dishes: [] }),
+        dishesCreateCaller: vi.fn() as never,
+        schedulesCreateCaller: vi.fn() as never,
+        recipeEntriesCaller: async () => ({ recipes: [shippedTimer, shippedManual, ticker] }),
+      });
+      await rig.route.whenLoaded();
+      clickAdd(rig.host, section);
+      await flush();
+      await flush();
+      const search = addPicker.searches.at(-1);
+      expect(search, `the ${section} picker mounted`).toBeDefined();
+      const found = (await search!('')).map((option) => option.id).sort();
+      rig.route.dispose();
+      return found;
+    };
+    expect(await options('dishes')).toEqual(['remind-me-of', 'ticker']);
+    expect(await options('schedules')).toEqual(['remind-me-of', 'ticker', 'today']);
+  });
+
   it('the settings form picks a mail template as on the recipe page, when the host wires the picker', async () => {
     const ticker = recipeEntry('ticker', 'Ticker recipe');
     ticker.recipe.auto_run = { interval_ms: 300_000 };
@@ -1447,6 +1581,95 @@ describe('Automation route — D-319 §5.4: one list, by recipe then dish', () =
     expect(list).toContain('Daily at 9:00 AM');
     expect(list).not.toContain('Ticker recipe');
     expect(html).toContain('Coming up <span class="automation-subnav-count">2</span>');
+  });
+
+  it('a timer with a time window says when it REALLY runs, and comes up at its first check inside it', async () => {
+    // Owner (2026-10-05) on "Runs every 10 minutes and weekdays at 8:00 AM":
+    // "is a wrong time use a real time in the message". The shipped Today
+    // recipe: checked every 10 minutes, open weekdays 8-9 (its defaults).
+    const today = recipeEntry('today', 'Today');
+    Object.assign(today.recipe, {
+      auto_run: { interval_ms: 600_000 },
+      trigger_steps: [{ id: 'morning', op: 'core.watch.time', args: {
+        weekdays: '{{config.weekdays}}', start_hour: '{{config.start_hour}}', end_hour: '{{config.end_hour}}',
+      } }],
+      variables: {
+        start_hour: { label: 'Window start hour', type: 'number', default: 8 },
+        end_hour: { label: 'Window end hour', type: 'number', default: 9 },
+        weekdays: { label: 'Active weekdays', type: 'array', default: [1, 2, 3, 4, 5] },
+      },
+    });
+    // Monday 04:02 in Los Angeles is its next CHECK; nothing runs before 08:02.
+    const nextCheck = Date.parse('2026-10-05T04:02:00-07:00');
+    const sixAm = Date.parse('2026-10-05T06:00:00-07:00');
+    const mount = (section: 'all' | 'coming-up') => mountRoute({
+      initialSection: section,
+      serverTimeZone: () => 'America/Los_Angeles',
+      dishesListCaller: async () => ({ dishes: [
+        dishOf({ dish_id: 'dsh_today', recipe_id: 'today' }),
+        dishOf({ dish_id: 'dsh_work', name: 'Work mailbox' }),
+      ] }),
+      schedulesListCaller: async () => ({ schedules: [
+        schedule({ schedule_id: 'sch_six', recipe_id: 'parcels', dish_id: 'dsh_work', next_run_at: sixAm }),
+      ] }),
+      autoRunListCaller: async () => ({ entries: [
+        autoRunEntry({ recipe_id: 'today', dish_id: 'dsh_today', recipe_name: 'Today', interval_ms: 600_000, next_run_at: nextCheck }),
+      ] }),
+      recipeEntriesCaller: async () => ({ recipes: [today, recipeEntry('parcels', 'Shop parcels watch')] }),
+      recipeNamesCaller,
+    });
+
+    const all = mount('all');
+    await all.route.whenLoaded();
+    await flush();
+    expect(all.host.innerHTML).toContain('Runs every 10 minutes from 8:00 to 9:00 AM on weekdays');
+    expect(all.host.innerHTML).toContain('every 10 minutes from 8:00 to 9:00 AM on weekdays');
+    expect(all.host.innerHTML).not.toContain('Runs every 10 minutes<');
+
+    const coming = mount('coming-up');
+    await coming.route.whenLoaded();
+    await flush();
+    const html = coming.host.innerHTML;
+    const list = html.slice(html.indexOf('data-recued-automation-coming-up'));
+    expect(list).toContain('Every 10 minutes from 8:00 to 9:00 AM on weekdays');
+    // The 06:00 schedule comes BEFORE Today: Today's next run is 08:02, not
+    // its 04:02 check. Instants, so this holds in any test machine's zone.
+    expect(list.indexOf('Work mailbox')).toBeGreaterThan(0);
+    expect(list.indexOf('#recipes/today')).toBeGreaterThan(0);
+    expect(list.indexOf('Work mailbox')).toBeLessThan(list.indexOf('#recipes/today'));
+  });
+
+  it('a timer that waits for data says what it waits for, shows its next CHECK, and is not coming up', async () => {
+    // Owner: "do the event wording for the 14 data-gated timers too". Its
+    // next check runs it only if the page has changed: no time is its next run.
+    const urgent = recipeEntry('urgent-mail', 'Urgent mail');
+    Object.assign(urgent.recipe, {
+      auto_run: { interval_ms: 60_000 },
+      trigger_steps: [{ id: 'page', op: 'core.watch.http', args: { target_url: '{{config.url}}' } }],
+      variables: { url: { label: 'Page', type: 'url', default: 'https://acme.com/pricing' } },
+    });
+    const mount = (section: 'all' | 'coming-up') => mountRoute({
+      initialSection: section,
+      dishesListCaller: async () => ({ dishes: [dishOf({ dish_id: 'dsh_urgent', recipe_id: 'urgent-mail' })] }),
+      schedulesListCaller: async () => ({ schedules: [] }),
+      autoRunListCaller: async () => ({ entries: [
+        autoRunEntry({ recipe_id: 'urgent-mail', dish_id: 'dsh_urgent', recipe_name: 'Urgent mail', interval_ms: 60_000, next_run_at: NOW + 60_000 }),
+      ] }),
+      recipeEntriesCaller: async () => ({ recipes: [urgent] }),
+      recipeNamesCaller,
+    });
+
+    const all = mount('all');
+    await all.route.whenLoaded();
+    await flush();
+    expect(all.host.innerHTML).toContain('Runs when the page at acme.com/pricing changes, checking every minute');
+    expect(all.host.innerHTML).toContain('next check ');
+
+    const coming = mount('coming-up');
+    await coming.route.whenLoaded();
+    await flush();
+    const html = coming.host.innerHTML;
+    expect(html.slice(html.indexOf('data-recued-automation-coming-up'))).not.toContain('#recipes/urgent-mail');
   });
 
   it('a re-read keeps the list on screen; it does not blank to Loading…', async () => {

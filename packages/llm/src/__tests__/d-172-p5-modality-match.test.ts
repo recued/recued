@@ -1,6 +1,7 @@
 /** D-172 P5 / N.8 / Q4 — modality-aware match resolution + warn-on-none. */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect } from 'vitest';
 import { matchLLM } from '../match.js';
+import { noteImageInput, resetEndpointCapabilities } from '../endpoint-capabilities.js';
 import { buildAvailability } from '../availability.js';
 import { createQuotaTracker } from '../quota.js';
 import { LLMError } from '../types.js';
@@ -119,5 +120,63 @@ describe('matchLLM — modality filtering (N.8)', () => {
     expect(match.source.kind).toBe('pool');
     if (match.source.kind === 'pool') expect(match.source.entry.id).toBe('fast-vision');
     expect(match.used_downgrade).toBe(true);
+  });
+});
+
+/** Picture input proven by Test connection (`endpoint-capabilities` § Picture
+ *  input). Before it, `modalities.image` could only be typed into a stored
+ *  config — nothing in the product typed it — so every picture turn refused. */
+describe('matchLLM — a picture reaches a source Test connection proved', () => {
+  beforeEach(() => { resetEndpointCapabilities(); });
+
+  const pick = async (config: LLMConfig) => matchLLM(
+    { requires: requires(), allowUpgrade: false, requireModalities: { image: true } },
+    { config, availability: await avail(config), quota: createQuotaTracker(), strategy: 'round_robin' },
+  );
+
+  it('routes a picture to the entry proven in this process', async () => {
+    const config: LLMConfig = { free_pool: [apiEntry('a'), apiEntry('b', { model: 'qwen-vl' })] };
+    noteImageInput({ provider: 'openai-compatible', model: 'qwen-vl' }, true);
+    const match = await pick(config);
+    if (match.source.kind !== 'pool') throw new Error('expected a pool match');
+    expect(match.source.entry.id).toBe('b');
+  });
+
+  /** A boot that could not read the store hydrates nothing; the per-use config
+   *  read still carries the stored proof, so it must count on its own. */
+  it('routes a picture to an entry whose stored proof says so, with nothing in memory', async () => {
+    const config: LLMConfig = { free_pool: [apiEntry('a'), apiEntry('b', { image_input_ok: true })] };
+    const match = await pick(config);
+    if (match.source.kind !== 'pool') throw new Error('expected a pool match');
+    expect(match.source.entry.id).toBe('b');
+  });
+
+  it('routes a picture to a proven slot', async () => {
+    const config: LLMConfig = {
+      slot_1: { provider: 'openai', model: 'gpt-4o', api_key: 'k', speed: 'fast', supports_json: true },
+    };
+    noteImageInput({ provider: 'openai', model: 'gpt-4o' }, true);
+    expect((await pick(config)).source.kind).toBe('slot');
+  });
+
+  it('still refuses a picture when no source is proven or declared', async () => {
+    const config: LLMConfig = { free_pool: [apiEntry('a')] };
+    noteImageInput({ provider: 'openai-compatible', model: 'other' }, true);
+    await expect(pick(config)).rejects.toBeInstanceOf(LLMError);
+  });
+
+  /** ⚠ The proof only ever ADDS: a declaration typed into the config is the
+   *  owner's to keep, and a demand for audio still needs audio. */
+  it('adds picture input without dropping or inventing other kinds', async () => {
+    const config: LLMConfig = { free_pool: [apiEntry('a', { modalities: { audio: true } })] };
+    noteImageInput({ provider: 'openai-compatible', model: 'llama' }, true);
+    const availability = await avail(config);
+    const demand = (requireModalities: { image?: boolean; audio?: boolean; document?: boolean }) =>
+      () => matchLLM(
+        { requires: requires(), allowUpgrade: false, requireModalities },
+        { config, availability, quota: createQuotaTracker(), strategy: 'round_robin' },
+      );
+    expect(demand({ image: true, audio: true })().source.kind).toBe('pool');
+    expect(demand({ document: true })).toThrow(LLMError);
   });
 });

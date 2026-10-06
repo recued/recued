@@ -16,7 +16,12 @@
  *  layer raises a typed RpcError the Kitchen executor can surface as
  *  `Failed: <message>` in the result panel. */
 
-import { IngredientError, type KernelDispatchers } from '@recued/ingredients';
+import {
+  IngredientError,
+  RECIPE_KEYED_WATCHER_SLUGS,
+  type KernelDispatchers,
+  type KernelWatcherSlug,
+} from '@recued/ingredients';
 import { RpcError, type TriggerTestRequest, type TriggerTestResult } from '@recued/contracts';
 import type { HandlerSlice, ServerRpcRegistry } from '@recued/contracts';
 
@@ -25,9 +30,9 @@ import type { WsClient } from './ws-server.js';
 type WatcherDispatcher = NonNullable<KernelDispatchers['watcher']>;
 
 export interface TriggerTestRpcDeps {
-  /** Same dispatcher bin.ts composes for the kernel adapter +
-   *  `runtime.runWatcher`. Shared binding — test-fire routes through
-   *  the identical handler set, so semantics match production ticks. */
+  /** Same dispatcher bin.ts composes for the kernel adapter. Shared
+   *  binding — test-fire routes through the identical handler set, so
+   *  semantics match production ticks. */
   watcherDispatcher: WatcherDispatcher;
   /** Clock override for tests. Production uses `Date.now`. */
   now?: () => number;
@@ -62,6 +67,25 @@ export const handleTestTrigger = async (
 ): Promise<TriggerTestResult> => {
   const req = validate(rawArgs);
   const now = deps.now ?? Date.now;
+
+  // ⛔⛔ A TEST FIRE IS NOT DRY FOR A WATCHER THAT KEYS PER-RECIPE STATE
+  // (2026-10-05). The dispatcher below is the production one, and these
+  // watchers act on the recipe their `recipe_id` names: `time-relative-watcher`
+  // writes its firing ledger, `http-watcher` holds the page it reported
+  // (`once_per_change`). Here that id is whatever the client sent, so a test
+  // fire could act on ANOTHER recipe's state — what D-228 fenced on
+  // `runtime.runWatcher` (since retired) for the webhook watcher's queue, which
+  // a caller could read and empty. Same set, same refusal, before dispatch.
+  // No client calls this rpc today.
+  if (RECIPE_KEYED_WATCHER_SLUGS.has(req.ingredient as KernelWatcherSlug)) {
+    throw new RpcError(
+      'bad_request',
+      `runtime.testTrigger[${req.ingredient}]: this watcher keys per-recipe state and `
+        + 'requires engine-owned recipe identity, which this transport cannot supply. '
+        + 'A test fire would act on that state, so it runs only as part of the owning recipe.',
+      400,
+    );
+  }
 
   let output: Record<string, unknown>;
   try {

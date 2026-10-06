@@ -30,7 +30,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { parseMailWorkReadRequest } from './mail-work-fresh-read.js';
 import { parseBrief } from './chat-rolling-brief.js';
+import { parseMailWorkEvidence } from './mail-work-evidence.js';
 import { parseChatSearchCursor, searchChatHistory } from './chat-history-search.js';
 import { parseChatDeliveryListRequest } from './chat-delivery-read.js';
 import { createListPager, readListPageRequest, type ListPager } from './list-pager.js';
@@ -38,7 +40,6 @@ import {
   CHAT_MODEL_ROUTING_LAYER_SET,
   CHAT_MODEL_SOURCE_ID_SET,
   CHAT_SESSION_CHANGED_FIELD_SET,
-  CHAT_TOOL_CATALOG_SCOPE_VALIDATION_ISSUE_CODES,
   CONNECTION_MCP_ANNOTATION_VALIDATION_ISSUE_CODES,
   MCP_INBOUND_TOKEN_VALIDATION_ISSUE_CODES,
   RpcError,
@@ -52,7 +53,6 @@ import {
   isChatModelSourceId,
   isReservedOwnerContractId,
   isReservedPublicContractId,
-  validateChatToolCatalogScopeInput,
   validateConnectionMcpAnnotationInput,
   validateInboundTokenChatModeUpdate,
   validateMcpInboundTokenInput,
@@ -76,12 +76,10 @@ import {
   type ChatHistoryCursor,
   type ChatSessionGetRequest,
   type ChatSessionSummary,
-  type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
   type ExecutionCaseLearnedEntry,
   type RecipeDefinition,
   type HandlerSlice,
-  type IngredientKind,
   type IssuedMcpInboundToken,
   type McpInboundTokenRecord,
   type RecuedServerSignature,
@@ -99,7 +97,6 @@ import type { ChatBroadcastEmitter } from './chat-orchestrator.js';
 import type { ChatOrchestrator } from './chat-orchestrator.js';
 import type { ChatSessionBusyRegistry } from './chat-session-busy.js';
 import type { ChatStore } from './storage/chat-store.js';
-import type { ChatToolCatalogStore } from './storage/chat-tool-catalog-store.js';
 import type { ChatConnectionMcpStore } from './storage/chat-connection-mcp-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { PEER_HANDLE_CONFLICT_PREFIX } from './storage/chat-inbound-token-store.js';
@@ -118,15 +115,9 @@ export interface ChatRpcDeps {
   store: ChatStore;
   /** Late-bound to the actual receive supervisor; never inferred from sends. */
   messengerReceiveStatus?: (vendor: string) => ChatMessengerReceiveState;
-  /** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope store. When
-   *  absent (dbless test harness, store unavailable), the tool-catalog
-   *  rpcs throw `not_configured` (501) so callers see a stable refusal
-   *  rather than silent default behaviour. */
-  toolCatalogStore?: ChatToolCatalogStore;
   /** D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
    *  annotation store. When absent, the `chat.connection_mcp.*` rpcs
-   *  throw `not_configured` (501) — same posture as the per-kind scope
-   *  store. */
+   *  throw `not_configured` (501) rather than fall back to a default. */
   connectionMcpStore?: ChatConnectionMcpStore;
   /** D-228 slice 4 — how many of a peer's tools are reachable as governed pack
    *  operations. The picker's visibility predicate: it used to count tools the
@@ -318,8 +309,6 @@ type ChatMethods =
   | 'chat.rolling_brief.set'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
-  | 'chat.tool_catalog.get'
-  | 'chat.tool_catalog.set'
   | 'chat.connection_mcp.list'
   | 'chat.connection_mcp.get'
   | 'chat.connection_mcp.set'
@@ -847,6 +836,7 @@ export const handleSend = async (
     data_diagnosis?: ChatDataDiagnosisRequest;
     /** The client asks for a turn that may only read. Narrowing only. */
     read_only?: boolean;
+    mail_work?: import('@recued/contracts').MailWorkReadRequest;
   },
 ): Promise<ChatTurnAcceptance & {
   turn_id: string;
@@ -865,6 +855,7 @@ export const handleSend = async (
     || (safe.read_only !== undefined && typeof safe.read_only !== 'boolean')) {
     throw new RpcError('bad_request', 'Invalid conversation submission.', 400);
   }
+  const mail_work = safe.mail_work === undefined ? undefined : parseMailWorkReadRequest(safe.mail_work);
   const queue_generation = safe.queue_generation === undefined ? undefined
     : ensureNonEmptyString('chat.send', 'queue_generation', safe.queue_generation);
   if ((queue_generation?.length ?? 0) > 128) throw new RpcError('bad_request', 'Invalid conversation generation.', 400);
@@ -1027,7 +1018,7 @@ export const handleSend = async (
     );
   }
   // A retry exists to run a write again; a read-only turn could never run it.
-  if (safe.retry_of_plan_id !== undefined && safe.read_only === true) {
+  if (safe.retry_of_plan_id !== undefined && (safe.read_only === true || mail_work !== undefined)) {
     throw new RpcError(
       'bad_request',
       'chat.send: a read-only turn cannot also request a retry',
@@ -1203,7 +1194,8 @@ export const handleSend = async (
           : {}),
         ...(retry_of_plan_id ? { retry_of_plan_id } : {}),
         ...(data_diagnosis ? { data_diagnosis } : {}),
-        ...(safe.read_only === true ? { read_only: true } : {}),
+        ...((safe.read_only === true || mail_work !== undefined) ? { read_only: true } : {}),
+        ...(mail_work ? { mail_work } : {}),
         on_accepted: (ack) => {
           acceptedTurnId = ack.turn_id;
           resolve({
@@ -1924,7 +1916,8 @@ export const handleSetRollingBrief = (
  *  🔑 ONLY POSSIBLE NOW THAT IT IS DURABLE. A module-level Map that dies with
  *  the process cannot be shown to anyone; a row can.
  *
- *  ⚠ IT IS AN INTERPRETATION, NOT A RECORD, and the surface must say so.
+ *  ⚠ THE AI BRIEF IS AN INTERPRETATION, and the surface must say so. Exact
+ *  mail-work observations are returned separately in `source_evidence`.
  *  Measured over 386 constraint entries: 10% are exact substrings of a user
  *  message, 66% near-copies, 25% reworded. And it asserts values at 98.4%
  *  accuracy — roughly 1 in 60 carried values is wrong, propagated faithfully
@@ -1939,11 +1932,15 @@ export const handleGetSessionBrief = async (
     throw new RpcError('bad_request', 'chat.session.brief.get: session_id is required', 400);
   }
   const json = await deps.store.readSessionBrief(safe.session_id);
-  if (json === null) return { brief: null };
   // ⛔ VALIDATE BEFORE IT LEAVES THE SERVER. A row that no longer parses as a
   //   brief reads as ABSENT rather than shipping an unknown shape to a client
   //   that would have to guess at it.
-  try { return { brief: parseBrief(JSON.parse(json)) }; } catch { return { brief: null }; }
+  let brief = null;
+  try { brief = json === null ? null : parseBrief(JSON.parse(json)); } catch { /* unreadable AI note */ }
+  const sourceJson = await deps.store.readMailWorkEvidence?.(safe.session_id);
+  const sourceEvidence = sourceJson ? parseMailWorkEvidence(sourceJson) : null;
+  // Display and Clear cover both kinds of carry, including turns with no fold.
+  return { brief: sourceEvidence ? { ...brief, source_evidence: sourceEvidence } : brief };
 };
 
 /** Drop what the assistant is carrying for one conversation.
@@ -1966,99 +1963,12 @@ export const handleClearSessionBrief = (
     throw new RpcError('bad_request', 'chat.session.brief.clear: session_id is required', 400);
   }
   deps.store.deleteSessionBrief(safe.session_id);
+  deps.store.deleteMailWorkEvidence?.(safe.session_id);
   void safeLogActivity(
     deps.auditLog, 'chat_session_brief_cleared', 'chat_session_brief',
     JSON.stringify({ session_id: safe.session_id }),
   );
   return { ok: true };
-};
-
-/** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope read. Returns
- *  the persisted shape (or the substrate default at first boot). The
- *  store hides corrupted rows behind a default fall-through so the
- *  rpc never surfaces undefined to the Settings page. */
-export const handleToolCatalogGet = (
-  deps: ChatRpcDeps,
-): { enabled_kinds: readonly string[]; updated_at: number } => {
-  if (!deps.toolCatalogStore) {
-    throw new RpcError(
-      'not_configured',
-      'chat.tool_catalog.get: tool-catalog store is not wired (dbless / pre-init)',
-      501,
-    );
-  }
-  const scope = deps.toolCatalogStore.getScope();
-  return {
-    enabled_kinds: scope.enabled_kinds,
-    updated_at: scope.updated_at,
-  };
-};
-
-/** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope write. Validates
- *  via `validateChatToolCatalogScopeInput` first; bad shapes raise
- *  `bad_request` (400) with detail strings carrying the closed-list
- *  issue codes. Persists, emits the `chat.tool_catalog_scope_changed`
- *  broadcast on success. Best-effort audit emit. */
-export const handleToolCatalogSet = (
-  deps: ChatRpcDeps,
-  args: { enabled_kinds: readonly string[] },
-): { enabled_kinds: readonly string[]; updated_at: number } => {
-  if (!deps.toolCatalogStore) {
-    throw new RpcError(
-      'not_configured',
-      'chat.tool_catalog.set: tool-catalog store is not wired (dbless / pre-init)',
-      501,
-    );
-  }
-  ensureRecordArgs('chat.tool_catalog.set', args);
-  const validation = validateChatToolCatalogScopeInput(args);
-  if (!validation.ok) {
-    // Surface every code so callers can map each (the Settings page
-    // renders one inline error per code without re-parsing).
-    const codes = validation.issues.map((i) => i.code).join(', ');
-    const details = validation.issues.map((i) => i.detail).join('; ');
-    // Codes is informational — the closed list is also exported for
-    // callers that prefer matching against the registry; this `void`
-    // reads it so the import stays load-bearing during lint passes.
-    void CHAT_TOOL_CATALOG_SCOPE_VALIDATION_ISSUE_CODES;
-    throw new RpcError(
-      'bad_request',
-      `chat.tool_catalog.set: ${codes} (${details})`,
-      400,
-    );
-  }
-  const now = deps.now ?? Date.now;
-  const persisted = deps.toolCatalogStore.setScope({
-    enabled_kinds: validation.enabled_kinds as ReadonlyArray<IngredientKind>,
-    now: now(),
-  });
-  // Broadcast even when the persisted scope is identical to the prior
-  // one — the bus is the multi-client coherence path, and a no-op
-  // notify is cheap. The Settings page reducer is idempotent.
-  if (deps.broadcast) {
-    try {
-      deps.broadcast.emit({
-        kind: 'chat.tool_catalog_scope_changed',
-        enabled_kinds: persisted.enabled_kinds,
-        updated_at: persisted.updated_at,
-      });
-    } catch {
-      // observability-only; never abort the rpc on emit failure
-    }
-  }
-  void safeLogActivity(
-    deps.auditLog,
-    'chat_tool_catalog_scope_set',
-    'chat_tool_catalog_scope',
-    JSON.stringify({
-      enabled_kinds: persisted.enabled_kinds,
-    }),
-  );
-  void (persisted satisfies ChatToolCatalogScopeState);
-  return {
-    enabled_kinds: persisted.enabled_kinds,
-    updated_at: persisted.updated_at,
-  };
 };
 
 /** D-137 W2.3 § A.10 — list every persisted MCP-connection annotation.
@@ -3069,8 +2979,6 @@ export const makeChatHandlers = (
       'chat.rolling_brief.set',
       'chat.session.brief.get',
       'chat.session.brief.clear',
-      'chat.tool_catalog.get',
-      'chat.tool_catalog.set',
       'chat.connection_mcp.list',
       'chat.connection_mcp.get',
       'chat.connection_mcp.set',
@@ -3186,12 +3094,6 @@ export const makeChatHandlers = (
         handleClearSessionBrief(deps, args as { session_id: string }),
       'chat.default_model_pref.set': async (args) =>
         handleSetDefaultModelPref(deps, args as { source_id: string }),
-      'chat.tool_catalog.get': async () => handleToolCatalogGet(deps),
-      'chat.tool_catalog.set': async (args) =>
-        handleToolCatalogSet(
-          deps,
-          args as { enabled_kinds: readonly string[] },
-        ),
       'chat.connection_mcp.list': async () => handleConnectionMcpList(deps),
       'chat.connection_mcp.get': async (args) =>
         handleConnectionMcpGet(

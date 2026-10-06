@@ -76,6 +76,26 @@ describe('applyAutoPiiForExecution', () => {
     expect(stepsOf(result).some((s) => s.transform === 'pii-restore')).toBe(true);
   });
 
+  // D-316 amendment (owner ruling 2026-10-05): a content-only finding gets a
+  // `content` tag too — on a server it hides the known contacts and every email.
+  it('tags an AI step that reads only a mail subject `content`, through the canonical classifier', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const recipe = recipeWith([
+      { id: 'mail', ingredient: 'mail-get' },
+      { id: 'note', transform: 'pick', source: { subject: '{{step.mail.record.hot_fields.subject}}' } },
+      {
+        id: 'triage',
+        ingredient: 'ai-classify',
+        input: { 'llm.data': '{{step.note}}', 'llm.categories': ['reply', 'fyi'] },
+      },
+    ], 'auto-pii-content');
+
+    const result = applyAutoPiiForExecution(recipe);
+
+    const triage = stepsOf(result).find((s) => s.id === 'triage')!;
+    expect((triage.input as Record<string, unknown>)['llm.pii_fields']).toEqual({ subject: 'content' });
+  });
+
   it('warns once with step ids and without raw PII values', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const recipe = leakingRecipe();

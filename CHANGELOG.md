@@ -7,6 +7,122 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.6 — 2026-10-06
+
+A Home Assistant pack lets you check on and control a self-hosted Home Assistant
+from chat or a workflow, and its camera check asks your AI about a picture once
+Test connection shows a model can see one. Workflows that read your mail and
+calendar now read the mailboxes and calendars you have, meeting reminders see
+every meeting, and the automatic workflows 26.9.30 stopped get their timers
+back. Chat follows a held action through to its answer, an approval says what
+it would change, and personal data stays protected in more places. The old mail,
+file, calendar, webhook and workflow watchers are retired in favour of triggers.
+
+⚠ If you updated to 26.9.30, an automatic workflow you had paused may start
+again: 26.9.30 lost the switches that said which were paused. A one-time notice
+lists the workflows that now run, so you can switch any of them off in
+Automation.
+
+⚠ A workflow you wrote yourself that uses one of the retired watchers stops at
+its trigger. Checking the workflow names what to use instead.
+
+⚠ If apt reports signature errors on a Linux server you installed as root, an
+earlier first boot replaced `/dev/null` with a regular file. Reboot, or run as
+root: `mknod -m 666 /dev/null.new c 1 3 && mv -f /dev/null.new /dev/null`.
+
+### Added
+
+- **Home Assistant.** A new pack connects to your self-hosted Home Assistant
+  with a long-lived access token. It reads states, history, the logbook,
+  calendars and camera snapshots; runs everyday controls (lights, switches,
+  climate, locks, media, scenes) straight away when you ask in your own chat or
+  run them yourself, and asks first when another app, another person or a
+  schedule does; and always asks before unlocking a door, disarming an alarm,
+  opening a cover such as a garage door, or calling any other service. An
+  approval names the device it changes. Its workflows check device health, check
+  the house before you leave, report weekly energy use, and control a device by
+  its name.
+- **A camera check asks your AI about a picture.** It takes a picture from one
+  camera and asks a yes-or-no question about it ("is someone at the door?"),
+  alerting on yes, or also when it cannot tell. Run it by hand, from chat or on
+  a schedule that a motion sensor can gate. The **Home Assistant Camera Alerts**
+  pack lets a Home Assistant automation start it through a webhook; what Home
+  Assistant sends can only choose a camera and one of the questions you listed,
+  never write the words your AI reads. Each snapshot is kept as a file in your
+  data.
+- **An AI model can be shown pictures once Test connection proves it can.** Test
+  connection now also shows the model a small test picture, and a model that
+  reads it back is used for steps that send a picture. A pack can keep the files
+  it captures, such as camera snapshots, out of the background AI passes.
+- **Chat can schedule a workflow**, once or on a repeating schedule, through the
+  same checks as the Run dialog; its schedules are listed in Automation. Only you
+  can, from your own chat, messenger or local CLI.
+- **A trigger can follow a dish's setting**, so a workflow starts only for the
+  folder, mailbox or calendar that dish names, and changing the setting re-points
+  the trigger. File Toolkit gains **Notify when a file arrives**.
+
+### Changed
+
+- **Follow this work** investigates from the current mail: it rereads the linked
+  mail and searches related mail before it answers, quotes the exact passages it
+  relies on, and ends with numbered steps that say which need your approval,
+  plus open questions. Nothing is created or run until you choose. With **Keep a
+  running note** on, chat keeps the mail it read and the last plan, encrypted,
+  and refining edits that plan.
+- **Retired:** the mail, file, calendar, webhook and workflow watchers, the
+  `on_failure` field (it never ran) and the starter templates. No shipped
+  workflow used them; triggers on mail, files, calendar changes, a workflow's
+  runs and webhooks replace them. The time, time-before-an-event and web-page
+  watchers stay.
+- **A missing value is never a number in a comparison.** Greater-than and
+  less-than comparisons with a missing or blank side are now false, so a missing
+  amount no longer passes "less than or equal to 0".
+- **A timer says when it really runs**: its time window, or what it waits for,
+  in Workflows, Automation and Kitchen. A timer's window now opens in your
+  server's time zone, as schedules already did.
+- **An approval says what the held action would change**, in the tray and on the
+  Approvals page, even when the action lists no reviewable fields; a field named
+  like a secret is shown with its value hidden.
+- **Chat reaches what its contract grants**, including the actions of installed
+  packs, and each call is still checked against its risk and approval. Chat no
+  longer offers "Keep as dish".
+- **A workflow's webhook follows its main dish**, and saving its settings, or
+  making the dish through a schedule, a trigger or switching it on, tells you
+  what that did to the webhook.
+- **Personal data.** A field tagged `content` hides the contacts your server
+  knows and every email address in the text before it reaches an AI, as chat
+  does. A step's `pii_fields` also protect values that arrive through a
+  reference, and a failed workflow's error message shows the real value instead
+  of an alias, including in the audit log.
+- **Installing from source** works under npm 12, verifies every package against
+  its lockfile hash, and says Node 24 everywhere. `npm run build:binary` on
+  macOS leaves a binary that runs, and the install steps say what to type on
+  Windows.
+
+### Fixed
+
+- Workflows that read mail or a calendar defaulted to one named `primary`, so
+  wherever you have none every run failed. Calendar workflows now read every
+  calendar unless you choose one, and mail workflows ask which mailbox to read.
+  If yours really is named `primary`, choose it once in the workflow's settings.
+  Workflows from Personal Organizer Foundation that you already have, such as
+  Today, keep their old copy until you install the pack again from
+  Settings → Packs.
+- Meeting reminders see every meeting, even with more than 500 ahead, fire for
+  none from the past when installed, and read each meeting from the calendar it
+  is in. A workflow switched off and on again no longer repeats its last reminder.
+- Automatic workflows that 26.9.30 stopped get their timers back, on the dish
+  they ran as. Switching one on is refused, with a link to Packs, while its pack
+  is not installed.
+- Web Watch runs on its own without asking for approval, and installs again.
+- An approved or refused held action now reaches the chat: the answer says so
+  when it finishes, and the chat stops calling it "awaiting approval". A
+  reloaded conversation shows its tool calls instead of raw text.
+- The AI extraction step now receives the instructions a workflow gives it. Four
+  AI enrichments of your mail (role, company, related threads and topic) run
+  once more in the background after the update.
+- A label such as `{{item.name}} ({{item.id}})` stays text instead of becoming 0.
+
 ## 26.9.30 — 2026-09-30
 
 Switching a workflow on now makes a dish. It asks for the workflow's settings,

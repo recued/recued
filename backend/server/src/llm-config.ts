@@ -18,7 +18,7 @@ import type {
 import {
   isLLMMessageRole, isLlmGatewayCallerSystemPolicy,
   LLM_MESSAGE_ROLES, LLM_GATEWAY_CALLER_SYSTEM_POLICIES,
-  defaultTranscriptionModel,
+  defaultTranscriptionModel, imageInputSeen,
 } from '@recued/llm';
 import {
   checkBudgetStatus, DEFAULT_BUDGET_THRESHOLDS,
@@ -195,7 +195,7 @@ export interface LLMConfigManager {
     source:
       | { kind: 'slot'; slot_key: 'slot_1' | 'slot_2' | 'embeddings_slot' | 'transcription_slot' }
       | { kind: 'pool'; entry_id: string },
-    patch: { system_role_ok?: boolean; native_json_ok?: boolean },
+    patch: { system_role_ok?: boolean; native_json_ok?: boolean; image_input_ok?: boolean },
   ): void;
   /** What the gateway does with a CALLER's OpenAI `system` message. `null`
    *  clears back to `'context'` (the pre-existing behaviour). */
@@ -411,6 +411,8 @@ export const createLLMConfigManager = (
     // means "not yet known", which reads as yes.
     if (get(`${prefix}.system_role_ok`) === '0') slot.system_role_ok = false;
     if (get(`${prefix}.native_json_ok`) === '0') slot.native_json_ok = false;
+    // ⚠ The opposite polarity: a PROOF, so only `1` is ever stored.
+    if (get(`${prefix}.image_input_ok`) === '1') slot.image_input_ok = true;
     const speed = get(`${prefix}.speed`);
     if (speed === 'fast' || speed === 'quality' || speed === 'thinking') slot.speed = speed;
     const sJson = get(`${prefix}.supports_json`);
@@ -457,6 +459,7 @@ export const createLLMConfigManager = (
       // built to provide — the write path had it all along.
       'system_role_ok',
       'native_json_ok',
+      'image_input_ok',
     ];
     if (!slot) {
       for (const k of keys) del(`${prefix}.${k}`);
@@ -473,6 +476,21 @@ export const createLLMConfigManager = (
     // a blank-key preserve is only honest when the context is unchanged.
     const prevProvider = get(`${prefix}.provider`);
     const prevBaseUrl = get(`${prefix}.base_url`);
+    // ⛔ THE PICTURE PROOF IS THE EXCEPTION TO "DETECTED DIES ON SAVE". Its
+    // default is "cannot", so killing it on a budget or name edit would switch
+    // off every camera check the owner relies on until they think to press
+    // Test again. It stays while the endpoint is the same one it was proven on,
+    // and it is ADOPTED when a Test of the unsaved draft proved this very
+    // endpoint (the in-memory proof, keyed by provider + base_url + model). A
+    // value the client sent is never read: nothing outside a picture check may
+    // assert one.
+    const sameEndpoint = prevProvider === slot.provider
+      && prevBaseUrl === (slot.base_url || undefined)
+      && get(`${prefix}.model`) === slot.model;
+    const picturesProven = imageInputSeen(slot)
+      || (sameEndpoint && get(`${prefix}.image_input_ok`) === '1');
+    if (picturesProven) set(`${prefix}.image_input_ok`, '1');
+    else del(`${prefix}.image_input_ok`);
     set(`${prefix}.provider`, slot.provider);
     // The name is a label, not credential context: it is written or cleared
     // here and plays no part in the key guard below.
@@ -835,7 +853,17 @@ export const createLLMConfigManager = (
     upsertPoolEntry(entry) {
       const pool = readPoolStrict();
       const prev = pool.find((e) => e.id === entry.id);
-      let stored = entry;
+      // The picture proof follows the same rule as a slot's (`writeSlot`):
+      // kept while the endpoint is unchanged, adopted from a Test of this very
+      // endpoint, and never taken from what the client sent.
+      const { image_input_ok: _claimed, ...asSent } = entry;
+      const sameEndpoint = prev !== undefined
+        && prev.provider === entry.provider
+        && (prev.base_url || undefined) === (entry.base_url || undefined)
+        && prev.model === entry.model;
+      const picturesProven = imageInputSeen(entry)
+        || (sameEndpoint && prev.image_input_ok === true);
+      let stored: FreePoolEntry = picturesProven ? { ...asSent, image_input_ok: true } : asSent;
       if (entry.api_key.length === 0) {
         // The same credential context `writeSlot` guards: a key never follows
         // its entry to another protocol or address.
@@ -843,7 +871,7 @@ export const createLLMConfigManager = (
           && prev.provider === entry.provider
           && (prev.base_url || undefined) === (entry.base_url || undefined);
         if (prev === undefined || !sameContext || !prev.api_key) return 'key_required';
-        stored = { ...entry, api_key: prev.api_key };
+        stored = { ...stored, api_key: prev.api_key };
       }
       const next: FreePoolEntry[] = [];
       let placed = false;
@@ -1016,6 +1044,9 @@ export const createLLMConfigManager = (
           if (value === false) setKey(`${prefix}.${field}`, '0');
           else del(`${prefix}.${field}`);
         }
+        // A proof, so the polarity flips: only `1` is worth a row.
+        if (patch.image_input_ok === true) setKey(`${prefix}.image_input_ok`, '1');
+        else if (patch.image_input_ok === false) del(`${prefix}.image_input_ok`);
       };
       if (source.kind === 'slot') {
         write(set, del, source.slot_key);
@@ -1024,17 +1055,22 @@ export const createLLMConfigManager = (
       // Pool entries live in one encrypted blob, so this is a read-modify-write
       // — the same shape the other field-level pool writes already use.
       const entries = readPoolStrict();
-      const next = entries.map((e) => (e.id === source.entry_id
-        ? {
-            ...e,
-            ...(patch.system_role_ok !== undefined
-              ? { system_role_ok: patch.system_role_ok }
-              : {}),
-            ...(patch.native_json_ok !== undefined
-              ? { native_json_ok: patch.native_json_ok }
-              : {}),
-          }
-        : e));
+      const next = entries.map((e) => {
+        if (e.id !== source.entry_id) return e;
+        // A verdict either way replaces the proof; no verdict keeps it.
+        const { image_input_ok: proven, ...rest } = e;
+        const keepsProof = patch.image_input_ok ?? proven === true;
+        return {
+          ...rest,
+          ...(patch.system_role_ok !== undefined
+            ? { system_role_ok: patch.system_role_ok }
+            : {}),
+          ...(patch.native_json_ok !== undefined
+            ? { native_json_ok: patch.native_json_ok }
+            : {}),
+          ...(keepsProof ? { image_input_ok: true } : {}),
+        };
+      });
       // Nothing matched — the entry was removed between the discovery and this
       // write. Drop the observation rather than resurrect a dead entry, and do
       // not rewrite the pool at all: it holds api keys and is stored

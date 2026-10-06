@@ -52,7 +52,7 @@ import { handleExecute, type ExecuteHandlerDeps } from '../../execute-handler.js
 import type { ExecuteResponse, InternalExecuteOverrides } from '../../types.js';
 import type { TriggersRpcDeps } from '../../triggers/handler.js';
 import { createBackfillStateLookup } from '../../triggers/backfill-state.js';
-import { reconcileDeclarativeTriggers, type ReconcilerDish } from '../../triggers/declarative-reconciler.js';
+import { dishTriggerSettings, reconcileDeclarativeTriggers, type ReconcilerDish } from '../../triggers/declarative-reconciler.js';
 import {
   createEventTriggerDispatcher,
   type EventTriggerDispatcher,
@@ -260,6 +260,7 @@ export const composeEventTriggers = (
   // into store rows BEFORE the first rebuild, so boot subscribes them
   // in the same pass. Reconcile-then-rebuild is the same closure the
   // recipe-store mutation hook + maintenance exit call later.
+  const groupOverlay = (group_id: string) => executeDeps.dishGroupStore?.get(group_id)?.config_overlay;
   const reconcilerDeps = {
     store,
     listStored: () => executeDeps.recipeStore.listStored(),
@@ -281,8 +282,11 @@ export const composeEventTriggers = (
     },
     // D-319 — a recipe's declared triggers are made once per dish of it, and
     // a `template_variable` trigger narrows to the template THAT dish's
-    // setting holds (D-315 §5.1).
-    ...(executeDeps.dishStore ? { listDishes: () => executeDeps.dishStore!.list() } : {}),
+    // setting holds (D-315 §5.1), as a raw pattern's setting part does. Read
+    // as a run of the dish reads them, its group's settings under its own.
+    ...(executeDeps.dishStore
+      ? { listDishes: () => executeDeps.dishStore!.list().map((dish) => dishTriggerSettings(dish, groupOverlay)) }
+      : {}),
   };
   const reconcile = (): boolean => {
     const result = reconcileDeclarativeTriggers(reconcilerDeps);
@@ -297,7 +301,9 @@ export const composeEventTriggers = (
 
   return {
     getVendorEntities: reconcilerDeps.getVendorEntities,
-    ...(executeDeps.dishStore ? { dishesOf: (recipe_id: string) => executeDeps.dishStore!.listByRecipe(recipe_id) } : {}),
+    ...(executeDeps.dishStore
+      ? { dishesOf: (recipe_id: string) => executeDeps.dishStore!.listByRecipe(recipe_id).map((dish) => dishTriggerSettings(dish, groupOverlay)) }
+      : {}),
     triggersDeps: {
       store,
       dispatcher,

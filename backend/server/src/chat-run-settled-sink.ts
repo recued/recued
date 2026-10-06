@@ -8,6 +8,7 @@
 import { isExecutionSource, type ExecutionSource, type RecuedServerSignature } from '@recued/contracts';
 import type { PreflightRunSettled } from './preflight-resumer.js';
 import { isNonTerminalToolResult } from './chat-tool-call-context.js';
+import { clearPendingAfterWait } from './chat-rolling-brief.js';
 import { renderToolRow, type ChatBroadcastEmitter } from './chat-orchestrator.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
@@ -97,6 +98,11 @@ export const createChatRunSettledSink = (
     callIds = store.toolCalls?.findByRun(plan.session_id, plan.pair_id) ?? [];
     const succeeded = plan.result !== null && typeof plan.result === 'object'
       && (plan.result as { success?: unknown }).success === true;
+    // A refusal settles as `failed` too; marking it keeps "you said no" from
+    // reading as "it broke", to the owner and to the model's next turn.
+    const denied = !succeeded && plan.result !== null && typeof plan.result === 'object'
+      && (plan.result as { denied?: unknown }).denied === true;
+    const state = settled.state ?? (succeeded ? 'succeeded' as const : 'failed' as const);
     await store.appendMessage({
       id: `settle:${plan.pair_id}`, session_id: plan.session_id, role: 'tool',
       content: renderToolRow(plan.tool_name, undefined, plan.result),
@@ -108,12 +114,23 @@ export const createChatRunSettledSink = (
       // pass to finalize it. Keep the encrypted owner-visible result outside
       // model recall. Existing untracked pairs keep their legacy writer.
       ...(callIds.length > 0 ? { source_lifecycle: 'failed' as const } : {}),
-      tool_call_settlements: callIds.map(message_id => ({ message_id,
-        state: settled.state ?? (succeeded ? 'succeeded' : 'failed') })),
+      tool_call_settlements: callIds.map(message_id => ({ message_id, state,
+        ...(denied && state === 'failed' ? { denied: true as const } : {}) })),
     });
     for (const message_id of callIds) {
       broadcast.emit({ kind: 'chat.session_changed', session_id: plan.session_id,
         field: 'tool_call', value: store.toolCalls?.get(message_id) });
+    }
+    // The running brief was folded while this call waited: its "still to do"
+    // was written around the wait. ⚠ In its own try: the settlement above is
+    // already durable, and a brief that cannot be tidied is not a failed
+    // settlement — the catch below would report one and re-broadcast the calls.
+    try {
+      const stored = await store.readSessionBrief(plan.session_id);
+      const tidied = stored === null ? null : clearPendingAfterWait(stored);
+      if (tidied !== null) await store.writeSessionBrief(plan.session_id, tidied);
+    } catch (error) {
+      console.error('[chat] run-settled brief tidy failed', error);
     }
   } catch (error) {
     console.error('[chat] run-settled tool row append failed', error);

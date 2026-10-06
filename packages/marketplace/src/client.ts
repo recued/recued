@@ -338,33 +338,6 @@ export const listRecipes = async (
   };
 };
 
-/** D-116 Phase 5 — list reactive-recipe templates from `/v1/marketplace/templates`.
- *  The Worker filters by `template:reactive:<vertical>` tag + the
- *  authorised `recued-core` publisher; this client just forwards the
- *  optional vertical filter.
- *
- *  Empty list on non-2xx (consistent with `listRecipes`). Templates
- *  are public and don't paginate today (max 50 rows per the Worker),
- *  so we return just `{ rows }` without pagination metadata. */
-export interface ListTemplatesParams {
-  /** Filter by template vertical (e.g. `mail`, `calendar`, `webhook`,
-   *  `cross-tool`). Omit to return all templates. */
-  vertical?: string;
-}
-
-export const listTemplates = async (
-  params: ListTemplatesParams = {},
-  fetchFn: typeof globalThis.fetch = globalThis.fetch,
-): Promise<{ rows: MarketplaceRecipeRow[] }> => {
-  const sp = new URLSearchParams();
-  if (params.vertical) sp.set('vertical', params.vertical);
-  const url = `${MARKETPLACE_URL}/v1/marketplace/templates${sp.toString() ? `?${sp}` : ''}`;
-  const res = await fetchFn(url, { headers: jsonHeaders });
-  if (!res.ok) return { rows: [] };
-  const body = await res.json() as ListEnvelope<MarketplaceRecipeRow>;
-  return { rows: body.data ?? [] };
-};
-
 /** Lightweight recipe summary for suggestions/search. Subset of
  *  `MarketplaceRecipeRow` preserved for backward compat. */
 export type RecipeSuggestion = Pick<

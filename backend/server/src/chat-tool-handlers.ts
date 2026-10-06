@@ -53,7 +53,9 @@ import {
   // THIS rather than hardcoding `'contact_id'`.
   crmRefFields,
   composePlatformRecordTargetId,
+  cronZoneFor,
   executionSourceContractId,
+  isDelegatedMcpToken,
   // D-237 P1 — the per-instance freshness verdict the AI-facing collection
   // reads now carry, alongside the CRM trio's `crm_freshness`.
   collectionSourceFreshnessFanOut,
@@ -70,6 +72,7 @@ import {
   type ConnectionMcpAnnotationState,
   type ContactAliasPlatform,
   type CrmAlias,
+  type DishWebhookDoorChange,
   type EnrichmentScope,
   type EnrichmentTopic,
   type IngredientManifest,
@@ -192,6 +195,9 @@ import {
   type RawOpDispatchOutcome,
 } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
+import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
+import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
+import { parseInstantWithOffset } from '@recued/transforms';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
@@ -344,6 +350,11 @@ export interface ChatToolHandlerDeps {
    *  composed `executeDeps` at call time). When undefined the
    *  `recipe.run` + Tier 2 handlers surface `execution_error`. */
   getExecuteRecipe: () => ChatRecipeExecutor | undefined;
+  /** D-193 amendment — chat's `recipe.schedule`: the scheduler over the
+   *  server's schedule store (`schedule-installed-recipe.ts`). Late-bound: the
+   *  store composes after the chat substrate. Undefined ⇒ the tool says
+   *  scheduling is unavailable. */
+  getInstalledRecipeScheduler?: () => InstalledRecipeScheduler | undefined;
   /** D-255 — the canonical op tools reachable for this server's bound
    *  connections, already filtered by each connection's operation profile.
    *
@@ -4336,6 +4347,196 @@ const createRecipeStopHandler =
     return { ok: true, result: projected };
   };
 
+// ────────────────────────────────────────────────────────────────
+// recipe.schedule — D-193 amendment: chat's own way to schedule
+// ────────────────────────────────────────────────────────────────
+
+/** The grant op `recipe.schedule` is governed by (a native op: no recipe step
+ *  can schedule another recipe, 2026-10-05). */
+const SCHEDULE_RECIPE_OP_ID = 'core.schedule.recipe';
+
+/** Why `recipe.schedule` is refused for this dispatch, or `undefined` when it is
+ *  admitted. Two sources may schedule, both the owner:
+ *    - the owner's chat and messenger turns, governed by the owner's contract,
+ *      while it holds `core.schedule.recipe` (granted unless the owner revoked it);
+ *    - the owner's own local MCP client (stdio / canonical CLI). It is
+ *      contract-less with the owner's full trust (`resolveTrustCeiling`), and the
+ *      one MCP source that is not a door (`isDelegatedMcpToken`). Like every op on
+ *      that connection, no grant applies to it (owner, 2026-10-05: "cli: allows").
+ *
+ *  ⛔ Every other source is refused, whatever it holds. A schedule arms the
+ *  OWNER's automation: its runs fire later on the system channel, which no
+ *  contract governs, and run whatever recipe it names. A door's recipe authority
+ *  is its inbound token, which this gate cannot read (`isOwnerRecipeGranted`
+ *  answers for the owner only, by design), so a door that scheduled would reach
+ *  past its token. That includes every remote MCP token, bound or not. The op's
+ *  grant is NOT what keeps doors out, and it is not owner-default-only: D-261's
+ *  pre-approval reads it too, for a door's one-shot that runs under the door's
+ *  own retained authority once the owner approves
+ *  (`preapproval-origin-authority.ts`).
+ *
+ *  Fail closed when no gate or source is wired. */
+const recipeScheduleRefusal = (
+  gate: Pick<OpAdmissionGate, 'isOpGranted' | 'isOwnerGoverned'> | undefined,
+  source: ExecutionSource | undefined,
+): string | undefined => {
+  if (gate === undefined || source === undefined) {
+    return 'recipe.schedule is not available here (nothing was scheduled)';
+  }
+  // Positively the owner's local client: anything else on the mcp channel is a
+  // door (fail closed by construction — the sentinel is the only way in).
+  if (source.channel === 'mcp' && !isDelegatedMcpToken(source.mcp_token_id)) return undefined;
+  if (!gate.isOwnerGoverned(source)) {
+    return "recipe.schedule is only for the owner's own chat and local MCP client (nothing was scheduled)";
+  }
+  if (!gate.isOpGranted(source, SCHEDULE_RECIPE_OP_ID)) {
+    return 'recipe.schedule is not granted to this contract (nothing was scheduled)';
+  }
+  return undefined;
+};
+
+/** One entry of a door's diff, in words: an account by name, a tool or an
+ *  action by its id (as the webclient's notice words it). */
+const doorEntryLabel = (entry: string): string => {
+  if (entry.startsWith('connection:')) return `the ${entry.slice('connection:'.length)} account`;
+  if (entry.startsWith('ingredient:')) return entry.slice('ingredient:'.length);
+  return entry;
+};
+
+/** What scheduling did to the recipe's webhook, for the model to pass on.
+ *
+ *  A schedule belongs to the recipe's main dish, made (with no settings) when
+ *  it has none, and the recipe's webhook follows that dish (D-209). So the
+ *  first schedule of a webhook recipe can move its door. The webclient tells
+ *  the owner with a sticky notice on `schedules.create`; a chat result never
+ *  reaches that, so the model is told to say it. A widening has to be named
+ *  (D-207 §5.1g). An unchanged door is not news, so it is not here. */
+const webhookDoorNote = (changes: readonly DishWebhookDoorChange[] | undefined): string | undefined => {
+  const sentences: string[] = [];
+  for (const change of changes ?? []) {
+    const name = change.recipe_name?.trim() || change.recipe_id;
+    const list = (entries: readonly string[] | undefined): string => (entries ?? []).map(doorEntryLabel).join(', ');
+    switch (change.state) {
+      case 'opened': {
+        const added = list(change.added);
+        const removed = list(change.removed);
+        if (!change.was_open) {
+          sentences.push(`${name}'s webhook is now on: messages coming in run with its main settings`
+            + (added === '' ? '.' : ` and may use ${added}.`));
+        } else {
+          sentences.push(`${name}'s webhook changed what messages coming in may use`
+            + (added === '' ? '' : `; now: ${added}`)
+            + (removed === '' ? '' : `; no longer: ${removed}`) + '.');
+        }
+        break;
+      }
+      case 'closed': {
+        const why = change.reason_code === 'no_account'
+          ? ' until its settings choose an account'
+          : change.reason_code === 'refused' && change.reason !== undefined && change.reason.trim() !== ''
+            ? ` (${change.reason.trim().replace(/\.$/, '')})`
+            : ' for now; saving its settings again retries';
+        sentences.push(`${name}'s webhook is ${change.was_open ? 'now ' : ''}off: messages coming in are refused${why}.`);
+        break;
+      }
+      case 'kept_revoked':
+        sentences.push(`${name}'s webhook stays off: its access was turned off, and scheduling does not turn it back on.`);
+        break;
+      default:
+        break;
+    }
+  }
+  return sentences.length === 0 ? undefined : `Tell the user: ${sentences.join(' ')}`;
+};
+
+/** D-193 amendment (2026-10-05) — schedule an installed recipe from chat.
+ *
+ *  It replaced the D-193 "Schedule recipe" RECIPE, whose `core.schedule.recipe`
+ *  step was the only one that could schedule another recipe. The owner ruled no
+ *  recipe step may; chat schedules here, granted by its contract. The same
+ *  handler the Run dialog and Automation use makes the row
+ *  (`schedule-installed-recipe.ts`), so its refusals are theirs: a recipe that is
+ *  not installed, a pack it needs that is missing, a cron below the floor. */
+const createRecipeScheduleHandler =
+  (deps: ChatToolHandlerDeps): Tier1Handler =>
+  async (raw, ctx) => {
+    const args = asObject(raw);
+    if (!args) return invalidArgs('args must be an object');
+    const refusal = recipeScheduleRefusal(deps.getOpAdmissionGate?.(), ctx.execution_source);
+    if (refusal !== undefined) return { ok: false, reason: 'classification_blocked', detail: refusal };
+    const schedule = deps.getInstalledRecipeScheduler?.();
+    if (!schedule) return executionError('scheduling is unavailable on this server');
+
+    const rawId = typeof args.recipe_id === 'string' ? args.recipe_id.trim() : '';
+    if (rawId === '') return invalidArgs('recipe.schedule needs recipe_id, as <publisher>/<slug>');
+    if (args.mode !== 'one_shot' && args.mode !== 'recurring') {
+      return invalidArgs('mode must be "one_shot" or "recurring"');
+    }
+    const mode = args.mode;
+    let run_at: number | undefined;
+    let cron_expression: string | undefined;
+    if (mode === 'one_shot') {
+      run_at = parseInstantWithOffset(args.run_at) ?? undefined;
+      if (run_at === undefined) {
+        return invalidArgs(
+          'one_shot needs run_at: an ISO 8601 date-time WITH a timezone offset, e.g. 2026-07-04T15:00:00-07:00',
+        );
+      }
+    } else {
+      cron_expression = typeof args.cron_expression === 'string' ? args.cron_expression.trim() : '';
+      if (cron_expression === '') {
+        return invalidArgs('recurring needs cron_expression: five fields, e.g. "0 8 * * 1" for Mondays at 8:00');
+      }
+    }
+    if (args.dish_id !== undefined && (typeof args.dish_id !== 'string' || args.dish_id.trim() === '')) {
+      return invalidArgs('dish_id, when given, must be a dish id; normally omit it');
+    }
+    if (args.enabled !== undefined && typeof args.enabled !== 'boolean') {
+      return invalidArgs('enabled, when given, must be true or false; normally omit it');
+    }
+
+    const store = deps.getRecipeStore();
+    const recipe_id = resolveRecipeId(rawId, store);
+    // The recipe's own publisher, as the Run dialog sends it. (The retired step
+    // sent none, so its schedules all read `local`.)
+    const publisher_id = store.getStored(recipe_id)?.publisher_id
+      ?? store.get(recipe_id)?.metadata?.author
+      ?? 'local';
+    try {
+      const { schedule: made, webhook_doors } = schedule({
+        recipe_id,
+        publisher_id,
+        mode,
+        ...(run_at !== undefined ? { run_at } : {}),
+        ...(cron_expression !== undefined ? { cron_expression } : {}),
+        ...(typeof args.dish_id === 'string' ? { dish_id: args.dish_id.trim() } : {}),
+        ...(typeof args.enabled === 'boolean' ? { enabled: args.enabled } : {}),
+      });
+      const note = webhookDoorNote(webhook_doors);
+      // The next run in the zone the schedule runs in (its own, else the host's,
+      // as the scheduler reads it), with that zone's offset. "…T08:00:00-07:00"
+      // reads as the time the user asked for; UTC would leave the model a
+      // conversion to get wrong in what it tells them.
+      const zone = cronZoneFor(made, Intl.DateTimeFormat().resolvedOptions().timeZone);
+      return {
+        ok: true,
+        result: {
+          status: 'scheduled',
+          schedule_id: made.schedule_id,
+          recipe_id: `${publisher_id}/${recipe_id}`,
+          mode,
+          ...(made.next_run_at !== null ? { next_run_at: formatIsoWithOffset(made.next_run_at, zone) } : {}),
+          enabled: made.enabled,
+          ...(note !== undefined ? { note } : {}),
+        },
+      };
+    } catch (error) {
+      // The handler's refusals are written for a person: "Recipe 'x' not found",
+      // the missing packs by name, an invalid cron.
+      return executionError(errMessage(error));
+    }
+  };
+
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
 ): Record<string, Tier1Handler> => wrapCollectionFence(wrapEmptyResults({
@@ -4358,6 +4559,7 @@ export const buildChatTier1Handlers = (
   'file.search': createFileSearchHandler(deps),
   'recipe.run': createRecipeRunHandler(deps),
   'recipe.stop': createRecipeStopHandler(deps),
+  'recipe.schedule': createRecipeScheduleHandler(deps),
 }), deps);
 
 /** ⛔ Applied at the TABLE, not inside each handler. Eight readers each

@@ -20,6 +20,20 @@ const brief = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('carried-brief projection', () => {
+  it('discloses exact owner requests and source snapshots even without an AI summary', () => {
+    const m = buildCarriedBriefModel({ source_evidence: { version: 1,
+      investigation_request: 'Phone decision: do not contact anyone.', owner_updates: ['Make it shorter.'],
+      observations: [{ tool_name: 'mail.read', status: 'ok', result: { hot_fields: { subject: 'Replacement request' },
+        received_at_iso: '2026-10-01T00:00:00Z', body: 'Explore documentation only.', body_incomplete: true } },
+      { tool_name: 'work.search', status: 'ok', args: { query: 'Cobalt' }, result: { entities: [] } }] } });
+    if (m.kind !== 'carrying') throw new Error('Expected visible carry with Clear control');
+    expect(m.caveat).toContain('source snapshots');
+    expect(m.caveat).not.toContain('not a record of what you said');
+    expect(m.rows.filter(r => r.from_owner).map(r => r.text)).toEqual(['Phone decision: do not contact anyone.', 'Make it shorter.']);
+    expect(m.rows.find(r => r.text.includes('documentation'))?.text).toContain('partial message');
+    expect(m.rows.at(-1)?.text).toContain('0 results in this search');
+    for (const row of m.rows) expect(CARRIED_BRIEF_FIELD_LABELS[row.field]).toBeTruthy();
+  });
   it('keeps loading, empty and carrying apart', () => {
     // ⛔ "nothing carried" and "we have not asked" look identical on screen and
     //   mean opposite things.

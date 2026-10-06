@@ -95,6 +95,23 @@ describe('read fresh before a write', () => {
     expect(calls('mark-read').every((c) => c.options?.cache === 'fresh')).toBe(true);
   });
 
+  /** 2026-10-05, live drive: a watcher is a read-tier ingredient, so the host
+   *  cached it. `meeting-prep-brief` (a recipe that writes nothing, so the rule
+   *  above never applied) replayed a first check's fire within its TTL and
+   *  briefed the same meeting twice. */
+  it('⛔ a trigger step reads fresh on every run, in a recipe that writes nothing', async () => {
+    const gate = { id: 'gate', ingredient: 'mark-read', input: { key: 'marks.meeting-1' } };
+    const { calls } = await runTwice(recipeOf({ trigger_steps: [gate as never], steps: [] }));
+    expect(calls('mark-read')).toHaveLength(2);
+    expect(calls('mark-read').every((c) => c.options?.cache === 'fresh')).toBe(true);
+  });
+
+  it('⛔ …even when the trigger step names its own cache', async () => {
+    const gate = { id: 'gate', ingredient: 'mark-read', input: { key: 'marks.meeting-1' }, cache: 'any' };
+    const { calls } = await runTwice(recipeOf({ trigger_steps: [gate as never], steps: [] }));
+    expect(calls('mark-read').every((c) => c.options?.cache === 'fresh')).toBe(true);
+  });
+
   it('without a host classifier nothing changes', async () => {
     const { calls } = await runTwice(recipeOf({ steps: [read(), write] }), false);
     expect(calls('mark-read')).toHaveLength(1);

@@ -132,7 +132,6 @@ describe('D-249 — kernel op scope classification', () => {
     const byOp = new Map(rows().map((r) => [r.op, r.scope]));
     for (const op of [
       'core.peer.ask',
-      'core.schedule.recipe',
       'core.storage.exchange.status',
       'core.seller.order.get',
       'core.seller.customer-access.issue',

@@ -27,7 +27,7 @@
 
 import type { ContractSnapshot, ExecutionSource } from './commits.js';
 import type { CollectionPlatform } from './collections.js';
-import { INGREDIENT_KINDS, type IngredientKind } from './ingredient.js';
+import type { IngredientKind } from './ingredient.js';
 import type { OpEntity } from './kernel-op-registry.js';
 import type { DependencyReadAdmission } from './work-entity-dependency-admission.js';
 // ⚠ The tool enums below are DERIVED from this list. A hand-copy here is the
@@ -101,7 +101,8 @@ export type Tier1ToolName =
   | 'work.update'
   | 'file.search'
   | 'recipe.run'
-  | 'recipe.stop';
+  | 'recipe.stop'
+  | 'recipe.schedule';
 
 export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'contact.search',
@@ -123,6 +124,7 @@ export const TIER1_TOOL_NAMES: ReadonlyArray<Tier1ToolName> = [
   'file.search',
   'recipe.run',
   'recipe.stop',
+  'recipe.schedule',
 ] as const;
 
 export const TIER1_TOOL_NAME_SET: ReadonlySet<Tier1ToolName> =
@@ -160,6 +162,9 @@ export const TIER1_TOPIC_TAGS: Readonly<Record<Tier1ToolName, ReadonlyArray<stri
   // the pair is start/stop: a model that can find only one of them turns
   // "do X instead" into "do X as well".
   'recipe.stop': ['recipe', 'stop', 'cancel', 'steer', 'workflow'],
+  // D-193 amendment — "every Monday at 8", "tomorrow at 9": arming a recipe to
+  // run LATER, on its own. Tagged beside the pair it completes.
+  'recipe.schedule': ['recipe', 'schedule', 'later', 'recurring', 'automation', 'workflow'],
 } as const;
 
 /** Per-Tier-1 read-vs-write classification. `recipe.run` is `unknown`
@@ -235,6 +240,16 @@ export const TIER1_CLASSIFICATIONS: Readonly<
   // durable run state (terminal `killed` + audit), even though it creates
   // nothing.
   'recipe.stop': 'write',
+  // `unknown`, with `work.create`'s reasoning, not `calendar.create`'s. A new
+  // schedule is ADDITIVE and visible: Automation lists it, and the owner switches
+  // it off or deletes it. It changes nothing the owner already relied on, and
+  // every run it starts meets the unattended-run gates on its own. The boundary
+  // is the tool's own check: the owner only (every door refused), and only while
+  // the owner's contract holds `core.schedule.recipe`.
+  // Before this tool, chat scheduled through the D-193 "Schedule recipe" recipe,
+  // whose `write` op ran with no card in owner chat (the `admin` ceiling), so a
+  // card here would be a new prompt for the same act.
+  'recipe.schedule': 'unknown',
 } as const;
 
 /** D-164 § 6 — per-Tier-1 batch-dispatch safety. Source for
@@ -288,6 +303,11 @@ export const TIER1_CONCURRENCY_SAFE: Readonly<
   // Never batched in parallel with anything: a stop and the call it would stop
   // must not race inside one turn's tool batch.
   'recipe.stop': false,
+  // Sequential for the shared-identity reason, not the write reason: each call
+  // mints its own schedule, but two schedules for ONE recipe in a turn ("every
+  // Monday at 8 and every Thursday at 5") join the same main dish, which the
+  // first may make (D-319). Only the order of the calls keeps that to one dish.
+  'recipe.schedule': false,
 } as const;
 
 /** § A.1.1 — registry entry shape. The LLM sees `name` / `description`
@@ -337,9 +357,9 @@ export interface ToolEntry {
   /** T3 only — from MCP `tools/list` annotations OR Mary's per-tool
    *  classification override (§ A.10). */
   destructive_hint?: boolean;
-  /** T2 only — derived from the recipe's step graph. Mary's per-kind
-   *  catalog scope toggle (§ A.1.1 + § P1) gates a T2 entry off when
-   *  any of its `requires_kinds` is unchecked. */
+  /** T2 only — derived from the recipe's step graph. The MCP door's grant
+   *  checklist groups tools by it. ⚠ It no longer decides what a chat sees:
+   *  the per-kind scope that did is retired (D-137 W2.2, 2026-10-04). */
   requires_kinds?: ReadonlyArray<IngredientKind>;
   /** D-192 Slice 7 — raw catalog ops (`recued_op_*`) only: the container reads
    *  granting this op TRANSITIVELY admits (`work_entity_sources[].
@@ -1086,10 +1106,6 @@ export interface ChatToolCall {
   /** Existing standing dish used by the dispatch. Omitted for ephemeral
    * manual-run attribution. */
   dish_id?: string;
-  /** Host-confirmed terminal succeeded ad-hoc run. Presence authorizes only
-   * the owner UI affordance; the promotion RPC still re-reads the audit anchor
-   * as the final authority. Omitted for held/failed and standing-dish runs. */
-  dish_promotable?: true;
   /** Reference into chat-side ephemeral storage; the orchestrator
    *  persists the raw result keyed on this id so the message row
    *  stays compact. */
@@ -1652,12 +1668,6 @@ export type ChatRpcMethod =
   | 'chat.rolling_brief.set'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
-  // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope. Per-pair
-  // setting (not per-session); reads via `chat.tool_catalog.get`,
-  // writes via `chat.tool_catalog.set` (which emits the
-  // `chat.tool_catalog_scope_changed` broadcast).
-  | 'chat.tool_catalog.get'
-  | 'chat.tool_catalog.set'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
   // annotation. `list` returns every persisted annotation row; `get`
   // returns one connection's row (or the empty default when absent);
@@ -1762,8 +1772,6 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.rolling_brief.set',
   'chat.session.brief.get',
   'chat.session.brief.clear',
-  'chat.tool_catalog.get',
-  'chat.tool_catalog.set',
   'chat.connection_mcp.list',
   'chat.connection_mcp.get',
   'chat.connection_mcp.set',
@@ -2087,6 +2095,8 @@ export const TIER1_TOOL_ENTITY: Readonly<Record<Tier1ToolName, OpEntity>> = {
   'file.search': 'file',
   'recipe.run': 'recipe',
   'recipe.stop': 'recipe',
+  // Grouped with the op that grants it (`core.schedule.recipe`, entity `schedule`).
+  'recipe.schedule': 'schedule',
 };
 
 /** P1 placeholder descriptor table — one entry per `Tier1ToolName`.
@@ -2677,6 +2687,54 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
     topic_tags: TIER1_TOPIC_TAGS['recipe.stop'],
     concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.stop'],
   },
+  /** D-193 amendment (2026-10-05) — how chat schedules. It replaced the D-193
+   *  "Schedule recipe" RECIPE, whose step was the only one that could schedule
+   *  another recipe; the owner ruled that no recipe step may
+   *  (`core.schedule.recipe` is now a native grant-only op), so scheduling is
+   *  chat's own tool, granted by its contract. The recipe runs with ITS saved
+   *  settings: this takes no settings, so a schedule never carries values a model
+   *  made up. */
+  'recipe.schedule': {
+    name: 'recipe.schedule',
+    description:
+      "Schedule an installed Recued recipe to run later on its own: once at a set time (`mode: \"one_shot\"` with `run_at`), or repeatedly (`mode: \"recurring\"` with a five-field `cron_expression`). Use it when the user asks for something at a time or on a repeat (\"every Monday at 8\", \"tomorrow at 9\"). For a plain reminder to the user, use the Remind me recipe instead. The recipe runs with its own saved settings; this takes none. Returns the schedule's id and its next run; the user can switch it off or delete it in Automation.",
+    arg_schema: {
+      type: 'object',
+      properties: {
+        recipe_id: {
+          type: 'string',
+          description: 'The installed recipe to schedule, as `<publisher>/<slug>`.',
+        },
+        mode: {
+          type: 'string',
+          enum: ['one_shot', 'recurring'],
+          description: '`one_shot` for a single future run, `recurring` for a repeat.',
+        },
+        run_at: {
+          type: 'string',
+          format: 'date-time',
+          description:
+            "For one_shot: when it runs, as an absolute ISO 8601 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date and time in your context, in the user's timezone; do not assume UTC, and if the timezone is unknown, ask. A value without an offset is refused.",
+        },
+        cron_expression: {
+          type: 'string',
+          description: 'For recurring: a five-field cron expression (minute hour day month weekday), e.g. `0 8 * * 1` for Mondays at 8:00.',
+        },
+        dish_id: {
+          type: 'string',
+          description: "Advanced — normally omit: run as one of the recipe's other dishes (another set of its saved settings) instead of its main one.",
+        },
+        enabled: {
+          type: 'boolean',
+          description: 'Normally omit. `false` creates the schedule switched off.',
+        },
+      },
+      required: ['recipe_id', 'mode'],
+    },
+    classification: TIER1_CLASSIFICATIONS['recipe.schedule'],
+    topic_tags: TIER1_TOPIC_TAGS['recipe.schedule'],
+    concurrency_safe: TIER1_CONCURRENCY_SAFE['recipe.schedule'],
+  },
 } as const;
 
 // ────────────────────────────────────────────────────────────────
@@ -3170,184 +3228,22 @@ export interface ChatPlanRecord {
 }
 
 // ────────────────────────────────────────────────────────────────
-// D-137 W2.2 § A.1.1 + § P1 — Mary's per-kind catalog scope.
+// ⛔ D-137 W2.2 — THE PER-KIND CHAT CATALOG SCOPE IS RETIRED (2026-10-04).
 //
-// Mary's Settings → Chat → Tool Catalog Scope page lets her toggle which
-// `IngredientKind`s her chat agent's Tier 2 catalog may transitively
-// touch. The substrate stores one row per pair (singleton-per-pair —
-// no cross-cloud sync per D-097 / D-168). The orchestrator's inline
-// `buildChatMainTurnTools` projection (D-164 P6.3) consumes the stored
-// enabled set as `kindGatedTier2Names`; Tier 1 + Tier 3 are unaffected.
+// It hid every Tier-2 recipe touching a kind the owner had not switched on,
+// and its default left `connection`, `cli`, `dom`, `chat` and `mcp` off. The
+// screen that switched a kind on was mounted nowhere, so no owner could: 481 of
+// the 755 corpus recipes marked for chat were invisible to it, read-only ones
+// included (Home Assistant's house check). The owner ruled that a chat is
+// allowed what its contract grants, because risk tier and approval already
+// gate what a call may do; a per-kind switch was a second, competing authority.
+//
+// Kept on purpose: `ToolEntry.requires_kinds` (the MCP door's grant checklist
+// groups by it), the `chat.tool_catalog_scope_changed` broadcast kind and the
+// `chat_tool_catalog_scope_set` audit kind (an older server may still emit or
+// have written them). Gone: the scope state, its default, the gate, the
+// validator, the `chat.tool_catalog.*` rpcs and the store.
 // ────────────────────────────────────────────────────────────────
-
-/** § A.1.1 — Mary-level setting. The persisted shape lives in the
- *  server's per-pair SQLite db; the rpc surface returns this shape +
- *  the broadcast surface fans it. `enabled_kinds` is the *positive*
- *  list — a kind absent from the array is disabled (i.e. every Tier 2
- *  recipe whose `requires_kinds` intersects the disabled set drops
- *  from the chat catalog). */
-export interface ChatToolCatalogScopeState {
-  /** Closed-list `IngredientKind` set. Order is informational only —
-   *  validators treat it as a set. */
-  enabled_kinds: ReadonlyArray<IngredientKind>;
-  /** Wall-clock at last write. Used for the "last changed" hint in
-   *  the Settings page + as a tiebreaker if Mary toggles on two
-   *  devices near-simultaneously. */
-  updated_at: number;
-}
-
-/** § P1 — default-on kinds. The substrate ships these as the
- *  out-of-box scope so Mary's mail/calendar/memory/AI-summary recipes
- *  surface immediately without manual setup.
- *
- *    - `http`     — mail / calendar / contact platform adapters
- *    - `ai`       — programmatic AI synthesis (BYOK / free pool)
- *    - `storage`  — local warehouse + memory + enrichment reads/writes
- *    - `service`  — D-118 long-running services
- *
- *  Risky kinds (`dom`, `chat`, `mcp`, `connection`, `cli`) start off —
- *  Mary opts in explicitly per the § P1 default-deny posture for
- *  high-risk surfaces. `cli` (D-182 local-binary toolkit ops —
- *  whisper / docling / ffmpeg / imagemagick) joins the off set: local
- *  tools surface in the agent's chat catalog only once Mary enables the
- *  "Local tools" kind, matching the §7 opt-in / bring-your-own-tool
- *  posture (execution stays gated by the §7 capability grant
- *  regardless). */
-export const SAFE_DEFAULT_CHAT_CATALOG_KINDS: ReadonlyArray<IngredientKind> = [
-  // Canonical INGREDIENT_KINDS declaration order — keeps the persisted
-  // shape stable when callers re-stamp (validator canonicalises against
-  // this same order, so reading the substrate default and writing it
-  // back via `chat.tool_catalog.set` is a fixed point).
-  'http',
-  'ai',
-  'service',
-  'storage',
-] as const;
-
-/** § P1 — initial scope minted by the server on first boot when no
- *  row exists. `updated_at` is `0` so the Settings page surfaces "not
- *  configured" copy + the next write stamps the real wall-clock. The
- *  closed-list `IngredientKind` membership is the only contract; the
- *  array reference is mutable-safe at runtime because callers must
- *  treat it as `readonly` per the type. */
-export const DEFAULT_CHAT_CATALOG_SCOPE: ChatToolCatalogScopeState = {
-  enabled_kinds: SAFE_DEFAULT_CHAT_CATALOG_KINDS,
-  updated_at: 0,
-} as const;
-
-/** § A.1.1 — pure helper. Returns the Tier 2 entries the orchestrator
- *  must mark as `kind_gated` (filter-tools drops with reason code
- *  `kind_gated`). The function treats Tier 1 + Tier 3 entries as
- *  out-of-scope (Mary's per-kind toggle only applies to Tier 2 per
- *  spec); they pass through untouched.
- *
- *  Substrate-pure: same `(catalog, enabledKinds)` → same set. No I/O,
- *  no clock, no module-level state. */
-export const computeKindGatedTier2Names = (
-  catalog: ReadonlyArray<ToolEntry>,
-  enabledKinds: ReadonlySet<IngredientKind>,
-): ReadonlySet<string> => {
-  const gated = new Set<string>();
-  for (const e of catalog) {
-    if (e.tier !== 2) continue;
-    const required = e.requires_kinds;
-    if (!required || required.length === 0) continue;
-    // A Tier 2 entry is gated iff ANY of its required kinds is
-    // disabled. Mary's per-kind toggle is a hard refusal — if she
-    // unchecks `file`, every recipe transitively touching `file` (via
-    // `storage` here) is gated regardless of which other kinds it
-    // also touches.
-    let gatedHere = false;
-    for (const k of required) {
-      if (!enabledKinds.has(k)) {
-        gatedHere = true;
-        break;
-      }
-    }
-    if (gatedHere) gated.add(e.name);
-  }
-  return gated;
-};
-
-/** § A.1.1 — validator for inbound `chat.tool_catalog.set` rpc args.
- *  Returns the closed-list issues; empty array = ok. Each issue carries
- *  a stable `code` so callers can map to user copy without parsing
- *  strings. */
-export type ChatToolCatalogScopeValidationIssueCode =
-  | 'enabled_kinds_not_array'
-  | 'enabled_kinds_member_invalid'
-  | 'enabled_kinds_duplicate';
-
-export interface ChatToolCatalogScopeValidationIssue {
-  code: ChatToolCatalogScopeValidationIssueCode;
-  detail: string;
-}
-
-export const CHAT_TOOL_CATALOG_SCOPE_VALIDATION_ISSUE_CODES:
-  ReadonlyArray<ChatToolCatalogScopeValidationIssueCode> = [
-  'enabled_kinds_not_array',
-  'enabled_kinds_member_invalid',
-  'enabled_kinds_duplicate',
-] as const;
-
-/** Pure validator. Inputs are wire-untrusted; the validator returns
- *  the issues array so the rpc handler can map to a `bad_request`
- *  envelope without bespoke error code soup. */
-export const validateChatToolCatalogScopeInput = (
-  input: unknown,
-): { ok: true; enabled_kinds: ReadonlyArray<IngredientKind> }
-  | { ok: false; issues: ReadonlyArray<ChatToolCatalogScopeValidationIssue> } => {
-  const issues: ChatToolCatalogScopeValidationIssue[] = [];
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return {
-      ok: false,
-      issues: [{
-        code: 'enabled_kinds_not_array',
-        detail: 'expected { enabled_kinds: IngredientKind[] }',
-      }],
-    };
-  }
-  const raw = (input as { enabled_kinds?: unknown }).enabled_kinds;
-  if (!Array.isArray(raw)) {
-    return {
-      ok: false,
-      issues: [{
-        code: 'enabled_kinds_not_array',
-        detail: 'enabled_kinds must be an array',
-      }],
-    };
-  }
-  const seen = new Set<string>();
-  const out: IngredientKind[] = [];
-  for (const member of raw) {
-    if (typeof member !== 'string' || !INGREDIENT_KINDS.has(member as IngredientKind)) {
-      issues.push({
-        code: 'enabled_kinds_member_invalid',
-        detail: `enabled_kinds contains non-IngredientKind value: ${JSON.stringify(member)}`,
-      });
-      continue;
-    }
-    if (seen.has(member)) {
-      issues.push({
-        code: 'enabled_kinds_duplicate',
-        detail: `enabled_kinds contains duplicate kind: ${member}`,
-      });
-      continue;
-    }
-    seen.add(member);
-    out.push(member as IngredientKind);
-  }
-  if (issues.length > 0) return { ok: false, issues };
-  // Preserve canonical declaration order from INGREDIENT_KINDS so the
-  // persisted shape stays stable across writes regardless of caller
-  // ordering — matches the audit-friendly ordering W2.1 uses for
-  // `deriveRecipeRequiresKinds`.
-  const canonical: IngredientKind[] = [];
-  for (const k of INGREDIENT_KINDS) {
-    if (seen.has(k)) canonical.push(k);
-  }
-  return { ok: true, enabled_kinds: canonical };
-};
 
 // ────────────────────────────────────────────────────────────────
 // D-137 W2.3 § A.1.1 + § A.10 — Tier 3 (connection.mcp.*) catalog
@@ -3461,8 +3357,8 @@ export interface ConnectionMcpAnnotationState {
    *  enrollment ("web search" / "research" / "github"). Inherited by
    *  every Tier 3 `ToolEntry` projected from this connection
    *  (`ToolEntry.topic_tags` carries them through to the catalog row);
-   *  the main-turn projection itself gates only on
-   *  `kindGatedTier2Names` / `disabledTier3Names`, but downstream
+   *  the main-turn projection itself withholds only `disabledTier3Names`
+   *  (and not on the topic), but downstream
    *  consumers (audit, picker, future routing) can still read the
    *  topic dimension off the catalog entry. Empty array = no
    *  connection-level tags. */

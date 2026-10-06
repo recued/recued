@@ -232,7 +232,8 @@ export const bootstrapMailWorkRoute = (opts: MailWorkRouteOptions) => {
     const submit = initial ? latest.investigation_started === false || (latest.investigation_started === undefined && investigate) : investigate;
     // The follow address is a handoff, not a place. Chat takes its history entry,
     // so Back returns to the email instead of running the handoff again.
-    opts.explore({ sessionId: session_id, ...(submit ? { prompt: mailWorkChatPrompt(latest, intent), repeat: !initial } : {}), ...(seed ? { replace: true } : {}) });
+    opts.explore({ sessionId: session_id, ...(submit ? { prompt: mailWorkChatPrompt(latest, intent), repeat: !initial,
+      mailWork: { seeds: latest.work.threads.map(thread => ({ slug: thread.slug, record_id: thread.seed_record_id, thread_id: thread.thread_id })) } } : {}), ...(seed ? { replace: true } : {}) });
   };
   const run = async (action: string, index: number): Promise<void> => {
     if (busy || loading) return;

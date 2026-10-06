@@ -1039,8 +1039,9 @@ describe('MCP per-ingredient tool catalog', () => {
    *  REVERTED. `kernel-only` is a kernel READ, and the assertion that it stays
    *  HIDDEN is the regression guard: it fails the moment kernel exposure is
    *  re-derived from `risk_tier`, which is exactly the change that must not
-   *  re-land while `http-watcher` (SSRF) and `webhook-watcher` (destructive,
-   *  labelled `read`) are still authored `read`. See the fence's own comment in
+   *  re-land while `http-watcher` (SSRF) and `time-relative-watcher` (it writes
+   *  its firing ledger) are still authored `read` (as `webhook-watcher`, which
+   *  emptied a queue, was until it was retired). See the fence's own comment in
    *  `mcp-server.ts` for the two preconditions. */
   it('kernel-authored ingredients stay hidden except the D-172 file content read surface', async () => {
     const manifests = createManifestRegistry('/nonexistent');

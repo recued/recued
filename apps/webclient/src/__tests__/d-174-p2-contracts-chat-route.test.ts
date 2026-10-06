@@ -10,6 +10,7 @@ import {
   type ChatQueuedTurn,
   type ChatSession,
   type ChatSessionSummary,
+  type ChatToolCall,
   type ChatTurnQueueSnapshot,
   type ContractDefinitionView,
   type InternalToolRegistry,
@@ -75,7 +76,6 @@ import {
   CHAT_ROUTE_ACTIVATION_ATTR,
   CHAT_ROUTE_ACTIVATION_CARD_ATTR,
   CHAT_ROUTE_ACTIVITY_ATTR,
-  CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR,
   CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR,
   CHAT_ROUTE_ACTIVITY_ROW_ATTR,
   CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR,
@@ -2024,9 +2024,31 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
   };
 
   const mountChatRouteWithStreamingBroadcasts = (
-    createDishFromRun?: (payload: { run_id: string }) => Promise<{ dish: { dish_id: string } }>,
+    layout?: { height: number; clientHeight: number; coordinationHeight?: number },
+    queueSnapshot?: () => ChatTurnQueueSnapshot,
+    initiallyEmpty = false,
+    defaultModelPreference?: Promise<{ source_id: null }>,
   ) => {
     const doc = makeFakeDocument();
+    if (layout !== undefined) {
+      const create = doc.createElement;
+      doc.createElement = tag => {
+        const element = create(tag);
+        // Each rendered scroller has its own measured height and starts at
+        // zero, like the browser. The next render can grow independently.
+        const height = layout.height;
+        const clientHeight = () => layout.clientHeight - (collectByAttr(root, 'data-chat-turn-status').length > 0
+          ? layout.coordinationHeight ?? 0 : 0);
+        let top = 0;
+        Object.defineProperties(element, {
+          scrollHeight: { get: () => height },
+          clientHeight: { get: clientHeight },
+          scrollTop: { get: () => Math.min(top, height - clientHeight()),
+            set: (value: number) => { top = Math.min(Math.max(0, value), height - clientHeight()); } },
+        });
+        return element;
+      };
+    }
     const root = doc.createElement('div');
     const listeners = new Map<string, Array<(event: RouteBroadcast) => void>>();
     let resolveSend: ((value: { turn_id: string }) => void) | null = null;
@@ -2035,13 +2057,15 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
     });
     const conn: ChatRouteConn = (async (method: string, payload?: unknown) => {
       if (method === 'chat.sessions.list') return { sessions: [sessionSummary()] };
-      if (method === 'chat.session.get') return { ...chatSession(), messages: [] };
+      if (method === 'chat.session.get') {
+        const id = (payload as { session_id: string }).session_id;
+        return { ...chatSession(), id, messages: layout && !initiallyEmpty ? [{ ...chatMessage(), session_id: id }] : [] };
+      }
       if (method === 'chat.session.create') return { session_id: 'chat_2' };
       if (method === 'chat.send') return sendGate;
+      if (method === 'chat.turns.list' && queueSnapshot) return queueSnapshot();
       if (method === 'server.getLLMConfig') return { config: { local: { enabled: true } } };
-      if (method === 'dishes.createFromRun' && createDishFromRun !== undefined) {
-        return createDishFromRun(payload as { run_id: string });
-      }
+      if (method === 'chat.default_model_pref.get' && defaultModelPreference) return defaultModelPreference;
       throw new Error(`unexpected method ${method}`);
     }) as ChatRouteConn;
 
@@ -2095,6 +2119,134 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       assistantRows(root).filter((row) => messageContent(row).trim().length === 0),
     ).toHaveLength(0);
   };
+
+  it.each([false, true].flatMap(broadcastFirst => [false, true].map(readHistory => ({ broadcastFirst, readHistory }))))(
+    'follows the first transcript after a long entry, then preserves reading (broadcast first: $broadcastFirst, reading: $readHistory)',
+    async ({ broadcastFirst, readHistory }) => {
+      const layout = { height: 2400, clientHeight: 400 };
+      const h = mountChatRouteWithStreamingBroadcasts(layout, undefined, true);
+      try {
+        await tick();
+        await h.route.openSession('chat_1');
+        const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
+        expect(scroller()).toBeUndefined();
+        const send = h.route.sendMessage('Investigate this work and prepare a private plan. '.repeat(100));
+        await tick();
+        if (broadcastFirst) {
+          h.publish({ kind: 'chat.token_streamed', session_id: 'chat_1', turn_id: 'turn_1', delta: 'Private plan.', cursor: 1 });
+          await tick();
+        } else {
+          h.resolveSend({ turn_id: 'turn_1' });
+          await send;
+        }
+        expect(Reflect.get(scroller(), 'scrollTop')).toBe(2000);
+        if (readHistory) Reflect.set(scroller(), 'scrollTop', 120);
+        if (broadcastFirst) { h.resolveSend({ turn_id: 'turn_1' }); await send; }
+        layout.height = 2800;
+        h.publish({ kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_1',
+          final: completedMessage('first_answer', 'Private plan. Which details should we refine?'), cursor: 2 });
+        await tick();
+        expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2400);
+      } finally { h.resolveSend({ turn_id: 'turn_1' }); h.route.dispose(); }
+    },
+  );
+
+  it.each([false, true])('preserves following or reading through a delayed full-route preference render (%s)', async readHistory => {
+    let resolvePreference!: (value: { source_id: null }) => void;
+    const preference = new Promise<{ source_id: null }>(resolve => { resolvePreference = resolve; });
+    const layout = { height: 2400, clientHeight: 400 };
+    const h = mountChatRouteWithStreamingBroadcasts(layout, undefined, false, preference);
+    try {
+      await tick();
+      await h.route.openSession('chat_1');
+      const send = h.route.sendMessage('Prepare the next private draft.');
+      h.resolveSend({ turn_id: 'turn_1' }); await send;
+      const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(2000);
+      if (readHistory) Reflect.set(scroller(), 'scrollTop', 120);
+      layout.height = 2800;
+      resolvePreference({ source_id: null });
+      await tick();
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2400);
+    } finally { resolvePreference({ source_id: null }); h.route.dispose(); }
+  });
+
+  it('does not carry a pending first-send scroll into another session', async () => {
+    const h = mountChatRouteWithStreamingBroadcasts({ height: 2400, clientHeight: 400 }, undefined, true);
+    try {
+      await tick(); await h.route.openSession('chat_1');
+      const send = h.route.sendMessage('Prepare a private plan.');
+      await tick();
+      // A session read already in progress can finish while admission waits.
+      await h.route.openSession('chat_2');
+      h.publish({ kind: 'chat.token_streamed', session_id: 'chat_2', turn_id: 'other_turn', delta: 'Another answer.', cursor: 1 });
+      await tick();
+      const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(0);
+      h.resolveSend({ turn_id: 'turn_1' }); await send;
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(0);
+    } finally { h.resolveSend({ turn_id: 'turn_1' }); h.route.dispose(); }
+  });
+
+  it.each([false, true])('follows an explicit send once and respects later reading through broadcast and ack (%s)', async readHistory => {
+    const layout = { height: 2400, clientHeight: 400 };
+    const h = mountChatRouteWithStreamingBroadcasts(layout);
+    await tick();
+    await h.route.openSession('chat_1');
+    const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
+    Reflect.set(scroller(), 'scrollTop', 120);
+    const send = h.route.sendMessage('Continue refining the plan');
+    await tick();
+    expect(Reflect.get(scroller(), 'scrollTop')).toBe(2000);
+
+    layout.height = 2800;
+    h.publish({ kind: 'chat.token_streamed', session_id: 'chat_1', turn_id: 'turn_1', delta: 'A private first step.', cursor: 1 });
+    await tick();
+    expect(Reflect.get(scroller(), 'scrollTop')).toBe(2400);
+    if (readHistory) Reflect.set(scroller(), 'scrollTop', 120);
+    h.resolveSend({ turn_id: 'turn_1' });
+    await send;
+    expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2400);
+
+    layout.height = 3000;
+    h.publish({ kind: 'chat.message_complete', session_id: 'chat_1', turn_id: 'turn_1',
+      final: completedMessage('msg_done', 'A private first step. Continue refining?'), cursor: 2 });
+    await tick();
+    expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2600);
+    h.route.dispose();
+  });
+
+  it.each([false, true])('preserves following or reading when a delayed queue panel resizes the transcript (%s)', async readHistory => {
+    let snapshot: ChatTurnQueueSnapshot = { generation: 'g', revision: 0, turns: [] };
+    const h = mountChatRouteWithStreamingBroadcasts(
+      { height: 2400, clientHeight: 400, coordinationHeight: 80 }, () => snapshot);
+    try {
+      await tick();
+      await h.route.openSession('chat_1');
+      const send = h.route.sendMessage('Continue refining the plan');
+      h.resolveSend({ turn_id: 'turn_1' });
+      await send;
+      await tick();
+      const scroller = () => collectByAttr(h.root, 'data-recued-chat-route-messages')[0]!;
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(2000);
+      if (readHistory) Reflect.set(scroller(), 'scrollTop', 120);
+
+      const running: ChatQueuedTurn = { turn_id: 'turn_1', session_id: 'chat_1', position: 1, status: 'running',
+        message: 'Continue refining the plan', created_at: 1, duplicate_count: 0 };
+      snapshot = { generation: 'g', revision: 1, turns: [running] };
+      h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'queue', value: true });
+      await tick();
+      expect(collectByAttr(h.root, 'data-chat-turn-status')).toHaveLength(1);
+      expect(Reflect.get(scroller(), 'clientHeight')).toBe(320);
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2080);
+
+      snapshot = { generation: 'g', revision: 2, turns: [{ ...running, status: 'completed' }] };
+      h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'queue', value: true });
+      await tick();
+      expect(Reflect.get(scroller(), 'clientHeight')).toBe(400);
+      expect(Reflect.get(scroller(), 'scrollTop')).toBe(readHistory ? 120 : 2000);
+    } finally { h.route.dispose(); }
+  });
 
   it('paints live streaming content under production broadcast-before-ack ordering', async () => {
     const h = mountChatRouteWithStreamingBroadcasts();
@@ -2369,51 +2521,35 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       h.route.dispose();
     });
 
-    it('lets the owner keep a succeeded ad-hoc run as a dish without duplicating standing dishes', async () => {
-      const createDishFromRun = vi.fn(async (payload: { run_id: string }) => ({
-        dish: { dish_id: `dsh_${payload.run_id}` },
-      }));
-      const h = mountChatRouteWithStreamingBroadcasts(createDishFromRun);
+    // D-259 §6.1 retired (2026-10-05): chat no longer offers to keep a run as a
+    // dish. A call an older server marked `dish_promotable` gets no button (the
+    // harness's conn throws on any method it was not given, the retired
+    // `dishes.createFromRun` included); a call that ran AS a standing dish still
+    // says so.
+    it('offers no Keep as dish, even for a call an older server marked; a standing dish still says so', async () => {
+      const h = mountChatRouteWithStreamingBroadcasts();
       await tick();
       await h.route.openSession('chat_1');
       await tick();
 
+      const markedByAnOlderServer = {
+        tool_name: 'recipe.run',
+        tier: 2,
+        args: { recipe_id: 'review-repo' },
+        status: 'ok',
+        result_ref: 'chat_1:turn_old:recipe.run',
+        run_id: 'run_259',
+        dish_promotable: true,
+        started_at: 1_000,
+        completed_at: 1_100,
+      } as ChatToolCall;
       h.publish({
         kind: 'chat.message_complete',
         session_id: 'chat_1',
-        turn_id: 'turn_promote',
-        final: {
-          ...chatMessage(),
-          id: 'msg_promote',
-          tool_calls: [{
-            tool_name: 'recipe.run',
-            tier: 2,
-            args: { recipe_id: 'review-repo' },
-            status: 'ok',
-            result_ref: 'chat_1:turn_promote:recipe.run',
-            run_id: 'run_259',
-            dish_promotable: true,
-            started_at: 1_000,
-            completed_at: 1_100,
-          }],
-        } satisfies ChatMessage,
+        turn_id: 'turn_old',
+        final: { ...chatMessage(), id: 'msg_old', tool_calls: [markedByAnOlderServer] } satisfies ChatMessage,
         cursor: 1,
       });
-      await tick();
-
-      const promote = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)[0]!;
-      expect(promote.textContent).toBe('Keep as dish');
-      expect(promote.getAttribute('data-run-id')).toBe('run_259');
-      promote.click();
-      await tick();
-      await tick();
-
-      expect(createDishFromRun).toHaveBeenCalledWith({ run_id: 'run_259' });
-      expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)).toHaveLength(0);
-      const saved = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR)[0]!;
-      expect(saved.textContent).toBe('Saved as dish');
-      expect(saved.getAttribute('data-dish-id')).toBe('dsh_run_259');
-
       h.publish({
         kind: 'chat.message_complete',
         session_id: 'chat_1',
@@ -2437,12 +2573,11 @@ describe('D-174 P2 chat route — route-side scaffold handling', () => {
       });
       await tick();
 
-      expect(collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR)).toHaveLength(0);
-      expect(
-        collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR)
-          .some((status) => status.textContent === 'Standing dish'
-            && status.getAttribute('data-dish-id') === 'dsh_existing'),
-      ).toBe(true);
+      expect(allText(h.root)).not.toContain('Keep as dish');
+      expect(collectByAttr(h.root, 'data-recued-chat-route-activity-dish-promote')).toHaveLength(0);
+      const statuses = collectByAttr(h.root, CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR);
+      expect(statuses.map((status) => [status.textContent, status.getAttribute('data-dish-id')]))
+        .toEqual([['Standing dish', 'dsh_existing']]);
 
       h.route.dispose();
     });
@@ -6955,14 +7090,15 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     const route = bootstrapChatRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
       conn, initialSessionId: 'chat_1',
       initialRecoveryDraft: { text: message, protected: true, modelSourceId: null },
-      initialWorkSubmission: { sessionId: 'chat_1', message },
+      initialWorkSubmission: { sessionId: 'chat_1', message, mailWork: { seeds: [{ slug: 'work', record_id: 'seed' }] } },
     });
     try {
       await route.whenLoaded();
-      expect(sends[0]).toMatchObject({ read_only: true });
+      expect(sends[0]).toMatchObject({ read_only: true, mail_work: { seeds: [{ slug: 'work', record_id: 'seed' }] } });
       await route.sendMessage(`${message} Then draft the reply to the client.`);
       expect(sends).toHaveLength(2);
       expect(sends[1]).not.toHaveProperty('read_only');
+      expect(sends[1]).not.toHaveProperty('mail_work');
       expect(sends[1]).not.toHaveProperty('repeat');
     } finally { route.dispose(); }
   });

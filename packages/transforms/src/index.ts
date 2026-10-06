@@ -21,6 +21,8 @@ import { round, clamp, to_number, math, weighted_score } from './numeric.js';
 import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date } from './date.js';
 import { compare, coalesce, switch_, all, any, count, default_, defaults_, not_, ternary, pluralize } from './logic.js';
 import { hash_replace, hash_restore, redact } from './privacy.js';
+// A step's legacy `pii_fields`, hashed at dispatch over the RESOLVED input.
+export { hashStepPiiFields, restoreHashTokens } from './privacy.js';
 import { to_checklist, to_table, to_summary, to_csv } from './display.js';
 import { to_slack_blocks } from './slack-blocks.js';
 import { starts_with, ends_with } from './boolean.js';
@@ -113,6 +115,9 @@ export {
   createPiiLedgerStore,
   getFallbackPiiLedgerStore,
   _resetPiiLedgerState,
+  // D-316 amendment — a recipe's `content` tag matched against the host's known values; the
+  // match failing closed.
+  PiiKnownValuesUnavailableError,
 } from './pii-alias.js';
 export type {
   Ledger,
@@ -120,6 +125,7 @@ export type {
   AliasNamespace,
   RedactionCounters,
   PiiLedgerStore,
+  PiiKnownValueSource,
   KnownValueIndex,
   KnownValueSeed,
   KnownValueIdentifierSeed,
@@ -186,3 +192,6 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
 ]);
 
 export const getTransform = (name: string): TransformFn | undefined => TRANSFORMS.get(name);
+
+// D-193 — the absolute-instant rule `date_parse`'s `require_offset` applies.
+export { parseInstantWithOffset } from './date.js';

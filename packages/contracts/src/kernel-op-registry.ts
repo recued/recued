@@ -808,7 +808,16 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // ── schedule — D-193 installed-recipe scheduling control plane.
   //    Creates recurring or one-shot rows for recipes already installed in the
   //    local RecipeStore. Write risk because it arms autonomous future execution.
-  op('core.schedule.recipe', 'schedule', 'schedule-recipe', 'write', 'schedule'),
+  //
+  //    ⛔ NATIVE since 2026-10-05 (owner: "take out core.schedule.recipe, not to be
+  //    used in recipe step"): chat schedules through its own Tier-1 `recipe.schedule`
+  //    tool, which this op GRANTS on the owner's contract (that tool refuses every
+  //    door outright, so this grant is the owner's switch, not the door fence), and
+  //    no recipe step can schedule another recipe. No backing ingredient, so a step
+  //    naming it has no lowering target, and the validator refuses it
+  //    (`native_op_in_step`). D-261's pre-approval origin check keeps reading this id
+  //    as the scheduling grant, for the owner and for a door alike, as before.
+  nativeOp('core.schedule.recipe', 'schedule', 'write', 'schedule'),
 
   // ── seller — core-owned commerce registry. Recipes can establish and read
   //    fixed-shape offers, but only Seller owns the DB/schema/menu/UI and the
@@ -964,53 +973,35 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    `should_run` gate. The op id is the `KernelWatcherSlug` minus the
   //    `-watcher` suffix (`time-relative-watcher` → `core.watch.time-relative`).
   //    All `risk: read` — but ⛔⛔ NOT because none make a side effect, which is
-  //    what this comment used to claim and is FALSE. `webhook-watcher` DELETES the
-  //    queue it returns (`watchers/webhook-watcher.ts` — drain-on-read), and
-  //    `time-relative-watcher` MUTATES firing state. Both were found by a Codex
-  //    review of D-228, 2026-07-31.
+  //    what this comment used to claim and is FALSE. `time-relative-watcher`
+  //    MUTATES firing state, and `http-watcher` with `once_per_change` keeps the
+  //    page it last reported. Found by a Codex review of D-228, 2026-07-31.
   //
   //    🔑 They stay `read` because this is the TRIGGER position and `risk` here
   //    feeds the APPROVAL gate (`admitByOpRisk`: read→admit, write/admin→ask,
   //    destructive→always). A trigger predicate is evaluated every tick, so any
   //    asking tier makes it nonfunctional — `core.watch.time-relative` alone backs
   //    5 shipped recipes, which a bump to `write` would have broken. Raising the
-  //    tier was tried and reverted for exactly that reason.
+  //    tier was tried and reverted for exactly that reason. Whose state a watcher
+  //    keys is bound by identity instead: the kernel adapter injects the trusted
+  //    `stepMeta.recipe_id` (`packages/ingredients/src/kernel.ts`). ⛔ Do not
+  //    re-tier these to paper over such a thing: `risk_tier` cannot express
+  //    "keys another recipe's state", and binding the identity can.
   //
-  //    ✅ THE WEBHOOK DRAIN IS FIXED (2026-07-31) — and NOT by making the read
-  //    non-destructive, which an earlier note here wrongly prescribed. The
-  //    DESTRUCTIVE drain is correct: it is the at-most-once consume that stops a
-  //    webhook re-firing on every tick. What was wrong is WHOSE queue a caller
-  //    could name — `recipe_id` was ordinary authored input, so one recipe could
-  //    drain another's queue, reading its headers / body / source IP and leaving
-  //    the owner to miss those deliveries. The kernel adapter now injects the
-  //    trusted `stepMeta.recipe_id` (`packages/ingredients/src/kernel.ts`),
-  //    exactly as it already did for `time-relative-watcher`'s firing ledger.
-  //    ⚠ Residual, pinned by test: a caller with NO engine context (the
-  //    `runtime.runWatcher` pair-rpc, which no client calls today) still supplies
-  //    its own id.
-  //
-  //    ⛔ Either way it was never a tiering question. `risk_tier` cannot express
-  //    "reads someone else's queue and empties it"; binding the identity can. Do
-  //    not re-tier these to paper over such a thing: the tier would be wrong on
-  //    the approval axis in order to be right on an axis it does not represent —
-  //    the same mistake slice 2 made with MCP exposure, which is now the authored
-  //    `mcp_exposed` field instead.
-  //
-  //    Connection-less closed-kind: the mail/calendar/file
-  //    watchers read warehouse state (like `core.mail.email.list`), http-watcher
-  //    polls an args-supplied URL — none bind a per-instance connection. (There is
-  //    NO `core.watch.dom`: DOM watching is not a server-local watcher — it runs
-  //    through the D-179 reactive watch-poll source, which reads via the paired
-  //    Bridge; see `backend` `watch/dom-source.ts`. The inert D-115 `dom-watcher`
-  //    kernel slug + this op were removed.)
+  //    ⛔ RETIRED 2026-10-05: `core.watch.mail`, `core.watch.file`,
+  //    `core.watch.calendar`, `core.watch.webhook` and `core.watch.recipe`. No
+  //    shipped recipe used one; each had a replacement every shipped recipe
+  //    already used — an event trigger on `data.mail` / `data.file` /
+  //    `data.calendar` (narrowed to the mailbox, folder or calendar a dish names
+  //    with `{{config.<setting>}}` in the pattern), D-201 `webhook_triggers`, and
+  //    `run.<recipe>.*` events — and `core.watch.time-relative` for "N minutes
+  //    before a meeting". The webhook watcher's `/hook/{recipe_id}/{slug}` route,
+  //    which verified nothing, went with it. (There is NO `core.watch.dom`
+  //    either: DOM watching runs through the D-179 reactive watch-poll source,
+  //    via the paired Bridge — `backend` `watch/dom-source.ts`.)
   op('core.watch.time', 'watch', 'time-watcher', 'read', 'watch'),
   op('core.watch.time-relative', 'watch', 'time-relative-watcher', 'read', 'watch'),
-  op('core.watch.mail', 'watch', 'mail-watcher', 'read', 'watch'),
-  op('core.watch.calendar', 'watch', 'calendar-watcher', 'read', 'watch'),
-  op('core.watch.file', 'watch', 'file-watcher', 'read', 'watch'),
   op('core.watch.http', 'watch', 'http-watcher', 'read', 'watch'),
-  op('core.watch.recipe', 'watch', 'recipe-watcher', 'read', 'watch'),
-  op('core.watch.webhook', 'watch', 'webhook-watcher', 'read', 'watch'),
 
   // ── dom — D-182 "core.dom" close-out. The Bridge-actuated DOM action ops
   //    (SEQUENTIAL-position — a recipe step, not a trigger watcher).

@@ -1004,7 +1004,11 @@ export const makeConfigHandlers = (
             elapsed_ms: 0,
           };
         }
-        return probeLlmSource({ adapter, slot, onUsage });
+        // A chat source is also shown the test picture: Test connection is the
+        // one place a model proves it can see pictures, and nothing reaches a
+        // camera check or a scanned page until one has (`endpoint-capabilities`
+        // § Picture input).
+        return probeLlmSource({ adapter, slot, onUsage, pictures: true });
       },
 
       // Writes block 1 (+ the transport role, + the gateway's caller policy).

@@ -41,7 +41,7 @@
  *
  *  Spec: D-209 §1.4; D-207 §5.1b / §5.1d / §5.1g. */
 
-import type { RecipeDefinition } from '@recued/contracts';
+import type { DishWebhookDoorChange, RecipeDefinition } from '@recued/contracts';
 
 import {
   deriveResolvedRecipeCapability,
@@ -330,4 +330,179 @@ export const reconcileWebhookDoors = (
   );
 
   return outcomes;
+};
+
+/** D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH.
+ *
+ *  A webhook-started run takes the MAIN dish's settings (`webhook-recipe-runner`
+ *  `resolveConfig`), and its door is derived from those settings — which account
+ *  each step reads is a dish value, not a recipe one (D-207 §5.1c-bis). Doors were
+ *  minted only at `recipe.save` and pack install, and both read the main dish:
+ *
+ *    - ⛔ a fresh pack install HAS no main dish, so every recipe whose connection
+ *      is a dish setting — all 32 shipped webhook recipes name theirs
+ *      `{{config.<vendor>}}` — got no door, and every delivery ended
+ *      `terminal_non_success` before the recipe ran;
+ *    - and once the owner did choose the account, nothing re-derived: the door
+ *      stayed missing, or (after a later swap) the runner refused every delivery
+ *      with "door authority changed; re-save the recipe".
+ *
+ *  So the dish rpc calls this whenever the MAIN dish's settings change, it is
+ *  made main, or it goes. Owner's ruling (2026-10-04): a settings save is the
+ *  owner's own act and the door follows it — and per D-207 §5.1g the change is
+ *  RETURNED, so the surface that saved names what the webhook may now do.
+ *
+ *  Scoped to ONE recipe on every consumer that triggers it, with the prior
+ *  snapshot NARROWED to that recipe (`consumersOfRecipe`) — given a consumer's
+ *  whole snapshot, the reconcile would retire a sibling recipe's door as
+ *  "not re-used". ⚠ `keepOwnerRevoked`: a door its owner revoked stays revoked;
+ *  changing a setting is not the gesture that reopens it.
+ *
+ *  ⛔ The rows are CLEARED before the reconcile, as `replaceConsumer` leaves the
+ *  rows of every other caller. These rows are not re-created, so a refusal would
+ *  otherwise retire the door while its id stayed STAMPED — and D-295 reads a
+ *  revoked door still stamped as one its OWNER shut, so every later save would
+ *  keep it shut ("kept_revoked"), for good. The snapshot taken first still
+ *  names the prior door: an unchanged door is re-stamped, an owner-revoked one
+ *  is recognised. Synchronous end to end, so no delivery sees the cleared rows
+ *  in between; a crash there leaves them door-less, which refuses (fail-closed)
+ *  until the next save. */
+export const followMainDishWebhookDoors = (
+  input: { readonly recipe_id: string; readonly recipe: RecipeDefinition },
+  deps: WebhookDoorEnrollDeps & {
+    readonly consumerStore: Pick<
+      WebhookConsumerStore,
+      | 'stampTriggerContracts'
+      | 'clearTriggerContracts'
+      | 'doorContractIdForRecipe'
+      | 'consumersOfRecipe'
+    >;
+  },
+): DishWebhookDoorChange[] => {
+  // ⚠ Never throws. The settings save already committed, so a door fault must
+  // not report the save as failed; it degrades to the fail-closed state and says
+  // so, as the install and save paths do around their own reconcile.
+  let owners: ReturnType<WebhookConsumerStore['consumersOfRecipe']>;
+  try {
+    owners = deps.consumerStore.consumersOfRecipe(input.recipe_id);
+  } catch (error) {
+    console.warn(
+      `[dish] webhook doors for '${input.recipe_id}' not re-derived: ${errorMessage(error)}`,
+    );
+    return [];
+  }
+  const recipeName = input.recipe.metadata?.name?.trim();
+  const changes: DishWebhookDoorChange[] = [];
+  for (const owner of owners) {
+    // What the owner is told about: this recipe, and whether a live door let its
+    // pushes through BEFORE this change ("now works" vs "what it may do changed").
+    const subject: DoorChangeSubject = {
+      recipe_id: input.recipe_id,
+      ...(recipeName ? { recipe_name: recipeName } : {}),
+      was_open: hadLiveDoor(owner.snapshot, deps),
+    };
+    let cleared = false;
+    try {
+      deps.consumerStore.clearTriggerContracts({
+        consumer_kind: owner.consumer_kind,
+        consumer_id: owner.consumer_id,
+        recipe_id: input.recipe_id,
+        publisher_id: owner.publisher_id,
+      });
+      cleared = true;
+      const outcome = reconcileWebhookDoors(
+        {
+          consumer_kind: owner.consumer_kind,
+          consumer_id: owner.consumer_id,
+          prior: owner.snapshot,
+          recipes: [{
+            recipe_id: input.recipe_id,
+            publisher_id: owner.publisher_id,
+            recipe: input.recipe,
+          }],
+          mintedBy: 'dish_settings',
+          retireReason: 'dish_settings_changed',
+          keepOwnerRevoked: true,
+        },
+        deps,
+      ).get(input.recipe_id);
+      if (outcome !== undefined) changes.push(doorChangeOf(subject, outcome));
+    } catch (error) {
+      // Fail closed, and leave no live door behind. Once the rows are cleared,
+      // every prior door is retired, as the reconcile's own supersession would
+      // have done: either nothing was stamped (the rows stay door-less and every
+      // delivery is refused), or a new door was, before the retire threw. Rows
+      // the clear never reached keep their door, so nothing is retired under a
+      // stamp (D-295 would read that as the owner's revoke).
+      if (cleared) {
+        try {
+          retireWebhookDoors(snapshotDoorContractIds(owner.snapshot), 'dish_settings_changed', deps);
+        } catch {
+          // A live door that no row names is inert: authority attaches only
+          // through a dispatch carrying its id.
+        }
+      }
+      changes.push({ ...subject, state: 'closed', reason: errorMessage(error), reason_code: 'fault' });
+    }
+  }
+  return changes;
+};
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+type DoorChangeSubject = Pick<DishWebhookDoorChange, 'recipe_id' | 'recipe_name' | 'was_open'>;
+
+/** Whether any door stamped on these rows was LIVE: the webhook let pushes
+ *  through. Never throws (the follow must not): an unreadable store reads as
+ *  "not open", which only words the notice. */
+const hadLiveDoor = (
+  snapshot: WebhookConsumerSnapshot,
+  deps: Pick<MintDoorDeps, 'definitionStore'>,
+): boolean => {
+  try {
+    return snapshotDoorContractIds(snapshot).some((contractId) => {
+      const stored = deps.definitionStore.get(contractId);
+      return stored !== null && (stored.revoked_at === undefined || stored.revoked_at === null);
+    });
+  } catch {
+    return false;
+  }
+};
+
+/** A refusal the owner can fix in these settings: a step's account slot
+ *  (`{{config.<name>}}`) that names no account. Anything else is the recipe's. */
+const reasonCodeOf = (refusal: RecipeCapabilityRefusal): 'no_account' | 'refused' =>
+  refusal.reason === 'dynamic_connection' && /^\{\{\s*config\./.test(refusal.ref)
+    ? 'no_account'
+    : 'refused';
+
+/** One reconcile outcome, as the owner-facing change the dish rpc returns. */
+const doorChangeOf = (
+  subject: DoorChangeSubject,
+  outcome: WebhookDoorOutcome,
+): DishWebhookDoorChange => {
+  switch (outcome.kind) {
+    case 'minted':
+      return outcome.unchanged
+        ? { ...subject, state: 'unchanged', operation_ids: [...outcome.operation_ids] }
+        : {
+            ...subject,
+            state: 'opened',
+            operation_ids: [...outcome.operation_ids],
+            added: [...outcome.added],
+            removed: [...outcome.removed],
+          };
+    case 'refused':
+      return {
+        ...subject,
+        state: 'closed',
+        reason: describeWebhookDoorRefusal(outcome.refusal),
+        reason_code: reasonCodeOf(outcome.refusal),
+      };
+    case 'failed':
+      return { ...subject, state: 'closed', reason: outcome.message, reason_code: 'fault' };
+    case 'kept_revoked':
+      return { ...subject, state: 'kept_revoked' };
+  }
 };

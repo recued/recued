@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStorageGate } from '@recued/storage-gate';
+import { TIER1_TOOL_DESCRIPTORS, type ToolEntry, type InternalToolRegistry } from '@recued/contracts';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import { createInboundFileCollection } from '../../../../backend/server/src/collections/file/inbound-file-collection.js';
 import { createEncryptedBlobStore } from '../../../../backend/server/src/storage/blob-store.js';
@@ -14,19 +16,76 @@ import { withQueuedChatTurns } from '../../../../backend/server/src/chat-turn-qu
 import { handleChatDelivery, handleChatQueue, handleClearSessionBrief, handleGetSessionBrief, handleSessionCreate, handleSend, handleSessionGet, handleSessionsList } from '../../../../backend/server/src/chat-handler.js';
 
 export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = false, attachmentDelivery = false,
-  options: { holdInModel?: boolean } = {}) => {
+  options: { holdInModel?: boolean; holdClosingBrief?: boolean; answer?: string; beforeAnswer?: () => Promise<void>; registry?: InternalToolRegistry;
+    modelResponse?: (packet: Record<string, unknown>) => unknown | Promise<unknown> } = {}) => {
   const db = new Database(':memory:'); ensureChatSchema(db); const store = createChatStore(db);
   store.createSession({ id: 's', title: 'Shared conversation' });
+  if (options.holdClosingBrief) store.setRollingBriefEnabled(true);
 
   const selfSignature = { server_kind: 'recued' as const, version: '1', instance_id: 'test' };
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const raw = createChatOrchestrator({ chatStore: store, selfSignature, broadcast,
-    registry: { list: () => [], listByTier: () => [], getByName: () => null,
-      dispatch: async () => ({ ok: true, result: {} }), subscribeRefresh: () => () => {} },
-    ...(options.holdInModel ? { executeAiCall: async () => {
+  if (options.holdClosingBrief) {
+    const writeEvidence = store.writeMailWorkEvidence!;
+    // Exercise the same preview/Stop/reentry boundary when a work turn can
+    // retain exact sources instead of calling the closing summarizer.
+    store.writeMailWorkEvidence = async (session, json, beforeCommit) => {
       await held;
-      return { body: { response: 'Start with the proposal due Friday.', events: [], tool_calls: [] } };
+      await writeEvidence(session, json, beforeCommit);
+    };
+  }
+  const tools: ToolEntry[] = options.holdClosingBrief ? [{ ...TIER1_TOOL_DESCRIPTORS['mail.read'], tier: 1 }] : [];
+  const modelInputs: Record<string, unknown>[] = [];
+  const raw = createChatOrchestrator({ chatStore: store, selfSignature, broadcast,
+    registry: options.registry ?? { list: () => tools, listByTier: () => tools, getByName: name => tools.find(tool => tool.name === name) ?? null,
+      dispatch: async () => ({ ok: true, result: { body: 'Please prepare a revised offer for Acme.' } }), subscribeRefresh: () => () => {} },
+    ...(options.holdInModel || options.holdClosingBrief || options.modelResponse ? { executeAiCall: async (_manifest, input) => {
+      const packet = JSON.parse(String(input['llm.prompt']));
+      modelInputs.push(structuredClone(packet));
+      // Scripted UI responses use the production plan envelope on prepared
+      // work turns. Malformed/error injections remain malformed/error inputs.
+      const withWorkPlan = (body: unknown): unknown => {
+        const taskShape = (input['llm.output_schema'] as any)?.properties.mail_work_plan.anyOf[0].properties.task;
+        const task = taskShape?.const ?? taskShape?.enum?.[0];
+        if (task !== 'propose' || !body || typeof body !== 'object' || Array.isArray(body)) return body;
+        const answer = body as Record<string, unknown>;
+        if (typeof answer.response !== 'string' || !Array.isArray(answer.tool_calls) || answer.tool_calls.length || answer.mail_work_plan) return body;
+        const observations = (packet.prior_tool_calls ?? []).flatMap((c: any) => c.tool_name === 'context.mail_work_evidence' ? c.result?.observations ?? [] : [c]);
+        const mail = observations.find((c: any) => c.tool_name === 'mail.read' && c.result?.body && c.result?.source_url);
+        if (!mail) return body;
+        const source = `mail_${createHash('sha256').update(mail.result.source_url).digest('hex').slice(0, 12)}`;
+        const passage = packet.prior_tool_calls.find((c: any) => c.tool_name === 'context.mail_work_evidence')
+          ?.result?.passage_catalog.find((row: any) => row.source === source)?.id;
+        if (!passage) throw new Error('Scripted work answer has no current source passage');
+        // Long scripted answers test scrolling/settlement using bounded plan
+        // steps. Never truncate a fixture to conceal a production bound.
+        const activities: string[] = [];
+        for (const raw of answer.response.split('\n\n')) {
+          const paragraph = raw.replace(/[\r\n]+/g, ' ');
+          if (paragraph.length > 160) throw new Error('Scripted work target exceeds the production bound');
+          const last = activities.at(-1);
+          if (last && last.length + paragraph.length + 1 <= 160) activities[activities.length - 1] = `${last} ${paragraph}`;
+          else activities.push(paragraph);
+        }
+        if (activities.length > 6) throw new Error('Scripted work answer exceeds the production step count');
+        return { ...answer, mail_work_plan: { task, facts: [passage],
+          actions: activities.map(target => ({ operation: 'draft', target,
+            context: [passage], source_notes: [] })), questions: [] } };
+      };
+      if (options.modelResponse) return { body: withWorkPlan(await options.modelResponse(packet)) };
+      if ('tool_results_since' in packet) {
+        await held;
+        return { body: { intent: 'Investigate work', constraints: [], pending: [], findings: [], completed: [] } };
+      }
+      if (options.holdInModel) await held;
+      if (options.holdClosingBrief && !packet.prior_tool_calls?.length) {
+        return { body: { response: 'Read the selected source.', events: [],
+          tool_calls: [{ tool: 'mail.read', args: { slug: 'work', record_id: 'seed' } }] } };
+      }
+      await options.beforeAnswer?.();
+      const observations = (packet.prior_tool_calls ?? []).flatMap((c: { tool_name: string; result?: { observations?: unknown[] } }) => c.tool_name === 'context.mail_work_evidence' ? c.result?.observations ?? [] : [c]);
+      const mail = observations.find((c: { tool_name: string; result?: { body?: string } }) => c.tool_name === 'mail.read' && c.result?.body);
+      return { body: withWorkPlan({ ...(mail?.result?.source_url ? { mail_work_recap: [{ source: mail.result.source_url, quote: mail.result.body, state: 'current' }] } : {}), response: options.answer ?? 'Start with the proposal due Friday.', events: [], tool_calls: [] }) };
     } } : {}) });
   const executions: string[] = [];
   let deliveries = 0;
@@ -53,10 +112,10 @@ export const createQueueFixture = (broadcast: ChatBroadcastEmitter, delivery = f
     });
   }
   const orchestrator = withQueuedChatTurns({ ...raw, runTurn: async input => {
-    executions.push(input.message); if (executions.length === 1 && !options.holdInModel) await held; return raw.runTurn(input);
+    executions.push(input.message); if (executions.length === 1 && !options.holdInModel && !options.holdClosingBrief) await held; return raw.runTurn(input);
   } }, { db, store, broadcast, pollMs: 20, ...(bridge ? { messengerBridge: bridge } : {}) });
   const deps = { store, orchestrator, selfSignature };
-  return { executions, release, deliveryCount: () => deliveries, snapshot: () => orchestrator.turnQueue!.snapshot('s'),
+  return { executions, release, modelInputs, deliveryCount: () => deliveries, snapshot: () => orchestrator.turnQueue!.snapshot('s'),
     uploads, files, blobs, db,
     messages: () => store.listMessages('s'),
     /** Store a running note, as a fold during a turn would. */

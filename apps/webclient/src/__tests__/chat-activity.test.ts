@@ -3,6 +3,7 @@ import {
   DEFAULT_TRANSPARENCY_STREAM_SETTINGS,
   type ChatMessage,
   type ChatToolCall,
+  type ChatToolCallRecord,
   type TransparencyEvent,
   type TransparencyStreamSettings,
 } from '@recued/contracts';
@@ -10,6 +11,7 @@ import {
 import {
   projectInFlightActivity,
   projectMessageActivity,
+  projectSettledCallNotices,
   projectTransparencyNote,
 } from '../chat/activity.js';
 import type { InFlightTurn } from '../chat/state.js';
@@ -232,16 +234,19 @@ describe('chat activity projections', () => {
     expect(projectMessageActivity(chatMessage())).toEqual([]);
   });
 
-  it('carries host-authored promotion and standing-dish addresses into activity rows', () => {
+  // D-259 §6.1 retired (2026-10-05): chat no longer offers to keep a run as a
+  // dish. Calls stored before then still carry `dish_promotable: true`, and the
+  // row they project to must not.
+  it('carries run and standing-dish addresses into rows, and drops a retired promotion mark', () => {
+    const storedBeforeRetirement = Object.assign(
+      toolCall({ status: 'ok', run_id: 'run_259' }),
+      { dish_promotable: true },
+    );
     expect(
       projectMessageActivity(
         chatMessage({
           tool_calls: [
-            toolCall({
-              status: 'ok',
-              run_id: 'run_259',
-              dish_promotable: true,
-            }),
+            storedBeforeRetirement,
             toolCall({
               status: 'ok',
               run_id: 'run_260',
@@ -256,7 +261,6 @@ describe('chat activity projections', () => {
         text: 'used mail.search ' + checkMark,
         status: 'ok',
         run_id: 'run_259',
-        dish_promotable: true,
       },
       {
         kind: 'tool',
@@ -356,5 +360,43 @@ describe('chat activity transparency settings', () => {
     expect(projectInFlightActivity(turn, disabled)).toEqual([
       { kind: 'tool', text: 'running mail.search...', status: 'started' },
     ]);
+  });
+});
+
+describe('a call that stopped to wait reads as what it is now', () => {
+  // Its dispatch QUEUED, so its persisted status is `ok`: the row said
+  // "used … ✓" while the call waited, and kept saying it after a refusal.
+  const tool = 'recued-core/control-device';
+  const record = (overrides: Partial<ChatToolCallRecord>): ChatToolCallRecord => ({
+    message_id: 'tool:x', session_id: 'sess_1', turn_id: 't', tool_name: tool, run_id: 'run-1',
+    state: 'held', started_at: 1, updated_at: 2, held_at: 2, ...overrides,
+  });
+  const message = chatMessage({ tool_calls: [toolCall({ tool_name: tool, status: 'ok', run_id: 'run-1' })] });
+  const rowFor = (overrides: Partial<ChatToolCallRecord>) =>
+    projectMessageActivity(message, { 'run-1': record(overrides) })[0];
+
+  it('says it is waiting, then how it ended', () => {
+    expect(rowFor({})).toMatchObject({ text: `waiting to hear back: ${tool}`, status: 'started', run_id: 'run-1' });
+    expect(rowFor({ state: 'succeeded' })).toMatchObject({ text: `used ${tool} ${checkMark}`, status: 'ok' });
+    expect(rowFor({ state: 'failed', denied: true })).toMatchObject({ text: `didn't run ${tool}: you said no`, status: 'error' });
+    expect(rowFor({ state: 'failed' })).toMatchObject({ text: `couldn't run ${tool}: it did not finish`, status: 'error' });
+    expect(rowFor({ state: 'interrupted' })).toMatchObject({ status: 'error' });
+    // No record ⇒ exactly the row it always was.
+    expect(projectMessageActivity(message)[0]).toMatchObject({ text: `used ${tool} ${checkMark}`, status: 'ok' });
+  });
+
+  it('adds one plain update under the answer once a call that waited has settled', () => {
+    const notices = (overrides: Partial<ChatToolCallRecord>) =>
+      projectSettledCallNotices(message, { 'run-1': record(overrides) });
+    expect(notices({})).toEqual([]);
+    expect(notices({ state: 'succeeded' })).toEqual([{ run_id: 'run-1', text: `Update: ${tool} has now finished.` }]);
+    expect(notices({ state: 'failed', denied: true })).toEqual([
+      { run_id: 'run-1', text: `Update: you said no, so ${tool} did not run.` }]);
+    expect(notices({ state: 'failed' })).toEqual([{ run_id: 'run-1', text: `Update: ${tool} did not finish.` }]);
+    // A call that never waited needs no update: its ✓ is already the truth.
+    const { held_at: _never, ...neverWaited } = record({ state: 'succeeded' });
+    expect(projectSettledCallNotices(message, { 'run-1': neverWaited })).toEqual([]);
+    expect(projectSettledCallNotices(message, undefined)).toEqual([]);
+    expect(projectSettledCallNotices(chatMessage({ role: 'user' }), { 'run-1': record({ state: 'succeeded' }) })).toEqual([]);
   });
 });

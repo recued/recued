@@ -60,6 +60,7 @@ import {
   RUNNING_AS_FOCUS_AFTER,
   RUNNING_AS_RECIPE_ATTR,
   RUNNING_AS_STYLES,
+  isInstalledRecipeEntry,
   renderRunningAs,
   renderSwitchOnButton,
   runningAsFocusKey,
@@ -370,6 +371,7 @@ export {
   RUNNING_AS_ACTION_ATTR,
   RUNNING_AS_ATTR,
   RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_NOT_INSTALLED_ATTR,
   RUNNING_AS_RECIPE_ATTR,
   RUNNING_AS_STATUS_ATTR,
 } from './running-as.js';
@@ -2224,6 +2226,7 @@ const renderRelatedRecipeRow = (
         autoRunBusy.has(entry.recipe_id),
       )
     : !hasDish && automation.dishes !== null && canSwitchOn && startsOnItsOwn(entry.recipe)
+        && isInstalledRecipeEntry(entry)
       ? renderSwitchOnButton(entry.recipe_id, false)
       : '';
   return `
@@ -4164,6 +4167,7 @@ export const bootstrapRecipesRoute = (
       recipe_id: entry.recipe_id,
       recipe_name: recipeDisplayName(entry),
       recipe: entry.recipe,
+      installed: isInstalledRecipeEntry(entry),
       dishes: automationData.dishes === null
         ? null
         : automationData.dishes.filter((dish) => dish.recipe_id === entry.recipe_id),
@@ -4184,6 +4188,8 @@ export const bootstrapRecipesRoute = (
       errors: dishErrors,
       failureHref: serializeShellRoute('automation', entry.recipe_id),
       valueText: settingValueText,
+      // A timer's window opens on the server's clock (D-269).
+      ...(opts.serverTimeZone?.() !== undefined ? { timeZone: opts.serverTimeZone()! } : {}),
     });
   };
 

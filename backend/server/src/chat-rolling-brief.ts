@@ -33,6 +33,7 @@
 
 import { TIER1_CLASSIFICATIONS } from '@recued/contracts';
 import type { ChatPriorToolCall } from '@recued/contracts';
+import { isNonTerminalToolResult } from './chat-tool-call-context.js';
 
 /** What a brief carries forward. Structured, NOT prose.
  *
@@ -1096,6 +1097,14 @@ export const completedActionRecords = (
   const seen = new Set<string>();
   for (const call of calls) {
     if (call.status !== 'ok') continue;
+    // ⛔ A HELD CALL HAS NOT HAPPENED. Its dispatch succeeded — it QUEUED — so its
+    //   status is `ok`, and this recorded "— completed" for an unlock still waiting
+    //   for approval (probe, 2026-10-04); the model is told those "ALREADY
+    //   SUCCEEDED", and a refusal left the record there for good. It never joins
+    //   `completed` later either: it settles after its turn, `completed` covers
+    //   one turn, and its outcome reaches the model from its durable record
+    //   (the waited-calls lines in `in_flight_context`).
+    if (isNonTerminalToolResult(call.result)) continue;
     const classification = (
       TIER1_CLASSIFICATIONS as Readonly<Record<string, 'read' | 'write' | 'unknown'>>
     )[call.tool_name];
@@ -1119,6 +1128,20 @@ export const completedActionRecords = (
   }
   return out;
 };
+
+/** The results a fold may summarise: everything but a held call's.
+ *
+ *  ⛔⛔ A HELD CALL'S RESULT IS A STATUS, NOT A VALUE, AND `findings` NEVER FORGET.
+ *  The fold is asked for "a number, a name, a date, a status" and unions what it
+ *  writes, so "the kitchen door unlock is awaiting approval" went into `findings`
+ *  and stayed there after the door was unlocked — the owner's running note and
+ *  the model's carry both said "awaiting approval" for good (live, 2026-10-04).
+ *  The call's state reaches the model from its durable record instead: the
+ *  waited-calls lines in `in_flight_context`, which a settlement updates. */
+export const foldableToolResults = (
+  calls: readonly ChatPriorToolCall[],
+): ChatPriorToolCall[] =>
+  calls.filter((call) => !(call.status === 'ok' && isNonTerminalToolResult(call.result)));
 
 /** Attach newly-derived completed-action records to a folded brief. Runs AFTER
  *  `mergeBriefs`, so the inherited records survive and the new ones join them. */
@@ -1209,6 +1232,36 @@ export const clearSessionBrief = (session_id: string): void => {
 
 /** Test seam — the map is module state and would otherwise leak between cases. */
 export const __clearSessionBriefs = (): void => { SESSION_BRIEFS.clear(); };
+
+/** A call that stopped to wait has settled (approved and run, refused, failed):
+ *  the stored brief's `pending`, as JSON, cleared — or `null` when there is
+ *  nothing to change (or nothing that reads as a brief).
+ *
+ *  ⛔ `pending` WAS WRITTEN IN A WORLD WHERE THE CALL WAS STILL WAITING. A fold
+ *  during the wait regenerates "still to do" around it ("unlock the kitchen
+ *  door"), and nothing rewrites it until the next fold — which a tool-free turn
+ *  never runs, and whose own carried input would be that same stale list. It is
+ *  a derived view (`mergeBriefs`: "a DERIVED VIEW earns none at all"), so it is
+ *  cleared and the next fold rebuilds it from what is true then. Live
+ *  2026-10-04: the owner's running note said "Still to do: Unlock the kitchen
+ *  door" after the door was unlocked.
+ *
+ *  ⚠ THE STORED JSON, NOT THE MODULE MAP. A running server persists the brief in
+ *  the chat store (`briefStore` in the orchestrator); `getSessionBrief` is the
+ *  fallback for tests that drive a turn with no database, and tidying that map
+ *  changed nothing a server reads (caught live). Every other stored field is
+ *  kept exactly. Not keyed to an entry: a brief holds no run ids, and matching
+ *  the model's own words to a call would be the fuzzy matching this module
+ *  refuses. A turn already running when the settlement lands writes its fold
+ *  over this, which regenerates `pending` anyway. */
+export const clearPendingAfterWait = (stored_json: string): string | null => {
+  let stored: unknown;
+  try { stored = JSON.parse(stored_json); } catch { return null; }
+  if (parseBrief(stored) === null) return null;
+  const pending = (stored as { pending?: unknown }).pending;
+  if (!Array.isArray(pending) || pending.length === 0) return null;
+  return JSON.stringify({ ...(stored as Record<string, unknown>), pending: [] });
+};
 
 /** ⛔⛔ USER STATEMENTS FROM TURNS THAT NEVER GOT A FOLD.
  *

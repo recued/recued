@@ -97,7 +97,8 @@ export const invokeGoverned = async (
     if (ctx.runAbortSignal?.aborted) throw new RunKilledError();
     const dispatch = () => ctx.ingredientExecutor(slug, input, output, stepOptions, stepMeta);
     const result = ctx.reviewedExecution
-      ? await ctx.reviewedExecution.invoke({ slug, input, output, catalog: false, connection_name: '', stepMeta }, dispatch)
+      ? await ctx.reviewedExecution.invoke({ slug, input, output, catalog: false, connection_name: '', stepMeta,
+        ...(stepOptions?.pii_fields !== undefined ? { pii_fields: stepOptions.pii_fields } : {}) }, dispatch)
       : await dispatch();
     // A kill that landed DURING this call: the in-flight call already ran (there
     // is no mid-flight cancel — "no mid-flight LLM abort"), but the run MUST NOT

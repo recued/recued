@@ -83,6 +83,15 @@ const makeDoc = () => {
       appendChild: (el: FakeEl) => { styles.push(el); return el; },
     },
     createElement: (tag: string) => makeEl(tag),
+    // `renderAnswerText` paints a formatted reply (**bold**, headings) from text
+    // nodes (b41c8e0cd). A double is a closed list: without this, the first
+    // fixture reply carrying markup throws. A text node is a bare element
+    // carrying its text.
+    createTextNode: (text: string): FakeEl => {
+      const node = makeEl('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener() {}, removeEventListener() {},
   };
 };

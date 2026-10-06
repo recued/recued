@@ -25,7 +25,7 @@
 export interface CarriedBriefRow {
   /** Which brief field this came from — the caller styles by this, and the
    *  fields differ in kind, not just in name. */
-  field: 'intent' | 'constraints' | 'findings' | 'pending';
+  field: 'intent' | 'constraints' | 'findings' | 'pending' | 'owner_source' | 'source';
   text: string;
   /** True for content that originated with the OWNER rather than with a tool.
    *  ⚠ The distinction is the brief's own central one — "a tool result can be
@@ -90,6 +90,36 @@ export const buildCarriedBriefModel = (
     : null;
   if (record === null) return { kind: 'empty' };
   const rows: CarriedBriefRow[] = [];
+  const evidence = record['source_evidence'];
+  const sources = evidence !== null && typeof evidence === 'object'
+    ? evidence as Record<string, unknown> : null;
+  if (sources?.['version'] === 1) {
+    const updates = asStrings(sources['owner_updates']);
+    const before = typeof sources['owner_updates_before_request'] === 'number' ? sources['owner_updates_before_request'] : 0;
+    for (const text of asStrings([...updates.slice(0, before), sources['investigation_request'], ...updates.slice(before)])) {
+      rows.push({ field: 'owner_source', text, from_owner: true });
+    }
+    for (const item of Array.isArray(sources['observations']) ? sources['observations'] : []) {
+      if (item === null || typeof item !== 'object') continue;
+      const call = item as Record<string, unknown>;
+      const result = call['result'] !== null && typeof call['result'] === 'object'
+        ? call['result'] as Record<string, unknown> : {};
+      const fields = result['hot_fields'] !== null && typeof result['hot_fields'] === 'object'
+        ? result['hot_fields'] as Record<string, unknown> : {};
+      const args = call['args'] !== null && typeof call['args'] === 'object'
+        ? call['args'] as Record<string, unknown> : {};
+      if (call['tool_name'] === 'mail.read' && typeof result['body'] === 'string') {
+        rows.push({ field: 'source', from_owner: false, text: [fields['subject'], fields['from'],
+          result['received_at_iso'], result['body'], result['body_incomplete'] ? 'This is a partial message.' : '']
+          .filter((x): x is string => typeof x === 'string' && x.length > 0).join('\n') });
+      } else {
+        const matches = Array.isArray(result['matches']) ? result['matches'] : Array.isArray(result['entities']) ? result['entities'] : null;
+        rows.push({ field: 'source', from_owner: false, text: call['status'] !== 'ok'
+          ? 'A source read failed; its contents were not available.'
+          : `Search${typeof args['query'] === 'string' ? ` for “${args['query']}”` : ' of linked records'}: ${matches === null ? 'bounded results retained' : `${String(matches.length)} results in this search`}.` });
+      }
+    }
+  }
   const intent = typeof record['intent'] === 'string' ? record['intent'].trim() : '';
   // ⚠ `intent` is the model's read of what you are working on and it DRIFTS by
   //   design (measured: 23% of turns), so it is shown as the current framing
@@ -111,7 +141,9 @@ export const buildCarriedBriefModel = (
   return {
     kind: 'carrying',
     heading: HEADING,
-    caveat: CAVEAT,
+    caveat: sources?.['version'] === 1
+      ? 'This context includes your requests and saved source snapshots. Snapshots can be out of date or incomplete; any AI notes below may be wrong. Your messages are not changed.'
+      : CAVEAT,
     rows,
   };
 };
@@ -125,4 +157,6 @@ export const CARRIED_BRIEF_FIELD_LABELS: Readonly<
   constraints: 'From you',
   pending: 'Still to do',
   findings: 'Found',
+  owner_source: 'Your request',
+  source: 'Source snapshot',
 };

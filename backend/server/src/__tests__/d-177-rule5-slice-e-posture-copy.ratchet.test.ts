@@ -87,6 +87,11 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
       expect(prompt).toContain('grant proposal card');
       expect(prompt).toContain('Contracts view');
       expect(prompt).toContain('approval card per action');
+      // 2026-10-04 — WHERE a card is answered. Without it the model took the one
+      // place the block named ("Contracts view", for grant proposals) as the
+      // place to approve single actions.
+      expect(prompt).toContain('Approval cards are answered from the bell at the top of the Recued app');
+      expect(prompt).toContain('not from the Contracts view');
     },
   );
 
@@ -120,6 +125,13 @@ describe('D-177 rule 5 slice E — 5.g posture copy ratchet', () => {
     expect(HELD_FOR_APPROVAL_MESSAGE).toContain(
       'the approval card itself may offer bounded options',
     );
+    // 2026-10-04 — where approvals are answered, stated generally (never "it is
+    // waiting there now": the notifier can be absent), and never the Contracts
+    // view, which holds grant proposals, not single actions.
+    expect(HELD_FOR_APPROVAL_MESSAGE).toContain(
+      'Approvals are answered in the Recued app, from the bell at the top of the page',
+    );
+    expect(HELD_FOR_APPROVAL_MESSAGE).not.toContain('Contracts');
   });
 
   it('the posture never promises model-side granting vocabulary', () => {

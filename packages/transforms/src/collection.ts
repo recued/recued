@@ -385,7 +385,15 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
     const withoutRefs = expr
       .replace(ITEM_REF_RE, ' ')
       .replace(/\b(?:min|max|abs|ceil|floor|round)\b/g, ' ');
-    const looksArithmetic = /^[\d\s+\-*/%().,]*$/.test(withoutRefs);
+    // ⛔ AND PARENTHESES ALONE ARE NOT ARITHMETIC. `{{item.name}} ({{item.id}})`
+    // — a label — leaves only `( )` once its refs are stripped, which passed the
+    // character test: both refs became numbers, `0 (0)` evaluated, and every
+    // label in the list read "0". Silently, like the slash case above (found
+    // 2026-10-04 listing Home Assistant cameras). Arithmetic needs an operator,
+    // or a call to one of the functions the evaluator knows — `abs({{item.x}})`
+    // has no operator and is the one such expression in the corpus.
+    const looksArithmetic = /^[\d\s+\-*/%().,]*$/.test(withoutRefs)
+      && (/[+\-*/%]/.test(withoutRefs) || /\b(?:min|max|abs|ceil|floor|round)\s*\(/.test(expr));
     ITEM_REF_RE.lastIndex = 0;
     if (ITEM_REF_RE.test(expr) && /[+\-*/%()]/.test(expr) && looksArithmetic) {
       ITEM_REF_RE.lastIndex = 0; // reset after .test()

@@ -12,14 +12,17 @@
  *  reads the action a click names from `RUNNING_AS_ACTION_ATTR` and the dish
  *  from `RUNNING_AS_DISH_ATTR` on the same button. */
 
-import type {
-  AutoRunStatusEntry,
-  Dish,
-  DishLastRun,
-  EventTrigger,
-  RecipeDefinition,
-  ServerSchedule,
+import {
+  startsOnItsOwn,
+  type AutoRunStatusEntry,
+  type Dish,
+  type DishLastRun,
+  type EventTrigger,
+  type RecipeDefinition,
+  type ServerRecipeListEntry,
+  type ServerSchedule,
 } from '@recued/contracts';
+import { serializeShellRoute } from '../shell/route.js';
 import {
   e,
   dishLineName,
@@ -44,6 +47,27 @@ export const RUNNING_AS_STATUS_ATTR = 'data-recued-running-as-status';
 /** A recipe-level control (Switch on, Save settings, + Add another). Value =
  *  recipe_id, so a related recipe's row can offer the same Switch on. */
 export const RUNNING_AS_RECIPE_ATTR = 'data-recued-running-as-recipe';
+/** The note shown in place of Switch on for a recipe whose pack is not
+ *  installed. */
+export const RUNNING_AS_NOT_INSTALLED_ATTR = 'data-recued-running-as-not-installed';
+
+/** D-319 — is this recipe installed, or does the server only ship it?
+ *
+ *  `recipe.list` lists the recipes the server ships beside the ones it has
+ *  installed, and only an installed recipe starts on its own: the auto-run
+ *  roster and the trigger reconciler read the installed ones. So Switch on is
+ *  offered for an installed recipe alone, and the server refuses the rest.
+ *
+ *  `source` answers it: the server lists a shipped-only recipe as `'bundled'`
+ *  and a stored one as `'pair-sync'` unless the row itself says `'bundled'`,
+ *  which no save path writes. It is a required field of the list entry, sent
+ *  by every server version, so this holds against an older server too. */
+export const isInstalledRecipeEntry = (
+  entry: Pick<ServerRecipeListEntry, 'source'>,
+): boolean => entry.source !== 'bundled';
+
+/** What a surface says instead of Switch on when the pack is not installed. */
+export const NOT_INSTALLED_TEXT = 'Its pack is not installed, so it does not start on its own.';
 
 export type RunningAsAction =
   /** No dish yet, and the recipe starts on its own: the switch-on form. */
@@ -76,7 +100,10 @@ export interface RunningAsView {
   readonly recipe_id: string;
   /** The recipe's own name: an unnamed dish's switch says what it switches. */
   readonly recipe_name: string;
-  readonly recipe: Pick<RecipeDefinition, 'variables' | 'auto_run' | 'event_triggers'>;
+  readonly recipe: Pick<RecipeDefinition, 'variables' | 'auto_run' | 'event_triggers' | 'trigger_steps'>;
+  /** Installed, or only shipped ({@link isInstalledRecipeEntry}): a shipped
+   *  recipe that starts on its own cannot be switched on. */
+  readonly installed: boolean;
   /** This recipe's dishes; `null` when they could not be read (the section
    *  stays quiet rather than claiming there are none). */
   readonly dishes: readonly Dish[] | null;
@@ -102,15 +129,18 @@ export interface RunningAsView {
   readonly failureHref?: string;
   /** Names a setting's value the plain wording cannot (a mail template). */
   readonly valueText?: SettingValueText;
+  /** The server's zone (D-269), on whose clock a timer's window opens. Absent:
+   *  this browser's. */
+  readonly timeZone?: string;
 }
 
 const when = (at: number): string =>
   formatClientDateTime(at, { includeSeconds: false, includeTimeZone: false });
 
-/** True when the recipe starts on its own (a trigger it declares, or a timer). */
-export const startsOnItsOwn = (
-  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'>,
-): boolean => recipe.auto_run !== undefined || (recipe.event_triggers ?? []).length > 0;
+/** True when the recipe starts on its own (a trigger it declares, or a timer).
+ *  The contracts' rule, which the server's notice reads too — re-exported so
+ *  the recipe pages keep one import. */
+export { startsOnItsOwn };
 
 const button = (
   action: RunningAsAction,
@@ -138,7 +168,10 @@ const renderLine = (
   const called = name ?? 'this dish';
   const busy = view.busy.has(dish.dish_id);
   const last = view.lastRuns[dish.dish_id];
-  const next = dishNextRun(dish, rows);
+  const next = dishNextRun(dish, rows, {
+    recipe: view.recipe,
+    ...(view.timeZone !== undefined ? { timeZone: view.timeZone } : {}),
+  });
   const menuOpen = view.openMenu === dish.dish_id;
   const confirming = view.confirmingRemove === dish.dish_id;
   const error = view.errors.get(dish.dish_id);
@@ -186,7 +219,7 @@ const renderLine = (
     ${shownSettings.length > 0
       ? `<p class="running-as-settings">${shownSettings.map((setting) => `${e(setting.label)}: ${e(setting.text)}`).join(' · ')}</p>`
       : ''}
-    <p class="running-as-starts">${e(dishStartsLine(view.recipe, rows.schedules))}</p>
+    <p class="running-as-starts">${e(dishStartsLine(view.recipe, rows.schedules, dish.config_overlay))}</p>
     <p class="running-as-times">${e(times)}</p>
     ${status.kind === 'failing'
       ? `<p class="running-as-failure">${e(status.reason)}${view.failureHref !== undefined
@@ -237,21 +270,31 @@ export const renderRunningAs = (view: RunningAsView): string => {
   const shown = settingsThatTellApart(view.recipe.variables ?? {}, dishes, {
     ...(view.valueText !== undefined ? { valueText: view.valueText } : {}),
   });
+  // A shipped recipe that starts on its own: installing its pack is what
+  // switching on needs, so that is what the section offers. A dish it already
+  // has (made before the server refused this) keeps its line.
+  const shippedOnly = !view.installed && startsOnItsOwn(view.recipe);
+  const notInstalled = shippedOnly
+    ? `<p class="recipes-detail-note" ${RUNNING_AS_NOT_INSTALLED_ATTR}>${e(NOT_INSTALLED_TEXT)}
+        <a class="recipes-inline-link" href="${e(serializeShellRoute('packs'))}">Install it from Packs</a> to switch it on.</p>`
+    : '';
   const body = dishes.length === 0
     ? startsOnItsOwn(view.recipe)
       ? `<p class="recipes-detail-note">Not switched on. ${e(whatStartsIt(view.recipe))}</p>
-         ${view.can.create ? `<div class="running-as-empty">${button('switch-on', switchingOn ? 'Switching on…' : 'Switch on', { recipe_id: view.recipe_id, primary: true, busy: switchingOn })}</div>` : ''}`
+         ${shippedOnly
+           ? notInstalled
+           : view.can.create ? `<div class="running-as-empty">${button('switch-on', switchingOn ? 'Switching on…' : 'Switch on', { recipe_id: view.recipe_id, primary: true, busy: switchingOn })}</div>` : ''}`
       : `<p class="recipes-detail-note">No saved settings. Save them once and every run and schedule uses them.</p>
          ${view.can.create && Object.keys(view.recipe.variables ?? {}).length > 0
            ? `<div class="running-as-empty">${button('save-settings', switchingOn ? 'Saving…' : 'Save settings', { recipe_id: view.recipe_id, busy: switchingOn })}</div>`
            : ''}`
     : `<ul class="running-as-list">${dishes.map((dish) =>
-        renderLine(view, dish, dishes.length, shown.get(dish.dish_id) ?? [])).join('')}</ul>`;
+        renderLine(view, dish, dishes.length, shown.get(dish.dish_id) ?? [])).join('')}</ul>${notInstalled}`;
   return `
     <section class="recipes-detail-section running-as" ${RUNNING_AS_ATTR}="${e(view.recipe_id)}">
       <div class="running-as-header">
         <h2 class="recipes-detail-section-title">Running as</h2>
-        ${dishes.length > 0 && view.can.create ? button('add', switchingOn ? 'Adding…' : '+ Add another', { recipe_id: view.recipe_id, busy: switchingOn }) : ''}
+        ${dishes.length > 0 && view.can.create && !shippedOnly ? button('add', switchingOn ? 'Adding…' : '+ Add another', { recipe_id: view.recipe_id, busy: switchingOn }) : ''}
       </div>
       ${body}
       ${recipeError !== undefined ? `<p class="running-as-error" role="alert">${e(recipeError)}</p>` : ''}

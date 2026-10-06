@@ -371,8 +371,6 @@ const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
  *   - `peer-ask` — suspends the run and puts a question to a PERSON on another
  *     server. Reads and writes nothing locally. (D-234 § 234.4.)
  *   - `notification-send` — fans text to channels. No record.
- *   - `schedule-recipe` — writes a schedule row; schedules are not a warehouse
- *     collection the owner browses under `data.*`.
  *   - `exchange-status` — folds RUN rows under an exchange ref. Run history is
  *     `data.audit`, which is not a `READABLE_COLLECTION` and is gated by
  *     `core.audit.read` instead (D-232 § 20.9 put it on that existing door
@@ -406,7 +404,6 @@ const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
   'notification-send',
   'core-notification-send',
   'core-notification-recipe-callback',
-  'schedule-recipe',
   // D-261 persists an inert owner-review proposal, not a data.preapproval collection.
   'preapproval-request',
   'exchange-status',
@@ -563,8 +560,8 @@ export const deriveDispatchScope = (
     // ONE. The generic rule below reads the slug's leading segment, which is a
     // proxy for "the collection this writes" and is simply FALSE for a kernel op
     // that writes none: `peer-ask` put a question to a person and derived
-    // `data.peer`; `schedule-recipe` derived `data.schedule`; the seller ops
-    // derived `data.seller`. None of those names a warehouse collection, so none
+    // `data.peer`; `schedule-recipe` (retired 2026-10-05, now chat's native
+    // `recipe.schedule`) derived `data.schedule`; the seller ops derived `data.seller`. None of those names a warehouse collection, so none
     // can appear in any grant row.
     //
     // ⛔⛔ AND THE RESULT WAS AN INVERTED FENCE, not a closed one. An unmatched

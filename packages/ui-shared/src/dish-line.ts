@@ -19,6 +19,8 @@ import {
 
 import { formatClientDateTime } from './date-time.js';
 import { startPhrase } from './dish-lead.js';
+import { timerNextRun, type TimeWindowSource } from './time-window.js';
+import { gateStepsOf } from './timer-gate-args.js';
 import { isValidValueHint, toWidgetShape } from './variable-widgets.js';
 
 /** The rows that run as one dish. */
@@ -96,15 +98,24 @@ export const DISH_STATUS_LABEL: Readonly<Record<DishStatus['kind'], string>> = {
 };
 
 /** When the dish runs next on its own: its soonest schedule or timer. `null`
- *  when it has neither, or both are off. */
-export const dishNextRun = (dish: Dish, rows: DishRows): number | null => {
+ *  when it has neither, or both are off. A timer with a time window runs next
+ *  at its first check inside the window, read on the server's clock
+ *  (`timeZone`), so `recipe` is needed to say it; without it, the next check. */
+export const dishNextRun = (
+  dish: Dish,
+  rows: DishRows,
+  opts: {
+    readonly recipe?: TimeWindowSource;
+    readonly timeZone?: string;
+  } = {},
+): number | null => {
   if (!dish.enabled) return null;
   const times = [
     ...rows.schedules
       .filter((schedule) => schedule.enabled)
       .map((schedule) => schedule.next_run_at),
     rows.timer !== undefined && rows.timer.enabled && !rows.timer.auto_disabled
-      ? rows.timer.next_run_at
+      ? timerNextRun(rows.timer, opts.recipe, dish.config_overlay, opts.timeZone)
       : null,
   ].filter((at): at is number => typeof at === 'number');
   return times.length === 0 ? null : Math.min(...times);
@@ -126,17 +137,23 @@ const cadenceInWords = (schedule: ServerSchedule): string =>
 
 /** What starts a dish, as its line says it: the recipe's own start and the
  *  dish's schedules — "Starts when a shipment’s state changes and weekdays
- *  at 9:00 AM", "Runs daily at 9:00 AM", "Runs when you run it". */
+ *  at 9:00 AM", "Runs daily at 9:00 AM", "Runs when you run it", "Runs every
+ *  10 minutes from 8:00 to 9:00 AM on weekdays, and weekdays at 8:00 AM".
+ *  `overlay`: the dish's own settings, which a timer's window may read. */
 export const dishStartsLine = (
-  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'>,
+  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'> & TimeWindowSource,
   schedules: readonly ServerSchedule[],
+  overlay?: Readonly<Record<string, unknown>>,
 ): string => {
-  const own = startPhrase(recipe);
+  const own = startPhrase(recipe, overlay);
   const cadences = [...new Set(schedules.map(cadenceInWords))];
   if (cadences.length === 0) return upperFirst(own);
   // A recipe that starts on nothing of its own runs on its schedules.
   if (own === 'runs when you run it') return `Runs ${cadences.join(' and ')}`;
-  return upperFirst(`${own} and ${cadences.join(' and ')}`);
+  // A gated timer already says when ("on weekdays", "checking every minute"): a
+  // comma keeps the schedule's own times from reading as part of it.
+  const gated = recipe.auto_run !== undefined && gateStepsOf(recipe).length > 0;
+  return upperFirst(`${own}${gated ? ', and ' : ' and '}${cadences.join(' and ')}`);
 };
 
 /** One setting of a dish, as its line shows it. */

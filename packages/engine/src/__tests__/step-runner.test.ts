@@ -6,6 +6,7 @@ import type {
   RecipeDefinition,
   RecipeStep,
   NamespaceStores,
+  StepOptions,
 } from '@recued/contracts';
 
 // ── helpers ────────────────────────────────────────────────────
@@ -36,147 +37,70 @@ const makeCtx = (executor: IngredientExecutor): ExecutionContext => ({
   ingredientExecutor: executor,
 });
 
-// ── pii_fields auto hash_replace / hash_restore ────────────────
+// ── pii_fields: carried to the dispatch ────────────────────────
+//
+// The engine does not hash. Here a value is still a `{{ref}}`, so hashing the
+// raw input missed every value that arrives through a ref and swapped a ref
+// under a named key for the token. The dispatch hashes the RESOLVED input
+// (`StepOptions.pii_fields`; packages/ingredients `dispatch-pii-fields.test.ts`).
 
-describe('runStep — pii_fields auto hash/restore', () => {
-  it('hashes PII fields before calling executor and restores them in the result', async () => {
-    let capturedInput: Record<string, unknown> | null = null;
-
-    const executor: IngredientExecutor = async (_slug, input) => {
-      capturedInput = { ...input };
-      // Simulate an AI ingredient that echoes the input values in its output
-      return { analysis: `Contact ${input.name} at ${input.email} is high-value` };
+describe('runStep — pii_fields rides to the dispatch', () => {
+  const capture = () => {
+    const calls: { input: Record<string, unknown>; options: StepOptions | undefined }[] = [];
+    const executor: IngredientExecutor = async (_slug, input, _output, options) => {
+      calls.push({ input, options });
+      return { narrative: 'HASH_STEP_00000001 is at risk' };
     };
+    return { calls, executor };
+  };
 
-    const step: RecipeStep = {
+  it('passes the input as authored, refs and all, and names the fields on the step options', async () => {
+    const { calls, executor } = capture();
+    const step = {
       id: 'ai_step',
-      ingredient: 'ai-classify',
-      input: { name: 'Alice Smith', email: 'alice@acme.com', role: 'CEO' },
-      pii_fields: ['name', 'email'],
-    };
-
-    const ctx = makeCtx(executor);
-    const log = await runStep(step, ctx);
-
-    // The executor should have received hashed values, not raw PII
-    expect(capturedInput).not.toBeNull();
-    expect(capturedInput!.name).toMatch(/^HASH_/);
-    expect(capturedInput!.email).toMatch(/^HASH_/);
-    // Non-PII fields pass through unchanged
-    expect(capturedInput!.role).toBe('CEO');
-
-    // The final result should have original values restored
-    expect(log.error).toBeNull();
-    const result = log.result as { analysis: string };
-    expect(result.analysis).toContain('Alice Smith');
-    expect(result.analysis).toContain('alice@acme.com');
-    expect(result.analysis).not.toMatch(/HASH_/);
-
-    // Step store should also have restored values
-    expect(ctx.stores.step.ai_step).toEqual(result);
-  });
-
-  it('passes input unchanged when pii_fields is absent', async () => {
-    let capturedInput: Record<string, unknown> | null = null;
-
-    const executor: IngredientExecutor = async (_slug, input) => {
-      capturedInput = { ...input };
-      return { status: 'ok' };
-    };
-
-    const step: RecipeStep = {
-      id: 'plain_step',
-      ingredient: 'deal-reader-hubspot',
-      input: { name: 'Alice Smith', email: 'alice@acme.com' },
-    };
-
-    const ctx = makeCtx(executor);
-    await runStep(step, ctx);
-
-    // Input should be completely unchanged — no hashing
-    expect(capturedInput).not.toBeNull();
-    expect(capturedInput!.name).toBe('Alice Smith');
-    expect(capturedInput!.email).toBe('alice@acme.com');
-  });
-
-  it('hashes PII on non-AI ingredient steps (hash is unconditional)', async () => {
-    let capturedInput: Record<string, unknown> | null = null;
-
-    const executor: IngredientExecutor = async (_slug, input) => {
-      capturedInput = { ...input };
-      return { name: input.name, score: 42 };
-    };
-
-    // A data ingredient (not ai-*) still triggers the hash/restore cycle
-    const step: RecipeStep = {
-      id: 'data_step',
-      ingredient: 'deal-reader-hubspot',
-      input: { name: 'Bob Jones', deal_id: '123' },
-      pii_fields: ['name'],
-    };
-
-    const ctx = makeCtx(executor);
-    const log = await runStep(step, ctx);
-
-    // Executor receives hashed name
-    expect(capturedInput).not.toBeNull();
-    expect(capturedInput!.name).toMatch(/^HASH_/);
-    expect(capturedInput!.deal_id).toBe('123');
-
-    // Result has original name restored
-    expect(log.error).toBeNull();
-    const result = log.result as { name: string; score: number };
-    expect(result.name).toBe('Bob Jones');
-    expect(result.score).toBe(42);
-  });
-
-  it('handles empty pii_fields array (no hashing)', async () => {
-    let capturedInput: Record<string, unknown> | null = null;
-
-    const executor: IngredientExecutor = async (_slug, input) => {
-      capturedInput = { ...input };
-      return { ok: true };
-    };
-
-    const step: RecipeStep = {
-      id: 'empty_pii',
       ingredient: 'ai-prompt',
-      input: { name: 'Alice', secret: 'xyz' },
-      pii_fields: [],
-    };
+      input: { 'llm.prompt': '{{step.ctx}}', deal_name: '{{step.deal.name}}' },
+      pii_fields: ['deal_name'],
+      cache: 'any',
+    } as RecipeStep;
 
-    const ctx = makeCtx(executor);
-    await runStep(step, ctx);
+    const log = await runStep(step, makeCtx(executor));
 
-    // Empty array means no fields to hash — input passes through as-is
-    expect(capturedInput!.name).toBe('Alice');
-    expect(capturedInput!.secret).toBe('xyz');
+    expect(log.error).toBeNull();
+    expect(calls).toEqual([{
+      input: { 'llm.prompt': '{{step.ctx}}', deal_name: '{{step.deal.name}}' },
+      options: { cache: 'any', pii_fields: ['deal_name'] },
+    }]);
+    // Restoring is the dispatch's: the engine returns what it was given.
+    expect(log.result).toEqual({ narrative: 'HASH_STEP_00000001 is at risk' });
   });
 
-  it('restores PII in nested result structures', async () => {
-    const executor: IngredientExecutor = async (_slug, input) => {
-      // AI returns hashed tokens scattered through a nested result
-      return {
-        summary: `Review for ${input.name}`,
-        contacts: [{ person: input.name, channel: input.email }],
-      };
-    };
+  it('names them for any ingredient the step calls, AI or not', async () => {
+    const { calls, executor } = capture();
+    await runStep({
+      id: 'data_step', ingredient: 'deal-reader-hubspot', input: { name: 'Bob Jones' }, pii_fields: ['name'],
+    }, makeCtx(executor));
+    expect(calls[0]!.options).toEqual({ pii_fields: ['name'] });
+  });
 
-    const step: RecipeStep = {
-      id: 'nested_result',
-      ingredient: 'ai-summarize',
-      input: { name: 'Carol Danvers', email: 'carol@test.com', data: 'some context' },
-      pii_fields: ['name', 'email'],
-    };
+  it('names none when the step declares none, an empty list, or no field names', async () => {
+    for (const pii_fields of [undefined, [], [7, null]]) {
+      const { calls, executor } = capture();
+      await runStep({
+        id: 'plain', ingredient: 'ai-prompt', input: { name: 'Alice' },
+        ...(pii_fields === undefined ? {} : { pii_fields: pii_fields as unknown as string[] }),
+      }, makeCtx(executor));
+      expect(calls[0]!.options?.pii_fields).toBeUndefined();
+      expect(calls[0]!.input).toEqual({ name: 'Alice' });
+    }
+  });
 
-    const ctx = makeCtx(executor);
-    const log = await runStep(step, ctx);
-
-    const result = log.result as { summary: string; contacts: { person: string; channel: string }[] };
-    expect(result.summary).toContain('Carol Danvers');
-    expect(result.summary).not.toMatch(/HASH_/);
-    expect(result.contacts[0].person).toBe('Carol Danvers');
-    expect(result.contacts[0].channel).toBe('carol@test.com');
+  it('keeps only the field names of a mixed list', async () => {
+    const { calls, executor } = capture();
+    await runStep({
+      id: 'mixed', ingredient: 'ai-prompt', input: {}, pii_fields: ['name', 7, 'email'] as unknown as string[],
+    }, makeCtx(executor));
+    expect(calls[0]!.options).toEqual({ pii_fields: ['name', 'email'] });
   });
 });
 

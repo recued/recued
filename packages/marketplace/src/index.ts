@@ -25,7 +25,6 @@ export {
   resolveRecipeInput,
   fetchSuggestions,
   listRecipes,
-  listTemplates,
   lookupIngredient,
   MARKETPLACE_URL,
   SUPABASE_URL,
@@ -34,7 +33,6 @@ export {
   type MarketplaceRecipeRow,
   type MarketplacePagination,
   type ListRecipesParams,
-  type ListTemplatesParams,
   type RecipeSuggestion,
 } from './client.js';
 export { search, matchesQuery, rankListings } from './search.js';

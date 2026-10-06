@@ -106,9 +106,9 @@ export interface AutoRunSpec {
 
 /** Output contract for ingredients used in the `trigger_steps` phase.
  *  Any ingredient CAN be used as a trigger step as long as it
- *  conforms — watcher-family ingredients (mail-watcher, file-watcher,
- *  etc.) are opinionated implementations that bundle the polling +
- *  filter logic.
+ *  conforms — watcher-family ingredients (time-watcher,
+ *  time-relative-watcher, http-watcher) are opinionated implementations
+ *  that bundle the check + filter logic.
  *
  *  Trigger-phase semantics:
  *    - All steps run; AND-gate over `should_run`.

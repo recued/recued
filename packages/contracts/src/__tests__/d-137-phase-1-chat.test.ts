@@ -110,9 +110,13 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // Without it "do X instead" silently became "do X as well": the model
     // started the new work while the old run kept going.
     'recipe.stop',
+    // D-193 amendment (2026-10-05) — +1: `recipe.schedule`. No recipe step may
+    // schedule another recipe any more; chat schedules through this, granted by
+    // its contract's `core.schedule.recipe`.
+    'recipe.schedule',
   ];
 
-  it('lists exactly nineteen canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop)', () => {
+  it('lists exactly twenty canonical primitives in spec order (P1 six + mail.read/document.read + deal/account.search + work.search/read/create/update + calendar.create/update + memory.write + file.search + recipe.stop + recipe.schedule)', () => {
     expect(TIER1_TOOL_NAMES).toEqual(expected);
   });
 
@@ -161,6 +165,10 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // reversible, grant-gated write that bypasses P3 plan-approval so a granted
     // customer can contribute autonomously (§3). See TIER1_CLASSIFICATIONS doc.
     expect(TIER1_CLASSIFICATIONS['memory.write']).toBe('unknown');
+    // D-193 amendment — `unknown` with `work.create`'s reasoning: a schedule is
+    // additive and visible in Automation, and the grant is the boundary. The
+    // recipe it replaced ran with no card in owner chat.
+    expect(TIER1_CLASSIFICATIONS['recipe.schedule']).toBe('unknown');
   });
 
   it('batch-safe unless two calls in one turn could hit the SAME row (D-164 § 6)', () => {
@@ -180,7 +188,9 @@ describe('D-137 P1 — TIER1_TOOL_NAMES closed list (§ A.1.1)', () => {
     // `document.read` is the one exception on a different axis: it can start a
     // local converter process per call (Docling allows up to an hour), so a
     // batch of attachments runs one conversion at a time rather than all at once.
-    const sequential = new Set(['recipe.run', 'recipe.stop', 'calendar.update', 'work.update', 'document.read']);
+    // `recipe.schedule` mints its own schedule, but two for ONE recipe join the
+    // same main dish, which the first may make: shared identity again.
+    const sequential = new Set(['recipe.run', 'recipe.stop', 'recipe.schedule', 'calendar.update', 'work.update', 'document.read']);
     for (const name of TIER1_TOOL_NAMES) {
       expect(TIER1_CONCURRENCY_SAFE[name]).toBe(!sequential.has(name));
     }
@@ -415,8 +425,6 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.rolling_brief.set',
       'chat.session.brief.get',
       'chat.session.brief.clear',
-      'chat.tool_catalog.get',
-      'chat.tool_catalog.set',
       'chat.connection_mcp.list',
       'chat.connection_mcp.get',
       'chat.connection_mcp.set',

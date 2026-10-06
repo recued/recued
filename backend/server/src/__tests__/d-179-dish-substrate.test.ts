@@ -318,9 +318,9 @@ describe('D-319 — the dish a row made without naming one belongs to (`mainDish
     const deps = makeDeps();
     const main = createDish(deps, { recipe_id: 'recipe-a', config_overlay: { a: 1 } }).dish;
     createDish(deps, { recipe_id: 'recipe-a', name: 'other' });
-    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: null }).dish_id).toBe(main.dish_id);
+    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: null }).dish.dish_id).toBe(main.dish_id);
     // Its own settings, in any key order, are no conflict.
-    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } }).dish_id).toBe(main.dish_id);
+    expect(mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } }).dish.dish_id).toBe(main.dish_id);
   });
 
   it('⛔ refuses settings that are not the main dish’s — settings belong to the dish', () => {
@@ -337,7 +337,7 @@ describe('D-319 — the dish a row made without naming one belongs to (`mainDish
       created: (d, opts) => { calls.push(`created switchOn=${opts.switchOn}`); },
       switched: () => undefined, settingsChanged: () => undefined, deleted: () => undefined, touched: () => undefined,
     };
-    const made = mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } });
+    const made = mainDishFor(deps, { recipe_id: 'recipe-a', publisher_id: 'p', config_overlay: { a: 1 } }).dish;
     expect(made).toMatchObject({ is_default: true, enabled: true, config_overlay: { a: 1 }, publisher_id: 'p' });
     expect(calls).toEqual(['created switchOn=false']);
   });
@@ -636,6 +636,38 @@ describe('dish groups (P3)', () => {
     });
     expect(deps.groupStore.get(created.group_id)).toBeNull();
     expect(listDishGroups(deps)).toEqual({ groups: [] });
+  });
+
+  /** A dish's runs read its group's settings under its own, so the rows that
+   *  follow a dish (a trigger watching the folder a setting names) follow a
+   *  change of the group's settings too, and its leaving the group. */
+  it('a change of a group’s settings, and its removal, reach each member’s rows', async () => {
+    const { createDishGroup, deleteDishGroup, updateDishGroup } = await import('../dish-handler.js');
+    const calls: string[] = [];
+    const deps = {
+      ...await makeGroupDeps(),
+      automation: {
+        created: () => undefined,
+        switched: () => undefined,
+        settingsChanged: (d: { dish_id: string }) => { calls.push(`settings ${d.dish_id}`); },
+        deleted: () => undefined,
+        touched: () => undefined,
+      } as unknown as DishAutomation,
+    };
+    const { group } = createDishGroup(deps, { name: 'work', config_overlay: { file_slug: 'scans' } });
+    const { dish: a } = createDish(deps, { recipe_id: 'recipe-a', group_id: group.group_id });
+    const { dish: b } = createDish(deps, { recipe_id: 'recipe-b', group_id: group.group_id });
+    createDish(deps, { recipe_id: 'recipe-c' });
+    calls.length = 0;
+
+    updateDishGroup(deps, group.group_id, { name: 'renamed' });
+    expect(calls).toEqual([]);
+    updateDishGroup(deps, group.group_id, { config_overlay: { file_slug: 'invoices' } });
+    expect(calls.sort()).toEqual([`settings ${a.dish_id}`, `settings ${b.dish_id}`].sort());
+
+    calls.length = 0;
+    deleteDishGroup(deps, group.group_id);
+    expect(calls.sort()).toEqual([`settings ${a.dish_id}`, `settings ${b.dish_id}`].sort());
   });
 
   it('createDishGroup rejects empty name', async () => {

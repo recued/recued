@@ -455,9 +455,12 @@ export const recipeShapeExample = (recipe: unknown): string | undefined => {
  *  This was `AUTOMATION_FIELDS = [auto_run, trigger_steps, event_triggers,
  *  webhook_triggers]`, and a Codex audit on 2026-07-29 found it MISSING two
  *  executable fields that exist on `RecipeDefinition`: `trigger` (URL
- *  triggering) and `on_failure` (binds ANOTHER installed recipe to fire when
- *  this one fails). The Kitchen renders neither, so a prompt-injected
- *  `on_failure` was invisible to the review and persisted on save.
+ *  triggering) and `on_failure` (DESIGNED to bind another installed recipe
+ *  to fire when this one fails). The Kitchen renders neither, so a
+ *  prompt-injected `on_failure` was invisible to the review and persisted on
+ *  save. ⚠ As of 2026-10-05 nothing reads `on_failure` at runtime, so a
+ *  persisted one fires nothing (`OnFailureBinding`, contracts); dropping it
+ *  stays right, because it would act the day it is wired.
  *
  *  ⚠ The old test could not catch it: it looped `for (const field of
  *  AUTOMATION_FIELDS) expect(!hasOwn(recipe, field))`, which passes VACUOUSLY

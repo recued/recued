@@ -108,6 +108,10 @@ export interface LLMCompletionOptions {
    *  Adapters without a JSON mode (Anthropic) ignore it; the post-hoc tolerant
    *  parser remains the net regardless. */
   json?: boolean;
+  /** Optional native object schema for an uncontracted JSON call. Adapters
+   * without this protocol keep their existing JSON behavior. Host validation
+   * remains mandatory: schema conformance does not establish meaning. */
+  json_schema?: Record<string, unknown>;
   /** The top-level shape the JSON reply must have. Absent means an object.
    *
    *  ⛔ A D-162 BATCH REPLY IS AN ARRAY, and OpenAI's `json_object` mode can only
@@ -200,6 +204,16 @@ export interface LLMSlot {
    *  still serves json calls fine via the post-hoc parser. Conflating the two
    *  turns a graceful degradation into an unroutable source. */
   native_json_ok?: boolean;
+  /** DETECTED — Test connection showed this model a picture and it read it
+   *  back (`endpoint-capabilities` § Picture input).
+   *
+   *  ⛔ A PROOF, UNLIKE THE TWO ABOVE, SO IT IS A ROUTING INPUT. Absent means
+   *  "not shown", and `match.ts` lets a picture reach this source only when
+   *  this, the in-memory proof, or a declared `modalities.image` says so. And
+   *  unlike them it SURVIVES a save that leaves provider / base_url / model
+   *  unchanged: a refusal that dies with a budget edit costs one extra round
+   *  trip, a proof that dies with one switches off the owner's camera checks. */
+  image_input_ok?: boolean;
   /** Whether this model supports the provider's built-in web search. */
   supports_search?: boolean;
   /** D-172 P5 / Q4 — declared modality capabilities. When a turn carries a
@@ -245,6 +259,9 @@ export interface FreePoolApiEntry {
   system_role_ok?: boolean;
   /** DETECTED — see {@link LLMSlot.native_json_ok}. */
   native_json_ok?: boolean;
+  /** DETECTED — see {@link LLMSlot.image_input_ok}: a proof, and a routing
+   *  input. */
+  image_input_ok?: boolean;
   supports_search?: boolean;
   enabled: boolean;
   weight?: number;

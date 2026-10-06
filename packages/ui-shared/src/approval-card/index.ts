@@ -5,6 +5,7 @@
  *  `@recued/ui-shared/approval-card` subpath export (see package.json). */
 
 export {
+  askDetailLabel,
   formatAskAge,
   renderApprovalCard,
   renderAskCard,

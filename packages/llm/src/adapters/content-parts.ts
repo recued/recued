@@ -61,9 +61,20 @@ export const hasCacheBreakpoint = (parts: readonly ContentPart[]): boolean =>
 export const joinTextParts = (parts: readonly ContentPart[]): string =>
   parts.map((p) => (p.type === 'text' ? p.text : '')).join('');
 
+/** The media type a provider is sent.
+ *
+ *  ⚠ `image/jpg` is not a registered media type, but Home Assistant's camera
+ *  proxy and other cameras label JPEGs with it, and Anthropic refuses any image
+ *  media_type outside jpeg / png / gif / webp. Normalised HERE, where every path
+ *  that sends a picture meets a provider (an `ai-*` step, the caption and text
+ *  producers, chat), instead of in one producer that the next one would miss.
+ *  The stored file keeps the vendor's label: that is the true record. */
+export const wireMediaType = (mime: string): string =>
+  mime.toLowerCase() === 'image/jpg' ? 'image/jpeg' : mime;
+
 /** Build a `data:<mime>;base64,<data>` URI from a base64 source. */
 const dataUri = (source: ContentSource): string =>
-  source.kind === 'url' ? source.data : `data:${source.media_type};base64,${source.data}`;
+  source.kind === 'url' ? source.data : `data:${wireMediaType(source.media_type)};base64,${source.data}`;
 
 // ─── Anthropic ───────────────────────────────────────────────────────────────
 
@@ -72,7 +83,7 @@ const dataUri = (source: ContentSource): string =>
 const anthropicSource = (source: ContentSource): Record<string, unknown> =>
   source.kind === 'url'
     ? { type: 'url', url: source.data }
-    : { type: 'base64', media_type: source.media_type, data: source.data };
+    : { type: 'base64', media_type: wireMediaType(source.media_type), data: source.data };
 
 /** Render `ContentPart[]` into an Anthropic Messages `content` block array.
  *  Anthropic supports text + image + document (PDF); it has NO audio block,
@@ -109,8 +120,8 @@ export const toGoogleParts = (parts: readonly ContentPart[]): unknown[] =>
   parts.map((p) => {
     if (p.type === 'text') return { text: p.text };
     return p.source.kind === 'url'
-      ? { fileData: { mimeType: p.source.media_type, fileUri: p.source.data } }
-      : { inlineData: { mimeType: p.source.media_type, data: p.source.data } };
+      ? { fileData: { mimeType: wireMediaType(p.source.media_type), fileUri: p.source.data } }
+      : { inlineData: { mimeType: wireMediaType(p.source.media_type), data: p.source.data } };
   });
 
 // ─── OpenAI (Chat Completions, multimodal) ───────────────────────────────────

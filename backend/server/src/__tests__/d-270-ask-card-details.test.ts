@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createAskCardDetailResolver } from '../ask-card-held-op-details.js';
+import { HIDDEN_SECRET_VALUE, isSecretShapedKey } from '../ask-card-default-details.js';
 
 const PREFLIGHT = 'gateway.preflight';
 
@@ -171,5 +172,74 @@ describe('D-270 card detail resolver', () => {
       })(ask({ checkpoint_id: 'cp1' }));
       expect(rows).toBeNull();
     });
+  });
+});
+
+describe('an action whose pack declares nothing reviewable (2026-10-04)', () => {
+  // 11,687 of 12,470 holdable actions declare no `editable_args`; their cards
+  // named the action and never what it would change. They now show their own
+  // DECLARED request fields — never the raw held args — with secrets hidden.
+  const REQUEST = { type: 'object', additionalProperties: false, properties: {
+    'body.entity_id': { type: 'string' },
+    'body.password': { type: 'string' },
+    body_raw: { type: 'string' },
+    'Idempotency-Key': { type: 'string' },
+    'body.secret_name': { type: 'string' },
+    'query.limit': { type: 'integer' },
+  } };
+  const held = recipeCheckpoint({
+    'body.entity_id': 'lock.kitchen_door',
+    'body.password': 'hunter2',
+    'body.secret_name': 'prod-db',
+    body_raw: '{"user":"sam","token":"tok-123","nested":{"client_secret":"cs-9"}}',
+    'Idempotency-Key': 'retry-1',
+    api_key: 'sk-live-SECRET',
+  });
+
+  it('shows the declared fields the call carries, hides secrets, and never a raw extra arg', async () => {
+    const rows = await mk({
+      getCheckpoint: async () => held,
+      resolveArgEditSchema: () => schema(),
+      lookupRequestSchema: () => REQUEST,
+    })(ask({ checkpoint_id: 'cp1' }));
+    // Idempotency is plumbing; `query.limit` was not sent, so it commits to nothing.
+    expect(rows?.map((r) => r.label)).toEqual(['entity_id', 'password', 'Data sent', 'secret_name']);
+    const value = (label: string) => rows?.find((r) => r.label === label)?.value;
+    expect(value('entity_id')).toBe('lock.kitchen_door');
+    // A secret is a ROW with its value hidden — the block stays complete.
+    expect(value('password')).toBe(HIDDEN_SECRET_VALUE);
+    // Hidden inside a JSON body too; the rest of the body still reads.
+    expect(value('Data sent')).toContain('"user":"sam"');
+    // The NAME of a secret is not one.
+    expect(value('secret_name')).toBe('prod-db');
+    expect(JSON.stringify(rows)).not.toMatch(/hunter2|tok-123|cs-9|sk-live-SECRET|retry-1/u);
+  });
+
+  it('a declared allowlist always wins over the default', async () => {
+    const rows = await mk({
+      getCheckpoint: async () => held,
+      resolveArgEditSchema: () => schema('body.entity_id'),
+      lookupRequestSchema: () => REQUEST,
+    })(ask({ checkpoint_id: 'cp1' }));
+    expect(rows?.map((r) => r.label)).toEqual(['body.entity_id']);
+  });
+
+  it('shows no block when the action declares nothing the call carries, or too much to summarise', async () => {
+    const none = await mk({ getCheckpoint: async () => held, resolveArgEditSchema: () => schema(),
+      lookupRequestSchema: () => ({ properties: { 'body.other': { type: 'string' } } }) })(ask({ checkpoint_id: 'cp1' }));
+    expect(none).toBeNull();
+    const wide = Object.fromEntries(Array.from({ length: 13 }, (_, i) => [`f${i}`, 'v']));
+    const tooMany = await mk({ getCheckpoint: async () => recipeCheckpoint(wide), resolveArgEditSchema: () => schema(),
+      lookupRequestSchema: () => ({ properties: Object.fromEntries(Object.keys(wide).map((k) => [k, { type: 'string' }])) }) })(ask({ checkpoint_id: 'cp1' }));
+    expect(tooMany).toBeNull();
+    // And with no schema reader at all, exactly as before the default.
+    expect(await mk({ getCheckpoint: async () => held, resolveArgEditSchema: () => schema() })(ask({ checkpoint_id: 'cp1' }))).toBeNull();
+  });
+
+  it('tells a secret from the name of one', () => {
+    for (const key of ['body.password', 'body.client_secret', 'body.access_token', 'body.refresh_token',
+      'authorization', 'body.user_token', 'api_key', 'body.tokens']) expect([key, isSecretShapedKey(key)]).toEqual([key, true]);
+    for (const key of ['body.secret_name', 'secretId', 'token_id', 'tokenId', 'apiCredentialId',
+      'body.token_type', 'body.author_id', 'session_id', 'body.entity_id', 'className']) expect([key, isSecretShapedKey(key)]).toEqual([key, false]);
   });
 });

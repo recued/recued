@@ -23,6 +23,7 @@ import {
   hydrateThreadFromSnapshot,
   initialChatThreadState,
   isChatThreadEvent,
+  prependOlderMessages,
   reduceChatThreadEvent,
 } from '../chat/state.js';
 
@@ -78,6 +79,44 @@ describe('durable tool-call updates', () => {
     expect(state.messages[0]?.tool_call?.state).toBe('succeeded');
     state = reduceChatThreadEvent(state, event({ ...call, updated_at: 6 }));
     expect(state.messages[0]?.tool_call?.state).toBe('succeeded');
+  });
+});
+
+describe('a call the live thread shows only as an activity row', () => {
+  // ⛔ The live thread holds no tool rows, so these broadcasts found nothing to
+  // update and were dropped: an unlock approved minutes later left the answer
+  // saying "queued" for good (live 2026-10-04).
+  const call = { message_id: 'tool:x', session_id: 's', turn_id: 't', tool_name: 'recued-core/control-device',
+    run_id: 'run-1', state: 'held' as const, started_at: 1, updated_at: 2, held_at: 2 };
+  const event = (value: unknown, session_id = 's'): ServerEvent => ({
+    kind: 'chat.session_changed', session_id, field: 'tool_call', value, cursor: 1,
+  });
+
+  it('remembers how it settled, and never lets a late wait undo that', () => {
+    let state = hydrateThreadFromSnapshot(initialChatThreadState(), {
+      ...mkSession('s'), messages: [mkUserMessage('u', 's'), mkAssistantMessage('a', 's')],
+    });
+    state = reduceChatThreadEvent(state, event(call));
+    expect(state.tool_call_records?.['run-1']?.state).toBe('held');
+    // Remembered, not conjured into the thread as a row of its own.
+    expect(state.messages.map((message) => message.id)).toEqual(['u', 'a']);
+    state = reduceChatThreadEvent(state, event({ ...call, state: 'failed', denied: true, updated_at: 5 }));
+    expect(state.tool_call_records?.['run-1']).toMatchObject({ state: 'failed', denied: true });
+    expect(reduceChatThreadEvent(state, event({ ...call, updated_at: 6 }))).toBe(state);
+    expect(reduceChatThreadEvent(state, event({ ...call, state: 'succeeded', updated_at: 4 }))).toBe(state);
+    expect(reduceChatThreadEvent(state,
+      event({ ...call, session_id: 'other', run_id: 'run-2' }, 'other'))).toBe(state);
+  });
+
+  it('gets its record back from a reload and from an older page', () => {
+    const record = { ...call, state: 'succeeded' as const, updated_at: 9, held_at: 3 };
+    const toolRow: ChatMessage = { ...mkUserMessage('tool:x', 's'), role: 'tool', tool_call: record };
+    const reloaded = hydrateThreadFromSnapshot(initialChatThreadState(), { ...mkSession('s'), messages: [toolRow] });
+    expect(reloaded.tool_call_records?.['run-1']).toMatchObject({ state: 'succeeded', held_at: 3 });
+    const empty = hydrateThreadFromSnapshot(initialChatThreadState(), { ...mkSession('s'), messages: [] });
+    expect(empty.tool_call_records).toBeUndefined();
+    const paged = prependOlderMessages(empty, [toolRow], { has_more: false, oldest_cursor: null });
+    expect(paged.tool_call_records?.['run-1']?.held_at).toBe(3);
   });
 });
 

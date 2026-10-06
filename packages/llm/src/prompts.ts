@@ -429,6 +429,13 @@ const extractPrompt = (
 ): LLMMessage[] => {
   const data = requireField(input, 'data', 'ai-extract');
   const fields = requireField(input, 'fields', 'ai-extract') as string[];
+  // ⛔ `llm.context` used to be accepted and never read here, so the four
+  // housekeeping producers that steer extraction with it (`role`, `company`,
+  // `related_threads`, `topic_cluster` — the last two describe in it the very shape
+  // they parse) and `deal-handoff-brief-hubspot` sent the model none of it. Placed
+  // as `ai-classify` places it; absent, the prompt is byte-unchanged.
+  const context = optionalField(input, 'context');
+  const contextLine = context ? `\n\nContext:\n${stringify(context)}` : '';
 
   if (isBatch) {
     const idField = input['llm.id_field'] as string;
@@ -444,7 +451,7 @@ const extractPrompt = (
         idField,
         `the requested keys ${JSON.stringify(fields)} (each value the extracted content — string, number, array, or null)`,
       );
-    const user = `Fields: ${JSON.stringify(fields)}\n\nRecords:\n${stringify(data)}`;
+    const user = `Fields: ${JSON.stringify(fields)}${contextLine}\n\nRecords:\n${stringify(data)}`;
     return [
       { role: 'system', content: system },
       { role: 'user', content: user },
@@ -458,7 +465,7 @@ const extractPrompt = (
     'Each value is the extracted content (string, number, array, or null).\n\n' +
     JSON_ONLY;
 
-  const user = `Fields: ${JSON.stringify(fields)}\n\nData:\n${stringify(data)}`;
+  const user = `Fields: ${JSON.stringify(fields)}${contextLine}\n\nData:\n${stringify(data)}`;
 
   return [
     { role: 'system', content: system },

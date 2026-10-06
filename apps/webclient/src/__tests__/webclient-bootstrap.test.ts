@@ -329,6 +329,16 @@ const makeFakeElement = (tag: string): FakeElement => {
       child.parentRef = el as FakeElement;
       return child;
     }) as unknown as HTMLElement['appendChild'],
+    replaceChildren: ((...children: FakeElement[]): void => {
+      for (const child of childList) child.parentRef = null;
+      childList.length = 0;
+      html = '';
+      textContent = '';
+      for (const child of children) {
+        childList.push(child);
+        child.parentRef = el as FakeElement;
+      }
+    }) as unknown as HTMLElement['replaceChildren'],
     insertBefore: ((child: FakeElement, before: FakeElement | null): FakeElement => {
       const index = before === null ? childList.length : childList.indexOf(before);
       if (index < 0) throw new Error('insertBefore: reference is not a child');
@@ -476,6 +486,15 @@ const makeFakeDocument = (): FakeDocument => {
       (el as { ownerDocument: Document }).ownerDocument = doc as FakeDocument;
       return el;
     }) as unknown as FakeDocument['createElement'],
+    // `renderAnswerText` paints a formatted reply (**bold**, headings) from text
+    // nodes (b41c8e0cd). A double is a closed list: without this, the first
+    // fixture reply carrying markup throws. A text node is a bare element
+    // carrying its text.
+    createTextNode: ((text: string): FakeElement => {
+      const node = makeFakeElement('#text');
+      node.textContent = text;
+      return node;
+    }) as unknown as Document['createTextNode'],
     addEventListener: ((evt: string, fn: (event: Event) => void): void => {
       (docListeners[evt] ??= new Set()).add(fn);
     }) as unknown as Document['addEventListener'],
@@ -1522,6 +1541,48 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
     await handle.dispose();
   });
+
+  it.each(['#chat/session/chat_1', '#mail/work/work_1'])(
+    'keeps workbook navigation made while %s is connecting',
+    async (initialHash) => {
+      const fixture = buildOpts();
+      fixture.hashSource.setHash(initialHash);
+      let releaseConnection!: () => void;
+      let connectionStarted!: () => void;
+      const heldConnection = new Promise<void>((resolve) => { releaseConnection = resolve; });
+      const connecting = new Promise<void>((resolve) => { connectionStarted = resolve; });
+      const open = fixture.transportControls.transport.open;
+      fixture.transportControls.transport.open = async (args) => {
+        connectionStarted();
+        await heldConnection;
+        await open(args);
+      };
+      const boot = bootstrapWebclient(fixture.opts);
+      await connecting;
+      // The first route is already mounted, as it is immediately after Chat
+      // reload in the live drive. Navigate before the handshake finishes.
+      fixture.hashSource.setHash('#mail/work/work_2');
+      const connectingHtml = routeContentRoot(fixture.root).innerHTML;
+      releaseConnection();
+      const handle = await boot;
+      try {
+        await flush();
+        expect(connectingHtml).toContain('class="mail-work"');
+        expect(handle.activeRoute()).toBe('mail');
+        expect(handle.captureRecoverySnapshot().returnHash).toBe('#mail/work/work_2');
+        expect(routeContentRoot(fixture.root).innerHTML).toContain('class="mail-work"');
+        expect(fixture.transportControls.sendCalls().filter((call) => {
+          const rpc = call as { method?: string; args?: { id?: string } };
+          return rpc.method === 'mail.work.get' && rpc.args?.id === 'work_2';
+        })).toHaveLength(1);
+        expect(fixture.transportControls.sendCalls().some((call) =>
+          (call as { method?: string }).method === 'chat.send',
+        )).toBe(false);
+      } finally {
+        await handle.dispose();
+      }
+    },
+  );
 
   it('subscribes to hashchange and re-mounts when the route flips', async () => {
     const fixture = buildOpts();
@@ -14571,6 +14632,120 @@ describe('paged list rpcs — the composition root reads recipe.list and the too
     expect(html).toContain(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}="alpha"`);
     expect(html).toContain(`${RECIPES_ROUTE_RECIPE_CARD_ATTR}="beta"`);
 
+    await handle.dispose();
+  });
+});
+
+describe('D-209 — a dish save that moved a webhook door is told, whichever screen saved', () => {
+  // ⚠ Through the REAL bootstrap and the REAL Automation route: the shared dish
+  // callers both routes are handed are what announce the change, so this drives
+  // one of them from a route's own control rather than calling the wrapper by
+  // hand (`webhook-door-notices.test.ts` pins the wording).
+  const MAIN_DISH = {
+    dish_id: 'dsh_main',
+    recipe_id: 'acme-order-paid',
+    publisher_id: 'acme',
+    name: '',
+    is_default: true,
+    config_overlay: {},
+    enabled: true,
+    created_at: 1_000,
+  };
+
+  it('switching a main dish off reports the webhook it closed, and the toast stays', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+    const before = fixture.transportControls.sendCalls().length;
+    fixture.hashSource.setHash('#automation');
+    for (let i = 0; i < 4; i += 1) await flush();
+
+    // The route settles its reads together: the dishes, and every other read
+    // refused (it tolerates each one failing).
+    const answered = new Set<string>();
+    answerAllRpc(fixture.transportControls, 'dishes.list', { dishes: [MAIN_DISH], last_runs: {} }, answered);
+    for (const call of fixture.transportControls.sendCalls().slice(before)) {
+      const row = call as { type?: unknown; request_id?: unknown };
+      if (row?.type !== 'rpc' || typeof row.request_id !== 'string' || answered.has(row.request_id)) continue;
+      answered.add(row.request_id);
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: row.request_id,
+        error: { code: 'unavailable', message: 'not part of this test' },
+      });
+    }
+    for (let i = 0; i < 8; i += 1) await flush();
+
+    const routeRoot = findChildByAttr(fixture.root, 'data-recued-automation-route');
+    expect(routeRoot).not.toBeNull();
+    routeRoot!.fireAttributeClick({
+      'data-recued-automation-action': 'toggle:dish:off',
+      'data-rule-id': 'dsh_main',
+    });
+    for (let i = 0; i < 4; i += 1) await flush();
+    const update = fixture.transportControls.sendCalls().find((call) =>
+      (call as { method?: unknown })?.method === 'dishes.update') as { args?: unknown } | undefined;
+    expect(update?.args).toEqual({ dish_id: 'dsh_main', enabled: false });
+
+    answerAllRpc(fixture.transportControls, 'dishes.update', {
+      dish: { ...MAIN_DISH, enabled: false },
+      webhook_doors: [{
+        recipe_id: 'acme-order-paid',
+        recipe_name: 'Acme order paid',
+        state: 'closed',
+        was_open: true,
+        reason_code: 'no_account',
+      }],
+    }, answered);
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    expect(subtreeText(findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!)).toContain(
+      'Webhook off: Acme order paidMessages coming in are refused until its settings choose an account.',
+    );
+    await handle.dispose();
+  });
+
+  it('the app\'s one connection announces a schedule that made a main dish, and never a read', async () => {
+    // A schedule, an owner-made trigger, or switching a timer recipe on makes a
+    // recipe's main dish when it has none. Every screen reaches the server through
+    // this one connection, so the notice is pinned on it, not on a screen.
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+    const call = handle.conn() as unknown as (method: string, args?: unknown) => Promise<unknown>;
+    const answered = new Set<string>();
+    const toastText = (): string => subtreeText(findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!);
+
+    const scheduled = call('schedules.create', {
+      recipe_id: 'acme-order-paid', cron_expression: '0 8 * * *', config_overlay: { acme: 'acme-prod' },
+    });
+    await flush();
+    answerAllRpc(fixture.transportControls, 'schedules.create', {
+      schedule: { schedule_id: 'sch_1' },
+      webhook_doors: [{
+        recipe_id: 'acme-order-paid',
+        recipe_name: 'Acme order paid',
+        state: 'opened',
+        was_open: false,
+        added: ['connection:acme-prod'],
+        removed: [],
+      }],
+    }, answered);
+    await expect(scheduled).resolves.toMatchObject({ schedule: { schedule_id: 'sch_1' } });
+    await flush();
+    expect(toastText()).toContain(
+      'Webhook on: Acme order paidMessages coming in now run with these settings. They may use: the acme-prod account.',
+    );
+
+    const listed = call('schedules.list');
+    await flush();
+    answerAllRpc(fixture.transportControls, 'schedules.list', {
+      schedules: [],
+      webhook_doors: [{ recipe_id: 'x', recipe_name: 'Not a change', state: 'closed', was_open: true }],
+    }, answered);
+    await listed;
+    await flush();
+    expect(toastText()).not.toContain('Not a change');
     await handle.dispose();
   });
 });

@@ -562,6 +562,12 @@ const validateRestResponseCapture = (
   if (capture.mime_type !== undefined && (typeof capture.mime_type !== 'string' || capture.mime_type.length === 0)) {
     add('error', 'composition_rest_response_capture_mime', `${capturePath}.mime_type`, 'response_capture.mime_type must be a non-empty string when present');
   }
+  // The one value there is: a captured file the pack keeps out of UNATTENDED
+  // AI enrichment (captions / transcripts / extracted text). Anything else is a
+  // typo, and a typo here would silently leave the file enrichable.
+  if (capture.ai_enrichment !== undefined && capture.ai_enrichment !== 'opt_out') {
+    add('error', 'composition_rest_response_capture_ai_enrichment', `${capturePath}.ai_enrichment`, "response_capture.ai_enrichment must be 'opt_out' when present; omit it to let the file's origin decide");
+  }
   const fs = capture.filename_source;
   if (!isPlainObject(fs)) {
     add('error', 'composition_rest_response_capture_filename_source', `${capturePath}.filename_source`, 'response_capture.filename_source must be an object');
@@ -2205,6 +2211,27 @@ export const validateComposition = (
           message: 'a closed request schema requires a catalog-shaped composition; the 1x1 plain-ingredient lowering drops operation schemas',
         });
       }
+    });
+  }
+  // An action that can be held for approval but declares neither reviewable
+  // fields nor request fields: its approval card can name the action and nothing
+  // it would change (`ask-card-default-details.ts` reads one or the other).
+  // Info, never blocking — measured 2026-10-04, 536 shipped actions in 79 packs.
+  if (isPlainObject(body) && Array.isArray(body.operations)) {
+    body.operations.forEach((rawOperation, idx) => {
+      if (!isPlainObject(rawOperation)) return;
+      if (!['write', 'admin', 'destructive'].includes(String(rawOperation.risk))) return;
+      if (!Array.isArray(rawOperation.args) || rawOperation.args.length === 0) return;
+      if (Array.isArray(rawOperation.editable_args) && rawOperation.editable_args.length > 0) return;
+      const schema = rawOperation.request_schema;
+      const properties = isPlainObject(schema) ? schema.properties : undefined;
+      if (isPlainObject(properties) && Object.keys(properties).length > 0) return;
+      issues.push({
+        severity: 'info',
+        code: 'approval_cannot_show_changes',
+        path: `operations[${idx}]`,
+        message: 'this action can be held for approval but declares neither editable_args nor request_schema fields, so its approval card cannot show what it would change',
+      });
     });
   }
   // Surface decompose-time notes (e.g. a 1×1 API wrapper dropping its declared

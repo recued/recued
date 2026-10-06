@@ -85,7 +85,6 @@ describe('tools.search — the surface, not the guard', () => {
     wrapChatRegistryForCatalogModes(
       emptyRegistry,
       ['lean-core'],
-      () => null,
       undefined,
       undefined,
       gated(isOwnerGoverned),

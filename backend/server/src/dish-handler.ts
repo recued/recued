@@ -4,7 +4,6 @@
  *  On/Off switch, and the triggers and schedules that start it on its own.
  *    dishes.list      list all (optional recipe_id filter)
  *    dishes.create    { recipe_id, name?, config_overlay?, enabled? } — switch on
- *    dishes.createFromRun { run_id, name?, enabled? } — owner promotion
  *    dishes.update    { dish_id, name?, config_overlay?, enabled?, main? }
  *    dishes.delete    by dish_id — its rows and continuity snapshot go too
  *    dishes.defaults  { recipe_id } — what a new dish starts from
@@ -24,11 +23,11 @@ import {
   DISH_ID_PREFIX,
   DISH_GROUP_ID_PREFIX,
   RpcError,
-  isEphemeralDishId,
   type Dish,
   type DishGroup,
   type DishLastRun,
   type DishRunRow,
+  type DishWebhookDoorChange,
   type HandlerSlice,
   type ServerRpcRegistry,
 } from '@recued/contracts';
@@ -66,6 +65,43 @@ export interface DishHandlerDeps {
   /** The publisher a recipe is installed under — the one its dishes carry.
    *  Absent, or null for a recipe that is gone ⇒ `'local'`. */
   publisherOf?: (recipe_id: string) => string | null;
+  /** D-319 — is the recipe installed, and does it start on its own? What the
+   *  one refused switch reads ({@link refuseSwitchOnNotInstalled}). Late-bound
+   *  by the composition. Absent (a harness) ⇒ nothing is refused; null ⇒ the
+   *  server has no such recipe. */
+  recipeInstall?: (recipe_id: string) => RecipeInstallState | null;
+  /** D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH
+   *  (`followMainDishWebhookDoors`): a pushed run takes the main dish's
+   *  settings, so the door it runs under is re-derived whenever they change, the
+   *  dish is made main, or the main dish goes. Late-bound by the composition
+   *  (the door substrate composes after the dish stores). Absent ⇒ no door
+   *  moves (a harness, or a server without webhooks). */
+  webhookDoors?: {
+    mainDishChanged(recipe_id: string): readonly DishWebhookDoorChange[];
+  };
+}
+
+/** The door changes a main-dish change made, for the rpc result: only the ones
+ *  that MOVED something — an unchanged door is not news to the owner. */
+const movedWebhookDoors = (
+  deps: DishHandlerDeps,
+  recipe_id: string,
+): { webhook_doors?: DishWebhookDoorChange[] } => {
+  const moved = (deps.webhookDoors?.mainDishChanged(recipe_id) ?? [])
+    .filter((change) => change.state !== 'unchanged');
+  return moved.length > 0 ? { webhook_doors: [...moved] } : {};
+};
+
+/** D-319 — a recipe's install state, as the switch reads it. */
+export interface RecipeInstallState {
+  readonly installed: boolean;
+  /** It declares a timer or a trigger (`startsOnItsOwn`). */
+  readonly startsOnItsOwn: boolean;
+  /** Its name, for the refusal. */
+  readonly name: string;
+  /** The packs that ship it (`<publisher>.<slug>`) — filled only when the
+   *  answer is a refusal, so a switch that goes ahead pays no roster walk. */
+  readonly packs: ReadonlyArray<{ readonly ref: string; readonly name: string }>;
 }
 
 /** Page size for `dishes.history` when the caller names none. Bounded
@@ -115,6 +151,37 @@ const requireOverlay = (
  *  auto-run timer belongs to a dish and owns none (the per-row config dishes
  *  D-179 minted and D-215 guarded are retired), so every dish is the owner's
  *  to edit, switch and remove through this rpc. */
+
+/** D-319 — refuse the one switch that would start nothing: switching on a
+ *  recipe that starts on its own when the server only SHIPS it (bundled, not
+ *  installed). Its own starts are read from the INSTALLED recipes alone — the
+ *  auto-run roster (`listInstallInputs`) and the declarative trigger
+ *  reconciler both walk `listStored()` — so the dish would show On while its
+ *  timer and its triggers never ran. Switching on is what the owner asked;
+ *  installing the pack is what makes it true, so the refusal says so.
+ *
+ *  ⚠ Only the switch: a schedule or trigger the owner adds names the recipe
+ *  by id and runs the shipped copy, so a dish made to hold one
+ *  (`mainDishFor`) and a dish that already holds one switch as before. Same
+ *  code and `missing_packs` shape as the run and schedule refusals, so a
+ *  surface can offer the same install link. */
+const refuseSwitchOnNotInstalled = (deps: DishHandlerDeps, recipe_id: string): void => {
+  const state = deps.recipeInstall?.(recipe_id);
+  if (state === undefined || state === null || state.installed || !state.startsOnItsOwn) return;
+  // One pack ⇒ name and link it; several ship it ⇒ any one would do, which
+  // `missing_packs` ("install them") cannot say, so the message alone does.
+  const only = state.packs.length === 1 ? state.packs[0] : undefined;
+  throw new RpcError(
+    'pack_not_installed',
+    only !== undefined
+      ? `'${state.name}' comes with the ${only.name} pack, which is not installed. `
+        + 'Install it from Packs, then switch it on.'
+      : `'${state.name}' comes with a pack that is not installed. Install it from Packs, then switch it on.`,
+    400,
+    undefined,
+    only !== undefined ? { missing_packs: [only.ref] } : undefined,
+  );
+};
 
 const checkAdmission = (
   deps: DishHandlerDeps,
@@ -238,7 +305,7 @@ export const createDish = (
     group_id?: unknown;
   },
   opts: { readonly switchOn?: boolean } = {},
-): { dish: Dish } => {
+): { dish: Dish; webhook_doors?: DishWebhookDoorChange[] } => {
   const recipe_id = typeof body.recipe_id === 'string' ? body.recipe_id : null;
   if (!recipe_id) {
     throw new RpcError('bad_request', 'recipe_id is required', 400);
@@ -265,6 +332,8 @@ export const createDish = (
   const group_id = body.group_id !== undefined
     ? requireGroupBinding(deps, body.group_id)
     : undefined;
+  // What `created` turns on: the switch, and only for a dish made on.
+  if ((opts.switchOn ?? enabled) && enabled) refuseSwitchOnNotInstalled(deps, recipe_id);
 
   const now = deps.now?.() ?? Date.now();
   const dish = storeNewDish(deps, {
@@ -279,7 +348,9 @@ export const createDish = (
     created_at: now,
   }, now);
   deps.automation?.created(dish, { switchOn: opts.switchOn ?? enabled });
-  return { dish };
+  // The recipe's first dish is its main one: its settings are what a pushed run
+  // now takes, so a webhook door that could not exist before may exist now.
+  return { dish, ...(dish.is_default ? movedWebhookDoors(deps, recipe_id) : {}) };
 };
 
 /** D-319 — the dish a schedule or trigger made for a recipe WITHOUT naming
@@ -291,11 +362,15 @@ export const createDish = (
  *
  *  Settings given for a recipe that HAS a main dish are refused unless they
  *  are its settings already: settings belong to the dish, and quietly
- *  dropping them would run the row with values the owner did not choose. */
+ *  dropping them would run the row with values the owner did not choose.
+ *
+ *  D-209 — making the main dish can open, change or close the recipe's webhook
+ *  door, as `dishes.create` can; `webhook_doors` says what moved, for the rpc
+ *  that made the row to return. An existing main dish moves nothing. */
 export const mainDishFor = (
   deps: DishHandlerDeps,
   input: { recipe_id: string; publisher_id: string; config_overlay: Record<string, unknown> | null },
-): Dish => {
+): { dish: Dish; webhook_doors?: DishWebhookDoorChange[] } => {
   const main = deps.store.getDefault(input.recipe_id);
   if (main !== null) {
     const given = input.config_overlay ?? {};
@@ -307,14 +382,14 @@ export const mainDishFor = (
         409,
       );
     }
-    return main;
+    return { dish: main };
   }
   return createDish(deps, {
     recipe_id: input.recipe_id,
     publisher_id: input.publisher_id,
     config_overlay: input.config_overlay ?? {},
     enabled: true,
-  }, { switchOn: false }).dish;
+  }, { switchOn: false });
 };
 
 /** Key-order-independent equality of two settings overlays. */
@@ -330,54 +405,6 @@ const sameSettings = (a: Record<string, unknown>, b: Record<string, unknown>): b
   return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 };
 
-/** D-259 §6.1 — promote one proven successful ad-hoc run into a NEW standing
- * dish. The wire supplies only an audit address plus presentation choices:
- * recipe identity and config are re-read from the authoritative run anchor.
- * In particular, no redacted chat args are ever replayed into configuration. */
-export const createDishFromRun = async (
-  deps: DishHandlerDeps,
-  body: {
-    run_id?: unknown;
-    name?: unknown;
-    enabled?: unknown;
-  },
-): Promise<{ dish: Dish }> => {
-  if (typeof body.run_id !== 'string' || body.run_id.trim().length === 0) {
-    throw new RpcError('bad_request', 'run_id is required', 400);
-  }
-  if (!deps.auditLog) {
-    throw new RpcError(
-      'not_configured',
-      'dish promotion requires a DB-backed audit log',
-      501,
-    );
-  }
-  const anchor = await deps.auditLog.get(body.run_id);
-  if (anchor === null) {
-    throw new RpcError('not_found', `Run '${body.run_id}' not found`, 404);
-  }
-  if (anchor.commit_status !== 'succeeded') {
-    throw new RpcError(
-      'conflict',
-      `Run '${body.run_id}' is '${anchor.commit_status}', not succeeded`,
-      409,
-    );
-  }
-  if (anchor.dish_id !== undefined && !isEphemeralDishId(anchor.dish_id)) {
-    throw new RpcError(
-      'conflict',
-      `Run '${body.run_id}' already belongs to standing dish '${anchor.dish_id}'`,
-      409,
-    );
-  }
-  return createDish(deps, {
-    recipe_id: anchor.recipe_id,
-    config_overlay: { ...anchor.config_snapshot },
-    ...(body.name !== undefined ? { name: body.name } : {}),
-    ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-  });
-};
-
 /** D-319 — settings change in place, from the dish's next run (each run
  *  records what it used); `enabled` switches every row of the dish, and is
  *  acted on even when unchanged — "switch on" is also how the owner re-arms
@@ -387,7 +414,7 @@ export const updateDish = (
   deps: DishHandlerDeps,
   dish_id: string,
   body: { name?: unknown; config_overlay?: unknown; enabled?: unknown; group_id?: unknown; main?: unknown },
-): { dish: Dish } => {
+): { dish: Dish; webhook_doors?: DishWebhookDoorChange[] } => {
   const existing = deps.store.get(dish_id);
   if (!existing) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
@@ -409,6 +436,13 @@ export const updateDish = (
     typeof body.group_id !== 'string'
   ) {
     throw new RpcError('bad_request', 'group_id must be a string or null', 400);
+  }
+  // Off → On is a switch on. A dish that holds a schedule or trigger of its
+  // own still switches: those rows run the shipped recipe by id. One with
+  // none would only re-arm the recipe's own starts, which it never runs.
+  if (body.enabled === true && !existing.enabled
+    && (deps.automation?.ownRows?.(dish_id) ?? 0) === 0) {
+    refuseSwitchOnNotInstalled(deps, existing.recipe_id);
   }
   const updated: Dish = {
     ...existing,
@@ -435,7 +469,14 @@ export const updateDish = (
   if (body.enabled !== undefined) deps.automation?.switched(stored);
   else if (body.config_overlay !== undefined || body.group_id !== undefined) deps.automation?.settingsChanged(stored);
   else deps.automation?.touched();
-  return { dish: stored };
+  // The main dish's settings are what a pushed run takes: they changed if this
+  // dish is main and its settings did, or if it just BECAME main.
+  const mainSettingsMoved = stored.is_default
+    && (body.config_overlay !== undefined || !existing.is_default);
+  return {
+    dish: stored,
+    ...(mainSettingsMoved ? movedWebhookDoors(deps, stored.recipe_id) : {}),
+  };
 };
 
 /** D-319 — remove a dish: its triggers and schedules go with it, and its
@@ -444,7 +485,7 @@ export const updateDish = (
 export const deleteDish = (
   deps: DishHandlerDeps,
   dish_id: string,
-): { deleted: true } => {
+): { deleted: true; webhook_doors?: DishWebhookDoorChange[] } => {
   // Read BEFORE deleting: the rows are found by the dish's id.
   const existing = deps.store.get(dish_id);
   if (!existing) {
@@ -460,7 +501,12 @@ export const deleteDish = (
     if (next !== undefined) deps.store.setMain(next.dish_id);
   }
   deps.automation?.deleted(existing);
-  return { deleted: true };
+  // Removing the main dish hands its role to the next one, or to none — either
+  // way a pushed run now takes different settings.
+  return {
+    deleted: true,
+    ...(existing.is_default ? movedWebhookDoors(deps, existing.recipe_id) : {}),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -533,6 +579,11 @@ export const updateDishGroup = (
   const projected = Math.max(0, estimateSize(updated) - estimateSize(existing));
   checkAdmission(deps, projected, 'group update', now);
   groupStore.set(updated);
+  // Its dishes' runs read the group's settings, so their triggers follow them
+  // (a folder or mailbox a trigger watches may be set here).
+  if (body.config_overlay !== undefined) {
+    for (const member of deps.store.listByGroup(group_id)) deps.automation?.settingsChanged(member);
+  }
   return { group: updated };
 };
 
@@ -551,6 +602,11 @@ export const deleteDishGroup = (
   }
   const detached_dish_ids = deps.store.detachGroup(group_id);
   groupStore.delete(group_id);
+  // The detached dishes no longer read the group's settings; their triggers follow.
+  for (const dish_id of detached_dish_ids) {
+    const dish = deps.store.get(dish_id);
+    if (dish !== null) deps.automation?.settingsChanged(dish);
+  }
   return { deleted: true, detached_dish_ids };
 };
 
@@ -573,7 +629,6 @@ export const dishDefaults = (
 export type DishMethods =
   | 'dishes.list'
   | 'dishes.create'
-  | 'dishes.createFromRun'
   | 'dishes.update'
   | 'dishes.delete'
   | 'dishes.history'
@@ -589,7 +644,7 @@ export const makeDishHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
-      'dishes.list', 'dishes.create', 'dishes.createFromRun', 'dishes.update', 'dishes.delete',
+      'dishes.list', 'dishes.create', 'dishes.update', 'dishes.delete',
       'dishes.history', 'dishes.defaults',
       'dish_groups.list', 'dish_groups.create', 'dish_groups.update', 'dish_groups.delete',
     ],
@@ -597,7 +652,6 @@ export const makeDishHandlers = (
       'dishes.list': async (args) =>
         listDishes(deps, args as { recipe_id?: string }),
       'dishes.create': async (args) => createDish(deps, args),
-      'dishes.createFromRun': async (args) => createDishFromRun(deps, args),
       'dishes.update': async (args) => {
         if (!args.dish_id || typeof args.dish_id !== 'string') {
           throw new RpcError('bad_request', 'dish_id is required', 400);

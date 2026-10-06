@@ -382,9 +382,9 @@ export interface IngredientManifest {
    *  maintained to that standard. But re-authoring `risk_tier` would not have
    *  rescued the derivation either, and this is the part worth remembering —
    *  ⛔ **`data-file-read`, the one ingredient that MUST be exposed, has exactly
-   *  the same `(kind: 'storage', risk_tier: 'read')` pair as `webhook-watcher`,
-   *  `time-relative-watcher`, `file-watcher` and `recipe-watcher`, which must
-   *  not be.** No combination of the authored fields separated them, because the
+   *  the same `(kind: 'storage', risk_tier: 'read')` pair as the watchers
+   *  (`time-relative-watcher`, and the webhook, file and recipe watchers retired
+   *  2026-10-05), which must not be.** No combination of the authored fields separated them, because the
    *  judgement simply was not written down anywhere: it lived in a
    *  `new Set(['data-file-read'])` in one server file's private scope.
    *

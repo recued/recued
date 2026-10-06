@@ -12,6 +12,7 @@
 
 import { CONNECTION_NAME_REGEX } from '@recued/ui-shared';
 import { renderAttentionSlot } from '@recued/ui-shared/top-bar';
+import { askDetailLabel } from '@recued/ui-shared/approval-card';
 import {
   CONNECTION_AUTH_TYPES,
   connectionCredentialRejectionCorrection,
@@ -70,6 +71,9 @@ export const ATTENTION_ERROR_ANNOUNCER_ATTR =
   'data-recued-attention-error-announcer';
 export const ATTENTION_GATEWAY_ASK_ROW_ATTR =
   'data-recued-attention-gateway-ask';
+/** D-270 — the held operation's resolved values on a gateway-ask row. */
+export const ATTENTION_GATEWAY_ASK_DETAILS_ATTR =
+  'data-recued-attention-gateway-ask-details';
 export const ATTENTION_CHAT_PLAN_LINK_ATTR =
   'data-recued-attention-chat-plan-link';
 export const ATTENTION_CHAT_PLAN_RESOLUTION_ATTR =
@@ -376,6 +380,31 @@ export const ATTENTION_TOPBAR_STYLES = `
    already use. */
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-reason {
   white-space: pre-wrap;
+}
+/* D-270 — what the approval commits to, one "Label value" line each. Never
+   collapsed: these are the values the decision is about. Long values wrap (a
+   400-character cap is the server's), so the row never widens the popover. */
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-details {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-detail {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-detail dt {
+  flex: none;
+  max-width: 45%;
+  color: var(--fg-muted, #71717a);
+  overflow-wrap: anywhere;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-detail dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 /* The argument payload, collapsed. The summary carries its own line count,
    so a reader can tell a short call from a wide one without opening it. */
@@ -1234,6 +1263,24 @@ const renderGatewayAskBody = (text: string): string => {
         </details>`;
 };
 
+/** D-270 — the resolved "what will happen" rows, as the Approvals card shows
+ *  them. ⛔ The tray is where the bell takes the owner, and it rendered only the
+ *  prose: a held unlock read "wants to run …lock.unlock (step unlock)" with no
+ *  door named, while the card one click away said "Device lock.kitchen_door".
+ *  Values are display text resolved server-side — never re-derived here. Absent
+ *  or empty ⇒ nothing, exactly as before (all-or-nothing, like the card). */
+const renderGatewayAskDetails = (ask: ServerPendingAsk): string => {
+  if (ask.details === undefined || ask.details.length === 0) return '';
+  const rows = ask.details.map((row) => `
+          <div class="attention-row-detail">
+            <dt>${escapeHtml(askDetailLabel(row.label))}</dt>
+            <dd>${escapeHtml(row.value)}</dd>
+          </div>`).join('');
+  return `
+        <dl class="attention-row-details" ${ATTENTION_GATEWAY_ASK_DETAILS_ATTR}>${rows}
+        </dl>`;
+};
+
 const renderGatewayAskRow = (
   ask: ServerPendingAsk,
   resolving: ReadonlySet<string>,
@@ -1270,6 +1317,7 @@ const renderGatewayAskRow = (
       <div class="attention-row-body">
         <h3 class="attention-row-title">${escapeHtml(title)}</h3>
         <span class="attention-row-meta">Connected action &middot; Answer to continue</span>
+        ${renderGatewayAskDetails(ask)}
         ${showBody ? renderGatewayAskBody(ask.text) : ''}
       </div>
       <div class="attention-row-actions">

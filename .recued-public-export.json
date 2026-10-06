@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "320502452573ceafe8189eca61f4d4ed01854ca0",
-    "tree": "2010958b85eeb56b1b4fa3b73a5515f4cba19596",
-    "committed_at": "2026-09-30T10:27:28-07:00"
+    "commit": "70fc448f73ce4324f97235986d2575b6807ccf92",
+    "tree": "4de89dfa035d55b3a4aa6b5464d3c41b8fa3bd35",
+    "committed_at": "2026-10-06T08:17:21-07:00"
   },
-  "export_manifest_sha256": "7513cea785024dd660a7470eedd26bd2f7f330d2ef73fe64441dd20582b74093",
-  "version": "26.9.30",
+  "export_manifest_sha256": "595cc248ef3646e065496131b11c3e9e00746c766d406c952403f64f10911dbf",
+  "version": "26.10.6",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -48,6 +48,7 @@
   "omitted_private_coupled_tests": {
     "paths": [
       "apps/webclient/e2e/live-update-path.spec.ts",
+      "apps/webclient/e2e/mail-work.spec.ts",
       "apps/webclient/src/__tests__/d-148-i15-no-smart-redirect.test.ts",
       "apps/webclient/src/__tests__/d-200-slice6g4-intake-recipe-pair-section.test.ts",
       "apps/webclient/src/__tests__/d-282-b6-bulk-action.test.ts",
@@ -65,9 +66,11 @@
       "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/byte-budget-char-slice.test.ts",
-      "backend/server/src/__tests__/calendar-e2e.test.ts",
+      "backend/server/src/__tests__/calendar-recipes-read-every-calendar.test.ts",
+      "backend/server/src/__tests__/calendar-reminder-recipes.test.ts",
       "backend/server/src/__tests__/commitment-writes-reach-the-store.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
+      "backend/server/src/__tests__/d-137-chat-orchestrator-composition.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
       "backend/server/src/__tests__/d-149-phase-3-reception-rpc-handler.test.ts",
@@ -190,6 +193,9 @@
       "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
       "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
+      "backend/server/src/__tests__/home-assistant-camera-alert-pushed-run.test.ts",
+      "backend/server/src/__tests__/home-assistant-camera-alert-webhook-capstone.test.ts",
+      "backend/server/src/__tests__/home-assistant-pack-semi-live.test.ts",
       "backend/server/src/__tests__/horizon-plan-classifier.test.ts",
       "backend/server/src/__tests__/install-names-the-packs-it-needs.test.ts",
       "backend/server/src/__tests__/install-sh-local-feed.test.ts",
@@ -204,6 +210,7 @@
       "backend/server/src/__tests__/list-settings-typed-in-the-form-are-lists.test.ts",
       "backend/server/src/__tests__/local-cli-pack-live-drive.test.ts",
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
+      "backend/server/src/__tests__/mail-recipes-read-the-mailbox-named.test.ts",
       "backend/server/src/__tests__/mail-work-readers.test.ts",
       "backend/server/src/__tests__/mcp-listen-source.test.ts",
       "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
@@ -214,6 +221,7 @@
       "backend/server/src/__tests__/month-end-closer-business-workflow.test.ts",
       "backend/server/src/__tests__/month-end-closer-past-one-page.test.ts",
       "backend/server/src/__tests__/notification-send-is-declared.ratchet.test.ts",
+      "backend/server/src/__tests__/notify-file-arrived.test.ts",
       "backend/server/src/__tests__/notify-new-inquiry-from-existing-customer-live.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
@@ -259,6 +267,8 @@
       "backend/server/src/__tests__/trigger-payload-reads.test.ts",
       "backend/server/src/__tests__/unattended-closers-patch.test.ts",
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
+      "backend/server/src/__tests__/watcher-required-args.ratchet.test.ts",
+      "backend/server/src/__tests__/web-watch-recipes.test.ts",
       "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
@@ -503,6 +513,7 @@
       "packages/recipes/src/__tests__/ai-reachability-corpus.test.ts",
       "packages/recipes/src/__tests__/air-quality-pack-audit.test.ts",
       "packages/recipes/src/__tests__/amplitude-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/analyze-corpus.test.ts",
       "packages/recipes/src/__tests__/asana-allocation-vs-away-pack-audit.test.ts",
       "packages/recipes/src/__tests__/asana-task-closure-loop.test.ts",
       "packages/recipes/src/__tests__/asana-task-comment-closure-loop.test.ts",
@@ -554,6 +565,7 @@
       "packages/recipes/src/__tests__/expected-quotation-email-loop.test.ts",
       "packages/recipes/src/__tests__/field-service-day-plan-audit.test.ts",
       "packages/recipes/src/__tests__/figma-comment-reply-closure-loop.test.ts",
+      "packages/recipes/src/__tests__/flatten-corpus.test.ts",
       "packages/recipes/src/__tests__/freshbooks-receivables-pack-audit.test.ts",
       "packages/recipes/src/__tests__/freshdesk-ticket-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/front-conversation-reply-reopen-loop.test.ts",
@@ -569,6 +581,7 @@
       "packages/recipes/src/__tests__/guard-required-reaches-the-schema.test.ts",
       "packages/recipes/src/__tests__/helpscout-conversation-reply-closure-loop.test.ts",
       "packages/recipes/src/__tests__/hex-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/home-assistant-camera-alert-generator.test.ts",
       "packages/recipes/src/__tests__/hubspot-analytics-recipes-run.test.ts",
       "packages/recipes/src/__tests__/inbound-artifact-verification-audit.test.ts",
       "packages/recipes/src/__tests__/intercom-conversation-reply-closure-loop.test.ts",
@@ -624,10 +637,12 @@
       "packages/recipes/src/__tests__/rental-book-audit.test.ts",
       "packages/recipes/src/__tests__/sentry-linear-work-handoff-loop.test.ts",
       "packages/recipes/src/__tests__/sentry-measured-vs-extrapolated-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/shared-key-prefix.test.ts",
       "packages/recipes/src/__tests__/shared-row-copy-ratchet.test.ts",
       "packages/recipes/src/__tests__/shopify-customer-reply-desk.test.ts",
       "packages/recipes/src/__tests__/smartsheet-row-discussion-closure-loop.test.ts",
       "packages/recipes/src/__tests__/snowflake-pack-audit.test.ts",
+      "packages/recipes/src/__tests__/step-dispatch-corpus.test.ts",
       "packages/recipes/src/__tests__/stripe-receivable-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/tailscale-node-readiness-pack-audit.test.ts",
       "packages/recipes/src/__tests__/teamwork-pack-audit.test.ts",
@@ -652,9 +667,11 @@
       "packages/recipes/src/__tests__/xero-first-page-ceiling-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-count-truth-pack-audit.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
-      "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts"
+      "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts",
+      "packages/ui-shared/src/__tests__/calendar-reminder-switch-on.test.ts",
+      "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "482e410ec1c16e0b7df5722931f762d8dafef27e0287fe4060a476d470373d3c",
+    "sha256": "8481409271e4fc74ba7c4556c88e2dea05783e35ac1865c93b31302566808679",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -671,15 +688,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1102,
+    "files_changed": 1104,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1031
+        "comments_rewritten": 1032
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 132
+        "comments_rewritten": 133
       },
       {
         "id": "internal-handover-note",
@@ -704,8 +721,8 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 22,
-      "sha256": "e30b471873f84a66120d1fdb3affb42092d94fce47de56c336ec1846398ccd61",
+      "file_count": 21,
+      "sha256": "0222385a80bd36c76219a499afd1ad7203587e7e0355caee9b96325dd775c6af",
       "paths": [
         "community/packs/personal-organizer-foundation.json",
         "community/packs/recued-core/mail-compose-foundation.json",
@@ -724,7 +741,6 @@
         "community/recipes/reschedule-calendar-event.json",
         "community/recipes/rewrite-composed-mail.json",
         "community/recipes/save-composed-draft-to-mailbox.json",
-        "community/recipes/schedule-recipe.json",
         "community/recipes/send-composed-mail.json",
         "community/recipes/stalled-projects.json",
         "community/recipes/today.json",
@@ -769,7 +785,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6395,
-    "sha256": "163f1ed2293b8f11082e818e92783560a1c42616c7517772c1e4b0c5c665fbc4"
+    "file_count": 6454,
+    "sha256": "2b71815281f147ffff90b0ef0fd4b761484adccab25df1bf1d51041c974978ed"
   }
 }

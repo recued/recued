@@ -166,6 +166,14 @@ export const startPostAppCollectionExecutionRuntime = async (
         ...(execution.workEntityTextDatesNotice !== undefined
           ? { workEntityTextDatesNotice: execution.workEntityTextDatesNotice }
           : {}),
+        // D-319 — pre-bound by the execution composer (see `autoRunTimerRearm`
+        // and `autoRunSwitchOnNotice`).
+        ...(execution.autoRunTimerRearm !== undefined
+          ? { autoRunTimerRearm: execution.autoRunTimerRearm }
+          : {}),
+        ...(execution.autoRunSwitchOnNotice !== undefined
+          ? { autoRunSwitchOnNotice: execution.autoRunSwitchOnNotice }
+          : {}),
         collection,
       },
       preListener: {

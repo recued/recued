@@ -2,16 +2,23 @@
  *
  *  JS port of internal benchmarks's
  *  quality_precheck(). Runs without I/O — pure function on a
- *  recipe JSON object. Used by:
+ *  recipe JSON object. Meant for:
  *    - Chat Tier 2 (show warnings in UI after AI generation)
  *    - Marketplace quality gate (automated review pipeline)
  *    - Kitchen editor (real-time feedback while editing)
+ *  ⚠ None of them calls it (checked 2026-10-06): it is exported from
+ *  `@recued/recipes` and tested, and nothing in backend/, apps/ or supabase/
+ *  imports it. What runs on save, install and publish is the validator's
+ *  phase 2, `validate/quality.ts`, which carries the same checks.
  *
  *  Severity tiers:
  *    'info'     — observation, no risk, can pass as-is
  *    'review'   — correctness/security concern, needs attention
  *    'critical' — runtime-breaking, will be auto-rejected
  */
+
+import { declaresPiiHandling, NO_PII_DECLARATION_DETAIL } from './pii-declaration.js';
+import { aiStepDispatch } from './step-dispatch.js';
 
 export interface QualityFinding {
   severity: 'info' | 'review' | 'critical';
@@ -73,10 +80,11 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
   const stepIds = steps.map((s) => str(s.id)).filter(Boolean);
   const allStepIds = new Set([...prefetchIds, ...stepIds]);
 
-  // AI step indices
+  // AI step indices — `ingredient: "ai-*"` (or `core-ai-*`) and `op: "core.ai.*"`
+  // alike; every shipped AI step is the op form.
   const aiStepIndices: number[] = [];
   for (let i = 0; i < steps.length; i++) {
-    if (stripCore(str(steps[i].ingredient)).startsWith('ai-')) aiStepIndices.push(i);
+    if (aiStepDispatch(steps[i]) !== undefined) aiStepIndices.push(i);
   }
 
   // ── Empty / degenerate recipe ──
@@ -128,9 +136,8 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
   // ── Hash/restore pairing ──
   const hasReplace = steps.some((s) => s.transform === 'hash_replace');
   const hasRestore = steps.some((s) => s.transform === 'hash_restore');
-  const hasPiiFields = steps.some((s) => Array.isArray(s.pii_fields) && (s.pii_fields as unknown[]).length > 0);
-  if (aiStepIndices.length > 0 && !hasReplace && !hasPiiFields) {
-    find('info', 'no_hash_before_ai', 'recipe has AI steps but no hash_replace or pii_fields — verify no PII is sent to LLM');
+  if (aiStepIndices.length > 0 && !declaresPiiHandling(steps)) {
+    find('info', 'no_hash_before_ai', NO_PII_DECLARATION_DETAIL);
   }
   if (hasReplace && !hasRestore) {
     find('review', 'missing_hash_restore', 'hash_replace used but no hash_restore — output may contain hashed tokens');
@@ -157,7 +164,7 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
   const hasProtect = steps.some((s) => s.transform === 'pii-protect');
   const hasPiiRestore = steps.some((s) => s.transform === 'pii-restore');
   if (hasProtect && !hasPiiRestore) {
-    find('review', 'missing_pii_restore', 'pii-protect used but no pii-restore — the engine restores the final output, but alias tokens (pii.Person1, m1@d1.invalid) still reach any mid-run egress (notify, durable write); add pii-restore before those steps');
+    find('review', 'missing_pii_restore', 'pii-protect used but no pii-restore — the engine restores what the run renders, and what it fires as an exchange, when it ends; alias tokens (pii.Person1, m1@d1.invalid) still reach any step before then that sends or stores data (notify, durable write) — add pii-restore before those steps');
   }
   // A pii-protect field tag the alias substrate can't honor (not a {path,kind}
   // object, empty path, or kind outside the 9-kind enum) leaves that field
@@ -232,11 +239,15 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
   }
 
   // ── Invalid model_hint ──
+  // An op step's is a `review`, as the validator only warns there: the check never
+  // reached that form before, and the runtime runs an unknown hint as the default.
   for (const step of steps) {
-    if (!stripCore(str(step.ingredient)).startsWith('ai-')) continue;
-    const hint = obj(step.input)['llm.model_hint'];
+    const call = aiStepDispatch(step);
+    if (call === undefined) continue;
+    const hint = call.payload['llm.model_hint'];
     if (hint != null && !VALID_MODEL_HINTS.has(String(hint))) {
-      find('critical', 'invalid_model_hint', `step '${str(step.id)}' has llm.model_hint='${hint}' — must be fast, quality, or thinking`);
+      find(call.payloadKey === 'input' ? 'critical' : 'review', 'invalid_model_hint',
+        `step '${str(step.id)}' has llm.model_hint='${hint}' — must be fast, quality, or thinking`);
     }
   }
 
@@ -271,9 +282,11 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
 
   // ── ai-prompt system_prompt ──
   for (const step of steps) {
-    if (step.ingredient !== 'ai-prompt') continue;
-    if (!obj(step.input)['llm.system_prompt']) {
-      find('review', 'ai_prompt_missing_system', `step '${str(step.id)}' ai-prompt has no llm.system_prompt`);
+    const call = aiStepDispatch(step);
+    if (call?.slug !== 'ai-prompt') continue;
+    if (!call.payload['llm.system_prompt']) {
+      find('review', 'ai_prompt_missing_system',
+        `step '${str(step.id)}' ${typeof step.op === 'string' ? step.op : str(step.ingredient)} has no llm.system_prompt`);
     }
   }
 
@@ -310,10 +323,6 @@ export const qualityPrecheck = (recipe: R): QualityFinding[] => {
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const arr = (v: unknown): R[] => (Array.isArray(v) ? v as R[] : []);
 const obj = (v: unknown): R => (v && typeof v === 'object' && !Array.isArray(v) ? v as R : {});
-// §5 — a `core-ai-*` kernel alias is an AI step like its bare slug; strip the
-// reserved prefix before the `ai-` heuristic (helper kept local — this Python-port
-// stays import-free).
-const stripCore = (s: string): string => (s.startsWith('core-') ? s.slice(5) : s);
 
 /** True if a hash_replace field path's last segment reads as one of the
  *  aliasable D-167 PII kinds (PII_HINTS). camelCase is folded to `_` first

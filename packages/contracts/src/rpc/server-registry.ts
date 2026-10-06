@@ -53,7 +53,7 @@ import type {
   SavedDataViewDeleteRequest, SavedDataViewUpdateRequest, SavedDataViewRetiredResolveRequest,
 } from '../saved-data-views.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
-import type { Dish, DishGroup, DishLastRun, DishRunRow } from '../dish.js';
+import type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from '../dish.js';
 import type { CacheEntry } from '../cache.js';
 import type {
   RecipeDefinition,
@@ -597,6 +597,18 @@ export interface ServerLlmProbeResult {
    *  is how a "verified" badge starts lying. */
   accepts_system_role?: boolean;
   supports_json?: boolean;
+  /** Chat sources, and only when the picture check reached a VERDICT: did the
+   *  model read back the number in the test picture? `true` is what lets
+   *  Recued send it pictures (a camera snapshot, a scanned page), and it is
+   *  remembered for that model. Absent ⇒ no verdict (a timeout, an empty
+   *  answer), and whatever an earlier Test proved still stands. */
+  sees_pictures?: boolean;
+  /** What the model answered when shown the test picture — shown, so a misread
+   *  is visible rather than merely called a failure. */
+  picture_answer?: string;
+  /** Why the picture check reached no verdict, or the provider's words when it
+   *  refused the picture outright. */
+  picture_detail?: string;
   /** Embeddings only, and only on success — the vector width actually
    *  returned. A model quietly serving 768-d where the owner expected 1536-d
    *  is a working connection that produces unusable neighbours. */
@@ -1655,7 +1667,9 @@ export type ServerRpcRegistry = {
       config_overlay?: Record<string, unknown>;
       [k: string]: unknown;
     },
-    { schedule: ServerSchedule }
+    /** `webhook_doors` — present when the schedule made its recipe's main
+     *  dish and that moved a webhook door (D-209). */
+    { schedule: ServerSchedule; webhook_doors?: DishWebhookDoorChange[] }
   >;
   'schedules.update': RpcMethodSpec<
     {
@@ -1715,7 +1729,9 @@ export type ServerRpcRegistry = {
       group_id?: string;
       [k: string]: unknown;
     },
-    { dish: Dish }
+    /** `webhook_doors` — present when the dish is the recipe's main one and
+     *  its settings moved a webhook door (D-209). */
+    { dish: Dish; webhook_doors?: DishWebhookDoorChange[] }
   >;
   /** D-319 — what a new dish of this recipe starts from beyond the recipe's
    *  own variable defaults: the template each `mail_template` setting holds
@@ -1724,18 +1740,6 @@ export type ServerRpcRegistry = {
   'dishes.defaults': RpcMethodSpec<
     { recipe_id: string },
     { config_overlay: Record<string, unknown> }
-  >;
-  /** D-259 §6.1 — owner promotion from a canonical chat/run-log address.
-   * The server re-reads recipe_id + config_snapshot from the terminal audit
-   * anchor; neither is accepted from the caller. Always mints a new standing
-   * dish — the recipe's main one when it is its first (D-319). */
-  'dishes.createFromRun': RpcMethodSpec<
-    {
-      run_id: string;
-      name?: string;
-      enabled?: boolean;
-    },
-    { dish: Dish }
   >;
   /** D-319 — settings change in place, from the dish's next run; the
    *  triggers narrowed to a template setting follow it. `enabled` switches
@@ -1751,12 +1755,17 @@ export type ServerRpcRegistry = {
       /** `null` detaches the dish from its group. */
       group_id?: unknown;
     },
-    { dish: Dish }
+    /** `webhook_doors` — present when the change reached the recipe's MAIN
+     *  dish settings (or made this dish main) and moved a webhook door. */
+    { dish: Dish; webhook_doors?: DishWebhookDoorChange[] }
   >;
   /** D-319 — remove a dish: its triggers, schedules and run-to-run memory
    *  go with it. Removing the main dish makes the oldest remaining one
    *  main. */
-  'dishes.delete': RpcMethodSpec<{ dish_id: string }, { deleted: true }>;
+  'dishes.delete': RpcMethodSpec<
+    { dish_id: string },
+    { deleted: true; webhook_doors?: DishWebhookDoorChange[] }
+  >;
   /** D-215 slice 5 — one dish's run history, newest first, each run with
    *  the settings it ran with (D-319).
    *
@@ -1823,7 +1832,9 @@ export type ServerRpcRegistry = {
       enabled?: boolean;
       config_overlay?: Record<string, unknown>;
     },
-    { entry: AutoRunStatusEntry }
+    /** `webhook_doors` — present when switching the recipe on made its main
+     *  dish and that moved a webhook door (D-209). */
+    { entry: AutoRunStatusEntry; webhook_doors?: DishWebhookDoorChange[] }
   >;
 
   // ── Watches (poll-manager / G6 — reactive-substrate slice 2) ─────
@@ -2414,21 +2425,6 @@ export type ServerRpcRegistry = {
    *  server; extension-local recipes call the in-process scheduler
    *  directly without pair-rpc. */
   'runtime.resetCircuit': RpcMethodSpec<{ recipe_id: string }, { ok: true; process_id: string }>;
-
-  /** D-115 Phase 6D — pair-rpc forwarder for the extension's watcher
-   *  dispatcher. The extension keeps `time-watcher`, `recipe-watcher`,
-   *  and `http-watcher` local (pure), and
-   *  forwards `mail-watcher` / `file-watcher` / `calendar-watcher` /
-   *  `webhook-watcher` here so the server can answer them off the
-   *  warehouse + webhook queue. The server runs the request through
-   *  its existing `createWatcherDispatcher`; absent deps surface as
-   *  `SERVER_NOT_REACHABLE`. `slug` typing is loose to avoid a
-   *  contracts → ingredients import; the server's switch enforces
-   *  the closed set. */
-  'runtime.runWatcher': RpcMethodSpec<
-    { slug: string; args: Record<string, unknown> },
-    Record<string, unknown> & { should_run: boolean }
-  >;
 
   /** D-119 Phase 5 — list installed recipes on the server. Backs the
    *  server-scope sidebar (`recipe.list`). Bundled + pair-sync recipes
@@ -6295,7 +6291,9 @@ export type ServerRpcRegistry = {
       watch_interval_ms?: number;
       enabled?: boolean;
     },
-    { trigger: EventTrigger }
+    /** `webhook_doors` — present when the trigger made its recipe's main
+     *  dish and that moved a webhook door (D-209). */
+    { trigger: EventTrigger; webhook_doors?: DishWebhookDoorChange[] }
   >;
   'triggers.update': RpcMethodSpec<
     {
@@ -6833,6 +6831,9 @@ export type ServerRpcRegistry = {
        * ignores it (`chat.send` copies the fields it knows), so the turn runs
        * with the ordinary tool set there. */
       read_only?: boolean;
+      /** Require current linked-mail reading before the first model answer.
+       * Implies read_only; persists with queued turns and retries. */
+      mail_work?: import('../mail-work.js').MailWorkReadRequest;
     },
     {
       turn_id: string;
@@ -7044,27 +7045,9 @@ export type ServerRpcRegistry = {
   >;
   'chat.session.brief.clear': RpcMethodSpec<{ session_id: string }, { ok: true }>;
 
-  // ── D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope ─────────
-  //
-  // Per-pair setting (NOT per-session). `get` returns the persisted
-  // scope (or the substrate default at first boot); `set` validates +
-  // persists + emits `chat.tool_catalog_scope_changed` on the
-  // broadcast bus. Per-pair only — no cross-cloud sync (per § Must
-  // Hold; D-097 / D-168).
-  'chat.tool_catalog.get': RpcMethodSpec<
-    void,
-    {
-      enabled_kinds: readonly string[];
-      updated_at: number;
-    }
-  >;
-  'chat.tool_catalog.set': RpcMethodSpec<
-    { enabled_kinds: readonly string[] },
-    {
-      enabled_kinds: readonly string[];
-      updated_at: number;
-    }
-  >;
+  // ⛔ `chat.tool_catalog.get` / `.set` (D-137 W2.2, the per-kind chat catalog
+  // scope) are RETIRED (2026-10-04): a chat is allowed what its contract grants.
+  // See `chat.ts` § D-137 W2.2.
 
   // ── D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
   //                                 annotation rpc ────────────
@@ -7979,7 +7962,6 @@ export const SERVER_RPC_METHODS = [
   'schedules.answerMissed',
   'dishes.list',
   'dishes.create',
-  'dishes.createFromRun',
   'dishes.update',
   'dishes.delete',
   'dishes.history',
@@ -8098,7 +8080,6 @@ export const SERVER_RPC_METHODS = [
   'execute',
   'runtime.testTrigger',
   'runtime.resetCircuit',
-  'runtime.runWatcher',
   'shared.write',
   'shared.compare-and-set',
   'shared.read',
@@ -8629,9 +8610,6 @@ export const SERVER_RPC_METHODS = [
   'chat.rolling_brief.set',
   'chat.session.brief.get',
   'chat.session.brief.clear',
-  // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope.
-  'chat.tool_catalog.get',
-  'chat.tool_catalog.set',
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
   // annotation. Three methods; substrate ships persisted-annotation
   // CRUD + broadcast + audit. The MCP probe wiring (which populates

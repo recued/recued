@@ -367,7 +367,6 @@ import {
   makeS2SPreviewHandlers,
   type S2SPreviewRpcDeps,
 } from './s2s-preview/handlers.js';
-import { makeWatcherRpcHandlers, type WatcherRpcDeps } from './watcher-rpc-handler.js';
 import {
   makeTriggerTestRpcHandlers,
   type TriggerTestRpcDeps,
@@ -1058,16 +1057,10 @@ export interface AttachWebSocketOptions {
   /** Phase G archive rpc deps (D-109). Enables `server.archive.*`
    *  methods — the Server → Config archive panel. */
   archiveDeps?: ArchiveRpcDeps;
-  /** D-115 Phase 6D — `runtime.runWatcher` forwarder deps. When
-   *  provided, the rpc dispatches into the watcher dispatcher; the
-   *  extension's local watcher dispatcher rpcs `mail-watcher` /
-   *  `file-watcher` / `calendar-watcher` / `webhook-watcher` here.
-   *  Absent → the rpc returns `not_configured` and the ext kernel
-   *  adapter surfaces it as `SERVER_NOT_REACHABLE` for those slugs. */
-  watcherRpcDeps?: WatcherRpcDeps;
   /** D-116 Phase 3 — `runtime.testTrigger` rpc deps. Backs the
    *  Kitchen "Test trigger" forward for warehouse-routed watchers.
-   *  Shares the same dispatcher binding as `runtime.runWatcher`. */
+   *  (`runtime.runWatcher`, the extension's watcher forwarder, was
+   *  retired 2026-10-05.) */
   triggerTestRpcDeps?: TriggerTestRpcDeps;
   /** D-119 Phase 5 — `recipe.list` rpc deps. The extension's server-
    *  scope sidebar fetches the paired server's installed-recipe roster
@@ -1555,7 +1548,7 @@ const buildWsBinding = (
     serverId, pairedInstances, pairRevokeAuditLog, accountBindingDeps, proConvenienceDeps, ddnsDeps, updateDeps, recoveryKeyCheck, recoveryVaultDeps, clientTokens, pressureDeps,
     lifecycleHandlers, lifecycleState, collectionDeps,
     auditExportDeps, triggersDeps, elementWatchDeps, autoRunDeps, watchDeps, archiveDeps,
-    watcherRpcDeps, triggerTestRpcDeps,
+    triggerTestRpcDeps,
     recipeListDeps, recipeSaveDeps, recipeRunnabilityDeps, approvalDeps, annotationDeps, contactDeps, contactMergeDeps,
     upstreamMergeDeps,
     connectionDeps,
@@ -1844,9 +1837,6 @@ const buildWsBinding = (
     makeWatchHandlers(watchDeps),
     // Phase G (D-109) — archive export/import rpc (Config → Archive).
     makeArchiveHandlers(archiveDeps).slice,
-    // D-115 Phase 6D — `runtime.runWatcher` pair-rpc forwarder for
-    // the extension's watcher dispatcher.
-    makeWatcherRpcHandlers(watcherRpcDeps),
     // D-116 Phase 3 — `runtime.testTrigger` pair-rpc forwarder for
     // Kitchen's warehouse-routed trigger-test flow.
     makeTriggerTestRpcHandlers(triggerTestRpcDeps),

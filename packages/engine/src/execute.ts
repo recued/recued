@@ -138,7 +138,7 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   const budgetMs = recipe.metadata?.budget_ms;
   if (!budgetMs || budgetMs <= 0) {
     try {
-      const result = await executeRecipeInner(ctx);
+      const result = restoreRunErrors(ctx, await executeRecipeInner(ctx));
       // An owner-abandoned run still drains its active transport, but its late
       // terminal must not fire an exchange after the caller has already
       // received `killed`.
@@ -216,9 +216,12 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
   // Never publish the inner run's exchange output after its budget expired.
   // Its only remaining job is to settle cancellation and dispose run-local PII.
   const run = executeRecipeInner(innerCtx)
-    .then((r) => budgetExpired || innerCtx.runAbortSignal?.aborted
-      ? r
-      : fireExchangeOutput(innerCtx, r))
+    .then((inner) => {
+      const r = restoreRunErrors(innerCtx, inner);
+      return budgetExpired || innerCtx.runAbortSignal?.aborted
+        ? r
+        : fireExchangeOutput(innerCtx, r);
+    })
     .finally(() => { if (ownsStore) piiStore?.dispose(); });
   try {
     const raced = await Promise.race([run, budgetSignal]);
@@ -232,6 +235,22 @@ export const executeRecipe = async (inputCtx: ExecutionContext): Promise<Executi
     if (budgetTimer) clearTimeout(budgetTimer);
     inputCtx.runAbortSignal?.removeEventListener('abort', abortFromCaller);
   }
+};
+
+/** A step's error message can quote the data it failed on — a provider rejecting a
+ *  draft addressed to `m1@d1.invalid` says so — and that data may be a `pii-protect`
+ *  alias. The run's ledger dies with the run, so its errors leave it restored, like
+ *  its rendered output (D-167 Slice 3) and the exchange it fires: in `errors` and on
+ *  each step's log, which the host hands on too. ⛔ They did not: an alias reached
+ *  the owner's run view, the audit row and a chat turn, where it names no one. */
+const restoreRunErrors = (ctx: ExecutionContext, result: ExecutionResult): ExecutionResult => {
+  const store = ctx.piiLedgerStore;
+  if (!store || (result.errors.length === 0 && !result.steps.some((step) => step.error))) return result;
+  return {
+    ...result,
+    errors: store.restoreAll(result.errors),
+    steps: result.steps.map((step) => (step.error ? { ...step, error: store.restoreAll(step.error) } : step)),
+  };
 };
 
 const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResult> => {
@@ -295,10 +314,10 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
 
   // Populate meta from recipe metadata. `recipe_id` is mirrored onto
   // `meta.recipe_id` so recipes can reference it in trigger-step /
-  // prefetch inputs — used by D-117 `calendar-watcher` to key its
-  // per-recipe cursor (see `CALENDAR_WATCHER_CURSOR_PREFIX`). Author-
-  // declared `metadata.recipe_id` wins if present (never likely; kept
-  // for forward-compatibility).
+  // prefetch inputs. (A watcher's own per-recipe state is keyed by the
+  // engine's id, never an authored one — `RECIPE_KEYED_WATCHER_SLUGS`.)
+  // Author-declared `metadata.recipe_id` wins if present (never likely;
+  // kept for forward-compatibility).
   assignOwnSafe(
     ctx.stores.meta as Record<string, unknown>,
     // `?? {}`: a malformed recipe with no `metadata` (strict validation off,
@@ -928,7 +947,9 @@ export const extractDefault = (val: unknown): unknown => {
  *  regex match. `restoreAll` short-circuits to the same value when the run never
  *  aliased anything, so the ~all recipes that don't use `pii-protect` pay
  *  nothing (no deep walk). This runs inside `executeRecipeInner`, before the
- *  run-local store is disposed (see `executeRecipe`). Mid-run egress that ACTS
+ *  run-local store is disposed (see `executeRecipe`). The other way a run hands
+ *  its result on — a fired `output.exchange` — is restored the same way in
+ *  `buildExchangeFirePayload`. Mid-run egress that ACTS
  *  on aliased data (a notify / durable-write step) is deliberately NOT covered
  *  here — that is the `missing_pii_restore` validator warning's remaining job. */
 const resolveOutputRender = (

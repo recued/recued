@@ -128,9 +128,9 @@ describe('RecipeDefinition — D-115 fields', () => {
       auto_run: { interval_ms: 60_000 },
       trigger_steps: [
         {
-          id: 'mail',
-          ingredient: 'mail-watcher',
-          input: { source: 'warehouse', filter: { label: 'urgent' } },
+          id: 'page',
+          ingredient: 'http-watcher',
+          input: { target_url: 'https://example.com/pricing' },
         },
       ],
     };

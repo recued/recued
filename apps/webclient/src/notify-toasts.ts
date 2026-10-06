@@ -85,8 +85,10 @@ export interface NotifyToastsMount {
   dismiss(id: string): void;
   /** Present another route-independent status through the same accessible
    * stack. Used by durable action-receipt invalidations; it does not turn the
-   * source event into a `notification.notify`. */
-  push(toast: { title?: string; text: string }): void;
+   * source event into a `notification.notify`. `sticky` keeps it until the
+   * owner dismisses it — for news that must not vanish unread, such as a
+   * webhook that stopped working (`webhook-door-notices.ts`). */
+  push(toast: { title?: string; text: string; sticky?: boolean }): void;
   /** Tear down: clear every timer, drop the subscription, remove the
    *  container. Idempotent. */
   dispose(): void;
@@ -302,7 +304,12 @@ export const mountNotifyToasts = (
     }
   };
 
-  const push = (title: string | undefined, text: string, link_url?: string): void => {
+  const push = (
+    title: string | undefined,
+    text: string,
+    link_url?: string,
+    sticky = false,
+  ): void => {
     if (disposed) return;
     const id = `toast-${(seq += 1)}`;
     const toast: InternalToast = {
@@ -330,7 +337,7 @@ export const mountNotifyToasts = (
         removeToastCard(evicted.id);
       }
     }
-    if (durationMs > 0) {
+    if (durationMs > 0 && !sticky) {
       armAutoDismiss(toast);
     }
     toasts.push(toast);
@@ -362,7 +369,7 @@ export const mountNotifyToasts = (
     dismiss: (id) => dismiss_(id),
     push: (toast) => {
       if (typeof toast.text !== 'string') return;
-      push(nonBlankTitle(toast.title), toast.text);
+      push(nonBlankTitle(toast.title), toast.text, undefined, toast.sticky === true);
     },
     dispose: () => {
       if (disposed) return;

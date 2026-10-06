@@ -40,6 +40,7 @@
 
 import type { IngredientKind, IngredientManifest, StepMeta } from '@recued/contracts';
 import { isKernelManifest, isLockedInputKey } from '@recued/contracts';
+import { hashStepPiiFields, restoreHashTokens } from '@recued/transforms';
 import { IngredientError, type IngredientExecutor, type ManifestLoader, type ResolvedCall } from './types.js';
 import {
   RECEPTION_LOCAL_BASE_URL,
@@ -276,8 +277,9 @@ export interface IngredientDispatchOptions {
  */
 export const createIngredientExecutor = (
   options: IngredientDispatchOptions,
-): IngredientExecutor => async (slug, stepInput, stepOutput, _stepOptions, stepMeta) => {
-  // `stepOptions` is consumed by the cache wrapper layer above, not here.
+): IngredientExecutor => async (slug, stepInput, stepOutput, stepOptions, stepMeta) => {
+  // `stepOptions` is consumed by the cache wrapper layer above, except
+  // `pii_fields`, applied below.
   // `stepMeta` (D-113 step identity, D-127 follow-on adds `recipe_id`) is
   // forwarded onto the `ResolvedCall` envelope so adapters that emit
   // per-call audit rows (kernel `mail-send`) can attribute back to the
@@ -382,6 +384,16 @@ export const createIngredientExecutor = (
     );
   }
 
+  // A step's legacy `pii_fields`: hashed HERE because this is the one place the
+  // input is resolved and not yet sent. Everything under a named key, at any depth,
+  // becomes tokens; the real values go back into whatever the adapter returns.
+  const piiHash = stepOptions?.pii_fields !== undefined && stepOptions.pii_fields.length > 0
+    ? hashStepPiiFields(resolvedInput, stepOptions.pii_fields)
+    : undefined;
+  const dispatchInput = piiHash
+    ? piiHash.data as Record<string, unknown>
+    : resolvedInput;
+
   const resolved: ResolvedCall = {
     slug: manifest.slug,
     risk_tier: riskTier,
@@ -391,14 +403,15 @@ export const createIngredientExecutor = (
     // it reviewed, which was built with the placeholders (`preapproval-execution`
     // `validateProvider`). Stripping theirs would refuse every pre-approved run.
     input: slot === 'kernel'
-      ? withoutManifestPlaceholders(resolvedInput, manifest.input, stepInput)
-      : resolvedInput,
+      ? withoutManifestPlaceholders(dispatchInput, manifest.input, stepInput)
+      : dispatchInput,
     output: mergedOutput,
     fallback: manifest.fallback,
     ...(stepMeta ? { stepMeta } : {}),
   };
 
-  return adapter(resolved);
+  if (!piiHash) return adapter(resolved);
+  return restoreHashTokens(await adapter(resolved), piiHash.mapping);
 };
 
 /** Diagnostic helper: enumerate the kinds the registry has wired

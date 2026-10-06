@@ -3057,14 +3057,111 @@ const aliasContentPass = (
   }
 };
 
+/**
+ * The whole-warehouse known-value matcher a HOST lends the recipe-mode PII functions
+ * (`pii-protect`, single-step `llm.pii_fields`) — the chat's recall resolver, by shape
+ * (`backend/server/src/chat-recall-index.ts` `RecallResolver`). Absent on a host with no
+ * warehouse (unit tests, the Kitchen simulation): a `content` tag then aliases only what the
+ * call's own identifier tags seeded.
+ */
+export interface PiiKnownValueSource {
+  /** Every contact and CRM-mirror name, org and street line, as one automaton. */
+  readonly nameOrgIndex: { readonly index: KnownValueIndex };
+  /** The identifiers present in `text`: every email, and phones that match a contact exactly. */
+  readonly resolveIdentifiers: (text: string) => readonly KnownValueIdentifierSeed[];
+  /** A seed source threw, so the match is incomplete and what it missed is unknown. */
+  readonly isDegraded: () => boolean;
+}
+
+/** The known-value match could not be completed. Raised BEFORE anything is aliased or sent:
+ *  `pii-protect` emits nothing and an `ai-*` step calls no model — the chat's rule for the same
+ *  failure (`RecallResolver.isDegraded`), since an empty seed set read through a failed store
+ *  is indistinguishable from "nothing to hide". Carries no data values. */
+export class PiiKnownValuesUnavailableError extends Error {
+  readonly code = 'pii_known_values_unavailable';
+  readonly retryable = false;
+
+  constructor() {
+    super(
+      'Recued could not read every known contact needed to protect this step\'s content, '
+      + 'so it stopped before sending it anywhere',
+    );
+    this.name = 'PiiKnownValuesUnavailableError';
+  }
+}
+
+/**
+ * D-316 amendment (2026-10-05) — a recipe's `content` tag gets the chat's known-value match
+ * for that call. Recipe PII stays authored (D-316 left recipe AI out of the chat's layer:
+ * "recipe AI is manual alias"), but a tagged `content` field was lookup-only: it hid nothing
+ * unless an identifier tag in the SAME call had seeded the value, so a Slack thread or an email
+ * body tagged `content` went out whole. Here every `content`-tagged value seeds the call's
+ * ledger exactly as the chat seeds a tool result (`aliasRecallArgs`): each string leaf through
+ * `seedKnownValuesFromContent` — the known names / orgs / street lines it contains — plus the
+ * identifiers resolved from the value's own text (every email; phones matching a contact).
+ *
+ * Seeding only: the content pass that follows replaces them, so a known value is hidden only
+ * inside the tagged fields and restores through the same ledger. Runs BETWEEN the identifier
+ * pass and the content pass, the chat's order — a tagged identifier keeps the alias number it
+ * has always had. Inert unless the call tags a present `content` value AND the host lends a
+ * source; the source is fetched only then, because building it reads the whole warehouse.
+ */
+const seedContentTagsFromKnownValues = (
+  ledger: Ledger,
+  units: readonly unknown[],
+  fields: readonly PiiFieldTag[],
+  getSource: (() => PiiKnownValueSource | undefined) | undefined,
+): void => {
+  if (getSource === undefined) return;
+  const values: unknown[] = [];
+  for (const field of fields) {
+    if (field.kind !== 'content') continue;
+    for (const unit of units) {
+      const value = getAtPath(unit, field.path);
+      if (value !== null && value !== undefined) values.push(value);
+    }
+  }
+  if (values.length === 0) return;
+  const source = getSource();
+  // ABSENCE IS NOT FAILURE: no warehouse wired is a complete match over an empty set.
+  if (source === undefined) return;
+  for (const value of values) {
+    const identifierSeeds = source.resolveIdentifiers(JSON.stringify(value) ?? '');
+    let seededIdentifiers = false;
+    walk(value, (s) => {
+      // An empty leaf seeds nothing (`seedKnownValuesFromContent` returns early), so it must
+      // not count as the leaf that carried the identifier seeds.
+      if (s.length === 0) return s;
+      seedKnownValuesFromContent(
+        ledger,
+        s,
+        source.nameOrgIndex.index,
+        seededIdentifiers ? [] : identifierSeeds,
+      );
+      seededIdentifiers = true;
+      return s;
+    });
+  }
+  // AFTER `resolveIdentifiers` (its phone lookup reads the store per value) and BEFORE the
+  // content pass writes anything — the chat's order (`aliasRecallFieldInPlace`).
+  if (source.isDegraded()) throw new PiiKnownValuesUnavailableError();
+};
+
+/**
+ * `knownValues` — the host's whole-warehouse matcher for `content`-tagged values
+ * (`seedContentTagsFromKnownValues`); the recipe-mode callers pass it, the chat egress does not
+ * (it seeds the session ledger its own way).
+ */
 export const aliasFields = (
   ledger: Ledger,
   data: PiiAliasableData,
   fields: readonly PiiFieldTag[],
   counters?: RedactionCounters,
+  knownValues?: () => PiiKnownValueSource | undefined,
 ): PiiAliasableData => {
   const clone = deepClonePacket(data) as PiiAliasableData;
   aliasIdentifierPass(ledger, clone, fields, counters);
+  seedContentTagsFromKnownValues(ledger, [clone], fields, knownValues);
   aliasContentPass(ledger, clone, fields, counters);
   return clone;
 };
@@ -3083,20 +3180,24 @@ export const aliasFields = (
  * order. Here element order can't leak: the single shared ledger is fully
  * populated before the first content scan. `fields` dot-paths are relative to
  * EACH element. Returns a new array; inputs are never mutated (deep-cloned).
+ * `knownValues` as for `aliasFields`, seeded list-wide between the two passes.
  */
 export const aliasFieldsBatch = (
   ledger: Ledger,
   items: readonly unknown[],
   fields: readonly PiiFieldTag[],
   counters?: RedactionCounters,
+  knownValues?: () => PiiKnownValueSource | undefined,
 ): unknown[] => {
   const clones = items.map((item) => deepClonePacket(item));
   // Pass 1 — identifier fields on every object element (skip strings / other).
-  for (const clone of clones) {
-    if (clone !== null && typeof clone === 'object' && !Array.isArray(clone)) {
-      aliasIdentifierPass(ledger, clone, fields, counters);
-    }
-  }
+  const objects = clones.filter(
+    (clone) => clone !== null && typeof clone === 'object' && !Array.isArray(clone),
+  );
+  for (const clone of objects) aliasIdentifierPass(ledger, clone, fields, counters);
+  // The host's known values in every element's `content` fields, list-wide like pass 1, so no
+  // element's content is scanned before the whole list has seeded.
+  seedContentTagsFromKnownValues(ledger, objects, fields, knownValues);
   // Pass 2 — content fields on object elements + bare-string elements, all
   // scanned against the now-fully-populated shared ledger.
   return clones.map((clone) => {

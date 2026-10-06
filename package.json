@@ -1,6 +1,6 @@
 {
   "name": "recued",
-  "version": "26.9.30",
+  "version": "26.10.6",
   "private": true,
   "description": "Self-hosted Recued server and webclient",
   "license": "AGPL-3.0-only",
@@ -13,7 +13,7 @@
     "url": "https://github.com/recued/recued/issues"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": "24.x"
   },
   "workspaces": [
     "apps/webclient",
@@ -74,5 +74,11 @@
   },
   "overrides": {
     "rolldown": "1.0.3"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.8.0": true,
+    "better-sqlite3-multiple-ciphers@12.11.1": true,
+    "esbuild@0.28.2": true,
+    "fsevents": false
   }
 }

@@ -48,6 +48,7 @@ import { preapprovalHref } from '../approvals/preapproval-route.js';
 import {
   describeCron,
   decodeMcpResourceUri,
+  isNotSwitchedOn,
   MCP_RESOURCE_POLL_SOURCE_ID,
 } from '@recued/contracts';
 
@@ -66,6 +67,10 @@ import {
   dishStatus,
   intervalInWords,
   rowsOfDish,
+  timerNextCheck,
+  timerNextRun,
+  timerRunsPhrase,
+  timerWaitsForData,
   whatStartsIt,
   type ConfigEditorOverlayHandle,
   type MailTemplateVariableCallers,
@@ -86,7 +91,7 @@ import {
   type ByRecipeGroup,
   type ComingUpEntry,
 } from './by-recipe.js';
-import { startsOnItsOwn } from '../recipes/running-as.js';
+import { NOT_INSTALLED_TEXT, isInstalledRecipeEntry, startsOnItsOwn } from '../recipes/running-as.js';
 import { dishFormStart, openDishForm, type DishFormMode } from '../recipes/dish-form.js';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
@@ -359,6 +364,10 @@ export interface BootstrapAutomationRouteOptions {
   /** Full `recipe.list` entries (the modal needs the recipe body for
    *  widgets/targeting). Absent → no Add affordance. */
   recipeEntriesCaller?: () => Promise<{ recipes: ServerRecipeListEntry[] }>;
+  /** The server's zone (D-269), on whose clock a timer's window opens, so a
+   *  timer's next run is its first check inside the window. Absent: this
+   *  browser's. */
+  serverTimeZone?: () => string | undefined;
   /** D-319 — what a first dish starts from (a mail template), for Switch on. */
   dishesDefaultsCaller?: (args: { recipe_id: string }) => Promise<{ config_overlay: Record<string, unknown> }>;
   /** D-319 §5.4 — the run dialog's Run tab. Absent, it said "Running is not
@@ -1697,9 +1706,17 @@ export const bootstrapAutomationRoute = (
       if (recipeEntriesRequest !== request) return;
       recipeEntriesRequest = null;
       // Repaint an open Add disclosure, the Dishes section whose Config
-      // affordances depend on recipe variable definitions, and the one list
-      // (what starts each dish; the recipes nobody switched on).
-      if (addPickerFor !== null || activeSection === 'dishes' || activeSection === 'all') render();
+      // affordances depend on recipe variable definitions, the one list
+      // (what starts each dish; the recipes nobody switched on), and every
+      // view showing a timer: its real time and next run are read from its
+      // recipe's window (2026-10-05).
+      if (
+        addPickerFor !== null
+        || activeSection === 'dishes'
+        || activeSection === 'all'
+        || activeSection === 'coming-up'
+        || activeSection === 'auto-run'
+      ) render();
     })();
     return true;
   };
@@ -1723,10 +1740,23 @@ export const bootstrapAutomationRoute = (
       })
       .sort((a, b) => a.label.localeCompare(b.label));
 
+  /** A recipe the Dishes section's Add can make a dish for: not one the
+   *  server only ships that starts on its own — that switch is refused. A
+   *  schedule or trigger runs the shipped copy, so those pickers list it. */
+  const dishable = (recipe_id: string): boolean => {
+    const entry = (recipeEntries ?? []).find((r) => r.recipe_id === recipe_id);
+    return entry === undefined || isInstalledRecipeEntry(entry) || !startsOnItsOwn(entry.recipe);
+  };
+
   const addRecipeSearch = (
     query: string,
   ): Promise<readonly RefPicker.RefPickerOption[]> =>
-    Promise.resolve(RefPicker.filterRefOptions(allRecipeOptions(), query));
+    Promise.resolve(RefPicker.filterRefOptions(
+      addPickerFor === 'dishes'
+        ? allRecipeOptions().filter((option) => dishable(option.id))
+        : allRecipeOptions(),
+      query,
+    ));
 
   const openCreateModal = (
     entry: ServerRecipeListEntry,
@@ -2334,6 +2364,42 @@ export const bootstrapAutomationRoute = (
   const autoRunRows = (): string[] =>
     autoRunItems().filter((item) => matchesStatus(item.armed)).map((item) => item.html);
 
+  /** A timer's recipe and the settings its dish runs with: what its window
+   *  is read from. */
+  const timerSubject = (a: AutoRunStatusEntry): {
+    readonly recipe: ServerRecipeListEntry['recipe'] | undefined;
+    readonly overlay: Readonly<Record<string, unknown>> | undefined;
+  } => ({
+    recipe: (recipeEntries ?? []).find((entry) => entry.recipe_id === a.recipe_id)?.recipe,
+    overlay: a.dish_id ? dishes.find((dish) => dish.dish_id === a.dish_id)?.config_overlay : undefined,
+  });
+
+  /** When a timer really runs, without the verb: "every 10 minutes from 8:00
+   *  to 9:00 AM on weekdays", "when an email labelled “urgent” arrives,
+   *  checking every minute". Its gates decide, not its interval; `null` for a
+   *  timer with none (its interval says it). */
+  const timerCadence = (a: AutoRunStatusEntry): string | null => {
+    const { recipe, overlay } = timerSubject(a);
+    if (recipe === undefined || (recipe.trigger_steps ?? []).length === 0) return null;
+    return timerRunsPhrase(recipe, a.interval_ms, overlay).replace(/^runs /, '');
+  };
+
+  /** A timer's next real run: its first check inside its window; `null` when it
+   *  waits for data (no time is its next run). */
+  const timerNext = (a: AutoRunStatusEntry): number | null => {
+    const { recipe, overlay } = timerSubject(a);
+    return timerNextRun(a, recipe, overlay, opts.serverTimeZone?.());
+  };
+
+  /** The timer's next line: its next run, or for one that waits for data, its
+   *  next check (which runs it only if there is something to run on). */
+  const timerNextMeta = (a: AutoRunStatusEntry): string => {
+    const { recipe, overlay } = timerSubject(a);
+    return recipe !== undefined && timerWaitsForData(recipe, overlay)
+      ? `next check ${formatDateTime(timerNextCheck(a, recipe, overlay, opts.serverTimeZone?.()))}`
+      : `next ${formatDateTime(timerNext(a))}`;
+  };
+
   const autoRunItems = (): RuleItem[] =>
     autoRun
       .filter((a) => matchesFilter(a.recipe_id))
@@ -2355,9 +2421,9 @@ export const bootstrapAutomationRoute = (
         titleHref: recipeHref(a.recipe_id),
         armed,
         stateLabel,
-        detail: `<span>every ${e(formatInterval(a.interval_ms))}${a.dynamic ? ' (dynamic)' : ''}</span>`,
+        detail: `<span>${e(timerCadence(a) ?? `every ${formatInterval(a.interval_ms)}`)}${a.dynamic ? ' (dynamic)' : ''}</span>`,
         meta: [
-          `next ${armed === 'on' ? formatDateTime(a.next_run_at) : '—'}`,
+          armed === 'on' ? timerNextMeta(a) : 'next —',
           `last ${formatDateTime(a.last_finished_at)}`,
         ],
         error: a.last_failure_reason,
@@ -2402,7 +2468,12 @@ export const bootstrapAutomationRoute = (
       if (matchesFilter(entry.recipe_id) && startsOnItsOwn(entry.recipe)) recipeIds.add(entry.recipe_id);
     }
     const groups = [...recipeIds].map((recipe_id): ByRecipeGroup => {
-      const recipe = (recipeEntries ?? []).find((entry) => entry.recipe_id === recipe_id)?.recipe;
+      const listed = (recipeEntries ?? []).find((entry) => entry.recipe_id === recipe_id);
+      const recipe = listed?.recipe;
+      // A recipe the server only ships is not the owner's to switch on: never
+      // "Not switched on", so its group shows only for rows of its own (made
+      // before the server refused the switch). Unlisted reads as installed.
+      const shippedOnly = listed !== undefined && !isInstalledRecipeEntry(listed) && startsOnItsOwn(listed.recipe);
       const mine = dishes.filter((dish) => dish.recipe_id === recipe_id)
         .sort((a, b) => Number(b.is_default) - Number(a.is_default) || a.created_at - b.created_at);
       const lines = mine.map((dish) => {
@@ -2414,7 +2485,7 @@ export const bootstrapAutomationRoute = (
           name: dishLineName(dish, mine.length),
           status: dishStatus(dish, rows, dishLastRuns[dish.dish_id]),
           needsYou: dishRows.some((item) => item.armed === 'waiting'),
-          startsLine: dishStartsLine(recipe ?? {}, rows.schedules),
+          startsLine: dishStartsLine(recipe ?? {}, rows.schedules, dish.config_overlay),
           lastRun: lastRunText(dish.dish_id),
           rows: dishRows.map((item) => item.html),
           busy: busy.has(dish.dish_id),
@@ -2430,8 +2501,14 @@ export const bootstrapAutomationRoute = (
         href: recipeHref(recipe_id),
         lines,
         strayRows: strays.map((item) => item.html),
-        notSwitchedOn: mine.length === 0
-          && ((recipe !== undefined && startsOnItsOwn(recipe)) || dishlessTimer !== undefined),
+        // The contracts' rule: the server's one-time notice names the recipes
+        // it matches, so the two cannot disagree.
+        notSwitchedOn: !shippedOnly && isNotSwitchedOn({
+          recipe,
+          dishes: mine.length,
+          dishlessTimer: dishlessTimer !== undefined,
+        }),
+        notInstalled: shippedOnly,
         lead: recipe !== undefined
           ? whatStartsIt(recipe)
           : dishlessTimer !== undefined ? `It runs every ${intervalInWords(dishlessTimer.interval_ms)}.` : '',
@@ -2467,12 +2544,17 @@ export const bootstrapAutomationRoute = (
     for (const a of autoRun) {
       if (!matchesFilter(a.recipe_id) || (a.dish_id ?? null) === null || !a.enabled || a.auto_disabled
         || a.next_run_at === null || !dishOn(a.dish_id ?? undefined)) continue;
+      // Its next RUN, not its next check: a window that has not opened yet
+      // runs nothing at the next check.
+      const at = timerNext(a);
+      if (at === null) continue;
+      const cadence = timerCadence(a) ?? `every ${intervalInWords(a.interval_ms)}`;
       out.push({
-        at: a.next_run_at,
+        at,
         recipe_name: nameFor(a.recipe_id),
         href: recipeHref(a.recipe_id),
         dish_name: dishOf(a.dish_id ?? undefined),
-        what: `Every ${intervalInWords(a.interval_ms)}`,
+        what: `${cadence.charAt(0).toUpperCase()}${cadence.slice(1)}`,
       });
     }
     return out;
@@ -3682,6 +3764,13 @@ export const bootstrapAutomationRoute = (
     render();
     const entry = (recipeEntries ?? []).find((r) => r.recipe_id === recipe_id);
     if (entry === undefined || autoRunConfigHandle !== null) return;
+    if (!dishable(recipe_id)) {
+      // A control painted before the list said so: the server refuses this
+      // switch, so say why here instead of opening a form it would refuse.
+      mutationErrors = { ...mutationErrors, dishes: `${nameFor(recipe_id)}: ${NOT_INSTALLED_TEXT} Install it from Packs to switch it on.` };
+      render();
+      return;
+    }
     const mine = mineNow();
     const mode: DishFormMode = mine.length > 0 ? 'add'
       : startsOnItsOwn(entry.recipe) ? 'switch-on' : 'save-settings';

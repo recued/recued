@@ -315,6 +315,9 @@ const TIER1_TO_INGREDIENT_KIND: Readonly<Record<Tier1ToolName, IngredientKind>> 
   // `recipe.run`: it reaches the local in-flight registry and the engine, never
   // a connection.
   'recipe.stop': 'storage',
+  // D-193 amendment — `recipe.schedule` writes the LOCAL schedule store, beside
+  // its two siblings. (A door is refused by the server regardless.)
+  'recipe.schedule': 'storage',
 } as const;
 
 export const inferChatInboundTokenToolKind = (
@@ -427,8 +430,7 @@ export const buildChatInboundTokenDetailModel = (args: {
   }
   // Project into the closed-list grouping order (matches
   // `INGREDIENT_KINDS` declaration order — keeps the page deterministic
-  // across renders + matches the per-kind catalog scope toggle layout
-  // in `chat-tool-catalog.ts`).
+  // across renders).
   const orderedKinds: ReadonlyArray<ChatInboundTokenGroupKind> = [
     'storage',
     'mcp',

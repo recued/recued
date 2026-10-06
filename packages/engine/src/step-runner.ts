@@ -611,6 +611,7 @@ const runTransform = (step: RecipeStep, ctx: ExecutionContext): unknown => {
     extendBudget: ctx.extendBudget,
     readEnrichmentRow: ctx.readEnrichmentRow,
     piiLedgerStore: ctx.piiLedgerStore,
+    piiKnownValues: ctx.piiKnownValues,
   }));
 };
 
@@ -879,6 +880,15 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   const piiFields = s.pii_fields as string[] | undefined;
   const stepOptions: StepOptions | undefined = ((): StepOptions | undefined => {
     const options: StepOptions = ctx.preapprovalAddressing ? { cache: 'fresh' }
+      // ⛔ The trigger phase decides whether to run NOW, so it never reads a
+      // cached answer. Its watchers read the clock and the state they keep
+      // server-side (a firing ledger, a cursor, the events already returned, a
+      // queue they drain), and a read-tier watcher was cached like any read:
+      // switched off and on within the TTL, `meeting-prep-brief` replayed its
+      // first check's "the standup is due" and briefed it again, the watcher
+      // never asked (live drive, 2026-10-05). A cached "nothing yet" hid new
+      // data for as long. Above `s.cache`: no gate is right served stale.
+      : ctx.executionPhase === 'trigger' ? { cache: 'fresh' }
       : s.cache !== undefined ? { cache: s.cache as 'fresh' | 'acceptable' | 'any' }
       // A read before a write (`step-seed.ts`) skips the host's L1 cache too.
       : typeof s.id === 'string' && ctx.readFreshSteps?.has(s.id) ? { cache: 'fresh' }
@@ -999,26 +1009,22 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   //    cannot be a static op-step. `runIngredient` as a whole is also the lowering
   //    target for ALL op-steps (`lowerOpStepRecipe` → ingredient-form). So neither
   //    this branch nor the function is removable.
-  // Auto hash_replace → ingredient → hash_restore when pii_fields is set.
-  // Only meaningful on AI ingredients — but we apply unconditionally here
-  // (non-AI ingredients just pass through hashed values, which is harmless).
-  if (Array.isArray(piiFields) && piiFields.length > 0) {
-    const hashReplace = getTransform('hash_replace');
-    const hashRestore = getTransform('hash_restore');
-    if (hashReplace && hashRestore) {
-      const tctx = createTransformContext(ctx.stores, {
-    extendBudget: ctx.extendBudget,
-    readEnrichmentRow: ctx.readEnrichmentRow,
-    piiLedgerStore: ctx.piiLedgerStore,
-  });
-      const replaced = hashReplace({ data: input, fields: piiFields }, tctx) as {
-        data: Record<string, unknown>; mapping: Record<string, string>;
-      };
-      input = replaced.data;
-      const result = await invokeGoverned(ctx, ingredientSlug, input, output, stepOptions, stepMeta);
-      return hashRestore({ data: result, mapping: replaced.mapping }, tctx);
-    }
-  }
+  // Legacy step-level `pii_fields`: carried to the dispatch (`StepOptions.
+  // pii_fields`), which hashes every value under a named key once the input is
+  // resolved and restores the result. Applied to whatever ingredient the step
+  // names (meant for AI ones).
+  //
+  // ⛔ It used to be hashed HERE, over the raw input, where a value is still a
+  // `{{ref}}`: data arriving through a ref was never looked inside
+  // (`"llm.prompt": "{{step.ctx}}"` sent `ctx.deal_name` to the model in clear),
+  // and a ref sitting under a named key was itself swapped for the token, so the
+  // call never received the data at all.
+  const piiFieldNames = Array.isArray(piiFields)
+    ? piiFields.filter((f): f is string => typeof f === 'string')
+    : [];
+  const dispatchOptions: StepOptions | undefined = piiFieldNames.length > 0
+    ? { ...stepOptions, pii_fields: piiFieldNames }
+    : stepOptions;
 
   // D-173 capstone, SECOND HALF — the same gated-args capture the catalog-form
   // branch does above, for the simple-form branch.
@@ -1039,7 +1045,7 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
   // there is no way to know in advance which fields someone needs in order to
   // approve, so the substrate lays them out rather than guessing.
   try {
-    return await invokeGoverned(ctx, ingredientSlug, input, output, stepOptions, stepMeta);
+    return await invokeGoverned(ctx, ingredientSlug, input, output, dispatchOptions, stepMeta);
   } catch (e) {
     // ⛔ THREE GUARDS, each learned by breaking something:
     //

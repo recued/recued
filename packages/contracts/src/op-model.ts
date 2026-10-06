@@ -221,9 +221,9 @@ export interface OpStep extends BaseStep {
    *  per element, carried over from the ingredient / canonical op-step. */
   foreach?: string;
   /** PII field names to hash before the op runs and restore after — the legacy
-   *  step-level shorthand for hash_replace → op → hash_restore, carried over from
-   *  the ingredient step (`IngredientStep.pii_fields`). Only meaningful on an `ai`
-   *  op; ignored elsewhere. Distinct from the contracted-function `llm.pii_fields`
+   *  step-level shorthand, hashed at dispatch over the resolved input, carried over
+   *  from the ingredient step (`IngredientStep.pii_fields`). Meant for an `ai` op;
+   *  a catalog (pack) op ignores it. Distinct from the contracted-function `llm.pii_fields`
    *  args map (path → kind) — the bare-name form is the ONLY PII shorthand the
    *  uncontracted `core.ai.prompt` / multi-data `core.ai.compare` ops support, so
    *  OpStep must carry it for those steps to keep their protection through the

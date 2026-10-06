@@ -281,14 +281,24 @@ export const buildExchangeFirePayload = (
   ctx: ExecutionContext,
   result: ExecutionResult,
 ): ExchangeFirePayload => {
-  const ref = asString(resolveValue(declared.ref, ctx.stores));
-  const deliver_to = asString(resolveValue(declared.deliver_to, ctx.stores));
+  // ⛔ What the run SENDS is restored like what it RENDERS (`resolveOutputRender`).
+  // An alias this run's `pii-protect` minted (`pii.Person1`, `m1@d1.invalid`)
+  // lives only in this run's ledger: the receiver — a peer recipe, a callback, a
+  // chat turn reading the result — has its own ledger, where the same token means
+  // nothing or someone else. This went out un-restored until 2026-10-06. Every
+  // value read from the run's stores is restored, routing included (a recipe may
+  // address a delivery from step data). The ledger is still alive here:
+  // `executeRecipe` fires before it disposes the store, on both of its paths.
+  const restore = <T>(value: T): T =>
+    ctx.piiLedgerStore ? ctx.piiLedgerStore.restoreAll(value) : value;
+  const ref = asString(restore(resolveValue(declared.ref, ctx.stores)));
+  const deliver_to = asString(restore(resolveValue(declared.deliver_to, ctx.stores)));
   const callback_op = declared.callback_op === undefined
     ? undefined
-    : asString(resolveValue(declared.callback_op, ctx.stores));
+    : asString(restore(resolveValue(declared.callback_op, ctx.stores)));
   const connection = declared.connection === undefined
     ? undefined
-    : asString(resolveValue(declared.connection, ctx.stores));
+    : asString(restore(resolveValue(declared.connection, ctx.stores)));
   // ⛔ `resolveDeep`, NOT `resolveValue`. `resolveValue` returns any non-ref
   // value UNCHANGED — so on an OBJECT it hands back the object with every
   // `{{step.*}}` inside it still a literal string. `data` is an object in every
@@ -299,7 +309,7 @@ export const buildExchangeFirePayload = (
   const require_connection = declared.require_connection === true;
   const data = declared.data === undefined
     ? undefined
-    : (resolveDeep(declared.data, ctx.stores) as Record<string, unknown>);
+    : restore(resolveDeep(declared.data, ctx.stores) as Record<string, unknown>);
 
   // ⛔ Read `success` off the RUN. Deriving the outcome from the presence of a
   // rendered output would call every failure a success, since a failed run
@@ -316,8 +326,9 @@ export const buildExchangeFirePayload = (
     ...(succeeded
       ? {}
       : (() => {
+          // A step's error message can quote the aliased data it failed on.
           const errors = result.errors.length > 0
-            ? result.errors
+            ? restore(result.errors)
             : [{ message: `Recipe '${result.recipe_id}' failed without reporting an error.` }];
           // § 21 — the classification rides WITH the errors, never instead of
           // them. `kind` is what a machine branches on; `errors` stays verbatim

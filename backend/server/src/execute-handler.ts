@@ -172,6 +172,7 @@ import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events
 import { deriveSagaPlans } from './saga-plans.js';
 import type { DishStore } from './dish-store.js';
 import type { DishContextStore } from './dish-context-store.js';
+import { httpWatcherRunOutcome, settleHttpWatcherRun } from './watchers/http-watcher-memory.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { reclaimRunScratchUnlessResumable } from './execution/run-scratch.js';
 import { mergeManifestStepInput } from '@recued/ingredients';
@@ -3939,6 +3940,26 @@ const handleExecuteInner = async (
   // bin.ts ➜ handleEnrichmentList).
   const isMcpTriggeredRecipe = request.trigger_source === 'mcp';
 
+  // ⛔⛔ FILES THIS RUN CAPTURED ITSELF. A `response_capture` op (Home
+  // Assistant's `camera.snapshot`) lands the vendor's bytes as a `data.file` and
+  // hands the run its `file_ref`; handing that ref to an `ai-*` step reads the
+  // bytes back. D-172 I-4 gates every such read on `data-file-read`, so a
+  // caller holding an `ai-*` grant cannot exfiltrate the OWNER's files by
+  // passing `{ file_ref }` — and that gate stays whole for every other file.
+  // But a picture this run just took is not the owner's existing data: the op
+  // that took it already passed this run's gate, exactly the reasoning that
+  // lets a run-scoped `temp` ref resolve ungated (D-185 §3.2). Requiring the
+  // general grant here left a webhook door — which grants only the ops its
+  // recipe names — unable to look at the picture it had just been allowed to
+  // take, and granting the door `data-file-read` instead would have let any AI
+  // step in a pushed run read ANY file, including one a crafted delivery
+  // points at. So the run remembers what IT captured (filled only by the
+  // capture path below, never by a caller), and the read of exactly those
+  // files rides the `ai-*` admission. ⚠ Per process run: a run resumed after
+  // a hold starts with an empty set, so a file captured before the hold needs
+  // the grant — fail-closed, never open.
+  const capturedFilesThisRun = new Set<string>();
+
   // D-157 P1 slice 4 — per-call admission probe. Closes over the run's
   // typed `ExecutionSource` + the manifest registry so the gateway can
   // evaluate `(channel × actor × contract_id)` for the *real* ingredient
@@ -4170,7 +4191,12 @@ const handleExecuteInner = async (
                   { d: input['llm.data'], cp: input['llm.content_parts'] },
                   stores,
                 ) as { d: unknown; cp: unknown };
-                if (resolvedAi.cp === undefined && extractFileRecordId(resolvedAi.d) !== null) {
+                const aiFileRecordId = resolvedAi.cp === undefined
+                  ? extractFileRecordId(resolvedAi.d)
+                  : null;
+                if (aiFileRecordId !== null && !capturedFilesThisRun.has(aiFileRecordId)) {
+                  // A file this run captured itself rides the `ai-*` admission
+                  // (`capturedFilesThisRun`); every other file is probed.
                   // The same fixed `data.file` scope as the mail-send case
                   // (`deriveDispatchScope` ignores the record_id for `data-file-read`,
                   // review F2.B), so one probe covers the ref.
@@ -4921,7 +4947,12 @@ const handleExecuteInner = async (
       // for this `(channel × actor × contract_id)`. `deriveDispatchScope`
       // fixes `data-file-read` to the `data.file` scope regardless of
       // `record_id` (review F2.B), so one probe covers the ref.
-      const decision = admitFileRead(DATA_FILE_READ_INGREDIENT_SLUG, { record_id });
+      // A picture this run captured itself is read on the `ai-*` admission
+      // that already passed (`capturedFilesThisRun`) — the same rule as the
+      // gateway probe above, or the two would disagree about one file.
+      const decision = capturedFilesThisRun.has(record_id)
+        ? { verdict: 'admit' as const }
+        : admitFileRead(DATA_FILE_READ_INGREDIENT_SLUG, { record_id });
       // Fail-closed on EVERY non-admit verdict (mirrors F2's three cases):
       //  - `null`  → the `data-file-read` manifest is absent (packaging /
       //    registry drift; the file collection registers off `cacheBlobs`
@@ -5400,7 +5431,16 @@ const handleExecuteInner = async (
       ...(contextRecipeSnapshot !== null ? { contextRecipeSnapshot } : {}),
       ingredientExecutor: engineExecutor,
       cliInvocationExecutor: deps.cliInvocationExecutor ?? CLI_INVOCATION_EXECUTOR,
-      ...(deps.ingestFileDownload ? { ingestFileDownload: deps.ingestFileDownload } : {}),
+      ...(deps.ingestFileDownload
+        ? {
+            // The ONLY writer of `capturedFilesThisRun`: the capture path itself.
+            ingestFileDownload: async (input: Parameters<NonNullable<ExecuteHandlerDeps['ingestFileDownload']>>[0]) => {
+              const landed = await deps.ingestFileDownload!(input);
+              capturedFilesThisRun.add(landed.record_id);
+              return landed;
+            },
+          }
+        : {}),
       ...(deps.describeUploadSource ? { describeUploadSource: deps.describeUploadSource } : {}),
       ...(deps.operationBoundWebhook
         ? { operationBoundWebhook: deps.operationBoundWebhook }
@@ -5486,6 +5526,15 @@ const handleExecuteInner = async (
             }),
           }
         : {}),
+      // D-316 amendment — a `pii-protect` step's `content` tags get the same
+      // known-value match the AI adapter gives `llm.pii_fields`: the run's ONE
+      // matcher (`run-known-values.ts`), shared with the adapter by `run_id` and
+      // released in `releaseRunResources`.
+      ...(deps.executorConfig.piiKnownValuesRuns
+        ? { piiKnownValues: deps.executorConfig.piiKnownValuesRuns.forRun(run_id) }
+        : deps.executorConfig.piiKnownValues
+          ? { piiKnownValues: deps.executorConfig.piiKnownValues }
+          : {}),
       // D-165 P0 — catalog-form gateway hooks. `connectionProfileResolver`
       // resolves the local per-connection operation profile (grants +
       // overrides); `onGatewayCall` emits the per-call `connection_gateway`
@@ -7326,6 +7375,21 @@ const handleExecuteInner = async (
         : result.awaiting_peer
           ? (checkpointId !== undefined ? 'awaiting_peer' : 'failed')
           : result.success ? 'succeeded' : 'failed';
+    // The page a `once_per_change` page watcher reported in this run becomes
+    // the one it compares against only if the run completed. A failed or
+    // skipped run leaves the change to the next check; a held run is settled
+    // by its resume, under this run id (`watchers/http-watcher-memory.ts`).
+    if (deps.db !== undefined) {
+      try {
+        settleHttpWatcherRun(deps.db, run_id,
+          httpWatcherRunOutcome(anchorCommitStatus, result.trigger_skipped === true));
+      } catch (e) {
+        console.warn(
+          `[execute-handler] page watcher memory not settled for run ${run_id}: `
+            + (e instanceof Error ? e.message : String(e)),
+        );
+      }
+    }
     // The owner reading their own data on their own client, having provably
     // dispatched nothing, earns no anchor. Fails toward auditing on every axis —
     // see `audit-exemption.ts`, whose `false` branches ARE the safety.
@@ -8158,6 +8222,10 @@ const handleExecuteInner = async (
     if (registerLiveRun) deps.inFlightRegistry!.completeRun(run_id);
     const releaseRunResources = (): void => {
       recordsExecutionLease?.release();
+      // D-316 amendment — drop the run's known-value matcher (~7 MB at 10k
+      // contacts). Also on a resumable pause: the resumed run builds a fresh one,
+      // which then sees the contacts added while it waited.
+      deps.executorConfig?.piiKnownValuesRuns?.release(run_id);
       // D-185 Slice 2 — reclaim this run's `storage:'temp'` cli output at the
       // TERMINAL run end (success, throw, killed, or pause-downgraded-to-failure).
       // Every `temp` ref the run produced lives under `runScratchRoot(run_id)`;

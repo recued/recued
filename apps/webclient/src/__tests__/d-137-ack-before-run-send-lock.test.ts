@@ -54,6 +54,7 @@ interface FakeDoc {
   listeners: Map<string, Array<(event?: unknown) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  createTextNode(text: string): FakeEl;
   addEventListener(type: string, fn: (event?: unknown) => void): void;
   removeEventListener(type: string, fn: (event?: unknown) => void): void;
 }
@@ -136,6 +137,15 @@ const makeFakeDocument = (): FakeDoc => {
       },
     },
     createElement: (tag) => makeFakeEl(tag),
+    // `renderAnswerText` paints a formatted reply (**bold**, headings) from text
+    // nodes (b41c8e0cd). A double is a closed list: without this, the first
+    // fixture reply carrying markup throws. A text node is a bare element
+    // carrying its text.
+    createTextNode: (text) => {
+      const node = makeFakeEl('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener(type, fn) {
       const list = listeners.get(type) ?? [];
       list.push(fn);

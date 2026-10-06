@@ -15,18 +15,23 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   curlFetchExact,
+  curlHeadExact,
+  etagMd5,
+  md5OfFile,
   provePublicRelease,
   publicProofSettings,
   publicProofTargets,
   sha256OfFile,
   type PublicProofExpectation,
   type PublicProofFetch,
+  type PublicProofHead,
 } from '../../scripts/release-public-proof.mjs';
 
 const ORIGIN = 'https://releases.recued.com';
 const SERVER_UA = 'recued/26.9.29 (linux-x64; binary)';
 const installerUa = (channel: string) => `recued-install/1 (linux-x64; ${channel})`;
 const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+const md5 = (bytes: string | Buffer) => createHash('md5').update(bytes).digest('hex');
 
 let scratch: string;
 beforeAll(() => { scratch = mkdtempSync(join(tmpdir(), 'public-proof-')); });
@@ -65,13 +70,17 @@ describe('publicProofTargets', () => {
     }
   });
 
-  it('asks for each artifact and its signature plainly, as the installers download them', () => {
-    expect(asked(`${ORIGIN}/artifacts/7/recued-linux-x64`)).toEqual([expect.objectContaining({
-      file: 'recued-linux-x64', headers: [], timeoutSeconds: 600,
-    })]);
-    expect(asked(`${ORIGIN}/artifacts/7/recued-linux-x64.minisig`)).toEqual([expect.objectContaining({
-      file: 'recued-linux-x64.minisig', headers: [], timeoutSeconds: 20,
-    })]);
+  it('proves each artifact and its signature by a plain HEAD, downloading only as a fallback', () => {
+    for (const file of ['recued-linux-x64', 'recued-linux-x64.minisig']) {
+      expect(asked(`${ORIGIN}/artifacts/7/${file}`)).toEqual([expect.objectContaining({
+        file, method: 'head', headers: [], timeoutSeconds: 20, fallbackTimeoutSeconds: 600,
+      })]);
+    }
+  });
+
+  it('downloads every manifest request in full: the only objects a stale cache can serve', () => {
+    expect(targets.filter((target) => target.url.endsWith('.json') || target.url.endsWith('.json.minisig'))
+      .every((target) => target.method === 'get')).toBe(true);
   });
 
   it('uses the exact URL — no cache-busting query — and nothing else', () => {
@@ -89,6 +98,7 @@ describe('provePublicRelease', () => {
         label: file,
         url: `${ORIGIN}/${file}`,
         file,
+        method: 'get',
         headers: [],
         timeoutSeconds: 20,
         expectedSize: Buffer.byteLength(body),
@@ -114,24 +124,24 @@ describe('provePublicRelease', () => {
   };
   const fresh = (dir: string) => mkdtempSync(join(dir, 'case-'));
 
-  it('passes when every response is its candidate, in one round', () => {
+  it('passes when every response is its candidate, in one round', async () => {
     const dir = fresh(scratch);
     const files = { 'manifest.json': '{"sequence":7}', 'recued-linux-x64': 'binary bytes' };
     const targets = expectations(dir, files);
     const { fetch, calls } = fakeFetch((url) => files[url.slice(ORIGIN.length + 1) as keyof typeof files]);
     const sleeps: number[] = [];
     const work = mkdtempSync(join(dir, 'work-'));
-    const result = provePublicRelease({
+    const result = await provePublicRelease({
       targets, attempts: 3, delayMs: 50, scratchDir: work, fetchExact: fetch, sleep: (ms) => sleeps.push(ms),
     });
-    expect(result).toEqual({ failures: [], attemptsUsed: 1 });
+    expect(result).toEqual({ failures: [], attemptsUsed: 1, fullDownloads: 0 });
     expect(calls).toHaveLength(2);
     expect(sleeps).toEqual([]);
     // Nothing downloaded is kept: a release is ~800 MB.
     expect(readdirSync(work)).toEqual([]);
   });
 
-  it('refetches only what failed, and passes once the edge converges', () => {
+  it('refetches only what failed, and passes once the edge converges', async () => {
     const dir = fresh(scratch);
     const files = { 'manifest.json': '{"sequence":7}', 'recued-linux-x64': 'binary bytes' };
     const targets = expectations(dir, files);
@@ -139,18 +149,18 @@ describe('provePublicRelease', () => {
       ? 'binarz bytes'
       : files[url.slice(ORIGIN.length + 1) as keyof typeof files]));
     const sleeps: number[] = [];
-    const result = provePublicRelease({
+    const result = await provePublicRelease({
       targets, attempts: 3, delayMs: 50, scratchDir: mkdtempSync(join(dir, 'work-')),
       fetchExact: fetch, sleep: (ms) => sleeps.push(ms),
     });
-    expect(result).toEqual({ failures: [], attemptsUsed: 2 });
+    expect(result).toEqual({ failures: [], attemptsUsed: 2, fullDownloads: 0 });
     expect(calls).toEqual([
       `${ORIGIN}/manifest.json`, `${ORIGIN}/recued-linux-x64`, `${ORIGIN}/recued-linux-x64`,
     ]);
     expect(sleeps).toEqual([50]);
   });
 
-  it('names every way a response can be wrong, after the last round', () => {
+  it('names every way a response can be wrong, after the last round', async () => {
     const dir = fresh(scratch);
     const targets = expectations(dir, {
       'same-size': 'abcdef',
@@ -167,7 +177,7 @@ describe('provePublicRelease', () => {
       return { status: 0, httpCode: '200' };
     });
     const sleeps: number[] = [];
-    const result = provePublicRelease({
+    const result = await provePublicRelease({
       targets, attempts: 2, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
       fetchExact: fetch, sleep: (ms) => sleeps.push(ms),
     });
@@ -181,6 +191,148 @@ describe('provePublicRelease', () => {
     });
     // A zero delay means no pause, not a zero-length one.
     expect(sleeps).toEqual([]);
+  });
+
+  it('checks up to `concurrency` targets at once, each reported against its own target', async () => {
+    const dir = fresh(scratch);
+    const files = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`f${i}`, `body ${i}`]));
+    const targets = expectations(dir, files);
+    let inFlight = 0;
+    let peak = 0;
+    const fetch: PublicProofFetch = async ({ url, destination }) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((settle) => setTimeout(settle, 20));
+      inFlight -= 1;
+      const name = url.slice(ORIGIN.length + 1);
+      writeFileSync(destination, name === 'f3' ? 'wrong!' : files[name]);
+      return { status: 0, httpCode: '200', detail: '' };
+    };
+    const result = await provePublicRelease({
+      targets, attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+      fetchExact: fetch, concurrency: 3,
+    });
+    expect(peak).toBe(3);
+    expect(result.failures.map(({ target, mismatch }) => `${target.label}: ${mismatch}`))
+      .toEqual([`f3: sha256 ${sha256('wrong!')}, expected ${sha256('body 3')}`]);
+  });
+
+  describe('a HEAD target', () => {
+    const headTarget = (dir: string, file: string, body: string): PublicProofExpectation => {
+      writeFileSync(join(dir, file), body);
+      return {
+        label: file,
+        url: `${ORIGIN}/${file}`,
+        file,
+        method: 'head',
+        headers: [],
+        timeoutSeconds: 20,
+        fallbackTimeoutSeconds: 600,
+        expectedSize: Buffer.byteLength(body),
+        expectedSha256: sha256(body),
+        expectedMd5: md5(body),
+      };
+    };
+    const head = (answer: Partial<ReturnType<PublicProofHead>>): { fn: PublicProofHead; calls: string[] } => {
+      const calls: string[] = [];
+      return {
+        calls,
+        fn: ({ url }) => {
+          calls.push(url);
+          return { status: 0, httpCode: '200', contentLength: null, etag: null, detail: '', ...answer };
+        },
+      };
+    };
+    const noDownload: PublicProofFetch = () => { throw new Error('a proven HEAD must not download'); };
+
+    it('is proven by its exact length and an ETag equal to its MD5, with nothing downloaded', async () => {
+      const dir = fresh(scratch);
+      const target = headTarget(dir, 'recued-linux-x64', 'binary bytes');
+      const { fn, calls } = head({ contentLength: 12, etag: `"${md5('binary bytes')}"` });
+      const result = await provePublicRelease({
+        targets: [target], attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+        fetchExact: noDownload, headExact: fn,
+      });
+      expect(result).toEqual({ failures: [], attemptsUsed: 1, fullDownloads: 0 });
+      expect(calls).toEqual([`${ORIGIN}/recued-linux-x64`]);
+    });
+
+    it('fails on another object\'s ETag or length, without downloading either', async () => {
+      const dir = fresh(scratch);
+      const etagWrong = headTarget(dir, 'etag-wrong', 'binary bytes');
+      const lengthWrong = headTarget(dir, 'length-wrong', 'binary bytes');
+      const fn: PublicProofHead = ({ url }) => (url.endsWith('etag-wrong')
+        ? { status: 0, httpCode: '200', contentLength: 12, etag: `"${md5('binarz bytes')}"`, detail: '' }
+        : { status: 0, httpCode: '200', contentLength: 13, etag: `"${md5('binary bytes')}"`, detail: '' });
+      const result = await provePublicRelease({
+        targets: [etagWrong, lengthWrong], attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+        fetchExact: noDownload, headExact: fn,
+      });
+      expect(Object.fromEntries(result.failures.map(({ target, mismatch }) => [target.label, mismatch]))).toEqual({
+        'etag-wrong': `etag ${md5('binarz bytes')}, expected md5 ${md5('binary bytes')}`,
+        'length-wrong': '13 bytes, expected 12',
+      });
+      expect(result.fullDownloads).toBe(0);
+    });
+
+    it.each([
+      ['a multipart upload\'s ETag', { contentLength: 12, etag: '"0123456789abcdef0123456789abcdef-2"' }],
+      ['a weak ETag', { contentLength: 12, etag: `W/"${md5('binary bytes')}"` }],
+      ['no ETag', { contentLength: 12, etag: null }],
+      ['no length', { contentLength: null, etag: `"${md5('binary bytes')}"` }],
+    ])('with %s proves nothing, so that object alone is downloaded and compared', async (_, answer) => {
+      const dir = fresh(scratch);
+      const target = headTarget(dir, 'recued-linux-x64', 'binary bytes');
+      const downloads: string[] = [];
+      const fetch: PublicProofFetch = ({ url, destination, timeoutSeconds }) => {
+        downloads.push(`${url} ${timeoutSeconds}`);
+        writeFileSync(destination, 'binary bytes');
+        return { status: 0, httpCode: '200', detail: '' };
+      };
+      const result = await provePublicRelease({
+        targets: [target], attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+        fetchExact: fetch, headExact: head(answer).fn,
+      });
+      expect(result).toEqual({ failures: [], attemptsUsed: 1, fullDownloads: 1 });
+      // Bounded like a full artifact download, not like a HEAD.
+      expect(downloads).toEqual([`${ORIGIN}/recued-linux-x64 600`]);
+    });
+
+    it('reports HTTP errors and failed requests without downloading', async () => {
+      const dir = fresh(scratch);
+      const missing = headTarget(dir, 'missing', 'x');
+      const unreachable = headTarget(dir, 'unreachable', 'x');
+      const fn: PublicProofHead = ({ url }) => (url.endsWith('missing')
+        ? { status: 0, httpCode: '404', contentLength: 9, etag: null, detail: '' }
+        : { status: 6, httpCode: '', contentLength: null, etag: null, detail: 'curl: (6) Could not resolve host' });
+      const result = await provePublicRelease({
+        targets: [missing, unreachable], attempts: 1, delayMs: 0, scratchDir: mkdtempSync(join(dir, 'work-')),
+        fetchExact: noDownload, headExact: fn,
+      });
+      expect(Object.fromEntries(result.failures.map(({ target, mismatch }) => [target.label, mismatch]))).toEqual({
+        missing: 'HTTP 404',
+        unreachable: 'fetch failed: curl: (6) Could not resolve host',
+      });
+    });
+  });
+});
+
+describe('etagMd5', () => {
+  it.each([
+    ['"d78264788b2ab95a6e40cafad87552ee"', 'd78264788b2ab95a6e40cafad87552ee'],
+    ['D78264788B2AB95A6E40CAFAD87552EE', 'd78264788b2ab95a6e40cafad87552ee'],
+    ['"d78264788b2ab95a6e40cafad87552ee-3"', null],
+    ['W/"d78264788b2ab95a6e40cafad87552ee"', null],
+    ['"abc"', null],
+    [null, null],
+  ])('reads %j as %j', (etag, expected) => {
+    expect(etagMd5(etag)).toBe(expected);
+  });
+
+  it('agrees with md5OfFile, which is what R2 reports for a single-part upload', () => {
+    const file = join(scratch, 'md5-probe');
+    writeFileSync(file, 'binary bytes');
+    expect(md5OfFile(file)).toBe(md5('binary bytes'));
   });
 });
 
@@ -224,7 +376,11 @@ describe('curlFetchExact', () => {
     const server = http.createServer((req, res) => {
       seen.push({ url: req.url, ua: req.headers['user-agent'] ?? null,
         cacheControl: req.headers['cache-control'] ?? null, pragma: req.headers['pragma'] ?? null });
-      if (req.url === '/artifact') { res.writeHead(200, { 'content-length': '5' }); res.end('bytes'); return; }
+      if (req.url === '/artifact') {
+        res.writeHead(200, { 'content-length': '5', etag: '"4b3a6218bb3e3a7303e8a171a60fcf92"' });
+        res.end('bytes');
+        return;
+      }
       if (req.url === '/moved') { res.writeHead(302, { location: '/artifact' }); res.end(); return; }
       if (req.url === '/large') { res.writeHead(200, { 'content-length': '64' }); res.end('x'.repeat(64)); return; }
       res.writeHead(404); res.end('missing');
@@ -255,16 +411,16 @@ describe('curlFetchExact', () => {
     await worker.terminate();
   });
 
-  const fetchTo = (path: string, maxBytes: number, headers: string[] = []) => {
+  const fetchTo = async (path: string, maxBytes: number, headers: string[] = []) => {
     const destination = join(scratch, `curl-${path.slice(1)}`);
     return {
       destination,
-      result: curlFetchExact({ url: `${base}${path}`, destination, maxBytes, timeoutSeconds: 10, headers }),
+      result: await curlFetchExact({ url: `${base}${path}`, destination, maxBytes, timeoutSeconds: 10, headers }),
     };
   };
 
   it('streams the exact URL to disk with the consumer\'s User-Agent and no cache bypass', async () => {
-    const { destination, result } = fetchTo('/artifact', 5, [`User-Agent: ${installerUa('stable')}`]);
+    const { destination, result } = await fetchTo('/artifact', 5, [`User-Agent: ${installerUa('stable')}`]);
     expect(result).toMatchObject({ status: 0, httpCode: '200' });
     expect(readFileSync(destination, 'utf8')).toBe('bytes');
     expect(sha256OfFile(destination)).toBe(sha256('bytes'));
@@ -274,20 +430,32 @@ describe('curlFetchExact', () => {
   });
 
   it('reports an HTTP error by its status code', async () => {
-    const { result } = fetchTo('/nowhere', 100);
+    const { result } = await fetchTo('/nowhere', 100);
     expect(result).toMatchObject({ status: 0, httpCode: '404' });
     await seen();
   });
 
   it('follows a redirect, as the installers do', async () => {
-    const { destination, result } = fetchTo('/moved', 5);
+    const { destination, result } = await fetchTo('/moved', 5);
     expect(result).toMatchObject({ status: 0, httpCode: '200' });
     expect(readFileSync(destination, 'utf8')).toBe('bytes');
     expect((await seen()).map((request) => request.url)).toEqual(['/moved', '/artifact']);
   });
 
+  it('HEADs the exact URL and reads its status, length and ETag, after a redirect too', async () => {
+    const direct = await curlHeadExact({ url: `${base}/artifact`, timeoutSeconds: 10, headers: [] });
+    expect(direct).toMatchObject({ status: 0, httpCode: '200', contentLength: 5 });
+    expect(etagMd5(direct.etag)).toBe(md5('bytes'));
+    const moved = await curlHeadExact({ url: `${base}/moved`, timeoutSeconds: 10, headers: [] });
+    expect(moved).toMatchObject({ status: 0, httpCode: '200', contentLength: 5 });
+    expect(etagMd5(moved.etag)).toBe(md5('bytes'));
+    const missing = await curlHeadExact({ url: `${base}/nowhere`, timeoutSeconds: 10, headers: [] });
+    expect(missing).toMatchObject({ status: 0, httpCode: '404' });
+    expect((await seen()).map((request) => request.url)).toEqual(['/artifact', '/moved', '/artifact', '/nowhere']);
+  });
+
   it('refuses a declared body larger than the candidate before downloading it', async () => {
-    const { result } = fetchTo('/large', 5);
+    const { result } = await fetchTo('/large', 5);
     expect(result.status).not.toBe(0);
     await seen();
   });

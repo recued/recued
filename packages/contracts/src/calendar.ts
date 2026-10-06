@@ -30,13 +30,6 @@ export const CALENDAR_EXPANSION_FUTURE_DAYS_DEFAULT = 90;
 /** Default poll cadence — calendars are low-churn; 5 min is plenty. */
 export const CALENDAR_POLL_SECONDS_DEFAULT = 300;
 
-/** `starting_soon` `minutes_ahead` default when author omits it. */
-export const CALENDAR_STARTING_SOON_DEFAULT_MINUTES = 15;
-
-/** Per-recipe cursor key prefix for the `changed_since` watcher mode.
- *  Stored in the `prefs` namespace (D-102 pair transport). */
-export const CALENDAR_WATCHER_CURSOR_PREFIX = 'calendar.watcher.';
-
 /** Default retention window (days) — events drop out of warehouse
  *  after this, independent of the sync cadence. */
 export const CALENDAR_RETENTION_DAYS_DEFAULT = 365;
@@ -199,59 +192,6 @@ export interface CalendarRecordStat {
   attendee_count?: number;
   /** Present when `exists: true`. Unix-ms UTC. */
   last_modified_at?: number;
-}
-
-// ────────────────────────────────────────────────────────────────
-// Watcher item shape
-// ────────────────────────────────────────────────────────────────
-
-/** One entry in the `items` array emitted by the `calendar-watcher`
- *  handler. Carries both unix-ms (for math / filters) and ISO 8601
- *  strings (for display) plus the `prior` version of the event so
- *  `attendee_diff` and ad-hoc diff recipes don't need a `shared.*`
- *  snapshot. */
-export interface CalendarWatcherItem {
-  source_id: string;
-  ical_uid: string;
-  calendar_id: string;
-
-  summary: string;
-  location?: string;
-  status: 'confirmed' | 'cancelled' | 'tentative';
-
-  /** Unix-ms UTC — use for math, sorting, filter gates. */
-  start_at: number;
-  /** Unix-ms UTC. */
-  end_at: number;
-
-  /** ISO 8601 with offset in the event's own timezone, e.g.
-   *  "2026-04-23T15:00:00-04:00". Derived on read — not stored. */
-  start_iso: string;
-  /** ISO 8601, same convention as `start_iso`. */
-  end_iso: string;
-  /** IANA timezone — pair with `date_format` for custom output. */
-  timezone: string;
-
-  attendees?: ReadonlyArray<{
-    email: string;
-    display_name?: string;
-    response_status:
-      | 'accepted'
-      | 'declined'
-      | 'tentative'
-      | 'needs_action';
-    is_self?: boolean;
-  }>;
-
-  /** The row's prior `record_payload`, parsed. `null` on first sync
-   *  of an event. Emitted on BOTH watcher modes so recipes can tell a
-   *  freshly-inserted event from a drifted one.
-   *
-   *  Warehouse-scoped, not recipe-scoped — if recipe A edits an event
-   *  via `calendar-update` and recipe B ticks later, B's `prior` is
-   *  the pre-A version (the warehouse's last overwrite), not recipe
-   *  B's previous sighting. Author docs must call this out. */
-  prior: CanonicalEvent | null;
 }
 
 // ────────────────────────────────────────────────────────────────

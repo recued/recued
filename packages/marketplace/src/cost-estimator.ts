@@ -26,7 +26,7 @@ import type { ResolvedPackRecipe } from './bulk-pack-resolver.js';
 /** Per-recipe input the caller assembles. The caller queries the
  *  warehouse for whatever the recipe's trigger anchors against (e.g.
  *  upcoming calendar events for time-relative-watcher recipes; recent
- *  mail for `mail-watcher` recipes) and produces a daily-fire estimate
+ *  mail for recipes a `data.mail` event starts) and produces a daily-fire estimate
  *  from that. The per-fire token estimate comes from a manifest-level
  *  hint or a default. */
 export interface PerRecipeCostInput {

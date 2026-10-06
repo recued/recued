@@ -25,7 +25,30 @@
  *  acknowledgement marker so all-channel notification failures can retry.
  *
  *  Spec: D-122 §"Kernel ingredient gap-closure" —
- *  `time-relative-watcher`. */
+ *  `time-relative-watcher`.
+ *
+ *  ⛔ Two fixes on a calendar (2026-10-05), both shown on the real calendar
+ *  stack before they were made:
+ *    - It read the 500 events with the LATEST start (the collection's
+ *      generic list, `start_at DESC`). A calendar with more than 500
+ *      upcoming occurrences in its 90-day expansion never fired for a
+ *      meeting 20 minutes away. It now reads the window of events whose
+ *      boundaries can be due, a page at a time.
+ *    - It had no lookback: installed on a calendar, it fired once for every
+ *      past occurrence in the warehouse, one per check. A boundary now fires
+ *      only if it crossed after the recipe started watching (its first check,
+ *      less `TIME_RELATIVE_FIRST_CHECK_GRACE_MS`). Downtime after that is
+ *      still caught up. Uninstall forgets the start point, so a reinstall
+ *      starts afresh (`forgetTimeRelativeWatcherRecipe`).
+ *  The task path (D-193 reminders) is unchanged: a pending reminder is an
+ *  obligation, due whenever it became due.
+ *
+ *  `instance` (2026-10-05) watches one calendar instead of every one, and
+ *  each fire names the instance its record came from (`trigger_instance`).
+ *  Three shipped recipes read the meeting's details from the calendar their
+ *  setting named (default `primary`) while the trigger watched them all: a
+ *  meeting elsewhere got no attendees, and a name no calendar has failed
+ *  every run (calendar reads refuse an unknown instance). */
 
 import type Database from 'better-sqlite3';
 import { IngredientError, type KernelTriggerOutput } from '@recued/ingredients';
@@ -35,6 +58,15 @@ import type { WorkEntityStore } from '../storage/work-entity-store.js';
 
 const STATE_TABLE = 'time_relative_watcher_state';
 const TASK_PAGE_SIZE = 500;
+/** When each recipe started watching a collection. Boundaries that crossed
+ *  before it never fire. */
+const ARMED_TABLE = 'time_relative_watcher_armed';
+/** A recipe's watch starts this long before its first check, so a boundary
+ *  that crossed in the hour before install still fires (a meeting starting in
+ *  20 minutes still gets its "30 minutes before"), and nothing older does. */
+export const TIME_RELATIVE_FIRST_CHECK_GRACE_MS = 60 * 60_000;
+/** Calendar rows are read a page at a time, so no cap can hide one. */
+const CALENDAR_PAGE_SIZE = 500;
 
 /** Records the watcher has already fired on. The compound key prevents
  *  re-fires across server restarts (state is durable) while allowing
@@ -56,10 +88,15 @@ export interface TimeRelativeWatcherArgs {
   anchor_field: string;
   offsets: string[];
   filter?: string;
+  /** Collection path: watch only this instance (a calendar's name under
+   *  Connections). Empty or absent: every instance of the platform
+   *  (2026-10-05; before, always every instance). */
+  instance?: string;
   /** Implicit — supplied by the engine on each call. */
   recipe_id: string;
-  /** Implicit — supplied by the engine on each call (per-recipe slug
-   *  for the watcher step inside `trigger_steps`). */
+  /** Keys this step's ledger and start point within the recipe. ⚠ The
+   *  engine does NOT supply it (only `recipe_id` is injected); absent, it
+   *  is `time-relative-watcher`. */
   slug?: string;
 }
 
@@ -92,6 +129,9 @@ export interface TimeRelativeWatcherOutput extends KernelTriggerOutput {
   trigger_record: Record<string, unknown> | null;
   trigger_offset: string | null;
   anchor_at: number | null;
+  /** The instance the fired record is in (a calendar's name), so the recipe
+   *  reads its details from the right calendar. Null on the task path. */
+  trigger_instance: string | null;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -111,7 +151,29 @@ export const ensureTimeRelativeWatcherSchema = (db: Database.Database): void => 
 
     CREATE INDEX IF NOT EXISTS idx_trw_recipe
       ON ${STATE_TABLE} (recipe_id, slug, fired_at DESC);
+
+    CREATE TABLE IF NOT EXISTS ${ARMED_TABLE} (
+      recipe_id    TEXT NOT NULL,
+      slug         TEXT NOT NULL,
+      armed_at     INTEGER NOT NULL,
+      scope        TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (recipe_id, slug)
+    );
   `);
+  // `scope` (the watched instance) came a commit after the table.
+  const columns = db.prepare(`PRAGMA table_info(${ARMED_TABLE})`).all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'scope')) {
+    db.exec(`ALTER TABLE ${ARMED_TABLE} ADD COLUMN scope TEXT NOT NULL DEFAULT ''`);
+  }
+};
+
+/** Drop a recipe's firing ledger and its start point. Run when the recipe is
+ *  uninstalled (`recipe-owned-state.ts`): a reinstall starts watching afresh,
+ *  instead of resuming from its first install and firing everything since. */
+export const forgetTimeRelativeWatcherRecipe = (db: Database.Database, recipe_id: string): void => {
+  ensureTimeRelativeWatcherSchema(db);
+  db.prepare(`DELETE FROM ${STATE_TABLE} WHERE recipe_id = ?`).run(recipe_id);
+  db.prepare(`DELETE FROM ${ARMED_TABLE} WHERE recipe_id = ?`).run(recipe_id);
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -186,10 +248,16 @@ export const handleTimeRelativeWatcher = async (
     trigger_record: null,
     trigger_offset: null,
     anchor_at: null,
+    trigger_instance: null,
   });
 
+  /** `floor`: boundaries that crossed before it are not fired (a collection
+   *  watch's start point; the task path passes none). `instance`: where the
+   *  record was found, handed to the recipe. */
   const evaluateRecord = (
     record: unknown,
+    floor = Number.NEGATIVE_INFINITY,
+    instance: string | null = null,
   ): TimeRelativeWatcherOutput | null => {
     const anchor = readAnchor(record, args.anchor_field);
     if (anchor === null) return null;
@@ -212,12 +280,13 @@ export const handleTimeRelativeWatcher = async (
       const targetAt = anchor + offsetMs;
       // Boundary "crossed" iff target_at is at or before now. The
       // per-`(recipe, slug, record, offset)` state table prevents
-      // double-fires across ticks + server restarts; we deliberately
-      // don't impose a lookback ceiling so a watcher installed onto
-      // an active warehouse picks up boundaries that already passed
-      // before install (the state table starts empty so each one
-      // fires exactly once).
+      // double-fires across ticks + server restarts.
+      // ⛔ And not before the recipe started watching (`floor`). Without it
+      // a watcher installed onto an active warehouse fired once for every
+      // boundary already behind it: a calendar's whole retained past, one
+      // meeting per check (2026-10-05).
       if (targetAt > now) continue;
+      if (targetAt < floor) continue;
       const recordId = readRecordId(record);
       if (!recordId) continue;
       const fired = findFiredStmt.get(args.recipe_id, slug, recordId, offsetLabel);
@@ -230,6 +299,7 @@ export const handleTimeRelativeWatcher = async (
         trigger_record: normalizeTriggerRecord(record),
         trigger_offset: offsetLabel,
         anchor_at: anchor,
+        trigger_instance: instance,
       };
     }
     return null;
@@ -305,6 +375,7 @@ export const handleTimeRelativeWatcher = async (
         trigger_record: normalizeTriggerRecord(bestReminder.record),
         trigger_offset: bestReminder.offsetLabel,
         anchor_at: bestReminder.anchor,
+        trigger_instance: null,
       };
     }
     return noFire();
@@ -334,8 +405,10 @@ export const handleTimeRelativeWatcher = async (
 
   // Walk every registered instance of the platform — most users have
   // one, but the multi-account case (two IMAP boxes, two calendars)
-  // wants a single watcher to span them.
-  const instances = deps.registry.list().filter((c) => c.platform === platform);
+  // wants a single watcher to span them — or only the one `instance` names.
+  const only = args.instance !== undefined && args.instance !== '' ? args.instance : undefined;
+  const instances = deps.registry.list()
+    .filter((c) => c.platform === platform && (only === undefined || c.slug === only));
 
   if (instances.length === 0) {
     // Collection isn't enrolled — recipe author misconfigured. Return
@@ -344,24 +417,62 @@ export const handleTimeRelativeWatcher = async (
     return noFire();
   }
 
-  // For each instance, walk recent records (cheap heuristic: list
-  // hot-field rows, then evaluate per-record). The collection's
-  // generic list method is bounded; the trigger phase tolerates a
-  // bounded scan.
+  // Where this recipe's watch starts: its first check, less the grace. It
+  // starts again when what it watches changes (another calendar named), or
+  // the newly watched calendar's past since the first install would replay.
+  const scope = only ?? '';
+  const armed = deps.db.prepare(
+    `SELECT armed_at, scope FROM ${ARMED_TABLE} WHERE recipe_id = ? AND slug = ?`,
+  ).get(args.recipe_id, slug) as { armed_at: number; scope: string } | undefined;
+  const floor = armed !== undefined && armed.scope === scope
+    ? armed.armed_at
+    : now - TIME_RELATIVE_FIRST_CHECK_GRACE_MS;
+  if (armed === undefined || armed.scope !== scope) {
+    deps.db.prepare(
+      `INSERT INTO ${ARMED_TABLE} (recipe_id, slug, armed_at, scope) VALUES (?, ?, ?, ?)
+         ON CONFLICT (recipe_id, slug) DO UPDATE SET armed_at = excluded.armed_at, scope = excluded.scope`,
+    ).run(args.recipe_id, slug, floor, scope);
+  }
+
+  // A calendar is read a page at a time. ⛔ Its generic list is the 500
+  // events with the LATEST start, so a single bounded read missed every
+  // upcoming meeting once more than 500 lay further ahead. When the anchor
+  // is the event's start or end, only events whose boundary can fall in
+  // [floor, now] are read: anchor in [floor - max(offset), now - min(offset)],
+  // which the overlap window (`start_at < before`, `end_at > from`) contains.
+  const offsetsMs = args.offsets.map(parseOffsetMs);
+  const window = platform === 'calendar'
+    && (args.anchor_field === 'start_at' || args.anchor_field === 'end_at')
+    ? { from: floor - Math.max(...offsetsMs) - 1, before: now - Math.min(...offsetsMs) + 1 }
+    : undefined;
+
   for (const collection of instances) {
+    if (platform === 'calendar') {
+      for (let offset = 0; ; offset += CALENDAR_PAGE_SIZE) {
+        const records = collection.list({
+          platform: collection.platform,
+          slug: collection.slug,
+          ...(window ? { calendar_window: window } : {}),
+          limit: CALENDAR_PAGE_SIZE,
+          offset,
+        });
+        for (const record of records) {
+          const out = evaluateRecord(record, floor, collection.slug);
+          if (out) return out;
+        }
+        if (records.length < CALENDAR_PAGE_SIZE) break;
+      }
+      continue;
+    }
+    // ⚠ Other collections keep one bounded read of recent records (no
+    // shipped recipe watches them; a mailbox can be too big to page per tick).
     const records = collection.list({
       platform: collection.platform,
       slug: collection.slug,
-      // Bounded; the watcher is intended for upcoming-soon scans.
-      // Negative offsets reach back through history but the steady-
-      // state user-flow only fires during a brief window around
-      // anchor_at; the per-record state table prevents historical
-      // re-fires after server restart.
       limit: 500,
     });
-
     for (const record of records) {
-      const out = evaluateRecord(record);
+      const out = evaluateRecord(record, floor, collection.slug);
       if (out) return out;
     }
   }
@@ -374,6 +485,13 @@ export const handleTimeRelativeWatcher = async (
 // ────────────────────────────────────────────────────────────────
 
 const validateArgs = (args: TimeRelativeWatcherArgs): void => {
+  if (args.instance !== undefined && typeof args.instance !== 'string') {
+    throw new IngredientError(
+      'BAD_INPUT',
+      `time-relative-watcher: instance must be text (got ${JSON.stringify(args.instance)})`,
+      { slug: args.slug ?? 'time-relative-watcher' },
+    );
+  }
   if (typeof args.collection !== 'string' || args.collection.length === 0) {
     throw new IngredientError(
       'BAD_INPUT',

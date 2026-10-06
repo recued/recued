@@ -27,7 +27,7 @@ describe('D-193 datetime variable → stable date-time arg schema', () => {
 
   it('keeps an optional datetime out of the required set', () => {
     const recipe = {
-      recipe_id: 'schedule-recipe',
+      recipe_id: 'send-digest-at',
       variables: {
         run_at: { label: 'Run at', type: 'datetime', optional: true, help: 'ISO 8601' },
       },

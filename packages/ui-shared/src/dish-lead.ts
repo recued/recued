@@ -8,17 +8,13 @@
  *  owner runs it. Pure, so a test needs no DOM. */
 
 import type { RecipeDefinition, RecipeEventTrigger } from '@recued/contracts';
+import { eventPatternSegments, settingOfEventSegment } from '@recued/contracts';
 
 import { humanizeFactName, withIndefiniteArticle } from './run-modal/mail-fact-trigger.js';
+import { gateArgValue } from './timer-gate-args.js';
+import { intervalInWords, timerRunsPhrase, type TimeWindowSource } from './time-window.js';
 
-/** An interval in words, as "every …" says it: "15 minutes", "hour", "2 days". */
-export const intervalInWords = (ms: number): string => {
-  const unit = (n: number, one: string): string => (n === 1 ? one : `${n} ${one}s`);
-  if (ms < 60_000) return unit(Math.max(1, Math.round(ms / 1000)), 'second');
-  if (ms < 3_600_000) return unit(Math.round(ms / 60_000), 'minute');
-  if (ms < 86_400_000) return unit(Math.round(ms / 3_600_000), 'hour');
-  return unit(Math.round(ms / 86_400_000), 'day');
-};
+export { intervalInWords };
 
 const VERB: Record<string, string> = {
   created: 'arrives',
@@ -42,19 +38,38 @@ const NOUN: ReadonlyArray<readonly [RegExp, string]> = [
   [/^record(\.|$)/, 'a record'],
 ];
 
-/** One raw bus pattern in words ("an email arrives"). */
-const rawEventInWords = (pattern: string): string => {
+/** What a setting part of a pattern names, by the kind of record. */
+const PLACE: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^data\.mail(\.|$)/, 'mailbox'],
+  [/^data\.calendar(\.|$)/, 'calendar'],
+  [/^data\.file(\.|$)/, 'folder'],
+];
+
+/** One raw bus pattern in words ("an email arrives"). A part a setting fills
+ *  (`data.file.{{config.file_slug}}.*.created`) says which one, as `settingOf`
+ *  reads it: "a file arrives in the “scans” folder", or, with none chosen,
+ *  "in the folder you choose". */
+const rawEventInWords = (pattern: string, settingOf: (setting: string) => unknown): string => {
   const vendor = /^data\.connection\.api\.([a-z0-9_-]+)\.([a-z0-9_-]+)/.exec(pattern);
   const noun = vendor !== null
     ? `a ${vendor[1]} ${vendor[2]}`
     : NOUN.find(([test]) => test.test(pattern))?.[1] ?? 'something it watches';
-  const last = pattern.split('.').at(-1) ?? '';
+  const segments = eventPatternSegments(pattern);
+  const last = segments.at(-1) ?? '';
   if (/^run(\.|$)/.test(pattern)) return last === 'failed' ? 'a run fails' : 'a run finishes';
-  return `${noun} ${VERB[last] ?? 'changes'}`;
+  const setting = segments.map(settingOfEventSegment).find((name): name is string => name !== null);
+  if (setting === undefined) return `${noun} ${VERB[last] ?? 'changes'}`;
+  const place = PLACE.find(([test]) => test.test(pattern))?.[1];
+  const value = settingOf(setting);
+  const where = typeof value === 'string' && value.length > 0
+    ? `in the “${value}”${place === undefined ? '' : ` ${place}`}`
+    : `in the ${place ?? 'one'} you choose`;
+  return `${noun} ${VERB[last] ?? 'changes'} ${where}`;
 };
 
-/** One declared trigger in words. */
-const declarationInWords = (entry: RecipeEventTrigger): string | null => {
+/** One declared trigger in words; a setting it names is read as `settingOf`
+ *  reads it. */
+const declarationInWords = (entry: RecipeEventTrigger, settingOf: (setting: string) => unknown): string | null => {
   if (entry === null || typeof entry !== 'object') return null;
   if (typeof entry.on === 'string') {
     const fact = /^mail_fact(?:\.([a-z0-9_]+))?$/.exec(entry.on);
@@ -77,20 +92,28 @@ const declarationInWords = (entry: RecipeEventTrigger): string | null => {
       ? `${/^[aeiou]/.test(thing) ? 'an' : 'a'} ${thing.replace(/_/g, ' ')} ${verb === 'changed' ? 'changes' : verb === 'created' ? 'arrives' : verb}`
       : null;
   }
-  return typeof entry.event === 'string' ? rawEventInWords(entry.event) : null;
+  return typeof entry.event === 'string' ? rawEventInWords(entry.event, settingOf) : null;
 };
 
 /** What starts the recipe, as a verb phrase: "starts when a shipment’s state
  *  changes", "runs every 15 minutes", "runs when you run it". A dish's line
- *  says it as a clause; the switch-on form as a sentence. */
+ *  says it as a clause; the switch-on form as a sentence.
+ *
+ *  A timer says when it REALLY runs (`timerRunsPhrase`): its time window ("runs
+ *  every 10 minutes from 8:00 to 9:00 AM on weekdays") or what it waits for
+ *  ("runs 30 minutes before each calendar event starts, checking every 5
+ *  minutes"), read with `overlay`, the dish's own settings (absent: the
+ *  recipe's defaults). */
 export const startPhrase = (
-  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'>,
+  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'> & TimeWindowSource,
+  overlay?: Readonly<Record<string, unknown>>,
 ): string => {
-  if (recipe.auto_run !== undefined) {
-    return `runs every ${intervalInWords(recipe.auto_run.interval_ms)}`;
-  }
+  if (recipe.auto_run !== undefined) return timerRunsPhrase(recipe, recipe.auto_run.interval_ms, overlay);
+  // A setting a trigger names, as a run of the dish reads it: its own value,
+  // else the recipe's default.
+  const settingOf = (setting: string): unknown => gateArgValue(`{{config.${setting}}}`, recipe, overlay);
   const said = [...new Set((recipe.event_triggers ?? [])
-    .map((entry) => declarationInWords(entry as RecipeEventTrigger))
+    .map((entry) => declarationInWords(entry as RecipeEventTrigger, settingOf))
     .filter((words): words is string => words !== null))];
   if (said.length === 0) return 'runs when you run it';
   return `starts when ${said.join(', or when ')}`;
@@ -98,5 +121,6 @@ export const startPhrase = (
 
 /** What starts the recipe, as one sentence ending in a full stop. */
 export const whatStartsIt = (
-  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'>,
-): string => `It ${startPhrase(recipe)}.`;
+  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'> & TimeWindowSource,
+  overlay?: Readonly<Record<string, unknown>>,
+): string => `It ${startPhrase(recipe, overlay)}.`;

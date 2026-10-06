@@ -494,9 +494,18 @@ const systemdCreds: MachineSecretProvider = {
     try {
       // Encrypting once materializes the host key if systemd has not yet, so the
       // stat below describes the file that will actually be used.
+      //
+      // ⛔ OUTPUT TO STDOUT ('-'), NEVER /dev/null. systemd-creds writes an
+      // output PATH atomically — a temp file beside it, then rename() over it —
+      // and a rename replaces a device node like any other file. Measured
+      // 2026-10-05 on Ubuntu 24.04 (systemd 255) as root: '/dev/null' here left
+      // /dev/null a regular 0644 file holding the blob, and every first boot of
+      // a root install broke apt on the host (it verifies signatures as `_apt`,
+      // which could no longer write /dev/null). stdout lands in
+      // `runWithInput`'s buffer and is dropped; the host key still materializes.
       await runWithInput(
         'systemd-creds',
-        ['encrypt', '--name=recued-probe', '--with-key=host', '-', '/dev/null'],
+        ['encrypt', '--name=recued-probe', '--with-key=host', '-', '-'],
         'probe',
         { timeout: 10_000 },
       );

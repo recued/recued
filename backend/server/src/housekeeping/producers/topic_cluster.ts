@@ -80,7 +80,9 @@ import { listCollectionDataTables } from '../../collections/table.js';
 const baseProducerVersionHash = computeProducerVersionHash({
   producer_code_hash: 'topic_cluster:1',
   model_id: '',
-  prompt_template_hash: 'topic_cluster_label_v1',
+  // v2: `ai-extract` began sending `llm.context` (LABELLING_CONTEXT) — v1 rows were
+  // labelled without it.
+  prompt_template_hash: 'topic_cluster_label_v2',
   adapter_version: '@recued/llm@1.0.0',
   consumed_ingredients_versions: [{ slug: 'ai-extract', version: '1' }],
 });
@@ -426,20 +428,34 @@ interface AiLabel {
   summary: string;
 }
 
-const isAiLabel = (v: unknown): v is AiLabel => {
-  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
-  const o = v as Record<string, unknown>;
-  if (typeof o.cluster_index !== 'number' || !Number.isFinite(o.cluster_index)) return false;
-  if (typeof o.topic_name !== 'string' || o.topic_name === '') return false;
-  if (typeof o.summary !== 'string') return false;
-  return true;
+/** A cluster index as a model hands it back. The corpus heads each block
+ *  `Cluster #0` and the context asks for the index echoed VERBATIM, so `"#0"` is as
+ *  faithful an answer as `0`. ⛔ Only `0` used to pass: the first time the context
+ *  reached a real model (qwen3.7-plus, 2026-10-06) every label came back `"#0"` and
+ *  the whole batch failed `topic_cluster_output_invalid`. */
+const clusterIndexOf = (v: unknown): number | null => {
+  if (typeof v === 'number') return Number.isInteger(v) ? v : null;
+  if (typeof v !== 'string') return null;
+  const m = /^\s*#?\s*(\d+)\s*$/.exec(v);
+  return m ? Number(m[1]) : null;
 };
 
-const isAiLabelOutput = (v: unknown): v is { labels: ReadonlyArray<AiLabel> } => {
-  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+/** The model's labels with numeric indices, or null when the shape is not one. */
+const parseAiLabels = (v: unknown): AiLabel[] | null => {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return null;
   const labels = (v as { labels?: unknown }).labels;
-  if (!Array.isArray(labels)) return false;
-  return labels.every(isAiLabel);
+  if (!Array.isArray(labels)) return null;
+  const out: AiLabel[] = [];
+  for (const label of labels) {
+    if (label === null || typeof label !== 'object' || Array.isArray(label)) return null;
+    const o = label as Record<string, unknown>;
+    const clusterIndex = clusterIndexOf(o.cluster_index);
+    if (clusterIndex === null) return null;
+    if (typeof o.topic_name !== 'string' || o.topic_name === '') return null;
+    if (typeof o.summary !== 'string') return null;
+    out.push({ cluster_index: clusterIndex, topic_name: o.topic_name, summary: o.summary });
+  }
+  return out;
 };
 
 /** Trim the AI's `topic_name` to a marketplace-friendly length. */
@@ -731,14 +747,15 @@ export const runTopicClusterCycle = async (
     },
   );
 
-  if (!isAiLabelOutput(result)) {
+  const labels = parseAiLabels(result);
+  if (labels === null) {
     throw new Error(
       'topic_cluster_output_invalid: ai-extract returned non-conformant shape',
     );
   }
 
   const labelsByIndex = new Map<number, AiLabel>();
-  for (const label of result.labels) {
+  for (const label of labels) {
     if (label.cluster_index < 0 || label.cluster_index >= clusters.length) continue;
     if (!labelsByIndex.has(label.cluster_index)) {
       labelsByIndex.set(label.cluster_index, label);

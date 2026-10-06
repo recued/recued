@@ -57,6 +57,7 @@ import {
   RUNNING_AS_ACTION_ATTR,
   RUNNING_AS_ATTR,
   RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_NOT_INSTALLED_ATTR,
   RUNNING_AS_RECIPE_ATTR,
   bootstrapRecipesRoute,
   type RecipeExecuteCaller,
@@ -377,7 +378,7 @@ describe('R24 — Recipes route: list view', () => {
         recipes: [recipeEntry('watch-mail', {
           recipe: recipeDefinition('watch-mail', {
             auto_run: { interval_ms: 60_000 },
-            trigger_steps: [{ id: 'watch', ingredient: 'mail-watcher' }],
+            trigger_steps: [{ id: 'watch', ingredient: 'http-watcher' }],
           } as unknown as Partial<RecipeDefinition>),
         })],
       })),
@@ -1110,7 +1111,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
         recipes: [recipeEntry('watch-mail', {
           recipe: recipeDefinition('watch-mail', {
             auto_run: { interval_ms: 60_000 },
-            trigger_steps: [{ id: 'watch', ingredient: 'mail-watcher' }],
+            trigger_steps: [{ id: 'watch', ingredient: 'http-watcher' }],
           } as unknown as Partial<RecipeDefinition>),
         })],
       })),
@@ -1147,7 +1148,9 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).not.toContain('data-recued-recipes-action="open-schedule"');
     expect(html).not.toContain('toggle-auto-run');
     expect(html).toContain('>Manage automation</a>');
-    expect(html).toContain('Runs every minute');
+    // Its mail watcher decides when it runs; the minute is how often it looks
+    // (2026-10-05: "do the event wording for the 14 data-gated timers too").
+    expect(html).toContain('Runs when the page it watches changes, checking every minute');
 
     clickRunningAs(rig.root, 'toggle-off', { dish_id: 'dsh_watch' });
     expect(dishesUpdateCaller).toHaveBeenCalledWith({ dish_id: 'dsh_watch', enabled: false });
@@ -1903,6 +1906,50 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(dishesDefaultsCaller).toHaveBeenCalledWith({ recipe_id: 'close-action' });
     await vi.waitFor(() => expect(settingsForm(rig.doc)?.innerHTML).toContain('Switch on “Close action”'));
     expect(autoRunUpdateCaller).not.toHaveBeenCalled();
+
+    rig.route.dispose();
+  });
+
+  it('D-319 — a recipe the server only ships offers Packs, not Switch on, on its row and its own page', async () => {
+    const bundle = 'recued-core/pipeline-response';
+    const bundled = (recipe_id: string, name: string, withAutoRun = false) => recipeDefinition(recipe_id, {
+      metadata: {
+        name,
+        description: `${name} description`,
+        author: 'recued-core',
+        supported_platforms: [],
+        tags: ['bundle'],
+        recipe_bundle: bundle,
+      },
+      ...(withAutoRun ? { auto_run: { interval_ms: 60_000, dynamic: false } } : {}),
+    });
+    const rig = mountRoute({
+      body: true,
+      initialRecipeId: 'watch-pipeline',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('watch-pipeline', { recipe: bundled('watch-pipeline', 'Watch pipeline') }),
+          recipeEntry('close-action', { recipe: bundled('close-action', 'Close action', true), source: 'bundled' }),
+        ],
+      })),
+      autoRunListCaller: vi.fn(async () => ({ entries: [] })),
+      dishesListCaller: vi.fn(async () => ({ dishes: [] })),
+      dishesCreateCaller: vi.fn(async () => ({ dish: dishOf({ recipe_id: 'close-action' }) })),
+      dishesDefaultsCaller: vi.fn(async () => ({ config_overlay: {} })),
+    });
+    await rig.route.whenLoaded();
+
+    const row = shellHtml(rig.root).match(
+      /<li data-recued-recipes-related-row="close-action">[\s\S]*?<\/li>/,
+    )?.[0] ?? '';
+    expect(row).not.toBe('');
+    expect(row).not.toContain(`${RUNNING_AS_ACTION_ATTR}="switch-on"`);
+
+    rig.route.openRecipe('close-action');
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain(RUNNING_AS_NOT_INSTALLED_ATTR));
+    const page = shellHtml(rig.root);
+    expect(page).toContain('Its pack is not installed, so it does not start on its own.');
+    expect(page).not.toContain(`${RUNNING_AS_ACTION_ATTR}="switch-on"`);
 
     rig.route.dispose();
   });

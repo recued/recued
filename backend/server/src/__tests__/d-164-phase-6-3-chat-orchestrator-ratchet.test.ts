@@ -20,7 +20,6 @@ import {
   type ChatDispatchResult,
   type ChatModelRoutingLayer,
   type ChatModelSourceId,
-  type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
   type IngredientManifest,
   type InternalToolRegistry,
@@ -145,7 +144,6 @@ const setup = (input: {
   catalog?: ReadonlyArray<ToolEntry>;
   dispatchImpl?: (name: string, args: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>;
   executeAiCall?: ExecuteChatAiCall;
-  scopeProvider?: () => ChatToolCatalogScopeState | null;
   annotationProvider?: () => ReadonlyArray<ConnectionMcpAnnotationState> | null;
   modelRouting?: { current: ChatModelRoutingLayer };
   catalogProjection?: ChatCatalogProjectionConfig;
@@ -164,7 +162,6 @@ const setup = (input: {
     mintId: mintCounter(harnessId),
     now: nextClock(),
     ...(input.executeAiCall ? { executeAiCall: input.executeAiCall } : {}),
-    ...(input.scopeProvider ? { scopeProvider: input.scopeProvider } : {}),
     ...(input.annotationProvider ? { annotationProvider: input.annotationProvider } : {}),
     ...(input.catalogProjection ? { catalogProjection: input.catalogProjection } : {}),
     ...(input.catalogProjectionForSource
@@ -310,18 +307,24 @@ describe('D-164 P6.3 routing options', () => {
 });
 
 describe('D-164 P6.3 catalog projection', () => {
-  it('applies the mechanical Tier 2 KIND gate to self catalogs', async () => {
-    // Mutation caught: mechanical exclusion logic changes or empty descriptions serialize.
-    // ⛔ D-228 slice 4 — THE TIER-3 ANNOTATION GATE IS GONE, so `peer.blocked`
-    // is no longer withheld. That is not a hole: nothing PRODUCES a tier-3
-    // entry any more (the registry projects none), so the only way one reaches
-    // this projection is a test supplying it by hand. The KIND gate, which
-    // still governs a live surface, is what this ratchet now pins.
+  it('applies NO Tier 2 kind gate — a recipe needing any kind reaches the model', async () => {
+    // Mutation caught: a kind-based withhold creeping back into the projection,
+    // or empty descriptions serializing.
+    // ⛔ D-137 W2.2 — THE PER-KIND GATE IS RETIRED (2026-10-04). This ratchet
+    // used to pin it; its default withheld every `connection` / `cli` / `dom`
+    // recipe behind a switch no screen offered. Tier-2 membership is the
+    // grant's call alone now (D-247, decided before this projection), so each
+    // kind that default left off has to reach the model here.
+    // ⛔ D-228 slice 4 — the Tier-3 annotation gate is gone too, so `peer.blocked`
+    // is not withheld; nothing PRODUCES a tier-3 entry any more (the registry
+    // projects none), so only a test supplying one by hand reaches this.
     const calls: CapturedAiCall[] = [];
     const executeAiCall = mkExecuteAiCall([{ body: aiOutput('ok') }], calls);
     const catalog = [
       mkTool('tier1.always', 1),
-      mkTool('recipe.blocked', 2, { requires_kinds: ['dom'] }),
+      mkTool('recipe.dom', 2, { requires_kinds: ['dom'] }),
+      mkTool('recipe.connection', 2, { requires_kinds: ['connection'] }),
+      mkTool('recipe.cli', 2, { requires_kinds: ['cli'] }),
       mkTool('recipe.allowed', 2, { requires_kinds: ['http'] }),
       mkTool('peer.blocked', 3),
       mkTool('peer.allowed', 3, { description: '' }),
@@ -331,14 +334,9 @@ describe('D-164 P6.3 catalog projection', () => {
       topic_tags: [],
       updated_at: 1,
     }];
-    const scopeProvider = (): ChatToolCatalogScopeState => ({
-      enabled_kinds: ['http'],
-      updated_at: 1,
-    });
     const { orchestrator, sessionId } = setup({
       catalog,
       executeAiCall,
-      scopeProvider,
       annotationProvider,
     });
 
@@ -353,6 +351,9 @@ describe('D-164 P6.3 catalog projection', () => {
     ).available_tools;
     expect(tools.map((tool) => tool.recipe_slug)).toEqual([
       'tier1.always',
+      'recipe.dom',
+      'recipe.connection',
+      'recipe.cli',
       'recipe.allowed',
       'peer.blocked',
       'peer.allowed',
@@ -466,15 +467,15 @@ describe('D-164 P6.3 catalog projection', () => {
     expect(bySlug(tools, 'tier1.always').description).toBe(longDesc);
   });
 
-  it('is presentation-only — index mode preserves BOTH the kind and Tier-3 annotation gates', async () => {
-    // Mutation caught: index mode resurrecting a gated entry, OR a
-    // mode-conditional skip of EITHER gate (kind on Tier-2, MCP annotation
-    // on Tier-3). Authorization must not change with the delivery mode —
-    // only the arg_schema presentation does. Mirrors the full-mode gate
-    // ratchet above, run under `{ mode: 'index' }`.
+  it('is presentation-only — index mode keeps the same entries, only leaning Tier-2', async () => {
+    // Mutation caught: index mode dropping or resurrecting an entry, i.e. a
+    // mode-conditional membership rule. Authorization must not change with the
+    // delivery mode — only the arg_schema presentation does. Mirrors the
+    // full-mode ratchet above, run under `{ mode: 'index' }`: the recipe needing
+    // `dom` (a kind the retired per-kind default withheld) stays, leaned.
     const catalog: ReadonlyArray<ToolEntry> = [
       mkTool('tier1.always', 1),
-      mkTool('recipe.blocked', 2, { requires_kinds: ['dom'] }),
+      mkTool('recipe.dom', 2, { requires_kinds: ['dom'] }),
       mkTool('recipe.allowed', 2, { requires_kinds: ['http'] }),
       mkTool('peer.blocked', 3),
       mkTool('peer.allowed', 3),
@@ -489,10 +490,6 @@ describe('D-164 P6.3 catalog projection', () => {
     const { orchestrator, sessionId } = setup({
       catalog,
       executeAiCall,
-      scopeProvider: (): ChatToolCatalogScopeState => ({
-        enabled_kinds: ['http'],
-        updated_at: 1,
-      }),
       annotationProvider,
       catalogProjection: { mode: 'index' },
     });
@@ -503,15 +500,16 @@ describe('D-164 P6.3 catalog projection', () => {
     });
     const tools = promptBody<{ available_tools: Array<Record<string, unknown>> }>(calls[0]!)
       .available_tools;
-    // Both gates applied identically to full mode: kind drops recipe.blocked,
-    // annotation drops peer.blocked.
+    // The same entries as full mode, in the same order.
     expect(tools.map((tool) => tool.recipe_slug)).toEqual([
       'tier1.always',
+      'recipe.dom',
       'recipe.allowed',
       'peer.blocked',
       'peer.allowed',
     ]);
-    // Only the surviving Tier-2 entry is leaned; Tier-1 + Tier-3 stay full.
+    // Every Tier-2 entry is leaned; Tier-1 + Tier-3 stay full.
+    expect(bySlug(tools, 'recipe.dom')).not.toHaveProperty('args_schema');
     expect(bySlug(tools, 'recipe.allowed')).not.toHaveProperty('args_schema');
     expect(bySlug(tools, 'tier1.always')).toHaveProperty('args_schema', { type: 'object' });
     expect(bySlug(tools, 'peer.allowed')).toHaveProperty('args_schema', { type: 'object' });
@@ -531,22 +529,19 @@ describe('D-164 P6.3 catalog projection', () => {
     expect(bySlug(tools, 'peer.tool')).toHaveProperty('args_schema', { type: 'object' });
   });
 
-  it('is presentation-only — lean-core still applies the Tier-3 annotation gate (then drops all Tier-2)', async () => {
+  it('is presentation-only — lean-core drops all Tier-2 and leaves every other tier', async () => {
     // Mirror of the index gate ratchet under `{ mode: 'lean-core' }`.
     // ⛔ D-228 slice 4 — what this used to prove (the Tier-3 annotation gate
     // drops peer.blocked) is gone with that gate; nothing produces a tier-3
     // entry any more. What it still proves is that lean-core is
     // PRESENTATION-ONLY: it drops every Tier-2 while leaving Tier-1 and any
-    // other tier untouched. The
-    // Tier-2 KIND gate is subsumed here — lean-core drops recipe.blocked AND
-    // recipe.allowed regardless of kind, so the projection can't distinguish a
-    // kind-gate skip. The authorization-relevant Tier-2 kind gate is the SEARCH
-    // corpus (a kind-disabled recipe must stay non-rediscoverable), covered
-    // mode-independently in chat-tools-search.test.ts. Authorization is
-    // identical across modes.
+    // other tier untouched, whatever kind a recipe needs (the per-kind gate
+    // is retired — D-137 W2.2). Recipes stay discoverable through the SEARCH
+    // corpus, whose membership is pinned in chat-tools-search.test.ts.
+    // Authorization is identical across modes.
     const catalog: ReadonlyArray<ToolEntry> = [
       mkTool('tier1.always', 1),
-      mkTool('recipe.blocked', 2, { requires_kinds: ['dom'] }),
+      mkTool('recipe.dom', 2, { requires_kinds: ['dom'] }),
       mkTool('recipe.allowed', 2, { requires_kinds: ['http'] }),
       mkTool('peer.blocked', 3),
       mkTool('peer.allowed', 3),
@@ -561,10 +556,6 @@ describe('D-164 P6.3 catalog projection', () => {
     const { orchestrator, sessionId } = setup({
       catalog,
       executeAiCall,
-      scopeProvider: (): ChatToolCatalogScopeState => ({
-        enabled_kinds: ['http'],
-        updated_at: 1,
-      }),
       annotationProvider,
       catalogProjection: { mode: 'lean-core' },
     });
@@ -575,9 +566,8 @@ describe('D-164 P6.3 catalog projection', () => {
     });
     const tools = promptBody<{ available_tools: Array<Record<string, unknown>> }>(calls[0]!)
       .available_tools;
-    // The kind gate applies identically to full mode, THEN every Tier-2 (incl.
-    // the kind-allowed recipe.allowed) is dropped by lean-core. Tier-3 entries
-    // pass through — no gate withholds them, and nothing produces them either.
+    // Every Tier-2 is dropped by lean-core, whatever kind it needs. Tier-3
+    // entries pass through — no gate withholds them, and nothing produces them.
     expect(tools.map((tool) => tool.recipe_slug))
       .toEqual(['tier1.always', 'peer.blocked', 'peer.allowed']);
     expect(bySlug(tools, 'tier1.always')).toHaveProperty('args_schema', { type: 'object' });

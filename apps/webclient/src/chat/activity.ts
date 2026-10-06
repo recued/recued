@@ -37,6 +37,7 @@ import {
   validateTransparencyEvent,
   type ChatMessage,
   type ChatToolCall,
+  type ChatToolCallRecord,
   type TransparencyEvent,
   type TransparencyStreamSettings,
 } from '@recued/contracts';
@@ -56,7 +57,6 @@ export type ChatActivityRow =
        * carry these; in-flight projections simply omit them. */
       run_id?: string;
       dish_id?: string;
-      dish_promotable?: true;
     };
 
 /** Both the ephemeral `InFlightToolCall` and the authoritative
@@ -70,7 +70,6 @@ type ToolCallLike = Pick<
   | 'detail'
   | 'run_id'
   | 'dish_id'
-  | 'dish_promotable'
 >;
 
 /** D-182 — a compact one-line form of a (possibly long / multi-line) error detail
@@ -97,14 +96,39 @@ const toolCallText = (call: ToolCallLike): string => {
   return `couldn't run ${call.tool_name}: ${why}`;
 };
 
-const toolCallRow = (call: ToolCallLike): ChatActivityRow => ({
-  kind: 'tool',
-  text: toolCallText(call),
-  status: call.status,
-  ...(call.run_id !== undefined ? { run_id: call.run_id } : {}),
-  ...(call.dish_id !== undefined ? { dish_id: call.dish_id } : {}),
-  ...(call.dish_promotable === true ? { dish_promotable: true as const } : {}),
-});
+/** A call that stopped to wait reads as what it is NOW, not as the "✓" its
+ *  turn ended on: the dispatch itself succeeded (it queued), so the persisted
+ *  status is `ok` whether the run later finished, was refused or never came
+ *  back. `null` ⇒ the ordinary row is already true (it finished, or nothing is
+ *  known about a wait). */
+const waitedCallRow = (
+  call: ToolCallLike,
+  record: ChatToolCallRecord | undefined,
+): Pick<ChatActivityRow & { kind: 'tool' }, 'text' | 'status'> | null => {
+  if (record === undefined || (record.held_at === undefined && record.state !== 'held')) return null;
+  switch (record.state) {
+    case 'held': return { text: `waiting to hear back: ${call.tool_name}`, status: 'started' };
+    case 'running': return { text: `running ${call.tool_name} again...`, status: 'started' };
+    case 'failed': return record.denied === true
+      ? { text: `didn't run ${call.tool_name}: you said no`, status: 'error' }
+      : { text: `couldn't run ${call.tool_name}: it did not finish`, status: 'error' };
+    case 'interrupted': return {
+      text: `stopped part-way: ${call.tool_name}. Recued does not know what happened`, status: 'error',
+    };
+    case 'succeeded': return null;
+  }
+};
+
+const toolCallRow = (call: ToolCallLike, record?: ChatToolCallRecord): ChatActivityRow => {
+  const waited = waitedCallRow(call, record);
+  return {
+    kind: 'tool',
+    text: waited?.text ?? toolCallText(call),
+    status: waited?.status ?? call.status,
+    ...(call.run_id !== undefined ? { run_id: call.run_id } : {}),
+    ...(call.dish_id !== undefined ? { dish_id: call.dish_id } : {}),
+  };
+};
 
 /** Project one scaffold transparency payload into its narrative line,
  *  or null for drop cases. Three payload shapes reach the scaffold:
@@ -188,7 +212,33 @@ export const projectInFlightActivity = (
  *  turns that dispatched nothing. */
 export const projectMessageActivity = (
   message: ChatMessage,
+  records?: Readonly<Record<string, ChatToolCallRecord>>,
 ): ChatActivityRow[] => {
   if (message.role !== 'assistant') return [];
-  return (message.tool_calls ?? []).map(toolCallRow);
+  return (message.tool_calls ?? []).map((call) =>
+    toolCallRow(call, call.run_id !== undefined ? records?.[call.run_id] : undefined));
+};
+
+/** One plain sentence per call this message made that waited and has since
+ *  settled — under the answer, because the answer itself still says "queued"
+ *  and nothing else on the page would say otherwise. Needs `held_at`: a call
+ *  that never waited needs no update, and its ✓ is already the truth. */
+export const projectSettledCallNotices = (
+  message: ChatMessage,
+  records: Readonly<Record<string, ChatToolCallRecord>> | undefined,
+): Array<{ run_id: string; text: string }> => {
+  if (message.role !== 'assistant' || records === undefined) return [];
+  return (message.tool_calls ?? []).flatMap((call) => {
+    const record = call.run_id !== undefined ? records[call.run_id] : undefined;
+    if (call.run_id === undefined || record === undefined || record.held_at === undefined) return [];
+    const text = record.state === 'succeeded' ? `Update: ${call.tool_name} has now finished.`
+      : record.state === 'failed'
+        ? record.denied === true
+          ? `Update: you said no, so ${call.tool_name} did not run.`
+          : `Update: ${call.tool_name} did not finish.`
+        : record.state === 'interrupted'
+          ? `Update: ${call.tool_name} stopped part-way. Recued does not know what happened.`
+          : null;
+    return text === null ? [] : [{ run_id: call.run_id, text }];
+  });
 };

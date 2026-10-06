@@ -28,7 +28,7 @@ describe('handleTestTrigger — request validation', () => {
     await expect(
       handleTestTrigger(
         { watcherDispatcher: dispatcher },
-        { step_id: 's', ingredient: 'mail-watcher', dry_run: true, resolved_input: {} },
+        { step_id: 's', ingredient: 'time-watcher', dry_run: true, resolved_input: {} },
       ),
     ).rejects.toMatchObject({ name: 'RpcError', code: 'bad_request' });
   });
@@ -46,7 +46,7 @@ describe('handleTestTrigger — request validation', () => {
     await expect(
       handleTestTrigger(
         { watcherDispatcher: dispatcher },
-        { recipe_id: 'r', step_id: 's', ingredient: 'mail-watcher', dry_run: false, resolved_input: {} },
+        { recipe_id: 'r', step_id: 's', ingredient: 'time-watcher', dry_run: false, resolved_input: {} },
       ),
     ).rejects.toMatchObject({ name: 'RpcError', code: 'bad_request' });
   });
@@ -55,7 +55,7 @@ describe('handleTestTrigger — request validation', () => {
     await expect(
       handleTestTrigger(
         { watcherDispatcher: dispatcher },
-        { recipe_id: 'r', step_id: 's', ingredient: 'mail-watcher', dry_run: true, resolved_input: null },
+        { recipe_id: 'r', step_id: 's', ingredient: 'time-watcher', dry_run: true, resolved_input: null },
       ),
     ).rejects.toMatchObject({ name: 'RpcError', code: 'bad_request' });
   });
@@ -73,22 +73,22 @@ describe('handleTestTrigger — dispatch', () => {
         now: () => 1_500_000_000_000,
       },
       {
-        recipe_id: 'mail-reactive',
+        recipe_id: 'hours-reactive',
         step_id: 'gate',
-        ingredient: 'mail-watcher',
+        ingredient: 'time-watcher',
         dry_run: true,
         resolved_input: { slug: 'inbox', since: 1000 },
       },
     );
-    expect(res.recipe_id).toBe('mail-reactive');
+    expect(res.recipe_id).toBe('hours-reactive');
     expect(res.step_id).toBe('gate');
-    expect(res.ingredient).toBe('mail-watcher');
+    expect(res.ingredient).toBe('time-watcher');
     expect(res.should_run).toBe(true);
     expect(res.output).toEqual({ should_run: true, items: [{ id: 1 }] });
     expect(res.cached).toBe(false);
     expect(res.at).toBe(1_500_000_000_000);
     expect(dispatcher).toHaveBeenCalledWith({
-      slug: 'mail-watcher',
+      slug: 'time-watcher',
       args: { slug: 'inbox', since: 1000 },
     });
   });
@@ -100,16 +100,16 @@ describe('handleTestTrigger — dispatch', () => {
       {
         recipe_id: 'r',
         step_id: 's',
-        ingredient: 'http-watcher',
+        ingredient: 'time-watcher',
         dry_run: true,
         resolved_input: {
-          target_url: 'https://example.com',
+          slug: 'inbox',
           api_key: { redacted: true, length: 32 },
         },
       },
     );
     expect(res.inputs_received).toEqual({
-      target_url: 'https://example.com',
+      slug: 'inbox',
       api_key: { redacted: true, length: 32 },
     });
   });
@@ -118,8 +118,8 @@ describe('handleTestTrigger — dispatch', () => {
     const dispatcher = mkDispatcher(async () => {
       throw new IngredientError(
         'SERVER_NOT_REACHABLE',
-        'calendar not configured',
-        { slug: 'calendar-watcher' },
+        'mail not configured',
+        { slug: 'time-watcher' },
       );
     });
     await expect(
@@ -128,7 +128,7 @@ describe('handleTestTrigger — dispatch', () => {
         {
           recipe_id: 'r',
           step_id: 's',
-          ingredient: 'calendar-watcher',
+          ingredient: 'time-watcher',
           dry_run: true,
           resolved_input: { slug: 'primary' },
         },
@@ -136,7 +136,7 @@ describe('handleTestTrigger — dispatch', () => {
     ).rejects.toMatchObject({
       name: 'RpcError',
       code: 'service_unavailable',
-      message: expect.stringContaining('runtime.testTrigger[calendar-watcher]'),
+      message: expect.stringContaining('runtime.testTrigger[time-watcher]'),
     });
   });
 
@@ -188,5 +188,33 @@ describe('makeTriggerTestRpcHandlers', () => {
     );
     expect(res.recipe_id).toBe('r');
     expect(res.at).toBe(42);
+  });
+});
+
+/** ⛔ A TEST FIRE IS NOT DRY FOR A WATCHER THAT KEYS PER-RECIPE STATE
+ *  (2026-10-05). `runtime.testTrigger` dispatched whatever watcher and args the
+ *  client sent. Naming another recipe's id drained THAT recipe's webhook queue
+ *  (the watcher, since retired): the read-and-destroy D-228 fenced on
+ *  `runtime.runWatcher`, open here. A test of a time-relative step also
+ *  advanced the real firing ledger, despite `dry_run: true`. The same set is
+ *  refused, before dispatch. */
+describe('recipe-keyed watchers are refused, before dispatch', () => {
+  const testFire = (dispatcher: WatcherDispatcher, ingredient: string, resolved_input: Record<string, unknown>) =>
+    handleTestTrigger({ watcherDispatcher: dispatcher }, {
+      recipe_id: 'kitchen-recipe', step_id: 's', ingredient, dry_run: true, resolved_input,
+    });
+
+  it.each(['time-relative-watcher', 'http-watcher'])('⛔ refuses %s — it keys state by recipe', async (slug) => {
+    const dispatcher = vi.fn(async () => ({ should_run: false }));
+    await expect(testFire(mkDispatcher(dispatcher), slug, { recipe_id: 'victim-recipe' }))
+      .rejects.toThrow(/engine-owned recipe identity/);
+    expect(dispatcher).not.toHaveBeenCalled();
+  });
+
+  it('…while a stateless watcher still test-fires', async () => {
+    const dispatcher = vi.fn(async () => ({ should_run: true }));
+    const res = await testFire(mkDispatcher(dispatcher), 'time-watcher', { start_hour: 8, end_hour: 9 });
+    expect(res.should_run).toBe(true);
+    expect(dispatcher).toHaveBeenCalled();
   });
 });

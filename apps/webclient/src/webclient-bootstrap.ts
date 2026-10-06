@@ -618,6 +618,10 @@ import {
   type NotifyToastsMount,
 } from './notify-toasts.js';
 import {
+  withWebhookDoorNotices,
+  type WebhookDoorToast,
+} from './webhook-door-notices.js';
+import {
   ACTION_RECEIPT_DELIVERY_STORAGE_KEY,
   followActionReceipts,
   type ActionReceiptFollow,
@@ -3060,10 +3064,13 @@ export const bootstrapWebclient = async (
     }
     subscriber.dispatch(message);
   });
-  const rpcConn: WebclientRpcConn<ServerRpcRegistry> = createWebclientRpcConn({
-    ws,
-    connectionStatus,
-  });
+  // D-209 — every rpc that can move a recipe's webhook door announces it,
+  // whichever screen called it (`webhook-door-notices.ts`). The toast stack
+  // mounts further down; it is read when a result arrives.
+  const rpcConn: WebclientRpcConn<ServerRpcRegistry> = withWebhookDoorNotices(
+    createWebclientRpcConn({ ws, connectionStatus }),
+    (toast) => presentWebhookDoor(toast),
+  );
   // A self-`pair.revoke` intentionally closes this session. Keep that known
   // retirement out of the generic rejected-credential recovery funnel: the
   // Account action owns revoke → durable local removal → reload. If the
@@ -3163,6 +3170,12 @@ export const bootstrapWebclient = async (
   //      once into <head>, marker-guarded.
   let notifyToasts: NotifyToastsMount | null = null;
   let actionReceiptFollow: ActionReceiptFollow | null = null;
+  // D-209 — a webhook door a dish save moved (`webhook-door-notices.ts`): the
+  // same accessible stack, kept until dismissed. Read through the binding, so a
+  // boot with toasts turned off presents nothing.
+  const presentWebhookDoor = (toast: WebhookDoorToast): void => {
+    notifyToasts?.push(toast);
+  };
   if (options.enableNotifyToasts !== false) {
     if (
       doc.head !== undefined
@@ -3310,7 +3323,7 @@ export const bootstrapWebclient = async (
   };
   let pendingChatRecovery = options.reauthRecovery;
   let pendingChatFile: { hash: string; file: import('@recued/contracts').FileAttachmentSelection } | undefined;
-  let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean } | undefined;
+  let pendingWorkPrompt: { hash: string; prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest } | undefined;
   const navigateHash = (hash: string): void => {
     if (hashSource?.setHash !== undefined) {
       hashSource.setHash(hash);
@@ -9625,7 +9638,7 @@ export const bootstrapWebclient = async (
   const mountRoute = (
     route: WebclientRouteId,
     chatFile?: import('@recued/contracts').FileAttachmentSelection,
-    workPrompt?: { prompt: string; repeat?: boolean },
+    workPrompt?: { prompt: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest },
   ): RecoveryContextProbe & {
     update?: () => void;
     dispose: () => void;
@@ -10896,6 +10909,8 @@ export const bootstrapWebclient = async (
         (args) => rpcConn.call('triggers.create', args);
       return withTrackedServerSwitchWork(bootstrapAutomationRoute({
         root: appShell.contentRoot,
+        // A timer's window opens on the server's clock (D-269).
+        serverTimeZone: getServerTimeZone,
         ...(options.document !== undefined ? { document: options.document } : {}),
         preapprovalPrepareCaller: switchWorkTracker.track(request => rpcConn.call('preapproval.prepare', request)),
         onPreapprovalPrepared: result => {
@@ -11192,7 +11207,7 @@ export const bootstrapWebclient = async (
           ? { initialRecoveryDraft: chatRecovery }
           : workPrompt !== undefined && chatSessionId !== undefined ? {
             initialRecoveryDraft: { text: workPrompt.prompt, protected: true, modelSourceId: null },
-            initialWorkSubmission: { sessionId: chatSessionId, message: workPrompt.prompt, repeat: workPrompt.repeat },
+            initialWorkSubmission: { sessionId: chatSessionId, message: workPrompt.prompt, repeat: workPrompt.repeat, mailWork: workPrompt.mailWork },
           } : {}),
         // Shell-frame Step 4 — the [✎ Create] composer overlay reuses the
         // compose route's local-write callers.
@@ -12315,9 +12330,9 @@ export const bootstrapWebclient = async (
             search: args => rpcConn.call('mail.work.search', args),
             openChat: args => rpcConn.call('chat.session.create', args),
           },
-          explore: ({ sessionId, prompt, repeat, replace }) => {
+          explore: ({ sessionId, prompt, repeat, replace, mailWork }) => {
             const hash = serializeChatSessionAddress({ sessionId });
-            pendingWorkPrompt = prompt === undefined ? undefined : { hash, prompt, repeat };
+            pendingWorkPrompt = prompt === undefined ? undefined : { hash, prompt, repeat, mailWork };
             if (replace === true) navigateHashInPlace(hash);
             else navigateHash(hash);
           },
@@ -14178,9 +14193,6 @@ export const bootstrapWebclient = async (
     });
   });
 
-  // 6. Auto-connect the ws-client (DD#3).
-  await ws.connect();
-
   // 6.6. § A.6.5 / slice 114 — cert-pin overlap panel polling tick
   //      (DD#10). When a watcher is constructed (default-on production
   //      composition), schedule a recurring timer that calls
@@ -14371,6 +14383,11 @@ export const bootstrapWebclient = async (
   if (typeof beforeUnloadView?.addEventListener === 'function') {
     beforeUnloadView.addEventListener('beforeunload', onBeforeUnload);
   }
+
+  // Auto-connect only after installing navigation and leave guards. The first
+  // route is already visible; a click during the handshake must not leave its
+  // old DOM displayed under the new URL (including Chat → followed work).
+  await ws.connect();
 
   return {
     activeRoute: () => activeRoute,

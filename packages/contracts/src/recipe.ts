@@ -69,7 +69,14 @@ export const ALLOW_UPGRADE_VARIABLE = 'allow_llm_upgrade';
 export interface RecipeEventTrigger {
   /** RAW form — warehouse-bus pattern. Same syntax as
    *  `EventTriggerPattern`: dot-delimited segments plus `*` and `**`
-   *  wildcards. Exactly one of `event` / `on`. */
+   *  wildcards. Exactly one of `event` / `on`.
+   *
+   *  A part after the first two may be one of the recipe's settings, written
+   *  as the whole part: `data.file.{{config.file_slug}}.*.created` starts on
+   *  a file arriving in the folder each dish names, and in no other. The
+   *  value is written into each dish's row when it is made, and the row
+   *  follows when the owner changes it; a dish with no value there has no
+   *  row (`resolveEventPatternSettings`, trigger-sugar.ts). */
   event?: string;
   /** RAW form — dispatch filter. Keys are dot-paths into the event
    *  payload; values are literal matches (scalar equal, AND). Omitted
@@ -1202,32 +1209,6 @@ export const undeclaredConfigArgumentMessage = (
     + `variable, or drop the key from the request or the stored overlay.`;
 };
 
-/** D-116 — declarative error-handler binding on a recipe.
- *
- *  When a recipe declares `on_failure`, the install path:
- *    1. Resolves `recipe_id` in the local install registry. Missing →
- *       `ON_FAILURE_HANDLER_UNKNOWN`.
- *    2. Verifies the handler is reactive (has `trigger_steps`). Missing
- *       → `ON_FAILURE_HANDLER_NOT_REACTIVE`.
- *    3. Verifies the handler has a `recipe-watcher` step in
- *       `trigger_steps`. Missing → `ON_FAILURE_HANDLER_MISSING_WATCHER`.
- *
- *  At runtime the handler's recipe-watcher filter is augmented so the
- *  handler fires only on failures of THIS source recipe. Handler input
- *  sees `{{trigger.failure.*}}` with `recipe_id`, `process_id`,
- *  `error_class`, `step_id`, `at`. */
-export interface OnFailureBinding {
-  /** Recipe_id of the handler. Must already be installed when THIS
-   *  recipe installs. Pointing at `recipe_id` itself is rejected —
-   *  failures of the handler would re-fire it. */
-  recipe_id: string;
-  /** Optional config patch merged onto the handler at dispatch.
-   *  (Historically "same shape as `event_triggers.config_patch`" —
-   *  that trigger field was retired by D-179 P2 in favor of dish
-   *  overlays; this binding-local patch is unaffected.) */
-  config?: Record<string, unknown>;
-}
-
 export interface RecipeDefinition {
   recipe_id: string;
   version: number;
@@ -1253,11 +1234,10 @@ export interface RecipeDefinition {
    *  intentionally separate from `event_triggers`: no vendor type is embedded
    *  in a warehouse topic and no missing-path filter can pass. */
   webhook_triggers?: RecipeWebhookTrigger[];
-  /** D-116 — declarative error-handler binding. When THIS recipe
-   *  fails, the engine fires the bound handler recipe (which must
-   *  already be installed + reactive + have a recipe-watcher step).
-   *  One-hop only — chains compose by binding handlers on handlers. */
-  on_failure?: OnFailureBinding;
+  // D-116 `on_failure` (a handler recipe fired when this one fails) was
+  // RETIRED 2026-10-05: it was never wired, and the recipe watcher it needed
+  // went the same day. The validator refuses it (`on_failure_retired`); a
+  // handler listens for `run.<recipe_id>.*.failed` instead.
   /** D-115 — reactive recipes. When present, the engine treats this
    *  recipe as auto-running on a short interval. The extension SW
    *  drives ticks via `chrome.alarms` (clamped to 30s / ~1m floor);

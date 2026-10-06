@@ -36,7 +36,9 @@ export const createOpenAIAdapter = (provider: LLMProvider = 'openai'): LLMAdapte
       // ⛔ Never for an ARRAY reply: `json_object` can only return an object, so a
       // batch answered one record and dropped the rest (see `json_shape`).
       ...(options.json && options.json_shape !== 'array'
-        ? { response_format: { type: 'json_object' } }
+        ? { response_format: options.json_schema
+          ? { type: 'json_schema', json_schema: { name: 'recued_response', strict: true, schema: options.json_schema } }
+          : { type: 'json_object' } }
         : {}),
       // `content_parts`, when present, is the source of truth (never `m.content`
       // — a D-172 additive parts list ≠ content): a multimodal turn renders the

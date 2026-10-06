@@ -199,20 +199,22 @@ describe('server.ts webhooks role — malformed-encoding + error-leak hardening'
     expect(JSON.parse(res.body!).error.code).toBe('bad_request');
   });
 
-  it('maps a malformed %-escape on /hook/<recipe>/<slug> to a generic 400', async () => {
-    const hookListener = vi.fn();
-    const handlerSet = createServerHandlerSet({ hookListener });
+  /** The D-115 `/hook/{recipe_id}/{slug}` route went with the webhook watcher
+   *  it fed (2026-10-05): it verified nothing, and a marketplace recipe's id is
+   *  public. What reaches the webhooks role there now is the generic 404. */
+  it('/hook/<recipe>/<slug> is no longer a route: the generic 404', async () => {
+    const handlerSet = createServerHandlerSet({});
     cleanups.push(() => handlerSet.close());
 
     const res = new FakeRes();
     await handlerSet.handlers.webhooks!(
-      buildReq({ url: '/hook/my-recipe/%E0%A4%A', body: '{}' }),
+      buildReq({ url: '/hook/my-recipe/inbound', body: '{}' }),
       res as unknown as ServerResponse,
     );
 
-    expect(hookListener).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body!).error.code).toBe('bad_request');
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body!).error.code).toBe('not_found');
+    expect(handlerSet.legacyAliases.some((alias) => alias.kind === 'prefix' && alias.prefix === '/hook/')).toBe(false);
   });
 
   it('never echoes the raw exception message when a downstream listener throws (500 stays generic)', async () => {

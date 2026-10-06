@@ -1,7 +1,8 @@
-/** D-115 Phase 6 — kernel adapter routing for the eight watcher
- *  slugs. The adapter fans every watcher slug out through the
- *  unified `watcher` dispatcher slot so runtime wiring can mount one
- *  handler covering all reactive gates. */
+/** D-115 Phase 6 — kernel adapter routing for the watcher slugs. The
+ *  adapter fans every watcher slug out through the unified `watcher`
+ *  dispatcher slot so runtime wiring can mount one handler covering all
+ *  reactive gates. The mail, file, calendar, webhook and recipe watchers
+ *  were retired 2026-10-05. */
 
 import { describe, expect, it } from 'vitest';
 
@@ -18,12 +19,8 @@ const mkCall = (slug: string, input: Record<string, unknown>) => ({
 
 const WATCHER_SLUGS: KernelWatcherSlug[] = [
   'time-watcher',
-  'recipe-watcher',
+  'time-relative-watcher',
   'http-watcher',
-  'mail-watcher',
-  'file-watcher',
-  'calendar-watcher',
-  'webhook-watcher',
 ];
 
 describe('createKernelAdapter — watcher routing', () => {
@@ -61,15 +58,15 @@ describe('createKernelAdapter — watcher routing', () => {
         return { should_run: false };
       },
     });
-    await adapter(mkCall('mail-watcher', {
-      since: 1_700_000_000,
-      from: 'alice@example.com',
-      subject: 'daily update',
+    await adapter(mkCall('time-watcher', {
+      weekdays: [1, 2, 3, 4, 5],
+      start_hour: 8,
+      end_hour: 9,
     }));
     expect(captured).toEqual({
-      since: 1_700_000_000,
-      from: 'alice@example.com',
-      subject: 'daily update',
+      weekdays: [1, 2, 3, 4, 5],
+      start_hour: 8,
+      end_hour: 9,
     });
   });
 
@@ -81,7 +78,7 @@ describe('createKernelAdapter — watcher routing', () => {
         last_seen_at: 1234,
       }),
     });
-    const res = await adapter(mkCall('mail-watcher', {})) as KernelTriggerOutput;
+    const res = await adapter(mkCall('time-relative-watcher', {})) as KernelTriggerOutput;
     expect(res.should_run).toBe(true);
     expect(res.items).toEqual([{ id: 'm1', subject: 'hi' }]);
     expect(res.last_seen_at).toBe(1234);
@@ -118,8 +115,18 @@ describe('createKernelAdapter — watcher routing', () => {
     });
   });
 
+  it.each(['mail-watcher', 'file-watcher', 'calendar-watcher', 'webhook-watcher', 'recipe-watcher'])(
+    'a retired watcher (%s) is not routed: a step naming one fails as an unknown ingredient',
+    async (slug) => {
+      const adapter = createKernelAdapter({
+        watcher: async () => ({ should_run: true }),
+      });
+      await expect(adapter(mkCall(slug, {}))).rejects.toMatchObject({ code: 'INGREDIENT_NOT_FOUND' });
+    },
+  );
+
   it('passes the full args object without mutation to the handler', async () => {
-    const args = { kind: 'starting_soon', minutes_ahead: 30, now: 1_700_000_000_000 };
+    const args = { weekdays: [1], start_hour: 8, end_hour: 9, now: 1_700_000_000_000 };
     let dispatched: Record<string, unknown> | null = null;
     const adapter = createKernelAdapter({
       watcher: async (input) => {
@@ -127,7 +134,7 @@ describe('createKernelAdapter — watcher routing', () => {
         return { should_run: true, items: [] };
       },
     });
-    await adapter(mkCall('calendar-watcher', args));
+    await adapter(mkCall('time-watcher', args));
     expect(dispatched).toEqual(args);
     // Reference equality would indicate the adapter handed through the
     // live reference — assert structural equality instead.

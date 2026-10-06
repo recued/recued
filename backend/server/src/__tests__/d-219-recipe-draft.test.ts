@@ -671,8 +671,10 @@ describe('D-219 — a machine-written draft arrives INERT', () => {
       'auto_run', 'event_triggers', 'on_failure', 'trigger', 'trigger_steps',
       'vault_hints', 'webhook_requirements', 'webhook_triggers',
     ]);
-    // ⚠ `on_failure` is the one with teeth: it fires ANOTHER installed recipe
-    // when this one fails, and the Kitchen renders no section for it.
+    // ⚠ `on_failure` is designed to fire ANOTHER installed recipe when this one
+    // fails, and the Kitchen renders no section for it. Nothing reads it at
+    // runtime yet (2026-10-05), so today it fires nothing; it is dropped for
+    // the day it is wired.
     expect(Object.hasOwn(result.recipe as object, 'on_failure')).toBe(false);
     expect(Object.hasOwn(result.recipe as object, 'trigger')).toBe(false);
     // …and the permitting witness: everything reviewable SURVIVES, or an

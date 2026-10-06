@@ -11,6 +11,7 @@
  *    - its auto-run failure trip. That is run health, not something the owner set up,
  *      so the Delete confirmation does not count it. Left behind, it tripped the
  *      reinstalled recipe before it ever ran (found driving a live server, 2026-09-24);
+ *    - its watchers' state (cursors, firing ledgers), also uncounted run state;
  *    - every saved setting: its dishes (D-319 — the main one, formerly the install
  *      config, and every other), with their prior-run continuity;
  *    - its retired-name list (D-303), which described those settings.
@@ -48,6 +49,13 @@ export interface RecipeOwnedStateDeps {
   /** The auto-run failure trips (one per dish's timer). The live roster holds them
    *  in memory too, so the caller also rebuilds the roster when the recipe was on it. */
   readonly autoRunCircuit?: Pick<CircuitBreakerStore, 'clearRecipe'>;
+  /** Its watchers' state (2026-10-05): the calendar watcher's cursor and record of
+   *  returned events, the time-relative watcher's firing ledger and start point,
+   *  the page watcher's memory of the page (`once_per_change`).
+   *  Left behind, a reinstall resumed from them: a time-relative watch fired every
+   *  boundary since the FIRST install, a calendar cursor every change since. Run
+   *  state, like the failure trip, so the Delete confirmation does not count it. */
+  readonly watcherState?: { clear(recipe_id: string): void };
 }
 
 /** What a recipe's uninstall removes (or would remove). */
@@ -86,6 +94,7 @@ export const removeRecipeOwnedState = (recipe_id: string, deps: RecipeOwnedState
   for (const trigger of triggers) deps.triggers!.remove(trigger.trigger_id);
   const timers = deps.autoRun?.forgetRecipe?.(recipe_id) ?? 0;
   deps.autoRunCircuit?.clearRecipe?.(recipe_id);
+  deps.watcherState?.clear(recipe_id);
   const dishes = deps.dishes?.listByRecipe(recipe_id) ?? [];
   for (const dish of dishes) {
     deps.dishes!.delete(dish.dish_id);

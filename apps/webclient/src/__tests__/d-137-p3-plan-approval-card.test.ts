@@ -42,6 +42,8 @@ import {
   CHAT_ROUTE_STYLES,
   type ChatRoute,
   type ChatRouteConn,
+  CHAT_ROUTE_LATE_RESULT_ATTR,
+  CHAT_ROUTE_TOOL_DETAILS_ATTR,
 } from '../chat/bootstrap-chat-route.js';
 
 interface FakeEl {
@@ -70,6 +72,7 @@ interface FakeDoc {
   listeners: Map<string, Array<(event?: unknown) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  createTextNode(text: string): FakeEl;
   addEventListener(type: string, fn: (event?: unknown) => void): void;
   removeEventListener(type: string, fn: (event?: unknown) => void): void;
 }
@@ -152,6 +155,15 @@ const makeFakeDocument = (): FakeDoc => {
       },
     },
     createElement: (tag) => makeFakeEl(tag),
+    // `renderAnswerText` paints a formatted reply (**bold**, headings) from text
+    // nodes (b41c8e0cd). A double is a closed list: without this, the first
+    // fixture reply carrying markup throws. A text node is a bare element
+    // carrying its text.
+    createTextNode: (text) => {
+      const node = makeFakeEl('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener(type, fn) {
       const list = listeners.get(type) ?? [];
       list.push(fn);
@@ -878,6 +890,87 @@ describe('D-137 P3 plan-approval reducer', () => {
         run_id: 'run-failed',
       },
     });
+  });
+});
+
+describe('a reloaded conversation shows its tool calls as the live one does', () => {
+  // Live 2026-10-04: after a reload every call read as its recall-format body —
+  // `recued-core/…({"action":"unlock"…})`, `…: {"recipe_id":…,"success":true,…}` —
+  // while the live view showed the same calls as one activity line each.
+  const TOOL = 'recued-core/control-device-home-assistant';
+  const RESULT = JSON.stringify({ recipe_id: 'control-device-home-assistant', success: true,
+    output: { render: [{ type: 'summary', data: { fields: [
+      { label: 'Result', value: 'Done: Home Assistant reports lock.kitchen_door is now unlocked' },
+    ] } }] } });
+  const tool = (id: string, content: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
+    ...assistantMessage(id), role: 'tool', contributor: 'model', content, turn_id: 'turn_1', ...extra,
+  });
+
+  it('folds the calls into the answer, shows the late result readably, and keeps a lone call as a row', async () => {
+    const h = mountChatRoute({
+      messages: [
+        tool('tool:search', 'tools.search({"query":"unlock door"})', { tool_call: {
+          message_id: 'tool:search', session_id: 'chat_1', turn_id: 'turn_1', tool_name: 'tools.search',
+          state: 'succeeded', started_at: 1, updated_at: 2 } }),
+        tool('tool:search:result', 'tools.search: {"ok":true,"result":{"match_count":6}}'),
+        tool('tool:unlock', `${TOOL}({"action":"unlock"})`, { tool_call: {
+          message_id: 'tool:unlock', session_id: 'chat_1', turn_id: 'turn_1', tool_name: TOOL,
+          run_id: 'run_1', state: 'succeeded', started_at: 1, updated_at: 9, held_at: 3 } }),
+        { ...assistantMessage('answer_1', 'I queued it for your approval.'), turn_id: 'turn_1', tool_calls: [
+          { tool_name: 'tools.search', tier: 1, args: {}, status: 'ok', started_at: 1 },
+          { tool_name: TOOL, tier: 2, args: {}, status: 'ok', run_id: 'run_1', started_at: 1 },
+        ] },
+        tool('settle:run_1', `control-device-home-assistant: ${RESULT}`, { ts: 9_000 }),
+        // An interrupted turn: its call was saved, its answer never was.
+        tool('tool:lone', `${TOOL}({"action":"open"})`, { turn_id: 'turn_2', tool_call: {
+          message_id: 'tool:lone', session_id: 'chat_1', turn_id: 'turn_2', tool_name: TOOL,
+          state: 'interrupted', started_at: 10, updated_at: 11 } }),
+      ],
+    });
+    await openMountedRoute(h);
+
+    const rows = collectByAttr(h.root, CHAT_ROUTE_MESSAGE_ATTR);
+    expect(rows.map((row) => row.getAttribute(CHAT_ROUTE_MESSAGE_ATTR))).toEqual(['answer_1', 'tool:lone']);
+    // The late result reads as the recipe's own summary, under its answer.
+    const late = collectByAttr(rows[0]!, CHAT_ROUTE_LATE_RESULT_ATTR);
+    expect(late).toHaveLength(1);
+    expect(allText(late[0]!)).toContain(`What ${TOOL} returned`);
+    expect(allText(late[0]!)).toContain('Done: Home Assistant reports lock.kitchen_door is now unlocked');
+    // The lone call is a sentence; its recall body sits behind a disclosure.
+    const lone = rows[1]!;
+    expect(allText(lone)).toContain(`Called ${TOOL}`);
+    const details = collectByAttr(lone, CHAT_ROUTE_TOOL_DETAILS_ATTR);
+    expect(details).toHaveLength(1);
+    expect(allText(details[0]!)).toContain('{"action":"open"}');
+    // Nowhere does a recall body stand as a message's own text.
+    for (const row of rows) {
+      const content = row.children.find((child) => child.className === 'chat-message-content');
+      expect(content?.textContent ?? '').not.toMatch(/[{}]/u);
+    }
+  });
+});
+
+describe('the running note after a waited call settles', () => {
+  it('reads the note again when the settlement lands, and not for a call that never waited', async () => {
+    const h = mountChatRoute({ messages: [assistantMessage('answer_1')] });
+    await openMountedRoute(h);
+    const briefReads = (): number => h.connSpy.mock.calls.filter(([method]) => method === 'chat.session.brief.get').length;
+    const before = briefReads();
+    const record = { message_id: 'tool:unlock', session_id: 'chat_1', turn_id: 'turn_1',
+      tool_name: 'recued-core/control-device', run_id: 'run_1', state: 'succeeded' as const,
+      started_at: 1, updated_at: 9, held_at: 3 };
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call',
+      value: record, cursor: 1 } as ServerEvent);
+    await tick();
+    expect(briefReads()).toBe(before + 1);
+    // Still waiting, or never waited: nothing in the note changed.
+    const { held_at: _never, ...neverWaited } = record;
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call',
+      value: { ...record, state: 'held', updated_at: 10 }, cursor: 2 } as ServerEvent);
+    h.publish({ kind: 'chat.session_changed', session_id: 'chat_1', field: 'tool_call',
+      value: { ...neverWaited, message_id: 'tool:read', run_id: 'run_2' }, cursor: 3 } as ServerEvent);
+    await tick();
+    expect(briefReads()).toBe(before + 1);
   });
 });
 

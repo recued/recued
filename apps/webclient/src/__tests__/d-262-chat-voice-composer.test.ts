@@ -147,6 +147,15 @@ const makeDoc = () => {
       appendChild(el: FakeEl) { styles.push(el); return el; },
     },
     createElement: create,
+    // `renderAnswerText` paints a formatted reply from text nodes plus <strong>
+    // (b41c8e0cd). A double is a closed list: without this, any reply with
+    // **bold** threw here and the turn never reached the speaker. This fake has
+    // no Text type, so a text node is a bare element carrying its text.
+    createTextNode: (text: string): FakeEl => {
+      const node = create('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
   };

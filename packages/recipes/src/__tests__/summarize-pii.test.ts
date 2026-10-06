@@ -173,7 +173,10 @@ describe('summarizeRecipePiiPosture', () => {
     );
   });
 
-  it('keeps content-only and declaration-only findings out of the headline', () => {
+  // D-316 amendment (owner ruling 2026-10-05): auto-PII tags content-only
+  // findings too, and the line says what a `content` tag hides — never that
+  // the whole field is aliased.
+  it('a content-only step is auto-protected, in words that say what a content tag hides', () => {
     const contentOnly = summarizeRecipePiiPosture(recipeWith([
       source('message', 'message-source'),
       aiClassify('ai', { 'llm.data': '{{step.message}}' }),
@@ -182,19 +185,61 @@ describe('summarizeRecipePiiPosture', () => {
     }));
 
     expect(contentOnly).toEqual({
-      headline: '',
-      auto_protected: [],
+      headline: 'Recued will auto-protect 1 AI step at run time.',
+      auto_protected: [
+        {
+          step_id: 'ai',
+          message:
+            "AI step 'ai' (ai-classify): Recued injects llm.pii_fields at run time — "
+            + 'the contacts the server knows and every email in body aliased before egress.',
+        },
+      ],
       warnings: [],
       infos: [
         {
           step_id: 'ai',
           message:
             "AI step 'ai' (ai-classify) receives free-text content fields that may mention identifiers — "
-            + 'a pii-protect bracket over the structured source fields seeds the ledger so the content scan can alias them',
+            + 'Recued tags them `content` at run time, which hides the contacts the server knows and every '
+            + 'email in them; tag the identifier fields they draw on (llm.pii_fields) to hide the rest',
         },
       ],
     });
+  });
 
+  it('an identifier and a content tag are each described for what they hide', () => {
+    const mixed = summarizeRecipePiiPosture(recipeWith([
+      source('message', 'message-source'),
+      aiClassify('ai', { 'llm.data': '{{step.message}}' }),
+    ]), classifierFrom({
+      'message-source': { from: ['email'], body: ['content'] },
+    }));
+
+    expect(mixed.auto_protected).toEqual([
+      {
+        step_id: 'ai',
+        message:
+          "AI step 'ai' (ai-classify): Recued injects llm.pii_fields at run time — from (email) aliased; "
+          + 'the contacts the server knows and every email in body aliased before egress.',
+      },
+    ]);
+  });
+
+  it('a content-only step auto-PII cannot tag is an info line, never a manual identifier leak', () => {
+    const interpolated = summarizeRecipePiiPosture(recipeWith([
+      source('message', 'message-source'),
+      { id: 'ai', ingredient: 'ai-prompt', input: { 'llm.prompt': 'Summarize: {{step.message.body}}' } },
+    ]), classifierFrom({
+      'message-source': { body: ['content'] },
+    }));
+
+    expect(interpolated.headline).toBe('');
+    expect(interpolated.auto_protected).toEqual([]);
+    expect(interpolated.warnings).toEqual([]);
+    expect(interpolated.infos.map((line) => line.step_id)).toEqual(['ai']);
+  });
+
+  it('keeps declaration-only findings out of the headline', () => {
     const declarationOnly = summarizeRecipePiiPosture(recipeWith([
       {
         id: 'legacy',

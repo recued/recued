@@ -186,43 +186,14 @@ describe('createKernelAdapter', () => {
     }))).rejects.toMatchObject({ code: 'BAD_INPUT' });
   });
 
-  it('routes schedule-recipe to the schedule dispatcher', async () => {
-    let captured: unknown;
-    const adapter = createKernelAdapter({
-      scheduleRecipe: async (input) => {
-        captured = input;
-        return { schedule: { schedule_id: 's1' } };
-      },
-    });
-    const res = await adapter(mkCall('schedule-recipe', {
-      recipe_id: 'today',
-      mode: 'recurring',
-      cron_expression: '0 9 * * *',
-      dish_id: '',
-      enabled: true,
-    }));
-    expect(res).toEqual({ schedule: { schedule_id: 's1' } });
-    expect(captured).toEqual({
-      recipe_id: 'today',
-      mode: 'recurring',
-      cron_expression: '0 9 * * *',
-      enabled: true,
-    });
-  });
-
-  it('rejects schedule-recipe mode-specific missing inputs', async () => {
-    const adapter = createKernelAdapter({
-      scheduleRecipe: async () => ({ schedule: {} }),
-    });
+  // D-193 amendment (2026-10-05) — no recipe step may schedule another recipe:
+  // the `schedule-recipe` ingredient is gone (chat schedules through its own
+  // `recipe.schedule` tool), so a step naming it is an unknown kernel ingredient.
+  it('has no schedule-recipe ingredient: a step naming it is refused', async () => {
+    const adapter = createKernelAdapter({});
     await expect(adapter(mkCall('schedule-recipe', {
-      recipe_id: 'today',
-      mode: 'one_shot',
-    }))).rejects.toBeInstanceOf(IngredientError);
-    await expect(adapter(mkCall('schedule-recipe', {
-      recipe_id: 'today',
-      mode: 'recurring',
-      cron_expression: '',
-    }))).rejects.toBeInstanceOf(IngredientError);
+      recipe_id: 'today', mode: 'recurring', cron_expression: '0 9 * * *',
+    }))).rejects.toThrow(/unknown kernel ingredient 'schedule-recipe'/);
   });
 
   it('routes core Seller offer ensure with recipe-stamped provenance', async () => {

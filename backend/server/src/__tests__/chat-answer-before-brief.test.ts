@@ -18,7 +18,7 @@ const gate = () => {
 
 /** One queued turn: read a mail, then answer. `blocked` holds the closing brief,
  * or, for `cancel-before-answer`, the final main model call. */
-const startTurn = (mode: 'success' | 'failure' | 'cancel' | 'cancel-before-answer') => {
+const startTurn = (mode: 'success' | 'failure' | 'empty-brief' | 'cancel' | 'cancel-before-answer') => {
   const db = new Database(':memory:'); ensureChatSchema(db);
   const store = createChatStore(db); store.createSession({ id: 'answer-before-brief' });
   store.setRollingBriefEnabled(true);
@@ -44,6 +44,7 @@ const startTurn = (mode: 'success' | 'failure' | 'cancel' | 'cancel-before-answe
         calls.brief++;
         await blocked.promise;
         if (mode === 'failure') throw new Error('Controlled brief provider failure');
+        if (mode === 'empty-brief' && calls.brief === 1) return { body: undefined };
         return { body: { intent: 'Explore scope', constraints: [], pending: [], findings: ['Scope remains open.'], completed: [] } };
       }
       calls.main++;
@@ -71,10 +72,13 @@ const startTurn = (mode: 'success' | 'failure' | 'cancel' | 'cancel-before-answe
 };
 
 describe('Chat answer display before closing carry', () => {
-  it.each(['success', 'failure', 'cancel'] as const)('keeps one streamed answer and honest queue/persistence boundaries on brief %s', async mode => {
+  it.each(['success', 'failure', 'empty-brief', 'cancel'] as const)('keeps one streamed answer and honest queue/persistence boundaries on brief %s', async mode => {
     const { store, events, calls, blocked, executionFinished, orchestrator, turn, expectedAnswer, close } = startTurn(mode);
     try {
       await vi.waitFor(() => expect(calls.brief).toBe(1));
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'chat.transparency', event: expect.objectContaining({
+        kind: 'recued.rolling_brief.call', phase: 'started', call_index: 1, closing: true, input_chars: expect.any(Number),
+      }) }));
       expect(events.filter(e => e.kind === 'chat.token_streamed').map(e => e.delta)).toEqual([expectedAnswer]);
       expect(events.some(e => e.kind === 'chat.message_complete')).toBe(false);
       expect((await store.listMessages('answer-before-brief')).some(m => m.role === 'assistant')).toBe(false);
@@ -89,6 +93,9 @@ describe('Chat answer display before closing carry', () => {
       }
       blocked.release();
       await turn;
+      if (mode !== 'cancel') expect(events).toContainEqual(expect.objectContaining({ kind: 'chat.transparency', event: expect.objectContaining({
+        kind: 'recued.rolling_brief.call', phase: 'finished', call_index: 1, outcome: mode === 'failure' ? 'failed' : 'returned', elapsed_ms: expect.any(Number),
+      }) }));
       if (mode !== 'cancel') {
         await vi.waitFor(async () => expect((await orchestrator.turnQueue!.snapshot('answer-before-brief')).turns.every(t => t.status === 'completed')).toBe(true));
         const first = events.find(e => e.kind === 'chat.message_complete');
@@ -96,6 +103,12 @@ describe('Chat answer display before closing carry', () => {
         const tokens = events.filter(e => e.kind === 'chat.token_streamed');
         expect(tokens.filter(e => e.turn_id === first?.turn_id)).toHaveLength(1);
         expect((await store.listMessages('answer-before-brief')).filter(m => m.role === 'assistant')).toHaveLength(2);
+        if (mode === 'empty-brief') {
+          expect(calls.brief).toBe(2);
+          expect(events).toContainEqual(expect.objectContaining({ kind: 'chat.transparency', event: expect.objectContaining({
+            kind: 'recued.rolling_brief.call', phase: 'finished', call_index: 2, outcome: 'returned',
+          }) }));
+        }
       } else {
         // Let the cancelled worker finish its already-started provider call.
         await executionFinished.promise;

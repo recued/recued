@@ -52,12 +52,24 @@ export const TRIGGER_SKIPPED_MESSAGE =
   + 'recipe looks for, and do not retry: the trigger will skip again. Tell the '
   + 'user the recipe did not run because its trigger condition was not met.';
 
+/** ⚠ WHERE, NOT ONLY THAT. Until 2026-10-04 this said the action needs approval
+ *  and never where it is given, so the model supplied a place: "your Contracts
+ *  view" (whose only source is the grant-proposal sentence in
+ *  `FEATURE_TEXT_APPROVALS`), "the approval card" in the chat (a gateway hold has
+ *  none there) or "your approvals queue" — live, three different answers across
+ *  eight held chat turns. The place sentence is general ("approvals are answered
+ *  …"), never "it is waiting there now": the 2026-06-08 rule still holds that this
+ *  must not imply a prompt is already visible (the notifier can be absent).
+ *  Byte-pinned twice — the D-177 ratchet and the trio-A copy — edit all or none,
+ *  and log it (internal design notes). */
 export const HELD_FOR_APPROVAL_MESSAGE =
   "This action is paused and is now queued for the user's approval before it can run. "
   + 'This is the expected, successful outcome for an action that sends a message or '
   + 'changes something outside Recued — it is NOT a failure. The action is already '
   + 'queued; do NOT call this tool again or resend it. Let the user know the action '
-  + 'needs their approval before it can proceed. You do not have the ability to '
+  + 'needs their approval before it can proceed. Approvals are answered in the Recued '
+  + 'app, from the bell at the top of the page (Attention), which also opens the '
+  + 'Approvals page. You do not have the ability to '
   + 'approve or bypass approvals yourself; if the user wants fewer approval '
   + 'interruptions, the approval card itself may offer bounded options (such as '
   + 'allowing repeats for this session).';

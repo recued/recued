@@ -119,4 +119,40 @@ describe('event_triggers validation wiring', () => {
     // A key that is no part of one is an error, not ignored.
     expect(errorCodes(withTriggers([{ on: 'mail_fact', typ: 'shipment' }]))).toEqual(['event_trigger_entry_invalid']);
   });
+
+  /** 2026-10-05 — a pattern part a dish's setting fills names a setting the
+   *  recipe declares: one it does not would hold nothing on any dish. */
+  describe('a setting part in a raw pattern', () => {
+    const watching = (variables: Record<string, unknown>) => ({
+      ...base,
+      variables,
+      event_triggers: [{ event: 'data.file.{{config.file_slug}}.*.created' }],
+    });
+    const issues = (input: unknown) => validateRecipe(input).issues
+      .filter((issue) => issue.path.startsWith('event_triggers'))
+      .map(({ severity, code, path, message }) => ({ severity, code, path, message }));
+
+    it('accepts one the recipe declares, as a required setting', () => {
+      expect(issues(watching({ file_slug: { label: 'Folder to watch', type: 'file_slug' } }))).toEqual([]);
+      expect(issues(watching({ file_slug: { label: 'Folder to watch', type: 'file_slug', default: 'inbox' } }))).toEqual([]);
+    });
+
+    it('⛔ refuses one the recipe does not declare', () => {
+      expect(issues(watching({}))).toEqual([{
+        severity: 'error',
+        code: 'event_trigger_entry_invalid',
+        path: 'event_triggers[0].event',
+        message: "'event' fills a part from the setting 'file_slug', which this recipe does not declare — add it to 'variables'",
+      }]);
+    });
+
+    it('notes one a dish may leave empty: that dish starts on nothing', () => {
+      expect(issues(watching({ file_slug: { label: 'Folder to watch', type: 'file_slug', optional: true } }))).toEqual([{
+        severity: 'warn',
+        code: 'event_trigger_setting_optional',
+        path: 'event_triggers[0].event',
+        message: "'event' fills a part from 'file_slug', which a dish may leave empty — that dish's trigger then starts on nothing",
+      }]);
+    });
+  });
 });

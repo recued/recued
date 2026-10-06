@@ -2645,7 +2645,7 @@
     "section": "From source",
     "eyebrow": "Setup",
     "url": "https://recued.com/docs/setup/install-server#from-source",
-    "body": "You can build the same server from a source checkout. You need Node.js 20\nor newer, and npm:\n\n```sh\nnpm install\nnpm --workspace @recued/server run build\nmkdir -p ./recued-data\nnode backend/server/dist/bin.js serve --db ./recued-data/recued.db\n```\n\nRun those commands from the top folder of the checkout. Source builds use\nthe `source` update channel. They can tell you a newer release exists. They\nnever replace your build by themselves."
+    "body": "You can build the same server from a source checkout. You need Node.js 24\nand npm:\n\n```sh\nnpm install\nnpm --workspace @recued/server run build\nmkdir -p ./recued-data\nnode backend/server/dist/bin.js serve --db ./recued-data/recued.db\n```\n\nOn Windows, run them in PowerShell. Type `npm.cmd` each time the block says\n`npm`. By default, PowerShell blocks the script a plain `npm` runs. The\n`mkdir` and `node` lines work as they are.\n\nRun those commands from the top folder of the checkout. Source builds use\nthe `source` update channel. They can tell you a newer release exists. They\nnever replace your build by themselves."
   },
   {
     "id": "setup/install-server#the-data-directory",

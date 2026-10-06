@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { RecipeDefinition } from '@recued/contracts';
 
-import { buildRecipeOpDependencyIndex, deriveRecipeCapability } from '../derive-recipe-capability.js';
+import {
+  buildRecipeOpDependencyIndex,
+  deriveRecipeCapability,
+  deriveResolvedRecipeCapability,
+} from '../derive-recipe-capability.js';
 
 const recipe = (partial: Record<string, unknown>): RecipeDefinition =>
   ({ prefetch_steps: [], steps: [], ...partial }) as unknown as RecipeDefinition;
@@ -126,6 +130,51 @@ describe('D-207 — connections: static once resolved through the recipe\'s own 
     );
     expect(d.ok).toBe(false);
     if (!d.ok) expect(d.refusal.reason).toBe('dynamic_connection');
+  });
+});
+
+/** ⛔ The door is derived from the config the RUN uses — and the engine fills every
+ *  variable the dish leaves unset from its declared default. A fresh pack install has
+ *  no dish yet, so a derivation that read the dish alone refused a connection the run
+ *  was certain to use, and the pack's webhook door was never minted (found 2026-10-04
+ *  with Home Assistant's `home-assistant` default). */
+describe('D-207 — connections resolve against the dish OVER the variable defaults', () => {
+  const homeAssistant = (fallback: unknown) => recipe({
+    variables: {
+      home_assistant: { label: 'Home Assistant connection', type: 'connection', default: fallback },
+    },
+    steps: [{ id: 'snap', op: 'recued-core.home-assistant.camera.snapshot', connection: '{{config.home_assistant}}' }],
+  });
+
+  it('resolves a literal default when there is no dish at all — a fresh install', () => {
+    expect(ok(deriveRecipeCapability(homeAssistant('home-assistant'))).connection_names)
+      .toEqual(['home-assistant']);
+  });
+
+  it('lets the dish win over the default, as the engine does', () => {
+    expect(ok(deriveRecipeCapability(homeAssistant('home-assistant'), {
+      config: { home_assistant: 'upstairs-ha' },
+    })).connection_names).toEqual(['upstairs-ha']);
+  });
+
+  it('still refuses a blank default — the owner has not chosen an account yet', () => {
+    for (const blank of ['', null]) {
+      const d = deriveRecipeCapability(homeAssistant(blank));
+      expect(d.ok, String(blank)).toBe(false);
+      if (!d.ok) expect(d.refusal.reason).toBe('dynamic_connection');
+    }
+  });
+
+  it('refuses when the dish sets the key to nothing, even over a default — the engine would not fill it', () => {
+    const d = deriveRecipeCapability(homeAssistant('home-assistant'), { config: { home_assistant: null } });
+    expect(d.ok).toBe(false);
+  });
+
+  it('carries the authored defaults into the dispatch form, which lowering may have rebuilt without them', () => {
+    const authored = homeAssistant('home-assistant');
+    const lowered = { ...authored, variables: {} } as RecipeDefinition;
+    expect(ok(deriveResolvedRecipeCapability(authored, lowered)).connection_names)
+      .toEqual(['home-assistant']);
   });
 });
 

@@ -181,7 +181,6 @@ export const KERNEL_REQUIRED_INPUTS: Record<string, readonly string[]> = {
   'project-archive': ['id'],
   'project-create': ['title'],
   'project-update': ['id'],
-  'schedule-recipe': ['recipe_id'],
   'shared-compare-and-set': ['key'],
   'shared-patch': ['key'],
   'shared-read': ['key'],

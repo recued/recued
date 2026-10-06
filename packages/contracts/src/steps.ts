@@ -30,6 +30,18 @@ export interface StepOptions {
   /** The step's `pages` setting (see {@link StepPages}), carried to the gateway,
    *  which reads a Records search page by page when it is `'all'`. */
   pages?: StepPages;
+  /** A simple-form step's legacy `pii_fields` (bare key names). The dispatch hashes
+   *  every value under a named key in the RESOLVED input before the adapter sees it,
+   *  and puts the real values back in what the adapter returns.
+   *
+   *  ⛔ Not the engine over the step's raw input, as it was: there a value is still a
+   *  `{{ref}}`, so data arriving through a ref was never looked inside, and a ref
+   *  under a named key was itself swapped for the token — the call never got the
+   *  data. Nor the engine over a resolved input: every layer between the engine and
+   *  the dispatch (the commit Gateway's identity hash, the usage meter's lineage
+   *  walk, the open-projection walk, the cache key) reads the input as authored, refs
+   *  and all. Set by the engine only. */
+  pii_fields?: readonly string[];
 }
 
 /** A step's `pages` setting. `'all'`: read a Records `search` page by page, up to
@@ -369,10 +381,15 @@ export interface IngredientStep extends BaseStep {
    *  connection-agnostic resolver can carry it onto the concrete fetch it emits for a
    *  TOOL op-step (the single-step pass-through path). */
   foreach?: string;
-  /** PII field names to hash before sending to the ingredient and restore after.
-   *  Shorthand for hash_replace → ingredient → hash_restore.
-   *  Only meaningful on AI ingredients — ignored on data/action ingredients.
-   *  Omit to send data as-is (manual hash_replace/hash_restore still works). */
+  /** PII field names (bare key names, any depth) to hash before the ingredient sees
+   *  them and restore after: at dispatch, everything under a named key in the
+   *  RESOLVED input — a list's items and an object's values included — becomes
+   *  `HASH_STEP_<n>` tokens (`StepOptions.pii_fields`), and the real values go back
+   *  into the step's result. Meant for AI ingredients, applied to any. ⚠ A value is
+   *  replaced WHOLE, so a free-text field named here reaches the model as a token it
+   *  cannot read; to hide only the identifiers inside text, tag it `content` in
+   *  `llm.pii_fields`. Omit to send data as-is (manual hash_replace/hash_restore still
+   *  works). */
   pii_fields?: string[];
   /** Ingredient version this step was built against. Set automatically by
    *  the Kitchen when adding from marketplace. Used to detect breaking

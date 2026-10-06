@@ -1457,6 +1457,18 @@ export interface RestResponseCaptureSpec {
     | { kind: 'header' }
     | { kind: 'static'; value: string }
     | { kind: 'arg'; arg: string };
+  /** The captured file is NOT for unattended AI enrichment. The server stamps
+   *  the stored file, and the housekeeping producers that would otherwise
+   *  caption, transcribe or extract it on an idle cycle skip it
+   *  (`mayAiEnrichFile`). An owner's own recipe step can still hand the file to
+   *  an AI on purpose; this opts out of the automation, not of the file.
+   *  Absent ⇒ the file follows its origin's rule (a `connection_download` may
+   *  be enriched). Home Assistant's camera snapshot declares it: a description
+   *  of a camera frame serves no one, and every unattended run would send the
+   *  picture to the AI pool.
+   *  ⚠ A server older than this field ignores it (no validator rejects an
+   *  unknown capture key), so there the file stays enrichable. */
+  ai_enrichment?: 'opt_out';
 }
 
 /** Lossless integer handling for a REST JSON response. Closed v1 shape: the

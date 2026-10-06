@@ -324,6 +324,14 @@ const humanizeAskField = (key: string): string => {
   return words.charAt(0).toLocaleUpperCase() + words.slice(1);
 };
 
+/** The label a D-270 detail row is shown under, on every surface that shows one.
+ *  A pack-declared label stands as written; the raw arg key a server falls back
+ *  to is humanized. ⚠ ONLY an identifier-shaped label: humanizing splits on
+ *  `[._-]`, which would mangle a real label like "e-mail" into "E mail". Shared
+ *  so the Approvals card and the top-bar tray cannot name one value two ways. */
+export const askDetailLabel = (label: string): string =>
+  /^[a-z][a-z0-9._]*$/.test(label) ? humanizeAskField(label) : label;
+
 type AskOptionIntent = 'approve' | 'reject' | 'neutral';
 
 const askOptionIntent = (option: AskCardOption): AskOptionIntent => {
@@ -423,12 +431,7 @@ export const renderAskCard = (
       // ⚠ Applied ONLY to an identifier-shaped label, never to a declared one:
       // `humanizeAskField` splits on `[._-]`, which would mangle a real label
       // like "e-mail" into "E mail".
-      for (const row of model.details) {
-        appendSummaryRow(
-          /^[a-z][a-z0-9._]*$/.test(row.label) ? humanizeAskField(row.label) : row.label,
-          row.value,
-        );
-      }
+      for (const row of model.details) appendSummaryRow(askDetailLabel(row.label), row.value);
     } else {
       for (const field of projected.highlights) {
         appendSummaryRow(humanizeAskField(field.key), field.value);

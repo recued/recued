@@ -2,7 +2,7 @@
  *  follows is about MODEL behaviour rather than about whether the plumbing
  *  works. */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ChatBriefCaptureError,
   ChatContextLengthError,
@@ -36,6 +36,8 @@ import {
   clearSessionBrief,
   getSessionBrief,
   completedActionRecords,
+  foldableToolResults,
+  clearPendingAfterWait,
   isFoldRecallBearing,
   markCarryIncomplete,
   mergeBriefs,
@@ -949,6 +951,50 @@ describe('parseBrief — the model mirrors the packet shape', () => {
 
   it('does not descend two levels', () => {
     expect(parseBrief({ emit: { emit: FIELDS } })).toBeNull();
+  });
+});
+
+describe('a call that waits is not done, and its wait does not become a finding', () => {
+  // Live 2026-10-04: an unlock held for approval was recorded "— completed"
+  // (the model is told those "ALREADY SUCCEEDED"), and its "awaiting approval"
+  // status went into `findings`, which never forget — so the running note said
+  // "awaiting approval" long after the door was unlocked.
+  const held = (tool_name: string, result: unknown): ChatPriorToolCall => ({
+    tool_name, tier: 2, args: { action: 'unlock' }, status: 'ok', result, started_at: 0, completed_at: 1,
+  });
+  const awaiting = held('recued-core/control-device', {
+    status: 'awaiting_approval', awaiting_approval: true, recipe_id: 'control-device', message: 'queued' });
+  const peer = held('peer.ask', { awaiting_peer: true });
+  const runHeld = held('work.create', { run_held: { kind: 'container_pick' } });
+  const done = held('memory.write', { ok: true });
+
+  it('records no held call as completed — only a write that finished', () => {
+    expect(completedActionRecords([awaiting, peer, runHeld])).toEqual([]);
+    expect(completedActionRecords([awaiting, done])).toEqual(['memory.write — completed']);
+  });
+
+  it('keeps a held call out of what a fold summarises, and everything else in', () => {
+    const refused: ChatPriorToolCall = { tool_name: 'mail.send', tier: 2, args: {}, status: 'error',
+      reason: 'execution_error', started_at: 0, completed_at: 1 };
+    expect(foldableToolResults([awaiting, done, peer, refused, runHeld])).toEqual([done, refused]);
+  });
+
+  describe('when the call settles, the stored brief', () => {
+    const stored = (pending: string[]): string => JSON.stringify({
+      intent: 'unlock the kitchen door', constraints: ['use the back door at night'],
+      pending, findings: ['lock.kitchen_door is the kitchen door'], completed: ['memory.write — completed'],
+    });
+
+    it('loses what was still to do around the wait — and nothing else', () => {
+      const tidied = clearPendingAfterWait(stored(['Unlock the kitchen door']));
+      expect(JSON.parse(tidied!)).toEqual({ ...JSON.parse(stored([])), pending: [] });
+    });
+
+    it('is left alone when there is nothing to clear, or nothing that reads as a brief', () => {
+      expect(clearPendingAfterWait(stored([]))).toBeNull();
+      expect(clearPendingAfterWait('{"note":"not a brief"}')).toBeNull();
+      expect(clearPendingAfterWait('not json')).toBeNull();
+    });
   });
 });
 

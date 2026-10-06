@@ -45,6 +45,10 @@ export interface DishAutomation {
   /** Something clients show changed (a name, the main dish) and no row
    *  follows: they re-list. */
   touched(): void;
+  /** How many triggers and schedules the dish holds — what switching it on
+   *  turns on besides its recipe's timer. Optional for a harness double;
+   *  absent reads as none. */
+  ownRows?(dish_id: string): number;
 }
 
 export interface DishAutomationDeps {
@@ -219,5 +223,6 @@ export const createDishAutomation = (deps: DishAutomationDeps): DishAutomation =
     touched: () => {
       emitAutomationRule(deps.eventBus, 'dish');
     },
+    ownRows: (dish_id) => triggersOf(dish_id).length + schedulesOf(dish_id).length,
   };
 };

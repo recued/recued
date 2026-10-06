@@ -275,6 +275,64 @@ describe('startPostAppCollectionExecutionRuntime', () => {
     expect(recoveries[1]).not.toHaveProperty('permanentPassRepair');
   });
 
+  it('D-319: threads the pre-bound switch-on notice into boot recovery, and nothing when none is bound', async () => {
+    // The composer binds it and boot recovery runs it; without this hop the
+    // notice is never told, and a test of either end stays green.
+    const autoRunSwitchOnNotice = vi.fn();
+    const recoveries: Array<Record<string, unknown>> = [];
+    bridgeMocks.composeCollectionContext.mockImplementation(() => ({
+      collectionRegistry: { tag: 'collection-registry' },
+      startCollectionAdapters: vi.fn(async () => undefined),
+    }));
+    bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockImplementation(
+      async (actualOptions) => {
+        recoveries.push(actualOptions.runtime.recovery);
+        return { runtime: { tag: 'runtime' }, schedulersBundle: { tag: 'schedulers' } };
+      },
+    );
+    for (const bound of [true, false]) {
+      bridgeMocks.composeExecutionContext.mockImplementation(async () => ({
+        executorConfig: { tag: 'executor-config' },
+        executeDeps: { tag: 'execute-deps' },
+        notificationBlock: { tag: 'notification-block' },
+        serverDisplayName: 'test-server',
+        ...(bound ? { autoRunSwitchOnNotice } : {}),
+      }));
+      await startPostAppCollectionExecutionRuntime(makeOptions());
+    }
+    expect(recoveries[0]?.autoRunSwitchOnNotice).toBe(autoRunSwitchOnNotice);
+    expect(recoveries[1]).not.toHaveProperty('autoRunSwitchOnNotice');
+  });
+
+  it('D-319: threads the pre-bound timer re-arm into boot recovery, and nothing when none is bound', async () => {
+    // The composer binds it and boot recovery runs it; without this hop no
+    // timer is given back, and a test of either end stays green.
+    const autoRunTimerRearm = vi.fn();
+    const recoveries: Array<Record<string, unknown>> = [];
+    bridgeMocks.composeCollectionContext.mockImplementation(() => ({
+      collectionRegistry: { tag: 'collection-registry' },
+      startCollectionAdapters: vi.fn(async () => undefined),
+    }));
+    bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockImplementation(
+      async (actualOptions) => {
+        recoveries.push(actualOptions.runtime.recovery);
+        return { runtime: { tag: 'runtime' }, schedulersBundle: { tag: 'schedulers' } };
+      },
+    );
+    for (const bound of [true, false]) {
+      bridgeMocks.composeExecutionContext.mockImplementation(async () => ({
+        executorConfig: { tag: 'executor-config' },
+        executeDeps: { tag: 'execute-deps' },
+        notificationBlock: { tag: 'notification-block' },
+        serverDisplayName: 'test-server',
+        ...(bound ? { autoRunTimerRearm } : {}),
+      }));
+      await startPostAppCollectionExecutionRuntime(makeOptions());
+    }
+    expect(recoveries[0]?.autoRunTimerRearm).toBe(autoRunTimerRearm);
+    expect(recoveries[1]).not.toHaveProperty('autoRunTimerRearm');
+  });
+
   it('composes exact peer-delivery boot recovery and dispatch preservation', async () => {
     const peerOutbox = { tag: 'peer-outbox' };
     const peerAuditLog = { tag: 'peer-audit-log' };

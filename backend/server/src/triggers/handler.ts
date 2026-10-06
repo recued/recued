@@ -18,6 +18,7 @@ import {
   validateRecipeEventTriggerEntry,
   type CompiledTriggerSubscription,
   type Dish,
+  type DishWebhookDoorChange,
   type EventTrigger,
   type HandlerSlice,
   type MailFactTypeSpec,
@@ -66,7 +67,7 @@ export interface TriggersRpcDeps {
     recipe_id: string;
     publisher_id: string;
     config_overlay: Record<string, unknown> | null;
-  }) => Dish;
+  }) => { dish: Dish; webhook_doors?: DishWebhookDoorChange[] };
   /** D-315 §5.1 — the kinds of email the owner made on this server. A row made
    *  here is checked against every kind a fact here can have, so what no kind
    *  has is refused while the owner is there to fix it; a recipe's own trigger
@@ -222,7 +223,7 @@ export const handleTriggersCreate = async (
     watch_interval_ms?: unknown;
     enabled?: unknown;
   },
-): Promise<{ trigger: EventTrigger }> => {
+): Promise<{ trigger: EventTrigger; webhook_doors?: DishWebhookDoorChange[] }> => {
   const recipe_id = requireNonEmptyString(args.recipe_id, 'recipe_id');
   const publisher_id = requireNonEmptyString(args.publisher_id, 'publisher_id');
   const shorthand = compileShorthand(args, deps.mailFactTypes !== undefined ? { mailFactTypes: deps.mailFactTypes } : {});
@@ -240,6 +241,7 @@ export const handleTriggersCreate = async (
 
   // D-319 — the dish the trigger belongs to, whose settings it runs with.
   let dish_id: string | null;
+  let webhook_doors: DishWebhookDoorChange[] | undefined;
   if (args.dish_id !== undefined) {
     dish_id = requireDishId(args.dish_id);
     if (hasSettings) {
@@ -247,7 +249,10 @@ export const handleTriggersCreate = async (
     }
     requireDishBindsRecipe(deps, dish_id, recipe_id);
   } else if (deps.mainDish) {
-    dish_id = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay }).dish_id;
+    const main = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay });
+    dish_id = main.dish.dish_id;
+    // D-209 — a main dish made here can move the recipe's webhook door.
+    webhook_doors = main.webhook_doors;
   } else {
     if (hasSettings) {
       throw new RpcError('not_configured', 'Settings need a dish, and this server keeps none', 501);
@@ -273,7 +278,7 @@ export const handleTriggersCreate = async (
   deps.dispatcher?.rebuild();
   deps.onRulesChanged?.();
   emitAutomationRule(deps.eventBus, 'event_trigger');
-  return { trigger };
+  return { trigger, ...(webhook_doors !== undefined ? { webhook_doors } : {}) };
 };
 
 // ────────────────────────────────────────────────────────────────

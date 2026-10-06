@@ -69,10 +69,11 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // remembered to add. The ratchet there now DERIVES the requirement from
   // `isChatThreadEvent`, so the next appended chat kind fails until subscribed.
   'chat.data_diagnosis_resolved',
-  // D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope. Fans to every
-  // paired client so Settings → Chat → Tool Catalog Scope stays in
-  // sync across devices without a manual refresh.
-  'chat.tool_catalog_scope_changed',
+  // ⛔ D-137 W2.2 — `chat.tool_catalog_scope_changed` REMOVED (2026-10-04). The
+  // per-kind chat catalog scope is retired: no server of this version emits it,
+  // and its one consumer (the Settings → Chat → Tool Catalog Scope page) was
+  // never mounted and is deleted. The kind stays in the contracts so an older
+  // server's emit still parses.
   // ⛔ D-228 slice 4 — `chat.connection_mcp_annotation_changed` REMOVED. Its
   // stated job was fanning "Settings → Connections → <name> → Tools" edits so
   // the Tier 3 catalog projection refreshed. That panel is deleted (it had zero
@@ -86,8 +87,9 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   // literal sweep is exactly the kind that reads the same whether a consumer is
   // absent or merely named differently — so the same sweep was run over four
   // other subscribed `chat.*` kinds first: `chat.tool_catalog_scope_changed`
-  // (2 consumer files) and `chat.inbound_token_changed` (4) both surfaced, which
-  // is what proves the method can see a consumer when there is one. There is no
+  // (2 consumer files, since retired with its page) and `chat.inbound_token_changed`
+  // (4) both surfaced, which is what proves the method can see a consumer when
+  // there is one. There is no
   // `onAny` listener in this app, so a kind absent from a literal sweep is
   // absent, full stop.
   //

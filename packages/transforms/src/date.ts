@@ -127,6 +127,16 @@ export const date_add: TransformFn = (p, ctx) => {
 const hasTimezoneOffset = (raw: string): boolean =>
   /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw.trim());
 
+/** D-193 — an ABSOLUTE instant a model supplied (a reminder's, a schedule's), as
+ *  Unix ms; `null` when it carries no explicit offset or does not parse. One rule
+ *  for `date_parse`'s `require_offset` and chat's `recipe.schedule`, so the two
+ *  can never disagree about which times they accept. */
+export const parseInstantWithOffset = (raw: unknown): number | null => {
+  if (isNonDateValue(raw) || typeof raw !== 'string' || !hasTimezoneOffset(raw)) return null;
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d.getTime();
+};
+
 export const date_parse: TransformFn = (p) => {
   // A nullish / empty input is "no date", NOT the Unix epoch. `new Date(null)`
   // coerces to epoch 0 — a VALID date — so without this guard an absent date
@@ -141,9 +151,7 @@ export const date_parse: TransformFn = (p) => {
   // offset; an offset-less value is ambiguous (parsed as server-local), so
   // fail closed to null rather than schedule the wrong instant. Opt-in — the
   // default stays lenient for the many callers parsing already-anchored data.
-  if (p.require_offset === true && (typeof raw !== 'string' || !hasTimezoneOffset(raw))) {
-    return null;
-  }
+  if (p.require_offset === true) return parseInstantWithOffset(raw);
   const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d.getTime();
 };

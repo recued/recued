@@ -45,11 +45,28 @@ const fieldList = (fields: Readonly<Record<string, string>>): string =>
     .map(([path, kind]) => `${path} (${kind})`)
     .join(', ');
 
+/** What a run-time tag set hides, in the owner's terms. An identifier tag
+ *  aliases its field's value; a `content` tag hides the contacts the server
+ *  knows and every email in the text (D-316 amendment, 2026-10-05) — calling
+ *  a whole content field "aliased" would overstate it. */
+const protectionPhrase = (fields: Readonly<Record<string, string>>): string => {
+  const identifiers = Object.fromEntries(Object.entries(fields).filter(([, kind]) => kind !== 'content'));
+  const content = Object.entries(fields)
+    .filter(([, kind]) => kind === 'content')
+    .map(([path]) => path)
+    .sort();
+  const parts: string[] = [];
+  if (Object.keys(identifiers).length > 0) parts.push(`${fieldList(identifiers)} aliased`);
+  if (content.length > 0) {
+    parts.push(`the contacts the server knows and every email in ${content.join(', ')} aliased`);
+  }
+  return `${parts.join('; ')} before egress.`;
+};
+
 /** Why auto-protection declined, appended to the residual step's warning so
  *  the author knows the automatic path was tried. Keyed by the applicator's
- *  typed outcome; `content_only` is absent on purpose (info-grade, never a
- *  warning). */
-const RESIDUAL_SUFFIX: Record<Exclude<AutoPiiResidualOutcome, 'content_only'>, string> = {
+ *  typed outcome. */
+const RESIDUAL_SUFFIX: Record<AutoPiiResidualOutcome, string> = {
   no_bracketable_source:
     ' (auto-protection declined: no payload source offers a runtime-walkable tag set)',
   unsupported_position:
@@ -90,7 +107,7 @@ export const summarizeRecipePiiPosture = (
 
   const autoProtected: RecipePiiPostureLine[] = [];
   const covered = new Set<string>();
-  const residualOutcome = new Map<string, Exclude<AutoPiiResidualOutcome, 'content_only'>>();
+  const residualOutcome = new Map<string, AutoPiiResidualOutcome>();
   if (application) {
     for (const inj of application.injections) {
       covered.add(inj.step_id);
@@ -98,7 +115,7 @@ export const summarizeRecipePiiPosture = (
         step_id: inj.step_id,
         message:
           `AI step '${inj.step_id}' (${inj.slug}): Recued injects llm.pii_fields at run time — `
-          + `${fieldList(inj.fields)} aliased before egress.`,
+          + protectionPhrase(inj.fields),
       });
     }
     for (const bracket of application.brackets) {
@@ -111,12 +128,10 @@ export const summarizeRecipePiiPosture = (
         step_id: bracket.step_id,
         message:
           `AI step '${bracket.step_id}' (${bracket.slug}): Recued wraps it in a `
-          + `pii-protect/pii-restore bracket at run time — ${fieldList(fields)} aliased before egress.`,
+          + `pii-protect/pii-restore bracket at run time — ${protectionPhrase(fields)}`,
       });
     }
-    for (const r of application.residual) {
-      if (r.outcome !== 'content_only') residualOutcome.set(r.step_id, r.outcome);
-    }
+    for (const r of application.residual) residualOutcome.set(r.step_id, r.outcome);
   }
 
   const warnings: RecipePiiPostureLine[] = [];
@@ -136,16 +151,18 @@ export const summarizeRecipePiiPosture = (
     warnings.push(toLine(issue)); // pii_declaration_ineffective — auto-PII never fixes it
   }
 
-  // M counts AI steps whose identifier egress STANDS at run time. With the
-  // applicator on, that is the non-content residual set; with it off, every
-  // identifier-leak warning stands.
+  // M counts AI steps whose identifier egress STANDS at run time: the
+  // identifier-leak steps auto-protection left residual (a content-only step
+  // that could not be bracketed keeps its info line, not a warning); with the
+  // applicator off, every identifier-leak warning stands.
+  const identifierLeakSteps = new Set(
+    validation.issues
+      .filter((i) => i.code === 'pii_reaches_llm')
+      .map((i) => i.step_id),
+  );
   const manualSteps = application
-    ? new Set(residualOutcome.keys())
-    : new Set(
-        validation.issues
-          .filter((i) => i.code === 'pii_reaches_llm')
-          .map((i) => i.step_id),
-      );
+    ? new Set([...residualOutcome.keys()].filter((id) => identifierLeakSteps.has(id)))
+    : identifierLeakSteps;
 
   const n = covered.size;
   const m = manualSteps.size;

@@ -835,6 +835,7 @@ export const composeExecuteDeps = (
         filename: string;
         mime_type: string;
         source_id: string;
+        ai_enrichment?: 'opt_out';
       }): Promise<{ record_id: string }> => {
         const record = await inboundFileCollection.ingest({
           bytes: Buffer.from(input.bytes_b64, 'base64'),
@@ -842,6 +843,7 @@ export const composeExecuteDeps = (
           mime_type: input.mime_type,
           origin: 'connection_download',
           source_id: input.source_id,
+          ...(input.ai_enrichment === 'opt_out' ? { ai_enrichment: 'opt_out' as const } : {}),
         });
         return { record_id: record.record_id };
       }

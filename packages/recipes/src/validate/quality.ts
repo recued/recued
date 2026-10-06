@@ -10,7 +10,7 @@
  *  recipe.
  */
 
-import { isEntityFieldPrivacy, stripCorePrefix } from '@recued/contracts';
+import { isEntityFieldPrivacy } from '@recued/contracts';
 import { canonicalJsonString } from '../canonical.js';
 import {
   CURRENCY_FIELD_HINTS,
@@ -22,6 +22,8 @@ import {
 } from './constants.js';
 import type { RecipeDefinition } from '@recued/contracts';
 import { guardRequiredVariables } from '../chat-catalog.js';
+import { declaresPiiHandling, NO_PII_DECLARATION_DETAIL } from '../pii-declaration.js';
+import { aiStepDispatch } from '../step-dispatch.js';
 import { parseStepRef } from './helpers.js';
 import type { AddFn } from './helpers.js';
 
@@ -39,12 +41,11 @@ export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): v
   checkConfidenceZeroAnchor(steps, add, 'steps');
   checkConfidenceZeroAnchor(prefetch, add, 'prefetch_steps');
 
+  // An AI step in either form: `ingredient: "ai-*"` (or a `core-ai-*` alias) or
+  // `op: "core.ai.*"`, which is how every shipped recipe writes one.
   const aiStepIndices: number[] = [];
   for (let i = 0; i < steps.length; i++) {
-    const ing = steps[i]?.ingredient;
-    // §5 — recognize the `core-ai-*` kernel aliases as AI steps too (same quality
-    // checks: guard-before-AI, etc.).
-    if (typeof ing === 'string' && stripCorePrefix(ing).startsWith('ai-')) aiStepIndices.push(i);
+    if (aiStepDispatch(steps[i]) !== undefined) aiStepIndices.push(i);
   }
 
   checkOrphanPrefetch(prefetch, steps, output, add);
@@ -175,10 +176,8 @@ const checkGuardBeforeAi = (steps: StepArr, aiStepIndices: number[], add: AddFn)
 const checkHashPairing = (steps: StepArr, aiStepIndices: number[], add: AddFn): void => {
   const hasReplace = steps.some((s) => s.transform === 'hash_replace');
   const hasRestore = steps.some((s) => s.transform === 'hash_restore');
-  const hasPiiFields = steps.some((s) => Array.isArray(s.pii_fields) && (s.pii_fields as unknown[]).length > 0);
-  if (aiStepIndices.length > 0 && !hasReplace && !hasPiiFields) {
-    add('info', 'no_hash_before_ai', 'steps',
-      'recipe has AI steps but no hash_replace or pii_fields — verify no PII is sent to LLM');
+  if (aiStepIndices.length > 0 && !declaresPiiHandling(steps)) {
+    add('info', 'no_hash_before_ai', 'steps', NO_PII_DECLARATION_DETAIL);
   }
   if (hasReplace && !hasRestore) {
     add('warn', 'missing_hash_restore', 'steps',
@@ -197,9 +196,10 @@ const checkHashPairing = (steps: StepArr, aiStepIndices: number[], add: AddFn): 
  *      would be the wrong call there. `content`-shaped blobs have no
  *      field-name signature, so they stay on `hash_replace` untouched.
  *   2. `missing_pii_restore` (warn) — `pii-protect` without a matching
- *      `pii-restore`. The engine auto-restores the final output before it
- *      reaches the user (D-167 Slice 3), so this is no longer an output-leak
- *      hole; it stays a warn because any MID-RUN egress (a notify, a durable
+ *      `pii-restore`. The engine auto-restores what the run hands on when it
+ *      ends — its rendered output (D-167 Slice 3) and, since 2026-10-06, an
+ *      `output.exchange` it fires (`buildExchangeFirePayload`) — so neither is
+ *      an output-leak hole; it stays a warn because any MID-RUN egress (a notify, a durable
  *      write, another channel) reached before the run ends still surfaces the
  *      alias tokens — an explicit `pii-restore` ahead of those steps is clearer
  *      and covers them.
@@ -229,7 +229,7 @@ const checkPiiAliasing = (steps: StepArr, aiStepIndices: number[], add: AddFn): 
   const hasRestore = steps.some((s) => s.transform === 'pii-restore');
   if (hasProtect && !hasRestore) {
     add('warn', 'missing_pii_restore', 'steps',
-      'pii-protect used but no pii-restore — the engine restores the final output, but alias tokens (pii.Person1, m1@d1.invalid) still reach any mid-run egress (notify, durable write); add pii-restore before those steps');
+      'pii-protect used but no pii-restore — the engine restores what the run renders, and what it fires as an exchange, when it ends; alias tokens (pii.Person1, m1@d1.invalid) still reach any step before then that sends or stores data (notify, durable write) — add pii-restore before those steps');
   }
 
   for (let i = 0; i < steps.length; i++) {
@@ -352,16 +352,18 @@ const checkNoopTransforms = (steps: StepArr, add: AddFn): void => {
 const checkAiPromptSpecificity = (steps: StepArr, add: AddFn): void => {
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    if (s.ingredient !== 'ai-prompt') continue;
-    const input = (s.input && typeof s.input === 'object' && !Array.isArray(s.input))
-      ? (s.input as Record<string, unknown>) : {};
-    const sysPrompt = input['llm.system_prompt'];
+    const call = aiStepDispatch(s);
+    if (call?.slug !== 'ai-prompt') continue;
+    // The step's own spelling: `ai-prompt`, or `core.ai.prompt` for an op step.
+    const name = typeof s.op === 'string' ? s.op : String(s.ingredient);
+    const at = `steps[${i}].${call.payloadKey}['llm.system_prompt']`;
+    const sysPrompt = call.payload['llm.system_prompt'];
     if (typeof sysPrompt !== 'string' || sysPrompt.length === 0) {
-      add('warn', 'ai_prompt_missing_system', `steps[${i}].input['llm.system_prompt']`,
-        `step '${s.id}' is ai-prompt but has no llm.system_prompt`);
+      add('warn', 'ai_prompt_missing_system', at,
+        `step '${s.id}' is ${name} but has no llm.system_prompt`);
     } else if (sysPrompt.length < 80) {
-      add('info', 'ai_prompt_vague', `steps[${i}].input['llm.system_prompt']`,
-        `step '${s.id}' ai-prompt system_prompt is ${sysPrompt.length} chars — be specific`);
+      add('info', 'ai_prompt_vague', at,
+        `step '${s.id}' ${name} system_prompt is ${sysPrompt.length} chars — be specific`);
     }
   }
 };

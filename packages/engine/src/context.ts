@@ -1,6 +1,11 @@
 import type { EnrichmentScope, NamespaceStores } from '@recued/contracts';
 import { resolveValue } from '@recued/contracts';
-import type { TransformContext, EnrichmentRowSnapshot, PiiLedgerStore } from '@recued/transforms';
+import type {
+  TransformContext,
+  EnrichmentRowSnapshot,
+  PiiKnownValueSource,
+  PiiLedgerStore,
+} from '@recued/transforms';
 import { getTransform } from '@recued/transforms';
 import { evaluateCondition } from './condition.js';
 
@@ -19,6 +24,8 @@ export interface TransformContextExtras {
   /** D-167 P4 — run-local PII alias ledger store for the recipe-mode
    *  `pii-protect` / `pii-restore` transforms. Minted per run by the engine. */
   piiLedgerStore?: PiiLedgerStore;
+  /** D-316 amendment — the host's known-value matcher for `content` tags. */
+  piiKnownValues?: () => PiiKnownValueSource | undefined;
 }
 
 /** Build the TransformContext that every transform function receives.
@@ -38,4 +45,5 @@ export const createTransformContext = (
   extendBudget: extras?.extendBudget,
   readEnrichmentRow: extras?.readEnrichmentRow,
   piiLedgerStore: extras?.piiLedgerStore,
+  piiKnownValues: extras?.piiKnownValues,
 });

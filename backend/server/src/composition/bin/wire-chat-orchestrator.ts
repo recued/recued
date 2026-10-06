@@ -3,8 +3,8 @@ import { createChatMessengerBridge } from '../../chat-messenger-bridge.js';
 /** D-137 — boot composer for the AI Chat substrate.
  *
  *  Wires the per-pair chat surface end-to-end:
- *    - SQLite-backed ChatStore + ChatToolCatalogStore +
- *      ChatConnectionMcpStore + ChatInboundTokenStore
+ *    - SQLite-backed ChatStore + ChatConnectionMcpStore +
+ *      ChatInboundTokenStore
  *    - First-party middleware registry + D-164 P4 prompt-cache
  *      registration (the registry is a substrate hook today — no
  *      consumer reads it; D-164 P4 builds on it)
@@ -48,6 +48,7 @@ import { resolveChatInputTokenBudget } from '../../chat-context-budget.js';
 import type { PreflightRunSettled } from '../../preflight-resumer.js';
 import { buildPriorToolPointers } from '../../chat-orchestrator.js';
 import { createChatRunSettledSink } from '../../chat-run-settled-sink.js';
+import { buildWaitedCallsContext, joinInFlightContexts } from '../../chat-waited-calls-context.js';
 import {
   CHAT_MESSAGE_RECALL_ELIGIBILITY,
   deriveChatMessageRecallEligibility,
@@ -178,11 +179,6 @@ import {
 } from '../../storage/chat-store.js';
 import { createSqliteChatPlanStore } from '../../storage/chat-plan-store.js';
 import {
-  createChatToolCatalogStore,
-  ensureChatToolCatalogSchema,
-  type ChatToolCatalogStore,
-} from '../../storage/chat-tool-catalog-store.js';
-import {
   createChatConnectionMcpStore,
   ensureChatConnectionMcpAnnotationSchema,
   type ChatConnectionMcpStore,
@@ -251,6 +247,8 @@ import type { PairedInstancesStore } from '../../paired-instances-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
+import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
+import { createInstalledRecipeScheduler } from '../../schedule-installed-recipe.js';
 import {
   buildMcpGrantCatalogLegacyEntries,
   buildRecipeOpCoverage,
@@ -321,6 +319,15 @@ export interface ComposeChatOrchestratorDeps {
   getConnectionStore: () => ConnectionStoreSqlite | undefined;
   getExecutorConfig: () => ServerExecutorConfig | undefined;
   getExecuteDeps: () => ExecuteHandlerDeps | undefined;
+  /** D-193 amendment — the schedule store's deps, for chat's `recipe.schedule`.
+   *  Late-bound (the maintenance composition builds the schedule store after the
+   *  chat surface); `undefined` ⇒ the tool says scheduling is unavailable.
+   *
+   *  ⚠ REQUIRED, so a composition that forgets it fails to compile. Optional, a
+   *  missing pass-through would leave the owner's chat saying "scheduling is
+   *  unavailable" while every test that hands the tool its scheduler stays green.
+   *  A profile with no scheduler says so: `() => undefined`. */
+  getScheduleDeps: () => ScheduleHandlerDeps | undefined;
   /** D-177 N.11 rule 5 (5.c, slice C) — the contract store, for the
    *  scoped-grant parse hook's suggestion store + binding store. Late-bound
    *  (the contract store bootstraps after the chat surface in
@@ -351,7 +358,6 @@ export interface ChatOrchestratorBundle {
   readonly runSettledSink: (settled: PreflightRunSettled) => void;
 
   chatStore: ChatStore;
-  toolCatalogStore: ChatToolCatalogStore;
   connectionMcpStore: ChatConnectionMcpStore;
   inboundTokenStore: ChatInboundTokenStore;
   internalRegistry: InternalToolRegistry;
@@ -475,7 +481,6 @@ export const composeChatOrchestrator = (
   // contract MUST hold whenever the encryption substrate exists.
   const chatKeyProvider = keys ? keys.keyProvider('chat') : undefined;
   ensureChatSchema(db);
-  ensureChatToolCatalogSchema(db);
   ensureChatConnectionMcpAnnotationSchema(db);
   ensureChatInboundTokenSchema(db);
   const chatStore = createChatStore(db, chatKeyProvider, getLlmConfig);
@@ -508,7 +513,6 @@ export const composeChatOrchestrator = (
       chatStore.setDefaultModelSourceId(derivedDefaultSourceId);
     }
   }
-  const toolCatalogStore = createChatToolCatalogStore(db);
   const connectionMcpStore = createChatConnectionMcpStore(db);
   let inboundTokenStore: ChatInboundTokenStore;
   inboundTokenStore = createChatInboundTokenStore(db, {
@@ -697,6 +701,15 @@ export const composeChatOrchestrator = (
         : { attachments: [], warnings: ['Attachment storage is unavailable.'] };
     },
     documentPacks: () => getExecuteDeps()?.contractScan?.('installed_pack', []) ?? [],
+    // ⛔ D-225 § 9.5.1 — THE CHAT RAW-OP SOURCE NEVER HAD ITS PACK SCAN. The
+    // source shipped with the scan optional ("absent ⇒ no raw ops") and nothing
+    // here passed it, so from 2026-07-30 no installed pack action reached the
+    // owner's chat in ANY catalog mode, while D-228 and D-247 were written
+    // assuming it did. Live: "take a snapshot of the camera" searched three
+    // times and was told nothing could. The same inventory `documentPacks`
+    // reads; the gate still decides per op (`isOpGranted`), and lean-core, the
+    // default, lists none of them: they are found through `tools.search`.
+    scanInstalledPacks: () => getExecuteDeps()?.contractScan?.('installed_pack', []) ?? [],
     // D-172 P2 — `file.search`'s DEFAULT (session) scope reads this session's
     // own message rows for their attachments. Without it the tool would have
     // only the owner-wide scope, which is the one we deliberately made
@@ -729,6 +742,26 @@ export const composeChatOrchestrator = (
       return executeDeps
         ? (req) => handleExecute(executeDeps, req)
         : undefined;
+    },
+    // D-193 amendment — `recipe.schedule`: the same handler the Run dialog uses,
+    // with the recipe-existence check and the missing-pack refusal.
+    getInstalledRecipeScheduler: () => {
+      const scheduleDeps = deps.getScheduleDeps();
+      if (scheduleDeps === undefined) return undefined;
+      const contractScan = getExecuteDeps()?.contractScan;
+      const manifests = getExecutorConfig()?.manifests;
+      return createInstalledRecipeScheduler({
+        scheduleDeps,
+        recipeStore,
+        ...(contractScan !== undefined && manifests !== undefined
+          ? {
+              packs: {
+                scanInstalledPacks: () => contractScan('installed_pack', []),
+                getManifest: (slug: string) => manifests.get(slug) ?? null,
+              },
+            }
+          : {}),
+      });
     },
     // D-259 § 7.4.3 — the SAME registry instance the executor and the MCP
     // stop use. Late-bound for the same reason as the executor above: this
@@ -1098,10 +1131,12 @@ export const composeChatOrchestrator = (
           isEnrichmentTopic(topic) ? readTrustState(topic) : 'off',
       }),
       CHAT_CATALOG_DELIVERY_MODES,
-      () => toolCatalogStore.getScope() ?? null,
       chatToolRegistryInputs.tier2GrantFilter,
       tier2OwnerCatalog,
       chatToolRegistryInputs.ownerCatalogGuard,
+      // The SAME raw-action source `buildCatalog` presents and the dispatch
+      // resolves by name, so search answers the same grant question.
+      chatToolRegistryInputs.rawOpSource as (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
     ),
     {
       backend: createRecallSearchBackend(chatStore),
@@ -1315,10 +1350,14 @@ export const composeChatOrchestrator = (
         turn_id,
       );
     },
-    buildInFlightContext: (source: ExecutionSource) =>
+    buildInFlightContext: (source: ExecutionSource) => joinInFlightContexts(
       getExecuteDeps()?.inFlightRegistry?.promptContext(
         deriveChannelSessionId(source),
       ),
+      // Calls that stopped to wait and have since settled (or still wait):
+      // without this the model repeats its own "queued" after the run is done.
+      buildWaitedCallsContext(chatStore.toolCalls, source),
+    ),
     // Pre-seed INDEX. Probes the ordinary Tier-1 read handlers for the owner's
     // own distinctive terms and reports only WHICH STORES answered — never a
     // row, a title or a count. Two gates apply and neither is re-implemented
@@ -1567,10 +1606,6 @@ export const composeChatOrchestrator = (
     broadcast,
     ...(auditLog ? { auditLog } : {}),
     selfSignature,
-    // D-137 W2.2 § A.1.1 — orchestrator reads Mary's per-kind scope
-    // at every turn start so the kindGatedTier2Names set stays current
-    // with Settings toggles without restarting the chat session.
-    scopeProvider: () => toolCatalogStore.getScope() ?? null,
     // D-137 W2.3 § A.10 — same pre-filtered annotation list the Tier 3
     // catalog projection uses (above) — keeps both surfaces consistent.
     annotationProvider: () => listLiveMcpAnnotations(),
@@ -1627,7 +1662,6 @@ export const composeChatOrchestrator = (
 
   const chatDeps: ChatRpcDeps = {
     store: chatStore,
-    toolCatalogStore,
     connectionMcpStore,
     // D-228 slice 4 — the picker's visibility predicate, off the SAME coverage
     // closure the chat catalog and the Tier-3 retirement use. A peer surfaces in
@@ -2205,7 +2239,6 @@ export const composeChatOrchestrator = (
     chatStore,
     // Source-scoped late outcomes for previously held owner-chat calls.
     runSettledSink: createChatRunSettledSink(chatStore, selfSignature, broadcast),
-    toolCatalogStore,
     connectionMcpStore,
     inboundTokenStore,
     internalRegistry,

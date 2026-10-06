@@ -186,6 +186,7 @@ const MANIFESTS = [
     "input": {
       "llm.data": null,
       "llm.fields": null,
+      "llm.context": null,
       "llm.model_hint": null,
       "llm.id_field": ""
     },
@@ -780,7 +781,7 @@ const MANIFESTS = [
   {
     "slug": "calendar-list",
     "name": "List events from a warehouse calendar collection",
-    "description": "Read hot-field rows from `data.calendar.{slug}.*` ordered by `start_at` ascending. Filters: `calendar_id` (target one calendar on the account), `since` / `until` (unix-ms range on `start_at`), `status` ('confirmed' | 'cancelled' | 'tentative'). Returns metadata only — descriptions and attendee detail come from `calendar-get`. Reads the warehouse only; the adapter is never consulted on this path. Returns empty when no events match the filter.",
+    "description": "Read hot-field rows from `data.calendar.{slug}.*`, or from every calendar when `slug` is empty, ordered by `start_at` ascending. Rows read from every calendar carry `collection_slug`, the calendar each is in. Filters: `calendar_id` (target one calendar on the account), `since` / `until` (unix-ms range on `start_at`), `status` ('confirmed' | 'cancelled' | 'tentative'). Returns metadata only — descriptions and attendee detail come from `calendar-get`. Reads the warehouse only; the adapter is never consulted on this path. Returns empty when no events match the filter.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -910,34 +911,6 @@ const MANIFESTS = [
     "writes": {
       "collection": "calendar",
       "id_output_field": "source_id"
-    }
-  },
-  {
-    "slug": "calendar-watcher",
-    "name": "Calendar Watcher",
-    "description": "Reads the server warehouse `data.calendar.*` collection with two modes: `starting_soon` fires when one or more events start within the next `minutes_ahead` window (paired with a recurring auto_run cadence for meeting-reminder recipes); `changed_since` fires when events were created, updated, or deleted after the stored cursor. Metadata-only — attendee lists and descriptions never leave the warehouse.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "watcher",
-      "calendar",
-      "warehouse",
-      "trigger"
-    ],
-    "input": {
-      "kind": null,
-      "minutes_ahead": null,
-      "since": null,
-      "limit": null
-    },
-    "output": {
-      "should_run": "should_run",
-      "items": "items",
-      "last_seen_at": "last_seen_at"
     }
   },
   {
@@ -1380,6 +1353,7 @@ const MANIFESTS = [
     "input": {
       "llm.data": null,
       "llm.fields": null,
+      "llm.context": null,
       "llm.model_hint": null,
       "llm.id_field": ""
     },
@@ -3125,36 +3099,6 @@ const MANIFESTS = [
     }
   },
   {
-    "slug": "file-watcher",
-    "name": "File Watcher",
-    "description": "Reads the server warehouse `data.file.*` collection and returns `should_run: true` when any file record modified after `since` matches the (optional) path prefix / extension / size bounds. Metadata-only — file contents never leave the warehouse. Same routing as mail-watcher: pair rpc from extension, direct read on server.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "watcher",
-      "file",
-      "warehouse",
-      "trigger"
-    ],
-    "input": {
-      "since": null,
-      "path_prefix": null,
-      "extension": null,
-      "min_size": null,
-      "max_size": null,
-      "limit": null
-    },
-    "output": {
-      "should_run": "should_run",
-      "items": "items",
-      "last_seen_at": "last_seen_at"
-    }
-  },
-  {
     "slug": "file-write",
     "name": "Write a file record to a warehouse file collection",
     "description": "Persist bytes to a record on the named file instance. Body is base64-encoded in the input so the rpc envelope stays JSON-clean. `mime` is optional — when omitted the adapter falls back to extension-based detection (fs) or the adapter's default (s3, ext-downloads). Creates the record when absent, overwrites in place when present. Rejects with `FILE_CAPABILITY_DENIED` when the instance lacks the `write` cap, `FILE_INSTANCE_DEGRADED` when auth has drifted, `FILE_TOO_LARGE` when the body exceeds the adapter's v1 ceiling. Returns `{ ok: true, bytes_written }` on success.",
@@ -3183,7 +3127,7 @@ const MANIFESTS = [
   {
     "slug": "http-watcher",
     "name": "HTTP Watcher",
-    "description": "Polls `target_url` and compares the response's ETag (or body hash when ETag is absent) against a stored cursor. Returns `should_run: true` on first tick and whenever the target has changed since the last recorded cursor. Pairs with a `shared-write` step that records the new etag/hash so the next tick is idempotent. Kernel ingredient — the watcher dispatcher owns the fetch; authors pass the URL via recipe step input (not the attested HTTP url key).",
+    "description": "Fetches `target_url` and fires when its body changed; with `once_per_change: true` the server remembers the page and hands it back as `previous_body`. Without it, pass the `hash` you stored last as `previous_hash` (or an `etag` as `previous_etag`) and store the new one yourself, or every check fires. The first check fires, with `previous_body: null`. The server moves its memory on only when the run that reported a change completes, so a run that fails reports the change again at the next check, and a recipe using it writes nothing. Compares a SHA-256 of the body (the ETag only when you pass `previous_etag`). Kernel ingredient — the watcher dispatcher owns the fetch; authors pass the URL via recipe step input (not the attested HTTP url key).",
     "author": "recued",
     "kind": "http",
     "version": 1,
@@ -3199,14 +3143,16 @@ const MANIFESTS = [
     "input": {
       "target_url": null,
       "previous_etag": null,
-      "previous_hash": null
+      "previous_hash": null,
+      "once_per_change": null
     },
     "output": {
       "should_run": "should_run",
       "body": "body",
       "status": "status",
       "etag": "etag",
-      "hash": "hash"
+      "hash": "hash",
+      "previous_body": "previous_body"
     }
   },
   {
@@ -3668,35 +3614,6 @@ const MANIFESTS = [
     }
   },
   {
-    "slug": "mail-watcher",
-    "name": "Mail Watcher",
-    "description": "Reads the server warehouse `data.mail.*` collection and returns `should_run: true` when any message newer than `since` matches the (optional) from / subject / label filter. Metadata-only — body contents never leave the warehouse. Extension invocations route via pair rpc to the paired recued-server; extensions without a paired server get `should_run: false` and a `no_paired_server` flag so the scheduler can advance the circuit-breaker counter rather than spinning silently.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "watcher",
-      "mail",
-      "warehouse",
-      "trigger"
-    ],
-    "input": {
-      "since": null,
-      "from": null,
-      "subject": null,
-      "label": null,
-      "limit": null
-    },
-    "output": {
-      "should_run": "should_run",
-      "items": "items",
-      "last_seen_at": "last_seen_at"
-    }
-  },
-  {
     "slug": "note-create",
     "name": "Create note",
     "description": "Create a note on the chosen Source. Default Source is the Recued built-in local Source; pass source_id explicitly to write anywhere else. last_user_action_at is stamped to now. Returns the canonical note record. Optional `container_names` names the destination container up front — a map from the Source's container dependency ref (the `dependency_ref` a container pick surfaces, e.g. `project` on Asana / `team` on Linear / `tasklist` on Google Tasks) to that container's name, `{ project: 'Roadmap' }` — so a caller that already knows the destination skips the ambiguous-container pick. A granted name that doesn't exist yet plans the container's creation for the owner to confirm; naming only disambiguates, so the write itself is still approval-gated. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
@@ -3816,33 +3733,6 @@ const MANIFESTS = [
     "output": {
       "delivered_to": "delivered_to",
       "failed": "failed"
-    }
-  },
-  {
-    "slug": "schedule-recipe",
-    "name": "Schedule Installed Recipe",
-    "description": "Creates a server-owned recurring or one-shot schedule for a recipe that is already installed on this local instance. This is a control-plane kernel operation: callers provide only recipe_id plus schedule timing, never inline recipe JSON or new recipe steps. One-shot schedules fire once and then disable themselves after the terminal attempt.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "action",
-    "risk_tier": "write",
-    "tags": [
-      "kernel",
-      "schedule",
-      "recipe",
-      "automation"
-    ],
-    "input": {
-      "recipe_id": null,
-      "mode": null,
-      "run_at": 0,
-      "cron_expression": "",
-      "dish_id": "",
-      "enabled": true
-    },
-    "output": {
-      "schedule": "schedule"
     }
   },
   {
@@ -4122,32 +4012,6 @@ const MANIFESTS = [
     "output": {
       "top_tier_kind": "top_tier_kind",
       "target_id": "target_id"
-    }
-  },
-  {
-    "slug": "recipe-watcher",
-    "name": "Recipe Watcher",
-    "description": "Watches the local audit log for recipe runs matching a target `recipe_id` + outcome. Three modes via `kind`: `succeeded_since` (fires when a target recipe has a successful run after the stored cursor), `failed_since` (same for failures), `stopped_since` (same for user-stopped runs). Returns `{ should_run, runs }` where `runs[]` is the matching audit rows. Author advances a `shared.<cursor>` key after each fire so the next tick picks up only fresher runs.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "watcher",
-      "recipe",
-      "audit",
-      "trigger"
-    ],
-    "input": {
-      "kind": null,
-      "recipe_id": null,
-      "since_ms": null
-    },
-    "output": {
-      "should_run": "should_run",
-      "runs": "runs"
     }
   },
   {
@@ -4547,7 +4411,7 @@ const MANIFESTS = [
   {
     "slug": "time-relative-watcher",
     "name": "Time-Relative Watcher",
-    "description": "Fires when wall-clock time crosses a declared offset relative to a field on a warehouse record. Generic temporal anchor — drives meeting reminders, deadline alerts, renewal nudges, anniversary triggers, follow-up windows. Sweeper queries the collection every TIME_RELATIVE_SWEEP_MS (60 s) for records whose (anchor_field + offset) has crossed since the last sweep. Per-fire output surfaces `fired` + `trigger_record_id` + `trigger_record` + `trigger_offset` so the recipe body can branch on which boundary fired. Lives inside `trigger_steps` of an `auto_run` recipe.",
+    "description": "Fires when wall-clock time crosses a declared offset relative to a field on a warehouse record. Generic temporal anchor — drives meeting reminders, deadline alerts, renewal nudges, anniversary triggers, follow-up windows. Each boundary (anchor_field + offset) fires once, and only if it crossed after the recipe started watching (with an hour's grace), so installing it does not replay the past. Every instance of the collection is watched unless `instance` names one (a calendar's name under Connections). Per-fire output surfaces `fired` + `trigger_record_id` + `trigger_record` + `trigger_offset`, and `trigger_instance`, the instance the record is in, so the recipe body can branch on which boundary fired and read the record's details from the right calendar. Lives inside `trigger_steps` of an `auto_run` recipe.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -4561,6 +4425,7 @@ const MANIFESTS = [
     ],
     "input": {
       "collection": null,
+      "instance": null,
       "anchor_field": null,
       "offsets": null,
       "filter": null
@@ -4571,7 +4436,8 @@ const MANIFESTS = [
       "trigger_record_id": "trigger_record_id",
       "trigger_record": "trigger_record",
       "trigger_offset": "trigger_offset",
-      "anchor_at": "anchor_at"
+      "anchor_at": "anchor_at",
+      "trigger_instance": "trigger_instance"
     }
   },
   {
@@ -4670,32 +4536,6 @@ const MANIFESTS = [
     },
     "output": {
       "records": "records"
-    }
-  },
-  {
-    "slug": "webhook-watcher",
-    "name": "Webhook Watcher",
-    "description": "Server-only. Registers an inbound webhook endpoint at `<server_base>/hook/<recipe_id>/<slug>`. Incoming POSTs queue in a bounded in-memory buffer between ticks; on tick, the watcher drains the queue and returns `should_run: queue.length > 0` with the drained payloads. Requires a publicly reachable recued-server (D-096 — cloud never relays webhooks). Extension instances see `should_run: false` with a `server_only: true` flag and eventually auto-disable via circuit breaker.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "watcher",
-      "webhook",
-      "server-only",
-      "trigger"
-    ],
-    "input": {
-      "recipe_id": null,
-      "slug": null
-    },
-    "output": {
-      "should_run": "should_run",
-      "requests": "requests",
-      "queue_size": "queue_size"
     }
   }
 ];

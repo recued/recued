@@ -22,6 +22,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  dishTriggerSettings,
   reconcileDeclarativeTriggers,
   type ReconcilerDish,
   type StoredRecipeRowLike,
@@ -584,6 +585,121 @@ describe('reconcileDeclarativeTriggers', () => {
       expect(withTemplates([parcels()])).toMatchObject({ removed: 1 });
       expect(store.list()).toEqual([]);
     });
+  });
+
+  /** 2026-10-05 — `data.file.{{config.file_slug}}.*.created`: each dish's row
+   *  watches the folder its setting names, where `data.file.*.*.created`
+   *  started a run for a file in every folder and the recipe stopped the
+   *  ones it did not want (each still a run in the history). */
+  describe('a pattern part a dish’s setting fills', () => {
+    const FOLDER = { file_slug: { label: 'Folder to watch', type: 'file_slug' } };
+    const arrivals = (
+      event_triggers: Array<Record<string, unknown>> = [{ event: 'data.file.{{config.file_slug}}.*.created' }],
+      variables: Record<string, unknown> = FOLDER,
+    ): StoredRecipeRowLike => ({
+      recipe_id: 'arrivals',
+      publisher_id: 'recued-core',
+      recipe_json: JSON.stringify({ recipe_id: 'arrivals', version: 1, variables, event_triggers }),
+    });
+    const patterns = () => store.list().map((row) => [row.dish_id, row.pattern, row.enabled]).sort();
+
+    it('each dish gets a row for its own folder, off; a dish with none chosen gets none', () => {
+      dishes = [
+        dishOf('arrivals', { file_slug: 'scans' }, 'dsh_scans'),
+        dishOf('arrivals', { file_slug: 'invoices' }, 'dsh_invoices'),
+        dishOf('arrivals', {}, 'dsh_unset'),
+      ];
+      expect(reconcile([arrivals()])).toMatchObject({ created: 2, skipped: 1 });
+      expect(patterns()).toEqual([
+        ['dsh_invoices', 'data.file.invoices.*.created', false],
+        ['dsh_scans', 'data.file.scans.*.created', false],
+      ]);
+    });
+
+    it('a dish that keeps the recipe’s default watches the default, as its runs read it', () => {
+      dishes = [dishOf('arrivals', {})];
+      reconcile([arrivals(undefined, { file_slug: { label: 'Folder to watch', type: 'file_slug', default: 'inbox' } })]);
+      expect(patterns()).toEqual([['dsh_arrivals', 'data.file.inbox.*.created', false]]);
+      // A primitive default is a default too (`extractVariableDefault`).
+      store.remove(store.list()[0]!.trigger_id);
+      reconcile([arrivals(undefined, { file_slug: 'outbox' })]);
+      expect(patterns()).toEqual([['dsh_arrivals', 'data.file.outbox.*.created', false]]);
+    });
+
+    it.each([
+      ['a wildcard, which would watch every folder', '*'],
+      ['a value with a dot, which would shift the parts', 'a.b'],
+      ['an empty value', ''],
+      ['a value that is not text', 42],
+    ])('⛔ %s makes no row', (_label, value) => {
+      dishes = [dishOf('arrivals', { file_slug: value })];
+      expect(reconcile([arrivals()])).toMatchObject({ created: 0, skipped: 1 });
+      expect(store.list()).toEqual([]);
+    });
+
+    it('⛔ follows the dish’s pick in place: the same row, on as it was, its history kept', () => {
+      dishes = [dishOf('arrivals', { file_slug: 'scans' })];
+      reconcile([arrivals()]);
+      const before = store.list()[0]!;
+      store.update(before.trigger_id, { enabled: true, last_fired_at: 4_000 });
+
+      dishes = [dishOf('arrivals', { file_slug: 'invoices' })];
+      expect(reconcile([arrivals()])).toMatchObject({ created: 0, removed: 0, repointed: 1, changed: true });
+      expect(store.list()).toEqual([expect.objectContaining({
+        trigger_id: before.trigger_id, pattern: 'data.file.invoices.*.created', enabled: true, last_fired_at: 4_000,
+      })]);
+      expect(reconcile([arrivals()])).toMatchObject({ repointed: 0, changed: false });
+    });
+
+    /** Where D-296's carry cannot pair (a dish with two rows), the follow
+     *  still keeps each row on. */
+    it('two triggers on one setting: both rows follow the pick, on', () => {
+      const both = arrivals([
+        { event: 'data.file.{{config.file_slug}}.*.created' },
+        { event: 'data.file.{{config.file_slug}}.*.updated' },
+      ]);
+      dishes = [dishOf('arrivals', { file_slug: 'scans' })];
+      reconcile([both]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      const ids = store.list().map((row) => row.trigger_id).sort();
+
+      dishes = [dishOf('arrivals', { file_slug: 'invoices' })];
+      expect(reconcile([both])).toMatchObject({ repointed: 2, created: 0, removed: 0 });
+      expect(store.list().map((row) => row.trigger_id).sort()).toEqual(ids);
+      expect(patterns()).toEqual([
+        ['dsh_arrivals', 'data.file.invoices.*.created', true],
+        ['dsh_arrivals', 'data.file.invoices.*.updated', true],
+      ]);
+    });
+
+    it('an update that narrows a `*` to the setting keeps the dish’s row, on', () => {
+      dishes = [dishOf('arrivals', { file_slug: 'scans' })];
+      reconcile([arrivals([{ event: 'data.file.*.*.created' }, { event: 'data.file.*.*.deleted' }])]);
+      for (const row of store.list()) store.update(row.trigger_id, { enabled: true });
+      const created = store.list().find((row) => row.pattern.endsWith('.created'))!;
+
+      expect(reconcile([arrivals([
+        { event: 'data.file.{{config.file_slug}}.*.created' },
+        { event: 'data.file.*.*.deleted' },
+      ])])).toMatchObject({ repointed: 1, created: 0, removed: 0 });
+      expect(store.get(created.trigger_id)).toMatchObject({ pattern: 'data.file.scans.*.created', enabled: true });
+    });
+
+    it('the row goes when the dish’s folder is cleared', () => {
+      dishes = [dishOf('arrivals', { file_slug: 'scans' })];
+      reconcile([arrivals()]);
+      dishes = [dishOf('arrivals', { file_slug: '' })];
+      expect(reconcile([arrivals()])).toMatchObject({ removed: 1 });
+      expect(store.list()).toEqual([]);
+    });
+  });
+
+  it('a dish reads its group’s settings under its own (`dishTriggerSettings`)', () => {
+    const groups: Record<string, Record<string, unknown>> = { g_work: { file_slug: 'scans', channels: ['slack'] } };
+    const grouped = { ...dishOf('arrivals', { channels: ['in_app'] }), group_id: 'g_work' };
+    expect(dishTriggerSettings(grouped, (id) => groups[id]).config_overlay).toEqual({ file_slug: 'scans', channels: ['in_app'] });
+    const alone = dishOf('arrivals', { file_slug: 'invoices' });
+    expect(dishTriggerSettings(alone, (id) => groups[id])).toBe(alone);
   });
 
   it('key-order and fields-order changes do NOT re-mint rows (canonical identity)', () => {

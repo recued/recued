@@ -12,8 +12,10 @@ import type { Checkpoint, Commit } from '@recued/contracts';
 import {
   D165_CONTRACT_SCHEMA,
   isMcpInboundTokenActive,
+  resolveServerTimeZone,
   setVendorAliasRegistryResolver,
 } from '@recued/contracts';
+import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
 import { getArg } from '../cli/parse.js';
 import {
   createChatInboundTokenStore,
@@ -106,6 +108,7 @@ import { startMCPServer } from '../mcp-server.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
 import { scopedCandidatesForChannelSession } from '../chat-forwarded-sender-index.js';
+import { createContactKnownValueIndexBuilder } from '../chat-recall-index.js';
 import { composeChatOrchestrator } from '../composition/bin/wire-chat-orchestrator.js';
 import { composeExecuteDeps } from '../composition/bin/wire-execute-deps.js';
 import { buildOwnerSurfaceLink } from '../ask-landing-answer-link.js';
@@ -339,10 +342,16 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   const contractGrantStore = createContractGrantStore(contractStore);
   const pairedInstances = createPairedInstancesStore(db);
   const collectionRegistry = createCollectionRegistry();
+  // D-269 — a time window reads the owner's declared zone here too, as it does
+  // on the served server (`compose-collection-context.ts`).
+  const serverZoneStore = createServerTimeZoneStore(db);
   const watcherDispatcher = createWatcherDispatcher({
-    auditLog,
     collectionRegistry,
     db,
+    serverTimeZone: () => resolveServerTimeZone(
+      serverZoneStore.read(),
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ),
   });
   const blobRoot = join(dirname(resolve(dbPath)), 'blobs');
   const cacheBlobs = createEncryptedBlobStore(
@@ -403,9 +412,20 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     getConnectionStore: () => connectionStore,
     getExecutorConfig: () => executorConfigRef,
     getExecuteDeps: () => executeDepsRef,
+    // This profile runs no scheduler, so chat's `recipe.schedule` says
+    // scheduling is unavailable here.
+    getScheduleDeps: () => undefined,
   });
 
   const executorConfig = await composeExecutorConfig({
+    // D-316 amendment — a recipe's `content` PII tags get this profile's chat
+    // match: no contact store here, as for the chat above, so the CRM mirror's
+    // names plus every email in the text.
+    piiKnownValues: createContactKnownValueIndexBuilder(
+      () => undefined,
+      () => crmRecordMirror,
+      () => liveVendorRegistry(localManifestStore),
+    ),
     // D-234 § 234.4 — the inbound peer door needs the notification block, which
     // is composed after this config. Same late-binding seam the container-pick
     // and saga wirings use.
@@ -421,8 +441,6 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     serverInstanceId,
     watcherDispatcher,
     collectionRegistry,
-    recipeStore,
-    getScheduleDeps: () => undefined,
     sellerStore,
     sellerOrderStore,
     contractStore,

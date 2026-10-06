@@ -98,10 +98,11 @@ const protectUnit = (
   ledger: Ledger,
   unit: unknown,
   fields: readonly PiiFieldTag[],
+  knownValues: TransformContext['piiKnownValues'],
 ): unknown => {
   if (typeof unit === 'string') return scanContent(ledger, unit).text;
   if (unit !== null && typeof unit === 'object' && !Array.isArray(unit)) {
-    return aliasFields(ledger, unit as PiiAliasableData, fields);
+    return aliasFields(ledger, unit as PiiAliasableData, fields, undefined, knownValues);
   }
   return unit;
 };
@@ -123,10 +124,12 @@ export const piiProtect: TransformFn = (p, ctx) => {
   // paths are relative to EACH element. `aliasFieldsBatch` runs a list-wide
   // two-pass (all identifier fields, THEN all content) so the shared ledger is
   // fully populated before any content scan — no element-order PII leak. A
-  // single value is aliased directly.
+  // single value is aliased directly. A `content` tag is also matched against
+  // the host's known values (`ctx.piiKnownValues`, D-316 amendment); if that
+  // match cannot complete, this throws before anything is emitted.
   const aliased = Array.isArray(scanned)
-    ? aliasFieldsBatch(ledger, scanned, fields)
-    : protectUnit(ledger, scanned, fields);
+    ? aliasFieldsBatch(ledger, scanned, fields, undefined, ctx.piiKnownValues)
+    : protectUnit(ledger, scanned, fields, ctx.piiKnownValues);
 
   return { aliased, ledger_handle: handle };
 };

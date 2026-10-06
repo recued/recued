@@ -28,9 +28,11 @@
 import {
   forgetEndpoint,
   jsonModeUnsupported,
+  noteImageInput,
   systemRoleUnsupported,
 } from './endpoint-capabilities.js';
 import { completeWithFallbacks } from './executor.js';
+import { PROBE_PICTURE } from './probe-picture.js';
 import type { EmbeddingsAdapterRegistry } from './embeddings/types.js';
 import type { TranscriptionAdapterRegistry } from './adapters/transcription.js';
 import type { LLMAdapter, LLMSlot } from './types.js';
@@ -84,6 +86,18 @@ export interface LlmProbeResult {
   expected_transcript?: string;
   /** D-262 § B7 — the language pin actually sent. Absent ⇒ auto-detect. */
   probe_language?: string;
+  /** Chat sources, and only when the picture check reached a verdict: did the
+   *  model read the test picture back? `true` is what lets Recued send this
+   *  model pictures (a camera snapshot, a scanned page) — see
+   *  `endpoint-capabilities` § Picture input. Absent ⇒ no verdict, and whatever
+   *  an earlier check proved still stands. */
+  sees_pictures?: boolean;
+  /** What the model answered when shown the test picture, so a wrong reading
+   *  is visible rather than just called a failure. */
+  picture_answer?: string;
+  /** Why the picture check reached no verdict, or the provider's words when it
+   *  refused the picture outright. */
+  picture_detail?: string;
   /** Round-trip in ms, including any capability retry. Useful on its own — a
    *  local model answering in 40s is a working configuration that will still
    *  make chat feel broken. */
@@ -165,7 +179,89 @@ export interface ProbeLlmSourceDeps {
   onUsage?: (totalTokens: number) => void;
   now?: () => number;
   timeout_ms?: number;
+  /** Also find out whether the model can see pictures — one more request, made
+   *  only when the first one succeeded. For chat sources; the embeddings and
+   *  transcription probes are different calls. */
+  pictures?: boolean;
 }
+
+/** The picture check's question. "Only" keeps a model that can see from
+ *  wrapping the number in a sentence that has to be parsed. */
+const PICTURE_PROMPT = 'What number is written in this picture? Reply with the number only.';
+
+/** ⚠ Longer than the text probe's box: reading a picture is slower, and a
+ *  reasoning model can take several seconds over it (measured 4–6 s on
+ *  qwen3.7-plus). Running out of time is no verdict, so a slow model is not
+ *  called blind — it just keeps what an earlier check proved. */
+export const PICTURE_PROBE_TIMEOUT_MS = 30_000;
+
+/** Statuses that say the endpoint REFUSED the picture: the same endpoint had
+ *  just answered the text probe, so the picture is what changed. Auth, a rate
+ *  limit, a timeout, an outage and an over-long input say nothing about
+ *  pictures and are left out. */
+const refusedPicture = (e: unknown): boolean => {
+  if (!(e instanceof LLMError) || e.retryable) return false;
+  const status = statusOf(e);
+  return status !== undefined && status >= 400 && status < 500
+    && status !== 401 && status !== 403 && status !== 408 && status !== 413
+    && status !== 429;
+};
+
+/** Show the model the test picture and record what that proves.
+ *
+ *  ⛔ ONLY A VERDICT IS RECORDED, IN EITHER DIRECTION: the number read back
+ *  (sees), a different answer (does not), or a refusal of the picture (does
+ *  not). An empty answer, a timeout or a rate limit leave the stored proof as
+ *  it was — the default is "cannot see", so recording those as "cannot" would
+ *  switch off the owner's camera checks over a failure that was never about
+ *  pictures. */
+const checkPictures = async (deps: ProbeLlmSourceDeps): Promise<Pick<
+  LlmProbeResult, 'sees_pictures' | 'picture_answer' | 'picture_detail'
+>> => {
+  try {
+    const result = await completeWithFallbacks(
+      deps.adapter,
+      deps.slot,
+      [{
+        role: 'user',
+        content: PICTURE_PROMPT,
+        content_parts: [
+          { type: 'text', text: PICTURE_PROMPT },
+          {
+            type: 'image',
+            source: {
+              kind: 'base64',
+              media_type: PROBE_PICTURE.mime_type,
+              data: PROBE_PICTURE.data_b64,
+            },
+          },
+        ],
+      }],
+      {
+        model: deps.slot.model,
+        // Room for "4827" and for a reasoning model's preamble; the probe still
+        // costs a few dozen tokens on a model that answers plainly.
+        max_tokens: 256,
+        json: false,
+        timeout_ms: PICTURE_PROBE_TIMEOUT_MS,
+      },
+    );
+    deps.onUsage?.(result.usage.total_tokens);
+    const answer = result.text.trim().slice(0, 120);
+    if (answer.length === 0) {
+      return { picture_detail: 'The model returned an empty answer, so whether it can see pictures is unknown.' };
+    }
+    const seen = answer.replace(/\D/gu, '').includes(PROBE_PICTURE.text);
+    noteImageInput(deps.slot, seen);
+    return { sees_pictures: seen, picture_answer: answer };
+  } catch (e) {
+    if (refusedPicture(e)) {
+      noteImageInput(deps.slot, false);
+      return { sees_pictures: false, picture_detail: (e as LLMError).message };
+    }
+    return { picture_detail: diagnoseProbeFailure(e).detail };
+  }
+};
 
 /** Run one minimal completion and report what the endpoint is.
  *
@@ -205,6 +301,7 @@ export const probeLlmSource = async (
       },
     );
     deps.onUsage?.(result.usage.total_tokens);
+    const pictures = deps.pictures === true ? await checkPictures(deps) : {};
     return {
       ok: true,
       diagnosis: 'ok',
@@ -212,6 +309,7 @@ export const probeLlmSource = async (
       // probe does not classify these itself.
       accepts_system_role: !systemRoleUnsupported(deps.slot),
       supports_json: wantsJson ? !jsonModeUnsupported(deps.slot) : false,
+      ...pictures,
       elapsed_ms: clock() - started,
     };
   } catch (e) {

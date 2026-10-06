@@ -42,22 +42,41 @@ export const answerTextSegments = (text: string): AnswerTextSegment[] => {
   return segments;
 };
 
-/** Paint answer text into `host`. Text without a citation is assigned exactly
- *  as before, one text node; a citation becomes an in-app `<a>`. */
+/** A deliberately small text formatter. Only headings and bold get emphasis;
+ * HTML and unsupported Markdown remain text. Fenced/code-like answers keep
+ * their literal notation. Link labels never enter this formatter. */
+const renderPlainFragment = (doc: Document, host: HTMLElement, text: string, format: boolean): void => {
+  const pattern = /(^|\n)#{1,6} ([^\n]+)|\*\*([^*\n]+)\*\*/gu;
+  let cursor = 0;
+  if (format) for (const match of text.matchAll(pattern)) {
+    const start = match.index;
+    if (text[start - 1] === '\\') continue;
+    if (start > cursor) host.appendChild(doc.createTextNode(text.slice(cursor, start)));
+    if (match[1]) host.appendChild(doc.createTextNode(match[1]));
+    const strong = doc.createElement('strong');
+    strong.textContent = match[2] ?? match[3] ?? '';
+    host.appendChild(strong);
+    cursor = start + match[0].length;
+  }
+  if (cursor < text.length) host.appendChild(doc.createTextNode(text.slice(cursor)));
+};
+
+/** Paint safe record links and bounded text emphasis, never model-authored HTML. */
 export const renderAnswerText = (
   doc: Document,
   host: HTMLElement,
   text: string,
 ): void => {
   const segments = answerTextSegments(text);
-  if (!segments.some((segment) => segment.kind === 'link')) {
+  const format = !text.includes('`');
+  if (!segments.some((segment) => segment.kind === 'link') && (!format || !/(^|\n)#{1,6} |\*\*[^*\n]+\*\*/u.test(text))) {
     host.textContent = text;
     return;
   }
   while (host.firstChild) host.removeChild(host.firstChild);
   for (const segment of segments) {
     if (segment.kind === 'text') {
-      host.appendChild(doc.createTextNode(segment.text));
+      renderPlainFragment(doc, host, segment.text, format);
       continue;
     }
     const link = doc.createElement('a');

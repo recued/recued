@@ -58,7 +58,9 @@ import { listCollectionDataTables } from '../../collections/table.js';
 const baseProducerVersionHash = computeProducerVersionHash({
   producer_code_hash: 'related_threads:1',
   model_id: '',
-  prompt_template_hash: 'related_threads_extract_v1',
+  // v2: `ai-extract` began sending `llm.context` (TIE_BREAK_CONTEXT) — v1 rows were
+  // graded without it.
+  prompt_template_hash: 'related_threads_extract_v2',
   adapter_version: '@recued/llm@1.0.0',
   consumed_ingredients_versions: [{ slug: 'ai-extract', version: '1' }],
 });

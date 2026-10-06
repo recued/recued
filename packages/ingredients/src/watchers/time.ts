@@ -1,7 +1,13 @@
 /** D-115 Phase 6 — time-watcher handler.
  *
  *  Pure predicate. Fires when `now` falls inside an optional weekday
- *  set + optional start/end hour range in the runtime's local TZ.
+ *  set + optional start/end hour range, on the server's wall clock: the
+ *  zone D-269 resolves (declared, or the host's), passed by the dispatcher
+ *  (2026-10-05). Before that it read the process's own zone, so on a server
+ *  whose declared zone is not the host's (a VPS in UTC for an owner in
+ *  Pacific time) every window opened at the wrong hour, while the cron
+ *  schedules beside it already ran on the declared zone. The rule itself is
+ *  `isWithinTimeWindow` in contracts, which the webclient reads too.
  *
  *  Conventions:
  *    - `weekdays`: subset of {0..7}; 0 = Sunday, and 7 = Sunday too. The
@@ -24,6 +30,8 @@
  *  Lives in `@recued/ingredients` (not `backend/server/`) so both the
  *  server's watcher dispatcher and the extension's runtime watcher
  *  dispatcher can share one source of truth — D-115 Phase 6D. */
+
+import { isWithinTimeWindow, wallClockAt } from '@recued/contracts';
 
 import { IngredientError } from '../types.js';
 
@@ -82,33 +90,13 @@ const validate = (args: TimeWatcherArgs): void => {
   }
 };
 
-const hourInWindow = (hour: number, start: number, end: number): boolean => {
-  if (start === end) return false;
-  if (start < end) return hour >= start && hour < end;
-  // Overnight wrap.
-  return hour >= start || hour < end;
-};
-
+/** `timeZone`: the IANA zone the window is read in. Absent ⇒ this process's
+ *  own zone (a runtime with no declared zone to hand). */
 export const evaluateTimeWatcher = (
   args: TimeWatcherArgs,
   now: Date = new Date(),
+  timeZone?: string,
 ): TimeWatcherOutput => {
   validate(args);
-
-  if (args.weekdays !== undefined) {
-    const day = now.getDay();
-    const sunday = day === 0 && args.weekdays.includes(7);
-    if (!args.weekdays.includes(day) && !sunday) return { should_run: false };
-  }
-
-  const startSet = args.start_hour !== undefined;
-  const endSet = args.end_hour !== undefined;
-  if (startSet || endSet) {
-    const hour = now.getHours();
-    const start = args.start_hour ?? 0;
-    const end = args.end_hour ?? 24;
-    if (!hourInWindow(hour, start, end)) return { should_run: false };
-  }
-
-  return { should_run: true };
+  return { should_run: isWithinTimeWindow(args, wallClockAt(now.getTime(), timeZone)) };
 };

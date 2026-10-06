@@ -28,11 +28,13 @@ import {
   collectRefs,
   stripCorePrefix,
   type IngredientManifest,
+  type OpStep,
   type RecipeDefinition,
   type RecipeStep,
   type PrefetchStep,
 } from '@recued/contracts';
 import { extractContextRecipeRefs } from './context-recipe-refs.js';
+import { resolveKernelClosedKindOpStep } from './op-step-kernel.js';
 
 const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -81,7 +83,8 @@ export type FlattenedActionKind =
 
 /** One step in the flattened action summary. Field presence depends
  *  on the step kind: ingredient steps carry `ingredient`; transform
- *  steps carry `transform`; guard steps carry `guard`. The shared
+ *  steps carry `transform`; guard steps carry `guard`; op steps carry
+ *  `op`, and a kernel op also the `ingredient` it runs as. The shared
  *  `action_kind` lets downstream consumers reason uniformly.
  *
  *  `input_refs` is the deduped list of fully-qualified refs the step
@@ -92,6 +95,8 @@ export type FlattenedActionKind =
  *  step-to-step writes without parsing the recipe again. */
 export interface FlattenedStep {
   step_id: string;
+  /** The op as written (`core.ai.summarize`, `recued-core.recurly.account.read`). */
+  op?: string;
   ingredient?: string;
   transform?: string;
   guard?: string;
@@ -261,6 +266,26 @@ const flattenStep = (
     return out;
   }
 
+  // An op step (`op: "core.ai.summarize"` — how every shipped recipe writes a kernel
+  // or pack call) names no ingredient. ⛔ It used to fall through to the ingredient
+  // branch below and record `ingredient: ''` as an `external_action`, so an AI op step
+  // was never an `ai_function` here. A kernel op is flattened as the ingredient step it
+  // lowers to, which is what a run records for the same step (a run flattens the
+  // recipe after lowering it), plus the op as written. A pack or canonical op resolves
+  // only against installed packs or a connection, so it keeps just its op.
+  const op = own(stepRecord, 'op');
+  if (typeof op === 'string') {
+    const lowered = resolveKernelClosedKindOpStep(step as unknown as OpStep);
+    if (lowered !== null) {
+      const { step_id: _id, ...asIngredient } = flattenStep(lowered, manifests);
+      return { step_id, op, ...asIngredient };
+    }
+    const refs = extractRefs(step);
+    const out: FlattenedStep = { step_id, op, action_kind: 'external_action', output_namespace };
+    if (refs.length > 0) out.input_refs = refs;
+    return out;
+  }
+
   // Ingredient step (covers both RecipeStep IngredientStep and PrefetchStep —
   // both expose `ingredient` + `input` of the same shape).
   const rawIngredient = own(stepRecord, 'ingredient');
@@ -276,7 +301,7 @@ const flattenStep = (
   if (refs.length > 0) out.input_refs = refs;
 
   // ai-classify carries its category whitelist directly on the step
-  // input (`input.llm.categories`). Capture it for L3+ pattern
+  // input (`input['llm.categories']`). Capture it for L3+ pattern
   // queries that want to know "what categories did this user score
   // mail into across the past quarter" without re-parsing the recipe.
   // §5 — `core-ai-classify` extracts categories like the bare slug.
@@ -425,12 +450,13 @@ const parseHost = (url: string): string | undefined => {
   }
 };
 
+/** ⛔ A step writes its categories under the flat key `"llm.categories"`, as every
+ *  `llm.*` input is written (23 shipped recipes; none nests an `llm` object). This read
+ *  `input.llm.categories` until 2026-10-06, so no snapshot ever carried them. */
 const readCategories = (step: RecipeStep | PrefetchStep): string[] | undefined => {
   const input = own(step as unknown as Record<string, unknown>, 'input');
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const llm = own(input as Record<string, unknown>, 'llm');
-  if (!llm || typeof llm !== 'object' || Array.isArray(llm)) return undefined;
-  const categories = own(llm as Record<string, unknown>, 'categories');
+  const categories = own(input as Record<string, unknown>, 'llm.categories');
   if (Array.isArray(categories) && categories.every((c) => typeof c === 'string')) {
     return categories as string[];
   }

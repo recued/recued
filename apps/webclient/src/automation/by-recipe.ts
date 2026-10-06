@@ -14,6 +14,8 @@
 
 import type { Dish } from '@recued/contracts';
 import { e, formatClientDateTime, type DishStatus } from '@recued/ui-shared';
+import { NOT_INSTALLED_TEXT } from '../recipes/running-as.js';
+import { serializeShellRoute } from '../shell/route.js';
 
 /** A control's action (`toggle:dish:on`, `configure:dish`, `detail:dish`,
  *  `switch-on:recipe`, `chip:<filter>`). Shared with the page's delegated
@@ -27,6 +29,8 @@ export const AUTOMATION_RECIPE_GROUP_ATTR = 'data-recued-automation-recipe';
 export const AUTOMATION_DISH_LINE_ATTR = 'data-recued-automation-dish';
 /** A filter chip. Value = the filter. */
 export const AUTOMATION_CHIP_ATTR = 'data-recued-automation-chip';
+/** The note on a recipe whose pack is not installed. Value = recipe_id. */
+export const AUTOMATION_NOT_INSTALLED_ATTR = 'data-recued-automation-not-installed';
 /** The "Coming up" list. */
 export const AUTOMATION_COMING_UP_ATTR = 'data-recued-automation-coming-up';
 
@@ -65,6 +69,10 @@ export interface ByRecipeGroup {
   readonly strayRows: readonly string[];
   /** It starts on its own, and nobody switched it on. */
   readonly notSwitchedOn: boolean;
+  /** It starts on its own, and the server only ships it: its pack is not
+   *  installed, so it cannot be switched on (the group shows only for rows
+   *  of its own). */
+  readonly notInstalled: boolean;
   /** What would start it, as a sentence ("It runs every 15 minutes."). */
   readonly lead: string;
   readonly switchOnBusy: boolean;
@@ -174,6 +182,12 @@ export const renderByRecipe = (view: ByRecipeView): string => {
               ? button('switch-on:recipe', group.recipe_id, group.switchOnBusy ? 'Switching on…' : 'Switch on',
                 group.switchOnBusy ? ' aria-disabled="true" aria-busy="true"' : '')
               : ''}
+          </div>`
+        : ''}
+      ${group.notInstalled && view.chip === null
+        ? `<div class="automation-not-on" ${AUTOMATION_NOT_INSTALLED_ATTR}="${e(group.recipe_id)}">
+            <span class="automation-dish-dot automation-dish-dot--off" aria-hidden="true"></span>
+            <span>${e(NOT_INSTALLED_TEXT)} <a href="${e(serializeShellRoute('packs'))}">Install it from Packs</a> to switch it on.</span>
           </div>`
         : ''}
       ${strays.length > 0 ? `<ul class="automation-list">${strays.join('')}</ul>` : ''}

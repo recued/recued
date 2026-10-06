@@ -68,6 +68,12 @@ export const CALENDAR_MAX_LIST_LIMIT = 500;
 /** Default page size when `limit` is omitted. */
 const DEFAULT_LIST_LIMIT = 100;
 
+/** How many rows a list or search returns for a requested `limit`. A read
+ *  across every calendar (`calendar-dispatcher.ts`) cuts its merged rows the
+ *  same way. */
+export const calendarListLimit = (limit: number | undefined): number =>
+  Math.max(1, Math.min(limit ?? DEFAULT_LIST_LIMIT, CALENDAR_MAX_LIST_LIMIT));
+
 // ────────────────────────────────────────────────────────────────
 // SQL identifier helpers
 // ────────────────────────────────────────────────────────────────
@@ -180,15 +186,15 @@ export interface CalendarListQuery {
   start_since?: number;
   /** Upper bound on `start_at` (exclusive, unix-ms). */
   start_until?: number;
-  /** Lower bound on `modified_at` (exclusive, unix-ms). Used by the
-   *  `changed_since` watcher mode in Phase 8. */
+  /** Lower bound on `modified_at` (exclusive, unix-ms): events changed
+   *  after a mark. */
   modified_since?: number;
   /** Filter to a specific calendar on the account. */
   calendar_id?: string;
   /** Filter on event status. */
   status?: CanonicalEvent['status'];
-  /** `'start_at'` (ascending) is the natural order for watcher
-   *  look-aheads; `'modified_at'` matches `changed_since`.
+  /** `'start_at'` (ascending) is the natural order for look-aheads;
+   *  `'modified_at'` for what changed since a mark.
    *  `'received_at'` is the warehouse-insertion order. */
   order_by?: 'start_at' | 'modified_at' | 'received_at';
   direction?: 'asc' | 'desc';
@@ -236,9 +242,8 @@ export interface CalendarCollectionTable {
    *  queries. */
   list(query: CalendarListQuery): CalendarRecordHotFields[];
   /** Same filter shape as `list`, but returns full row snapshots
-   *  (current + prior payloads + inline body + etag). The
-   *  calendar-watcher handler uses this path so `CalendarWatcherItem`
-   *  carries `prior` without a second round-trip per event. */
+   *  (current + prior payloads + inline body + etag), so a reader gets
+   *  `prior` without a second round-trip per event. */
   listSnapshots(query: CalendarListQuery): CalendarRowSnapshot[];
   /** FTS5 search over summary + description + location. */
   search(query: CalendarSearchQuery): CalendarSearchMatch[];
@@ -766,10 +771,7 @@ export const createCalendarTable = (
     // Tiebreaker on record_id so results are stable across runs.
     const orderClause =
       `ORDER BY ${orderBy} ${direction.toUpperCase()}, record_id ${direction.toUpperCase()}`;
-    const limit = Math.max(
-      1,
-      Math.min(query.limit ?? DEFAULT_LIST_LIMIT, CALENDAR_MAX_LIST_LIMIT),
-    );
+    const limit = calendarListLimit(query.limit);
     const sql = `
       SELECT * FROM ${tableName}
       ${whereClause}
@@ -793,10 +795,7 @@ export const createCalendarTable = (
   };
 
   const search = (query: CalendarSearchQuery): CalendarSearchMatch[] => {
-    const limit = Math.max(
-      1,
-      Math.min(query.limit ?? DEFAULT_LIST_LIMIT, CALENDAR_MAX_LIST_LIMIT),
-    );
+    const limit = calendarListLimit(query.limit);
     // FTS5 MATCH parses its argument as a query expression, so a raw query
     // with punctuation (an email's `.`/`@`, a stray quote, a colon) is a
     // *syntax error*, not a miss. Reduce the query to bareword tokens

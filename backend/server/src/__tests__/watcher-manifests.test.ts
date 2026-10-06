@@ -20,17 +20,12 @@ const loadManifest = (file: string): Record<string, unknown> => {
   return m as unknown as Record<string, unknown>;
 };
 
+/** The D-115 watchers still shipped. The mail, file, calendar, webhook and
+ *  recipe watchers were retired 2026-10-05. */
 const WATCHER_FILES = [
   'time-watcher.json',
-  'recipe-watcher.json',
   'http-watcher.json',
-  'mail-watcher.json',
-  'file-watcher.json',
-  'calendar-watcher.json',
-  'webhook-watcher.json',
 ];
-
-const WATCHER_SLUGS = WATCHER_FILES.map((f) => f.replace(/\.json$/, ''));
 
 describe('watcher manifests — D-115 Phase 6', () => {
   it.each(WATCHER_FILES)('%s exists and parses', (file) => {
@@ -67,33 +62,14 @@ describe('watcher manifests — D-115 Phase 6', () => {
     expect(m.author).toBe('recued');
   });
 
-  it('exactly the seven D-115 watcher manifests are present (no stragglers)', () => {
-    expect(WATCHER_SLUGS.sort()).toEqual([
-      'calendar-watcher',
-      'file-watcher',
+  /** ⚠ Read from the kernel catalog itself. This compared its own list with
+   *  itself, so a manifest added or left behind could never fail it. */
+  it('exactly the shipped watcher manifests are present (no stragglers)', () => {
+    expect(KERNEL_MANIFESTS.map((m) => m.slug).filter((slug) => slug.endsWith('-watcher')).sort()).toEqual([
       'http-watcher',
-      'mail-watcher',
-      'recipe-watcher',
+      'time-relative-watcher',
       'time-watcher',
-      'webhook-watcher',
     ]);
-  });
-
-  it('mail / file / calendar watchers declare since + limit for warehouse paging', () => {
-    for (const file of ['mail-watcher.json', 'file-watcher.json', 'calendar-watcher.json']) {
-      const m = loadManifest(file);
-      const input = m.input as Record<string, unknown>;
-      expect(input).toHaveProperty('since');
-      expect(input).toHaveProperty('limit');
-    }
-  });
-
-  it('mail / file / calendar watchers emit last_seen_at for cursor advance', () => {
-    for (const file of ['mail-watcher.json', 'file-watcher.json', 'calendar-watcher.json']) {
-      const m = loadManifest(file);
-      const output = m.output as Record<string, string>;
-      expect(output).toHaveProperty('last_seen_at');
-    }
   });
 
   it('http-watcher exposes both etag and hash outputs for cursor choice', () => {
@@ -109,23 +85,5 @@ describe('watcher manifests — D-115 Phase 6', () => {
     expect(input).toHaveProperty('weekdays');
     expect(input).toHaveProperty('start_hour');
     expect(input).toHaveProperty('end_hour');
-  });
-
-  it('recipe-watcher carries kind + recipe_id + since_ms', () => {
-    const m = loadManifest('recipe-watcher.json');
-    const input = m.input as Record<string, unknown>;
-    expect(input).toHaveProperty('kind');
-    expect(input).toHaveProperty('recipe_id');
-    expect(input).toHaveProperty('since_ms');
-  });
-
-  it('webhook-watcher carries recipe_id + slug for endpoint scoping', () => {
-    const m = loadManifest('webhook-watcher.json');
-    const input = m.input as Record<string, unknown>;
-    expect(input).toHaveProperty('recipe_id');
-    expect(input).toHaveProperty('slug');
-    const output = m.output as Record<string, string>;
-    expect(output).toHaveProperty('requests');
-    expect(output).toHaveProperty('queue_size');
   });
 });

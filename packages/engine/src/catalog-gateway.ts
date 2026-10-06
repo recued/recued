@@ -1926,6 +1926,9 @@ const REST_PROTOCOL_EXECUTOR: ProtocolExecutor<RestExecutionBinding> = {
         `${a.stepMeta?.run_id ?? 'dl'}:${a.resolution.operation_id}:${idArg ?? filename}`;
       const { record_id } = await a.ctx.ingestFileDownload({
         bytes_b64, filename, mime_type, source_id,
+        // The PACK declares it, on the binding — never a recipe arg.
+        ...(binding.response_capture.ai_enrichment === 'opt_out'
+          ? { ai_enrichment: 'opt_out' as const } : {}),
       });
       return {
         kind: 'ok',

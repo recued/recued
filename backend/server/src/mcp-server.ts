@@ -220,14 +220,14 @@ const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
  *  scope. The first attempt replaced it with `risk_tier === 'read'` and was
  *  REVERTED: that promoted a PRESENTATION HINT to an AUTHORIZATION INPUT, and a
  *  Codex review found four `read`-tier kernel manifests that are not safe reads
- *  (`http-watcher` SSRF; `webhook-watcher`, which DELETES a queue;
- *  `time-relative-watcher`, scoped to `data.time` but scanning the caller's
+ *  (`http-watcher` SSRF; `webhook-watcher`, since retired, which DELETED a
+ *  queue; `time-relative-watcher`, scoped to `data.time` but scanning the caller's
  *  chosen collection; `connection-mcp-read`, the Tier-3 confused deputy).
  *
  *  ⛔⛔ AND RE-AUTHORING `risk_tier` WOULD NOT HAVE SAVED IT. `data-file-read` —
  *  the one kernel ingredient that MUST be exposed — carries exactly the same
- *  `(kind: 'storage', risk_tier: 'read')` pair as `webhook-watcher`,
- *  `time-relative-watcher`, `file-watcher` and `recipe-watcher`. No authored
+ *  `(kind: 'storage', risk_tier: 'read')` pair as `time-relative-watcher` (and
+ *  the webhook, file and recipe watchers, retired 2026-10-05). No authored
  *  field separated them, because the judgement had never been written down. A
  *  derivation cannot recover a decision that was never recorded.
  *

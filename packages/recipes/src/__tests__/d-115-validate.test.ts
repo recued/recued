@@ -11,23 +11,23 @@ import { AUTO_RUN_SERVER_FLOOR_MS } from '@recued/contracts';
 
 // Reactive recipe used as a starting point — keeps test diffs small.
 const baseReactive: RecipeDefinition = {
-  recipe_id: 'reactive-mail-watcher',
+  recipe_id: 'reactive-page-watcher',
   version: 1,
   ttl: 60,
   metadata: {
-    name: 'Reactive Mail Watcher',
-    description: 'Fires when an urgent email arrives. Sample reactive recipe.',
+    name: 'Reactive Page Watcher',
+    description: 'Fires when a watched page changes. Sample reactive recipe.',
     author: 'recued',
-    supported_platforms: ['gmail'],
-    tags: ['reactive', 'mail', 'gmail'],
+    supported_platforms: ['server'],
+    tags: ['reactive', 'web'],
   },
   variables: {},
   auto_run: { interval_ms: 60_000 },
   trigger_steps: [
     {
-      id: 'mail',
-      ingredient: 'mail-watcher',
-      input: { source: 'warehouse', filter: { label: 'urgent' } },
+      id: 'page',
+      ingredient: 'http-watcher',
+      input: { target_url: 'https://example.com/pricing' },
     },
   ],
   prefetch_steps: [],
@@ -136,7 +136,7 @@ describe('trigger_steps cross-field invariant', () => {
   });
 
   it('non-array trigger_steps → trigger_steps_shape', () => {
-    const recipe = { ...baseReactive, trigger_steps: 'mail-watcher' as unknown as never };
+    const recipe = { ...baseReactive, trigger_steps: 'http-watcher' as unknown as never };
     expect(codesOf(validateRecipe(recipe))).toContain('trigger_steps_shape');
   });
 
@@ -148,11 +148,37 @@ describe('trigger_steps cross-field invariant', () => {
   });
 });
 
+/** 2026-10-05 — the mail, file, calendar, webhook and recipe watchers were
+ *  retired. A recipe naming one is refused here with what replaced it, where
+ *  it used to pass this check and fail at install or dispatch as an unknown op. */
+describe('a retired watcher is refused with its replacement', () => {
+  it.each([
+    [{ id: 'gate', op: 'core.watch.mail', args: { slug: 'work' } }, 'core.watch.mail', 'data.mail.{{config.mail_slug}}.*.created'],
+    [{ id: 'gate', ingredient: 'file-watcher', input: { slug: 'scans' } }, 'file-watcher', 'data.file.{{config.file_slug}}.*.created'],
+    [{ id: 'gate', op: 'core.watch.calendar', args: { slug: 'work', kind: 'starting_soon' } }, 'core.watch.calendar', 'core.watch.time-relative'],
+    [{ id: 'gate', op: 'core.watch.webhook', args: { slug: 'stripe' } }, 'core.watch.webhook', 'webhook_triggers'],
+    [{ id: 'gate', ingredient: 'recipe-watcher', input: { recipe_id: 'daily-digest' } }, 'recipe-watcher', 'run.<recipe_id>.*.failed'],
+  ])('%j', (step, named, instead) => {
+    const issue = validateRecipe({ ...baseReactive, trigger_steps: [step as never] }).issues
+      .find((i) => i.code === 'watcher_retired');
+    expect(issue).toMatchObject({ severity: 'error', path: 'trigger_steps[0]' });
+    expect(issue!.message).toContain(`'${named}' was retired on 2026-10-05`);
+    expect(issue!.message).toContain(instead);
+  });
+
+  it('the watchers that stay are not refused', () => {
+    for (const op of ['core.watch.time', 'core.watch.time-relative', 'core.watch.http']) {
+      const result = validateRecipe({ ...baseReactive, trigger_steps: [{ id: 'gate', op, args: {} } as never] });
+      expect(codesOf(result)).not.toContain('watcher_retired');
+    }
+  });
+});
+
 describe('trigger_steps per-step shape', () => {
   it('non-object trigger step → trigger_step_shape', () => {
     const recipe = {
       ...baseReactive,
-      trigger_steps: ['mail-watcher' as unknown as never],
+      trigger_steps: ['http-watcher' as unknown as never],
     };
     expect(codesOf(validateRecipe(recipe))).toContain('trigger_step_shape');
   });
@@ -160,7 +186,7 @@ describe('trigger_steps per-step shape', () => {
   it('missing id on trigger step → trigger_step_id_required', () => {
     const recipe = {
       ...baseReactive,
-      trigger_steps: [{ ingredient: 'mail-watcher' } as unknown as never],
+      trigger_steps: [{ ingredient: 'http-watcher' } as unknown as never],
     };
     expect(codesOf(validateRecipe(recipe))).toContain('trigger_step_id_required');
   });
@@ -179,7 +205,7 @@ describe('trigger_steps per-step shape', () => {
       trigger_steps: [{
         id: 'confused',
         transform: 'concat',
-        ingredient: 'mail-watcher',
+        ingredient: 'http-watcher',
       } as unknown as never],
     };
     expect(codesOf(validateRecipe(recipe))).toContain('trigger_step_multi_discriminator');
@@ -190,7 +216,7 @@ describe('trigger_steps per-step shape', () => {
     // a recipe with both can never be referenced cleanly.
     const recipe: RecipeDefinition = {
       ...baseReactive,
-      trigger_steps: [{ id: 'noop', ingredient: 'mail-watcher' }],
+      trigger_steps: [{ id: 'noop', ingredient: 'http-watcher' }],
     };
     expect(codesOf(validateRecipe(recipe))).toContain('step_id_duplicate');
   });

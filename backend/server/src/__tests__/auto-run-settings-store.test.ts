@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecipeDefinition } from '@recued/contracts';
@@ -5,6 +9,9 @@ import {
   createAutoRunSettingsStore,
   createCircuitBreakerStore,
   createServerAutoRunScheduler,
+  PRE_D319_AUTO_RUN_CIRCUIT_TABLE,
+  PRE_D319_AUTO_RUN_SETTINGS_TABLE,
+  setAsidePreD319Table,
 } from '../auto-run-scheduler.js';
 import type { RecipeStore } from '../recipe-store.js';
 import type { ExecuteRequest, ExecuteResponse } from '../types.js';
@@ -110,17 +117,165 @@ describe('createAutoRunSettingsStore — a dish’s timer (D-319)', () => {
     expect(store.list().map((t) => t.dish_id)).toEqual(['dsh_c']);
   });
 
-  it('drops the per-recipe table it replaces — a timer the owner never switched on as a dish does not start', () => {
-    db.exec(`CREATE TABLE auto_run_settings (recipe_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
-      INSERT INTO auto_run_settings VALUES ('r', 1, 0);
-      CREATE TABLE auto_run_circuit (recipe_id TEXT PRIMARY KEY, consecutive_failures INTEGER NOT NULL DEFAULT 0,
-        auto_disabled INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, last_failure_reason TEXT);`);
-    createAutoRunSettingsStore(db);
-    createCircuitBreakerStore(db);
-    const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((t) => t.name);
-    expect(tables).not.toContain('auto_run_settings');
-    expect(tables).not.toContain('auto_run_circuit');
-    expect(tables).toEqual(expect.arrayContaining(['auto_run_timers', 'auto_run_timer_circuit']));
+  describe('26.9.29\'s per-recipe tables are SET ASIDE for the one-shot conversion, never dropped', () => {
+    const tables = (): string[] =>
+      (db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map((t) => t.name);
+    const oldTables = (settings: string, circuit: string): void => {
+      db.exec(`CREATE TABLE auto_run_settings (recipe_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
+        INSERT INTO auto_run_settings VALUES ('${settings}', 0, 0);
+        CREATE TABLE auto_run_circuit (recipe_id TEXT PRIMARY KEY, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+          auto_disabled INTEGER NOT NULL DEFAULT 0, last_failure_at INTEGER, last_failure_reason TEXT);
+        INSERT INTO auto_run_circuit VALUES ('${circuit}', 5, 1, 1, 'boom');`);
+    };
+    const asideRows = () => ({
+      settings: db.prepare(`SELECT recipe_id, enabled FROM ${PRE_D319_AUTO_RUN_SETTINGS_TABLE}`).all(),
+      circuit: db.prepare(`SELECT recipe_id, auto_disabled FROM ${PRE_D319_AUTO_RUN_CIRCUIT_TABLE}`).all(),
+    });
+
+    // Serve opens the breaker store first; `recued mcp` the timer store.
+    for (const order of [['circuit', 'timers'], ['timers', 'circuit']] as const) {
+      it(`moves both aside with their rows, whichever store opens first (${order.join(' then ')})`, () => {
+        oldTables('r', 'r');
+        for (const which of order) (which === 'circuit' ? createCircuitBreakerStore : createAutoRunSettingsStore)(db);
+        expect(tables()).not.toContain('auto_run_settings');
+        expect(tables()).not.toContain('auto_run_circuit');
+        expect(tables()).toEqual(expect.arrayContaining([
+          PRE_D319_AUTO_RUN_SETTINGS_TABLE, PRE_D319_AUTO_RUN_CIRCUIT_TABLE, 'auto_run_timers', 'auto_run_timer_circuit',
+        ]));
+        expect(asideRows()).toEqual({
+          settings: [{ recipe_id: 'r', enabled: 0 }],
+          circuit: [{ recipe_id: 'r', auto_disabled: 1 }],
+        });
+      });
+    }
+
+    it('reopening is a no-op: the set-aside rows stay as they were', () => {
+      oldTables('r', 'r');
+      for (let i = 0; i < 3; i += 1) {
+        createCircuitBreakerStore(db);
+        createAutoRunSettingsStore(db);
+      }
+      expect(asideRows()).toEqual({
+        settings: [{ recipe_id: 'r', enabled: 0 }],
+        circuit: [{ recipe_id: 'r', auto_disabled: 1 }],
+      });
+    });
+
+    it('with an aside copy already there (a rollback re-made the table), keeps the first and drops the new', () => {
+      oldTables('first', 'first');
+      createCircuitBreakerStore(db);
+      createAutoRunSettingsStore(db);
+      oldTables('second', 'second');
+      createCircuitBreakerStore(db);
+      createAutoRunSettingsStore(db);
+      expect(tables()).not.toContain('auto_run_settings');
+      expect(tables()).not.toContain('auto_run_circuit');
+      expect(asideRows()).toEqual({
+        settings: [{ recipe_id: 'first', enabled: 0 }],
+        circuit: [{ recipe_id: 'first', auto_disabled: 1 }],
+      });
+    });
+
+    it('a server that never had them gets no aside tables', () => {
+      createCircuitBreakerStore(db);
+      createAutoRunSettingsStore(db);
+      expect(tables()).not.toContain(PRE_D319_AUTO_RUN_SETTINGS_TABLE);
+      expect(tables()).not.toContain(PRE_D319_AUTO_RUN_CIRCUIT_TABLE);
+    });
+
+    it('works inside an open transaction: it nests as a savepoint', () => {
+      oldTables('r', 'r');
+      db.transaction(() => {
+        createCircuitBreakerStore(db);
+        createAutoRunSettingsStore(db);
+      })();
+      expect(asideRows()).toEqual({
+        settings: [{ recipe_id: 'r', enabled: 0 }],
+        circuit: [{ recipe_id: 'r', auto_disabled: 1 }],
+      });
+    });
+
+    describe('two processes on one realm (serve and `recued mcp`)', () => {
+      let dir: string;
+      beforeEach(() => {
+        dir = mkdtempSync(join(tmpdir(), 'recued-set-aside-'));
+        return () => rmSync(dir, { recursive: true, force: true });
+      });
+
+      it('the second to open it finds the table moved, and does nothing', () => {
+        const path = join(dir, 'realm.db');
+        const first = new Database(path);
+        first.exec(`CREATE TABLE auto_run_settings (recipe_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
+          INSERT INTO auto_run_settings VALUES ('r', 0, 0);`);
+        const second = new Database(path);
+        try {
+          createAutoRunSettingsStore(first);
+          expect(() => createAutoRunSettingsStore(second)).not.toThrow();
+          expect(second.prepare(`SELECT recipe_id, enabled FROM ${PRE_D319_AUTO_RUN_SETTINGS_TABLE}`).all())
+            .toEqual([{ recipe_id: 'r', enabled: 0 }]);
+        } finally {
+          first.close();
+          second.close();
+        }
+      });
+
+      it('the other cannot move the table between this one\'s check and its move', () => {
+        // ⛔ The race, made deterministic: the other process tries its move at
+        // the worst moment — right after this one has seen the table. Holding
+        // the write lock across both, this one's move stands and the other's
+        // waits (refused here, with no busy timeout); checking unlocked, the
+        // other's move lands first and this one's rename throws at boot.
+        const path = join(dir, 'realm.db');
+        const mine = new Database(path);
+        mine.exec(`CREATE TABLE auto_run_settings (recipe_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);
+          INSERT INTO auto_run_settings VALUES ('r', 0, 0);`);
+        const other = new Database(path, { timeout: 0 });
+        let otherMove: 'moved' | 'refused' | 'not tried' = 'not tried';
+        const atTheWorstMoment = new Proxy(mine, {
+          get(target, prop) {
+            if (prop === 'prepare') {
+              return (sql: string) => {
+                const statement = target.prepare(sql);
+                if (!sql.includes('sqlite_master') || otherMove !== 'not tried') return statement;
+                return {
+                  get: (...args: unknown[]) => {
+                    const row = statement.get(...args);
+                    try {
+                      other.exec(`ALTER TABLE auto_run_settings RENAME TO ${PRE_D319_AUTO_RUN_SETTINGS_TABLE}`);
+                      otherMove = 'moved';
+                    } catch {
+                      otherMove = 'refused';
+                    }
+                    return row;
+                  },
+                };
+              };
+            }
+            const value = Reflect.get(target, prop) as unknown;
+            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+          },
+        });
+        try {
+          expect(() => setAsidePreD319Table(atTheWorstMoment, 'auto_run_settings', PRE_D319_AUTO_RUN_SETTINGS_TABLE))
+            .not.toThrow();
+          expect(otherMove).toBe('refused');
+          expect(mine.prepare(`SELECT recipe_id, enabled FROM ${PRE_D319_AUTO_RUN_SETTINGS_TABLE}`).all())
+            .toEqual([{ recipe_id: 'r', enabled: 0 }]);
+        } finally {
+          mine.close();
+          other.close();
+        }
+      });
+    });
+
+    it('the stores read none of it: a set-aside recipe is not a timer, and its trip is no breaker', () => {
+      oldTables('r', 'r');
+      const timers = createAutoRunSettingsStore(db);
+      const circuits = createCircuitBreakerStore(db);
+      expect(timers.list()).toEqual([]);
+      expect(timers.isEnabled('r')).toBe(false);
+      expect(circuits.list()).toEqual([]);
+    });
   });
 });
 

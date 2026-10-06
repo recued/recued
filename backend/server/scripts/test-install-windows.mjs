@@ -270,8 +270,12 @@ const PORT = srv.address().port;
 const BASE = `http://${REACHBACK}:${PORT}`;
 say(`serving on 127.0.0.1:${PORT} (guest reaches ${BASE})`);
 
+// !! PASSWORD ONLY. Without the last two options ssh offers every local key
+// first, the guest drops the connection before the password is tried, and the
+// run dies on its first call with "Permission denied" (2026-10-04).
 const sshBase = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
-  '-o', 'LogLevel=ERROR', '-o', 'NumberOfPasswordPrompts=1'];
+  '-o', 'LogLevel=ERROR', '-o', 'NumberOfPasswordPrompts=1',
+  '-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no'];
 
 /** Compile the minimum executable contract the installer itself calls. Add-Type
  * runs on the Windows guest, so this is a genuine PE that both ARM64 and x64

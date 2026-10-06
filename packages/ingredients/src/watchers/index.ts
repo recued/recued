@@ -15,12 +15,3 @@ export {
   type HttpWatcherOutput,
   type HttpWatcherDeps,
 } from './http.js';
-
-export {
-  evaluateRecipeWatcher,
-  type RecipeWatcherArgs,
-  type RecipeWatcherKind,
-  type RecipeWatcherOutput,
-  type RecipeWatcherRunSummary,
-  type RecipeWatcherDeps,
-} from './recipe.js';

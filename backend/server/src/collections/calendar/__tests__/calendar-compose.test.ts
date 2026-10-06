@@ -34,7 +34,6 @@ import {
   registerCalendarCollections,
   type CalendarStack,
 } from '../compose.js';
-import { handleCalendarWatcher } from '../calendar-watcher.js';
 import type {
   CalendarAdapterContext,
   CalendarAdapterFactory,
@@ -318,36 +317,6 @@ describe('composeCalendarStack — dispatcher wiring', () => {
     await expect(
       harness.stack.kernelDispatchers.calendarList({ slug: 'unknown' }),
     ).rejects.toMatchObject({ code: 'not_found' });
-  });
-
-  it('live collections + watcherCursors route starting_soon through the warehouse', async () => {
-    enrollRow(harness, 'work');
-    await harness.stack.startAll();
-    const res = await handleCalendarWatcher(
-      {
-        getCollection: (slug) =>
-          harness.stack.listLive().find((c) => c.slug === slug),
-        cursors: harness.stack.watcherCursors,
-      },
-      { slug: 'work', kind: 'starting_soon', minutes_ahead: 15 },
-    );
-    // Empty warehouse → no fire.
-    expect(res).toMatchObject({ should_run: false, items: [] });
-  });
-
-  it('watcherCursors persists cursor through startAll reboot', async () => {
-    harness.stack.watcherCursors.set('my-recipe', 42_000);
-    // Simulate a restart: rebuild the stack against the same DB.
-    const second = composeCalendarStack(
-      harness.db,
-      {
-        blobs: { async put() { return 'blob:test'; }, async get() { return null; }, async delete() {} } as never,
-        bus: harness.bus,
-        getGate: () => mkNoopGate(),
-      },
-      { factories: [] },
-    );
-    expect(second.watcherCursors.get('my-recipe')).toBe(42_000);
   });
 });
 

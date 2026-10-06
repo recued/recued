@@ -23,10 +23,11 @@
  *    - Calendar-* kernel dispatchers (`calendarList`, `calendarGet`,
  *      …) resolve slugs against the internal `live` map directly —
  *      same-process pointer avoids a registry re-walk on every call.
- *    - `calendar-watcher` routes through the shared
+ *    - the time-relative watcher reads events through the shared
  *      `createWatcherDispatcher` (watchers/index.ts) against the
  *      `CollectionRegistry` mirror populated by
- *      `registerCalendarCollections` + this stack's `watcherCursors`.
+ *      `registerCalendarCollections`. (The calendar watcher and its
+ *      per-recipe cursor store were retired 2026-10-05.)
  */
 
 import type Database from 'better-sqlite3';
@@ -67,10 +68,6 @@ import {
   handleCalendarUpdate,
   type CalendarDispatcherDeps,
 } from './calendar-dispatcher.js';
-import {
-  createCalendarWatcherCursorStore,
-  type CalendarWatcherCursorStore,
-} from './watcher-cursor-store.js';
 import type {
   CalendarProvider,
   CalendarProviderKind,
@@ -141,12 +138,6 @@ export interface CalendarStack {
   /** Feed to `collectionDeps.calendarEnroll`. Carries `onEnrolled`/
    *  `onDeleted` hooks that maintain the live-collection map. */
   enrollDeps: CalendarEnrollDeps;
-  /** Per-recipe `changed_since` cursor store. Threaded into the
-   *  shared watcher dispatcher (`createWatcherDispatcher`) as
-   *  `calendarWatcherCursors` — calendar-watcher resolves live
-   *  collections through the shared `CollectionRegistry` the same
-   *  way mail + file do. */
-  watcherCursors: CalendarWatcherCursorStore;
   /** Rehydrate every live `CalendarCollection` from the instance
    *  store. Call once at boot before `startServer`. */
   startAll(): Promise<void>;
@@ -213,7 +204,6 @@ export const composeCalendarStack = (
   for (const factory of bundle.factories) {
     adapters.register(factory);
   }
-  const watcherCursors = createCalendarWatcherCursorStore(db);
 
   const live = new Map<string, CalendarCollection>();
   let closed = false;
@@ -470,7 +460,6 @@ export const composeCalendarStack = (
     listLive: () => [...live.values()],
     kernelDispatchers,
     enrollDeps,
-    watcherCursors,
     startAll,
     disposeAll,
     resumeSync,

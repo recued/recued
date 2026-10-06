@@ -28,6 +28,18 @@ export * from './config-editor-overlay.js';
 // D-319 — a dish said as a line: what starts it, what tells it apart, its status.
 export * from './dish-lead.js';
 export * from './dish-line.js';
+export {
+  nextRunInTimeWindow,
+  recipeTimeWindow,
+  timeWindowRunsPhrase,
+  timerNextCheck,
+  timerNextRun,
+  timerRunsPhrase,
+  timerWaitsForData,
+  type RecipeTimeWindow,
+  type TimeWindowSource,
+} from './time-window.js';
+export { timerEventClauses } from './timer-events.js';
 export * as Primitives from './primitives/index.js';
 export * as TopBar from './top-bar/index.js';
 export * as ServerPill from './server-pill/index.js';

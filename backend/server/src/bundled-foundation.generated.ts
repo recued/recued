@@ -57,15 +57,15 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "personal-organizer-foundation",
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
-    "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
-    "version": 6,
+    "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 9 ready-to-run workflows.",
+    "version": 7,
     "bundled": true,
     "recipes": [],
     "contents": [
       {
         "type": "recipe",
         "slug": "today",
-        "version": 2,
+        "version": 3,
         "visible": true
       },
       {
@@ -113,12 +113,6 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "reminder-due-notifier",
-        "version": 1,
-        "visible": true
-      },
-      {
-        "type": "recipe",
-        "slug": "schedule-recipe",
         "version": 1,
         "visible": true
       }
@@ -2469,122 +2463,6 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       ]
     }
   },
-  "schedule-recipe": {
-    "recipe_id": "schedule-recipe",
-    "chat_exposed": true,
-    "version": 1,
-    "ttl": 60,
-    "metadata": {
-      "name": "Schedule recipe",
-      "description": "Use “Schedule recipe” in Recued. Create a recurring or one-shot schedule for an already installed Recued recipe. Accepts only an installed recipeid plus timing fields — no inline recipe JSON or new steps.",
-      "author": "recued-core",
-      "supported_platforms": [],
-      "tags": [
-        "schedule",
-        "recipe",
-        "automation",
-        "control-plane",
-        "productivity",
-        "pack:personal-organizer"
-      ],
-      "budget_ms": 10000
-    },
-    "variables": {
-      "recipe_id": {
-        "label": "Recipe ID",
-        "type": "string",
-        "help": "Installed recipe_id to schedule."
-      },
-      "mode": {
-        "label": "Schedule mode",
-        "type": "enum",
-        "options": [
-          "one_shot",
-          "recurring"
-        ],
-        "help": "Use one_shot for a single future run, recurring for a cron schedule."
-      },
-      "run_at": {
-        "label": "Run at",
-        "type": "datetime",
-        "optional": true,
-        "help": "Required for one_shot: when the recipe runs, as an absolute ISO 8601 / RFC 3339 date-time WITH a timezone offset (e.g. 2026-07-04T15:00:00-07:00 or 2026-07-04T22:00:00Z). Resolve the user's requested time against the current date/time in your context, in the user's timezone — do NOT assume UTC; if the timezone is unknown, ask. An offset-less value is rejected."
-      },
-      "cron_expression": {
-        "label": "Cron expression",
-        "type": "string",
-        "optional": true,
-        "default": "",
-        "help": "Required for recurring. Five-field cron expression."
-      },
-      "dish_id": {
-        "label": "Dish ID",
-        "type": "string",
-        "optional": true,
-        "default": "",
-        "help": "Optional standing dish binding for overlay and continuity."
-      },
-      "enabled": {
-        "label": "Enabled",
-        "type": "boolean",
-        "default": true,
-        "help": "Whether the schedule should be armed immediately."
-      }
-    },
-    "requires": [],
-    "steps": [
-      {
-        "id": "run_at_ms",
-        "skip_when": "{{config.mode}} not_equal one_shot",
-        "transform": "date_parse",
-        "input": "{{config.run_at}}",
-        "require_offset": true,
-        "fail_on": "{{step.run_at_ms}} is_null"
-      },
-      {
-        "id": "create",
-        "op": "core.schedule.recipe",
-        "args": {
-          "recipe_id": "{{config.recipe_id}}",
-          "mode": "{{config.mode}}",
-          "run_at": "{{step.run_at_ms}}",
-          "cron_expression": "{{config.cron_expression}}",
-          "dish_id": "{{config.dish_id}}",
-          "enabled": "{{config.enabled}}"
-        }
-      },
-      {
-        "id": "card",
-        "transform": "to_summary",
-        "fields": [
-          {
-            "label": "Recipe",
-            "value": "{{config.recipe_id}}"
-          },
-          {
-            "label": "Mode",
-            "value": "{{config.mode}}"
-          },
-          {
-            "label": "Schedule ID",
-            "value": "{{step.create.schedule.schedule_id}}"
-          },
-          {
-            "label": "Next run",
-            "value": "{{step.create.schedule.next_run_at}}"
-          }
-        ]
-      }
-    ],
-    "output": {
-      "render": [
-        {
-          "type": "summary",
-          "source": "step.card"
-        }
-      ]
-    }
-  },
   "send-composed-mail": {
     "recipe_id": "send-composed-mail",
     "chat_exposed": false,
@@ -2868,7 +2746,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "today": {
     "recipe_id": "today",
     "chat_exposed": true,
-    "version": 2,
+    "version": 3,
     "ttl": 60,
     "metadata": {
       "name": "Today",
@@ -2889,9 +2767,11 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
     },
     "variables": {
       "calendar_slug": {
-        "label": "Primary calendar slug to read today's events from",
+        "label": "Calendar to read today's events from",
         "type": "string",
-        "default": "primary"
+        "optional": true,
+        "default": "",
+        "help": "Its name under Connections → Calendar. Leave empty to read every calendar."
       },
       "start_hour": {
         "label": "Window start hour (local TZ)",

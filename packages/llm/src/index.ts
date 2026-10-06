@@ -106,6 +106,8 @@ export {
   resetEndpointCapabilities,
   snapshotEndpointCapabilities,
   systemRoleUnsupported,
+  noteImageInput,
+  imageInputSeen,
   isContextOverflowRejection,
   noteContextAccepted,
   noteContextRefused,
@@ -122,7 +124,9 @@ export {
   probeTranscriptionSource,
   diagnoseProbeFailure,
   LLM_PROBE_TIMEOUT_MS,
+  PICTURE_PROBE_TIMEOUT_MS,
 } from './probe.js';
+export { PROBE_PICTURE } from './probe-picture.js';
 export type { LlmProbeResult, LlmProbeDiagnosis, ProbeLlmSourceDeps } from './probe.js';
 
 export type { LLMProviderInvocation, LLMExecutorDeps, MatchContextHook, LLMMatchResolved } from './executor.js';

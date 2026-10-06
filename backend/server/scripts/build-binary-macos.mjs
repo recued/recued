@@ -254,8 +254,11 @@ for (const t of targets) {
   say(`  addon: ${t.arch} Mach-O, loads under ${t.version} ✓`);
 
   // ── 3. the SEA, built BY that node (process.arch decides the triple) ───
+  // RECUED_CALLER_SIGNS: steps 4-5 stage and sign with the Developer ID, so
+  // build-binary.mjs must hand over the bare injected binary rather than
+  // ad-hoc finishing it for a local build.
   say('  building the SEA …');
-  try { run('npm', ['run', 'build:binary'], PKG_ROOT, nodeBinDir); }
+  try { run('npm', ['run', 'build:binary'], PKG_ROOT, nodeBinDir, { RECUED_CALLER_SIGNS: '1' }); }
   catch (e) { fail(`SEA build failed:\n${(e.stdout || '') + (e.stderr || '')}`); }
   const exeName = `recued-${t.triple}`;
   if (!existsSync(join(BIN_DIR, exeName))) {

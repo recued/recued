@@ -1,3 +1,4 @@
+import { packMailWorkEnvelopes } from './mail-work-egress-envelope.js';
 /** D-167 P5 S4 — chat-mode PII egress: the bookend hooks + the wire-seam
  *  enactment.
  *
@@ -1180,6 +1181,17 @@ const uniformContentScanDataFields = (
   ]) {
     if (aliasLedgerFieldInPlace(record, briefField, plan)) changed = true;
   }
+  // This host-validated edit target has only one free-text field: action
+  // targets. All other values are host IDs, passage handles or fixed enums.
+  // Keep those bindings stable if a contact happens to share an enum's name.
+  const editTarget = record['mail_work_edit_target'];
+  if (editTarget && typeof editTarget === 'object' && !Array.isArray(editTarget)) {
+    const actions = (editTarget as Record<string, unknown>)['actions'];
+    if (Array.isArray(actions)) for (const action of actions) {
+      if (action && typeof action === 'object' && !Array.isArray(action)
+        && aliasLedgerFieldInPlace(action as Record<string, unknown>, 'target', plan)) changed = true;
+    }
+  }
   // The pre-seed INDEX rides the same boundary. It is built from the owner's own
   // prompt terms, so every token in it is one the ledger may already alias from
   // `user_message` — and an index naming the raw name beside an aliased message
@@ -1267,7 +1279,7 @@ const aliasRecallContextField = (
  *  starts with `cache_prefix`, and the LLM layer's `buildUserTurn` split holds.
  *  (A `pii.`-literal pre-scan that rewrote the catalog would drift the head;
  *  `buildUserTurn` fails open to a single unsplit block in that case.) */
-const aliasChatAiInput = async (
+const aliasChatAiInputData = async (
   input: Record<string, unknown>,
   plan: PiiEgressPlan,
   /** D-167 — the prompt-cache prefetch's STRUCTURED entity parts, threaded from
@@ -1541,7 +1553,12 @@ const aliasChatAiInput = async (
     //   `aliasLedgerFieldInPlace`. Results are CONTENT; args are a RECORD of
     //   what the model sent. This mirrors it instead of inventing a rule.
     if (recallCtx !== undefined) {
-      const calls = (target as Record<string, unknown>).prior_tool_calls;
+      // Closing summaries carry the same tool records under another top-level
+      // field. They need the same warehouse scan and degraded withholding.
+      const calls = ['prior_tool_calls', 'tool_results_since'].flatMap(lane => {
+        const entries = (target as Record<string, unknown>)[lane];
+        return Array.isArray(entries) ? entries : [];
+      });
       if (Array.isArray(calls)) {
         for (const raw of calls) {
           if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
@@ -1670,6 +1687,26 @@ const aliasChatAiInput = async (
   // re-serializes unconditionally, so the return value is discarded.
   injectPiiAliasNotice(aliased, plan);
   return withSystem({ ...input, 'llm.prompt': JSON.stringify(aliased) });
+};
+
+/** Keep host schema out of key-aware content scans without exempting data. */
+const aliasChatAiInput = async (
+  input: Record<string, unknown>, plan: PiiEgressPlan, entityParts?: readonly EntityPromptPart[],
+): Promise<Record<string, unknown>> => {
+  let packet: unknown;
+  try { packet = typeof input['llm.prompt'] === 'string' ? JSON.parse(input['llm.prompt']) : null; }
+  catch { packet = null; }
+  const restore = packet !== null && typeof packet === 'object' && !Array.isArray(packet)
+    ? packMailWorkEnvelopes(packet as Record<string, unknown>) : null;
+  if (restore === null) return aliasChatAiInputData(input, plan, entityParts);
+  const aliased = await aliasChatAiInputData({ ...input, 'llm.prompt': JSON.stringify(packet) }, plan, entityParts);
+  try {
+    const result = JSON.parse(String(aliased['llm.prompt'])) as Record<string, unknown>;
+    restore(result);
+    return { ...aliased, 'llm.prompt': JSON.stringify(result) };
+  } catch {
+    throw new ChatPiiPrivacyError('mail work source envelope lost data');
+  }
 };
 
 /** D-164 — drop a now-stale `llm.cache_prefix` when egress drifted the body's

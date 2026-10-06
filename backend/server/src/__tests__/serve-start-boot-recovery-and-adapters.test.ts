@@ -574,3 +574,121 @@ describe('startBootRecoveryAndAdapters — the shared mail attachment link repai
     expect(startCollectionAdapters).toHaveBeenCalledTimes(1);
   });
 });
+
+/** D-319 — the one-time notice naming the recipes on a timer the update left
+ *  switched off: REACHED at boot, behind the lock claim, before the adapters
+ *  start. Its own suite proves what it says and that it says it once; this
+ *  proves something calls it (the saga sweep's lesson above). */
+/** D-319 — the one-shot repair giving each recipe's auto-run timer back to the
+ *  dish it ran as: REACHED at boot, behind the lock claim, BEFORE the notice
+ *  that names what it switched on. Its own suite proves what it writes; the
+ *  composition suite that the scheduler's roster has it. */
+describe('startBootRecoveryAndAdapters — D-319 auto-run timer re-arm', () => {
+  const rearmed = { applied: true, path: 'recovered' as const, rearmed: 2, kept_off: 1, tripped: 1, left: 3 };
+
+  it('runs it once, behind the lock claim, before the notice and the adapters', async () => {
+    const order: string[] = [];
+    const autoRunTimerRearm = vi.fn(() => { order.push('rearm'); return rearmed; });
+    await startBootRecoveryAndAdapters(makeOptions({
+      bootSigningIdentity: vi.fn(async () => { order.push('identity'); }),
+      collection: { startCollectionAdapters: vi.fn(async () => { order.push('collection'); }) },
+      autoRunTimerRearm,
+      autoRunSwitchOnNotice: vi.fn(async () => { order.push('notice'); return { outcome: 'noticed' as const, named: 0, switched_on: 2 }; }),
+    } as never));
+    expect(autoRunTimerRearm).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['identity', 'rearm', 'notice', 'collection']);
+  });
+
+  it('does not run without the lifecycle lock', async () => {
+    const autoRunTimerRearm = vi.fn(() => rearmed);
+    await startBootRecoveryAndAdapters(makeOptions({ lifecycle: undefined, autoRunTimerRearm } as never));
+    expect(autoRunTimerRearm).not.toHaveBeenCalled();
+  });
+
+  it('says what it did when it did something, and nothing otherwise', async () => {
+    const warn = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({ warn, autoRunTimerRearm: vi.fn(() => rearmed) } as never));
+    expect(warn).toHaveBeenCalledWith(
+      '[auto-run] D-319 timers recovered — 2 switched on, 1 kept off, 1 still stopped by failures, 3 left as they were',
+    );
+    for (const result of [
+      { ...rearmed, applied: false },
+      { applied: true, path: 'nothing' as const, rearmed: 0, kept_off: 0, tripped: 0, left: 0 },
+    ]) {
+      const quiet = vi.fn();
+      await startBootRecoveryAndAdapters(makeOptions({ warn: quiet, autoRunTimerRearm: vi.fn(() => result) } as never));
+      expect(quiet).not.toHaveBeenCalledWith(expect.stringContaining('[auto-run]'));
+    }
+  });
+
+  it('survives a re-arm that throws, says the next boot retries it, and still runs the notice and the adapters', async () => {
+    const warn = vi.fn();
+    const autoRunSwitchOnNotice = vi.fn(async () => ({ outcome: 'done' as const, named: 0, switched_on: 0 }));
+    const startCollectionAdapters = vi.fn(async () => undefined);
+    await expect(startBootRecoveryAndAdapters(makeOptions({
+      warn, collection: { startCollectionAdapters }, autoRunSwitchOnNotice,
+      autoRunTimerRearm: vi.fn(() => { throw new Error('database is locked'); }),
+    } as never))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('[auto-run] D-319 timer re-arm failed, retrying next boot: database is locked');
+    expect(autoRunSwitchOnNotice).toHaveBeenCalledTimes(1);
+    expect(startCollectionAdapters).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('startBootRecoveryAndAdapters — D-319 auto-run switch-on notice', () => {
+  const told = { outcome: 'noticed' as const, named: 2, switched_on: 0 };
+
+  it('runs it once, after the signing identity boots behind the lock claim', async () => {
+    const order: string[] = [];
+    const autoRunSwitchOnNotice = vi.fn(async () => { order.push('notice'); return told; });
+    await startBootRecoveryAndAdapters(makeOptions({
+      bootSigningIdentity: vi.fn(async () => { order.push('identity'); }),
+      collection: { startCollectionAdapters: vi.fn(async () => { order.push('collection'); }) },
+      autoRunSwitchOnNotice,
+    } as never));
+    expect(autoRunSwitchOnNotice).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['identity', 'notice', 'collection']);
+  });
+
+  it('does not run without the lifecycle lock', async () => {
+    const autoRunSwitchOnNotice = vi.fn(async () => told);
+    await startBootRecoveryAndAdapters(makeOptions({ lifecycle: undefined, autoRunSwitchOnNotice } as never));
+    expect(autoRunSwitchOnNotice).not.toHaveBeenCalled();
+  });
+
+  it('says the owner was told, and nothing on a boot that told nobody', async () => {
+    const warn = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn, autoRunSwitchOnNotice: vi.fn(async () => told),
+    } as never));
+    expect(warn).toHaveBeenCalledWith(
+      '[auto-run] 2 recipe(s) on a timer are not switched on — the owner was told',
+    );
+    const both = vi.fn();
+    await startBootRecoveryAndAdapters(makeOptions({
+      warn: both, autoRunSwitchOnNotice: vi.fn(async () => ({ ...told, switched_on: 3 })),
+    } as never));
+    expect(both).toHaveBeenCalledWith(
+      '[auto-run] 2 recipe(s) on a timer are not switched on, 3 were switched on — the owner was told',
+    );
+
+    for (const outcome of ['waiting', 'done', 'nothing_to_say'] as const) {
+      const quiet = vi.fn();
+      await startBootRecoveryAndAdapters(makeOptions({
+        warn: quiet, autoRunSwitchOnNotice: vi.fn(async () => ({ outcome, named: 0, switched_on: 0 })),
+      } as never));
+      expect(quiet).not.toHaveBeenCalledWith(expect.stringContaining('[auto-run]'));
+    }
+  });
+
+  it('survives a notice that throws, says the next boot retries it, and still starts the adapters', async () => {
+    const warn = vi.fn();
+    const startCollectionAdapters = vi.fn(async () => undefined);
+    await expect(startBootRecoveryAndAdapters(makeOptions({
+      warn, collection: { startCollectionAdapters },
+      autoRunSwitchOnNotice: vi.fn(async () => { throw new Error('disk full'); }),
+    } as never))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('[auto-run] switch-on notice failed, retrying next boot: disk full');
+    expect(startCollectionAdapters).toHaveBeenCalledTimes(1);
+  });
+});

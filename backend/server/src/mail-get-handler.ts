@@ -2,9 +2,9 @@
  *
  *  Symmetric with `calendar-get`: returns the full canonical mail row
  *  for a `(slug, record_id)` pair, or `{ record: null }` when the
- *  record doesn't exist. Foundational recipes that consume a
- *  `mail-watcher` trigger and want to materialize `{{step.record.*}}`
- *  use this rather than `collection.get`'s generic shape — the named
+ *  record doesn't exist. Recipes a `data.mail` event starts, which want
+ *  to materialize `{{step.record.*}}`, use this rather than
+ *  `collection.get`'s generic shape — the named
  *  primitive keeps recipe JSON cleaner.
  *
  *  No new storage layer; routes through `CollectionRegistry.get('mail',

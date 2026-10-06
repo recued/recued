@@ -10,9 +10,9 @@
  *    2. Persist the user message to `chat_messages` (encrypted via
  *       `chat` sub-DEK).
  *    3. Project the catalog the AI sees:
- *         - Self-target: union of `InternalToolRegistry.list()`,
- *           minus per-kind-disabled Tier 2 entries (Mary's Settings
- *           scope) and per-MCP-disabled Tier 3 entries.
+ *         - Self-target: union of `InternalToolRegistry.list()`, Tier 2
+ *           narrowed to what the turn's grant admits (D-247) — the
+ *           per-kind Settings scope is retired (D-137 W2.2, 2026-10-04).
  *         (⛔ D-228 slice 5 — the peer-target arm is retired; `picker_target`
  *         can only be `'self'`.)
  *       The catalog passed to the AI is the post-capability-filter
@@ -75,6 +75,7 @@
  */
 
 import { dateFormatIssue } from './date-argument-format.js';
+import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
 import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
 import { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
 
@@ -83,10 +84,7 @@ import type { ContractDefinitionStore } from './storage/contract-definition-stor
 import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import {
-  computeKindGatedTier2Names,
   aggregateTokenUsageReports,
-  INGREDIENT_KINDS,
-  SAFE_DEFAULT_CHAT_CATALOG_KINDS,
   type ChatBroadcastEventKind,
   type ChatDispatchChannel,
   type ChatDispatchContext,
@@ -100,12 +98,10 @@ import {
   type ChatSession,
   type ChatTailMessage,
   type ChatToolCall,
-  type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
   type ChatMessageAttachment,
   type ContractSnapshot,
   type ExecutionSource,
-  type IngredientKind,
   type IngredientManifest,
   type InternalToolRegistry,
   type ModelTier,
@@ -680,10 +676,12 @@ const leanTier2Tool = (
 };
 
 /** D-164 P6.3 — pure projection of a catalog union to the AI-facing
- *  `available_tools` list. Mary's per-kind scope (Tier 2 only) and per-
- *  MCP-connection annotation (Tier 3 only) gate inclusion mechanically.
- *  Tier 1 entries always surface. Self vs peer-target catalogs flow
- *  through the same projection; peer catalogs surface every entry as
+ *  `available_tools` list. Tier-2 membership is decided BEFORE this, by the
+ *  turn's grant (D-247 — `tier2OwnerCatalog` / `tier2GrantFilter` in
+ *  `buildCatalog`); the per-kind scope that also gated it here is retired
+ *  (D-137 W2.2, 2026-10-04). Tier 1 entries always surface. Self vs
+ *  peer-target catalogs flow through the same projection; peer catalogs
+ *  surface every entry as
  *  Tier 3 from Mary's side per § A.1.1 (the peer-side projection has
  *  already classified internally).
  *
@@ -693,13 +691,11 @@ const leanTier2Tool = (
  *  semantics. */
 const buildChatMainTurnTools = (
   catalog: ReadonlyArray<ToolEntry>,
-  kindGatedTier2Names: ReadonlySet<string>,
   disabledTier3Names: ReadonlySet<string>,
   projection: ChatCatalogProjectionConfig,
 ): ReadonlyArray<ChatMainTurnTool> => {
   const out: ChatMainTurnTool[] = [];
   for (const entry of catalog) {
-    if (entry.tier === 2 && kindGatedTier2Names.has(entry.name)) continue;
     if (entry.tier === 3 && disabledTier3Names.has(entry.name)) continue;
     // Lever-2 per-slot — the tools.search wrapper is enabled construction-wide
     // (enable-if-ANY-source-thins, since per-source modes are live), so it
@@ -1068,17 +1064,6 @@ export interface ChatOrchestratorDeps {
    *  map to `engine.budget_exceeded` transparency events + an empty-
    *  assistant message body. */
   executeAiCall?: ExecuteChatAiCall;
-  /** D-137 W2.2 § A.1.1 — Mary's per-kind catalog scope provider.
-   *  Read on every turn start; the orchestrator translates the
-   *  returned scope into the `kindGatedTier2Names` set that gates the
-   *  AI-facing available_tools projection (`buildChatMainTurnTools`).
-   *  Returning `null` (no row written yet, store unavailable, dbless
-   *  test harness) collapses to the substrate default
-   *  (`SAFE_DEFAULT_CHAT_CATALOG_KINDS`); the orchestrator never
-   *  invents a different set. The provider is invoked synchronously
-   *  per turn so a toggle from Settings surfaces on the next message
-   *  Mary sends without re-priming the orchestrator. */
-  scopeProvider?: () => ChatToolCatalogScopeState | null;
   /** D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
    *  annotation provider. Read on every turn start; the orchestrator
    *  derives the `disabled_tier3_names` set for the inline
@@ -1236,6 +1221,7 @@ export interface ChatTurnInput {
    * investigation). Narrowing only: persisted with the queued turn, so a
    * retry or a restart keeps it. A diagnosis turn is read-only regardless. */
   read_only?: boolean;
+  mail_work?: import('@recued/contracts').MailWorkReadRequest;
   model_pref?: {
     current: ChatModelRoutingLayer;
     model_hint?: ChatModelHint;
@@ -2199,47 +2185,6 @@ export const buildChatTail = async (
   }
 };
 
-/** D-137 W2.2 § A.1.1 — Project Mary's per-kind catalog scope state
- *  into the `Set<IngredientKind>` `buildChatMainTurnTools` consumes.
- *
- *  Two distinct cases:
- *    - **Missing snapshot** (`null` / `undefined` / non-array
- *      `enabled_kinds`) — the orchestrator has no idea what Mary
- *      wants (store-unavailable race, dbless test harness,
- *      pre-init boot window). Fall back to
- *      `SAFE_DEFAULT_CHAT_CATALOG_KINDS` so the substrate stays
- *      reachable.
- *    - **Explicit empty** (`enabled_kinds: []`) — Mary deliberately
- *      disabled every kind via the Settings page (the contracts
- *      validator + Settings UI explicitly support this as "disable
- *      every Tier 2 kind"). Respect it verbatim; promoting an empty
- *      scope back to defaults would silently override Mary's intent.
- *
- *  Codex W2.2 review P1 fold — the prior `out.size === 0 → fall back
- *  to safe defaults` branch conflated those two cases and let a
- *  saved-empty setting silently re-enable every safe-default kind.
- *
- *  Off-list values in the persisted blob are already caught upstream
- *  (contracts validator at write time + store-side `parseEnabledKinds-
- *  Json` at read time, which returns null on any non-IngredientKind
- *  member and triggers the missing-snapshot branch). The defensive
- *  filter below is belt-and-braces for hand-edited rows that slipped
- *  past both layers. Pure; no clock, no I/O. */
-export const resolveEnabledKinds = (
-  scope: ChatToolCatalogScopeState | null | undefined,
-): ReadonlySet<IngredientKind> => {
-  if (!scope || !Array.isArray(scope.enabled_kinds)) {
-    return new Set<IngredientKind>(SAFE_DEFAULT_CHAT_CATALOG_KINDS);
-  }
-  const out = new Set<IngredientKind>();
-  for (const k of scope.enabled_kinds) {
-    if (typeof k === 'string' && INGREDIENT_KINDS.has(k as IngredientKind)) {
-      out.add(k as IngredientKind);
-    }
-  }
-  return out;
-};
-
 export const createChatOrchestrator = (
   deps: ChatOrchestratorDeps,
 ): ChatOrchestrator => {
@@ -2326,7 +2271,7 @@ export const createChatOrchestrator = (
   // post-capability-filter Tier 1/2/3 union → AI-facing `available_tools`),
   // lifted behind a closure the stream adapter calls so the catalog becomes
   // a registered hook (not an inline call). Pure over the per-pair deps
-  // (`registry` / `scopeProvider` / `annotationProvider`)
+  // (`registry` / `annotationProvider`)
   // + the per-turn picker target; the hook writes the result to shared
   // `state`, the executor ENACTs it. The D-164 P3 6-section catalog
   // substrate is the salvage path that replaces this projection's internals
@@ -2373,11 +2318,10 @@ export const createChatOrchestrator = (
       : tier2Reachable
         ? registryEntries.filter((e) => e.tier !== 2 || tier2Reachable(e.name))
         : registryEntries;
-    const enabledKinds = resolveEnabledKinds(
-      deps.scopeProvider ? deps.scopeProvider() : null,
-    );
-    const kindGatedTier2Names =
-      computeKindGatedTier2Names(catalogEntries, enabledKinds);
+    // ⛔ D-137 W2.2 — no per-kind gate after this. It withheld every recipe
+    // touching `connection` / `cli` / `dom` (481 of the 755 corpus recipes
+    // marked for chat) behind a switch no screen offered. A chat is allowed what
+    // its grant admits; risk tier + approval gate each call (owner, 2026-10-04).
     // ⛔⛔ D-228 slice 4 — THERE IS NO TIER-3 CATALOG ANY MORE. Its entries were
     // projected from `tool_overrides`, the chat presentation store D-225 named
     // as the standing defect; slice 3 stood them down per tool as packs covered
@@ -2395,7 +2339,6 @@ export const createChatOrchestrator = (
     const rawOps = deps.rawOpSource ? deps.rawOpSource(source) : [];
     return buildChatMainTurnTools(
       [...catalogEntries, ...(rawOps as typeof catalogEntries)],
-      kindGatedTier2Names,
       disabledTier3Names,
       projection,
     );
@@ -3270,6 +3213,7 @@ export const createChatOrchestrator = (
     readonly retry_of_plan_id?: string;
     /** Explanation-only policy enforced again at dispatch. */
     readonly read_only?: boolean;
+    readonly mail_work?: import('@recued/contracts').MailWorkReadRequest;
     readonly picker_target: ChatPickerTarget;
     readonly dispatch_peer_name: string | null;
     /** The turn's REAL channel-minted `ExecutionSource` — chat's
@@ -3539,7 +3483,13 @@ export const createChatOrchestrator = (
                 streamState,
                 now(),
               );
-              return deps.executeAiCall!(manifest, aiInput, opts);
+              // The PII wrapper calls this closure with the final wire packet.
+              // Bind only prepared Mail Work; summaries and ordinary Chat
+              // retain their existing contracts and execution controls.
+              const input = params.mail_work === undefined ? aiInput : { ...aiInput,
+                'llm.output_schema': bindMailWorkChatTools(aiInput['llm.output_schema'], aiInput['llm.prompt']),
+              };
+              return deps.executeAiCall!(manifest, input, opts);
             };
       const executeAiCallForTurn =
         trackedExecuteAiCall !== undefined && piiPlan !== undefined
@@ -3578,6 +3528,7 @@ export const createChatOrchestrator = (
             : {}),
           picker_target,
           dispatch_peer_name: params.dispatch_peer_name,
+          ...(params.mail_work ? { mail_work: params.mail_work } : {}),
           execution_source: params.execution_source,
           ...(chatSystemPrompt !== undefined
             ? {
@@ -3661,14 +3612,27 @@ export const createChatOrchestrator = (
             },
             clear: (sid) => { deps.chatStore.deleteSessionBrief(sid); },
           },
-          dispatchTool: (call) => {
+          ...(directOwnerRecallSurface && deps.chatStore.readMailWorkEvidence
+            && deps.chatStore.writeMailWorkEvidence && deps.chatStore.deleteMailWorkEvidence ? {
+              mailWorkEvidenceStore: {
+                read: (sid: string) => deps.chatStore.readMailWorkEvidence!(sid),
+                write: (sid: string, json: string) => deps.chatStore.writeMailWorkEvidence!(sid, json, params.assert_active),
+                clear: (sid: string) => {
+                  params.assert_active?.();
+                  deps.chatStore.deleteMailWorkEvidence!(sid);
+                },
+              },
+            } : {}),
+          dispatchTool: async (call) => {
             params.assert_active?.();
-            return dispatchTool({
+            const result = await dispatchTool({
               ...call,
               ...(params.read_only === true ? { read_only: true } : {}),
               turn_state: streamState,
               get_retained_candidates: () => [...retainedCandidates.values()],
             });
+            params.assert_active?.();
+            return result;
           },
           ...(params.execution_source.channel === 'chat' ? {
             onAnswerReady: async (text: string) => {
@@ -4034,9 +3998,10 @@ export const createChatOrchestrator = (
         ...(input.retry_of_plan_id !== undefined
           ? { retry_of_plan_id: input.retry_of_plan_id }
           : {}),
-        ...(input.data_diagnosis !== undefined || input.read_only === true
+        ...(input.data_diagnosis !== undefined || input.read_only === true || input.mail_work !== undefined
           ? { read_only: true }
           : {}),
+        ...(input.mail_work ? { mail_work: input.mail_work } : {}),
         picker_target,
         dispatch_peer_name: dispatchPeerName,
         // The same chat source the stream's inbound carries (below) — the
@@ -4769,7 +4734,6 @@ export const createChatOrchestrator = (
     // path: full mode omits it, and no ungranted recipe can be discovered.
     const availableTools = buildChatMainTurnTools(
       contractCatalog,
-      new Set<string>(),
       new Set<string>(),
       { mode: 'full' },
     );

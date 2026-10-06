@@ -49,6 +49,7 @@ import {
   type ChatSession,
   type ChatSessionChangedField,
   type ChatToolCall,
+  type ChatToolCallRecord,
   type ServerEvent,
   type ToolTier,
   type TransparencyEvent,
@@ -209,7 +210,42 @@ export interface ChatThreadState {
    *  assistant bubble. Capped FIFO (`COMPLETED_TURN_MEMORY`);
    *  session-tab-lifetime only (hydration resets). */
   completed_turn_ids: ReadonlyArray<string>;
+  /** Durable call records by `run_id`.
+   *
+   *  ⛔ THE LIVE THREAD HOLDS NO TOOL ROWS. A turn arrives as its user and
+   *  assistant messages; its calls show only as the assistant's activity rows.
+   *  So the `tool_call` broadcasts — "it is waiting", then "it finished" when an
+   *  approval lands minutes later — found no message to update and were dropped,
+   *  and the thread said "queued" for good. Keyed by `run_id`, which the
+   *  assistant's own `tool_calls` carry, so the activity row can read them.
+   *  Optional so a state built before this field reads as "nothing known". */
+  tool_call_records?: Readonly<Record<string, ChatToolCallRecord>>;
 }
+
+const TERMINAL_TOOL_CALL_STATES: ReadonlyArray<ChatToolCallRecord['state']> =
+  ['succeeded', 'failed', 'interrupted'];
+
+/** Keep the newest record per run, never letting a late "running" or "held"
+ *  undo a settlement — the same two guards as a tool row's own update. Returns
+ *  the SAME object when nothing changed, so a caller can skip a state copy. */
+export const rememberToolCallRecords = (
+  records: Readonly<Record<string, ChatToolCallRecord>> | undefined,
+  calls: Iterable<ChatToolCallRecord>,
+): Readonly<Record<string, ChatToolCallRecord>> | undefined => {
+  let next = records;
+  for (const call of calls) {
+    if (call.run_id === undefined) continue;
+    const prior = next?.[call.run_id];
+    if (prior !== undefined && (call.updated_at < prior.updated_at
+      || (TERMINAL_TOOL_CALL_STATES.includes(prior.state)
+        && !TERMINAL_TOOL_CALL_STATES.includes(call.state)))) continue;
+    next = { ...(next ?? {}), [call.run_id]: call };
+  }
+  return next;
+};
+
+const toolCallRecordsOf = (messages: readonly ChatMessage[]): ChatToolCallRecord[] =>
+  messages.flatMap((message) => message.tool_call !== undefined ? [message.tool_call] : []);
 
 /** How many completed turn ids the reducer remembers. Sends are
  *  serialized per tab (the route's `sending` flag), so the guard only
@@ -332,7 +368,19 @@ export const hydrateThreadFromSnapshot = (
     latest_window_start: gap ? latestWindowStart : null,
     // Same cap and same end as the live path: newest kept, oldest dropped.
     completed_turn_ids: completedTurnIds.slice(-COMPLETED_TURN_MEMORY),
+    ...withToolCallRecords(
+      state.session?.id === session.id ? state.tool_call_records : undefined,
+      messages,
+    ),
   };
+};
+
+const withToolCallRecords = (
+  records: Readonly<Record<string, ChatToolCallRecord>> | undefined,
+  messages: readonly ChatMessage[],
+): { tool_call_records?: Readonly<Record<string, ChatToolCallRecord>> } => {
+  const next = rememberToolCallRecords(records, toolCallRecordsOf(messages));
+  return next === undefined ? {} : { tool_call_records: next };
 };
 
 /** Put an older page in FRONT of what is already loaded.
@@ -358,6 +406,7 @@ export const prependOlderMessages = (
     messages: [...fresh, ...state.messages],
     has_more_before: next.has_more,
     oldest_cursor: next.oldest_cursor,
+    ...withToolCallRecords(state.tool_call_records, fresh),
   };
 };
 
@@ -377,6 +426,7 @@ export const appendNewerMessages = (
   const hasMoreAfter = next.has_more_after && !reachedLatestWindow;
   return {
     ...state,
+    ...withToolCallRecords(state.tool_call_records, fresh),
     messages: [...state.messages, ...fresh].sort((a, b) =>
       a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
     has_more_after: hasMoreAfter,
@@ -414,8 +464,8 @@ export const beginInFlightTurn = (
 /** Closed-list discriminator for *chat-thread*-scoped broadcast events.
  *  These are the per-turn / per-session variants the thread reducer
  *  consumes — distinct from the broader `ChatBroadcastEventKind` set
- *  (which also includes `chat.tool_catalog_scope_changed`, a Settings-
- *  scoped event the Settings page reducer absorbs separately). Keep
+ *  (which also includes per-pair setting events such as
+ *  `chat.default_model_pref_changed`, absorbed elsewhere). Keep
  *  tightly scoped — adding a kind = D-137 substrate change.
  *
  *  D-167 chat provider-threading — `chat.default_model_pref_changed` is
@@ -598,16 +648,19 @@ export const reduceChatThreadEvent = (
       const call = event.value;
       if (event.session_id !== state.session?.id || !isChatToolCallRecord(call)
         || call.session_id !== event.session_id) return state;
-      const index = state.messages.findIndex(message => message.id === call.message_id);
-      const message = state.messages[index];
+      const records = rememberToolCallRecords(state.tool_call_records, [call]);
+      const known = records === state.tool_call_records
+        ? state : { ...state, tool_call_records: records };
+      const index = known.messages.findIndex(message => message.id === call.message_id);
+      const message = known.messages[index];
       const prior = message?.tool_call;
       if (!prior || prior.turn_id !== call.turn_id
           || call.updated_at < prior.updated_at
           || (['succeeded', 'failed', 'interrupted'].includes(prior.state)
-            && ['running', 'held'].includes(call.state))) return state;
-      const messages = [...state.messages];
+            && ['running', 'held'].includes(call.state))) return known;
+      const messages = [...known.messages];
       messages[index] = { ...message!, tool_call: call };
-      return { ...state, messages };
+      return { ...known, messages };
     }
     return applySessionChanged(state, event);
   }

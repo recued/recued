@@ -322,6 +322,18 @@ export interface WebhookConsumerStore {
     publisher_id: string;
     contract_id: string;
   }): number;
+  /** D-209 — the inverse of {@link stampTriggerContracts}: leave this recipe's
+   *  rows on one consumer door-less (NULL), as `replaceConsumer` leaves every row
+   *  it re-creates. For a reconcile over rows that are NOT re-created (a main
+   *  dish's settings changing), so a refusal leaves no stamp naming the door it
+   *  retires — D-295 reads "revoked while still stamped" as the OWNER's act.
+   *  Returns the rows changed. */
+  clearTriggerContracts(input: {
+    consumer_kind: WebhookConsumerKind;
+    consumer_id: string;
+    recipe_id: string;
+    publisher_id: string;
+  }): number;
   /** D-209 #1 — the door contract every one of this recipe's trigger rows
    * carries, or `null` when the recipe has no rows, any row is unstamped, or
    * the rows disagree. `null` is the fail-closed "door missing — re-save"
@@ -332,6 +344,17 @@ export interface WebhookConsumerStore {
     recipeId: string,
     publisherId: string,
   ): string | null;
+  /** Every consumer whose trigger rows start this recipe, each with a snapshot
+   *  NARROWED to that recipe's own rows (its bindings kept whole). What a door
+   *  reconcile for ONE recipe diffs against: given a consumer's whole snapshot,
+   *  `reconcileWebhookDoors` would retire a SIBLING recipe's door as "not
+   *  re-used" — a pack ships several webhook recipes under one consumer. */
+  consumersOfRecipe(recipeId: string): Array<{
+    consumer_kind: WebhookConsumerKind;
+    consumer_id: string;
+    publisher_id: string;
+    snapshot: WebhookConsumerSnapshot;
+  }>;
   hasDispatchTarget(ingressId: string, providerEventType: string): boolean;
   prepareDispatches(input: {
     event: AcceptedWebhookEventRecord;
@@ -1195,6 +1218,38 @@ export const createWebhookConsumerStore = (
     return updated.changes;
   };
 
+  const clearTriggerContracts: WebhookConsumerStore['clearTriggerContracts'] = (
+    input,
+  ) => {
+    if (input.consumer_kind !== 'pack_install'
+      && input.consumer_kind !== 'local_recipe') {
+      throw new WebhookConsumerStoreError('invalid', 'consumer_kind is invalid');
+    }
+    requireSafeIdentity(input.consumer_id, 'consumer_id');
+    requireSafeIdentity(input.recipe_id, 'recipe_id');
+    requireSafeIdentity(input.publisher_id, 'publisher_id');
+    const stamp = now();
+    if (!Number.isSafeInteger(stamp) || stamp < 0) {
+      throw new WebhookConsumerStoreError('invalid', 'webhook consumer clock is invalid');
+    }
+    const updated = db.prepare(`
+      UPDATE webhook_recipe_triggers SET
+        contract_id = NULL, updated_at = ?
+      WHERE recipe_id = ? AND publisher_id = ? AND contract_id IS NOT NULL
+        AND binding_id IN (
+          SELECT binding_id FROM webhook_consumer_bindings
+          WHERE consumer_kind = ? AND consumer_id = ?
+        )
+    `).run(
+      stamp,
+      input.recipe_id,
+      input.publisher_id,
+      input.consumer_kind,
+      input.consumer_id,
+    );
+    return updated.changes;
+  };
+
   const doorContractIdForRecipe: WebhookConsumerStore['doorContractIdForRecipe'] = (
     consumerKind,
     consumerId,
@@ -1215,6 +1270,34 @@ export const createWebhookConsumerStore = (
       Array<{ contract_id: string | null }>;
     if (rows.length !== 1) return null;
     return rows[0]!.contract_id;
+  };
+
+  const consumersOfRecipe: WebhookConsumerStore['consumersOfRecipe'] = (recipeId) => {
+    requireSafeIdentity(recipeId, 'recipe_id');
+    const owners = db.prepare(`
+      SELECT DISTINCT binding.consumer_kind AS consumer_kind,
+        binding.consumer_id AS consumer_id, trigger.publisher_id AS publisher_id
+      FROM webhook_recipe_triggers trigger
+      JOIN webhook_consumer_bindings binding
+        ON binding.binding_id = trigger.binding_id
+      WHERE trigger.recipe_id = ?
+      ORDER BY binding.consumer_kind ASC, binding.consumer_id ASC, trigger.publisher_id ASC
+    `).all(recipeId) as Array<{
+      consumer_kind: WebhookConsumerKind;
+      consumer_id: string;
+      publisher_id: string;
+    }>;
+    return owners.map((owner) => {
+      const whole = snapshotConsumer(owner.consumer_kind, owner.consumer_id);
+      return {
+        ...owner,
+        snapshot: {
+          ...whole,
+          triggers: whole.triggers.filter((row) =>
+            row.recipe_id === recipeId && row.publisher_id === owner.publisher_id),
+        },
+      };
+    });
   };
 
   const targetRows = (
@@ -1807,7 +1890,9 @@ export const createWebhookConsumerStore = (
       return rows.map(bindingFromSql);
     },
     stampTriggerContracts,
+    clearTriggerContracts,
     doorContractIdForRecipe,
+    consumersOfRecipe,
     hasDispatchTarget(ingressId, providerEventType) {
       return currentTargets(ingressId, providerEventType).length > 0;
     },

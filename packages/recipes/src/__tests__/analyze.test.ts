@@ -331,3 +331,28 @@ describe('analyzeRecipe — AI call counting', () => {
     expect(r.has_ai).toBe(false);
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// Op steps
+// ────────────────────────────────────────────────────────────────
+
+/** Every shipped recipe writes its calls as `op:` steps. ⛔ The analyzer read
+ *  `ingredient` alone, so a shipped recipe analysed as calling nothing, with no AI. */
+describe('analyzeRecipe — op steps', () => {
+  it('a kernel op counts as the ingredient it runs as, every op is listed, and an AI op is an AI call', () => {
+    const r = analyzeRecipe({
+      prefetch_steps: [{ id: 'account', op: 'recued-core.recurly.account.read', args: {} }],
+      steps: [
+        { id: 'brief', op: 'core.ai.summarize', args: { 'llm.data': '{{step.account}}' } },
+        { id: 'tell', op: 'core.notification.send', args: { text: '{{step.brief.summary}}' } },
+        { id: 'label', ingredient: 'ai-classify', input: {} },
+      ],
+    });
+    expect(r.ingredient_slugs).toEqual(['ai-classify', 'core-ai-summarize', 'core-notification-send']);
+    expect(r.op_ids).toEqual(['core.ai.summarize', 'core.notification.send', 'recued-core.recurly.account.read']);
+    expect(r.ai_function_slugs).toEqual(['ai-classify', 'core-ai-summarize']);
+    expect(r.ai_call_count).toBe(2);
+    expect(r.has_ai).toBe(true);
+  });
+
+});

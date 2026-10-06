@@ -13,9 +13,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   compileTriggerSugarEntry,
+  eventPatternSegments,
+  eventPatternSettings,
   matchesTriggerDispatchFilter,
   parseTriggerOn,
   recipeEventTriggerNotes,
+  resolveEventPatternSettings,
+  settingOfEventSegment,
   validateRecipeEventTriggerEntry,
   whereToDispatchFilter,
 } from '../trigger-sugar.js';
@@ -306,6 +310,50 @@ describe('validateRecipeEventTriggerEntry', () => {
       on: 'form_response.accepted',
       where: { form_definition_id: 7 },
     })).toContain("'where.form_definition_id' must be a string id for 'form_response.accepted'");
+  });
+});
+
+/** 2026-10-05 — a raw pattern's part a dish's setting fills, so one recipe
+ *  watches the folder (mailbox, calendar) each dish names. */
+describe('a setting part in a raw `event` pattern', () => {
+  it('keeps a setting part whole: it holds a dot of its own', () => {
+    expect(eventPatternSegments('data.file.{{config.file_slug}}.*.created'))
+      .toEqual(['data', 'file', '{{config.file_slug}}', '*', 'created']);
+    expect(eventPatternSegments('data.mail.**.created')).toEqual(['data', 'mail', '**', 'created']);
+    expect(eventPatternSettings('data.file.{{config.file_slug}}.{{config.kind}}.created')).toEqual(['file_slug', 'kind']);
+    expect(settingOfEventSegment('{{config.file_slug}}')).toBe('file_slug');
+    expect(settingOfEventSegment('{{step.folder}}')).toBeNull();
+  });
+
+  it('fills each from the dish’s value, and refuses one that is not a single plain part', () => {
+    const fill = (value: unknown) => resolveEventPatternSettings('data.file.{{config.file_slug}}.*.created', () => value);
+    expect(fill('scans')).toBe('data.file.scans.*.created');
+    expect(fill('my_folder-2')).toBe('data.file.my_folder-2.*.created');
+    // None chosen, a widening wildcard, a part-shifting dot, not text.
+    for (const value of [undefined, null, '', '*', '**', 'a.b', 'a b', 42]) expect(fill(value)).toBeNull();
+    expect(resolveEventPatternSettings('data.mail.**.created', () => 'never read')).toBe('data.mail.**.created');
+  });
+
+  it('is accepted as a whole part after the first two', () => {
+    expect(validateRecipeEventTriggerEntry({ event: 'data.file.{{config.file_slug}}.*.created' })).toEqual([]);
+    expect(validateRecipeEventTriggerEntry({ event: 'data.mail.{{config.mail_slug}}.message.created', filter: { 'record.folder': 'inbox' } })).toEqual([]);
+    expect(validateRecipeEventTriggerEntry({ event: 'run.notify-run-failed.{{config.dish}}.failed' })).toEqual([]);
+  });
+
+  it.each([
+    ['the kind of event', 'data.{{config.kind}}.*.*.created', 'only after its first two'],
+    ['the namespace', '{{config.ns}}.file.*.created', 'only after its first two'],
+    ['part of a part', 'data.file.in-{{config.file_slug}}.*.created', 'only as the whole part'],
+    ['anything but a setting', 'data.file.{{step.folder}}.*.created', 'only as the whole part'],
+    ['an unclosed reference', 'data.file.{{config.file_slug.*.created', 'only as the whole part'],
+  ])('⛔ refuses a setting in %s', (_where, event, says) => {
+    const problems = validateRecipeEventTriggerEntry({ event });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain(says);
+  });
+
+  it('still checks the rest of the pattern', () => {
+    expect(validateRecipeEventTriggerEntry({ event: 'data.file.{{config.file_slug}}..created' })[0]).toContain('not a valid bus pattern');
   });
 });
 

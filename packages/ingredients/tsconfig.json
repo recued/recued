@@ -10,6 +10,7 @@
     { "path": "../contracts" },
     { "path": "../crypto" },
     { "path": "../cache" },
-    { "path": "../storage" }
+    { "path": "../storage" },
+    { "path": "../transforms" }
   ]
 }

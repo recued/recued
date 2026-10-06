@@ -37,6 +37,7 @@ import {
   type AutoRunState,
   type RecipeReactiveShape,
 } from '../recipes/recipe-action-kind.js';
+import { NOT_INSTALLED_TEXT, isInstalledRecipeEntry, startsOnItsOwn } from '../recipes/running-as.js';
 
 export {
   autoRunStateOf,
@@ -70,6 +71,9 @@ export const RUN_PALETTE_ACTION_ATTR = 'data-recued-run-palette-action';
 export const RUN_PALETTE_SEARCH_ATTR = 'data-recued-run-palette-search';
 export const RUN_PALETTE_RESULT_ATTR = 'data-recued-run-palette-result';
 export const RUN_PALETTE_RETRY_ATTR = 'data-recued-run-palette-retry';
+/** The note shown in place of Switch on for a recipe whose pack is not
+ *  installed. */
+export const RUN_PALETTE_NOT_INSTALLED_ATTR = 'data-recued-run-palette-not-installed';
 
 const RECIPE_PICKER_ID = 'run-palette-recipe';
 
@@ -626,6 +630,28 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     const buttons = doc.createElement('div');
     buttons.className = 'run-palette-buttons';
 
+    // D-319 — a recipe the server only ships starts nothing of its own until
+    // its pack is installed, and the server refuses to switch it on: the
+    // palette says so, and where to install it, instead of Switch on.
+    const notInstalled = (): void => {
+      const note = doc.createElement('div');
+      note.className = 'run-palette-state';
+      note.setAttribute(RUN_PALETTE_NOT_INSTALLED_ATTR, '');
+      note.textContent = NOT_INSTALLED_TEXT;
+      actionArea.appendChild(note);
+      if (opts.packsHref !== undefined) {
+        const packs = doc.createElement('a');
+        packs.setAttribute(RUN_PALETTE_ACTION_ATTR, 'browse-packs');
+        packs.setAttribute('href', opts.packsHref);
+        packs.textContent = 'Install it from Packs →';
+        // As the Automation link: the shell's route change closes it.
+        packs.addEventListener('click', () => requestClose());
+        buttons.appendChild(packs);
+      }
+      actionArea.appendChild(buttons);
+    };
+    const shippedOnly = !isInstalledRecipeEntry(entry) && startsOnItsOwn(entry.recipe);
+
     if (kind === 'manual') {
       buttons.appendChild(
         actionButton('Run', true, () => openRunModalFor(entry, 'run')),
@@ -655,6 +681,10 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
         actionArea.appendChild(result);
       }
       if (!switchedOn) {
+        if (shippedOnly) {
+          notInstalled();
+          return;
+        }
         // D-319 §5.5 — its settings first.
         if (opts.switchOn !== undefined) {
           const switchOn = actionButton(switchOnPending ? 'Opening…' : 'Switch on…', true, () => switchOnFor(entry));
@@ -688,7 +718,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     }
 
     // managed-reactive — a pure event-trigger recipe: arm/disarm lives in
-    // the Automation surface.
+    // the Automation surface, which lists no recipe the server only ships.
+    if (shippedOnly) {
+      notInstalled();
+      return;
+    }
     const link = doc.createElement('a');
     link.setAttribute(RUN_PALETTE_ACTION_ATTR, '');
     link.textContent = 'Manage in Automation →';

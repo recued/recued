@@ -74,8 +74,19 @@ export const fileOriginOf = (record: CollectionRecord): string | null => {
  *  ⛔ An ABSENT origin returns false. A record whose provenance cannot be read
  *  is not a record whose provenance is safe, and the conservative reading is
  *  the only one that cannot be exploited by a future writer that forgets to
- *  stamp the field. */
+ *  stamp the field.
+ *
+ *  ⛔ A file its capturing op OPTED OUT is refused whatever its origin
+ *  (`hot_fields.ai_enrichment`, stamped `'opt_out'` from the pack's
+ *  `response_capture.ai_enrichment`). The origin says who put the file here;
+ *  the opt-out says what it is for. A Home Assistant camera snapshot is an
+ *  allowed origin and still nothing an AI should describe on an idle cycle.
+ *  It stops only the automation: the owner's own recipe can still send it.
+ *  ⚠ ANY value refuses, not just `'opt_out'`: the writer only stamps that one,
+ *  so anything else is a row whose intent cannot be read, and this module
+ *  fails closed on those. */
 export const mayAiEnrichFile = (record: CollectionRecord): boolean => {
+  if (record.hot_fields?.ai_enrichment !== undefined) return false;
   const origin = fileOriginOf(record);
   return origin !== null && AI_ENRICHABLE_FILE_ORIGINS.has(origin);
 };

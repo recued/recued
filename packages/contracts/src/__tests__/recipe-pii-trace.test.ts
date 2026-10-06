@@ -588,6 +588,88 @@ describe('tracePiiFlow', () => {
     expect(finding(leaking, 'ai').verdict).toBe('pii_reaches_llm');
   });
 
+  // A legacy entry over free text is credited as cover, but the step-level hash
+  // hides nothing inside text: the validator warns from `legacy_content`.
+  it('records the free-text paths a legacy bare-name entry names', () => {
+    const profiles: Record<string, PiiPathProfile> = {
+      'mail-source': { subject: ['content'], from: ['email'] },
+      'mail-list': { [`${PII_LIST_SEGMENT}.subject`]: ['content'], [`${PII_LIST_SEGMENT}.from`]: ['email'] },
+    };
+    const t = trace([
+      { id: 'mail', ingredient: 'mail-source' },
+      { id: 'mails', ingredient: 'mail-list' },
+      {
+        id: 'ai',
+        ingredient: 'ai-classify',
+        pii_fields: ['subject', 'from'],
+        input: { 'llm.data': '{{step.mail}}' },
+      },
+      {
+        // ⛔ The dispatch hashes before the AI executor, so a `content` tag on the
+        // same path only ever sees the token: recorded all the same.
+        id: 'ai_tagged',
+        ingredient: 'ai-classify',
+        pii_fields: ['subject'],
+        input: { 'llm.data': '{{step.mail}}', 'llm.pii_fields': { subject: 'content', from: 'email' } },
+      },
+      {
+        id: 'ai_batch',
+        ingredient: 'ai-classify',
+        pii_fields: ['subject', 'from'],
+        input: { 'llm.data': '{{step.mails}}', 'llm.id_field': 'message_id' },
+      },
+    ], profiles);
+
+    expect(finding(t, 'ai').verdict).toBe('protected_declared');
+    expect(finding(t, 'ai').legacy_content).toEqual([
+      { input_key: 'llm.data', path: 'subject', entry: 'subject' },
+    ]);
+    expect(finding(t, 'ai_tagged').legacy_content).toEqual([
+      { input_key: 'llm.data', path: 'subject', entry: 'subject' },
+    ]);
+    expect(finding(t, 'ai_batch').legacy_content).toEqual([
+      { input_key: 'llm.data', path: `${PII_LIST_SEGMENT}.subject`, entry: 'subject' },
+    ]);
+  });
+
+  // The hash replaces everything under a named key, so any key along a path covers it:
+  // a list the classifier profiles as a plain path (mail `to`), a list path, and an
+  // ancestor. ⛔ It used to credit the LAST key only, for a walk that left a list in clear.
+  it('credits any named key along the path — the list, its items, an ancestor — for pii_fields and hash_replace alike', () => {
+    const profiles: Record<string, PiiPathProfile> = {
+      'mail-source': { from: ['email'], to: ['email'], 'contact.email': ['email'], [`cc.${PII_LIST_SEGMENT}`]: ['email'], 'thread.subject': ['content'] },
+    };
+    const t = trace([
+      { id: 'mail', ingredient: 'mail-source' },
+      {
+        id: 'ai',
+        ingredient: 'ai-classify',
+        pii_fields: ['to', 'cc', 'contact', 'thread'],
+        input: { 'llm.data': '{{step.mail}}' },
+      },
+      { id: 'hashed', transform: 'hash_replace', data: '{{step.mail}}', fields: ['to', 'cc', 'contact', 'thread'] },
+      { id: 'ai_hashed', ingredient: 'ai-classify', input: { 'llm.data': '{{step.hashed.data}}' } },
+    ], profiles);
+
+    expect(uncoveredOf(finding(t, 'ai'))).toEqual([{ input_key: 'llm.data', path: 'from', kinds: ['email'] }]);
+    expect(finding(t, 'ai').legacy_content).toEqual([
+      { input_key: 'llm.data', path: 'thread.subject', entry: 'thread' },
+    ]);
+    expect(uncoveredOf(finding(t, 'ai_hashed'))).toEqual([{ input_key: 'llm.data', path: 'from', kinds: ['email'] }]);
+  });
+
+  it('records nothing when the entries name identifiers, or nothing names the text', () => {
+    const profiles: Record<string, PiiPathProfile> = { 'mail-source': { subject: ['content'], from: ['email'] } };
+    const t = trace([
+      { id: 'mail', ingredient: 'mail-source' },
+      { id: 'ai_identifier', ingredient: 'ai-classify', pii_fields: ['from'], input: { 'llm.data': '{{step.mail}}' } },
+      { id: 'ai_none', ingredient: 'ai-classify', input: { 'llm.data': '{{step.mail}}' } },
+    ], profiles);
+
+    expect(finding(t, 'ai_identifier').legacy_content).toEqual([]);
+    expect(finding(t, 'ai_none').legacy_content).toEqual([]);
+  });
+
   it('applies llm.pii_fields only to exact contracted llm.data paths', () => {
     const t = trace([
       { id: 'record', ingredient: 'record-source' },
@@ -764,14 +846,18 @@ describe('tracePiiFlow', () => {
     expect(plan.injections).toEqual(expect.arrayContaining([
       { step_id: 'ai_scalar', slug: 'ai-classify', fields: { email: 'email' } },
       { step_id: 'ai_batch_list', slug: 'ai-classify', fields: { x: 'email' } },
+      // D-316 amendment (owner ruling 2026-10-05): a content-only finding is
+      // injected too — on a server a `content` tag hides the known contacts
+      // and every email in the text, so it is no longer decorative.
+      { step_id: 'ai_content', slug: 'ai-classify', fields: { summary: 'content' } },
     ]));
     expect(plan.gaps).toEqual(expect.arrayContaining([
       { step_id: 'ai_prompt', slug: 'ai-prompt', reason: 'slug_not_contracted' },
       { step_id: 'ai_whole', slug: 'ai-classify', reason: 'unstructured_payload' },
       { step_id: 'ai_list_value', slug: 'ai-classify', reason: 'list_crossing' },
-      { step_id: 'ai_content', slug: 'ai-classify', reason: 'content_without_identifier_seed' },
       { step_id: 'ai_opaque', slug: 'ai-classify', reason: 'untraced' },
     ]));
+    expect(plan.gaps.map((g) => g.step_id)).not.toContain('ai_content');
   });
 
   it('de-aliases taint on ai output echo into a later ai step', () => {

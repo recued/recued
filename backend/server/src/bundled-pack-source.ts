@@ -261,6 +261,17 @@ export const loadBundledPackManifests = (
   return [...manifests];
 };
 
+/** D-319 — the packs on the bundled roster that ship a recipe, as
+ *  `<publisher>.<slug>` (the `missing_packs` form) with their names. The
+ *  roster, so a core feature is never named: its recipes are installed at
+ *  boot. Empty when no bundled pack ships it. */
+export const bundledPacksShippingRecipe = (
+  recipe_id: string,
+): Array<{ ref: string; name: string }> =>
+  loadBundledPackManifests()
+    .filter((manifest) => manifest.recipes.some((ref) => ref.slug === recipe_id))
+    .map((manifest) => ({ ref: `${manifest.publisher}.${manifest.slug}`, name: manifest.name }));
+
 /** Resolve one pack by manifest `slug`, disk first, embed second.
  *
  *  The file name on disk does not have to match the manifest's `slug` — row

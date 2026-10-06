@@ -30,6 +30,7 @@ import {
   wireRunPalette,
   RUN_PALETTE_ACTION_ATTR,
   RUN_PALETTE_CLOSE_ATTR,
+  RUN_PALETTE_NOT_INSTALLED_ATTR,
   RUN_PALETTE_OVERLAY_ATTR,
   RUN_PALETTE_RETRY_ATTR,
   RUN_PALETTE_RESULT_ATTR,
@@ -686,6 +687,39 @@ describe('run-palette wire', () => {
     expect(link.textContent).toContain('Automation');
     // Deep-links to THIS recipe's rules (recipes-route parity).
     expect(link.getAttribute('href')).toBe('#automation/trigger-1');
+    handle.destroy();
+  });
+
+  it('D-319 — a recipe the server only ships offers Packs, not Switch on: nothing of it starts on its own', async () => {
+    const shippedTimer = { ...AUTORUN, recipe_id: 'shipped-timer', source: 'bundled' as const };
+    const shippedTrigger = { ...TRIGGERED, recipe_id: 'shipped-trigger', source: 'bundled' as const };
+    const shippedManual = { ...MANUAL, recipe_id: 'shipped-manual', source: 'bundled' as const };
+    const switchOn = vi.fn(async () => ({ destroy: vi.fn() }));
+    const autoRunUpdate = vi.fn(async () => ({}));
+    const { doc, handle } = mount({
+      recipeList: vi.fn(async () => ({ recipes: [shippedTimer, shippedTrigger, shippedManual] })),
+      autoRunList: vi.fn(async () => ({ entries: [] })),
+      autoRunUpdate,
+      switchOn,
+      packsHref: '#packs',
+    });
+    await tick();
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    for (const id of ['shipped-timer', 'shipped-trigger']) {
+      handle.selectRecipe(id);
+      expect(collectByAttr(overlay, RUN_PALETTE_NOT_INSTALLED_ATTR)[0]!.textContent)
+        .toBe('Its pack is not installed, so it does not start on its own.');
+      const actions = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR);
+      expect(actions.map((action) => action.textContent)).toEqual(['Install it from Packs →']);
+      expect(actions[0]!.getAttribute('href')).toBe('#packs');
+    }
+    expect(switchOn).not.toHaveBeenCalled();
+    expect(autoRunUpdate).not.toHaveBeenCalled();
+    // One the owner runs still runs.
+    handle.selectRecipe('shipped-manual');
+    expect(collectByAttr(overlay, RUN_PALETTE_NOT_INSTALLED_ATTR)).toHaveLength(0);
+    expect(collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).map((action) => action.textContent))
+      .toEqual(['Run', 'Schedule']);
     handle.destroy();
   });
 

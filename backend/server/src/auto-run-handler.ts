@@ -23,6 +23,7 @@ import {
   RpcError,
   type AutoRunStatusEntry,
   type Dish,
+  type DishWebhookDoorChange,
   type HandlerSlice,
   type RecipeDefinition,
   type ServerRpcRegistry,
@@ -59,7 +60,7 @@ export interface AutoRunRpcDeps {
     recipe_id: string;
     publisher_id: string;
     config_overlay: Record<string, unknown> | null;
-  }) => Dish;
+  }) => { dish: Dish; webhook_doors?: DishWebhookDoorChange[] };
   /** D-121 broadcast bus — mutations fan `automation_rule_changed`
    *  so every paired client's Automation surface refreshes live. */
   eventBus?: EventBus;
@@ -71,8 +72,11 @@ interface DefinitionalRow {
 }
 
 /** SQLite-stored recipes carrying `auto_run` — the same definitional
- *  set the scheduler rosters from. */
-const listDefinitional = (deps: AutoRunRpcDeps): DefinitionalRow[] => {
+ *  set the scheduler rosters from. Also read by the one-time notice about
+ *  the timers D-319 stopped (`auto-run-switch-on-notice.ts`). */
+export const listDefinitional = (deps: {
+  readonly recipeStore: Pick<RecipeStore, 'listStored'>;
+}): DefinitionalRow[] => {
   const out: DefinitionalRow[] = [];
   for (const row of deps.recipeStore.listStored()) {
     let recipe: RecipeDefinition;
@@ -141,7 +145,7 @@ export const listAutoRun = (
 export const updateAutoRun = async (
   deps: AutoRunRpcDeps,
   body: { dish_id?: unknown; recipe_id?: unknown; enabled?: unknown; config_overlay?: unknown },
-): Promise<{ entry: AutoRunStatusEntry }> => {
+): Promise<{ entry: AutoRunStatusEntry; webhook_doors?: DishWebhookDoorChange[] }> => {
   if (body.enabled !== undefined && typeof body.enabled !== 'boolean') {
     throw new RpcError('bad_request', 'enabled must be a boolean', 400);
   }
@@ -153,6 +157,7 @@ export const updateAutoRun = async (
 
   // The dish: named, or the recipe's main one.
   let dish: Dish;
+  let webhook_doors: DishWebhookDoorChange[] | undefined;
   if (typeof body.dish_id === 'string' && body.dish_id.length > 0) {
     if (overlay !== undefined) {
       throw new RpcError('bad_request', 'A timer has no settings of its own — change its dish’s settings', 400);
@@ -169,7 +174,10 @@ export const updateAutoRun = async (
     if (!deps.mainDish) {
       throw new RpcError('not_configured', 'Switching a recipe on needs a dish, and this server keeps none', 501);
     }
-    dish = deps.mainDish({ recipe_id, publisher_id: definitional.publisher_id, config_overlay: overlay ?? null });
+    const main = deps.mainDish({ recipe_id, publisher_id: definitional.publisher_id, config_overlay: overlay ?? null });
+    dish = main.dish;
+    // D-209 — a main dish made here can move the recipe's webhook door.
+    webhook_doors = main.webhook_doors;
   } else {
     throw new RpcError('bad_request', 'dish_id (or recipe_id) is required', 400);
   }
@@ -199,7 +207,10 @@ export const updateAutoRun = async (
   await deps.getHandle()?.refreshRoster();
 
   emitAutomationRule(deps.eventBus, 'auto_run');
-  return { entry: buildEntry(deps, row, deps.dishStore?.get(dish.dish_id) ?? dish) };
+  return {
+    entry: buildEntry(deps, row, deps.dishStore?.get(dish.dish_id) ?? dish),
+    ...(webhook_doors !== undefined ? { webhook_doors } : {}),
+  };
 };
 
 // ────────────────────────────────────────────────────────────────

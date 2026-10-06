@@ -61,6 +61,7 @@ import {
   AI_MODELS_SLOT_TEST_ATTR,
   AI_MODELS_SLOT_TEST_RESULT_ATTR,
   AI_MODELS_PROBE_TRANSCRIPT_ATTR,
+  AI_MODELS_PROBE_PICTURES_ATTR,
   AI_MODELS_SLOT_CLEAR_ATTR,
   AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
   AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
@@ -2942,6 +2943,43 @@ describe('Test connection', () => {
     supports_json: true,
     elapsed_ms: 240,
   };
+
+  /** ⛔ Picture input is the one capability a model has to PROVE, and this
+   *  verdict is the only place the owner learns whether it did. A page that
+   *  dropped it would leave camera checks failing with nothing to explain why. */
+  it.each([
+    [{ sees_pictures: true, picture_answer: '4827' }, 'sees', 'Sees pictures'],
+    [{ sees_pictures: false, picture_answer: 'I cannot see any picture.' }, 'blind',
+      'it answered "I cannot see any picture."'],
+    [{ sees_pictures: false, picture_detail: 'image input is not supported' }, 'blind',
+      'it refused the test picture (image input is not supported)'],
+    [{ picture_detail: 'LLM call timed out after 30000ms' }, 'unknown',
+      'Could not check whether it sees pictures, so nothing changed'],
+  ] as const)('shows the picture verdict (%#)', async (facts, state, text) => {
+    const runProbeLlmSource = vi.fn(async () => ({ ...probeOk, ...facts }));
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
+    const line = findByAttrValue(box, AI_MODELS_PROBE_PICTURES_ATTR, state);
+    expect(line).toBeTruthy();
+    expect(hasText(line!, text)).toBe(true);
+    mount.dispose();
+  });
+
+  it('shows no picture line when no picture check ran', async () => {
+    const runProbeLlmSource = vi.fn(async () => probeOk);
+    const { host, mount } = mountFixture({ runProbeLlmSource });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_SLOT_TEST_ATTR, 'slot_1');
+    await flush();
+    const box = findByAttrValue(host, AI_MODELS_SLOT_TEST_RESULT_ATTR, 'slot_1')!;
+    for (const state of ['sees', 'blind', 'unknown']) {
+      expect(findByAttrValue(box, AI_MODELS_PROBE_PICTURES_ATTR, state)).toBeFalsy();
+    }
+    mount.dispose();
+  });
 
   it('probes the FORM values, not the saved slot', async () => {
     const runProbeLlmSource = vi.fn(async () => probeOk);

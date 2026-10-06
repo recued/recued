@@ -7,6 +7,9 @@ import type { ChatDispatchContext, ChatDispatchResult, InternalToolRegistry, Too
 import { createChatOrchestrator } from '../chat-orchestrator.js';
 import { bindChatToolCallRun, observeResumedChatToolCall, withChatToolCallContext } from '../chat-tool-call-context.js';
 import { createChatRunSettledSink } from '../chat-run-settled-sink.js';
+import {
+  buildWaitedCallsContext, joinInFlightContexts, renderWaitedCallsContext, WAITED_CALLS_CONTEXT_LEAD,
+} from '../chat-waited-calls-context.js';
 import { createChatStore, ensureChatSchema } from '../storage/chat-store.js';
 import { createChatToolCallStore } from '../storage/chat-tool-call-store.js';
 import { InFlightRegistry } from '../execution/in-flight-registry.js';
@@ -340,5 +343,161 @@ describe('restart recovery and lifecycle boundaries', () => {
     late?.(2, false);
     expect(bind).toHaveBeenCalledExactlyOnceWith('outer', 'recipe');
     expect(progress).toHaveBeenCalledExactlyOnceWith('outer', 1, false);
+  });
+});
+
+describe('a call that had to wait, and what the next turn is told about it', () => {
+  const holdCall = async (store: ReturnType<typeof createChatStore>, id: string, run: string) => {
+    await store.toolCalls!.start(startInput(id));
+    store.toolCalls!.bind(id, run);
+    store.toolCalls!.hold(id);
+  };
+
+  it('keeps when it first waited, and settles a refusal as a refusal', async () => {
+    const { store } = storage();
+    const sink = createChatRunSettledSink(store, signature, { emit: vi.fn() });
+    await holdCall(store, 'refused-call', 'refused-run');
+    await holdCall(store, 'failed-call', 'failed-run');
+    await holdCall(store, 'done-call', 'done-run');
+    const firstWait = store.toolCalls!.get('done-call')!.held_at;
+    expect(firstWait).toEqual(expect.any(Number));
+    // Its go-ahead started it again and it stopped again: still the call that
+    // started waiting THEN.
+    expect(store.toolCalls!.resumeRun('session', 'done-run')).toEqual(['done-call']);
+    store.toolCalls!.hold('done-call');
+    expect(store.toolCalls!.get('done-call')!.held_at).toBe(firstWait);
+
+    const settle = (run_id: string, result: unknown) => sink({ execution_source: source,
+      run_id, tool_name: 'recipe.run', result, ts: Date.now() });
+    await settle('refused-run', { denied: true, message: 'The owner denied it.' });
+    await settle('failed-run', { success: false, error: 'provider said no' });
+    await settle('done-run', { success: true });
+    expect(store.toolCalls!.get('refused-call')).toMatchObject({ state: 'failed', denied: true });
+    expect(store.toolCalls!.get('failed-call')).toMatchObject({ state: 'failed' });
+    expect(store.toolCalls!.get('failed-call')!.denied).toBeUndefined();
+    expect(store.toolCalls!.get('done-call')).toMatchObject({ state: 'succeeded', held_at: firstWait });
+    expect(store.toolCalls!.get('done-call')!.denied).toBeUndefined();
+  });
+
+  it('lists only this chat\'s calls that waited, most recently changed first, within the bound', async () => {
+    const { store } = storage();
+    store.createSession({ id: 'other', now: 1_000 });
+    await store.toolCalls!.start(startInput('never-waited'));
+    for (let i = 0; i < 7; i += 1) await holdCall(store, `waited-${i}`, `run-${i}`);
+    await store.toolCalls!.start({ ...startInput('other-chat'), session_id: 'other',
+      execution_source: { ...source, chat_session_id: 'other' } });
+    store.toolCalls!.bind('other-chat', 'run-other');
+    store.toolCalls!.hold('other-chat');
+    const listed = store.toolCalls!.listWaited('session', 5);
+    expect(listed).toHaveLength(5);
+    expect(listed.every((call) => call.session_id === 'session' && call.held_at !== undefined)).toBe(true);
+    expect(listed.map((call) => call.message_id)).not.toContain('never-waited');
+    expect(store.toolCalls!.listWaited('other', 5).map((call) => call.message_id)).toEqual(['other-chat']);
+  });
+
+  it('tells the next turn where each waited call stands: the outcome, never the result', () => {
+    const base = { session_id: 'session', turn_id: 'turn', tool_name: 'recued-core/control-device',
+      started_at: 10, updated_at: 20, held_at: 15 };
+    const { held_at: _never, ...neverWaited } = base;
+    const text = renderWaitedCallsContext([
+      { ...base, message_id: 'a', run_id: 'r1', state: 'succeeded' },
+      { ...base, message_id: 'b', run_id: 'r2', state: 'failed', denied: true },
+      { ...base, message_id: 'c', run_id: 'r3', state: 'failed' },
+      { ...base, message_id: 'd', run_id: 'r4', state: 'held' },
+      { ...base, message_id: 'e', run_id: 'r5', state: 'interrupted' },
+      // Running again after its go-ahead: the live in-flight line says so.
+      { ...base, message_id: 'f', run_id: 'r6', state: 'running' },
+      // Never waited: a synchronous call the model already saw answer.
+      { ...neverWaited, message_id: 'g', run_id: 'r7', state: 'succeeded' },
+    ]);
+    expect(text?.split('\n')).toEqual([
+      WAITED_CALLS_CONTEXT_LEAD,
+      'run=r1; recipe=recued-core/control-device; state=went ahead and finished; asked_at=10; settled_at=20',
+      'run=r2; recipe=recued-core/control-device; state=did not run, the owner refused it; asked_at=10; settled_at=20',
+      'run=r3; recipe=recued-core/control-device; state=went ahead but failed; asked_at=10; settled_at=20',
+      'run=r4; recipe=recued-core/control-device; state=still waiting; asked_at=10',
+      'run=r5; recipe=recued-core/control-device; state=stopped part-way, outcome unknown; asked_at=10; settled_at=20',
+    ]);
+    // Nothing waited ⇒ no block at all, so such a turn is byte-identical to before.
+    expect(renderWaitedCallsContext([])).toBeUndefined();
+    expect(renderWaitedCallsContext([{ ...neverWaited, message_id: 'g', state: 'succeeded' }])).toBeUndefined();
+  });
+
+  it('is told only in the owner\'s own chat, and shares the field with live work', async () => {
+    const { store } = storage();
+    await holdCall(store, 'waited', 'run-waited');
+    expect(buildWaitedCallsContext(store.toolCalls, source)).toContain('run=run-waited; recipe=recipe.run; state=still waiting');
+    expect(buildWaitedCallsContext(store.toolCalls,
+      { ...source, actor: 'contracted_user', contract_id: 'contract-1' })).toBeUndefined();
+    expect(buildWaitedCallsContext(store.toolCalls, { ...source, chat_session_id: 'elsewhere' })).toBeUndefined();
+    expect(buildWaitedCallsContext(undefined, source)).toBeUndefined();
+    expect(joinInFlightContexts('live work', undefined)).toBe('live work');
+    expect(joinInFlightContexts(undefined, 'waited')).toBe('waited');
+    expect(joinInFlightContexts('live work', 'waited')).toBe('live work\nwaited');
+    expect(joinInFlightContexts(undefined, undefined)).toBeUndefined();
+  });
+
+  it('tidies the STORED running brief when it settles — the to-do written around the wait goes', async () => {
+    // ⛔ Through the chat store, which is where a running server keeps the brief
+    //   (`briefStore`). The first cut tidied the module's in-memory fallback and
+    //   this test passed against it while a live drive showed the owner's note
+    //   unchanged: a stub the composition root does not use.
+    const { store } = storage();
+    const sink = createChatRunSettledSink(store, signature, { emit: vi.fn() });
+    const carried = { intent: 'unlock the kitchen door', constraints: ['use the back door at night'],
+      findings: ['lock.kitchen_door is the kitchen door'], pending: ['Unlock the kitchen door'], completed: [] };
+    await store.writeSessionBrief('session', JSON.stringify(carried));
+    await holdCall(store, 'unlock-call', 'run-unlock');
+    await sink({ execution_source: source, run_id: 'run-unlock', tool_name: 'control-device',
+      result: { success: true }, ts: Date.now() });
+    expect(JSON.parse((await store.readSessionBrief('session'))!)).toEqual({ ...carried, pending: [] });
+    // A refusal settles the same way: the to-do was about a call that is over.
+    await store.writeSessionBrief('session', JSON.stringify(carried));
+    await holdCall(store, 'refused-call', 'run-refused');
+    await sink({ execution_source: source, run_id: 'run-refused', tool_name: 'control-device',
+      result: { denied: true, message: 'The owner denied it.' }, ts: Date.now() });
+    expect(JSON.parse((await store.readSessionBrief('session'))!).pending).toEqual([]);
+    // And the settlement itself is never undone by the tidy.
+    expect(store.toolCalls!.get('unlock-call')?.state).toBe('succeeded');
+    expect(store.toolCalls!.get('refused-call')).toMatchObject({ state: 'failed', denied: true });
+  });
+
+  it('reports a brief it cannot tidy as that, never as a failed settlement', async () => {
+    const { store } = storage();
+    const emit = vi.fn();
+    const sink = createChatRunSettledSink(store, signature, { emit });
+    await holdCall(store, 'unlock-call', 'run-unlock');
+    store.readSessionBrief = async () => { throw new Error('brief unreadable'); };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await sink({ execution_source: source, run_id: 'run-unlock', tool_name: 'control-device',
+      result: { success: true }, ts: Date.now() });
+    expect(store.toolCalls!.get('unlock-call')?.state).toBe('succeeded');
+    const logged = errors.mock.calls.map(([first]) => String(first));
+    expect(logged).toEqual(['[chat] run-settled brief tidy failed']);
+    // One broadcast — the settlement — not a second "interrupted" round.
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('reaches the model on the next turn, after the run settled', async () => {
+    const { store } = storage();
+    await holdCall(store, 'waited', 'run-unlock');
+    await createChatRunSettledSink(store, signature, { emit: vi.fn() })({ execution_source: source,
+      run_id: 'run-unlock', tool_name: 'recipe.run', result: { success: true, answer: 'private late result' },
+      ts: Date.now() });
+    const seen: string[] = [];
+    const app = createChatOrchestrator({ chatStore: store, registry: {
+      list: () => [], listByTier: () => [], getByName: () => null,
+      subscribeRefresh: () => () => {}, dispatch: async () => ({ ok: true, result: null }),
+    } as unknown as InternalToolRegistry, broadcast: { emit: () => {} }, selfSignature: signature,
+    buildInFlightContext: (src) => joinInFlightContexts(undefined, buildWaitedCallsContext(store.toolCalls, src)),
+    executeAiCall: async (...call: unknown[]) => {
+      seen.push(JSON.stringify(call));
+      return { body: { response: 'Yes, it finished.', events: [], tool_calls: [] } };
+    } });
+    await app.runTurn({ ...turnInput, message: 'Is it done?' });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toContain('run=run-unlock; recipe=recipe.run; state=went ahead and finished');
+    // The outcome travels; the late result itself stays out of the model.
+    expect(seen.join('')).not.toContain('private late result');
   });
 });

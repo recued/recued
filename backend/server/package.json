@@ -1,6 +1,6 @@
 {
   "name": "@recued/server",
-  "version": "26.9.30",
+  "version": "26.10.6",
   "description": "Personal automation server — data warehouse + scheduler + MCP host",
   "license": "AGPL-3.0-only",
   "homepage": "https://recued.com",
@@ -37,7 +37,7 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": "24.x"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

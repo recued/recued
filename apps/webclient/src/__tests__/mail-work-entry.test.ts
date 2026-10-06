@@ -46,8 +46,8 @@ describe('Follow this work opens Chat immediately', () => {
     const f = setup(); const review = vi.spyOn(f.fixture.service, 'review');
     await f.mount().whenLoaded();
     expect(f.handoffs).toHaveLength(1);
-    expect(f.handoffs[0]).toMatchObject({ repeat: false, prompt: expect.stringContaining('mail.read') });
-    expect(f.handoffs[0]?.prompt).toContain('document.read');
+    expect(f.handoffs[0]).toMatchObject({ repeat: false, prompt: expect.any(String),
+      mailWork: { seeds: [expect.objectContaining({ slug: 'work', record_id: 'seed' })] } });
     expect(f.root.innerHTML).not.toContain('Name (optional)');
     expect((await f.fixture.service.list()).works).toHaveLength(1);
     expect(review).not.toHaveBeenCalled();

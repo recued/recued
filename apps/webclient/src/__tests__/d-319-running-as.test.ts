@@ -5,11 +5,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AutoRunStatusEntry, Dish, EventTrigger, ServerSchedule } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import {
   RUNNING_AS_ACTION_ATTR,
   RUNNING_AS_DISH_ATTR,
+  RUNNING_AS_NOT_INSTALLED_ATTR,
   RUNNING_AS_STATUS_ATTR,
+  isInstalledRecipeEntry,
   renderRunningAs,
   startsOnItsOwn,
   type RunningAsView,
@@ -36,6 +39,7 @@ const view = (over: Partial<RunningAsView> = {}): RunningAsView => ({
   recipe_id: 'parcels',
   recipe_name: 'Shop parcels watch',
   recipe: watcher,
+  installed: true,
   dishes: [],
   lastRuns: {},
   schedules: [],
@@ -81,6 +85,37 @@ describe('with no dish', () => {
     const html = renderRunningAs(view({ can: { create: false, update: true, remove: true, run: true, schedule: true } }));
     expect(html).toContain('Not switched on');
     expect(html).not.toContain(action('switch-on'));
+  });
+});
+
+describe('a recipe the server only ships', () => {
+  it('reads as installed only when the server lists it from its store', () => {
+    expect(isInstalledRecipeEntry({ source: 'bundled' })).toBe(false);
+    expect(isInstalledRecipeEntry({ source: 'pair-sync' })).toBe(true);
+    expect(isInstalledRecipeEntry({ source: 'inline' })).toBe(true);
+  });
+
+  it('that starts on its own offers Packs instead of Switch on — its timer and triggers would never run', () => {
+    const html = renderRunningAs(view({ installed: false }));
+    expect(html).toContain('Not switched on. It starts when a shipment’s state changes.');
+    expect(html).toContain(RUNNING_AS_NOT_INSTALLED_ATTR);
+    expect(html).toContain('Its pack is not installed, so it does not start on its own.');
+    expect(html).toContain('<a class="recipes-inline-link" href="#packs">Install it from Packs</a> to switch it on.');
+    expect(html).not.toContain(action('switch-on'));
+  });
+
+  it('a dish it already has keeps its line, with no "+ Add another" to make a dead one', () => {
+    const html = renderRunningAs(view({ installed: false, dishes: [dish()] }));
+    expect(html).toContain(action('toggle-off', 'dsh_work'));
+    expect(html).toContain(RUNNING_AS_NOT_INSTALLED_ATTR);
+    expect(html).not.toContain(action('add'));
+  });
+
+  it('that runs only when the owner runs it saves settings as before', () => {
+    const manual = { variables: { note: { label: 'Note', type: 'text' } } } as unknown as RunningAsView['recipe'];
+    const html = renderRunningAs(view({ installed: false, recipe: manual }));
+    expect(html).toContain(action('save-settings'));
+    expect(html).not.toContain(RUNNING_AS_NOT_INSTALLED_ATTR);
   });
 });
 
@@ -209,3 +244,65 @@ describe('the menu and removing', () => {
     expect(html).not.toContain(RUNNING_AS_ACTION_ATTR);
   });
 });
+
+describe('a timer with a time window (2026-10-05: "use a real time in the message")', () => {
+  /** The shipped Today recipe: checked every 10 minutes, open weekdays 8-9. */
+  const today = {
+    auto_run: { interval_ms: 600_000 },
+    trigger_steps: [{ id: 'morning', op: 'core.watch.time', args: {
+      weekdays: '{{config.weekdays}}', start_hour: '{{config.start_hour}}', end_hour: '{{config.end_hour}}',
+    } }],
+    variables: {
+      start_hour: { label: 'Window start hour', type: 'number', default: 8 },
+      end_hour: { label: 'Window end hour', type: 'number', default: 9 },
+      weekdays: { label: 'Active weekdays', type: 'array', default: [1, 2, 3, 4, 5] },
+    },
+  } as unknown as RunningAsView['recipe'];
+  const nextCheck = Date.parse('2026-10-05T04:02:00-07:00');
+  const timer = {
+    recipe_id: 'today', dish_id: 'dsh_today', enabled: true, auto_disabled: false,
+    interval_ms: 600_000, next_run_at: nextCheck, consecutive_failures: 0,
+  } as unknown as AutoRunStatusEntry;
+  const when = (at: number) => formatClientDateTime(at, { includeSeconds: false, includeTimeZone: false });
+
+  it('says the window with the dish\'s settings, and its next run is the first check inside it', () => {
+    const html = renderRunningAs(view({
+      recipe_id: 'today', recipe_name: 'Today', recipe: today,
+      dishes: [dish({ dish_id: 'dsh_today', recipe_id: 'today', config_overlay: { start_hour: 7, end_hour: 8 } })],
+      autoRun: [timer],
+      timeZone: 'America/Los_Angeles',
+    }));
+    expect(html).toContain('Runs every 10 minutes from 7:00 to 8:00 AM on weekdays');
+    expect(html).toContain(`next ${when(Date.parse('2026-10-05T07:02:00-07:00'))}`);
+    expect(html).not.toContain(`next ${when(nextCheck)}`);
+  });
+
+  it('with nothing switched on, says the recipe\'s own window', () => {
+    expect(renderRunningAs(view({ recipe_id: 'today', recipe_name: 'Today', recipe: today })))
+      .toContain('Not switched on. It runs every 10 minutes from 8:00 to 9:00 AM on weekdays.');
+  });
+});
+
+describe('a timer that waits for data (2026-10-05: "do the event wording … too")', () => {
+  const briefing = {
+    auto_run: { interval_ms: 300_000 },
+    trigger_steps: [{ id: 'upcoming', op: 'core.watch.time-relative', args: {
+      collection: 'data.calendar', anchor_field: 'start_at', offsets: '{{config.lead_offsets}}',
+    } }],
+    variables: { lead_offsets: { label: 'How long before', type: 'array', default: ['-30m'] } },
+  } as unknown as RunningAsView['recipe'];
+
+  it('says what it waits for, and claims no next run its data has not decided', () => {
+    const html = renderRunningAs(view({
+      recipe_id: 'meeting-prep-brief', recipe_name: 'Meeting prep', recipe: briefing,
+      dishes: [dish({ dish_id: 'dsh_brief', recipe_id: 'meeting-prep-brief' })],
+      autoRun: [{
+        recipe_id: 'meeting-prep-brief', dish_id: 'dsh_brief', enabled: true, auto_disabled: false,
+        interval_ms: 300_000, next_run_at: Date.parse('2026-10-05T04:02:00-07:00'), consecutive_failures: 0,
+      } as unknown as AutoRunStatusEntry],
+    }));
+    expect(html).toContain('Runs 30 minutes before each calendar event starts, checking every 5 minutes');
+    expect(html).not.toContain('next ');
+  });
+});
+

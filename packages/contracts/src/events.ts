@@ -791,7 +791,11 @@ export type ServerEvent =
        *  deliberately absent on this variant. Carries the new
        *  enabled-kind list so paired clients (laptop, phone PWA)
        *  refresh the Settings UI + the chat catalog without an rpc
-       *  round-trip. */
+       *  round-trip.
+       *
+       *  ⛔ NO LONGER EMITTED: the per-kind scope is retired (2026-10-04;
+       *  `chat.ts` § D-137 W2.2). Kept so an older server's emit still
+       *  parses; no client of this version subscribes to it. */
       kind: 'chat.tool_catalog_scope_changed';
       enabled_kinds: readonly string[];
       updated_at: number;

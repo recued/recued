@@ -1,3 +1,4 @@
+import { createMailWorkEvidence } from '../mail-work-evidence.js';
 import {
   composeVendorEntityScope,
   CONNECTION_VENDOR_ENTITIES,
@@ -1793,4 +1794,28 @@ describe('RAW-VALUE RATCHET — no ledger value may egress unaliased', () => {
       .toEqual(['Dana Reyes']);
     expect(rawLedgerValuesInText(l, 'a note from pii.Person1 today')).toEqual([]);
   });
+});
+
+it.each(['prior_tool_calls', 'tool_results_since'])('protects host evidence schema in %s through reharvest and degraded withholding', async lane => {
+  const record = createMailWorkEvidence(null, 'Read the source.', true, 1);
+  record.record({ tool_name: 'mail.read', tier: 1, args: { slug: 'work', record_id: 'source' }, status: 'ok', started_at: 1, completed_at: 2,
+    result: { body: 'owner asked for an outline.', owner_private_key: 'owner' } });
+  for (const tool_name of ['calendar.search', 'deal.search']) {
+    record.record({ tool_name, tier: 1, args: { query: 'owner' }, status: 'ok', started_at: 1, completed_at: 2,
+      result: { matches: [{ owner_private_key: 'owner' }] } });
+  }
+  const packet = { user_message: 'Continue.', [lane]: [record.asCall()], recall_context: [memorySearchEntry('A past conversation.')] };
+  const plan: PiiEgressPlan = { ...withRecall(makePlan(() => []), () => recallResolver({ names: ['owner'] })),
+    candidateReharvest: { contributor: { contribute: async () => ({ candidates: [{ kind: 'name', value: 'owner' }], partial: false,
+      joined_source_session_ids: [], decrypted_rows: 0, decrypted_bytes: 0 }) }, getJoinedPieces: () => [], hasRegisteredRecall: () => true } };
+  const protectedPacket = (await egress(plan, JSON.stringify(packet))).packet;
+  const result = (protectedPacket[lane] as Array<{ result: Record<string, any> }>)[0]!.result;
+  expect(result.owner_updates).toEqual([]);
+  expect(result.owner_updates_before_request).toBe(0);
+  expect(result.note).toContain('entries in owner_updates');
+  expect(JSON.stringify(result.observations)).not.toContain('owner_private_key');
+  expect(JSON.stringify(result.observations)).toContain('pii.Person');
+  const withheld = await egress({ ...makePlan(() => []), recall: { getIndex: () => ({ ...recallResolver({ names: ['owner'] }), isDegraded: () => true }) } }, JSON.stringify(packet));
+  expect((withheld.packet[lane] as Array<{ result: unknown }>)[0]!.result).toBe(RECALL_WITHHELD_MESSAGE);
+  expect(withheld.rawPrompt).not.toContain('asked for an outline');
 });

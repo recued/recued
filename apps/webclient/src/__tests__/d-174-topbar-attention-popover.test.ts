@@ -18,6 +18,7 @@ import {
   ATTENTION_CONNECTIONS_LINK_ATTR,
   ATTENTION_DIALOG_ATTR,
   ATTENTION_ERROR_ANNOUNCER_ATTR,
+  ATTENTION_GATEWAY_ASK_DETAILS_ATTR,
   ATTENTION_GATEWAY_ASK_ROW_ATTR,
   ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
   ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
@@ -2748,6 +2749,41 @@ describe('D-174 - approval attention top-bar adapter', () => {
     // must not end up behind the disclosure with the payload.
     const detailsAt = html.indexOf('attention-row-payload');
     expect(html.indexOf('Approve?')).toBeLessThan(detailsAt);
+    handle.dispose();
+  });
+
+  it('names what a held action would change, as the Approvals card does', async () => {
+    // Live 2026-10-04: a held unlock read "wants to run …lock.unlock (step
+    // unlock)" here with no door named, while the Approvals card said which.
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [
+        ask('gw-unlock', {
+          title: 'Approve home-assistant.lock.unlock (admin)',
+          text: 'Recipe control-device wants to run home-assistant.lock.unlock (step unlock).\n\nApprove?',
+          details: [
+            { label: 'Device', value: 'lock.kitchen_door' },
+            { label: 'body.transition', value: '<b>2</b>' },
+          ],
+        }),
+        ask('gw-no-details'),
+      ],
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const html = topbar.innerHTML;
+    expect(html.split(ATTENTION_GATEWAY_ASK_DETAILS_ATTR)).toHaveLength(2);
+    expect(html).toContain('<dt>Device</dt>');
+    expect(html).toContain('<dd>lock.kitchen_door</dd>');
+    // A raw key reads as the card reads it; a value is text, never markup.
+    expect(html).toContain('<dt>Body transition</dt>');
+    expect(html).toContain('<dd>&lt;b&gt;2&lt;/b&gt;</dd>');
+    // The values come before the prose, inside the unlock's own row.
+    const rowAt = html.indexOf(`${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-unlock"`);
+    const detailsAt = html.indexOf(ATTENTION_GATEWAY_ASK_DETAILS_ATTR);
+    expect(rowAt).toBeLessThan(detailsAt);
+    expect(detailsAt).toBeLessThan(html.indexOf('wants to run home-assistant.lock.unlock'));
     handle.dispose();
   });
 

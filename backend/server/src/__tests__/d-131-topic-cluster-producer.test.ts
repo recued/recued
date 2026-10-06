@@ -860,6 +860,29 @@ describe('runTopicClusterCycle', () => {
     expect((rows[0]!.value as TopicCluster).topic_name).toBe('Real');
   });
 
+  // The corpus heads each block `Cluster #0` and the context says to echo the index
+  // VERBATIM; a real model (qwen3.7-plus) answered `"#0"` for every label.
+  it('reads a cluster index the model echoes as "#0" or "1"', async () => {
+    seedThreeClusterCorpus();
+    const llm = buildLlm({
+      labels: [
+        { cluster_index: '#0', topic_name: 'First', summary: 'From "#0".' },
+        { cluster_index: '1', topic_name: 'Second', summary: 'From "1".' },
+      ],
+    });
+    const out = await runTopicClusterCycle(buildCtx({ llm: llm.fn }));
+    expect(out.produced).toBe(2);
+    const names = store.list({ topic: TOPIC_CLUSTER_TOPIC, fresh_only: false })
+      .map((r) => (r.value as TopicCluster).topic_name).sort();
+    expect(names).toEqual(['First', 'Second']);
+  });
+
+  it('throws when a cluster index is neither a number nor "#<n>"', async () => {
+    seedThreeClusterCorpus();
+    const llm = buildLlm({ labels: [{ cluster_index: 'first', topic_name: 'X', summary: 'Y.' }] });
+    await expect(runTopicClusterCycle(buildCtx({ llm: llm.fn }))).rejects.toThrow(/topic_cluster_output_invalid/);
+  });
+
   it('throws when AI returns malformed shape', async () => {
     seedThreeClusterCorpus();
     const llm = buildLlm({ wrong: 'shape' });

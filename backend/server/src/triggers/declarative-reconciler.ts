@@ -73,7 +73,13 @@
 
 import { randomUUID } from 'node:crypto';
 import type { ConnectionVendorEntity, RecipeDefinition } from '@recued/contracts';
-import { compileTriggerSugarEntry } from '@recued/contracts';
+import {
+  compileTriggerSugarEntry,
+  eventPatternSegments,
+  resolveEventPatternSettings,
+  settingOfEventSegment,
+} from '@recued/contracts';
+import { extractVariableDefault } from '@recued/engine';
 import { isValidPattern } from '@recued/warehouse-events';
 import type { EventTrigger } from '@recued/contracts';
 import type { EventTriggersStore } from './store.js';
@@ -102,7 +108,8 @@ export interface ReconcileDeclarativeTriggersDeps {
   /** D-319 — every dish: a recipe's declared triggers are made once per dish
    *  of it, and a trigger with `template_variable` (D-315 §5.1) is narrowed
    *  to the template THAT dish's setting holds — a dish with none chosen
-   *  gets no row for it. Absent ⇒ no dish, so no row. */
+   *  gets no row for it. So is a raw pattern with a setting part. Absent ⇒
+   *  no dish, so no row. */
   listDishes?: () => ReadonlyArray<ReconcilerDish>;
 }
 
@@ -110,14 +117,26 @@ export interface ReconcileDeclarativeTriggersDeps {
 export interface ReconcilerDish {
   readonly dish_id: string;
   readonly recipe_id: string;
+  /** The settings a run of the dish reads: its group's under its own
+   *  (`dishTriggerSettings`). */
   readonly config_overlay: Readonly<Record<string, unknown>>;
 }
+
+/** The settings a dish's triggers are made from: what a run of it reads
+ *  (`mergeRecipeConfigLayers`), its group's settings under its own. Without
+ *  the group's, a folder set on the group reached every run and no trigger. */
+export const dishTriggerSettings = (
+  dish: ReconcilerDish & { readonly group_id?: string },
+  groupOverlay: (group_id: string) => Readonly<Record<string, unknown>> | undefined,
+): ReconcilerDish => dish.group_id === undefined
+  ? dish
+  : { ...dish, config_overlay: { ...(groupOverlay(dish.group_id) ?? {}), ...dish.config_overlay } };
 
 export interface ReconcileResult {
   created: number;
   removed: number;
   /** D-315 §5.1 — rows re-pointed in place to the template their recipe's
-   *  setting holds now. */
+   *  setting holds now, or to the pattern part (a folder, a mailbox) it holds. */
   repointed: number;
   /** Declared entries skipped (composition.* / schedule.* markers,
    *  unparseable sugar, zero-coverage alias, invalid pattern) —
@@ -152,6 +171,10 @@ export interface Declaration {
   /** D-315 §5.1 — the recipe setting its `record.template` came from. Not
    *  part of the identity: the row follows the setting (`reconcile…`). */
   template_variable?: string;
+  /** The parts of `pattern` a setting filled (`{{config.<setting>}}` in the
+   *  recipe's `event`), by position. Not part of the identity either: the row
+   *  follows the setting the same way. */
+  setting_segments?: number[];
 }
 
 /** Collision-proof identity (JSON-array encoding — filter values may
@@ -282,7 +305,19 @@ export const recipeTriggerDeclarations = (
       skipped += 1;
       continue;
     }
-    if (!isValidPattern(pattern)) {
+    // A part the dish's setting fills (`data.file.{{config.file_slug}}.*.created`):
+    // the value a run of this dish reads there — its own setting, else the
+    // recipe's default, as the engine fills it. None, or a value that is not one
+    // plain part, and the dish gets no row: it would start for every folder.
+    const setting_segments = eventPatternSegments(pattern)
+      .flatMap((segment, index) => (settingOfEventSegment(segment) === null ? [] : [index]));
+    const subscribed = setting_segments.length === 0
+      ? pattern
+      : resolveEventPatternSettings(pattern, (setting) =>
+        Object.prototype.hasOwnProperty.call(settings, setting)
+          ? settings[setting]
+          : extractVariableDefault(recipe.definition.variables?.[setting]));
+    if (subscribed === null || !isValidPattern(subscribed)) {
       skipped += 1;
       continue;
     }
@@ -296,8 +331,9 @@ export const recipeTriggerDeclarations = (
     declare({
       recipe_id: row.recipe_id,
       publisher_id: row.publisher_id,
-      pattern,
+      pattern: subscribed,
       ...(filter !== undefined ? { filter } : {}),
+      ...(setting_segments.length > 0 ? { setting_segments } : {}),
     });
   }
   return { declarations, skipped };
@@ -356,34 +392,44 @@ export const reconcileDeclarativeTriggers = (
   // or off as it was, its history kept. Paired only when exactly one row and
   // one declaration of the dish differ by the template alone; anything else is
   // left to the rules below.
+  // A row whose pattern a setting filled (`{{config.<setting>}}`) follows the
+  // same way when the owner picks another folder: the parts the setting filled
+  // are left out of the pairing, and the row's pattern is re-pointed.
   let repointed = 0;
   const withoutTemplate = (filter: Record<string, unknown> | undefined): Record<string, unknown> | undefined => {
     if (filter === undefined) return undefined;
     const rest = Object.fromEntries(Object.entries(filter).filter(([path]) => path !== 'record.template'));
     return Object.keys(rest).length > 0 ? rest : undefined;
   };
-  const looseKey = (d: Declaration): string => {
+  /** `d`'s identity without what a setting chose: its template, and the
+   *  pattern parts at `settingSegments` (a filled pattern is plain parts, so a
+   *  plain split is right here). */
+  const looseKey = (d: Declaration, settingSegments: readonly number[] = []): string => {
     const filter = withoutTemplate(d.filter);
     return declarationKey({
       recipe_id: d.recipe_id,
       publisher_id: d.publisher_id,
       dish_id: d.dish_id ?? null,
-      pattern: d.pattern,
+      pattern: d.pattern.split('.').map((part, index) => (settingSegments.includes(index) ? '{{setting}}' : part)).join('.'),
       ...(filter !== undefined ? { filter } : {}),
       ...(d.fields !== undefined ? { fields: d.fields } : {}),
     });
   };
-  const followers = [...declared].filter(([key, d]) => !managedByKey.has(key) && d.template_variable !== undefined);
+  const followers = [...declared].filter(([key, d]) => !managedByKey.has(key)
+    && (d.template_variable !== undefined || d.setting_segments !== undefined));
   for (const [key, decl] of followers) {
-    const loose = looseKey(decl);
-    const rivals = followers.filter(([, other]) => looseKey(other) === loose);
+    const segments = decl.setting_segments ?? [];
+    const loose = looseKey(decl, segments);
+    const rivals = followers.filter(([, other]) => looseKey(other, segments) === loose);
     const rows = [...managedByKey].filter(([rowKey, row]) =>
       !declared.has(rowKey)
-      && typeof row.filter?.['record.template'] === 'string'
-      && looseKey(rowDeclaration(row)) === loose);
+      && (decl.template_variable === undefined || typeof row.filter?.['record.template'] === 'string')
+      && looseKey(rowDeclaration(row), segments) === loose);
     if (rivals.length !== 1 || rows.length !== 1) continue;
     const [rowKey, row] = rows[0]!;
-    const updated = deps.store.update(row.trigger_id, { filter: decl.filter ?? null });
+    const updated = deps.store.update(row.trigger_id, decl.template_variable !== undefined
+      ? { filter: decl.filter ?? null }
+      : { pattern: decl.pattern });
     if (updated === null) continue;
     managedByKey.delete(rowKey);
     managedByKey.set(key, updated);

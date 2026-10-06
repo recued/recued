@@ -5,8 +5,15 @@ import { HARNESS_SERVER_PUBLIC_KEY } from './server-identity.js';
 
 const messages = new Set<(message: unknown) => void>();
 const states = new Set<(state: WebclientWsState) => void>();
+const connectionReady = new Promise<void>(resolve => {
+  Object.assign(window, { mailWorkReleaseConnection: resolve });
+  if (new URL(location.href).searchParams.get('hold_connection') !== '1') resolve();
+});
+Object.assign(window, { mailWorkTestEvent: (event: unknown) => {
+  for (const listener of messages) listener(event);
+} });
 const transport: WebclientWsTransport = {
-  async open() { for (const listener of states) listener('connected'); }, async close() {},
+  async open() { await connectionReady; for (const listener of states) listener('connected'); }, async close() {},
   onMessage(listener) { messages.add(listener); return () => messages.delete(listener); },
   onState(listener) { states.add(listener); return () => states.delete(listener); },
   async send(payload) {

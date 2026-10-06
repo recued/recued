@@ -10,6 +10,8 @@ export type StoredChatToolCall = ChatToolCallRecord & { process_id: string };
 export interface ChatToolCallSettlement {
   message_id: string;
   state: 'succeeded' | 'failed' | 'interrupted';
+  /** The call never ran because its approval was refused (`state: 'failed'`). */
+  denied?: true;
 }
 
 const storedCall = (metadata: string | null): StoredChatToolCall | undefined => {
@@ -44,14 +46,18 @@ export const settleChatToolCall = (
   settlement: ChatToolCallSettlement,
   ts: number,
 ): void => {
+  // ⛔ TWO STATEMENTS, NOT ONE WITH A NULLABLE PARAMETER. `json_set` with a NULL
+  // value writes `"denied": null`, which `isChatToolCallRecord` refuses — and a
+  // refused record vanishes from every reader rather than reading as not denied.
+  const denied = settlement.denied === true ? `, '$.tool_call.denied', json('true')` : '';
   db.prepare(`UPDATE chat_messages
     SET metadata_blob = json_set(metadata_blob,
       '$.tool_call.state', @state, '$.tool_call.updated_at',
-      MAX(@ts, COALESCE(json_extract(metadata_blob, '$.tool_call.updated_at'), @ts)))
+      MAX(@ts, COALESCE(json_extract(metadata_blob, '$.tool_call.updated_at'), @ts))${denied})
     WHERE message_id = @message_id AND session_id = @session_id
       AND role = 'tool' AND json_valid(metadata_blob)
       AND json_extract(metadata_blob, '$.tool_call.state') IN ('running', 'held', 'interrupted')
-  `).run({ ...settlement, session_id, ts });
+  `).run({ message_id: settlement.message_id, state: settlement.state, session_id, ts });
 };
 
 export interface ChatToolCallTracker {
@@ -61,6 +67,9 @@ export interface ChatToolCallTracker {
   hold(message_id: string): void;
   interrupt(message_id: string, includeHeld?: boolean): void;
   list(session_id?: string): ChatToolCallRecord[];
+  /** This chat's calls that stopped to wait, settled or not, most recently
+   *  changed first. What the model is told about them on its next turn. */
+  listWaited(session_id: string, limit: number): ChatToolCallRecord[];
   findByRun(session_id: string, run_id: string): string[];
   /** Called only when an existing authorized continuation actually dispatches. */
   resumeRun(session_id: string, run_id: string): string[];
@@ -119,7 +128,10 @@ export const createChatToolCallTracker = (
     hold(message_id) {
       const call = read(message_id);
       if (!call || call.process_id !== processId || call.state !== 'running') return;
-      write(call, { ...call, state: 'held', updated_at: Math.max(Date.now(), call.updated_at) });
+      const at = Math.max(Date.now(), call.updated_at);
+      // The FIRST wait is kept: a resumed call that waits again is still the call
+      // that started waiting then.
+      write(call, { ...call, state: 'held', updated_at: at, held_at: call.held_at ?? at });
     },
     interrupt(message_id, includeHeld = false) {
       const call = read(message_id);
@@ -137,6 +149,20 @@ export const createChatToolCallTracker = (
           AND recall_contract_id IS NULL
           AND (@session_id IS NULL OR session_id = @session_id)
         ORDER BY ts, message_id`).all({ session_id: session_id ?? null }) as
+          Array<{ metadata_blob: string }>;
+      return rows.flatMap(row => {
+        const call = chatToolCallFromMetadata(row.metadata_blob, processId);
+        return call ? [call] : [];
+      });
+    },
+    listWaited(session_id, limit) {
+      const rows = db.prepare(`SELECT metadata_blob FROM chat_messages
+        WHERE session_id = @session_id AND role = 'tool' AND json_valid(metadata_blob)
+          AND json_extract(metadata_blob, '$.tool_call.held_at') IS NOT NULL
+          AND recall_eligibility = 'chat:owner_authenticated'
+          AND recall_contract_id IS NULL
+        ORDER BY json_extract(metadata_blob, '$.tool_call.updated_at') DESC, message_id DESC
+        LIMIT @limit`).all({ session_id, limit: Math.max(0, Math.floor(limit)) }) as
           Array<{ metadata_blob: string }>;
       return rows.flatMap(row => {
         const call = chatToolCallFromMetadata(row.metadata_blob, processId);

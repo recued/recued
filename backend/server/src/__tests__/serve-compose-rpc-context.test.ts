@@ -200,7 +200,7 @@ describe('composeRpcContext', () => {
     expect(source).toMatch(/composeObservabilityRpcDeps/);
     expect(source).not.toMatch(/createServerHandlerSet|startServer/);
     expect(source).not.toMatch(/path-listener|createProductionPathListenerCoordinator/);
-    expect(source).not.toMatch(/composeWebhookAndHookListeners/);
+    expect(source).not.toMatch(/composeWebhookListeners/);
     expect(source).not.toMatch(/composeSchedulers|composeHousekeepingScheduler/);
     expect(source).not.toMatch(/background-services/);
     expect(source).not.toMatch(/mcp-server|wire-mcp-http-transport|composeMcpHttpTransport/);

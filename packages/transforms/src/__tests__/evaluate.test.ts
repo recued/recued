@@ -63,6 +63,36 @@ describe('evaluateOp', () => {
   it('less', () => expect(evaluateOp(3, 'less', 5)).toBe(true));
   it('less_or_equal', () => expect(evaluateOp(5, 'less_or_equal', 5)).toBe(true));
 
+  // ⛔ A MISSING VALUE IS NOT ZERO. `Number(null)` and `Number('')` are 0, so an
+  // absent side used to pass `less_or_equal 0`, `greater_or_equal 0` and any
+  // range that holds 0. Now an absent side fails every numeric comparison.
+  for (const absent of [null, undefined, '', '   ']) {
+    for (const op of ['greater', 'greater_or_equal', 'less', 'less_or_equal'] as const) {
+      it(`${op}: ${JSON.stringify(absent) ?? 'undefined'} is absent on either side, never 0`, () => {
+        expect(evaluateOp(absent, op, 0)).toBe(false);
+        expect(evaluateOp(0, op, absent)).toBe(false);
+        expect(evaluateOp(absent, op, 1)).toBe(false);
+        expect(evaluateOp(absent, op, -1)).toBe(false);
+      });
+    }
+  }
+  it('a range check refuses a missing value it used to read as 0', () => {
+    const inRange = (v: unknown) => evaluateOp(v, 'greater_or_equal', 0) && evaluateOp(v, 'less_or_equal', 900000000000);
+    expect(inRange(null)).toBe(false);
+    expect(inRange('')).toBe(false);
+    expect(inRange(0)).toBe(true);
+    expect(inRange('0')).toBe(true);
+  });
+  it('everything that is present coerces as before', () => {
+    expect(evaluateOp('12', 'greater', 5)).toBe(true);
+    expect(evaluateOp(' 12 ', 'less', 20)).toBe(true);
+    expect(evaluateOp(0, 'less_or_equal', 0)).toBe(true);
+    expect(evaluateOp('0', 'greater_or_equal', 0)).toBe(true);
+    expect(evaluateOp(true, 'greater', 0)).toBe(true);
+    expect(evaluateOp('abc', 'greater', 0)).toBe(false);
+    expect(evaluateOp('abc', 'less', 0)).toBe(false);
+  });
+
   // String
   it('contains', () => expect(evaluateOp('hello world', 'contains', 'world')).toBe(true));
   it('contains: false', () => expect(evaluateOp('hello', 'contains', 'xyz')).toBe(false));

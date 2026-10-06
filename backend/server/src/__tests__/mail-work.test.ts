@@ -30,10 +30,18 @@ let second: Map<string, CollectionRecord>;
 let ai: ReturnType<typeof vi.fn<NonNullable<MailWorkServiceDeps['ai']>>>;
 let deps: MailWorkServiceDeps;
 let service: ReturnType<typeof createMailWorkService>;
-const answer = () => ({ claims: [
-  { kind: 'request', text: 'The client requests a revised offer.', basis: 'email', sources: ['mail_source_1'] },
-  { kind: 'next_action', text: 'Check pricing approval with your coworker.', basis: 'inference', sources: [] },
-], search_queries: ['Acme pricing'] });
+const answer = () => {
+  const input = ai?.mock.calls.at(-1)?.[0];
+  const packet = input ? JSON.parse(String(input['llm.prompt'])) : null;
+  const email = packet?.prior_tool_calls.find((c: { result: { source?: string } }) => c.result.source === 'mail_source_1')?.result;
+  if (email && !email.body_text) return { review_format: 'source_actions_v2', claims: [{ id: 'q1', kind: 'question', basis: 'inference', text: 'Which missing source can clarify the request?', sources: [], targets: [] }], search_queries: [] };
+  return { review_format: 'source_actions_v2', claims: [
+    { id: 'f1', kind: 'request', basis: 'email', sources: ['mail_source_1'],
+      excerpt: { source: 'mail_source_1', quote: email?.body_text?.slice(0, 800) ?? 'Can you send the revised offer?', state: 'current' } },
+    { id: 'a1', kind: 'next_action', text: 'Check pricing approval with your coworker.', basis: 'inference', sources: [], targets: ['f1'],
+      action: { mode: 'contact', scope: 'pricing approval', permission: 'requires_owner_approval', permission_quote: null, conditions: [] } },
+  ], search_queries: ['Acme pricing'] };
+};
 const collection = (slug: string, rows: Map<string, CollectionRecord>) => ({
   platform: 'mail' as const, slug,
   get: (id: string) => rows.get(id) ?? null,
@@ -42,6 +50,20 @@ const collection = (slug: string, rows: Map<string, CollectionRecord>) => ({
   search: vi.fn((_query: CollectionSearchQuery) => [...rows.values()].map(row => ({ record_id: row.record_id, hot_fields: row.hot_fields, rank: 0 }))),
 });
 const create = (request_id = randomUUID()) => service.create({ request_id, email: { slug: 'work', record_id: 'seed' }, goal: 'Find a workable offer. The exact solution is still open.', separate: true });
+const passage = (source: string): string => {
+  const packet = JSON.parse(String(ai.mock.calls.at(-1)![0]['llm.prompt']));
+  return packet.prior_tool_calls.find((call: any) => call.tool_name === 'mail.work.passage_catalog')
+    .result.passage_catalog.find((row: any) => row.source === source).id;
+};
+const sectionAnswer = () => ({
+  review_format: 'source_sections_v1',
+  facts: [{ id: 'f1', kind: 'request', source: 'mail_source_1', quote: 'Can you send the revised offer?', state: 'current' }],
+  questions: [], completion_conditions: [], search_queries: [],
+  actions: [{ id: 'a1', activity: 'Draft the revised offer privately.', mode: 'private_preparation',
+    permission: { kind: 'not_contact' }, targets: ['f1'], conditions: [] },
+  { id: 'a2', activity: 'Send the revised offer.', mode: 'contact',
+    permission: { kind: 'requires_owner_approval' }, targets: ['f1'], conditions: [] }],
+});
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'mail-work-'));
@@ -60,6 +82,219 @@ beforeEach(() => {
 afterEach(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 
 describe('following work from email', () => {
+  it('stores the native source plan with separate phone provenance, exact qualifications and scoped contact approval', async () => {
+    const created = await create();
+    const notes = 'The client withdrew the old request by phone. Ask me before contacting anybody.';
+    const updated = await service.update({ id: created.work.id, expected_revision: created.work.revision, owner_notes: notes });
+    ai.mockImplementation(async input => {
+      expect(input['llm.output_schema']).toMatchObject({ type: 'object' });
+      return { task: 'propose', facts: [passage('owner_notes'), passage('mail_source_1')], actions: [
+        { operation: 'draft', target: 'options privately.', context: [passage('mail_source_1')], source_notes: [] },
+        { operation: 'ask', target: 'the coworker about capacity.', context: [passage('owner_notes')], source_notes: [passage('owner_notes')] },
+      ], questions: [{ kind: 'scope', context: [passage('mail_source_1')] }] };
+    });
+    const reviewed = await service.review(updated.work.id, updated.work.revision);
+    expect(reviewed.work.brief!.claims[0]).toEqual({ kind: 'progress', basis: 'owner', text: `Source 1 — Your notes: “${notes}”`, evidence: [] });
+    expect(reviewed.work.brief!.claims[1]!.evidence).toEqual([{ slug: 'work', record_id: 'seed' }]);
+    expect(reviewed.work.brief!.claims[1]!.text).toBe('Source 2 — Email: “Can you send the revised offer?”');
+    expect(reviewed.work.brief!.claims[2]!.text).toBe('Private preparation: Draft options privately.\nSource context:\nSource 2 — Email');
+    expect(reviewed.work.brief!.claims[2]!.evidence).toEqual([{ slug: 'work', record_id: 'seed' }]);
+    expect(reviewed.work.brief!.claims[3]!.text).toContain('After your approval: Ask the coworker');
+    expect(reviewed.work.brief!.claims[3]!.text).toContain('Source notes for this step:\nSource 1 — Your notes');
+    expect(reviewed.work.brief!.claims[3]!.evidence).toEqual([]); // phone report never becomes an email claim
+    expect(reviewed.work.brief!.claims.map(item => item.text).join('\n').split(notes)).toHaveLength(2);
+    expect(reviewed.work.status).toBe('active');
+    expect(ai).toHaveBeenCalledTimes(1);
+    expect((await service.get(reviewed.work.id)).work).toEqual(reviewed.work);
+  });
+  it('rejects an invalid native declaration without fallback, repair or replacing the saved review', async () => {
+    const created = await create(), prior = await service.review(created.work.id, created.work.revision);
+    ai.mockResolvedValueOnce({ task: 'propose', facts: [{ source: 'mail_source_1', quote: 'Permission was given over the phone.' }], actions: [], questions: [] });
+    await expect(service.review(prior.work.id, prior.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+    expect((await service.get(prior.work.id)).work).toEqual(prior.work);
+    expect(ai).toHaveBeenCalledTimes(2);
+  });
+  it.each(['native', 'legacy'])('preserves the saved review when a %s plan calls an exact prohibition permission', async format => {
+    const created = await create(), prior = await service.review(created.work.id, created.work.revision);
+    const notes = 'Do not contact anyone without my approval.';
+    const updated = await service.update({ id: prior.work.id, expected_revision: prior.work.revision, owner_notes: notes });
+    const plan = () => ({ task: 'propose', facts: [passage('owner_notes')], actions: [
+      { operation: 'send', target: 'the offer.', context: [passage('owner_notes')], source_notes: [],
+        permission: { kind: 'explicitly_permitted', source: 'owner_notes', quote: notes } },
+    ], questions: [] });
+    const legacy = answer();
+    ai.mockImplementationOnce(async () => format === 'native' ? plan() : { ...legacy, claims: legacy.claims.map((claim, index) => index === 1
+      ? { ...claim, action: { mode: 'contact', scope: 'pricing approval', permission: 'explicitly_permitted', permission_quote: notes, conditions: [] } }
+      : claim) });
+    await expect(service.review(updated.work.id, updated.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+    expect((await service.get(updated.work.id)).work).toEqual(updated.work);
+    expect(JSON.stringify(ai.mock.calls.at(-1)![0]['llm.output_schema'])).not.toContain('explicitly_permitted');
+    expect(ai).toHaveBeenCalledTimes(2); // no semantic repair or hidden retry
+    // A later explicit review can still propose the contact with approval.
+    ai.mockImplementationOnce(async () => ({ ...plan(), actions: [{ operation: 'send', target: 'the offer.',
+      context: [passage('owner_notes')], source_notes: [] }] }));
+    const next = await service.review(updated.work.id, updated.work.revision);
+    expect(next.work.brief?.claims.at(-1)?.text).toContain('After your approval: Send the offer.');
+    expect(ai).toHaveBeenCalledTimes(3);
+  });
+  it('stores the sectioned review with exact target-derived citations and permission rendering', async () => {
+    ai.mockImplementation(async () => sectionAnswer());
+    const created = await create();
+    const result = await service.review(created.work.id, created.work.revision);
+    expect(result.work.brief?.claims).toEqual([
+      { kind: 'request', basis: 'email', text: 'Email (AI status: current): “Can you send the revised offer?”', evidence: [{ slug: 'work', record_id: 'seed' }] },
+      { kind: 'next_action', basis: 'inference', text: 'Private preparation: Draft the revised offer privately.', evidence: [{ slug: 'work', record_id: 'seed' }] },
+      { kind: 'next_action', basis: 'inference', text: 'After your approval: Send the revised offer.', evidence: [{ slug: 'work', record_id: 'seed' }] },
+    ]);
+    expect(result.work.status).toBe('active');
+    expect((await service.get(created.work.id)).work).toEqual(result.work);
+  });
+  it.each(['source_sections_v2', 'source_sections_v3'])('persists %s conditions and exact owner wording while the private draft stays available', async format => {
+    const prerequisite = 'Check pricing before sending the offer.';
+    const ownerNotes = 'Review the offer with me before sending it.';
+    mail.set('coworker', message('coworker', 'internal', prerequisite, 200));
+    const created = await create();
+    const updated = await service.update({ id: created.work.id, expected_revision: created.work.revision,
+      owner_notes: ownerNotes, link_email: { slug: 'work', record_id: 'coworker' } });
+    ai.mockImplementation(async (input) => {
+      const packet = JSON.parse(String(input['llm.prompt']));
+      const token = (body: string) => packet.prior_tool_calls.find((c: any) => c.result.body_text === body).result.source;
+      const reply: any = sectionAnswer();
+      reply.review_format = format;
+      reply.facts[0].source = token('Can you send the revised offer?');
+      reply.facts.push({ id: 'f2', kind: 'dependency', source: token(prerequisite), quote: prerequisite, state: 'current' },
+        { id: 'f3', kind: 'dependency', source: 'owner_notes', quote: ownerNotes, state: 'current' });
+      reply.actions[1].conditions = format === 'source_sections_v3' ? [{ target: 'f2' }, { target: 'f3' }]
+        : [{ text: 'Pricing has been checked.', target: 'f2' }, { text: 'The owner has reviewed the offer.', target: 'f3' }];
+      return reply;
+    });
+    const reviewed = await service.review(updated.work.id, updated.work.revision);
+    const actions = reviewed.work.brief!.claims.filter(c => c.kind === 'next_action');
+    expect(actions[0]).toMatchObject({ text: 'Private preparation: Draft the revised offer privately.',
+      evidence: [{ slug: 'work', record_id: 'seed' }] });
+    const conditions = format === 'source_sections_v3' ? `${prerequisite}; ${ownerNotes}` : 'Pricing has been checked.; The owner has reviewed the offer.';
+    expect(actions[1]).toEqual({ kind: 'next_action', basis: 'inference',
+      text: `After your approval: Send the revised offer. Conditions for Send the revised offer.: ${conditions} (owner notes: ${ownerNotes})`,
+      evidence: [{ slug: 'work', record_id: 'seed' }, { slug: 'work', record_id: 'coworker' }] });
+    expect((await service.get(reviewed.work.id)).work).toEqual(reviewed.work);
+    expect(ai).toHaveBeenCalledTimes(1);
+  });
+  it('preserves saved work when v3 tries to rewrite a condition, then accepts a later explicit review', async () => {
+    const created = await create(), prior = await service.review(created.work.id, created.work.revision);
+    const prerequisite = 'Check pricing with me before sending the offer.';
+    const updated = await service.update({ id: prior.work.id, expected_revision: prior.work.revision, owner_notes: prerequisite });
+    const response: any = sectionAnswer(); response.review_format = 'source_sections_v3';
+    response.facts.push({ id: 'f2', kind: 'dependency', source: 'owner_notes', quote: prerequisite, state: 'current' });
+    response.actions[1].conditions = [{ target: 'f2', text: 'Pricing must be approved.' }];
+    const raw = structuredClone(response); ai.mockResolvedValueOnce(response);
+    await expect(service.review(updated.work.id, updated.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+    expect(response).toEqual(raw);
+    expect((await service.get(updated.work.id)).work).toEqual(updated.work);
+    const corrected = structuredClone(response); corrected.actions[1].conditions = [{ target: 'f2' }];
+    ai.mockResolvedValueOnce(corrected);
+    const next = await service.review(updated.work.id, updated.work.revision);
+    expect(next.work.revision).toBe(updated.work.revision + 1);
+    expect(next.work.brief?.claims.at(-1)?.text).toContain(prerequisite);
+    expect(next.work.brief?.claims.at(-1)?.text).not.toContain('Pricing must be approved');
+    expect(ai).toHaveBeenCalledTimes(3);
+  });
+  it.each(['missing_fact', 'retired_fact', 'wrong_quote', 'legacy_condition'])(
+    'preserves the saved review on v2 %s rejection and can accept the next explicit review', async problem => {
+      const created = await create(), prior = await service.review(created.work.id, created.work.revision);
+      const response: any = sectionAnswer(); response.review_format = 'source_sections_v2';
+      response.actions[1].conditions = [{ text: 'Confirm the supplied request.', target: 'f1' }];
+      if (problem === 'missing_fact') response.actions[1].conditions[0].target = 'missing';
+      if (problem === 'retired_fact') response.facts[0].state = 'superseded';
+      if (problem === 'wrong_quote') response.facts[0].quote = 'The request has been accepted.';
+      if (problem === 'legacy_condition') response.actions[1].conditions = [{ text: 'Wait.', sources: ['owner_notes'], owner_quote: null }];
+      const raw = structuredClone(response); ai.mockResolvedValueOnce(response);
+      await expect(service.review(prior.work.id, prior.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+      expect(response).toEqual(raw);
+      expect((await service.get(prior.work.id)).work).toEqual(prior.work);
+      ai.mockResolvedValueOnce({ ...sectionAnswer(), review_format: 'source_sections_v2' });
+      const next = await service.review(prior.work.id, prior.work.revision);
+      expect(next.work.revision).toBe(prior.work.revision + 1);
+      expect(next.work.brief?.claims.at(-1)?.text).toBe('After your approval: Send the revised offer.');
+      expect(ai).toHaveBeenCalledTimes(3);
+    });
+  it.each(['missing_permission', 'question_fact', 'wait_quote', 'wrong_source', 'retired_target'])(
+    'preserves the previous saved work on a sectioned %s failure', async problem => {
+      const created = await create();
+      const prior = await service.review(created.work.id, created.work.revision);
+      const response: any = sectionAnswer();
+      if (problem === 'missing_permission') delete response.actions[0].permission;
+      if (problem === 'question_fact') response.facts[0].kind = 'question';
+      if (problem === 'wait_quote') {
+        response.actions[1].mode = 'wait'; response.actions[1].permission.quote = 'Do not contact anyone.';
+      }
+      if (problem === 'wrong_source') response.facts[0].source = 'owner_notes';
+      if (problem === 'retired_target') response.facts[0].state = 'withdrawn';
+      ai.mockImplementation(async () => response);
+      await expect(service.review(prior.work.id, prior.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+      expect((await service.get(prior.work.id)).work).toEqual(prior.work);
+    });
+  it('keeps note recording time through unchanged saves, other edits, reviews and encrypted reopen', async () => {
+    let clock = 1000;
+    service = createMailWorkService({ ...deps, now: () => clock });
+    let result = await create();
+    expect(result.work.owner_notes_recorded_at).toBeNull();
+    clock = 2000;
+    result = await service.update({ id: result.work.id, expected_revision: result.work.revision,
+      owner_notes: '  Phone report. Do not contact anyone.  ' });
+    expect(result.work).toMatchObject({ owner_notes: 'Phone report. Do not contact anyone.', owner_notes_recorded_at: 2000 });
+    for (const patch of [
+      { owner_notes: '\nPhone report. Do not contact anyone.\n' },
+      { title: 'Changed title', goal: 'New purpose' },
+      { link_email: { slug: 'work', record_id: 'coworker' } },
+      { status: 'resolved' as const, resolution_note: 'Recorded outcome.' },
+      { status: 'active' as const },
+    ]) {
+      clock += 1000;
+      result = await service.update({ id: result.work.id, expected_revision: result.work.revision, ...patch });
+      expect(result.work.owner_notes_recorded_at).toBe(2000);
+      expect(result.work.updated_at).toBe(clock);
+    }
+    clock += 1000;
+    result = await service.review(result.work.id, result.work.revision);
+    const packet = JSON.parse(String(ai.mock.calls.at(-1)![0]['llm.prompt']));
+    const owner = packet.prior_tool_calls.find((call: { tool_name: string }) => call.tool_name === 'mail.work.owner_context');
+    expect(owner.result.owner_notes_recorded_at_iso).toBe('1970-01-01T00:00:02.000Z');
+    expect(owner.started_at).toBe(clock);
+    expect(result.work.owner_notes_recorded_at).toBe(2000);
+    const restarted = createMailWorkService({ ...deps, store: createMailWorkStore(db, codec) });
+    expect((await restarted.get(result.work.id)).work).toEqual(result.work);
+  });
+  it('records changed normalized notes, clears absent notes and ignores client-supplied timestamps', async () => {
+    let clock = 1000;
+    service = createMailWorkService({ ...deps, now: () => clock });
+    let result = await create();
+    for (const [notes, expected] of [['A', 2000], ['B', 3000], ['  ', null], ['A', 5000]] as const) {
+      clock += 1000;
+      const patch = { owner_notes: notes, owner_notes_recorded_at: 999999 };
+      result = await service.update({ id: result.work.id, expected_revision: result.work.revision, ...patch });
+      expect(result.work.owner_notes_recorded_at).toBe(expected);
+    }
+    await expect(service.update({ id: result.work.id, expected_revision: result.work.revision - 1, owner_notes: 'Stale' }))
+      .rejects.toMatchObject({ code: 'conflict' });
+    expect((await service.get(result.work.id)).work).toEqual(result.work);
+  });
+  it('leaves legacy note timing unknown until its text actually changes', async () => {
+    service = createMailWorkService({ ...deps, now: () => 9000 });
+    let result = await create();
+    const legacy = (await store.get(result.work.id))!;
+    legacy.work.owner_notes = 'Existing undated report.';
+    delete legacy.work.owner_notes_recorded_at;
+    db.prepare('UPDATE mail_work SET ciphertext=? WHERE id=?').run(await codec.seal(legacy), result.work.id);
+    result = await service.update({ id: result.work.id, expected_revision: result.work.revision, owner_notes: ' Existing undated report. ' });
+    expect(result.work.owner_notes_recorded_at).toBeUndefined();
+    result = await service.review(result.work.id, result.work.revision);
+    const packet = JSON.parse(String(ai.mock.calls.at(-1)![0]['llm.prompt']));
+    expect(packet.prior_tool_calls.find((call: { tool_name: string }) => call.tool_name === 'mail.work.owner_context')
+      .result.owner_notes_recorded_at_iso).toBeNull();
+    expect(result.work.owner_notes_recorded_at).toBeUndefined();
+    result = await service.update({ id: result.work.id, expected_revision: result.work.revision, owner_notes: 'New report.' });
+    expect(result.work.owner_notes_recorded_at).toBe(9000);
+  });
   it('reuses an exact conversation on another click and keeps resolved work resolved', async () => {
     const first = await service.create({ request_id: randomUUID(), email: { slug: 'work', record_id: 'seed' } });
     await service.update({ id: first.work.id, expected_revision: 1, status: 'resolved', resolution_note: 'Finished.' });
@@ -135,7 +370,7 @@ describe('following work from email', () => {
     expect(result.needs_review).toBe(false);
     expect(result.work.brief?.claims[0]?.evidence).toEqual([{ slug: 'work', record_id: 'coworker' }]);
     const packet = JSON.parse(String(ai.mock.calls[0]![0]['llm.prompt']));
-    expect(packet.prior_tool_calls).toHaveLength(3);
+    expect(packet.prior_tool_calls).toHaveLength(4);
     expect(packet.prior_tool_calls[0].result.body_text).toContain('Can you send');
     expect(packet.prior_tool_calls[0].result).toHaveProperty('attachment_content_included', false);
     expect(packet.prior_tool_calls[0].result.date).toBe(new Date(mail.get('seed')!.received_at).toISOString());
@@ -223,20 +458,17 @@ describe('following work from email', () => {
 });
 
 describe('review integrity and boundaries', () => {
-  it.each([['completion_condition', 'owner'], ['completion_condition', 'email'], ['next_action', 'owner'], ['next_action', 'email']] as const)('labels %s proposals as inference even when the model calls them %s facts', async (kind, basis) => {
+  it.each([['completion_condition', 'owner'], ['completion_condition', 'email'], ['next_action', 'owner'], ['next_action', 'email']] as const)('rejects %s proposals presented as %s facts', async (kind, basis) => {
     const created = await create();
-    const sources = basis === 'email' ? ['mail_source_1'] : [];
-    ai.mockResolvedValueOnce({ claims: [{ kind, basis, sources,
-      text: 'A signed order would complete the work.' }], search_queries: [] });
-    const reviewed = await service.review(created.work.id, created.work.revision);
-    expect(reviewed.work.brief?.claims).toEqual([{ kind, basis: 'inference',
-      text: 'A signed order would complete the work.', evidence: basis === 'email' ? [{ slug: 'work', record_id: 'seed' }] : [] }]);
-    expect(reviewed.work.status).toBe('active');
+    const response = answer();
+    ai.mockResolvedValueOnce({ ...response, claims: [{ ...response.claims[0], kind, basis }] });
+    await expect(service.review(created.work.id, 1)).rejects.toMatchObject({ code: 'bad_request' });
+    expect((await service.get(created.work.id)).work).toEqual(created.work);
   });
   it('explains an unrestored private reference and preserves the previous review', async () => {
     const created = await create();
     const original = await service.review(created.work.id, 1);
-    ai.mockResolvedValueOnce({ claims: [{ kind: 'request', basis: 'email', sources: ['mail_source_1'],
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [{ kind: 'request', basis: 'email', sources: ['mail_source_1'],
       text: 'pii.person1@client.test requested the pilot.' }], search_queries: [] });
     await expect(service.review(created.work.id, 2)).rejects.toMatchObject({ code: 'bad_request',
       message: expect.stringContaining('private reference that could not be matched back') });
@@ -245,25 +477,25 @@ describe('review integrity and boundaries', () => {
   it('accepts a faithful claim that says PII or names a pii.* file', async () => {
     const created = await create();
     const text = 'Send the redacted pii.csv file; it will not contain any PII.';
-    ai.mockResolvedValueOnce({ claims: [{ kind: 'next_action', basis: 'inference', sources: [], text }],
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [answer().claims[0], { ...answer().claims[1], text }],
       search_queries: ['PII. export'] });
     const reviewed = await service.review(created.work.id, created.work.revision);
-    expect(reviewed.work.brief?.claims).toEqual([{ kind: 'next_action', basis: 'inference', text, evidence: [] }]);
+    expect(reviewed.work.brief?.claims[1]).toEqual({ kind: 'next_action', basis: 'inference', text: `After your approval: ${text}`, evidence: [] });
   });
   it.each(['m7@d9.invalid', 'pii.Person3', 'cap_pii.Org2', 'd4.invalid'])('still rejects an unrestored %s', async token => {
     const created = await create();
-    ai.mockResolvedValueOnce({ claims: [{ kind: 'next_action', basis: 'inference', sources: [],
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [{ kind: 'next_action', basis: 'inference', sources: [],
       text: `Ask ${token} about the revised offer.` }], search_queries: [] });
     await expect(service.review(created.work.id, created.work.revision)).rejects.toMatchObject({ code: 'bad_request',
       message: expect.stringContaining('private reference that could not be matched back') });
   });
-  it.each(['inference', 'owner'])('accepts an omitted citation list on an explicit %s claim from a live-model-shaped response', async basis => {
+  it('accepts an omitted empty citation list on a scoped inference with a current target', async () => {
     const created = await create();
-    const text = basis === 'owner' ? 'Find a workable offer; the solution is still open.' : 'Check pricing approval with your coworker.';
-    ai.mockResolvedValueOnce({ claims: [answer().claims[0], { kind: 'next_action', basis, text }], search_queries: [] });
+    const response = answer();
+    const { sources: _sources, ...proposal } = response.claims[1]!;
+    ai.mockResolvedValueOnce({ ...response, claims: [response.claims[0], proposal] });
     const reviewed = await service.review(created.work.id, 1);
-    expect(reviewed.work.brief?.claims[0]?.evidence).toEqual([{ slug: 'work', record_id: 'seed' }]);
-    expect(reviewed.work.brief?.claims[1]).toEqual({ kind: 'next_action', basis: 'inference', text, evidence: [] });
+    expect(reviewed.work.brief?.claims[1]).toMatchObject({ basis: 'inference', evidence: [], text: expect.stringContaining('After your approval:') });
     expect(reviewed.work.status).toBe('active');
   });
   it.each([
@@ -273,19 +505,69 @@ describe('review integrity and boundaries', () => {
     { basis: 'inference', sources: 'm1' },
     { basis: 'owner', sources: ['mail_source_999'] },
     { basis: 'owner', sources: ['owner'] },
+    { basis: 'owner', sources: ['mail_source_1'] },
     { basis: 'email', sources: ['mail_source_1', 'owner'] },
   ])('still rejects invalid or missing email evidence: %j', async claim => {
     const created = await create();
     const original = await service.review(created.work.id, 1);
-    ai.mockResolvedValueOnce({ claims: [{ kind: 'next_action', text: 'Check pricing approval.', ...claim }] });
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [{ kind: 'next_action', text: 'Check pricing approval.', ...claim }] });
     await expect(service.review(created.work.id, 2)).rejects.toMatchObject({ code: 'bad_request' });
     expect((await service.get(created.work.id)).work).toEqual(original.work);
   });
   it('rejects an array masquerading as the email basis with no supporting evidence', async () => {
     const created = await create();
-    ai.mockResolvedValueOnce({ claims: [{ kind: 'agreement', basis: ['email'], text: 'The client accepted.', sources: [] }] });
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [{ kind: 'agreement', basis: ['email'], text: 'The client accepted.', sources: [] }] });
     await expect(service.review(created.work.id, 1)).rejects.toMatchObject({ code: 'bad_request' });
     expect((await service.get(created.work.id)).work).toEqual(created.work);
+  });
+  it('keeps a phone withdrawal in an owner quote, separate from a current email quote', async () => {
+    const created = await create();
+    const notes = 'Phone correction: the client withdrew the earlier delivery request.';
+    const updated = await service.update({ id: created.work.id, expected_revision: 1, owner_notes: notes });
+    ai.mockResolvedValueOnce({ ...answer(), claims: [answer().claims[0],
+      { id: 'phone', kind: 'progress', basis: 'owner', sources: [], excerpt: { source: 'owner_notes', quote: notes, state: 'withdrawn' } },
+      answer().claims[1],
+    ] });
+    const reviewed = await service.review(created.work.id, updated.work.revision);
+    expect(reviewed.work.brief?.claims[0]).toMatchObject({ basis: 'email', evidence: [{ slug: 'work', record_id: 'seed' }] });
+    expect(reviewed.work.brief?.claims[1]).toMatchObject({ basis: 'owner', evidence: [], text: `Your notes (AI status: withdrawn): “${notes}”` });
+  });
+  it('renders structured action permission and retains prerequisite mail evidence', async () => {
+    const created = await create();
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [answer().claims[0], { id: 'action', targets: ['f1'], kind: 'next_action',
+      basis: 'inference', sources: [], text: 'Ask the client about an offer.',
+      action: { mode: 'contact', scope: 'revised offer', permission: 'requires_owner_approval', permission_quote: null,
+        conditions: [{ scope: 'revised offer', text: 'The requested scope must be understood.', sources: ['mail_source_1'], owner_quote: null }] },
+    }], search_queries: [] });
+    const reviewed = await service.review(created.work.id, 1);
+    expect(reviewed.work.brief?.claims?.slice(1)).toMatchObject([{ basis: 'inference',
+      text: 'After your approval: Ask the client about an offer. Conditions for revised offer: The requested scope must be understood.',
+      evidence: [{ slug: 'work', record_id: 'seed' }] }]);
+  });
+  it('preserves the prior review when a structured action omits its permission declaration', async () => {
+    const created = await create();
+    const original = await service.review(created.work.id, 1);
+    ai.mockResolvedValueOnce({ review_format: 'source_actions_v2', claims: [answer().claims[0], { id: 'action', targets: ['f1'], kind: 'next_action', basis: 'inference',
+      sources: [], text: 'Gather availability from colleagues.' }], search_queries: [] });
+    await expect(service.review(created.work.id, 2)).rejects.toMatchObject({ code: 'bad_request' });
+    expect((await service.get(created.work.id)).work).toEqual(original.work);
+  });
+  it('follows question and action references without inheriting permission from either', async () => {
+    const created = await create();
+    const reply = { ...answer(), claims: [answer().claims[0],
+      { id: 'q1', kind: 'question', basis: 'inference', sources: [], targets: ['f1'], text: 'Which details should the outline cover?' },
+      { id: 'draft', kind: 'next_action', basis: 'inference', sources: [], targets: ['q1'], text: 'Draft an outline privately.',
+        action: { mode: 'private_preparation', scope: 'offer outline', permission: 'not_contact', permission_quote: null, conditions: [] } },
+      { ...answer().claims[1], targets: ['draft'] },
+    ] };
+    ai.mockResolvedValueOnce(reply);
+    const reviewed = await service.review(created.work.id, 1);
+    expect(reviewed.work.brief?.claims.map(claim => claim.text)).toContain('After your approval: Check pricing approval with your coworker.');
+    expect(reply.claims.at(-1)?.targets).toEqual(['draft']);
+    ai.mockResolvedValueOnce({ ...reply, claims: reply.claims.map(claim => claim.id === 'a1' && 'action' in claim
+      ? { ...claim, action: { ...claim.action, permission: 'not_contact' } } : claim) });
+    await expect(service.review(created.work.id, reviewed.work.revision)).rejects.toMatchObject({ code: 'bad_request' });
+    expect((await service.get(created.work.id)).work).toEqual(reviewed.work);
   });
   it.each(['unknown citation', 'missing citation', 'invalid basis', 'invalid kind', 'empty'])('rejects %s without replacing a prior brief', async kind => {
     const created = await create(); const original = await service.review(created.work.id, 1);
@@ -398,4 +680,12 @@ describe('review integrity and boundaries', () => {
     await expect(handlers['mail.work.list'](undefined, owner)).resolves.toMatchObject({ works: [] });
     await expect(handlers['mail.work.create'](null as never, owner)).rejects.toMatchObject({ code: 'bad_request' });
   });
+});
+
+it('rejects an otherwise readable legacy review instead of bypassing the source contract', async () => {
+  const created = await create();
+  const previous = await service.review(created.work.id, 1);
+  ai.mockResolvedValueOnce({ claims: [{ kind: 'request', basis: 'email', sources: ['mail_source_1'], text: 'An unsupported paraphrase.' }] });
+  await expect(service.review(created.work.id, 2)).rejects.toMatchObject({ code: 'bad_request' });
+  expect((await service.get(created.work.id)).work).toEqual(previous.work);
 });

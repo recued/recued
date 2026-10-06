@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,10 +44,8 @@ const listenerMocks = vi.hoisted(() => {
     handlerSet,
     certChain,
     webhookListener: vi.fn(),
-    hookListener: vi.fn(),
-    composeWebhookAndHookListeners: vi.fn(async () => ({
+    composeWebhookListeners: vi.fn(async () => ({
       webhookListener: vi.fn(),
-      hookListener: vi.fn(),
     })),
     createServerHandlerSet: vi.fn(() => handlerSet),
     // Annotated with the real return type so an OPTIONAL field (today
@@ -70,9 +69,9 @@ const listenerMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('../composition/bin/wire-webhook-and-hook-listeners.js', () => ({
-  composeWebhookAndHookListeners:
-    listenerMocks.composeWebhookAndHookListeners,
+vi.mock('../composition/bin/wire-webhook-listeners.js', () => ({
+  composeWebhookListeners:
+    listenerMocks.composeWebhookListeners,
 }));
 
 vi.mock('../server.js', () => ({
@@ -112,6 +111,8 @@ import {
 } from '../serve/compose-listeners.js';
 import { D165_CONTRACT_SCHEMA } from '@recued/contracts';
 import { createContractStore } from '../storage/contract-store.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { recordPackInventory } from '../pack-inventory.js';
 import { createWebhookIngressStore } from '../storage/webhook-ingress-store.js';
 import { createWebhookDeliveryStore } from '../storage/webhook-delivery-store.js';
@@ -128,6 +129,10 @@ import {
   webhookPrefixedPositiveDecimalRegistrationRemoteIdProfilePreset,
 } from '../webhook-shared-profile-parser-presets.js';
 import { webhookProfile } from '@recued/contracts';
+import { createRecipeStore } from '../recipe-store.js';
+import { createDishStore } from '../dish-store.js';
+import { createDish, type DishHandlerDeps } from '../dish-handler.js';
+import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
 import {
   createPublicAddressService,
   createSqlitePublicAddressStore,
@@ -171,10 +176,9 @@ const resetListenerMocks = (): void => {
   listenerMocks.handlerSet.close.mockReset();
   listenerMocks.handlerSet.wsHandle.clientCount.mockReset();
   listenerMocks.handlerSet.wsHandle.clientCount.mockReturnValue(3);
-  listenerMocks.composeWebhookAndHookListeners.mockReset();
-  listenerMocks.composeWebhookAndHookListeners.mockResolvedValue({
+  listenerMocks.composeWebhookListeners.mockReset();
+  listenerMocks.composeWebhookListeners.mockResolvedValue({
     webhookListener: listenerMocks.webhookListener,
-    hookListener: listenerMocks.hookListener,
   });
   listenerMocks.createServerHandlerSet.mockReset();
   listenerMocks.createServerHandlerSet.mockReturnValue(listenerMocks.handlerSet);
@@ -271,7 +275,6 @@ const makeOptions = (
   },
   collection: {
     collectionRegistry: { tag: 'collection-registry' },
-    webhookWatcherQueue: { tag: 'webhook-watcher-queue' },
     watcherDispatcher: { tag: 'watcher-dispatcher' },
     calendarStack: undefined,
     mailStack: undefined,
@@ -414,8 +417,8 @@ describe('composeListeners', () => {
     expect(listenerMocks.reconcileInstalledPacksOnBoot.mock.invocationCallOrder[0])
       .toBeLessThan(listenerMocks.checkInstalledManifestsOnBoot.mock.invocationCallOrder[0]!);
     expect(listenerMocks.checkInstalledManifestsOnBoot.mock.invocationCallOrder[0])
-      .toBeLessThan(listenerMocks.composeWebhookAndHookListeners.mock.invocationCallOrder[0]!);
-    expect(listenerMocks.composeWebhookAndHookListeners.mock.invocationCallOrder[0])
+      .toBeLessThan(listenerMocks.composeWebhookListeners.mock.invocationCallOrder[0]!);
+    expect(listenerMocks.composeWebhookListeners.mock.invocationCallOrder[0])
       .toBeLessThan(listenerMocks.createServerHandlerSet.mock.invocationCallOrder[0]!);
   });
 
@@ -586,6 +589,32 @@ describe('composeListeners', () => {
       },
     }));
     expect(listenerMocks.notifyUnrunnablePacks).not.toHaveBeenCalled();
+  });
+
+  it('removes a retired shipped recipe at boot, through the store whose deletion hooks it registered', async () => {
+    // D-193 amendment (owner: "yes remove the dead schedule-recipe at boot").
+    // The removal is pinned in `retired-recipe-removal.test.ts`; this pins that
+    // the REAL composition runs it, on the store the hooks are on.
+    const dir = mkdtempSync(join(tmpdir(), 'compose-listeners-retired-'));
+    try {
+      const recipes = createRecipeStore(dir, storageDb);
+      const shipped = (recipe_id: string, steps: unknown[]) => ({
+        recipe_id, version: 1, steps,
+        metadata: { name: recipe_id, description: 'fixture', author: 'recued-core', tags: [] },
+      }) as never;
+      recipes.save(shipped('schedule-recipe', [{ id: 'schedule', op: 'core.schedule.recipe', args: {} }]),
+        'recued-core', 'bundled', 1, 'personal-organizer-foundation');
+      recipes.save(shipped('today', []), 'recued-core', 'bundled', 1, 'personal-organizer-foundation');
+      const base = makeOptions();
+      const execution = base.execution as unknown as { executeDeps: Record<string, unknown> };
+      await composeListeners(makeOptions({
+        execution: { ...execution, executeDeps: { ...execution.executeDeps, recipeStore: recipes } },
+      }));
+      expect(recipes.getStored('schedule-recipe')).toBeNull();
+      expect(recipes.getStored('today')).not.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('stops listeners despite a sibling teardown failure and coalesces close', async () => {
@@ -2658,6 +2687,169 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
   });
 });
 
+describe('composeListeners — D-319 a recipe the server only ships cannot be switched on', () => {
+  // ⚠ Through the composition's own binding of the REAL recipe store: a
+  // handler test that supplies `recipeInstall` itself proves the refusal, not
+  // that a server has it. Pack counts are read from the roster, never
+  // hard-coded — a checkout ships ~1,000 packs, a release only its foundation.
+  it('refuses a shipped recipe that starts on its own until it is installed, and nothing else', async () => {
+    const recipeStore = createRecipeStore(undefined, storageDb);
+    const shipped = 'reminder-due-notifier';
+    expect(recipeStore.get(shipped)?.auto_run).toBeDefined();
+    expect(recipeStore.getStored(shipped)).toBeNull();
+    const dishDeps: DishHandlerDeps = { store: createDishStore(storageDb) };
+    const base = makeOptions() as unknown as {
+      execution: { executeDeps: Record<string, unknown> } & Record<string, unknown>;
+    };
+    await composeListeners(makeOptions({
+      dishDeps,
+      execution: { ...base.execution, executeDeps: { ...base.execution.executeDeps, recipeStore } },
+    }));
+
+    const packs = bundledPacksShippingRecipe(shipped);
+    expect(packs.map((pack) => pack.ref)).toContain('recued-core.personal-organizer-foundation');
+    let refused: unknown;
+    try {
+      createDish(dishDeps, { recipe_id: shipped });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toMatchObject({
+      code: 'pack_not_installed',
+      message: expect.stringContaining(`'${recipeStore.get(shipped)!.metadata!.name}' comes with`),
+      details: packs.length === 1 ? { missing_packs: [packs[0]!.ref] } : undefined,
+    });
+    expect(dishDeps.store.listByRecipe(shipped)).toEqual([]);
+
+    // A shipped recipe that runs only when the owner runs it saves settings.
+    expect(recipeStore.getStored('remind-me-of')).toBeNull();
+    expect(createDish(dishDeps, { recipe_id: 'remind-me-of' }).dish.enabled).toBe(true);
+
+    // Installed, the same switch goes ahead.
+    recipeStore.save(recipeStore.get(shipped)!, 'recued-core', 'pair-sync');
+    expect(createDish(dishDeps, { recipe_id: shipped }).dish).toMatchObject({ recipe_id: shipped, enabled: true });
+  });
+});
+
+describe('composeListeners — D-209 a webhook door follows the main dish', () => {
+  // ⚠ Through the composition's own late binding of `dishDeps.webhookDoors`: the
+  // handler suite (`d-209-webhook-door-follows-main-dish.test.ts`) wires the hook
+  // by hand, which proves the hook, not that a server has it. The dish store the
+  // rpc writes and the one the door reads (`executeDeps.dishStore`) are separate
+  // instances over one database, as in production.
+  it('a main dish made with the account opens the door a fresh install could not', async () => {
+    let stamp = 2_099_999_999_999;
+    const ingressStore = createWebhookIngressStore(storageDb, {
+      now: () => stamp,
+      getEncryptionKey: () => new Uint8Array(32).fill(5),
+    });
+    const ingress = ingressStore.create({
+      display_name: 'Acme order events',
+      profile_id: 'generic.static-header-token.v1',
+      environment: 'test',
+      paired_connection_id: null,
+      registration_mode: 'manual',
+      selected_event_types: ['delivery'],
+    });
+    await ingressStore.writeCredentialVersion(ingress.ingress_id, {
+      header_name: 'x-fixture-token',
+      header_token: 'fixture-token',
+    });
+    ingressStore.confirmManualRegistration(ingress.ingress_id, {
+      requires_handshake: false,
+      endpoint_url: `https://home.example.test/v1/webhooks/${ingress.public_id}`,
+    });
+    ingressStore.enable(ingress.ingress_id);
+    const consumerStore = createWebhookConsumerStore(storageDb, { ingressStore, now: () => ++stamp });
+    const contractStore = createContractStore(storageDb, { now: () => ++stamp });
+    const definitionStore = createContractDefinitionStore(contractStore);
+    const recipeStore = createRecipeStore('/path/that/does/not/exist', storageDb);
+    // A vendor webhook recipe: its account is a dish setting with a blank default.
+    recipeStore.save({
+      recipe_id: 'acme-order-paid',
+      version: 1,
+      ttl: 60,
+      metadata: {
+        name: 'Acme order paid',
+        description: 'D-209 composition fixture',
+        author: 'fixture-publisher',
+        supported_platforms: [],
+        tags: [],
+      },
+      variables: { acme: { type: 'connection', label: 'Acme account', default: '' } },
+      prefetch_steps: [],
+      steps: [{
+        id: 'order',
+        ingredient: 'acme-widgets',
+        input: { operation: 'order.read' },
+        connection: '{{config.acme}}',
+      }],
+      output: { sidebar: [] },
+      webhook_triggers: [{ binding: 'generic_delivery', event_types: ['delivery'] }],
+    } as never, 'fixture-publisher', 'pair-sync');
+    // A fresh install's trigger rows: door-less, since no dish names the account yet.
+    consumerStore.replaceConsumer({
+      consumer_kind: 'pack_install',
+      consumer_id: 'acme-webhook-pack',
+      requirements: [{
+        binding: 'generic_delivery',
+        profile_ids: ['generic.static-header-token.v1'],
+        required_event_types: ['delivery'],
+        registration_modes: ['manual'],
+        environment_policy: 'any',
+        decoded_payload_access: 'metadata_only',
+        source_truth_policy: 'delivery_payload_allowed',
+      }],
+      selections: [{ binding: 'generic_delivery', ingress_id: ingress.ingress_id }],
+      recipes: [{
+        recipe_id: 'acme-order-paid',
+        publisher_id: 'fixture-publisher',
+        webhook_triggers: [{ binding: 'generic_delivery', event_types: ['delivery'] }],
+      }],
+    });
+    const doorId = () => consumerStore.doorContractIdForRecipe(
+      'pack_install', 'acme-webhook-pack', 'acme-order-paid', 'fixture-publisher',
+    );
+    expect(doorId()).toBeNull();
+
+    const dishDeps: DishHandlerDeps = { store: createDishStore(storageDb) };
+    const base = makeOptions() as unknown as {
+      storage: Record<string, unknown>;
+      app: Record<string, unknown>;
+      execution: { executeDeps: Record<string, unknown> } & Record<string, unknown>;
+    };
+    await composeListeners(makeOptions({
+      dishDeps,
+      // The door's Records exposure preflight reads these: no Records pack installed.
+      storage: {
+        ...base.storage,
+        recordsStore: { isInstalledOperationId: () => false, isInstalledCatalogOperation: () => false },
+      },
+      app: { ...base.app, webhookConsumerStoreRef: consumerStore },
+      execution: {
+        ...base.execution,
+        contractDefinitionStore: definitionStore,
+        grantEntryStore: createContractGrantEntryStore(contractStore),
+        executeDeps: {
+          ...base.execution.executeDeps,
+          recipeStore,
+          dishStore: createDishStore(storageDb),
+        },
+      },
+    }));
+
+    const made = createDish(dishDeps, { recipe_id: 'acme-order-paid', config_overlay: { acme: 'acme-prod' } });
+
+    expect(made.webhook_doors).toEqual([expect.objectContaining({
+      recipe_id: 'acme-order-paid',
+      state: 'opened',
+    })]);
+    // Stamped on the rows the dispatcher reads, and held in the store the Gateway reads.
+    expect(doorId()).not.toBeNull();
+    expect(definitionStore.get(doorId()!)?.scope.connection_names).toEqual(['acme-prod']);
+  });
+});
+
 describe('composeListeners — MCP manual-probe transport wiring', () => {
   it('reuses the websocket and stdio capabilities composed for live execution', async () => {
     const options = makeOptions();
@@ -2690,7 +2882,7 @@ describe('compose-listeners source boundary', () => {
   it('owns webhook listeners, handler-set assembly, and path listener coordinator construction', () => {
     const source = readFileSync(listenerContextPath, 'utf8');
 
-    expect(source).toMatch(/composeWebhookAndHookListeners/);
+    expect(source).toMatch(/composeWebhookListeners/);
     expect(source).toMatch(/createServerHandlerSet/);
     expect(source).toMatch(/resolveLanAddress/);
     expect(source).toMatch(/createCertChainHolder/);

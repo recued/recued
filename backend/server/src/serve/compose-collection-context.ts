@@ -76,10 +76,6 @@ import type { WorkEntityStore } from '../storage/work-entity-store.js';
 import type { WorkEntitySourceWriteExecutor } from '../work-entity-write-executor.js';
 import type { GateRegistry } from '../storage-gates.js';
 import { createWatcherDispatcher } from '../watchers/index.js';
-import {
-  createWebhookWatcherQueue,
-  type WebhookWatcherQueue,
-} from '../watchers/webhook-watcher.js';
 import { createWorkEntityDispatchers } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import {
@@ -190,7 +186,6 @@ export interface CollectionContext extends ConnectionNotificationBundle {
    *  boot. Its cli executor is late-bound at the collection/execution
    *  convergence point. */
   supervisionStack: SupervisionStack | undefined;
-  webhookWatcherQueue: WebhookWatcherQueue;
   collectionRegistry: CollectionRegistry;
   watcherDispatcher: WatcherDispatcher;
   workEntityDispatchers: WorkEntityDispatchers | undefined;
@@ -556,12 +551,16 @@ export const composeCollectionContext = (
       })
     : undefined;
 
-  const webhookWatcherQueue = createWebhookWatcherQueue();
+  // The owner's zone (D-269): for judging a date-only deadline by its day, and
+  // for reading a `core.watch.time` window on the same clock as cron schedules.
+  const serverZoneStore = db ? createServerTimeZoneStore(db) : undefined;
+  const serverTimeZone = (): string => resolveServerTimeZone(
+    serverZoneStore?.read(),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+  );
   const watcherDispatcher = createWatcherDispatcher({
-    auditLog,
     collectionRegistry,
-    ...(calendarStack ? { calendarWatcherCursors: calendarStack.watcherCursors } : {}),
-    webhookQueue: webhookWatcherQueue,
+    serverTimeZone,
     ...(db ? { db } : {}),
     ...(workEntityStore ? { workEntityStore } : {}),
   });
@@ -577,16 +576,11 @@ export const composeCollectionContext = (
     collectionRegistry,
   });
 
-  // The owner's zone, for judging a date-only deadline by its day.
-  const serverZoneStore = db ? createServerTimeZoneStore(db) : undefined;
   const workEntityDispatchers = workEntityStore
     ? createWorkEntityDispatchers({
         store: workEntityStore,
         resolver: createWorkEntityResolver(workEntityStore),
-        timeZone: () => resolveServerTimeZone(
-          serverZoneStore?.read(),
-          Intl.DateTimeFormat().resolvedOptions().timeZone,
-        ),
+        timeZone: serverTimeZone,
         bus: warehouseBus,
         ...(enrichmentCascade ? { cascade: enrichmentCascade } : {}),
         ...(options.getWorkEntityWriteExecutor
@@ -687,7 +681,6 @@ export const composeCollectionContext = (
     bootEvents,
     serviceStack,
     supervisionStack,
-    webhookWatcherQueue,
     collectionRegistry,
     watcherDispatcher,
     notificationDeps,

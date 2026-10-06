@@ -32,16 +32,20 @@ import type { SourceRecord } from '../housekeeping/source-walkers.js';
  *  passed for a reason that had nothing to do with what it claimed to check.
  *  ⇒ Everything here must look exactly like a file the producer WOULD enrich,
  *  so provenance is the only thing left that can stop it. */
-const fileRecord = (origin: string, media_class: string) => ({
+const fileRecord = (origin: string, media_class: string, extra: Record<string, unknown> = {}) => ({
   record_id: 'file:deadbeef',
   storage_ref: { kind: 'cas', blob_hash: 'a'.repeat(64) },
   blob_hash: 'a'.repeat(64),
-  hot_fields: { origin, media_class, mime_type: 'audio/ogg', filename: 'note.ogg' },
+  hot_fields: { origin, media_class, mime_type: 'audio/ogg', filename: 'note.ogg', ...extra },
 } as never);
 
-const sourceRec = (origin: string, media_class: string): SourceRecord<never> => ({
+const sourceRec = (
+  origin: string,
+  media_class: string,
+  extra: Record<string, unknown> = {},
+): SourceRecord<never> => ({
   id: 'file:deadbeef',
-  data: fileRecord(origin, media_class),
+  data: fileRecord(origin, media_class, extra),
 } as never);
 
 /** A context whose every AI capability throws: reaching ANY of them is the
@@ -87,6 +91,20 @@ describe('D-262 § B12.2 — the file-origin gate', () => {
       const result = await producer.produce(ctx, sourceRec('reception_drop', mediaClass));
       expect(result).toBeNull();
     });
+
+    // ⛔ An ALLOWED origin, so only the opt-out can stop it: a Home Assistant
+    // camera snapshot arrives as a `connection_download`, which every producer
+    // here would otherwise read and send to the AI pool.
+    it(`⛔ '${producer.topic}' refuses a file its capturing op opted out, whatever the origin`, async () => {
+      const ctx = explodingCtx();
+      const mediaClass = producer.topic === 'transcript'
+        ? 'voice'
+        : producer.topic === 'caption' ? 'image' : 'document';
+      const result = await producer.produce(
+        ctx, sourceRec('connection_download', mediaClass, { ai_enrichment: 'opt_out' }),
+      );
+      expect(result).toBeNull();
+    });
   }
 });
 
@@ -98,6 +116,24 @@ describe('D-262 § B12.2 — the allowlist itself', () => {
     ]) {
       expect(mayAiEnrichFile(fileRecord(origin, 'voice'))).toBe(true);
     }
+  });
+
+  it('⛔ refuses a file its capturing op opted out, from every origin it would otherwise admit', () => {
+    for (const origin of [
+      'webclient_upload', 'messenger_media', 'mail_attachment',
+      'tool_output', 'connection_download',
+    ]) {
+      expect([origin, mayAiEnrichFile(fileRecord(origin, 'image', { ai_enrichment: 'opt_out' }))])
+        .toEqual([origin, false]);
+    }
+  });
+
+  it('⛔ FAILS CLOSED on an opt-out value nobody writes', () => {
+    // The intake only ever stamps 'opt_out'. Any other value is a row whose
+    // intent cannot be read, and this gate does not spend tokens on those.
+    expect(mayAiEnrichFile(fileRecord('connection_download', 'image', { ai_enrichment: 'maybe' }))).toBe(false);
+    // Absent, the origin decides, as before.
+    expect(mayAiEnrichFile(fileRecord('connection_download', 'image'))).toBe(true);
   });
 
   it('⛔ refuses the open-visitor path', () => {

@@ -11,6 +11,8 @@ import { composeAppContext } from '../serve/compose-app-context.js';
 import { composeCollectionContext } from '../serve/compose-collection-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
 import { createVaultStateBus } from '../vault-state-bus.js';
+import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
+import { wallClockAt } from '@recued/contracts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -67,6 +69,7 @@ describe('composeCollectionContext', () => {
           getCollectionRegistry: () => undefined,
           getExecutorConfig: () => undefined,
           getExecuteDeps: () => undefined,
+          getScheduleDeps: () => undefined,
         },
       });
 
@@ -93,7 +96,6 @@ describe('composeCollectionContext', () => {
       expect(context.calendarStack).toBeDefined();
       expect(context.mailStack).toBeDefined();
       expect(context.serviceStack).toBeDefined();
-      expect(context.webhookWatcherQueue).toBeDefined();
       expect(context.collectionRegistry).toBeDefined();
       expect(context.watcherDispatcher).toBeDefined();
       expect(context.notificationDeps).toBeDefined();
@@ -104,28 +106,24 @@ describe('composeCollectionContext', () => {
       expect(context.workEntityDispatchers).toBeDefined();
       expect(context.oauthClientConfigDeps.getClientId('gmail')).toBeNull();
 
-      context.webhookWatcherQueue.enqueue('recipe-1', 'deploy', {
-        delivery_id: 'delivery-1',
-        received_at: Date.now(),
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{"ok":true}',
-        source_ip: '127.0.0.1',
+      // The webhook watcher and its queue were retired 2026-10-05 (D-201
+      // webhook triggers replace them): the context composes neither.
+      expect(context).not.toHaveProperty('webhookWatcherQueue');
+
+      // D-269 (2026-10-05) — the composed watcher reads a time window on the
+      // owner's DECLARED zone, as the cron schedules do, not on this process's.
+      // UTC+14 is at least 3 hours from any host this runs on, so a two-hour
+      // window around its hour holds there and not on the host's clock.
+      createServerTimeZoneStore(storageContext.db).write('fixed', 'Pacific/Kiritimati', Date.now());
+      const declared = wallClockAt(Date.now(), 'Pacific/Kiritimati');
+      const host = wallClockAt(Date.now());
+      const around = (at: { day: number; hour: number }) => ({
+        weekdays: [at.day, (at.day + 1) % 7], start_hour: at.hour, end_hour: (at.hour + 2) % 24,
       });
-      const webhookResult = await context.watcherDispatcher({
-        slug: 'webhook-watcher',
-        args: { recipe_id: 'recipe-1', slug: 'deploy' },
-      });
-      expect(webhookResult).toMatchObject({
-        should_run: true,
-        queue_size: 0,
-        requests: [
-          {
-            delivery_id: 'delivery-1',
-            body: '{"ok":true}',
-          },
-        ],
-      });
+      await expect(context.watcherDispatcher({ slug: 'time-watcher', args: around(declared) }))
+        .resolves.toMatchObject({ should_run: true });
+      await expect(context.watcherDispatcher({ slug: 'time-watcher', args: around(host) }))
+        .resolves.toMatchObject({ should_run: false });
 
       await expect(context.startCollectionAdapters()).resolves.toBeUndefined();
     } finally {
@@ -182,6 +180,7 @@ describe('composeCollectionContext', () => {
         getCollectionRegistry: () => undefined,
         getExecutorConfig: () => undefined,
         getExecuteDeps: () => undefined,
+        getScheduleDeps: () => undefined,
       },
     });
     const vaultStateBus = createVaultStateBus();
@@ -256,12 +255,11 @@ describe('composeCollectionContext', () => {
     expect(source).toMatch(/composeServiceBoot/);
     expect(source).toMatch(/createCollectionRegistry/);
     expect(source).toMatch(/createWatcherDispatcher/);
-    expect(source).toMatch(/createWebhookWatcherQueue/);
     expect(source).toMatch(/composeConnectionNotification/);
     expect(source).toMatch(/createWorkEntityDispatchers/);
     expect(source).toMatch(/oauthClientConfigDeps/);
     expect(source).not.toMatch(/composeExecutorConfig|composeExecuteDeps|handleExecute/);
-    expect(source).not.toMatch(/createServerHandlerSet|path-listener|listener-coordinator|composeWebhookAndHookListeners/);
+    expect(source).not.toMatch(/createServerHandlerSet|path-listener|listener-coordinator|composeWebhookListeners/);
     expect(source).not.toMatch(/composeSchedulers|composeHousekeepingScheduler|background-services/);
     expect(source).not.toMatch(/mcp-server|wire-mcp-http-transport/);
     expect(source).not.toMatch(/createLifecycle|LockHeldError|process\.on/);

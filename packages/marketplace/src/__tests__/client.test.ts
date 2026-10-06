@@ -7,7 +7,6 @@ import {
   fetchRecipeByUrl,
   checkUpstream,
   listRecipes,
-  listTemplates,
   fetchSuggestions,
   resolveRecipeInput,
 } from '../client.js';
@@ -243,63 +242,6 @@ describe('listRecipes', () => {
   it('defaults rows to [] when envelope data is absent', async () => {
     const { fetchFn } = mkFetch([{ body: { meta: { request_id: 'r', timestamp: 't' } } }]);
     const r = await listRecipes({}, fetchFn);
-    expect(r.rows).toEqual([]);
-  });
-});
-
-// ────────────────────────────────────────────────────────────────
-// listTemplates
-// ────────────────────────────────────────────────────────────────
-
-describe('listTemplates', () => {
-  it('fetches /v1/marketplace/templates with no query string when params are empty', async () => {
-    const { fetchFn, calls } = mkFetch([{
-      body: { data: [], meta: { request_id: 'r', timestamp: 't' } },
-    }]);
-    const r = await listTemplates({}, fetchFn);
-    expect(r.rows).toEqual([]);
-    expect(calls[0]).toBe(`${MARKETPLACE_URL}/v1/marketplace/templates`);
-  });
-
-  it('defaults params to {} when not passed', async () => {
-    const { fetchFn, calls } = mkFetch([{
-      body: { data: [], meta: { request_id: 'r', timestamp: 't' } },
-    }]);
-    await listTemplates(undefined, fetchFn);
-    expect(calls[0]).toBe(`${MARKETPLACE_URL}/v1/marketplace/templates`);
-  });
-
-  it('forwards the vertical filter as ?vertical=', async () => {
-    const { fetchFn, calls } = mkFetch([{
-      body: { data: [], meta: { request_id: 'r', timestamp: 't' } },
-    }]);
-    await listTemplates({ vertical: 'mail' }, fetchFn);
-    expect(calls[0]).toBe(`${MARKETPLACE_URL}/v1/marketplace/templates?vertical=mail`);
-  });
-
-  it('returns empty rows on non-ok response', async () => {
-    const { fetchFn } = mkFetch([{ ok: false, status: 500 }]);
-    const r = await listTemplates({}, fetchFn);
-    expect(r.rows).toEqual([]);
-  });
-
-  it('returns the data array from the envelope', async () => {
-    const { fetchFn } = mkFetch([{
-      body: {
-        data: [
-          { recipe_id: 'a', name: 'A', description: '', tags: ['template:reactive:mail'], platforms: [], download_count: 0 },
-          { recipe_id: 'b', name: 'B', description: '', tags: ['template:reactive:webhook'], platforms: [], download_count: 0 },
-        ],
-        meta: { request_id: 'r', timestamp: 't' },
-      },
-    }]);
-    const r = await listTemplates({}, fetchFn);
-    expect(r.rows.map((row) => row.recipe_id)).toEqual(['a', 'b']);
-  });
-
-  it('defaults rows to [] when envelope data is absent', async () => {
-    const { fetchFn } = mkFetch([{ body: { meta: { request_id: 'r', timestamp: 't' } } }]);
-    const r = await listTemplates({}, fetchFn);
     expect(r.rows).toEqual([]);
   });
 });

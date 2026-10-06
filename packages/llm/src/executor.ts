@@ -8,7 +8,14 @@ import type {
   PiiFieldTag,
   WebChatTab,
 } from '@recued/contracts';
-import { aliasFields, aliasFieldsBatch, createLedger, restoreArgs, type Ledger } from '@recued/transforms';
+import {
+  aliasFields,
+  aliasFieldsBatch,
+  createLedger,
+  restoreArgs,
+  type Ledger,
+  type PiiKnownValueSource,
+} from '@recued/transforms';
 import type {
   AdapterRegistry,
   AvailabilitySnapshot,
@@ -41,9 +48,11 @@ import {
   isContextOverflowRejection,
   isJsonModeRejection,
   jsonModeUnsupported,
+  jsonSchemaUnsupported,
   noteContextAccepted,
   noteContextRefused,
   noteJsonModeUnsupported,
+  noteJsonSchemaUnsupported,
   noteSystemRoleUnsupported,
   isSystemRoleRejection,
   systemRoleUnsupported,
@@ -140,6 +149,11 @@ export interface LLMExecutorDeps {
   /** Optional observer for the match resolution. Fires once per successful
    *  call (and once per retry-walk attempt). */
   onMatchResolved?: (evt: LLMMatchResolved) => void;
+  /** D-316 amendment — the host's whole-warehouse known-value matcher (the
+   *  chat's), run over every `content`-tagged `llm.pii_fields` value before the
+   *  call. A getter, called only when the step tags present content; absent on
+   *  hosts with no warehouse. */
+  piiKnownValues?: () => PiiKnownValueSource | undefined;
 }
 
 /** Execute a single LLM ingredient call.
@@ -180,9 +194,15 @@ const completeWithJsonFallback = async (
   try {
     return await adapter.complete(slot, messages, effective);
   } catch (e) {
+    if (effective.json && effective.json_schema && isJsonModeRejection(e)) {
+      // Protocol rejection only, before any answer was generated. A schema
+      // rejected by this endpoint must not poison ordinary JSON support.
+      noteJsonSchemaUnsupported(slot, effective.json_schema);
+      return completeWithJsonFallback(adapter, slot, messages, { ...effective, json_schema: undefined });
+    }
     if (effective.json && isJsonModeRejection(e)) {
       noteJsonModeUnsupported(slot);
-      return adapter.complete(slot, messages, { ...options, json: false });
+      return adapter.complete(slot, messages, { ...options, json: false, json_schema: undefined });
     }
     throw e;
   }
@@ -270,12 +290,21 @@ const completeWithFallbacksInner = async (
  * Shared with review; new fallback behavior still needs a new exact match. */
 export const describeInitialLLMProviderRequest = (slot: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => ({
   messages: hasSystemMessage(messages) && systemRoleUnsupported(slot) ? demoteSystemMessages(messages) : messages,
-  options: options.json && jsonModeUnsupported(slot) ? { ...options, json: false } : options,
+  options: options.json && jsonModeUnsupported(slot) ? { ...options, json: false, json_schema: undefined }
+    : options.json_schema && (!options.json || jsonSchemaUnsupported(slot, options.json_schema))
+      ? { ...options, json_schema: undefined } : options,
 });
 
 /** The actual input normalization and privacy pass. Preparation calls this
  * without resolving bytes or invoking a provider. */
-export const prepareLLMInput = (manifest: IngredientManifest, input: Record<string, unknown>) => {
+/** `piiKnownValues` — the host's known-value matcher for `content`-tagged
+ *  `llm.pii_fields` values. Every builder of a model request passes the same
+ *  one: a reviewed run's request must equal the one it was reviewed as. */
+export const prepareLLMInput = (
+  manifest: IngredientManifest,
+  input: Record<string, unknown>,
+  piiKnownValues?: () => PiiKnownValueSource | undefined,
+) => {
   // D-162 — a batch-capable ai-* call is in batch mode when `llm.data` is
   // an array and `llm.id_field` is a non-empty string. `ai-compare` is
   // excluded (I-6 — no single `llm.data`); an `ai-compare` batch opt-in is
@@ -394,13 +423,19 @@ export const prepareLLMInput = (manifest: IngredientManifest, input: Record<stri
   // Best-effort — a tagged path absent from the data passes through
   // (recipes read fields outside the ingredient contract); a malformed
   // declaration already threw above. One ephemeral per-call ledger; no
-  // cross-step bridge.
+  // cross-step bridge. A `content` tag is also matched against the host's known
+  // values (D-316 amendment); if that match cannot complete, this throws and no
+  // model is called.
   let piiLedger: Ledger | undefined;
   if (piiFields.length > 0) {
     piiLedger = createLedger('llm:single-step');
     const aliasedData = batchMode
-      ? aliasFieldsBatch(piiLedger, input['llm.data'] as readonly unknown[], piiFields)
-      : aliasFields(piiLedger, input['llm.data'] as PiiAliasableData, piiFields);
+      ? aliasFieldsBatch(
+        piiLedger, input['llm.data'] as readonly unknown[], piiFields, undefined, piiKnownValues,
+      )
+      : aliasFields(
+        piiLedger, input['llm.data'] as PiiAliasableData, piiFields, undefined, piiKnownValues,
+      );
     input = { ...input, 'llm.data': aliasedData };
   }
   /** Restore this call's own output before it leaves the executor (single-step
@@ -423,9 +458,20 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
 ): { contracted: boolean; messages: LLMMessage[]; options: LLMCompletionOptions } => {
   const { input, contentParts, batchMode, batchElementMedia } = prepared;
   const contracted = isContractedSlug(manifest.slug);
+  const schema = input['llm.output_schema'];
+  if (schema !== undefined && (contracted || batchMode || input['llm.output_format'] !== 'json'
+    || schema === null || typeof schema !== 'object' || Array.isArray(schema)
+    || (schema as Record<string, unknown>).type !== 'object' || JSON.stringify(schema).length > 100_000)) {
+    throw new LLMError('AI_OUTPUT_INVALID', 'llm.output_schema requires an uncontracted JSON object call and a bounded object schema');
+  }
   const messages: LLMMessage[] = contracted
     ? buildContractedPrompt(manifest.slug, input)
     : buildUncontractedPrompt(input);
+  if (schema !== undefined && !messages.some(message => /json/iu.test(message.content))) {
+    // JSON-object fallback has the same provider requirement as native object
+    // mode. Add the protocol instruction before multimodal content is attached.
+    messages.unshift({ role: 'system', content: 'Return one complete JSON object in the requested shape.' });
+  }
 
   // D-172 P5 — fold the single-mode multimodal parts onto the user turn
   // (the prompt builder produced the instruction text; the media rides
@@ -459,6 +505,8 @@ export const buildLLMCompletionRequest = (manifest: IngredientManifest,
     search: wantsWebSearch(manifest, input) && match.slot.supports_search === true,
     timeout_ms: resolveLLMTimeoutMs(timeout_ms),
     json: wantsJson && match.slot.supports_json === true,
+    ...(schema !== undefined && match.slot.supports_json === true
+      ? { json_schema: schema as Record<string, unknown> } : {}),
     // A batch contract answers with a JSON ARRAY — see `json_shape`.
     ...(batchMode ? { json_shape: 'array' as const } : {}),
   };
@@ -493,7 +541,7 @@ export const executeLLM = async (
   input: Record<string, unknown>,
   deps: LLMExecutorDeps,
 ): Promise<unknown> => {
-  const prepared = prepareLLMInput(manifest, input);
+  const prepared = prepareLLMInput(manifest, input, deps.piiKnownValues);
   if (prepared.empty) return [];
   input = prepared.input;
   const { batchMode, requireModalities, finishPii } = prepared;
@@ -937,9 +985,20 @@ const resolveHint = (
 const isModelHint = (v: unknown): v is ModelHint =>
   v === 'fast' || v === 'quality' || v === 'thinking';
 
-/** D-172 P5 — the N.8 warn message naming the unsupported modalities. */
-const modalityWarnMessage = (req: Modalities): string => {
+/** D-172 P5 — the N.8 warn message naming the unsupported modalities.
+ *
+ *  ⛔ A PICTURE NAMES THE WAY OUT, BECAUSE THE PRODUCT HAS ONE. Picture input
+ *  is proven by Test connection (`endpoint-capabilities` § Picture input), and
+ *  until that existed "choose a model that supports it" sent the owner — and a
+ *  chat model relaying the failure — looking for a setting no screen had. Audio
+ *  and documents still have no such check, so they keep the plain sentence. */
+export const modalityWarnMessage = (req: Modalities): string => {
   const kinds = (['image', 'audio', 'document'] as const).filter((k) => req[k]).join('/');
+  if (req.image === true && req.audio !== true && req.document !== true) {
+    return 'None of your AI models has shown it can see pictures. '
+      + 'In Settings → AI / Models, press Test connection on a model that can: '
+      + 'Recued shows it a test picture and remembers that it can see.';
+  }
   return `The configured LLM does not support ${kinds} input. `
     + 'Choose a model that supports it, or remove the file.';
 };

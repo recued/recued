@@ -122,12 +122,6 @@ export {
   type HttpWatcherArgs,
   type HttpWatcherOutput,
   type HttpWatcherDeps,
-  evaluateRecipeWatcher,
-  type RecipeWatcherArgs,
-  type RecipeWatcherKind,
-  type RecipeWatcherOutput,
-  type RecipeWatcherRunSummary,
-  type RecipeWatcherDeps,
 } from './watchers/index.js';
 export type {
   ValidationSeverity,

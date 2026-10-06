@@ -10,6 +10,7 @@ import type { ExecutionContext, IngredientExecutor, LocalRecipeInvokeCall } from
 import { canonicalRecipeDefinition } from '@recued/recipes';
 import type { CommitGatewayDeps } from '@recued/gateway';
 import { mergeManifestStepInput, mergeManifestStepOutput } from '@recued/ingredients';
+import { hashStepPiiFields } from '@recued/transforms';
 import type { createPreapprovalService } from './preapproval-service.js';
 import type { PreapprovalStorage } from './storage/preapproval-storage.js';
 import type { ExecuteResponse } from './types.js';
@@ -323,8 +324,13 @@ export const createPreapprovalExecutionRuntime = (deps: {
       const resolveActualInput = (call: EngineCall) => {
         const manifest = preparation.manifest(call.slug);
         if (!manifest) return refuse('The reviewed operation definition disappeared.');
-        return call.catalog ? call.input : resolveDeep(mergeManifestStepInput(manifest.input, call.input,
+        if (call.catalog) return call.input;
+        const resolved = resolveDeep(mergeManifestStepInput(manifest.input, call.input,
           { trustedSurfaceDispatch: false }), host.stores, { deferVault: true });
+        // A step's `pii_fields` are hashed by the dispatch once it has resolved the
+        // input, so the call the provider receives carries the tokens; this one must.
+        return call.pii_fields !== undefined && call.pii_fields.length > 0
+          ? hashStepPiiFields(resolved, call.pii_fields).data : resolved;
       };
       const describeActual = (call: EngineCall, expected: PreparedInvocation): PreparedInvocation => {
         const manifest = preparation.manifest(call.slug);

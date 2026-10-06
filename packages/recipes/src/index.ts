@@ -100,14 +100,6 @@ export type {
   CalendarCapIngredient,
 } from './validate-calendar-caps.js';
 
-// D-116 — install-time `on_failure` handler check + runtime helper
-// for collecting source recipes bound to a given handler.
-export { checkOnFailureInstallable, failureSourcesFor } from './validate-on-failure.js';
-export type {
-  OnFailureInstallIssue,
-  OnFailureHandlerLookup,
-} from './validate-on-failure.js';
-
 // D-116 Phase 6 — ingredient probe manifest validator.
 export { validateProbeManifest } from './validate-probe.js';
 export type { ProbeIssue } from './validate-probe.js';

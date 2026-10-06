@@ -36,7 +36,7 @@ import { renderRecipeSettings, EDITOR_WORKBENCH_STYLES } from './editor-panels.j
 import type { RecipeSimulationResult } from '@recued/contracts';
 import type { RecipeSimulationCaller } from './recipe-simulation-caller.js';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { intervalInWords, RunModal } from '@recued/ui-shared';
+import { RunModal, startPhrase } from '@recued/ui-shared';
 
 import {
   applyFieldToStep,
@@ -4023,8 +4023,10 @@ export const bootstrapRecipeEditorRoute = (
     if (triggers.length === 0) {
       const empty = doc.createElement('div');
       empty.className = 'recipe-editor-empty recipe-editor-trigger-empty';
-      appendText(doc, empty, 'strong', state.recipe.auto_run
-        ? `Runs every ${intervalInWords(state.recipe.auto_run.interval_ms)} once switched on`
+      // A timer says when it really runs: its window, at the recipe's defaults.
+      const timer = state.recipe.auto_run ? startPhrase(state.recipe) : null;
+      appendText(doc, empty, 'strong', timer !== null
+        ? `${timer.charAt(0).toUpperCase()}${timer.slice(1)} once switched on`
         : 'Runs manually');
       appendText(doc, empty, 'span', 'Add a trigger so something can set this Recipe off.');
       section.appendChild(empty);

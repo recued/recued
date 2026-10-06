@@ -91,6 +91,32 @@ describe('assessRecipePiiPosture', () => {
     expect(assessRecipePiiPosture(canonicalInjectableLeak())).toEqual(expectedManualSummary());
   });
 
+  // The canonical classifier calls a mail subject free text. A step-level
+  // `pii_fields` entry naming it swaps the subject for one token the model
+  // cannot read, so install / save / Kitchen show the warning beside whatever
+  // auto-PII does for the step's other fields.
+  it('warns where a step-level pii_fields entry names a field the canonical classifier calls free text', () => {
+    const summary = assessRecipePiiPosture(recipeWith('legacy-entry-over-subject', [
+      { id: 'mail', ingredient: 'mail-get', input: {} },
+      {
+        id: 'ai',
+        ingredient: 'ai-classify',
+        pii_fields: ['subject', 'from'],
+        input: { 'llm.data': '{{step.mail.record.hot_fields}}', 'llm.categories': ['reply', 'fyi'] },
+      },
+    ]));
+    expect(summary?.warnings).toContainEqual({
+      step_id: 'ai',
+      message:
+        "AI step 'ai' (ai-classify): pii_fields entry 'subject' covers free text (llm.data.subject) — "
+        + 'step-level pii_fields swaps every value under the name for a token, so the model gets a token in '
+        + "place of the text; keep pii_fields to identifier fields and tag 'subject' `content` in "
+        + 'llm.pii_fields instead, which hides the contacts the server knows and every email in the text '
+        + 'while the model still reads it',
+    });
+    expect(JSON.stringify(summary)).not.toContain("entry 'from'");
+  });
+
   it('returns null when assessment throws', () => {
     const throwingRecipe = new Proxy({}, {
       get(_target, prop) {

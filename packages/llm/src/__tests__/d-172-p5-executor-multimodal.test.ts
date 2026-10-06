@@ -77,7 +77,15 @@ describe('executeLLM — multimodal (llm.content_parts)', () => {
         { 'llm.data': '[image]', 'llm.categories': ['a'], 'llm.content_parts': [imagePart] },
         makeDeps(adapter, textOnlyConfig),
       ),
-    ).rejects.toMatchObject({ code: 'AI_MODALITY_UNSUPPORTED' });
+    ).rejects.toMatchObject({
+      code: 'AI_MODALITY_UNSUPPORTED',
+      // ⛔ It names the way out, because the product has one: Test connection
+      // proves a model can see pictures. "Choose a model that supports it" sent
+      // the owner — and a chat model relaying it — after a setting no screen had.
+      message: 'None of your AI models has shown it can see pictures. '
+        + 'In Settings → AI / Models, press Test connection on a model that can: '
+        + 'Recued shows it a test picture and remembers that it can see.',
+    });
     expect(adapter.complete).not.toHaveBeenCalled();
   });
 

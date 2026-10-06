@@ -220,7 +220,9 @@ export const evaluateHttpWatcher = async (
     const hash = await hashBody(body);
 
     // First tick (no cursor) ⇒ fire. Recipe author is expected to
-    // store `etag` + `hash` in shared.* so subsequent ticks compare.
+    // store `etag` + `hash` in shared.* so subsequent ticks compare —
+    // or, on the server, to pass `once_per_change`, and the watcher keeps
+    // them itself (backend `watchers/http-watcher-memory.ts`, 2026-10-05).
     const firstTick = !args.previous_etag && !args.previous_hash;
     if (firstTick) {
       return { should_run: true, body, status: res.status, etag, hash };

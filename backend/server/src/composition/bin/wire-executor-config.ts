@@ -43,6 +43,7 @@ import type {
   KernelDispatchers,
 } from '@recued/ingredients';
 import type { CacheStore } from '@recued/cache';
+import type { PiiKnownValueSource } from '@recued/transforms';
 import type {
   LLMConfig,
   QuotaTracker,
@@ -51,6 +52,7 @@ import type { LLMConfigManager } from '../../llm-config.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
 import { createRunTokenUsageSink, type RunTokenUsageSink } from '../../run-token-usage.js';
+import { createRunKnownValues } from '../../run-known-values.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { BlobStore } from '../../storage/blob-store.js';
@@ -88,8 +90,6 @@ import type { ReceptionProjectionWorkEntityStore } from '../../ports/reception/p
 import type { WorkEntityStore } from '../../storage/work-entity-store.js';
 import type { PublicEndpointRegistryStore } from '../../storage/public-endpoint-registry-store.js';
 import type { ReceptionSealedVisitorEmailResolver } from '../../ports/reception/projection/reception-sealed-visitor-email.js';
-import type { RecipeStore } from '../../recipe-store.js';
-import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
 import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
@@ -178,10 +178,6 @@ export interface ComposeExecutorConfigDeps {
   serverInstanceId: string;
   watcherDispatcher: ReturnType<typeof createWatcherDispatcher>;
   collectionRegistry: CollectionRegistry;
-  recipeStore: RecipeStore;
-  /** D-193 — late-bound because maintenance owns schedule store
-   *  construction and runs after executor config composition. */
-  getScheduleDeps: (() => ScheduleHandlerDeps | undefined) | undefined;
   /** Core Seller substrate. The Seller offer registry needs this store alone;
    *  the D-196 customer-access lifecycle group additionally requires the
    *  contract and inbound-token stores below. Missing dependencies leave only
@@ -218,6 +214,11 @@ export interface ComposeExecutorConfigDeps {
    *  keep, and getting it wrong yields a field permanently absent with nothing
    *  failing anywhere. */
   runTokenUsage?: RunTokenUsageSink | undefined;
+  /** D-316 amendment — the chat's whole-warehouse known-value matcher for a
+   *  recipe's `content` PII tags. Forwarded onto `ServerExecutorConfig`, where
+   *  the AI adapter, the preapproval review and the execute handler all read the
+   *  SAME one. Absent ⇒ `content` tags hide only what identifier tags seeded. */
+  piiKnownValues?: (() => PiiKnownValueSource | undefined) | undefined;
   connectionStore: ConnectionStoreSqlite | undefined;
   /** D-234 § 234.4 — LATE BINDING for the inbound peer door. The notification
    *  block lands on `executeDeps.preflightNotifier`, which is composed AFTER
@@ -629,6 +630,15 @@ export const composeExecutorConfig = async (
     // default. Gating it on the manager would have shipped the field silently
     // empty on exactly the installs least likely to notice.
     runTokenUsage: deps.runTokenUsage ?? createRunTokenUsageSink(),
+    // D-316 amendment — the run cache is built ONCE PER CONFIG, like the token
+    // sink above: the AI adapter and the execute handler must share it, or each
+    // would build its own matcher for the same run.
+    ...(deps.piiKnownValues
+      ? {
+          piiKnownValues: deps.piiKnownValues,
+          piiKnownValuesRuns: createRunKnownValues(deps.piiKnownValues),
+        }
+      : {}),
     cacheStore: deps.cacheStore,
     instanceId: deps.serverInstanceId,
     cacheMaxBytes: 1024 * 1024 * 1024, // 1 GB default
@@ -792,13 +802,12 @@ export const composeExecutorConfig = async (
     kernelDispatchers: {
       ...(deps.fileStack?.kernelDispatchers ?? {}),
       ...(deps.calendarStack?.kernelDispatchers ?? {}),
-      // D-115 Phase 6 — unified watcher dispatcher slot. Phase A wired
-      // time / recipe / http + reused D-117 Phase 8's calendar-watcher;
-      // Phase B wired mail / file; Phase C wires webhook via the
-      // in-memory queue + /hook listener; Phase 6D shares this same
-      // binding with `runtime.runWatcher` rpc. (DOM watching is not a
-      // server-local watcher — it runs through the D-179 watch-poll
-      // source via the paired Bridge; see `watch/dom-source.ts`.)
+      // D-115 Phase 6 — unified watcher dispatcher slot: time,
+      // time-relative and http (the mail, file, calendar, webhook and
+      // recipe watchers were retired 2026-10-05); `runtime.testTrigger`
+      // shares this binding. (DOM watching is not a server-local watcher —
+      // it runs through the D-179 watch-poll source via the paired Bridge;
+      // see `watch/dom-source.ts`.)
       watcher: deps.watcherDispatcher,
       // D-234 § 234.4 — the peer ASK dispatcher. ⛔ WIRING THIS IS THE WHOLE
       // FEATURE: `createKernelAdapter` refuses an unwired slug with
@@ -1836,34 +1845,6 @@ export const composeExecutorConfig = async (
         const request = deps.getExecuteDeps?.()?.preapprovalRequest;
         if (!request) throw new Error('Pre-approval requests are unavailable until the owner review service is ready.');
         return request(input, meta);
-      },
-      scheduleRecipe: async (input) => {
-        const scheduleDeps = deps.getScheduleDeps?.();
-        if (!scheduleDeps) {
-          throw new Error('schedule-recipe unavailable — no schedule store wired');
-        }
-        const { createSchedule } = await import('../../schedule-handler.js');
-        const { createMissingPackDepsForRecipe } = await import('../../pack-inventory.js');
-        return createSchedule(
-          {
-            ...scheduleDeps,
-            recipeStore: deps.recipeStore,
-            // ⛔ The pack refusal the webclient's `schedules.create` runs, from
-            // the same factory. Without it a Schedule recipe run armed a cron for
-            // a recipe whose pack is not installed, which fails every firing.
-            // Absent contract store ⇒ no refusal, as on that route.
-            ...(deps.contractStore
-              ? {
-                missingPackDepsForRecipe: createMissingPackDepsForRecipe(
-                  deps.recipeStore,
-                  () => deps.contractStore!.scan('installed_pack', []),
-                  (slug) => deps.manifests.get(slug),
-                ),
-              }
-              : {}),
-          },
-          input,
-        );
       },
       ...(deps.sellerStore
         ? {

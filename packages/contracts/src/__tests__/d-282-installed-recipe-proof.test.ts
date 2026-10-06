@@ -220,7 +220,7 @@ describe('a watcher is never read-only for a view, whatever its approval risk', 
 
   it('names the watchers by entity', () => {
     expect(kernelOpIsWatcher('core.watch.http')).toBe(true);
-    expect(kernelOpIsWatcher('core.watch.webhook')).toBe(true);
+    expect(kernelOpIsWatcher('core.watch.time-relative')).toBe(true);
     expect(kernelOpIsWatcher('core.data.calendar.list')).toBe(false);
   });
 
@@ -245,7 +245,7 @@ describe('a watcher is never read-only for a view, whatever its approval risk', 
 
   it('⛔ refuses a watcher even where the validator would not admit one', () => {
     expect(isProvablyReadOnly(
-      recipe('steps', { id: 'w', op: 'core.watch.webhook', args: {} }), noCatalogs,
+      recipe('steps', { id: 'w', op: 'core.watch.time-relative', args: {} }), noCatalogs,
     )).toBe(false);
   });
 });

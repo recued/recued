@@ -355,6 +355,20 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
       .toContain('The export was handed off.');
   });
 
+  it('keeps a sticky status until it is dismissed, beside one that still expires', () => {
+    const { timers, toasts } = mount();
+
+    toasts.push({ title: 'Webhook off: Camera alert', text: 'Its deliveries are refused.', sticky: true });
+    expect(timers.scheduledCount()).toBe(0);
+    toasts.push({ title: 'What you allowed was sent', text: 'The export was handed off.' });
+    expect(timers.scheduledCount()).toBe(1);
+
+    timers.fire(timers.pending()[0]!);
+    expect(toasts.getToasts().map((t) => t.title)).toEqual(['Webhook off: Camera alert']);
+    toasts.dismiss(toasts.getToasts()[0]!.id);
+    expect(toasts.getToasts()).toEqual([]);
+  });
+
   it('renders an untitled frame as text-only (no title element)', () => {
     const { host, fake } = mount();
     notifyListener(fake)(notifyEvent('Just a body'));

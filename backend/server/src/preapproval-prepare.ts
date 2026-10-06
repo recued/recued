@@ -10,6 +10,7 @@ import {
 } from '@recued/contracts';
 import { evaluateCondition, extractVariableDefault, isPrototypeSensitiveKey } from '@recued/engine';
 import { mergeManifestStepInput, mergeManifestStepOutput } from '@recued/ingredients';
+import { hashStepPiiFields } from '@recued/transforms';
 import { resolveCanonicalRecipeForDispatch, type DispatchResolveDeps } from './dispatch-canonical-resolve.js';
 import { mergeRecipeConfigLayers } from './recipe-effective-config.js';
 import {
@@ -269,11 +270,18 @@ export const prepareFutureExecution = (input: {
       const catalog = isCatalog(manifest);
       const merged = catalog ? stepInput : mergeManifestStepInput(manifest.input, stepInput, { trustedSurfaceDispatch: false });
       if (unresolvedRefs(merged, stores)) { uncover(stepPath, 'A material default depends on a live namespace. Pin the value in the proposal config — a live read can change between review and dispatch.'); return; }
+      // A step's `pii_fields` are hashed by the dispatch once it has resolved the
+      // input, so the call reviewed here carries the tokens the run sends — the
+      // model request it describes is the one `beforeAiProvider` compares.
+      const piiFields = !catalog && Array.isArray(step.pii_fields)
+        ? step.pii_fields.filter((f): f is string => typeof f === 'string') : [];
       // Catalog operation selectors are static in the real runner. Only args
       // are interpolated; resolving the selector here would review another op.
       const resolvedInput = catalog
         ? { ...merged, ...(merged.args === undefined ? {} : { args: resolveDeep(merged.args, stores) }) }
-        : resolveDeep(merged, stores);
+        : piiFields.length > 0
+          ? hashStepPiiFields(resolveDeep(merged, stores), piiFields).data
+          : resolveDeep(merged, stores);
       const rawConnection = step.connection ?? stepInput.connection;
       if (rawConnection !== undefined && unresolvedRefs(rawConnection, stores)) { uncover(stepPath, 'The connection is not fixed. Name one connection in the proposal config rather than deriving it from an earlier step.'); return; }
       const connection = rawConnection === undefined ? '' : resolveValue(rawConnection, stores);

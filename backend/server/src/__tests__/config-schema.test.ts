@@ -11,7 +11,7 @@ import { randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { createRuntimeConfigStore } from '@recued/config';
 import type { FreePoolEntry, LLMSlot } from '@recued/llm';
-import { resetEndpointCapabilities } from '@recued/llm';
+import { imageInputSeen, noteImageInput, resetEndpointCapabilities } from '@recued/llm';
 import { createLLMConfigManager } from '../llm-config.js';
 import { buildSchema, applyField, makeConfigHandlers } from '../config-schema.js';
 
@@ -272,14 +272,25 @@ const handlersFor = (
   return slice.handlers;
 };
 
-/** A probe wiring whose adapter records what it was asked to send. */
+/** True when a request carries a picture — the second call a chat source's
+ *  Test makes (`probeLlmSource`'s picture check). */
+const carriesPicture = (
+  messages: Array<{ role: string; content_parts?: Array<{ type: string }> }>,
+): boolean => messages.some((m) => (m.content_parts ?? []).some((p) => p.type === 'image'));
+
+/** A probe wiring whose adapter records what it was asked to send. By default
+ *  it answers "ok" to everything — so a chat source's picture check reads no
+ *  number back and is called blind, which is the right default for a double
+ *  that cannot see. */
 const probeDeps = (
-  complete: (messages: Array<{ role: string }>) => unknown = () => ({
+  complete: (
+    messages: Array<{ role: string; content_parts?: Array<{ type: string }> }>,
+  ) => unknown = () => ({
     text: 'ok',
     usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5, model_id: 'm' },
   }),
 ) => {
-  const seen: Array<{ slot: LLMSlot; roles: string[] }> = [];
+  const seen: Array<{ slot: LLMSlot; roles: string[]; picture: boolean }> = [];
   const usage: Array<[string, number]> = [];
   const embedSeen: LLMSlot[] = [];
   const deps = {
@@ -304,8 +315,11 @@ const probeDeps = (
     }) as never,
     adapters: ((key: string) => (key === 'nope' ? undefined : {
       provider: key,
-      complete: async (slot: LLMSlot, messages: Array<{ role: string }>) => {
-        seen.push({ slot, roles: messages.map((m) => m.role) });
+      complete: async (
+        slot: LLMSlot,
+        messages: Array<{ role: string; content_parts?: Array<{ type: string }> }>,
+      ) => {
+        seen.push({ slot, roles: messages.map((m) => m.role), picture: carriesPicture(messages) });
         return complete(messages);
       },
     })) as never,
@@ -351,8 +365,9 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
     await h['server.probeLlmSource'](
       { target: { kind: 'slot', slot_key: 'slot_2' } }, undefined as never);
     // A probe that skipped the tracker would be an unmetered hole in the daily
-    // budget — one the owner can pull on demand, from a button.
-    expect(usage).toEqual([['slot_2', 5]]);
+    // budget — one the owner can pull on demand, from a button. Both requests
+    // count: the connection check and the picture check.
+    expect(usage).toEqual([['slot_2', 5], ['slot_2', 5]]);
   });
 
   /** ⛔ THE DRAFT RULE. A blank key means "keep the stored one" — but only
@@ -394,7 +409,9 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
       'You changed the protocol or base URL, so the saved key is not sent there. '
         + 'Enter the key for this endpoint and test again.',
     );
-    expect(seen).toHaveLength(1);
+    // The first probe's two requests (connection, then picture); the changed
+    // provider sent none.
+    expect(seen.map((c) => c.picture)).toEqual([false, true]);
   });
 
   /** The pool form tests an entry before it is added: the draft is the whole
@@ -422,7 +439,8 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
     const saved = await h['server.probeLlmSource'](
       { target: { kind: 'pool_entry', entry_id: 'groq-2' } }, undefined as never);
     expect(saved).toMatchObject({ ok: false, diagnosis: 'rejected' });
-    expect(seen).toHaveLength(1);
+    // Only the draft probe's two requests (connection, then picture).
+    expect(seen.map((c) => c.picture)).toEqual([false, true]);
   });
 
   it('answers auth without a request when no key is stored at all', async () => {
@@ -501,15 +519,60 @@ describe('makeConfigHandlers — server.probeLlmSource', () => {
       { target: { kind: 'pool_entry', entry_id: 'groq-b' } }, undefined as never);
 
     expect(result.ok).toBe(true);
-    expect(seen).toHaveLength(1);
+    expect(seen.map((c) => c.picture)).toEqual([false, true]);
     // ⛔ The entries differ in exactly these fields on purpose. Identical
     // fixtures would make a wrong-row lookup send a byte-identical request,
     // and this assertion would pass on a broken lookup.
-    expect(seen[0]?.slot.api_key).toBe('k-b');
-    expect(seen[0]?.slot.model).toBe('llama-70b');
+    for (const call of seen) {
+      expect(call.slot.api_key).toBe('k-b');
+      expect(call.slot.model).toBe('llama-70b');
+    }
     // Metered against THAT entry, not the pool as a whole — the daily caps are
     // per-entry.
-    expect(usage).toEqual([['pool:groq-b', 5]]);
+    expect(usage).toEqual([['pool:groq-b', 5], ['pool:groq-b', 5]]);
+  });
+
+  /** Test connection is the one place a model proves it can see pictures
+   *  (`endpoint-capabilities` § Picture input): a chat source is shown the
+   *  bundled picture of a number, and only reading that number back counts. */
+  it('shows a chat source the test picture and reports whether it read it', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const reads = probeDeps((messages) => ({
+      text: carriesPicture(messages) ? '4827' : 'ok',
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5, model_id: 'm' },
+    }));
+    const h = handlersFor(llmManager, reads.deps);
+    await h['server.setLLMSlot']({ slot_key: 'slot_1', slot: SLOT }, undefined as never);
+
+    const sees = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'slot_1' } }, undefined as never);
+    expect(sees).toMatchObject({ ok: true, sees_pictures: true, picture_answer: '4827' });
+    expect(imageInputSeen({ provider: 'openai', model: 'gpt-4o' })).toBe(true);
+
+    // A model that answers without the picture — the case the number exists
+    // for — is called blind, and the proof it had is withdrawn.
+    const guesses = probeDeps(() => ({
+      text: 'I cannot see any picture.',
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5, model_id: 'm' },
+    }));
+    const blind = await handlersFor(llmManager, guesses.deps)['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'slot_1' } }, undefined as never);
+    expect(blind).toMatchObject({
+      ok: true, sees_pictures: false, picture_answer: 'I cannot see any picture.',
+    });
+    expect(imageInputSeen({ provider: 'openai', model: 'gpt-4o' })).toBe(false);
+  });
+
+  it('shows no picture to the embeddings slot, which is not a chat model', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const { deps, seen } = probeDeps();
+    const h = handlersFor(llmManager, deps);
+    await h['server.setEmbeddingsSlot'](
+      { slot: { ...SLOT, model: 'text-embedding-3-small' } }, undefined as never);
+    const result = await h['server.probeLlmSource'](
+      { target: { kind: 'slot', slot_key: 'embeddings_slot' } }, undefined as never);
+    expect(result.sees_pictures).toBeUndefined();
+    expect(seen).toHaveLength(0);
   });
 
   it('answers for a pool id that does not exist instead of probing something else', async () => {
@@ -628,6 +691,84 @@ describe('detected endpoint capabilities live on the source', () => {
       .prepare("SELECT value FROM llm_config WHERE key = 'pool'")
       .get() as { value: string };
     expect(rawAfter.value).toBe(rawBefore.value);
+  });
+
+  /** ⛔ THE PICTURE PROOF IS THE EXCEPTION TO "DETECTED DIES ON SAVE". Its
+   *  default is "cannot", so dying with a budget edit would switch off the
+   *  owner's camera checks; it dies with the ENDPOINT instead. */
+  it('keeps a picture proof across a save of the same model, and drops it with a new model', () => {
+    const m = createLLMConfigManager(db);
+    const qwen = {
+      provider: 'openai-compatible' as const, model: 'qwen-vl', api_key: 'k',
+      base_url: 'https://dashscope.example/v1', speed: 'fast' as const, supports_json: true,
+    };
+    m.setSlot1(qwen);
+    m.setSourceCapability({ kind: 'slot', slot_key: 'slot_1' }, { image_input_ok: true });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.image_input_ok).toBe(true);
+
+    // An unrelated edit — a budget — with a fresh process memory, so only the
+    // STORED proof can carry it.
+    resetEndpointCapabilities();
+    m.setSlot1({ ...qwen, daily_budget_tokens: 50_000 });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.image_input_ok).toBe(true);
+
+    m.setSlot1({ ...qwen, model: 'qwen-text-only' });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.image_input_ok).toBeUndefined();
+
+    // A verdict of "cannot" withdraws it.
+    m.setSlot1(qwen);
+    m.setSourceCapability({ kind: 'slot', slot_key: 'slot_1' }, { image_input_ok: true });
+    m.setSourceCapability({ kind: 'slot', slot_key: 'slot_1' }, { image_input_ok: false });
+    expect(createLLMConfigManager(db).getConfig().slot_1?.image_input_ok).toBeUndefined();
+  });
+
+  /** The settings form tests a DRAFT before saving it. That Test proves the
+   *  endpoint in memory; the save that follows must keep the proof, or the
+   *  next restart forgets a model the owner watched pass. */
+  it('adopts a proof the unsaved draft earned when that endpoint is saved', () => {
+    const m = createLLMConfigManager(db);
+    const draft = {
+      provider: 'openai-compatible' as const, model: 'llava', api_key: 'k',
+      base_url: 'http://localhost:11434/v1', speed: 'fast' as const, supports_json: true,
+    };
+    noteImageInput(draft, true);
+    m.setSlot1(draft);
+    expect(createLLMConfigManager(db).getConfig().slot_1?.image_input_ok).toBe(true);
+
+    noteImageInput({ ...draft, model: 'llama3' }, false);
+    m.setSlot2({ ...draft, model: 'llama3' });
+    expect(createLLMConfigManager(db).getConfig().slot_2?.image_input_ok).toBeUndefined();
+  });
+
+  /** ⛔ Nothing outside a picture check may assert one: a client that sent the
+   *  field would otherwise route pictures to a model nobody showed one. */
+  it('ignores a picture proof the client sent, on a slot and on a pool entry', async () => {
+    const llmManager = createLLMConfigManager(db);
+    const h = handlersFor(llmManager);
+    await h['server.setLLMSlot'](
+      { slot_key: 'slot_1', slot: { ...SLOT, image_input_ok: true } }, undefined as never);
+    llmManager.upsertPoolEntry({ ...ENTRY('groq-a'), image_input_ok: true } as never);
+    const reread = createLLMConfigManager(db).getConfig();
+    expect(reread.slot_1?.image_input_ok).toBeUndefined();
+    expect(reread.free_pool?.[0]?.image_input_ok).toBeUndefined();
+  });
+
+  it('keeps a pool entry proof across an edit of the same model, and drops it with a new model', () => {
+    const m = createLLMConfigManager(db);
+    m.upsertPoolEntry(ENTRY('gem', { model: 'gemini-flash' }) as never);
+    m.setSourceCapability({ kind: 'pool', entry_id: 'gem' }, { image_input_ok: true });
+    resetEndpointCapabilities();
+
+    m.upsertPoolEntry(ENTRY('gem', { model: 'gemini-flash', daily_cap_tokens: 9_000 }) as never);
+    expect(createLLMConfigManager(db).getConfig().free_pool?.[0]?.image_input_ok).toBe(true);
+
+    m.upsertPoolEntry(ENTRY('gem', { model: 'gemini-pro' }) as never);
+    expect(createLLMConfigManager(db).getConfig().free_pool?.[0]?.image_input_ok).toBeUndefined();
+
+    m.upsertPoolEntry(ENTRY('gem', { model: 'gemini-flash' }) as never);
+    m.setSourceCapability({ kind: 'pool', entry_id: 'gem' }, { image_input_ok: true });
+    m.setSourceCapability({ kind: 'pool', entry_id: 'gem' }, { image_input_ok: false });
+    expect(createLLMConfigManager(db).getConfig().free_pool?.[0]?.image_input_ok).toBeUndefined();
   });
 
   /** …and this is the invalidation the fingerprint was built to provide, which

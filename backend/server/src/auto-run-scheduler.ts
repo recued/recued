@@ -98,9 +98,11 @@ export interface AutoRunTimer {
  *  (`dish-automation.ts`) writes the row.
  *
  *  (Until D-319 this was one row per RECIPE, on by default, with a pointer
- *  to a managed config dish. That table is dropped, not converted: nothing
- *  is published, and a timer the owner never switched on as a dish must
- *  not start.) */
+ *  to a managed config dish. 26.9.30 dropped that table unconverted, so every
+ *  timer that ran before stopped; it is now set aside instead
+ *  (`PRE_D319_AUTO_RUN_SETTINGS_TABLE`) for the one-shot conversion in
+ *  `auto-run-timer-rearm.ts`, which gives each recipe's timer back to the
+ *  dish it ran as.) */
 export interface AutoRunSettingsStore {
   /** A dish's timer, when it has one. */
   get(dish_id: string): AutoRunTimer | null;
@@ -119,12 +121,40 @@ export interface AutoRunSettingsStore {
   forgetRecipe?(recipe_id: string): number;
 }
 
+/** D-319 — where 26.9.29's per-recipe tables wait for the one-shot conversion
+ *  (`auto-run-timer-rearm.ts`), which drops them once its ledger row is
+ *  written. */
+export const PRE_D319_AUTO_RUN_SETTINGS_TABLE = 'auto_run_settings_pre_d319';
+export const PRE_D319_AUTO_RUN_CIRCUIT_TABLE = 'auto_run_circuit_pre_d319';
+
+const tableExists = (db: Database, name: string): boolean =>
+  db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) !== undefined;
+
+/** ⛔ SET ASIDE, NEVER DROPPED. A pre-D-319 table holds the only record of
+ *  which recipes ran and which the owner had paused; 26.9.30 dropped them and
+ *  every timer stopped. Whichever store opens first moves its table aside —
+ *  the circuit store opens before the timer store at serve boot, after it in
+ *  `recued mcp` — so no process can destroy what the conversion needs. When an
+ *  aside copy already exists (a rollback re-made the old table), the first
+ *  copy is kept: it is the state the owner left before any update.
+ *
+ *  ⚠ The check and the move hold the write lock together (IMMEDIATE; a
+ *  savepoint when nested): serve and `recued mcp` can open one realm at
+ *  once, and a check-then-rename that lost the race would throw "no such
+ *  table" at boot, where `DROP TABLE IF EXISTS` never could. */
+export const setAsidePreD319Table = (db: Database, table: string, aside: string): void => {
+  db.transaction(() => {
+    if (!tableExists(db, table)) return;
+    db.exec(tableExists(db, aside) ? `DROP TABLE ${table}` : `ALTER TABLE ${table} RENAME TO ${aside}`);
+  }).immediate();
+};
+
 /** SQLite-backed timer store. Creates its table on first use — the same
  *  shared-db posture as the circuit store below. */
 export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore => {
   initializePreapprovalLifecycle(db);
+  setAsidePreD319Table(db, 'auto_run_settings', PRE_D319_AUTO_RUN_SETTINGS_TABLE);
   db.exec(`
-    DROP TABLE IF EXISTS auto_run_settings;
     CREATE TABLE IF NOT EXISTS auto_run_timers (
       dish_id    TEXT PRIMARY KEY,
       recipe_id  TEXT NOT NULL,
@@ -190,12 +220,12 @@ export const createAutoRunSettingsStore = (db: Database): AutoRunSettingsStore =
 
 /** SQLite-backed circuit-breaker store, one row per dish's timer. Creates
  *  its table on first use — tolerates sharing the recued-server.db with
- *  every other table. (The per-recipe `auto_run_circuit` is dropped with the
- *  per-recipe timers — D-319.) */
+ *  every other table. (The per-recipe `auto_run_circuit` is set aside with
+ *  the per-recipe timers — D-319, `setAsidePreD319Table`.) */
 export const createCircuitBreakerStore = (db: Database): CircuitBreakerStore => {
   initializePreapprovalLifecycle(db);
+  setAsidePreD319Table(db, 'auto_run_circuit', PRE_D319_AUTO_RUN_CIRCUIT_TABLE);
   db.exec(`
-    DROP TABLE IF EXISTS auto_run_circuit;
     CREATE TABLE IF NOT EXISTS auto_run_timer_circuit (
       dish_id              TEXT PRIMARY KEY,
       recipe_id            TEXT NOT NULL,

@@ -31,10 +31,17 @@ const message = (id: string, at: number, body = 'Can you send the revised offer?
 };
 const seed: MailWorkEmailRef = { slug: 'work', record_id: 'seed' };
 const owner = { instance_id: 'owner-browser', client_kind: 'webclient' } as WsClient;
-const answer = () => ({ claims: [
-  { kind: 'request', text: 'The client requests a revised offer.', basis: 'email', sources: ['mail_source_1'] },
-  { kind: 'next_action', text: 'Check pricing approval with your coworker.', basis: 'inference', sources: [] },
-], search_queries: ['Acme pricing'] });
+const answer = () => {
+  const input = ai?.mock.calls.at(-1)?.[0];
+  const packet = input ? JSON.parse(String(input['llm.prompt'])) : null;
+  const email = packet?.prior_tool_calls.find((c: { result: { source?: string } }) => c.result.source === 'mail_source_1')?.result;
+  return { review_format: 'source_actions_v2', claims: [
+    { id: 'f1', kind: 'request', basis: 'email', sources: ['mail_source_1'],
+      excerpt: { source: 'mail_source_1', quote: email?.body_text?.slice(0, 800) ?? (mail ? [...mail.values()].sort((a, b) => b.received_at - a.received_at)[0]?.body_inline : 'Capacity is available.'), state: 'current' } },
+    { id: 'a1', kind: 'next_action', text: 'Check pricing approval with your coworker.', basis: 'inference', sources: [], targets: ['f1'],
+      action: { mode: 'contact', scope: 'pricing approval', permission: 'requires_owner_approval', permission_quote: null, conditions: [] } },
+  ], search_queries: ['Acme pricing'] };
+};
 
 let db: Database.Database;
 let unlocked: boolean;
@@ -210,9 +217,9 @@ describe('the review packet and its rejections', () => {
     expect(reviewed.work.brief?.claims).toHaveLength(2);
   });
   it.each([
-    ['an overlong statement', 'claims[1].text', { claims: [answer().claims[0], { kind: 'question', basis: 'inference', sources: [], text: 'x'.repeat(1201) }] }],
-    ['an empty statement', 'claims[0].text', { claims: [{ kind: 'question', basis: 'inference', sources: [], text: '   ' }] }],
-    ['a statement that is not text', 'claims[0].text', { claims: [{ kind: 'question', basis: 'inference', sources: [], text: 42 }] }],
+    ['an overlong statement', 'claims[1].text', { ...answer(), claims: [answer().claims[0], { id: 'q1', targets: ['f1'], kind: 'question', basis: 'inference', sources: [], text: 'x'.repeat(1201) }] }],
+    ['an empty statement', 'claims[0].text', { ...answer(), claims: [{ id: 'q1', targets: [], kind: 'question', basis: 'inference', sources: [], text: '   ' }] }],
+    ['a statement that is not text', 'claims[0].text', { ...answer(), claims: [{ id: 'q1', targets: [], kind: 'question', basis: 'inference', sources: [], text: 42 }] }],
     ['an overlong suggested search', 'search_queries[0]', { ...answer(), search_queries: ['x'.repeat(241)] }],
     ['a suggested search that is not text', 'search_queries[1]', { ...answer(), search_queries: ['Acme pricing', 42] }],
   ])('explains %s in plain English and keeps the previous review', async (_label, field, response) => {
@@ -243,7 +250,7 @@ describe('recipient bounds and privacy', () => {
           sent = JSON.stringify(input);
           const packet = JSON.parse(String(input['llm.prompt']));
           const email = packet.prior_tool_calls.find((call: { tool_name: string }) => call.tool_name === 'core.mail.get').result;
-          return { body: { claims: [{ kind: 'request', text: 'The client asks for a confirmation.', basis: 'email', sources: [email.source] }], search_queries: [] } };
+          return { body: { review_format: 'source_actions_v2', claims: [{ id: 'f1', kind: 'request', basis: 'email', sources: [email.source], excerpt: { source: email.source, quote: email.body_text, state: 'current' } }], search_queries: [] } };
         },
       });
       service = createMailWorkService({ ...deps, store: createMailWorkStore(privacyDb, codec), ai: mailFactAiCallThrough(privateCall, MAIL_WORK_MANIFEST) });

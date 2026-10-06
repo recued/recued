@@ -245,6 +245,7 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
               ? { system_role_ok: entry.system_role_ok } : {}),
             ...(entry.native_json_ok !== undefined
               ? { native_json_ok: entry.native_json_ok } : {}),
+            ...(entry.image_input_ok === true ? { image_input_ok: true } : {}),
           },
           source: { kind: 'pool', entry_id: entry.id },
         });
@@ -256,6 +257,7 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
       fingerprint: endpointFingerprint(slot),
       ...(slot.system_role_ok === false ? { system_role_unsupported: true } : {}),
       ...(slot.native_json_ok === false ? { json_mode_unsupported: true } : {}),
+      ...(slot.image_input_ok === true ? { image_input_seen: true } : {}),
     })));
 
     onEndpointCapabilityLearned((note) => {
@@ -268,6 +270,12 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
           manager.setSourceCapability(source, {
             system_role_ok: note.system_role_unsupported !== true,
             native_json_ok: note.json_mode_unsupported !== true,
+            // ⛔ Only a picture check's own announcement carries this, and only
+            // that may move the stored proof (`EndpointCapabilityNote
+            // .image_input_seen`): every other announcement leaves it alone.
+            ...(note.image_input_seen !== undefined
+              ? { image_input_ok: note.image_input_seen }
+              : {}),
           });
         }
       } catch {

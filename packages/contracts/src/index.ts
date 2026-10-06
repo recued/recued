@@ -90,7 +90,7 @@ export type {
   OutputSection, OutputType, RecipeOutput, RecipeExchangeOutput, ResolvedFilterDescriptor,
   ResolvedOutputSection, OutputFilterInvocation, RecipeInvocation,
   RecipeOutputAction, RecipeDefinition,
-  RecipeEventTrigger, OnFailureBinding,
+  RecipeEventTrigger,
   UndeclaredConfigOrigin, UndeclaredConfigArgument, UndeclaredConfigArgumentDetails,
 } from './recipe.js';
 export {
@@ -3217,6 +3217,7 @@ export type {
 // D-269 step 3 follow-on — zoned wall clock, shared by the server sweep and the
 // client's quiet-hours preview (which cannot import from `backend/`).
 export { zonedWallClockToEpochMs, zoneOffsetMsAt, cronZoneFor } from './zoned-wall-clock.js';
+export { isWithinTimeWindow, wallClockAt, type TimeWindow, type WallClock } from './time-window.js';
 // A due at UTC midnight names a DAY (live drive: "due Monday" read overdue on
 // Sunday evening in Pacific time). One rule, every reader.
 export {
@@ -3308,8 +3309,6 @@ export {
   CALENDAR_EXPANSION_PAST_DAYS_DEFAULT,
   CALENDAR_EXPANSION_FUTURE_DAYS_DEFAULT,
   CALENDAR_POLL_SECONDS_DEFAULT,
-  CALENDAR_STARTING_SOON_DEFAULT_MINUTES,
-  CALENDAR_WATCHER_CURSOR_PREFIX,
   CALENDAR_RETENTION_DAYS_DEFAULT,
   CALENDAR_QUOTA_BYTES_DEFAULT,
   CalendarAdapterError,
@@ -3319,7 +3318,6 @@ export type {
   CalendarRecordHotFields,
   CalendarCollectionCaps,
   CalendarRecordStat,
-  CalendarWatcherItem,
   CalendarAdapterErrorCode,
 } from './calendar.js';
 
@@ -3422,13 +3420,18 @@ export type {
 } from './supervision.js';
 
 // D-179 P1 — dishes (execution instances); P3 — dish groups.
-export type { Dish, DishGroup, DishLastRun, DishRunRow } from './dish.js';
+export type { Dish, DishGroup, DishLastRun, DishRunRow, DishWebhookDoorChange } from './dish.js';
 export {
   DISH_ID_PREFIX,
   DISH_GROUP_ID_PREFIX,
+  // D-209 — the rpcs whose results can carry `webhook_doors`.
+  DISH_WEBHOOK_DOOR_RPCS,
   EPHEMERAL_DISH_ID_PREFIX,
   ephemeralDishId,
   isEphemeralDishId,
+  // D-319 §5.4 — "Not switched on": one rule for Automation and the server.
+  isNotSwitchedOn,
+  startsOnItsOwn,
 } from './dish.js';
 
 // Reactive authoring sugar — the canonical `on:` subscriber form
@@ -3452,6 +3455,10 @@ export {
   matchesTriggerDispatchFilter,
   validateRecipeEventTriggerEntry,
   recipeEventTriggerNotes,
+  eventPatternSegments,
+  settingOfEventSegment,
+  eventPatternSettings,
+  resolveEventPatternSettings,
 } from './trigger-sugar.js';
 export {
   ELEMENT_ON_SHORTHAND,
@@ -3480,6 +3487,7 @@ export type {
   PiiSourceClassifier,
   PiiEgressVerdict,
   PiiUncoveredPath,
+  PiiLegacyContentPath,
   PiiEgressFinding,
   PiiUntracedStep,
   RecipePiiTrace,
@@ -4613,12 +4621,6 @@ export {
   isChatSessionChangedField,
   CHAT_TABLES,
   CHAT_TABLE_SET,
-  // D-137 W2.2 — Mary's per-kind catalog scope
-  SAFE_DEFAULT_CHAT_CATALOG_KINDS,
-  DEFAULT_CHAT_CATALOG_SCOPE,
-  computeKindGatedTier2Names,
-  CHAT_TOOL_CATALOG_SCOPE_VALIDATION_ISSUE_CODES,
-  validateChatToolCatalogScopeInput,
   // D-137 W2.3 — Tier 3 (connection.mcp.*) catalog substrate
   TIER3_TOOL_CLASSIFICATIONS,
   TIER3_TOOL_CLASSIFICATION_SET,
@@ -4720,10 +4722,6 @@ export type {
   ChatSessionGetRequest,
   ChatSessionChangedField,
   ChatTableName,
-  // D-137 W2.2 — Mary's per-kind catalog scope
-  ChatToolCatalogScopeState,
-  ChatToolCatalogScopeValidationIssueCode,
-  ChatToolCatalogScopeValidationIssue,
   // D-137 W2.3 — Tier 3 (connection.mcp.*) catalog substrate
   Tier3ToolClassification,
   McpToolDescriptor,

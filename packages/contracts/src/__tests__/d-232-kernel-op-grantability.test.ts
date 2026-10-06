@@ -69,8 +69,9 @@ describe('D-232 § 20.20 — the kernel grant fence', () => {
     // added tomorrow is grantable by DEFAULT — the correct direction for a
     // usefulness fence: forgetting one means "the owner cannot grant something
     // useful", never "a door reaches something it should not".
+    // 15 since 2026-10-05: five `core.watch.*` ops were retired (it was 20).
     const grantable = KERNEL_OP_REGISTRY.filter((e) => isGrantableKernelOp(e.op));
-    expect(KERNEL_OP_GRANT_EXCLUSIONS.size).toBe(20);
-    expect(grantable.length).toBe(KERNEL_OP_REGISTRY.length - 20);
+    expect(KERNEL_OP_GRANT_EXCLUSIONS.size).toBe(15);
+    expect(grantable.length).toBe(KERNEL_OP_REGISTRY.length - 15);
   });
 });

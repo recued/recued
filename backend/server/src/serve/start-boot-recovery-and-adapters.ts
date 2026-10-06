@@ -29,6 +29,8 @@ import type { PreapprovalStorage } from '../storage/preapproval-storage.js';
 import type { TornSagaSweepResult } from '@recued/gateway';
 import type { PermanentPassRepairBootResult } from '../seller/permanent-pass-repair.js';
 import type { WorkEntityTextDatesNoticeResult } from '../work-entity-date-repair-notice.js';
+import type { AutoRunSwitchOnNoticeResult } from '../auto-run-switch-on-notice.js';
+import type { AutoRunTimerRearmResult } from '../auto-run-timer-rearm.js';
 import type { MailAttachmentLinkRepairResult } from '../collections/mail/mail-attachment-link-repair.js';
 
 export interface StartBootRecoveryAndAdaptersOptions {
@@ -54,6 +56,16 @@ export interface StartBootRecoveryAndAdaptersOptions {
    *  (`WORK_ENTITY_TEXT_DATES_REPAIR_ID`), pre-bound by the composition root.
    *  Absent without a notifier ⇒ it waits for a boot that has one. */
   readonly workEntityTextDatesNotice?: () => Promise<WorkEntityTextDatesNoticeResult>;
+  /** D-319 — the one-time notice naming the recipes on a timer the update left
+   *  switched off (`AUTO_RUN_SWITCH_ON_NOTICE_ID`), pre-bound by the
+   *  composition root. On a boot with no notifier it records nothing and waits
+   *  for one that has. */
+  readonly autoRunSwitchOnNotice?: () => Promise<AutoRunSwitchOnNoticeResult>;
+  /** D-319 — the one-shot repair giving each recipe's auto-run timer back to
+   *  the dish it ran as, pre-bound by the composition root. Runs before the
+   *  notice, which names what it switched on, and long before the scheduler
+   *  builds its roster (`start-post-listener-runtime.ts`). */
+  readonly autoRunTimerRearm?: () => AutoRunTimerRearmResult;
   /** The one-off removal of the attachment links two IMAP mailboxes shared
    *  (`MAIL_ATTACHMENT_SHARED_ID_REPAIR_ID`), pre-bound over the db. Runs
    *  before the mailboxes start, so their first sync re-files those
@@ -303,6 +315,51 @@ export const startBootRecoveryAndAdapters = async (
       } catch (error) {
         warn(
           '[work-entities] text-dates repair notice failed, retrying next boot: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    // D-319 — the update stopped every auto-run timer: give each recipe's back
+    // to the dish it ran as, once. Before the notice, which names what this
+    // switched on, and before the scheduler's first roster, which this boot
+    // builds after the listener. All or nothing, so a failure is retried by
+    // the next boot.
+    if (options.autoRunTimerRearm) {
+      try {
+        const rearm = options.autoRunTimerRearm();
+        if (rearm.applied && rearm.path !== 'nothing') {
+          warn(
+            `[auto-run] D-319 timers ${rearm.path} — ${rearm.rearmed} switched on, `
+              + `${rearm.kept_off} kept off, ${rearm.tripped} still stopped by failures, `
+              + `${rearm.left} left as they were`,
+          );
+        }
+      } catch (error) {
+        warn(
+          '[auto-run] D-319 timer re-arm failed, retrying next boot: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+
+    // D-319 — the update stopped every auto-run timer until its recipe is
+    // switched on: tell the owner once which recipes are not, and which the
+    // re-arm switched on. A notice that did not reach the history is retried
+    // next boot.
+    if (options.autoRunSwitchOnNotice) {
+      try {
+        const notice = await options.autoRunSwitchOnNotice();
+        if (notice.outcome === 'noticed') {
+          warn(
+            `[auto-run] ${notice.named} recipe(s) on a timer are not switched on`
+              + (notice.switched_on > 0 ? `, ${notice.switched_on} were switched on` : '')
+              + ' — the owner was told',
+          );
+        }
+      } catch (error) {
+        warn(
+          '[auto-run] switch-on notice failed, retrying next boot: '
             + (error instanceof Error ? error.message : String(error)),
         );
       }

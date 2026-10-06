@@ -1181,9 +1181,30 @@ describe('phase 2: guard before AI', () => {
 });
 
 describe('phase 2: hash_replace / hash_restore pairing', () => {
-  it('AI without hash_replace → no_hash_before_ai info', () => {
+  it('AI without any PII declaration → no_hash_before_ai info, pointing to llm.pii_fields', () => {
     const result = validateRecipe(goodRecipe);
-    expect(issuesOf(result, 'no_hash_before_ai').length).toBe(1);
+    const issues = issuesOf(result, 'no_hash_before_ai');
+    expect(issues.length).toBe(1);
+    expect(issues[0].message).toContain("AI step's llm.pii_fields");
+    expect(issues[0].message).not.toContain('hash_replace');
+  });
+  it('llm.pii_fields or a pii-protect bracket counts as a declaration', () => {
+    const classify = {
+      id: 'ai_classify', ingredient: 'ai-classify',
+      input: { 'llm.data': '{{step.deal}}', 'llm.categories': ['at_risk', 'healthy'] },
+      skip_when: '{{config.verbose}} equal false',
+    };
+    const withSteps = (steps: unknown[]) => ({
+      ...goodRecipe, steps, output: { sidebar: [{ type: 'ai_analysis', source: 'step.ai_classify' }] },
+    }) as unknown as RecipeDefinition;
+    const tagged = withSteps([{ ...classify, input: { ...classify.input, 'llm.pii_fields': { owner_email: 'email' } } }]);
+    const bracketed = withSteps([
+      { id: 'protect', transform: 'pii-protect', data: '{{step.deal}}', fields: [{ path: 'owner_email', kind: 'email' }] },
+      { ...classify, input: { ...classify.input, 'llm.data': '{{step.protect.aliased}}' } },
+    ]);
+    expect(issuesOf(validateRecipe(withSteps([classify])), 'no_hash_before_ai').length).toBe(1);
+    expect(issuesOf(validateRecipe(tagged), 'no_hash_before_ai').length).toBe(0);
+    expect(issuesOf(validateRecipe(bracketed), 'no_hash_before_ai').length).toBe(0);
   });
   it('hash_replace without hash_restore → missing_hash_restore warn', () => {
     const recipe = {
@@ -1641,6 +1662,96 @@ describe('phase 2: ai-prompt system_prompt length', () => {
     };
     expect(issuesOf(validateRecipe(recipe), 'ai_prompt_vague').length).toBe(0);
     expect(issuesOf(validateRecipe(recipe), 'ai_prompt_missing_system').length).toBe(0);
+  });
+});
+
+/** Every shipped AI step is written `op: "core.ai.*"`, its payload in `args` (371
+ *  steps in 328 recipes on 2026-10-06, none in ingredient form). The AI checks found
+ *  AI steps by `ingredient` alone, so they ran on none of them. */
+describe('phase 2: the AI checks see an op step', () => {
+  const GATED = '{{config.verbose}} equal false';
+  const withStep = (step: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    ...goodRecipe,
+    steps: [step],
+    output: { sidebar: [{ type: 'ai_analysis', source: `step.${String(step.id)}` }] },
+    ...extra,
+  }) as unknown as RecipeDefinition;
+  const summarize = (args: Record<string, unknown> = {}, more: Record<string, unknown> = {}) => ({
+    id: 'brief', op: 'core.ai.summarize', args: { 'llm.data': '{{step.deal}}', ...args }, ...more,
+  });
+
+  it('guard before AI', () => {
+    expect(issuesOf(validateRecipe(withStep(summarize())), 'no_guard_before_ai')).toEqual([
+      expect.objectContaining({ severity: 'info', path: 'steps[0]' }),
+    ]);
+    expect(issuesOf(validateRecipe(withStep(summarize({}, { skip_when: GATED }))), 'no_guard_before_ai')).toEqual([]);
+  });
+
+  it('no PII declaration — and llm.pii_fields in args is one', () => {
+    expect(issuesOf(validateRecipe(withStep(summarize())), 'no_hash_before_ai')).toHaveLength(1);
+    const tagged = withStep(summarize({ 'llm.pii_fields': { owner_email: 'email' } }));
+    expect(issuesOf(validateRecipe(tagged), 'no_hash_before_ai')).toEqual([]);
+  });
+
+  it('pii-protect over a hash_replace of an identifier', () => {
+    const recipe = {
+      ...withStep(summarize()),
+      steps: [
+        { id: 'hashed', transform: 'hash_replace', source: '{{step.deal}}', fields: ['owner_email'] },
+        summarize({ 'llm.data': '{{step.hashed}}' }, { skip_when: GATED }),
+        { id: 'restored', transform: 'hash_restore', source: '{{step.brief}}' },
+      ],
+    };
+    expect(issuesOf(validateRecipe(recipe), 'prefer_pii_protect')).toHaveLength(1);
+  });
+
+  it('the AI TTL floor', () => {
+    // 120 s clears the data floor (60 s), not the AI one (300 s).
+    expect(issuesOf(validateRecipe(withStep(summarize(), { ttl: 120 })), 'ttl_below_floor')).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('below the AI recipe floor of 300s') }),
+    ]);
+  });
+
+  it('the ai-prompt system prompt, at the args path, named as the step spells it', () => {
+    const prompt = (args: Record<string, unknown>) => withStep({
+      id: 'ask', op: 'core.ai.prompt', args: { 'llm.prompt': '{{step.deal}}', ...args }, skip_when: GATED,
+    });
+    expect(issuesOf(validateRecipe(prompt({})), 'ai_prompt_missing_system')).toEqual([{
+      severity: 'warn',
+      code: 'ai_prompt_missing_system',
+      path: "steps[0].args['llm.system_prompt']",
+      message: "step 'ask' is core.ai.prompt but has no llm.system_prompt",
+    }]);
+    expect(issuesOf(validateRecipe(prompt({ 'llm.system_prompt': 'Be brief.' })), 'ai_prompt_vague')).toHaveLength(1);
+    const long = 'You are a careful CRM analyst. Name each risk, cite the step output it comes from, one line per finding.';
+    expect(issuesOf(validateRecipe(prompt({ 'llm.system_prompt': long })), 'ai_prompt_vague')).toEqual([]);
+  });
+
+  it('an unknown model hint WARNS on an op step, where the ingredient form is an error', () => {
+    const result = validateRecipe(withStep(summarize({ 'llm.model_hint': 'gpt-4o' }, { skip_when: GATED })));
+    expect(issuesOf(result, 'invalid_model_hint')).toEqual([
+      expect.objectContaining({ severity: 'warn', path: "steps[0].args['llm.model_hint']" }),
+    ]);
+    // ⛔ An error would stop an installed recipe that runs today: strict parsing
+    // refuses the whole run, and the runtime runs the hint as the default tier.
+    expect(result.valid).toBe(true);
+    for (const hint of ['fast', 'quality', 'thinking', null]) {
+      const ok = validateRecipe(withStep(summarize({ 'llm.model_hint': hint }, { skip_when: GATED })));
+      expect(issuesOf(ok, 'invalid_model_hint'), String(hint)).toEqual([]);
+    }
+    const ingredientForm = validateRecipe(withStep({
+      id: 'brief', ingredient: 'ai-summarize', input: { 'llm.data': '{{step.deal}}', 'llm.model_hint': 'gpt-4o' },
+      skip_when: GATED,
+    }));
+    expect(issuesOf(ingredientForm, 'invalid_model_hint').map((i) => i.severity)).toEqual(['error']);
+  });
+
+  it('a non-AI op is not an AI step', () => {
+    const notify = { id: 'ping', op: 'core.notification.send', args: { text: 'hi' } };
+    const result = validateRecipe(withStep(notify, { ttl: 120 }));
+    for (const code of ['no_guard_before_ai', 'no_hash_before_ai', 'ttl_below_floor']) {
+      expect(issuesOf(result, code), code).toEqual([]);
+    }
   });
 });
 

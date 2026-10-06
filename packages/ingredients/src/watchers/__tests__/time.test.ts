@@ -124,3 +124,23 @@ describe('evaluateTimeWatcher — validation', () => {
     expect(() => evaluateTimeWatcher({ end_hour: 25 })).toThrow(/end_hour/);
   });
 });
+
+describe('evaluateTimeWatcher — read on the server\'s clock (D-269, 2026-10-05)', () => {
+  // Monday 2026-10-05 15:30 UTC = 08:30 in Los Angeles.
+  const instant = new Date(Date.parse('2026-10-05T15:30:00Z'));
+  const morning = { weekdays: [1, 2, 3, 4, 5], start_hour: 8, end_hour: 9 };
+
+  it('opens the window at the zone\'s 8:00, not the process\'s', () => {
+    // ⛔ The defect this pins: on a server in UTC for an owner in Pacific time,
+    // an "8-9 AM" window opened at 8 AM UTC — 1 AM for the owner — while the
+    // cron schedules beside it already ran on the declared zone.
+    expect(evaluateTimeWatcher(morning, instant, 'America/Los_Angeles').should_run).toBe(true);
+    expect(evaluateTimeWatcher(morning, instant, 'UTC').should_run).toBe(false);
+  });
+
+  it('reads the day in the zone too', () => {
+    // Already Tuesday 00:30 in Tokyo.
+    expect(evaluateTimeWatcher({ weekdays: [2] }, instant, 'Asia/Tokyo').should_run).toBe(true);
+    expect(evaluateTimeWatcher({ weekdays: [1] }, instant, 'Asia/Tokyo').should_run).toBe(false);
+  });
+});

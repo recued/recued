@@ -250,6 +250,23 @@ describe('auto_run.update naming only a recipe — its main dish', () => {
     expect(deps.settingsStore.isEnabled(main.dish_id)).toBe(true);
   });
 
+  it('reports the webhook door a new main dish moved (D-209); an existing main dish moves none', async () => {
+    const change = {
+      recipe_id: 'r', state: 'opened' as const, was_open: false, added: ['connection:primary'], removed: [],
+    };
+    const asked: string[] = [];
+    dishDeps.webhookDoors = { mainDishChanged: (recipe_id) => { asked.push(recipe_id); return [change]; } };
+    const deps = makeDeps([storedRow(makeRecipe('r'))]);
+
+    const first = await updateAutoRun(deps, { recipe_id: 'r', enabled: true, config_overlay: { stripe: 'primary' } });
+    expect(first.webhook_doors).toEqual([change]);
+    expect(asked).toEqual(['r']);
+
+    const again = await updateAutoRun(deps, { recipe_id: 'r', enabled: false });
+    expect(again).not.toHaveProperty('webhook_doors');
+    expect(asked).toEqual(['r']);
+  });
+
   it('acts on the main dish that exists — and refuses settings that are not its', async () => {
     const main = createDish(dishDeps, { recipe_id: 'r', config_overlay: { a: 1 } }).dish;
     createDish(dishDeps, { recipe_id: 'r', name: 'Other' });

@@ -45,6 +45,7 @@ export {
 export {
   projectInFlightActivity,
   projectMessageActivity,
+  projectSettledCallNotices,
   projectTransparencyNote,
   type ChatActivityRow,
 } from './activity.js';

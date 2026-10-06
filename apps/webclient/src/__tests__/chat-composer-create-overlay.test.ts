@@ -146,6 +146,7 @@ interface FakeDoc {
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   styles: FakeEl[];
   createElement(tag: string): FakeEl;
+  createTextNode(text: string): FakeEl;
   addEventListener(t: string, fn: (ev: unknown) => void): void;
   removeEventListener(t: string, fn: (ev: unknown) => void): void;
   fireKeydown(key: string, isComposing?: boolean): void;
@@ -184,6 +185,15 @@ const makeDoc = (): FakeDoc => {
       },
     },
     createElement: create,
+    // `renderAnswerText` paints a formatted reply (**bold**, headings) from text
+    // nodes (b41c8e0cd). A double is a closed list: without this, the first
+    // fixture reply carrying markup throws. A text node is a bare element
+    // carrying its text.
+    createTextNode: (text) => {
+      const node = makeEl('#text');
+      node.textContent = text;
+      return node;
+    },
     addEventListener: (t, fn) => {
       if (t === 'keydown') keydown.push(fn);
     },

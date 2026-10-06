@@ -77,6 +77,10 @@ export interface DataFileHotFields extends Record<string, unknown> {
   scan_status: FileScanStatus;
   media_class: FileMediaClass;
   cloud_capture?: FileCloudCapture;
+  /** Not for unattended AI enrichment — the capturing op's
+   *  `response_capture.ai_enrichment`. `mayAiEnrichFile` refuses it whatever the
+   *  origin. Absent ⇒ the origin decides. */
+  ai_enrichment?: 'opt_out';
 }
 
 export interface DataFileRecord extends CollectionRecord {
@@ -103,6 +107,9 @@ export interface InboundFileIngestInput {
   source_id: string;
   /** Server-captured source metadata, never supplied by the attachment picker. */
   cloud_capture?: FileCloudCapture;
+  /** See `DataFileHotFields.ai_enrichment`. Re-ingesting the same record
+   *  restamps it from THIS input. */
+  ai_enrichment?: 'opt_out';
   scan_status?: FileScanStatus;
   now?: number;
   /** D-124 — published while its source drained its initial backfill (a
@@ -497,6 +504,7 @@ export const createInboundFileCollection = (
         scan_status: input.scan_status ?? keptVerdict ?? 'unscanned',
         media_class: mediaClassForMimeType(input.mime_type),
         ...(input.cloud_capture ? { cloud_capture: input.cloud_capture } : {}),
+        ...(input.ai_enrichment === 'opt_out' ? { ai_enrichment: 'opt_out' as const } : {}),
       },
       size_bytes,
       source_id: input.source_id,

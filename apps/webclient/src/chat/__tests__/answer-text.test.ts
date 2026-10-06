@@ -108,3 +108,18 @@ describe('Chat answer citations', () => {
     ]);
   });
 });
+
+it('renders headings and bold as text-only emphasis beside a safe citation', () => {
+  const host = paint(`## Current work\n**Private preparation** and [source](${record}).`);
+  expect(host.children.map(n => n.tagName)).toEqual(['STRONG', '#text', 'STRONG', '#text', 'A', '#text']);
+  expect(host.children[0]?.textContent).toBe('Current work');
+  expect(host.children[2]?.textContent).toBe('Private preparation');
+  expect(host.children[4]?.getAttribute('href')).toBe(record);
+});
+
+it('never executes HTML inside emphasis and leaves code notation literal', () => {
+  expect(paint('**<img src=x onerror=alert(1)>**').children[0]).toMatchObject({ tagName: 'STRONG', children: [], textContent: '<img src=x onerror=alert(1)>' });
+  const code = '```md\n## Heading\n**bold**\n```';
+  expect(paint(code).textContent).toBe(code);
+  expect(paint('\\**literal**').children.map(n => n.tagName)).not.toContain('STRONG');
+});

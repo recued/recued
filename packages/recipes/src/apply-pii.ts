@@ -20,10 +20,13 @@
  *      values they would have seen without the bracket (zero-failure-restore
  *      invariant; restore passes unknown values through verbatim).
  *
- * CONTENT-only findings are deliberately NOT bracketed: a content scan
- * aliases only the identifier kinds seeded by tags in the SAME protect
- * step's run-local ledger, so a content-only bracket is decorative — those
- * findings stay flagged (validate-pii, info severity).
+ * CONTENT-only findings are bracketed too (owner ruling, 2026-10-05): a
+ * `content` tag hides the identifiers seeded by the same protect step's tags
+ * plus — on a server — the warehouse's known contacts and every email in the
+ * text (D-316 amendment), so it is no longer decorative. Such a bracket is
+ * kept only if it covers EVERY content path the step receives — claiming
+ * "auto-protected" over a half-tagged body would be a false reassurance —
+ * and the finding's info line still says what a content tag cannot hide.
  *
  * "No harm done" is enforced MECHANICALLY, not by hope:
  *   - per-finding verification: after a candidate bracket is applied the
@@ -119,11 +122,8 @@ export interface AppliedPiiBracket {
 }
 
 export type AutoPiiResidualOutcome =
-  /** Only `content`-kind taint is uncovered — a bracket would be decorative
-   *  (content scans alias only same-step-seeded identifier kinds). */
-  | 'content_only'
-  /** No payload source ref offers a runtime-walkable identifier tag set
-   *  (scalar collapse, interior `[]` crossing, `item.*`-only sources). */
+  /** No payload source ref offers a runtime-walkable tag set (scalar
+   *  collapse, interior `[]` crossing, `item.*`-only sources). */
   | 'no_bracketable_source'
   /** The ai-step is not in the sequential `steps` array. */
   | 'unsupported_position'
@@ -294,9 +294,12 @@ interface QualifiedSource {
  *   - an OBJECT runs `aliasFields` — tag paths walk `getAtPath` exactly and
  *     never cross a `[]` boundary;
  *   - a whole-value entry (`''`) is a scalar/smeared string — no path to tag;
- *   - content paths that fit the same shape ride along (the identifier tags
- *     seed the ledger, so the content scan actually protects them); content
- *     paths that don't fit are dropped silently (decorative either way).
+ *   - content paths that fit the same shape ride along; content paths that
+ *     don't fit are dropped here, and the verification gate decides whether
+ *     what remains covers the step;
+ *   - a CONTENT-ONLY source (no identifier entries) is tagged by the same
+ *     shape rules over its content paths (D-316 amendment: a `content` tag
+ *     hides the server's known contacts and every email).
  */
 const qualifySource = (sources: readonly PiiEgressSource[]): QualifiedSource | null => {
   const first = sources[0];
@@ -317,9 +320,11 @@ const qualifySource = (sources: readonly PiiEgressSource[]): QualifiedSource | n
     }
   }
   const identifierPaths = [...merged].filter(([, k]) => [...k].some((x) => x !== 'content'));
-  if (identifierPaths.length === 0) return null; // content-only source
+  // The identifier entries set the shape (list vs object); a content-only
+  // source takes it from its content entries.
+  const shapePaths = identifierPaths.length > 0 ? identifierPaths : [...merged];
   const isListPath = (p: string): boolean => p.startsWith(LIST_LEAD);
-  const listMode = identifierPaths.every(([p]) => isListPath(p));
+  const listMode = shapePaths.length > 0 && shapePaths.every(([p]) => isListPath(p));
   const tagPathOf = (p: string): string | null => {
     const rel = listMode && isListPath(p) ? p.slice(LIST_LEAD.length) : p;
     if (rel === '' || rel === PII_LIST_SEGMENT) return null;
@@ -339,6 +344,7 @@ const qualifySource = (sources: readonly PiiEgressSource[]): QualifiedSource | n
     const tag = tagPathOf(p);
     if (tag !== null && fields[tag] === undefined) fields[tag] = 'content';
   }
+  if (Object.keys(fields).length === 0) return null; // nothing this shape can tag
   return { ref, input_keys: [...new Set(sources.map((s) => s.input_key))], fields };
 };
 
@@ -392,9 +398,13 @@ const verifyBracket = (
   prev: RecipePiiTrace,
   next: RecipePiiTrace,
   targetStepId: string,
+  contentOnly: boolean,
 ): boolean => {
   const target = next.findings.find((f) => f.step_id === targetStepId);
   if (!target || hasIdentifierLeak(target) || target.untraced) return false;
+  // A content-only bracket has nothing else to show for itself: it must cover
+  // every content path, or the summary would call a half-tagged body protected.
+  if (contentOnly && target.uncovered.length > 0) return false;
   if (next.untraced_steps.length > prev.untraced_steps.length) return false;
   for (const nf of next.findings) {
     if (nf.step_id === targetStepId) continue;
@@ -455,7 +465,7 @@ export const applyAutoPiiProtection = (
     injections.push(inj);
   }
 
-  // ── 2. Bracket synthesis for identifier-leak gaps ──
+  // ── 2. Bracket synthesis for the gaps (identifier leaks; content-only too) ──
   const gapByStep = new Map(plan.gaps.map((g) => [g.step_id, g]));
   let currentTrace = injections.length > 0 ? tracePiiFlow(work, classifier) : trace;
 
@@ -469,10 +479,9 @@ export const applyAutoPiiProtection = (
       fail('no_bracketable_source');
       continue;
     }
-    if (!hasIdentifierLeak(finding)) {
-      fail('content_only');
-      continue;
-    }
+    // A content-only finding is bracketed too (D-316 amendment), under the
+    // stricter full-coverage check below.
+    const contentOnly = !hasIdentifierLeak(finding);
     const loc = findStep(work, gap.step_id);
     if (!loc) continue;
     if (loc.where !== 'steps') {
@@ -582,7 +591,7 @@ export const applyAutoPiiProtection = (
 
     // ── Verify or roll back ──
     const nextTrace = tracePiiFlow(candidate, classifier);
-    if (!verifyBracket(currentTrace, nextTrace, gap.step_id)) {
+    if (!verifyBracket(currentTrace, nextTrace, gap.step_id, contentOnly)) {
       fail('verification_failed');
       continue;
     }

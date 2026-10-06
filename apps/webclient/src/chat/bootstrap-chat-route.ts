@@ -7,6 +7,7 @@ import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES }
 import {
   chatSessionMatchesFilters,
   hasChatHistoryFilters,
+  isChatToolCallRecord,
   type ListPageFields,
   type ListPageRequest,
 } from '@recued/contracts';
@@ -73,6 +74,7 @@ import {
   type TransparencyStreamSettings,
 } from '@recued/contracts';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
+import { describeToolRow, planToolRows, readToolResult } from './tool-rows.js';
 
 import {
   applyPlanResolution,
@@ -87,6 +89,7 @@ import {
   isChatThreadEvent,
   projectInFlightActivity,
   projectMessageActivity,
+  projectSettledCallNotices,
   reduceChatThreadEvent,
   type ChatActivityRow,
   type ChatModelSourceOption,
@@ -245,12 +248,19 @@ export const CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR =
   'data-recued-chat-route-activity-toggle';
 export const CHAT_ROUTE_ACTIVITY_ROW_ATTR =
   'data-recued-chat-route-activity-row';
-/** D-259 — owner-only promotion of a succeeded ad-hoc run into a standing
- * dish. Existing standing-dish calls render status, never a duplicate action. */
-export const CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR =
-  'data-recued-chat-route-activity-dish-promote';
+/** D-259 — a call that ran as one of the owner's standing dishes says so
+ *  (value of `data-dish-id`: that dish). Chat no longer offers to keep a run
+ *  as a dish (D-259 §6.1 retired 2026-10-05): the settings a chat run uses are
+ *  worked out from that conversation, so a frozen copy of them has no use. */
 export const CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR =
   'data-recued-chat-route-activity-dish-status';
+/** One sentence under an answer whose call waited and has since settled
+ *  (value: the run id) — the answer itself still says it is queued. */
+export const CHAT_ROUTE_CALL_SETTLED_ATTR = 'data-recued-chat-route-call-settled';
+/** A late result under its answer (value: the run id), readable first. */
+export const CHAT_ROUTE_LATE_RESULT_ATTR = 'data-recued-chat-route-late-result';
+/** The raw text behind a tool row drawn on its own (no answer lists it). */
+export const CHAT_ROUTE_TOOL_DETAILS_ATTR = 'data-recued-chat-route-tool-details';
 /** D-137 P3 § A.11 — interactive plan-approval card painted under the
  *  proposing turn's message. Carries `data-status` (`proposed` /
  *  `approved` / `cancelled`) + `data-plan-id`; the approve / cancel
@@ -568,12 +578,6 @@ export interface ChatRouteConn extends ChatQueueClient, ChatDeliveryClient {
     method: 'chat.plan.approve' | 'chat.plan.cancel',
     payload: { plan_id: string },
   ): Promise<{ plan: ChatPlanProposal }>;
-  /** D-259 §6.1 — owner-only run-log promotion. The route sends only the
-   * durable audit address; recipe/config authority is recovered server-side. */
-  (
-    method: 'dishes.createFromRun',
-    payload: { run_id: string },
-  ): Promise<{ dish: { dish_id: string } }>;
 }
 
 /** This route's OWN chrome. Exported for the style-scale ratchet, which must
@@ -1126,6 +1130,59 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.45;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}],
+[${CHAT_ROUTE_TOOL_DETAILS_ATTR}] {
+  min-width: 0;
+  max-width: 100%;
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] summary,
+[${CHAT_ROUTE_TOOL_DETAILS_ATTR}] summary {
+  cursor: pointer;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] dl {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] dl > div {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] dt {
+  flex: none;
+  max-width: 40%;
+  overflow-wrap: anywhere;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+[${CHAT_ROUTE_LATE_RESULT_ATTR}] pre,
+[${CHAT_ROUTE_TOOL_DETAILS_ATTR}] pre {
+  margin: 6px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+[${CHAT_ROUTE_CALL_SETTLED_ATTR}] {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--chat-radius-panel);
+  background: var(--surface-subtle);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 [${CHAT_ROUTE_ANSWER_WAITING_ATTR}] {
   display: flex;
@@ -1921,26 +1978,10 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 [${CHAT_ROUTE_ACTIVITY_ROW_ATTR}][data-status="error"] {
   color: var(--fail);
 }
-[${CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR}] {
-  border: 1px solid var(--border);
-  border-radius: var(--chat-radius-pill);
-  background: var(--surface);
-  color: var(--fg);
-  padding: 2px 7px;
-  font: inherit;
-  cursor: pointer;
-}
-[${CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR}][disabled] {
-  cursor: default;
-  opacity: 0.65;
-}
 [${CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR}] {
   margin-left: 6px;
   color: var(--muted);
   font-size: 11px;
-}
-[${CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR}][data-status="error"] {
-  color: var(--fail);
 }
 [${CHAT_ROUTE_TURN_FAILURE_ATTR}] {
   display: flex;
@@ -2693,7 +2734,7 @@ export interface BootstrapChatRouteOptions {
   /** A transient, explicit Follow this work submission. Consumed once after
    * hydration in its exact session; never reconstructed from a URL/reconnect.
    * Failed/unavailable sends remain an ordinary protected composer draft. */
-  initialWorkSubmission?: { sessionId: string; message: string; repeat?: boolean };
+  initialWorkSubmission?: { sessionId: string; message: string; repeat?: boolean; mailWork?: import('@recued/contracts').MailWorkReadRequest };
   filePreviewCallers?: FilePreviewCallers;
   fileListCaller?: ChatFileListCaller;
   cloudFileCallers?: CloudFileCallers;
@@ -3714,6 +3755,15 @@ export const bootstrapChatRoute = (
   };
   const renderCoordination = (): void => {
     if (disposed || !coordinationHost || !state.thread.session) return;
+    // Queue/delivery snapshots repaint this dock independently of the Chat
+    // render. Its height changes the transcript's viewport, so preserve the
+    // reading position from BEFORE the dock grows or disappears.
+    const scroller = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const scrollBefore = scroller != null && typeof scroller.scrollHeight === 'number'
+      ? { scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight }
+      : null;
     const session = state.thread.session.id;
     deliveryView.setMessages(session, state.thread.messages.filter(message => message.role === 'user' || message.role === 'assistant').map(message => message.id));
     const focused = doc.activeElement?.getAttribute('data-delivery-control');
@@ -3738,6 +3788,9 @@ export const bootstrapChatRoute = (
       clearChildren(host);
       const detail = id ? deliveryView.renderMessage(doc, session, id) : null;
       if (detail) host.appendChild(detail);
+    }
+    if (scroller != null && scrollBefore !== null) {
+      scroller.scrollTop = nextThreadScrollTop(scrollBefore, scroller.scrollHeight, scroller.clientHeight);
     }
     if (focused) restoreDeliveryFocus(focused, focusedMessage);
     else if (panelFocused) focusDeliveryPanel(false);
@@ -4868,11 +4921,6 @@ export const bootstrapChatRoute = (
   // after the swap — a collapse during streaming re-expands on the
   // authoritative row), survives re-renders, dies with the tab.
   const collapsedActivity = new Set<string>();
-  type DishPromotionState =
-    | { status: 'saving' }
-    | { status: 'saved'; dish_id: string }
-    | { status: 'error'; message: string };
-  const dishPromotions = new Map<string, DishPromotionState>();
 
   const renderActivity = (
     host: HTMLElement,
@@ -4903,59 +4951,61 @@ export const bootstrapChatRoute = (
         line.setAttribute(CHAT_ROUTE_ACTIVITY_ROW_ATTR, '');
         if (row.kind === 'tool') line.setAttribute('data-status', row.status);
         line.textContent = row.text;
-        if (row.kind === 'tool' && row.status === 'ok' && row.run_id !== undefined) {
-          const promotion = dishPromotions.get(row.run_id);
-          const standingDishId = row.dish_id
-            ?? (promotion?.status === 'saved' ? promotion.dish_id : undefined);
-          if (standingDishId !== undefined) {
-            const status = doc.createElement('span');
-            status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
-            status.setAttribute('data-dish-id', standingDishId);
-            status.textContent = row.dish_id !== undefined ? 'Standing dish' : 'Saved as dish';
-            line.appendChild(status);
-          } else if (row.dish_promotable === true) {
-            const promote = doc.createElement('button');
-            promote.type = 'button';
-            promote.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_PROMOTE_ATTR, '');
-            promote.setAttribute('data-run-id', row.run_id);
-            promote.disabled = promotion?.status === 'saving';
-            promote.textContent = promote.disabled ? 'Saving…' : 'Keep as dish';
-            promote.addEventListener('click', () => {
-              dishPromotions.set(row.run_id!, { status: 'saving' });
-              renderPreservingHandoffFocus();
-              void opts.conn('dishes.createFromRun', { run_id: row.run_id! }).then(
-                ({ dish }) => {
-                  if (disposed) return;
-                  dishPromotions.set(row.run_id!, {
-                    status: 'saved',
-                    dish_id: dish.dish_id,
-                  });
-                  renderPreservingHandoffFocus();
-                },
-                (error: unknown) => {
-                  if (disposed) return;
-                  dishPromotions.set(row.run_id!, {
-                    status: 'error',
-                    message: error instanceof Error ? error.message : String(error),
-                  });
-                  renderPreservingHandoffFocus();
-                },
-              );
-            });
-            line.appendChild(promote);
-            if (promotion?.status === 'error') {
-              const status = doc.createElement('span');
-              status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
-              status.setAttribute('data-status', 'error');
-              status.textContent = `Recued could not save the dish: ${promotion.message}`;
-              line.appendChild(status);
-            }
-          }
+        if (row.kind === 'tool' && row.status === 'ok' && row.run_id !== undefined && row.dish_id !== undefined) {
+          const status = doc.createElement('span');
+          status.setAttribute(CHAT_ROUTE_ACTIVITY_DISH_STATUS_ATTR, '');
+          status.setAttribute('data-dish-id', row.dish_id);
+          status.textContent = 'Standing dish';
+          line.appendChild(status);
         }
         block.appendChild(line);
       }
     }
     host.appendChild(block);
+  };
+
+  /** A late result under its answer: the recipe's own summary fields when it
+   *  has them, a plain message when it carries one, the raw body behind a second
+   *  disclosure either way — readable first, nothing dropped. */
+  const renderLateResult = (late: { run_id: string; tool_name: string; text: string }): HTMLElement => {
+    const block = doc.createElement('details');
+    block.setAttribute(CHAT_ROUTE_LATE_RESULT_ATTR, late.run_id);
+    const summary = doc.createElement('summary');
+    summary.textContent = `What ${late.tool_name} returned`;
+    block.appendChild(summary);
+    const readable = readToolResult(late.text);
+    if (readable.summary.length > 0) {
+      const list = doc.createElement('dl');
+      for (const field of readable.summary) {
+        const row = doc.createElement('div');
+        const label = doc.createElement('dt');
+        label.textContent = field.label;
+        const value = doc.createElement('dd');
+        value.textContent = field.value;
+        row.appendChild(label);
+        row.appendChild(value);
+        list.appendChild(row);
+      }
+      block.appendChild(list);
+    }
+    if (readable.message !== undefined) {
+      const note = doc.createElement('p');
+      note.textContent = readable.message;
+      block.appendChild(note);
+    }
+    const raw = doc.createElement('pre');
+    raw.textContent = readable.raw;
+    if (readable.summary.length === 0 && readable.message === undefined) {
+      block.appendChild(raw);
+    } else {
+      const technical = doc.createElement('details');
+      const technicalSummary = doc.createElement('summary');
+      technicalSummary.textContent = 'Technical details';
+      technical.appendChild(technicalSummary);
+      technical.appendChild(raw);
+      block.appendChild(technical);
+    }
+    return block;
   };
 
   const renderMessage = (
@@ -8201,8 +8251,25 @@ export const bootstrapChatRoute = (
     });
   })();
 
+  let renderedSessionId: string | null = null;
+  let followFirstTranscriptFor: string | null = null;
+
   const render = (): void => {
     if (disposed) return;
+    const sessionId = state.thread.session?.id ?? null;
+    const previousScroller = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    // Every full render replaces the scroller, including background reads
+    // that do not use the focus-preserving wrapper. Carry position only within
+    // the same session; explicit message landings and history paging still
+    // apply their own positioning after this render.
+    const scrollBefore = renderedSessionId === sessionId
+      && previousScroller != null && typeof previousScroller.scrollHeight === 'number'
+      ? { scrollTop: previousScroller.scrollTop, scrollHeight: previousScroller.scrollHeight,
+          clientHeight: previousScroller.clientHeight }
+      : null;
+    if (followFirstTranscriptFor !== sessionId) followFirstTranscriptFor = null;
     conversationFiles?.reconcile();
     reconcileLandingTarget();
     reconcileDataVerificationDiagnosis();
@@ -9003,14 +9070,41 @@ export const bootstrapChatRoute = (
           content: sourceTurn.question,
         });
       };
+      // A loaded conversation holds the stored tool rows; the live one does
+      // not. Fold each into the answer that lists it so both read the same.
+      const toolRows = planToolRows(state.thread.messages);
       for (const message of state.thread.messages) {
+        if (toolRows.folded.has(message.id)) continue;
         const sourceTurn = sourceTurnsByMessageId.get(message.id) ?? null;
         if (sourceTurn !== null) renderSourceQuestion(sourceTurn);
         const messageRow = renderMessage(
           messages,
-          message,
-          projectMessageActivity(message),
+          // A tool row no answer lists stays a row: a sentence, not its
+          // recall-format body (which goes behind the disclosure below).
+          message.role === 'tool' ? { ...message, content: describeToolRow(message) } : message,
+          projectMessageActivity(message, state.thread.tool_call_records),
         );
+        if (message.role === 'tool') {
+          const details = doc.createElement('details');
+          details.setAttribute(CHAT_ROUTE_TOOL_DETAILS_ATTR, message.id);
+          const summary = doc.createElement('summary');
+          summary.textContent = 'Details';
+          const raw = doc.createElement('pre');
+          raw.textContent = [message.content, toolRows.result_text_by_call.get(message.id)]
+            .filter((text): text is string => text !== undefined && text.length > 0).join('\n\n');
+          details.appendChild(summary);
+          details.appendChild(raw);
+          messageRow.appendChild(details);
+        }
+        for (const notice of projectSettledCallNotices(message, state.thread.tool_call_records)) {
+          const line = doc.createElement('p');
+          line.setAttribute(CHAT_ROUTE_CALL_SETTLED_ATTR, notice.run_id);
+          line.textContent = notice.text;
+          messageRow.appendChild(line);
+        }
+        for (const late of toolRows.late_results.get(message.id) ?? []) {
+          messageRow.appendChild(renderLateResult(late));
+        }
         if (state.thread.session && (message.role === 'user' || message.role === 'assistant')) {
           const deliveryHost = doc.createElement('div'); deliveryHost.setAttribute('data-chat-message-delivery', message.id);
           const detail = deliveryView.renderMessage(doc, state.thread.session.id, message.id);
@@ -9219,6 +9313,20 @@ export const bootstrapChatRoute = (
     shell.appendChild(thread);
 
     routeRoot.appendChild(shell);
+    renderedSessionId = sessionId;
+    const scroller = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (scroller != null && typeof scroller.scrollHeight === 'number') {
+      if (scrollBefore !== null) {
+        scroller.scrollTop = nextThreadScrollTop(scrollBefore, scroller.scrollHeight, scroller.clientHeight);
+      } else if (sessionId !== null && followFirstTranscriptFor === sessionId) {
+        // An empty Chat has no transcript at send time. Consume the send's
+        // follow intent when it first appears, under either ack/event order.
+        scroller.scrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      }
+      followFirstTranscriptFor = null;
+    }
   };
 
   /** Pull the page before the loaded window and put it in front.
@@ -9477,19 +9585,6 @@ export const bootstrapChatRoute = (
     const landingPlanFocused =
       highlightedPlanId !== null
       && activePlanCard?.getAttribute('data-plan-id') === highlightedPlanId;
-    const scroller = routeRoot.querySelector?.(
-      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
-    ) as HTMLElement | null | undefined;
-    const scrollBefore =
-      scroller === null
-      || scroller === undefined
-      || typeof scroller.scrollHeight !== 'number'
-        ? null
-        : {
-            scrollTop: scroller.scrollTop,
-            scrollHeight: scroller.scrollHeight,
-            clientHeight: scroller.clientHeight,
-          };
     const selectionStart = inputFocused ? input.selectionStart : null;
     const selectionEnd = inputFocused ? input.selectionEnd : null;
     const historySelectionStart = historySearchFocused
@@ -9502,22 +9597,6 @@ export const bootstrapChatRoute = (
       ? historySearch.selectionDirection
       : null;
     render();
-    if (scrollBefore !== null) {
-      const nextScroller = routeRoot.querySelector?.(
-        `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
-      ) as HTMLElement | null | undefined;
-      if (
-        nextScroller !== null
-        && nextScroller !== undefined
-        && typeof nextScroller.scrollHeight === 'number'
-      ) {
-        nextScroller.scrollTop = nextThreadScrollTop(
-          scrollBefore,
-          nextScroller.scrollHeight,
-          nextScroller.clientHeight,
-        );
-      }
-    }
     if (inputFocused) {
       focusComposer(true);
       const nextInput = routeRoot.querySelector?.(
@@ -11114,7 +11193,16 @@ export const bootstrapChatRoute = (
     // create — so a second click / Enter during create can't mint a second
     // session and dispatch a second turn (the draft Send is otherwise enabled).
     state = { ...state, sending: true, error: null };
-    render();
+    renderPreservingHandoffFocus();
+    // An explicit send (including a prepared investigation) follows the new
+    // turn. Do this once, before awaiting admission: later renders still hold
+    // the reader's position if they choose to scroll back while it runs.
+    const transcriptAtSend = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (transcriptAtSend != null && typeof transcriptAtSend.scrollHeight === 'number') {
+      transcriptAtSend.scrollTop = transcriptAtSend.scrollHeight;
+    }
     if (composerOwnedFocus) focusComposer(true, 'end');
 
     // Lazy session — a DRAFT thread (no active session) mints + opens its
@@ -11133,6 +11221,10 @@ export const bootstrapChatRoute = (
         }
         return;
       }
+    }
+    if (state.thread.session?.id === session.id
+      && routeRoot.querySelector?.(`[${CHAT_ROUTE_MESSAGES_ATTR}]`) == null) {
+      followFirstTranscriptFor = session.id;
     }
     const followupDraftEdited =
       connectedSourceFollowupDraft !== null
@@ -11182,7 +11274,8 @@ export const bootstrapChatRoute = (
         // draft is the owner's own request and runs as an ordinary turn.
         ...(workInvestigationDraft?.sessionId === session.id && workInvestigationDraft.message === message
           && replyAtSend === null && attachmentsAtSend.length === 0
-          ? { repeat: workInvestigationDraft.repeat !== false, read_only: true } : {}),
+          ? { repeat: workInvestigationDraft.repeat !== false, read_only: true,
+            ...(workInvestigationDraft.mailWork ? { mail_work: workInvestigationDraft.mailWork } : {}) } : {}),
         ...(replyAtSend ? { reply_to_message_id: replyAtSend.messageId } : {}),
         picker_state: session.picker_state,
         // D-172 P2 — finalized ids only; a climbing file cannot reach here
@@ -11406,6 +11499,7 @@ export const bootstrapChatRoute = (
       // The RPC did not confirm its turn id, so release the provisional
       // metadata. An already-adopted broadcast remains visible; otherwise the
       // handoff and original draft stay available for a clean retry.
+      if (followFirstTranscriptFor === session.id) followFirstTranscriptFor = null;
       pendingConnectedSourceAnswer = null;
       pendingConnectedSourceProvisionalTurnId = null;
       sendError = classifyRpcError(err);
@@ -11508,6 +11602,22 @@ export const bootstrapChatRoute = (
             // projections. Re-read them quietly so returning-user history
             // stays current across this tab and other paired clients.
             void loadSessions(true);
+          }
+          // A call that waited has settled, usually minutes after its reply and
+          // with no reply of its own: the server has just cleared the running
+          // note's "still to do" written around the wait. Read it again, or the
+          // panel keeps showing the queued call until the next reply.
+          if (
+            evt.kind === 'chat.session_changed'
+            && (event as { field?: unknown }).field === 'tool_call'
+            && evt.session_id === state.thread.session?.id
+          ) {
+            const call = (event as { value?: unknown }).value;
+            if (isChatToolCallRecord(call) && call.held_at !== undefined
+              && call.session_id === state.thread.session?.id
+              && call.state !== 'held' && call.state !== 'running') {
+              void loadCarriedBrief(call.session_id);
+            }
           }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;

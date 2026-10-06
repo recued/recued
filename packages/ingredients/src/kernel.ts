@@ -14,9 +14,10 @@
  *      dispatcher because its canonical free-form record shape is not a
  *      Phase-D collection mirror row.
  *    - Phase 6 (D-115): watcher ingredients — `time-watcher`,
- *      `recipe-watcher`, `http-watcher`, `mail-watcher`,
- *      `file-watcher`, `calendar-watcher`, `webhook-watcher`. One
- *      unified `watcher` dispatcher slot fans out on the slug so
+ *      `time-relative-watcher`, `http-watcher` (the mail, file,
+ *      calendar, webhook and recipe watchers were retired 2026-10-05
+ *      for event triggers, D-201 webhook triggers and `run.*` events).
+ *      One unified `watcher` dispatcher slot fans out on the slug so
  *      runtime wiring can mount a single handler for all reactive
  *      gates. Handlers return `TriggerOutput = { should_run, ... }`
  *      — the executor's trigger phase inspects `should_run` to
@@ -322,40 +323,38 @@ export type KernelCalendarMutationScope =
   | 'series';
 
 /** Known watcher slugs routed through the unified `watcher`
- *  dispatcher slot. See `watcherDispatchSlugs` below for the
- *  manifest-match set — any non-watcher slug that happens to start
- *  with one of these prefixes still falls through to its own switch
- *  arm (webhook-list vs webhook-watcher). */
+ *  dispatcher slot. ⛔ `mail-watcher`, `file-watcher`, `calendar-watcher`,
+ *  `webhook-watcher` and `recipe-watcher` were RETIRED 2026-10-05 (see
+ *  `kernel-op-registry.ts` § watch for what replaced each). */
 export type KernelWatcherSlug =
   | 'time-watcher'
-  | 'recipe-watcher'
   | 'http-watcher'
-  | 'mail-watcher'
-  | 'file-watcher'
-  | 'calendar-watcher'
-  | 'webhook-watcher'
   | 'time-relative-watcher';
 
 /** ⛔⛔ THE WATCHERS THAT KEY PER-RECIPE STATE, and therefore require an
  *  ENGINE-OWNED recipe identity rather than an authored one.
  *
- *    webhook-watcher       — its per-`(recipe_id, slug)` queue, which `drain()`
- *                            DELETES as it returns.
  *    time-relative-watcher — its durable firing ledger.
+ *    http-watcher          — the page it remembers with `once_per_change`,
+ *                            held per recipe and address until the run that
+ *                            reported it settles, so it takes the RUN id from
+ *                            the step's metadata as well.
  *
  *  Two consumers, and they must never drift apart:
  *    1. The kernel adapter (below) OVERWRITES `args.recipe_id` from
  *       `stepMeta.recipe_id` for exactly these slugs, so a recipe can only ever
  *       touch its own state.
- *    2. `runtime.runWatcher` (backend `watcher-rpc-handler.ts`) REFUSES exactly
- *       these slugs, because that transport is a thin pass-through with no
- *       engine context — it cannot supply the identity, so it must not pretend
- *       to. A caller there could otherwise name another recipe's queue and both
- *       read its contents (headers, body, source IP) and destroy them.
+ *    2. `runtime.testTrigger` (backend `trigger-test-rpc-handler.ts`) REFUSES
+ *       exactly these slugs, because that transport has no engine context — it
+ *       cannot supply the identity, so it must not pretend to. (`runtime.
+ *       runWatcher`, the other such door, was retired 2026-10-05 with the
+ *       watchers the extension had forwarded through it.)
  *
- *  ⚠ The other six take explicit args and mutate nothing, so they stay
- *  forwardable. This is not "watchers are dangerous"; it is "state keyed by an
- *  identity the caller supplies is only as trustworthy as the caller". */
+ *  ⚠ `time-watcher` takes explicit args and mutates nothing. This is not
+ *  "watchers are dangerous"; it is "state keyed by an identity the caller
+ *  supplies is only as trustworthy as the caller". (The webhook watcher's
+ *  queue, which a caller-named id could read and EMPTY, was the case that
+ *  found this, D-228 2026-07-31; it was retired 2026-10-05.) */
 /** D-120 provenance stamping — the engine is the authority for WHO wrote an
  *  annotation / link / enrichment and under WHICH recipe shape, so the kernel
  *  write adapters take those two from `StepMeta` and fall back to the caller's
@@ -378,8 +377,10 @@ const stampedRecipeId = <T>(
 
 
 export const RECIPE_KEYED_WATCHER_SLUGS: ReadonlySet<KernelWatcherSlug> = new Set([
-  'webhook-watcher',
   'time-relative-watcher',
+  // `once_per_change` (2026-10-05): the page it last reported, per recipe and
+  // address. A step without the flag keeps no state, and the id is unused.
+  'http-watcher',
 ]);
 
 /** Minimum envelope watcher handlers return. `should_run` is the AND-
@@ -462,15 +463,6 @@ export interface ReceptionMaterializeInput {
 export interface ReceptionMaterializeResult {
   top_tier_kind: ReceptionMaterializeKind;
   target_id: string;
-}
-
-export interface KernelScheduleRecipeInput {
-  recipe_id: string;
-  mode: 'one_shot' | 'recurring';
-  run_at?: number;
-  cron_expression?: string;
-  dish_id?: string;
-  enabled?: boolean;
 }
 
 export interface KernelSellerOfferEnsureInput {
@@ -1070,14 +1062,16 @@ export interface KernelDispatchers {
   /** Backs `calendar-list`. Returns hot-field rows ordered by
    *  `start_at` ascending. */
   calendarList?: (input: {
-    slug: string;
+    /** Empty or absent: every calendar, each row naming its own
+     *  (`collection_slug`). */
+    slug?: string;
     calendar_id?: string;
     since?: number;
     until?: number;
     status?: 'confirmed' | 'cancelled' | 'tentative';
     limit?: number;
   }) => Promise<{
-    records: KernelCalendarHotFields[];
+    records: Array<KernelCalendarHotFields & { collection_slug?: string }>;
     source_freshness?: CollectionSourceFreshness;
   }>;
 
@@ -1494,14 +1488,6 @@ export interface KernelDispatchers {
     failed_to: number;
     coalesced: true;
     skipped_reason: string | null;
-  }>;
-
-  /** D-193 — backs `schedule-recipe`. Creates a server-owned schedule
-   *  for an already-installed recipe only. The dispatcher wires the
-   *  local RecipeStore + ScheduleStore, so inline recipe JSON is not a
-   *  supported input path. */
-  scheduleRecipe?: (input: KernelScheduleRecipeInput) => Promise<{
-    schedule: unknown;
   }>;
 
   /** D-261: the source comes from trusted engine metadata, never the payload.
@@ -3136,17 +3122,11 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
 
       // D-115 Phase 6 — watcher ingredients. One kernel slot handles
       // every watcher slug; the handler inspects `input.slug` + `input.args`
-      // to pick the concrete gate logic (warehouse / audit / HTTP /
-      // time / webhook). Absent handler surfaces as
-      // SERVER_NOT_REACHABLE so reactive recipes fail cleanly in
-      // runtimes that haven't wired watcher dispatch yet.
+      // to pick the concrete gate logic (time / time-relative / HTTP).
+      // Absent handler surfaces as SERVER_NOT_REACHABLE so reactive recipes
+      // fail cleanly in runtimes that haven't wired watcher dispatch yet.
       case 'time-watcher':
-      case 'recipe-watcher':
       case 'http-watcher':
-      case 'mail-watcher':
-      case 'file-watcher':
-      case 'calendar-watcher':
-      case 'webhook-watcher':
       case 'time-relative-watcher': {
         if (!dispatchers.watcher) {
           throw new IngredientError(
@@ -3163,30 +3143,30 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         // metadata is present it must win over authored input.
         //
         //   time-relative-watcher — its durable firing ledger.
-        //   webhook-watcher       — ⛔⛔ its per-`(recipe_id, slug)` queue, which
-        //     `drain()` DELETES as it returns. Added 2026-07-31 after a Codex
-        //     review: `recipe_id` was caller-supplied and unchecked, so any
-        //     recipe could name ANOTHER recipe's queue and both READ its
-        //     contents (headers, body, source IP — including authorization and
-        //     signature headers) and DESTROY them, leaving the owning recipe to
-        //     miss those deliveries permanently. One trigger silently eating
-        //     another's webhooks is close to undiagnosable from the outside.
+        //   http-watcher          — the page it remembers (`once_per_change`).
         //
-        // ⚠ The DESTRUCTIVE drain itself is correct and stays: it is the
-        // at-most-once consume that stops a webhook re-firing on every tick.
-        // What was wrong is WHOSE queue a caller could name. With identity
-        // bound to the executing recipe, a recipe can only drain its own —
-        // `slug` stays authored because the hook path is `/hook/{recipe_id}/
-        // {slug}`, so it is already fenced inside the recipe's own namespace.
+        // Added 2026-07-31 after a Codex review found the webhook watcher's
+        // queue (retired 2026-10-05) could be named, read and EMPTIED by any
+        // recipe that wrote another recipe's id.
         // ⚠ DERIVED from `RECIPE_KEYED_WATCHER_SLUGS`, never re-listed here — the
-        // rpc handler refuses the same set, and a hand-copied list is how the
-        // two halves of one rule drift apart.
+        // test-trigger rpc refuses the same set, and a hand-copied list is how
+        // the two halves of one rule drift apart.
         if (
           RECIPE_KEYED_WATCHER_SLUGS.has(slug as KernelWatcherSlug)
           && typeof call.stepMeta?.recipe_id === 'string'
           && call.stepMeta.recipe_id.length > 0
         ) {
           args.recipe_id = call.stepMeta.recipe_id;
+        }
+        // The page watcher holds the page a fire reported until the run that
+        // reported it settles (`once_per_change`), so the run is engine-owned
+        // too: from the step's metadata, never from the recipe's own args.
+        if (slug === 'http-watcher') {
+          if (typeof call.stepMeta?.run_id === 'string' && call.stepMeta.run_id.length > 0) {
+            args.run_id = call.stepMeta.run_id;
+          } else {
+            delete args.run_id;
+          }
         }
         return dispatchers.watcher({
           slug: slug as KernelWatcherSlug,
@@ -4152,75 +4132,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ...(ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {}),
           source_recipe_id: sourceRecipeId,
         });
-      }
-
-      case 'schedule-recipe': {
-        if (!dispatchers.scheduleRecipe) {
-          throw new IngredientError(
-            'SERVER_NOT_REACHABLE',
-            `schedule-recipe unavailable — no paired server or schedule dispatcher`,
-            { slug },
-          );
-        }
-        const input = call.input as {
-          recipe_id?: unknown;
-          mode?: unknown;
-          run_at?: unknown;
-          cron_expression?: unknown;
-          dish_id?: unknown;
-          enabled?: unknown;
-        };
-        if (typeof input.recipe_id !== 'string' || input.recipe_id.length === 0) {
-          throw new IngredientError('BAD_INPUT', 'schedule-recipe: recipe_id is required', { slug });
-        }
-        if (input.mode !== 'one_shot' && input.mode !== 'recurring') {
-          throw new IngredientError(
-            'BAD_INPUT',
-            "schedule-recipe: mode must be 'one_shot' or 'recurring'",
-            { slug },
-          );
-        }
-        if (
-          input.mode === 'one_shot' &&
-          (typeof input.run_at !== 'number' || !Number.isFinite(input.run_at) || input.run_at <= 0)
-        ) {
-          throw new IngredientError(
-            'BAD_INPUT',
-            'schedule-recipe: run_at must be a positive Unix-ms timestamp for one_shot schedules',
-            { slug },
-          );
-        }
-        if (
-          input.mode === 'recurring' &&
-          (typeof input.cron_expression !== 'string' || input.cron_expression.trim().length === 0)
-        ) {
-          throw new IngredientError(
-            'BAD_INPUT',
-            'schedule-recipe: cron_expression is required for recurring schedules',
-            { slug },
-          );
-        }
-        if (
-          input.dish_id !== undefined &&
-          input.dish_id !== '' &&
-          (typeof input.dish_id !== 'string' || input.dish_id.length === 0)
-        ) {
-          throw new IngredientError('BAD_INPUT', 'schedule-recipe: dish_id must be a non-empty string', { slug });
-        }
-        if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
-          throw new IngredientError('BAD_INPUT', 'schedule-recipe: enabled must be boolean when provided', { slug });
-        }
-        const dispatchInput: KernelScheduleRecipeInput = {
-          recipe_id: input.recipe_id,
-          mode: input.mode,
-        };
-        if (typeof input.run_at === 'number') dispatchInput.run_at = input.run_at;
-        if (typeof input.cron_expression === 'string' && input.cron_expression.length > 0) {
-          dispatchInput.cron_expression = input.cron_expression;
-        }
-        if (typeof input.dish_id === 'string' && input.dish_id.length > 0) dispatchInput.dish_id = input.dish_id;
-        if (typeof input.enabled === 'boolean') dispatchInput.enabled = input.enabled;
-        return dispatchers.scheduleRecipe(dispatchInput);
       }
 
       case 'seller-offer-ensure': {

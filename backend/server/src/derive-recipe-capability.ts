@@ -36,6 +36,7 @@
  *  Pure: no I/O, no clock. Spec: D-207 §5.1a / §5.1d. */
 
 import { kernelOpForBackingSlug, parseOpId, type RecipeDefinition } from '@recued/contracts';
+import { extractVariableDefault } from '@recued/engine';
 
 /** The authority surface of a recipe — exactly the axes `ContractScope` stores. */
 export interface RecipeCapability {
@@ -105,7 +106,7 @@ const asRecord = (v: unknown): Record<string, unknown> | undefined =>
 
 /** Resolve `{{config.x.y}}` against the RESOLVED INSTALL CONFIG.
  *
- *  ⚠ NOT against `recipe.variables`. A Recipe is a PURE PAPER RECORD (D-179): its
+ *  ⚠ NOT against `recipe.variables` ALONE. A Recipe is a PURE PAPER RECORD (D-179): its
  *  `variables` block DECLARES the config keys (usually `null` = "required from caller"),
  *  it does not hold their values. The values live in the DISH's `config_overlay` — the
  *  execute-handler feeds `config: { ...installDish.config_overlay, ...request.config }`.
@@ -115,7 +116,11 @@ const asRecord = (v: unknown): Record<string, unknown> | undefined =>
  *
  *  The caller therefore supplies the resolved config. A reception run's config comes
  *  from the installed dish, never from the visitor, so a config-rooted connection ref IS
- *  static — it just needs the right lookup table. */
+ *  static — it just needs the right lookup table.
+ *
+ *  ⛔ AND THE TABLE IS THE ONE THE RUN READS: the dish OVER the variable defaults
+ *  ({@link effectiveConfig}). Reading the dish alone refused a connection the run was
+ *  certain to use. */
 const resolveConfigPath = (
   config: Record<string, unknown> | undefined,
   path: string,
@@ -129,6 +134,36 @@ const resolveConfigPath = (
   return cur;
 };
 
+/** The config a run of this recipe resolves `{{config.*}}` against: the given config
+ *  (the dish's) OVER each variable's declared default.
+ *
+ *  ⛔⛔ WHY THE DEFAULTS. The engine fills every variable the config leaves unset from
+ *  its declared default before the first step runs (`execute.ts`, "Populate config from
+ *  recipe variables"), so a connection slot whose variable has a literal default is
+ *  DECIDED before any dish exists. Resolving against the dish alone refused it as
+ *  `dynamic_connection` — and a fresh pack install has no dish yet, so the pack's
+ *  webhook door was never minted and every delivery was refused, for a recipe whose run
+ *  would have used exactly that connection (found 2026-10-04 with Home Assistant's
+ *  `home-assistant` default). The door must be derived from the config the run will
+ *  actually use, and this is that config.
+ *
+ *  ⚠ Layered exactly as the engine does: a key the config sets — even to `null` or
+ *  `undefined` — wins over the default, and a null or empty default resolves to nothing,
+ *  so the 748-of-933 recipes whose connection setting is blank still refuse until the
+ *  owner fills it. */
+const effectiveConfig = (
+  recipe: RecipeDefinition,
+  config: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined => {
+  const defaults: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(recipe.variables ?? {})) {
+    const fallback = extractVariableDefault(value);
+    if (fallback !== undefined) defaults[key] = fallback;
+  }
+  if (Object.keys(defaults).length === 0) return config;
+  return { ...defaults, ...(config ?? {}) };
+};
+
 /** Every step across ALL THREE lists. The completeness the whole slice rests on. */
 const allSteps = (recipe: RecipeDefinition): ReadonlyArray<Record<string, unknown>> => [
   ...((recipe.prefetch_steps ?? []) as unknown as Record<string, unknown>[]),
@@ -140,10 +175,11 @@ const allSteps = (recipe: RecipeDefinition): ReadonlyArray<Record<string, unknow
 export const deriveRecipeCapability = (
   recipe: RecipeDefinition,
   opts?: {
-    /** The RESOLVED install config (the dish's `config_overlay`). Absent ⇒ an
-     *  unconfigured recipe: every `{{config.*}}` connection refuses, which is correct —
-     *  an unconfigured recipe cannot back a public door, because which credential it
-     *  would reach for is not yet decided. */
+    /** The RESOLVED install config (the dish's `config_overlay`). The recipe's variable
+     *  defaults are layered UNDER it ({@link effectiveConfig}). Absent, with no default
+     *  either ⇒ an unconfigured recipe: its `{{config.*}}` connection refuses, which is
+     *  correct — an unconfigured recipe cannot back a public door, because which
+     *  credential it would reach for is not yet decided. */
     readonly config?: Record<string, unknown>;
     readonly resolveOp?: OpResolver;
   },
@@ -159,7 +195,7 @@ export const deriveRecipeCapability = (
   const noteOp = (opId: string, stepId: string): void => {
     if (!(opId in opSteps)) opSteps[opId] = stepId;
   };
-  const config = asRecord(opts?.config);
+  const config = effectiveConfig(recipe, asRecord(opts?.config));
 
   for (const step of allSteps(recipe)) {
     const stepId = isNonEmptyString(step.id) ? step.id : '<unnamed>';
@@ -265,11 +301,16 @@ export const deriveResolvedRecipeCapability = (
   dispatchRecipe: RecipeDefinition,
   opts?: Parameters<typeof deriveRecipeCapability>[1],
 ): RecipeCapabilityDerivation => {
-  const authored = deriveRecipeCapability(authoredRecipe, opts);
+  // The AUTHORED recipe's defaults ride into both derivations: lowering is free to
+  // rebuild a recipe, and the dispatch form must resolve the same connection the
+  // authored one does, or a door would derive from two different configs.
+  const config = effectiveConfig(authoredRecipe, asRecord(opts?.config));
+  const resolvedOpts = { ...opts, ...(config === undefined ? {} : { config }) };
+  const authored = deriveRecipeCapability(authoredRecipe, resolvedOpts);
   if (!authored.ok) return authored;
   const dispatch = dispatchRecipe === authoredRecipe
     ? authored
-    : deriveRecipeCapability(dispatchRecipe, opts);
+    : deriveRecipeCapability(dispatchRecipe, resolvedOpts);
   if (!dispatch.ok) return dispatch;
 
   const operationSteps: Record<string, string> = { ...authored.capability.operation_steps };

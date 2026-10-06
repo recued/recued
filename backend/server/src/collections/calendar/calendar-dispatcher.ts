@@ -3,7 +3,8 @@
  *  Eight kernel ingredients route through this module:
  *
  *    Reads (warehouse-only — adapter never consulted):
- *      calendar-list   → table.list({ start_since, start_until, … })
+ *      calendar-list   → table.list({ start_since, start_until, … }), of
+ *                        every calendar when it names none
  *      calendar-get    → table.get(source_id)
  *      calendar-search → table.search({ query, limit })
  *      calendar-stat   → table.stat(source_id)
@@ -38,7 +39,7 @@
  *  sync tick to reconcile whatever actually landed on the provider.
  */
 
-import { collectionSourceFreshnessOf, RpcError } from '@recued/contracts';
+import { collectionSourceFreshnessOf, deriveCollectionSourceFreshness, RpcError } from '@recued/contracts';
 import type { CollectionSourceFreshness } from '@recued/contracts';
 import type {
   CalendarCollectionCaps,
@@ -55,6 +56,7 @@ import {
 import { CalendarAdapterError } from '@recued/contracts';
 import { callCalendarAdapter } from './errors.js';
 import type { CalendarCollection } from './calendar-collection.js';
+import { calendarListLimit, type CalendarListQuery } from './calendar-table.js';
 import type {
   CalendarMutationScope,
   CreateEventInput,
@@ -139,10 +141,62 @@ const requireWrite = (
 // Read handlers
 // ────────────────────────────────────────────────────────────────
 
+/** The verdict for a read across several calendars: as current as the least
+ *  current of them. A calendar not running counts as never synced. */
+const leastCurrent = (
+  verdicts: readonly CollectionSourceFreshness[],
+  now: number,
+): CollectionSourceFreshness => {
+  if (verdicts.length === 0) return deriveCollectionSourceFreshness(null, now);
+  const neverSynced = verdicts.some((verdict) => verdict.last_success_at === null);
+  return {
+    last_success_at: neverSynced ? null : Math.min(...verdicts.map((verdict) => verdict.last_success_at!)),
+    age_ms: neverSynced ? null : Math.max(...verdicts.map((verdict) => verdict.age_ms!)),
+    degraded: verdicts.some((verdict) => verdict.degraded),
+    pending: verdicts.reduce((total, verdict) => total + verdict.pending, 0),
+    stale: verdicts.some((verdict) => verdict.stale),
+  };
+};
+
+/** Every calendar's events (2026-10-05), for a list that names no calendar.
+ *
+ *  Eight shipped recipes defaulted their calendar to `primary` and read it
+ *  here, and a server has no calendar by that name unless one was enrolled so:
+ *  every run failed on `CALENDAR_INSTANCE_NOT_FOUND`, `today` (pre-installed)
+ *  among them. The default calendar is `local`, and an owner may have several.
+ *  Rows come in start order, each carrying the calendar it is in
+ *  (`collection_slug`, as the cross-instance reads carry it), cut to the same
+ *  limit one calendar's read is. An event on two calendars is listed for each. */
+const listEveryCalendar = (
+  deps: CalendarDispatcherDeps,
+  query: CalendarListQuery,
+  now: number,
+): { records: Array<CalendarRecordHotFields & { collection_slug: string }>; source_freshness: CollectionSourceFreshness } => {
+  const slugs = deps.instances.list('calendar').map((row) => row.slug).sort();
+  const records: Array<CalendarRecordHotFields & { collection_slug: string }> = [];
+  const verdicts: CollectionSourceFreshness[] = [];
+  for (const slug of slugs) {
+    const collection = deps.getCollection(slug);
+    if (collection === undefined) {
+      verdicts.push(deriveCollectionSourceFreshness(null, now));
+      continue;
+    }
+    for (const record of collection.table.list(query)) records.push({ ...record, collection_slug: slug });
+    verdicts.push(collectionSourceFreshnessOf(collection.health, now));
+  }
+  // Stable: a tie keeps calendar order, then each calendar's own order.
+  records.sort((a, b) => a.start_at - b.start_at);
+  return {
+    records: records.slice(0, calendarListLimit(query.limit)),
+    source_freshness: leastCurrent(verdicts, now),
+  };
+};
+
 export const handleCalendarList = async (
   deps: CalendarDispatcherDeps,
   input: {
-    slug: string;
+    /** The calendar to read. Empty or absent: every calendar. */
+    slug?: string;
     calendar_id?: string;
     since?: number;
     until?: number;
@@ -150,17 +204,21 @@ export const handleCalendarList = async (
     limit?: number;
   },
 ): Promise<{
-  records: CalendarRecordHotFields[];
+  records: Array<CalendarRecordHotFields & { collection_slug?: string }>;
   source_freshness: CollectionSourceFreshness;
 }> => {
-  const { collection } = requireRead(deps, input.slug);
-  const records = collection.table.list({
+  const query: CalendarListQuery = {
     ...(input.calendar_id !== undefined ? { calendar_id: input.calendar_id } : {}),
     ...(input.since !== undefined ? { start_since: input.since } : {}),
     ...(input.until !== undefined ? { start_until: input.until } : {}),
     ...(input.status !== undefined ? { status: input.status } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
-  });
+  };
+  if (input.slug === undefined || input.slug === '') {
+    return listEveryCalendar(deps, query, (deps.now ?? Date.now)());
+  }
+  const { collection } = requireRead(deps, input.slug);
+  const records = collection.table.list(query);
   // D-236 — calendar has its OWN kernel ingredients and its own dispatcher, so
   // it does NOT ride the `collection.list` path the mail/file/webhook verdict
   // travels. Its `health()` supplies the same fields (`last_indexed_at` is the

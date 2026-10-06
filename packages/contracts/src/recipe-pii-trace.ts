@@ -130,6 +130,21 @@ export interface PiiEgressSource {
   profile: Readonly<Record<string, readonly EntityFieldPrivacy[]>>;
 }
 
+/** A free-text (`content`) path that a legacy bare-name `pii_fields` entry covers —
+ *  names the field itself or a field above it. The step-level hash aliases nothing
+ *  INSIDE text: it swaps every value under the name for a `HASH_STEP_<n>` token, so
+ *  the model gets a token it cannot read in place of the text. It runs at dispatch,
+ *  before the AI executor, so an `llm.pii_fields` `content` tag on the same path
+ *  finds only the token. */
+export interface PiiLegacyContentPath {
+  /** The model-bound input key. */
+  input_key: string;
+  /** Dot-path within that input's value (may carry `[]` list segments). */
+  path: string;
+  /** The `pii_fields` entry that covers it — the outermost named key on the path. */
+  entry: string;
+}
+
 export interface PiiEgressFinding {
   step_id: string;
   /** The ai-* ingredient slug. */
@@ -160,6 +175,10 @@ export interface PiiEgressFinding {
   /** Flow opacity reached this call (true whenever `untraced` taint arrived,
    *  regardless of verdict — a concrete leak verdict can carry it too). */
   untraced: boolean;
+  /** Free-text paths a legacy bare-name `pii_fields` entry covers (see
+   *  {@link PiiLegacyContentPath}) — credited as covered above, but what the model
+   *  then gets is a token in place of the text. */
+  legacy_content: readonly PiiLegacyContentPath[];
 }
 
 export interface PiiUntracedStep {
@@ -855,8 +874,9 @@ export const tracePiiFlow = (
         return out;
       }
       case 'hash_replace': {
-        // Runtime deepReplace hashes only LISTED bare key names (any depth);
-        // a path-form entry never matches, a non-array `fields` is a no-op.
+        // Runtime deepReplace hashes everything under a LISTED bare key name (any
+        // depth), so a path is covered when any key along it is listed; a
+        // path-form entry never matches, a non-array `fields` is a no-op.
         const dataTaint = valueTaint(s.data, itemProfile);
         const bareNames = new Set(
           Array.isArray(s.fields)
@@ -867,8 +887,9 @@ export const tracePiiFlow = (
         );
         const hashed = empty();
         for (const [path, kinds] of dataTaint) {
-          const last = path.split('.').at(-1) ?? path;
-          const covered = bareNames.has(last);
+          const covered = path.split('.').some(
+            (seg) => seg !== PII_LIST_SEGMENT && bareNames.has(seg),
+          );
           hashed.set(
             path,
             new Set(
@@ -979,8 +1000,9 @@ export const tracePiiFlow = (
 
       // Declared protections.
       // legacy step-level pii_fields: hash_replace deep-matches BARE key names
-      // at any depth; a path-form entry ('contacts[].email', 'a.b') matches
-      // nothing (validate-pii reports those as ineffective).
+      // at any depth and hashes everything under each; a path-form entry
+      // ('contacts[].email', 'a.b') matches nothing (validate-pii reports those
+      // as ineffective).
       const legacyBareNames = new Set(
         Array.isArray(s.pii_fields)
           ? s.pii_fields.filter(
@@ -997,6 +1019,7 @@ export const tracePiiFlow = (
       const batchActive = typeof idField === 'string' && idField !== '';
 
       const uncovered: PiiUncoveredPath[] = [];
+      const legacyContent: PiiLegacyContentPath[] = [];
       for (const [key, taint] of perKey) {
         for (const [path, kinds] of taint) {
           const raw = [...kinds].filter(
@@ -1004,9 +1027,14 @@ export const tracePiiFlow = (
           );
           if (raw.length === 0) continue;
           const segs = path.split('.');
-          // legacy deepReplace descends arrays — match the bare KEY name
-          const lastSegment =
-            segs.filter((sgm) => sgm !== PII_LIST_SEGMENT).at(-1) ?? path;
+          // The step-level hash replaces EVERYTHING under a named key, so any key
+          // along the path covers it. The outermost one is the key the hash hits
+          // first. ⛔ It used to be the LAST key only, for a walk that left a list
+          // under a named key in clear — mail `to` / `cc`, which the classifier
+          // profiles as plain paths, read covered while every address went out.
+          const namedSegment = segs.find(
+            (sgm) => sgm !== PII_LIST_SEGMENT && legacyBareNames.has(sgm),
+          );
           // llm.pii_fields walks EXACT dot-paths (`getAtPath`): no recursive
           // root coverage, no crossing a `[]` boundary — except item-relative
           // tags over a top-level batch list.
@@ -1020,7 +1048,12 @@ export const tracePiiFlow = (
             && (!isBatchPath || batchActive)
             && tagWalkable
             && declaredPaths.has(tagPath);
-          const covered = piiFieldsCovered || legacyBareNames.has(lastSegment);
+          const covered = piiFieldsCovered || namedSegment !== undefined;
+          // Recorded even where `llm.pii_fields` also tags it: the step-level hash
+          // runs first, at dispatch, so the content tag would only see the token.
+          if (raw.includes('content') && namedSegment !== undefined) {
+            legacyContent.push({ input_key: key, path, entry: namedSegment });
+          }
           if (!covered) {
             uncovered.push({
               input_key: key,
@@ -1066,6 +1099,7 @@ export const tracePiiFlow = (
           batch: batchActive,
         },
         untraced,
+        legacy_content: legacyContent,
       });
 
       // The model may echo any (restored) input value into any output field:
@@ -1143,9 +1177,6 @@ export interface PiiInjectionGap {
      *  cross (and the step is not an authored batch call) — the fix is an
      *  upstream `pii-protect` over the list itself. */
     | 'list_crossing'
-    /** Only `content`-kind taint is uncovered and nothing seeds the run
-     *  ledger — a content scan with no seeded identifiers protects nothing. */
-    | 'content_without_identifier_seed'
     /** Flow opacity — `pii_untraced` (nothing concrete to cover). */
     | 'untraced';
 }
@@ -1201,21 +1232,11 @@ export const deriveAutoPiiFieldInjections = (
       const identifier = u.kinds.find((k) => k !== 'content');
       fields[tagPath] = identifier ?? 'content';
     }
-    // A content tag protects only what the identifier pass seeded into the
-    // run ledger — content-only injections with no identifier seed (neither
-    // injected nor authored) are decorative; surface the gap instead.
-    const injectedIdentifierSeed = Object.values(fields).some((k) => k !== 'content');
-    const authoredIdentifierSeed = Object.values(f.declared.llm_pii_fields).some(
-      (k) => k !== 'content',
-    );
-    if (!injectedIdentifierSeed && !authoredIdentifierSeed) {
-      gaps.push({
-        step_id: f.step_id,
-        slug: f.slug,
-        reason: 'content_without_identifier_seed',
-      });
-      continue;
-    }
+    // A content-only injection is injected too (owner ruling, 2026-10-05). A
+    // content tag hides what the identifier pass seeded plus — on a server —
+    // the warehouse's known contacts and every email in the text (D-316
+    // amendment), so it is no longer decorative. It still misses identifiers
+    // the warehouse lacks; the posture summary says exactly what it hides.
     injections.push({ step_id: f.step_id, slug: f.slug, fields });
   }
   return { injections, gaps };

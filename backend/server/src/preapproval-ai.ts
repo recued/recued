@@ -36,7 +36,9 @@ export const createPreapprovalAi = (deps: { db: Database.Database; executor: Ser
         input = { ...input, 'llm.data': `[${part.type}: ${file.filename}]`, 'llm.content_parts': [part] };
       }
     }
-    const prepared = prepareLLMInput(call.manifest, input);
+    // The executor's own known-value matcher: the request reviewed here must be
+    // the one `executeLLM` builds, alias for alias (`beforeAiProvider` compares).
+    const prepared = prepareLLMInput(call.manifest, input, deps.executor.piiKnownValues);
     if (prepared.empty) return fail('This empty AI batch has no future provider operation to approve.');
     const existing = context.plan?.members.find(member => preapprovalPathKey(member.invocation_path) === preapprovalPathKey(call.path));
     const expected = readReviewedAiSnapshot(existing?.dispatch_snapshot);

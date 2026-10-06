@@ -74,6 +74,27 @@ describe('buildContractedPrompt', () => {
     expect(messages[0].content).toContain('email');
   });
 
+  // ⛔ ai-extract accepted llm.context and never read it: the producers that steer
+  // extraction with it (role, company, related_threads, topic_cluster) sent the model
+  // none of it.
+  it('ai-extract puts llm.context between the fields and the data, in both modes', () => {
+    const single = buildContractedPrompt('ai-extract', {
+      'llm.data': { body: 'Thanks — Dana' },
+      'llm.fields': ['title'],
+      'llm.context': 'Only a title the signature names.',
+    });
+    expect(single[1].content).toBe(
+      'Fields: ["title"]\n\nContext:\nOnly a title the signature names.\n\nData:\n{\n  "body": "Thanks — Dana"\n}',
+    );
+    const batch = buildContractedPrompt('ai-extract', {
+      'llm.data': [{ id: 'r1', body: 'x' }],
+      'llm.id_field': 'id',
+      'llm.fields': ['title'],
+      'llm.context': 'Only a title the signature names.',
+    });
+    expect(batch[1].content).toMatch(/^Fields: \["title"\]\n\nContext:\nOnly a title the signature names\.\n\nRecords:\n/);
+  });
+
   it('ai-summarize honors max_length and focus', () => {
     const messages = buildContractedPrompt('ai-summarize', {
       'llm.data': 'long text',

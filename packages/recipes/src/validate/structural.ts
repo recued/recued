@@ -30,6 +30,7 @@ import {
   OPS,
   parseOpId,
   PAID_DOCUMENT_DIRECT_CHECKOUT_CONFIGURATION_METADATA_KEY,
+  eventPatternSettings,
   recipeEventTriggerNotes,
   resolvePaidDocumentDirectCheckoutClaimConfiguration,
   validateRecipeEventTriggerEntry,
@@ -53,6 +54,7 @@ import {
 import { TRANSFORM_SCHEMAS, applyValueParam } from '@recued/transforms';
 import { connectionVariableNames } from '../connection-agnostic.js';
 import { OP_STEP_CONNECTION_REF_REGEX, parseOpStepConnectionRef } from '../connection-agnostic-paths.js';
+import { aiStepDispatch } from '../step-dispatch.js';
 import {
   AUTHOR_PLACEHOLDERS,
   KNOWN_PLATFORMS,
@@ -406,7 +408,11 @@ export const validateAutoRun = (r: Record<string, unknown>, add: AddFn): void =>
  *    - `event_trigger_entry_invalid` — one issue per entry problem.
  *    - `event_trigger_mail_fact_unknown` (warn) — D-315: a mail-fact trigger
  *      watches something no built-in kind of email has. A kind the owner
- *      makes may have it, so it is not refused; it starts for no one else. */
+ *      makes may have it, so it is not refused; it starts for no one else.
+ *    - `event_trigger_setting_optional` (warn) — a raw pattern's part comes
+ *      from a setting a dish may leave empty; that dish's trigger then starts
+ *      on nothing (`patternSettingFindings`). A setting the recipe does not
+ *      declare is an `event_trigger_entry_invalid`. */
 export const validateEventTriggers = (r: Record<string, unknown>, add: AddFn): void => {
   if (r.event_triggers === undefined) return;
   if (!Array.isArray(r.event_triggers)) {
@@ -423,7 +429,40 @@ export const validateEventTriggers = (r: Record<string, unknown>, add: AddFn): v
     }
     const problem = templateVariableProblem(r.event_triggers[i], r.variables);
     if (problem !== null) add('error', 'event_trigger_entry_invalid', `event_triggers[${i}].template_variable`, problem);
+    for (const finding of patternSettingFindings(r.event_triggers[i], r.variables)) {
+      add(finding.severity, finding.severity === 'error' ? 'event_trigger_entry_invalid' : 'event_trigger_setting_optional',
+        `event_triggers[${i}].event`, finding.message);
+    }
   }
+};
+
+/** A raw pattern's setting part (`data.file.{{config.file_slug}}.*.created`)
+ *  names one of this recipe's settings: one it does not declare holds nothing
+ *  on any dish, so no dish would get the row. A setting a dish may leave empty
+ *  is a note: that dish's trigger starts on nothing until it is set. */
+const patternSettingFindings = (
+  entry: unknown,
+  variables: unknown,
+): Array<{ severity: 'error' | 'warn'; message: string }> => {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return [];
+  const event = (entry as { event?: unknown }).event;
+  if (typeof event !== 'string') return [];
+  const declared = variables !== null && typeof variables === 'object' && !Array.isArray(variables)
+    ? variables as Record<string, unknown>
+    : {};
+  return eventPatternSettings(event).flatMap((setting): Array<{ severity: 'error' | 'warn'; message: string }> => {
+    if (!Object.prototype.hasOwnProperty.call(declared, setting)) {
+      return [{ severity: 'error',
+        message: `'event' fills a part from the setting '${setting}', which this recipe does not declare — add it to 'variables'` }];
+    }
+    const hint = declared[setting];
+    return hint !== null && typeof hint === 'object' && !Array.isArray(hint)
+      && (hint as { optional?: unknown }).optional === true
+      && (hint as { default?: unknown }).default === undefined
+      ? [{ severity: 'warn',
+        message: `'event' fills a part from '${setting}', which a dish may leave empty — that dish's trigger then starts on nothing` }]
+      : [];
+  });
 };
 
 /** D-315 §5.1 — a trigger's `template_variable` names one of this recipe's
@@ -773,35 +812,25 @@ export const validateRequires = (r: Record<string, unknown>, add: AddFn): void =
   }
 };
 
-/** D-116 — `on_failure` field shape. Install-time "handler installed +
- *  reactive + has recipe-watcher" lives in `checkOnFailureInstallable`
- *  (needs registry I/O). This validator only enforces what can be
- *  checked from the recipe object alone:
+/** D-116 — `on_failure` is RETIRED (2026-10-05) and refused, not ignored.
  *
- *    - `on_failure_shape`          — not an object or missing recipe_id
- *    - `on_failure_recipe_id_required` — recipe_id absent or empty
- *    - `on_failure_self_loop`      — handler == source (would re-fire)
- *    - `on_failure_config_shape`   — config present but not an object */
+ *  It bound a handler recipe to fire when this one failed, through the handler's
+ *  `recipe-watcher` step. It was never wired: nothing read it at runtime, so a
+ *  recipe could declare a handler and nothing fired when it failed. The recipe
+ *  watcher went on 2026-10-05, and an accepted field that does nothing reads as a
+ *  safeguard while being decoration, so a recipe carrying it is refused with
+ *  what works: the handler listens for this recipe's failed runs itself
+ *  (`notify-run-failed` does it for every recipe). */
 export const validateOnFailure = (r: Record<string, unknown>, add: AddFn): void => {
   if (r.on_failure === undefined) return;
-  if (!r.on_failure || typeof r.on_failure !== 'object' || Array.isArray(r.on_failure)) {
-    add('error', 'on_failure_shape', 'on_failure',
-      'on_failure must be an object with at least { recipe_id }');
-    return;
-  }
-  const o = r.on_failure as Record<string, unknown>;
-  if (typeof o.recipe_id !== 'string' || !o.recipe_id) {
-    add('error', 'on_failure_recipe_id_required', 'on_failure.recipe_id',
-      'on_failure.recipe_id is required and must be a non-empty string');
-  } else if (typeof r.recipe_id === 'string' && o.recipe_id === r.recipe_id) {
-    add('error', 'on_failure_self_loop', 'on_failure.recipe_id',
-      'on_failure.recipe_id may not point at this recipe — failures of the handler would re-fire it');
-  }
-  if (o.config !== undefined
-      && (o.config === null || typeof o.config !== 'object' || Array.isArray(o.config))) {
-    add('error', 'on_failure_config_shape', 'on_failure.config',
-      'on_failure.config must be an object (omit the field entirely if no patch is needed)');
-  }
+  const handler = r.on_failure !== null && typeof r.on_failure === 'object' && !Array.isArray(r.on_failure)
+    && typeof (r.on_failure as { recipe_id?: unknown }).recipe_id === 'string'
+    ? `'${(r.on_failure as { recipe_id: string }).recipe_id}'`
+    : 'the handler recipe';
+  const source = typeof r.recipe_id === 'string' && r.recipe_id.length > 0 ? r.recipe_id : '<this recipe>';
+  add('error', 'on_failure_retired', 'on_failure',
+    `'on_failure' was retired: it never fired. To act when this recipe fails, give ${handler} `
+    + `the event trigger { "event": "run.${source}.*.failed" } and remove 'on_failure' here`);
 };
 
 /** D-116 — cross-cutting checks for the `wait` transform. Ensures:
@@ -906,6 +935,29 @@ export const validateWait = (r: Record<string, unknown>, add: AddFn): void => {
         `wait used without auto_run — the recipe will block the user's sidebar for ${totalLiteralWait}ms; prefer auto_run + next_run_at`);
     }
   }
+};
+
+/** The watchers retired on 2026-10-05, by op id, and what took each one's
+ *  place. A recipe naming one would otherwise pass this check and fail at
+ *  install or dispatch as an op that does not exist; this says what to use. */
+const RETIRED_WATCHERS: Readonly<Record<string, string>> = {
+  'core.watch.mail': 'an event trigger on the mailbox a setting names: { "event": "data.mail.{{config.mail_slug}}.*.created" }',
+  'core.watch.file': 'an event trigger on the folder a setting names: { "event": "data.file.{{config.file_slug}}.*.created" }',
+  'core.watch.calendar': 'core.watch.time-relative to start before an event begins, or an event trigger on data.calendar for its changes',
+  'core.watch.webhook': 'a webhook_triggers entry (D-201), which verifies what arrives',
+  'core.watch.recipe': 'an event trigger on another recipe\'s runs: { "event": "run.<recipe_id>.*.failed" } (or .completed)',
+};
+
+/** The retired watcher a trigger step names, as `op` or as its ingredient
+ *  (`mail-watcher` ⇒ `core.watch.mail`), or null. */
+const retiredWatcherOf = (s: Record<string, unknown>): { name: string; instead: string } | null => {
+  const named = typeof s.op === 'string'
+    ? s.op
+    : typeof s.ingredient === 'string' && s.ingredient.endsWith('-watcher')
+      ? `core.watch.${s.ingredient.slice(0, -'-watcher'.length)}`
+      : null;
+  if (named === null || !Object.prototype.hasOwnProperty.call(RETIRED_WATCHERS, named)) return null;
+  return { name: typeof s.op === 'string' ? s.op : String(s.ingredient), instead: RETIRED_WATCHERS[named]! };
 };
 
 /** D-182 watcher — a trigger-position kernel op (`core.watch.<source>`). It
@@ -1046,16 +1098,20 @@ export const validateTriggerSteps = (
     // rejected: a canonical / Tier-P / non-watcher kernel op doesn't produce the
     // gate and the trigger phase must complete promptly — it belongs in `steps`.
     // `op` is counted in the discriminator set so a MIXED step (e.g.
-    // `{ op: core.watch.time, ingredient: mail-watcher }`) is rejected here rather
+    // `{ op: core.watch.time, ingredient: http-watcher }`) is rejected here rather
     // than slipping through as a concrete ingredient step at lowering (`isOpStep`
     // is false when a co-discriminator is present → the watch op would be dropped).
     const discriminators = ['transform', 'ingredient', 'guard', 'op'].filter((d) => d in s);
+    const retired = retiredWatcherOf(s);
     if (discriminators.length === 0) {
       add('error', 'trigger_step_no_discriminator', path,
         'trigger step must have exactly one of: transform, ingredient, guard, op');
     } else if (discriminators.length > 1) {
       add('error', 'trigger_step_multi_discriminator', path,
         `trigger step has multiple discriminators (${discriminators.join(', ')}) — must have exactly one`);
+    } else if (retired !== null) {
+      add('error', 'watcher_retired', path,
+        `'${retired.name}' was retired on 2026-10-05 — use ${retired.instead}`);
     } else if ('op' in s) {
       if (isWatchOp(s.op)) {
         if (s.args !== undefined && (s.args === null || typeof s.args !== 'object' || Array.isArray(s.args))) {
@@ -1083,6 +1139,31 @@ export const validateTriggerSteps = (
     }
   }
 };
+
+/** D-193 amendment (2026-10-05) — what a recipe step may not run.
+ *
+ *  A NATIVE kernel op is a grant for a chat or MCP tool, not something a recipe
+ *  runs: it has no backing ingredient, so the lowering has no target
+ *  (`op-step-kernel.ts`) and such a step would only fail at install, or on its
+ *  first run for a recipe saved in the Kitchen. Refuse it where it is written.
+ *
+ *  `core.schedule.recipe` became native on the owner's ruling that no recipe step
+ *  may schedule another recipe ("take out core.schedule.recipe, not to be used in
+ *  recipe step"), and its `schedule-recipe` ingredient is gone with it. */
+const SCHEDULING_IN_A_STEP =
+  "no recipe step can schedule another recipe; schedule from chat (recipe.schedule), or from the recipe's Run dialog or Automation";
+
+const nativeOpInStepRefusal = (op: string): string | undefined => {
+  if (getKernelOp(op)?.native !== true) return undefined;
+  return op === 'core.schedule.recipe'
+    ? `op-step "${op}" cannot run in a recipe: ${SCHEDULING_IN_A_STEP}`
+    : `op-step "${op}" is the grant for a chat or MCP tool, not a recipe step: a recipe has nothing to run for it`;
+};
+
+const retiredIngredientRefusal = (slug: unknown): string | undefined =>
+  slug === 'schedule-recipe'
+    ? `the schedule-recipe ingredient is retired: ${SCHEDULING_IN_A_STEP}`
+    : undefined;
 
 /** Connection-agnostic canonical op-step shape (D-170 N.18 / slice 3).
  *
@@ -1118,6 +1199,9 @@ export const validateTriggerSteps = (
  *                                      checked at install. `op_step_unknown_entity`
  *                                      is retired for this reason.)
  *    - `op_step_args_shape`          — `args` present but not an object.
+ *    - `shared_key_outside_data_shared` — a `core.storage.shared.*` op whose
+ *                                      key / prefix / scope cannot begin
+ *                                      `data.shared.` (the server refuses it).
  *    - `op_step_optional_unsupported` — `optional` present (a prefetch-only knob;
  *                                      op-steps are sequential-only, so it is dead).
  *    - `op_step_iteration_unsupported` — `foreach` on a crm_alias-family op-step
@@ -1129,6 +1213,39 @@ export const validateTriggerSteps = (
  *                                      declared `type:'connection'`.
  *    - `op_step_connection_ambiguous` — >1 connection variables declared and
  *                                      the op-step names no slot. */
+/** The shared-storage ops and the argument naming their key. Every one is
+ *  refused on the server unless that key begins `data.shared.`
+ *  (`shared-handler.ts`, `keyRoutesToDurable`): a bare key reaches no store.
+ *  Found 2026-10-05 in two shipped Web Watch recipes and two starter templates,
+ *  each failing at its cursor write on every run while its tests passed (they
+ *  stubbed or dry-ran the write). */
+const SHARED_KEY_ARG: Readonly<Record<string, string>> = {
+  'core.storage.shared.write': 'key',
+  'core.storage.shared.compare-and-set': 'key',
+  'core.storage.shared.patch': 'key',
+  'core.storage.shared.read': 'key',
+  'core.storage.shared.delete': 'key',
+  'core.storage.shared.delete-prefix': 'prefix',
+  'core.storage.shared.list': 'prefix',
+  'core.storage.shared.search': 'scope',
+};
+const DATA_SHARED_PREFIX = 'data.shared.';
+
+/** `shared_key_outside_data_shared` — a shared-storage op whose key cannot
+ *  begin `data.shared.`. Only the literal text before the first `{{` is
+ *  judged: `{{step.key}}` and `data.shared.{{config.prefix}}` pass, since the
+ *  run decides them. */
+const validateSharedKeyArg = (op: string, args: Record<string, unknown>, path: string, add: AddFn): void => {
+  const arg = SHARED_KEY_ARG[op];
+  if (arg === undefined) return;
+  const value = args[arg];
+  if (typeof value !== 'string') return;
+  const head = value.split('{{')[0]!;
+  if (head.startsWith(DATA_SHARED_PREFIX) || DATA_SHARED_PREFIX.startsWith(head)) return;
+  add('error', 'shared_key_outside_data_shared', `${path}.args.${arg}`,
+    `"${op}" ${arg} "${value}" must begin with "${DATA_SHARED_PREFIX}" — the server refuses any other key at run time, so this step would fail on every run (e.g. "${DATA_SHARED_PREFIX}${value}")`);
+};
+
 const validateCanonicalOpStep = (
   s: Record<string, unknown>,
   path: string,
@@ -1148,6 +1265,11 @@ const validateCanonicalOpStep = (
   if (isWatchOp(op)) {
     add('error', 'watch_op_outside_trigger_steps', `${path}.op`,
       'core.watch.* ops are trigger-position only — place the watcher op-step in trigger_steps, not steps');
+    return;
+  }
+  const nativeRefusal = nativeOpInStepRefusal(op);
+  if (nativeRefusal !== undefined) {
+    add('error', 'native_op_in_step', `${path}.op`, nativeRefusal);
     return;
   }
   // D-182 Slice 4 — a TWO-TIER op id (kernel `core.<domain>.<op>` or Tier-P
@@ -1225,6 +1347,8 @@ const validateCanonicalOpStep = (
   if (s.args !== undefined && (s.args === null || typeof s.args !== 'object' || Array.isArray(s.args))) {
     add('error', 'op_step_args_shape', `${path}.args`,
       'canonical op-step `args` must be an object of vendor-neutral args (omit when none)');
+  } else if (s.args !== undefined) {
+    validateSharedKeyArg(op, s.args as Record<string, unknown>, path, add);
   }
   // Per-operand connection slot (R2 step 5, doc §1.3).
   if (s.connection !== undefined) {
@@ -1274,6 +1398,11 @@ const validatePrefetchOpStep = (
   if (isWatchOp(op)) {
     add('error', 'watch_op_outside_trigger_steps', `${path}.op`,
       'core.watch.* ops are trigger-position only — place the watcher op-step in trigger_steps, not prefetch_steps');
+    return;
+  }
+  const nativeRefusal = nativeOpInStepRefusal(op);
+  if (nativeRefusal !== undefined) {
+    add('error', 'native_op_in_step', `${path}.op`, nativeRefusal);
     return;
   }
   const parsed = parseOpId(op);
@@ -1387,6 +1516,10 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         add('error', 'prefetch_ingredient_required', `${path}.ingredient`,
           'prefetch step must reference an ingredient slug');
       }
+      const retiredPrefetch = retiredIngredientRefusal(s.ingredient);
+      if (retiredPrefetch !== undefined) {
+        add('error', 'retired_ingredient', `${path}.ingredient`, retiredPrefetch);
+      }
       // Prefetch steps shouldn't have transform or guard fields
       if ('transform' in s) {
         add('error', 'prefetch_has_transform', `${path}.transform`,
@@ -1444,6 +1577,11 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         validateTransformStep(s, path, add);
       }
 
+      const retired = retiredIngredientRefusal(s.ingredient);
+      if (retired !== undefined) {
+        add('error', 'retired_ingredient', `${path}.ingredient`, retired);
+      }
+
       // Canonical op-step (connection-agnostic): validate the `op` shape only
       // when it's the sole discriminator (a transform/ingredient/guard that also
       // carries `op` already errored as multi-discriminator above).
@@ -1464,15 +1602,22 @@ export const validateSteps = (r: Record<string, unknown>, add: AddFn): Set<strin
         validateConditionField(s.guard, `${path}.guard`, add);
       }
 
-      // model_hint check for ingredient steps
-      if ('ingredient' in s && s.input && typeof s.input === 'object' && !Array.isArray(s.input)) {
-        const inp = s.input as Record<string, unknown>;
-        if (inp['llm.model_hint'] !== undefined && inp['llm.model_hint'] !== null) {
-          const hint = inp['llm.model_hint'];
-          if (typeof hint !== 'string' || !VALID_MODEL_HINTS.has(hint)) {
-            add('error', 'invalid_model_hint', `${path}.input['llm.model_hint']`,
-              `llm.model_hint must be one of ${[...VALID_MODEL_HINTS].join(', ')} — got ${JSON.stringify(hint)}`);
-          }
+      // model_hint check — an ingredient step's `input`, and an AI op step's `args`
+      // (`op: "core.ai.*"`, how every shipped AI step is written). ⛔ The op form
+      // only WARNS: this check never reached it before, the runtime runs a hint it
+      // does not know as the default tier (`resolveHint`, packages/llm), and an
+      // error would stop an installed recipe that runs today, since strict parsing
+      // refuses the whole run (the rule `validateInputContracts` states).
+      const hinted = 'ingredient' in s
+        ? { at: 'input', payload: s.input, severity: 'error' as const }
+        : aiStepDispatch(s) !== undefined
+          ? { at: 'args', payload: s.args, severity: 'warn' as const }
+          : undefined;
+      if (hinted && hinted.payload && typeof hinted.payload === 'object' && !Array.isArray(hinted.payload)) {
+        const hint = (hinted.payload as Record<string, unknown>)['llm.model_hint'];
+        if (hint !== undefined && hint !== null && (typeof hint !== 'string' || !VALID_MODEL_HINTS.has(hint))) {
+          add(hinted.severity, 'invalid_model_hint', `${path}.${hinted.at}['llm.model_hint']`,
+            `llm.model_hint must be one of ${[...VALID_MODEL_HINTS].join(', ')} — got ${JSON.stringify(hint)}`);
         }
       }
     }

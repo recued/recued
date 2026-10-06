@@ -27,6 +27,7 @@ import { LLMError } from '@recued/llm';
 import { runChatTurn } from '../chat-turn-executor.js';
 import {
   appendUnfoldedUserMessage,
+  getSessionBrief,
   setSessionBrief,
   __clearSessionBriefs,
   __clearUnfoldedUserMessages,
@@ -449,5 +450,59 @@ describe('fold parse failure — one retry', () => {
 
   it('does not retry a reply that parses first time', async () => {
     expect(await foldCalls([USABLE])).toBe(1);
+  });
+});
+
+describe('a held call in a folded turn', () => {
+  // Live 2026-10-04: the closing fold read the held unlock's "queued for
+  // approval" result and wrote it into `findings` (which never forget), and the
+  // code-derived `completed` called the queued unlock done.
+  it('reaches neither the fold nor `completed` — the read beside it still does', async () => {
+    const foldPrompts: string[] = [];
+    let mainRound = 0;
+    setSessionBrief('s', BRIEF);
+    await runChatTurn(
+      {
+        session_id: 's', turn_id: 't', picker_target: 'self',
+        dispatch_peer_name: null, available_tools: [],
+        content: { chat_tail: [], user_message: 'read ring 01, then unlock the kitchen door' },
+        correction_context: [], model_layer: 'byok',
+      } as never,
+      {
+        rollingBriefEnabled: () => true,
+        executeAiCall: async (_m: unknown, input: Record<string, unknown>) => {
+          const prompt = String(input['llm.prompt'] ?? '');
+          if (prompt.includes('tool_results_since')) {
+            foldPrompts.push(prompt);
+            return { body: { intent: 'unlock the kitchen door', constraints: [], findings: [],
+              pending: [], completed: [] } };
+          }
+          mainRound += 1;
+          return mainRound === 1
+            ? { body: { response: 'on it', events: [], tool_calls: [
+                { tool: 'work.read', args: { id: 'ring-01' } },
+                { tool: 'recued-core/control-device', args: { action: 'unlock' } },
+              ] } }
+            : { body: { response: 'queued it', events: [], tool_calls: [] } };
+        },
+        registry: {
+          list: () => [], listByTier: () => [], getByName: () => undefined,
+          dispatch: async () => ({ ok: true, result: {} }),
+          subscribeRefresh: () => () => undefined,
+        } as never,
+        dispatchTool: async (input: { tool_name: string }) => input.tool_name === 'work.read'
+          ? { ok: true as const, result: { cost: 137 } }
+          : { ok: true as const, run_id: 'run-unlock', result: { status: 'awaiting_approval',
+            awaiting_approval: true, recipe_id: 'control-device', message: 'queued for the user' } },
+        emit: () => undefined,
+        now: () => 1_000,
+      } as never,
+    ).catch(() => undefined);
+    expect(foldPrompts.length).toBeGreaterThan(0);
+    const since = JSON.parse(foldPrompts.at(-1)!).tool_results_since as Array<{ tool_name: string }>;
+    expect(since.map((call) => call.tool_name)).toEqual(['work.read']);
+    expect(foldPrompts.join('')).not.toContain('awaiting_approval');
+    expect(getSessionBrief('s')?.completed ?? []).not.toContainEqual(
+      expect.stringContaining('recued-core/control-device'));
   });
 });

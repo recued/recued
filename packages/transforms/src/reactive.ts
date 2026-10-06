@@ -195,11 +195,10 @@ const collectAttendees = (source: unknown): Map<string, NormalizedAttendee> => {
  *  report added / removed / response-changed entries. Matches
  *  attendees by email (case-insensitive). When `prior` is null or
  *  missing attendees, every current attendee lands in `added`; when
- *  `current` is null, every prior attendee lands in `removed`. The
- *  canonical pairing from the `calendar-watcher` output is
- *  `{{item.prior}}` + `{{item.attendees}}` — which fits both argument
- *  shapes: passing the full events works, or passing the two
- *  attendees arrays directly works. */
+ *  `current` is null, every prior attendee lands in `removed`. Both
+ *  argument shapes work: the full events (a calendar event trigger's
+ *  `{{context.event.payload.prev}}` beside the event it read), or the two
+ *  attendees arrays directly. */
 export const attendee_diff: TransformFn = (p) => {
   const priorMap = collectAttendees(p.prior ?? p.prior_attendees ?? null);
   const currentMap = collectAttendees(
@@ -225,8 +224,9 @@ export const attendee_diff: TransformFn = (p) => {
 };
 
 /** Filter audit entries down to successful runs of a specific recipe
- *  since `since_ms`. Paired with the `recipe-watcher` ingredient for
- *  "fire when recipe X succeeded" semantics.
+ *  since `since_ms`, for "did recipe X succeed" over audit rows. (To START
+ *  on a run's outcome, use an event trigger on `run.<recipe_id>.*.completed`;
+ *  the recipe watcher this was paired with was retired 2026-10-05.)
  *
  *  D-153 P1 — predicate reads `commit_status === 'succeeded'` (the new
  *  lifecycle enum) directly. The pre-D-153 `outcome ?? status ??

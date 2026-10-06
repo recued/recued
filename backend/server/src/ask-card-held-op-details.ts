@@ -41,6 +41,7 @@ import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
 
 import { buildAskLandingDetails } from './ask-landing-held-op-details.js';
+import { defaultReviewDetails } from './ask-card-default-details.js';
 import { holdCoversSeveralItems } from './foreach-approval-items.js';
 // ⛔ THE OPERATION ID IS IMPORTED, NOT RE-DERIVED. It selects the
 // `editable_args` allowlist, so a second copy drifting would have the card and
@@ -68,6 +69,10 @@ export interface AskCardDetailResolverDeps {
   ) => Promise<{ readonly members: readonly unknown[] } | null>;
   /** IANA zone every `datetime` row renders in and NAMES. */
   readonly timeZone?: string;
+  /** The installed action's `request_schema`, for the rows of an action whose
+   *  pack declares no reviewable fields (`ask-card-default-details.ts`). Absent
+   *  ⇒ such an action shows no block, the behaviour before the default. */
+  readonly lookupRequestSchema?: (operation_id: string) => unknown;
 }
 
 const resolveDefaultTimeZone = (): string => {
@@ -180,14 +185,24 @@ export const createAskCardDetailResolver = (
     // approval has nothing held, so its "what will happen" is already history.
     if (anchor.commit_status !== 'awaiting_approval') return null;
     const args = heldArgs(checkpoint);
+    const operation_id = heldOperationId(anchor, checkpoint);
     let arg_schema: ArgEditSchema;
+    let shown = args;
     try {
-      arg_schema = deps.resolveArgEditSchema(heldOperationId(anchor, checkpoint), args);
+      arg_schema = deps.resolveArgEditSchema(operation_id, args);
+      // A pack that declared nothing reviewable still says what the call will
+      // change: the action's own declared fields, secrets hidden. Display only.
+      if (arg_schema.fields.length === 0 && deps.lookupRequestSchema !== undefined) {
+        const fallback = defaultReviewDetails(deps.lookupRequestSchema(operation_id), args);
+        if (fallback === null) return null;
+        arg_schema = { fields: fallback.fields };
+        shown = fallback.args;
+      }
     } catch {
       return null;
     }
     const built = buildAskLandingDetails(
-      { args, arg_schema, proposed_action: '' },
+      { args: shown, arg_schema, proposed_action: '' },
       { timeZone },
     );
     return built.details.length > 0

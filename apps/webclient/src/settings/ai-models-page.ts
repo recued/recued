@@ -110,6 +110,11 @@ export const AI_MODELS_SLOT_TEST_RESULT_ATTR =
  *  checks the verdict. */
 export const AI_MODELS_PROBE_TRANSCRIPT_ATTR =
   'data-recued-ai-models-probe-transcript';
+/** The picture check's verdict line — `sees` / `blind` / `unknown`. Named for
+ *  the same reason as the transcript: a verdict the server returns and the
+ *  page drops is invisible to a test that only checks "ok". */
+export const AI_MODELS_PROBE_PICTURES_ATTR =
+  'data-recued-ai-models-probe-pictures';
 export const AI_MODELS_EMBEDDINGS_FIELD_ATTR =
   'data-recued-ai-models-embeddings-field';
 /** D-262 § B1 — the transcription slot's fields, plus its language input. */
@@ -754,6 +759,28 @@ const CATALOG_MODE_LEGEND: Readonly<Record<ChatCatalogDeliveryMode, string>> = {
  *  owner's. The raw provider text is still shown underneath — someone debugging
  *  a self-hosted endpoint needs it, and paraphrasing hides the one detail that
  *  identifies the problem. */
+/** The picture check's verdict, in what it means for the owner. ⚠ Picture
+ *  input is the one capability a model has to PROVE — the default is "cannot",
+ *  and Test is the only thing that proves it — so the line says what follows
+ *  from the verdict rather than leaving a bare fact to interpret. `null` when
+ *  no picture check ran (embeddings, transcription, an older server). */
+export const probePictureLine = (result: ServerLlmProbeResult): string | null => {
+  if (result.sees_pictures === true) {
+    return 'Sees pictures: it read the test picture, so Recued can send it pictures such as a camera snapshot.';
+  }
+  if (result.sees_pictures === false) {
+    return result.picture_answer !== undefined
+      ? `Cannot see pictures: shown a picture of a number, it answered "${result.picture_answer}". Recued will not send it pictures.`
+      : `Cannot see pictures: it refused the test picture${
+        result.picture_detail !== undefined ? ` (${result.picture_detail})` : ''
+      }. Recued will not send it pictures.`;
+  }
+  if (result.picture_detail !== undefined) {
+    return `Could not check whether it sees pictures, so nothing changed: ${result.picture_detail}`;
+  }
+  return null;
+};
+
 const PROBE_VERDICT: Readonly<Record<ServerLlmProbeResult['diagnosis'], string>> = {
   ok: 'Connected.',
   auth: 'That key was refused. Check it.',
@@ -2827,6 +2854,20 @@ export const mountAiModelsPage = (
       }
       facts.textContent = parts.join(' · ');
       box.appendChild(facts);
+
+      const pictureLine = probePictureLine(probeResult);
+      if (pictureLine !== null) {
+        const pictures = doc.createElement('p');
+        pictures.className = 'ai-models-probe-facts';
+        pictures.setAttribute(
+          AI_MODELS_PROBE_PICTURES_ATTR,
+          probeResult.sees_pictures === true
+            ? 'sees'
+            : probeResult.sees_pictures === false ? 'blind' : 'unknown',
+        );
+        pictures.textContent = pictureLine;
+        box.appendChild(pictures);
+      }
 
       // ⛔⛔ D-262 § B7 — SHOW WHAT IT HEARD. The server returns `transcript`
       // for one stated reason: a `transcription_language` the owner did not

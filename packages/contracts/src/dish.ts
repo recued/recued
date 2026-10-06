@@ -31,8 +31,41 @@
  *  Spec: D-179 (RATIFIED 2026-06-12), D-319.
  */
 
+import type { RecipeDefinition } from './recipe.js';
+
 /** Prefix for standing dish ids. */
 export const DISH_ID_PREFIX = 'dsh_';
+
+/** D-319 — the recipe starts on its own: it runs on a timer (`auto_run`) or
+ *  declares a trigger. What starts it belongs to a dish, so it starts nothing
+ *  until it is switched on. */
+export const startsOnItsOwn = (
+  recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'>,
+): boolean => recipe.auto_run !== undefined || (recipe.event_triggers ?? []).length > 0;
+
+/** D-319 §5.4 — "Not switched on": a recipe that starts on its own and has no
+ *  dish. Nothing of it runs on its own until the owner switches it on, which
+ *  makes its first dish.
+ *
+ *  ⛔ ONE RULE, TWO READERS. Automation shows this ("Not switched on", with
+ *  Switch on), and the server's one-time notice about the auto-run timers
+ *  D-319 stopped (`auto-run-switch-on-notice.ts`) names the recipes it
+ *  matches. A second copy would let the notice name recipes Automation shows
+ *  as on, or miss ones it shows as off.
+ *
+ *  - `recipe` — its definition; `undefined` when the reader does not have it.
+ *  - `dishes` — how many dishes it has, on or off. A dish that is off is still
+ *    a dish: the owner switched it on once and can switch it on again.
+ *  - `dishlessTimer` — `auto_run.list` listed its timer with no dish, the
+ *    server's word that an auto-run recipe is not switched on. It stands in
+ *    for a definition the reader does not have. */
+export const isNotSwitchedOn = (input: {
+  readonly recipe: Pick<RecipeDefinition, 'auto_run' | 'event_triggers'> | undefined;
+  readonly dishes: number;
+  readonly dishlessTimer?: boolean;
+}): boolean =>
+  input.dishes === 0
+  && ((input.recipe !== undefined && startsOnItsOwn(input.recipe)) || input.dishlessTimer === true);
 
 /** Prefix for ephemeral (manual-run) dish ids — `dsh:eph:<run_id>`.
  *  The `:` makes an ephemeral id structurally distinct from any
@@ -72,6 +105,59 @@ export interface Dish {
    *  free dish. */
   group_id?: string;
   created_at: number; // epoch ms
+}
+
+/** D-209 — every rpc whose result can carry `webhook_doors`: each one can make
+ *  a recipe's MAIN dish or change its settings, and a recipe's webhook runs with
+ *  those. `dishes.*` directly; a schedule, an owner-made trigger, or switching a
+ *  timer recipe on makes the main dish when the recipe has none (`mainDishFor`).
+ *  The webclient announces exactly these results (`webhook-door-notices.ts`). */
+export const DISH_WEBHOOK_DOOR_RPCS = [
+  'dishes.create',
+  'dishes.update',
+  'dishes.delete',
+  'schedules.create',
+  'triggers.create',
+  'auto_run.update',
+] as const;
+
+/** D-209 — what a change to a recipe's MAIN dish did to the webhook door its
+ *  pushed runs pass through.
+ *
+ *  A webhook-started run takes the main dish's settings, and its door — the
+ *  contract it runs under — is derived from those settings (which account it
+ *  reads, which operations it calls). So the door FOLLOWS the main dish: made
+ *  the first time the settings name an account, re-made when they name another,
+ *  retired when they name none. ⛔ The change is reported because a gesture
+ *  that widens what a door may do must NAME it (D-207 §5.1g): the owner saving
+ *  settings learns what the webhook can now do. */
+export interface DishWebhookDoorChange {
+  readonly recipe_id: string;
+  /** The recipe's display name, for the owner. Absent when it has none. */
+  readonly recipe_name?: string;
+  /** `opened` — a door now governs the recipe's pushes (a new one, or one
+   *  re-made because what it may do changed); `unchanged` — the door already
+   *  matched these settings; `closed` — these settings back no door (no
+   *  account named, for one), so every push is refused; `kept_revoked` — the
+   *  owner revoked this door and a settings change does not reopen it. */
+  readonly state: 'opened' | 'unchanged' | 'closed' | 'kept_revoked';
+  /** Whether a live door governed the recipe's pushes BEFORE this change —
+   *  what tells "the webhook now works" from "what it may do changed", and
+   *  "it stopped" from "it still does not work". */
+  readonly was_open: boolean;
+  /** The operations the door allows (`opened` / `unchanged`). */
+  readonly operation_ids?: readonly string[];
+  /** What changed against the door it replaced: operations, and
+   *  `connection:<name>` / `ingredient:<slug>` entries. */
+  readonly added?: readonly string[];
+  readonly removed?: readonly string[];
+  /** Why no door (`closed`), in the owner's terms. */
+  readonly reason?: string;
+  /** Why no door (`closed`), as a code a screen can phrase: `no_account` —
+   *  these settings choose no account for a step that needs one; `refused` —
+   *  the recipe itself cannot back a door (`reason` says why); `fault` — the
+   *  server could not record the door, and saving again retries. */
+  readonly reason_code?: 'no_account' | 'refused' | 'fault';
 }
 
 /** D-215 slice 3 — the last-outcome cell a dish row renders.

@@ -26,6 +26,7 @@ import {
 import {
   RpcError,
   type Dish,
+  type DishWebhookDoorChange,
   type HandlerSlice,
   type ServerRpcRegistry,
   type ServerSchedule,
@@ -82,7 +83,7 @@ export interface ScheduleHandlerDeps {
     recipe_id: string;
     publisher_id: string;
     config_overlay: Record<string, unknown> | null;
-  }) => Dish;
+  }) => { dish: Dish; webhook_doors?: DishWebhookDoorChange[] };
   instanceId: string;
   now?: () => number;
   /** Override for the cron interval floor. Self-hosters can lower this
@@ -254,7 +255,7 @@ export const createSchedule = (
     config_overlay?: unknown;
     missed_policy?: unknown;
   },
-): { schedule: Schedule } => {
+): { schedule: Schedule; webhook_doors?: DishWebhookDoorChange[] } => {
   const recipe_id = typeof body.recipe_id === 'string' ? body.recipe_id : null;
   const publisher_id = typeof body.publisher_id === 'string' ? body.publisher_id : 'local';
   const explicitMode = body.mode !== undefined;
@@ -380,13 +381,17 @@ export const createSchedule = (
   }
 
   // Post-admission, so a GATE rejection never makes a dish.
+  let webhook_doors: DishWebhookDoorChange[] | undefined;
   if (named_dish_id === undefined && deps.mainDish !== undefined) {
-    schedule.dish_id = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay }).dish_id;
+    const main = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay });
+    schedule.dish_id = main.dish.dish_id;
+    // D-209 — a main dish made here can move the recipe's webhook door.
+    webhook_doors = main.webhook_doors;
   }
 
   deps.store.set(schedule);
   emitSchedule(deps.eventBus, 'updated');
-  return { schedule };
+  return { schedule, ...(webhook_doors !== undefined ? { webhook_doors } : {}) };
 };
 
 export const updateSchedule = (

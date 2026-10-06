@@ -14,12 +14,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   flattenRecipe,
+  resolveKernelClosedKindOpStep,
   serializeFlattenedInsight,
   type FlattenedInsight,
 } from '../index.js';
-import type {
-  IngredientManifest,
-  RecipeDefinition,
+import {
+  KERNEL_OP_REGISTRY,
+  type IngredientManifest,
+  type OpStep,
+  type RecipeDefinition,
 } from '@recued/contracts';
 
 const baseRecipe = (overrides: Partial<RecipeDefinition> = {}): RecipeDefinition => ({
@@ -314,6 +317,9 @@ describe('flattenRecipe — external_call extraction', () => {
 });
 
 describe('flattenRecipe — ai-classify categories', () => {
+  // ⛔ Under the flat key `llm.categories`, the way a recipe writes every `llm.*` input.
+  // These cases used a nested `llm: { categories }` object no recipe has, so they
+  // passed while no real snapshot ever carried a category.
   it('captures llm.categories on ai-classify steps only', () => {
     const flat = flattenRecipe(
       baseRecipe({
@@ -322,10 +328,8 @@ describe('flattenRecipe — ai-classify categories', () => {
             id: 'classify',
             ingredient: 'ai-classify',
             input: {
-              llm: {
-                data: '{{step.body}}',
-                categories: ['urgent', 'normal', 'spam'],
-              },
+              'llm.data': '{{step.body}}',
+              'llm.categories': ['urgent', 'normal', 'spam'],
             },
           },
         ],
@@ -341,13 +345,60 @@ describe('flattenRecipe — ai-classify categories', () => {
           {
             id: 'extract',
             ingredient: 'ai-extract',
-            input: { llm: { categories: ['ignored'] } },
+            input: { 'llm.categories': ['ignored'] },
           },
         ],
       }),
     );
     expect(flat.steps[0].categories).toBeUndefined();
   });
+
+});
+
+describe('flattenRecipe — op steps', () => {
+  /** Every shipped AI step, and most calls, are written `op:` with an `args` payload.
+   *  ⛔ They fell through to the ingredient branch: `ingredient: ''`, `external_action`. */
+  const opStep = (op: string, args: Record<string, unknown> = {}) =>
+    flattenRecipe(baseRecipe({ steps: [{ id: 'call', op, args } as unknown as RecipeDefinition['steps'][number]] })).steps[0];
+
+  it('a kernel AI op is recorded as the op and the ingredient it runs as', () => {
+    expect(opStep('core.ai.summarize', { 'llm.data': '{{step.deal}}' })).toEqual({
+      step_id: 'call',
+      op: 'core.ai.summarize',
+      ingredient: 'core-ai-summarize',
+      action_kind: 'ai_function',
+      output_namespace: 'step.call',
+      input_refs: ['step.deal'],
+    });
+    expect(opStep('core.ai.prompt').action_kind).toBe('ai_prompt');
+    expect(opStep('core.ai.classify', { 'llm.data': 'x', 'llm.categories': ['hot', 'cold'] }).categories)
+      .toEqual(['hot', 'cold']);
+  });
+
+  it('a pack op keeps its op and names no ingredient', () => {
+    const flat = opStep('recued-core.recurly.account.read', { account_id: '{{config.account}}' });
+    expect(flat).toEqual({
+      step_id: 'call',
+      op: 'recued-core.recurly.account.read',
+      action_kind: 'external_action',
+      output_namespace: 'step.call',
+      input_refs: ['config.account'],
+    });
+    expect('ingredient' in flat).toBe(false);
+  });
+
+  it('a kernel op step records what a run records for the step it lowers to', () => {
+    // A run flattens the recipe after lowering it, so the two snapshots of one step agree.
+    const differ = KERNEL_OP_REGISTRY.filter((entry) => entry.backing_slug !== undefined).flatMap((entry) => {
+      const authored = { id: 'call', op: entry.op, args: { 'llm.data': '{{step.x}}', 'llm.categories': ['a'] }, skip_when: '{{step.x}} is_null' };
+      const lowered = resolveKernelClosedKindOpStep(authored as unknown as OpStep)!;
+      const { op, ...fromOp } = flattenRecipe(baseRecipe({ steps: [authored as unknown as RecipeDefinition['steps'][number]] })).steps[0];
+      const fromLowered = flattenRecipe(baseRecipe({ steps: [lowered] })).steps[0];
+      return op === entry.op && JSON.stringify(fromOp) === JSON.stringify(fromLowered) ? [] : [entry.op];
+    });
+    expect(differ).toEqual([]);
+  });
+
 });
 
 describe('flattenRecipe — prefetch + trigger_steps surfaces', () => {

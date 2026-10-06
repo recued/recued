@@ -32,6 +32,16 @@ describe('map expressions that are text, not arithmetic', () => {
     }
   });
 
+  /** ⛔ Parentheses around a ref left only `( )` once the refs were stripped,
+   *  which passed the arithmetic test: `0 (0)` evaluated and every label read
+   *  "0". Found listing Home Assistant cameras by name and entity id. */
+  it('builds a label with the id in parentheses', () => {
+    expect(run('{{item.name}} ({{item.id}})', [
+      { name: 'Front Door', id: 'camera.front_door' },
+      { name: 'Garden', id: 'camera.garden_east' },
+    ])).toEqual(['Front Door (camera.front_door)', 'Garden (camera.garden_east)']);
+  });
+
   it('still interpolates ordinary text that happens to contain an operator', () => {
     // A hyphen, a bracket, a percent sign in prose — all operators to the old
     // guard, none of them arithmetic.

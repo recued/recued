@@ -22,7 +22,7 @@ import {
   recipeOutputSections,
   stripCorePrefix,
 } from '@recued/contracts';
-import { getKernelOp } from '@recued/contracts';
+import { stepDispatch } from '../step-dispatch.js';
 import { AI_FUNCTION_REQUIRED_INPUTS, KERNEL_REQUIRED_INPUTS } from './constants.js';
 import { REF_PATTERN, validateConditionField, type AddFn } from './helpers.js';
 
@@ -203,14 +203,7 @@ const validateAiResultReads = (r: Record<string, unknown>, add: AddFn): void => 
  *  `core-*` slug (`core.notification.send` → `core-notification-send`) missed both
  *  tables, and the AI rule never looked at op steps at all: 16 shipped summaries
  *  passed `input` for `llm.data` and failed on every run. */
-const stepSlug = (s: Record<string, unknown>): string | undefined => {
-  const raw = typeof s.ingredient === 'string'
-    ? s.ingredient
-    : typeof s.op === 'string'
-      ? getKernelOp(s.op)?.backing_slug
-      : undefined;
-  return raw === undefined ? undefined : stripCorePrefix(raw);
-};
+const stepSlug = (s: Record<string, unknown>): string | undefined => stepDispatch(s)?.slug;
 
 /** Required inputs, for an `ingredient` step and an `op` step alike (an op step's
  *  `args` ARE the backing ingredient's `input`).

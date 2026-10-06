@@ -3,15 +3,15 @@
   "slug": "personal-organizer-foundation",
   "publisher": "recued-core",
   "name": "Personal Organizer Foundation",
-  "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 10 ready-to-run workflows.",
-  "version": 6,
+  "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 9 ready-to-run workflows.",
+  "version": 7,
   "bundled": true,
   "recipes": [],
   "contents": [
     {
       "type": "recipe",
       "slug": "today",
-      "version": 2,
+      "version": 3,
       "visible": true
     },
     {
@@ -59,12 +59,6 @@
     {
       "type": "recipe",
       "slug": "reminder-due-notifier",
-      "version": 1,
-      "visible": true
-    },
-    {
-      "type": "recipe",
-      "slug": "schedule-recipe",
       "version": 1,
       "visible": true
     }

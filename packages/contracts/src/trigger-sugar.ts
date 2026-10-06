@@ -670,6 +670,102 @@ const isValidBusPattern = (pattern: string): boolean => {
   return true;
 };
 
+/** A part of a raw `event` pattern that a dish's setting fills (2026-10-05):
+ *  `data.file.{{config.file_slug}}.*.created` watches the folder each dish
+ *  names, where `data.file.*.*.created` started a run for a file in every
+ *  folder and the recipe had to stop the ones it did not want. The reconciler
+ *  writes the value into each dish's row (`resolveEventPatternSettings`). */
+const SETTING_SEGMENT_RE = /^\{\{config\.([A-Za-z0-9_]+)\}\}$/;
+
+/** A setting may fill a part only after the first two: those say what kind
+ *  of event it is (`data.file`, `run.<recipe>`), and a setting there would let
+ *  a dish change what the recipe watches, not just where. */
+const FIRST_SETTING_SEGMENT = 2;
+
+/** A raw pattern's parts. ⛔ Split on the dots OUTSIDE `{{…}}`: a setting
+ *  part holds a dot of its own (`{{config.file_slug}}`), and a plain
+ *  `split('.')` cuts it in two. */
+export const eventPatternSegments = (pattern: string): string[] => {
+  const segments: string[] = [];
+  let current = '';
+  let open = 0;
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern.startsWith('{{', i)) {
+      open += 1;
+      current += '{{';
+      i += 1;
+    } else if (open > 0 && pattern.startsWith('}}', i)) {
+      open -= 1;
+      current += '}}';
+      i += 1;
+    } else if (open === 0 && pattern[i] === '.') {
+      segments.push(current);
+      current = '';
+    } else {
+      current += pattern[i];
+    }
+  }
+  segments.push(current);
+  return segments;
+};
+
+/** The setting a pattern part names (`{{config.<setting>}}`), or null. */
+export const settingOfEventSegment = (segment: string): string | null =>
+  SETTING_SEGMENT_RE.exec(segment)?.[1] ?? null;
+
+/** The settings a raw pattern's parts name, in order. */
+export const eventPatternSettings = (pattern: string): string[] =>
+  eventPatternSegments(pattern).flatMap((segment) => {
+    const setting = settingOfEventSegment(segment);
+    return setting === null ? [] : [setting];
+  });
+
+/** A raw pattern with each setting part filled from `valueOf`: what one dish's
+ *  trigger subscribes to. Null when a setting holds no value that is ONE plain
+ *  part (`[A-Za-z0-9_-]+`): none chosen, or a value that would widen the
+ *  pattern (`*`) or shift its parts (`.`). The row is then not made, as a
+ *  D-315 template trigger with no template is not (`compileTriggerSugarEntry`). */
+export const resolveEventPatternSettings = (
+  pattern: string,
+  valueOf: (setting: string) => unknown,
+): string | null => {
+  const parts: string[] = [];
+  for (const segment of eventPatternSegments(pattern)) {
+    const setting = settingOfEventSegment(segment);
+    if (setting === null) {
+      parts.push(segment);
+      continue;
+    }
+    const value = valueOf(setting);
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
+    parts.push(value);
+  }
+  return parts.join('.');
+};
+
+/** Why a raw pattern's setting parts are malformed, or null. A `{{` must be
+ *  a whole part naming a setting, after the first two parts. */
+const eventPatternSettingProblem = (pattern: string): string | null => {
+  const segments = eventPatternSegments(pattern);
+  for (const [index, segment] of segments.entries()) {
+    if (!segment.includes('{{') && !segment.includes('}}')) continue;
+    if (settingOfEventSegment(segment) === null) {
+      return `a part of 'event' can be a setting only as the whole part, written {{config.<setting>}} — got ${JSON.stringify(segment)}`;
+    }
+    if (index < FIRST_SETTING_SEGMENT) {
+      return `a setting can fill a part of 'event' only after its first two, as in 'data.file.{{config.file_slug}}.*.created' — those two say what kind of event it is`;
+    }
+  }
+  return null;
+};
+
+/** The pattern with each setting part read as a plain one, for the grammar
+ *  checks a filled pattern must pass. */
+const withSettingsAsParts = (pattern: string): string =>
+  eventPatternSegments(pattern)
+    .map((segment) => (settingOfEventSegment(segment) === null ? segment : 'setting'))
+    .join('.');
+
 /** Validate one `event_triggers` entry (raw or sugar) against the closed
  *  grammar. Returns human-readable problems (empty = well-formed). Pure +
  *  registry-free so the portable recipe validator and the server share ONE
@@ -679,8 +775,11 @@ const isValidBusPattern = (pattern: string): boolean => {
  *  Literal-only pin: `connection` and `where` values must be literals —
  *  the dispatch filter compares at dispatch time with no config
  *  resolution, so a `{{config.*}}` ref would never match (a silent dead
- *  subscription). Fail loud here instead; per-install narrowing stays in
- *  recipe-side `skip_when` until dispatch-time config resolution lands. */
+ *  subscription). Fail loud here instead. A raw `event` pattern is the one
+ *  place a setting resolves: a whole part written `{{config.<setting>}}`,
+ *  filled per dish when its row is made (`resolveEventPatternSettings`).
+ *  Whether the recipe declares that setting is the recipe validator's check
+ *  (`validateEventTriggers`); this one sees the entry alone. */
 export const validateRecipeEventTriggerEntry = (entry: unknown, options: TriggerSugarOptions = {}): string[] => {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
     return ['entry must be an object'];
@@ -695,13 +794,16 @@ export const validateRecipeEventTriggerEntry = (entry: unknown, options: Trigger
   }
 
   if (hasEvent) {
+    const settingProblem = typeof e.event === 'string' ? eventPatternSettingProblem(e.event) : null;
     if (typeof e.event !== 'string' || e.event.length === 0) {
       problems.push("'event' must be a non-empty bus pattern string");
-    } else if (!isValidBusPattern(e.event)) {
+    } else if (settingProblem !== null) {
+      problems.push(settingProblem);
+    } else if (!isValidBusPattern(withSettingsAsParts(e.event))) {
       problems.push(
         `'event' is not a valid bus pattern (dot-delimited segments of [A-Za-z0-9_-], '*', or '**') — got ${JSON.stringify(e.event)}`,
       );
-    } else if (isUnmatchableDomWatchPattern(e.event)) {
+    } else if (isUnmatchableDomWatchPattern(withSettingsAsParts(e.event))) {
       // Matchable-tail (brick-1-deferred): a dom-element pattern that can
       // never match the only emitted shape `data.dom.element.<target>.updated`
       // — tailless (`…<target>`), wrong kind (`…<target>.created`/`.deleted`

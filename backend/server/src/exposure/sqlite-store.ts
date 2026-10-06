@@ -8,8 +8,7 @@
  *
  *  Store discipline:
  *    - Singleton row keyed `id = 1` (CHECK constraint enforces literal
- *      one). Mirrors `chat_tool_catalog_scope` + every other per-pair
- *      singleton store in the server.
+ *      one). Mirrors every other per-pair singleton store in the server.
  *    - `state_json` carries the full `ExposureState` shape verbatim. The
  *      shape is small + closed-list (5 paths × 2 bits + ack + scalars);
  *      JSON keeps round-trip trivial without introducing column drift on
@@ -26,7 +25,7 @@
  *
  *  Schema is idempotent (`CREATE TABLE IF NOT EXISTS`) — safe to call on
  *  every boot. Mirrors the per-store install pattern used by
- *  `ensureChatToolCatalogSchema` / `ensureReceptionSchema` /
+ *  `ensureReceptionSchema` /
  *  `ensureTlsDomainSchema`.
  */
 

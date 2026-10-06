@@ -26,6 +26,28 @@ const TXT: ContentPart = { type: 'text', text: 'describe this' };
 
 // ─── Pure renderers ──────────────────────────────────────────────────────────
 
+/** ⚠ Home Assistant's camera proxy labels JPEGs `image/jpg`, which is not a
+ *  registered type and which Anthropic refuses. Every renderer sends the name
+ *  providers accept; the stored file keeps the vendor's label. */
+describe('a JPEG labelled image/jpg', () => {
+  const JPG: ContentPart = { type: 'image', source: { kind: 'base64', media_type: 'image/jpg', data: 'AAAA' } };
+  it('reaches every provider as image/jpeg', () => {
+    expect(toAnthropicContent([JPG])).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'AAAA' } },
+    ]);
+    expect(toGoogleParts([JPG])).toEqual([{ inlineData: { mimeType: 'image/jpeg', data: 'AAAA' } }]);
+    expect(toOpenAIContent([JPG])).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAAA' } },
+    ]);
+  });
+
+  it('leaves every other type as it was', () => {
+    expect(toOpenAIContent([IMG])).toEqual([
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ]);
+  });
+});
+
 describe('toAnthropicContent', () => {
   it('renders text + image(base64) + document blocks', () => {
     const out = toAnthropicContent([TXT, IMG, DOC]) as Array<Record<string, any>>;

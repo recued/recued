@@ -88,6 +88,7 @@ const buildDeps = (
     getConnectionStore: vi.fn(() => undefined),
     getExecutorConfig: vi.fn(() => undefined),
     getExecuteDeps: vi.fn(() => undefined),
+    getScheduleDeps: vi.fn(() => undefined),
   }) as unknown as ComposeChatOrchestratorDeps;
 
 describe('D-214 #50 — chat audit sink reaches a real store through the composer', () => {

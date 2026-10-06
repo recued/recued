@@ -262,18 +262,6 @@ export type RecipeErrorCode =
    *  recipe's filter. Load-bearing — a broken event emitter
    *  should NOT drown the runtime by queueing thousands of runs. */
   | 'EVENT_TRIGGER_BACKPRESSURE'
-  // D-116 on_failure binding (install-time)
-  /** Recipe's `on_failure.recipe_id` does not resolve to an installed
-   *  recipe. Handler must be installed before the source references it. */
-  | 'ON_FAILURE_HANDLER_UNKNOWN'
-  /** Recipe's `on_failure.recipe_id` resolves but the handler has no
-   *  `trigger_steps` — it isn't a reactive recipe and cannot receive
-   *  recipe-watcher dispatches. */
-  | 'ON_FAILURE_HANDLER_NOT_REACTIVE'
-  /** Handler is reactive but none of its `trigger_steps` invoke the
-   *  `recipe-watcher` ingredient — the engine has no way to wire the
-   *  failure signal. */
-  | 'ON_FAILURE_HANDLER_MISSING_WATCHER'
   // D-118 — data.service platform
   /** Slug not in `collection_instances` for `platform = 'service'`.
    *  Distinct from `COLLECTION_NOT_FOUND` (table absent) — here the
@@ -678,9 +666,6 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   ARCHIVE_IMPORT_IN_PROGRESS: 'error',
   COLLECTION_RECORD_NOT_FOUND: 'error',
   EVENT_TRIGGER_BACKPRESSURE: 'warn',
-  ON_FAILURE_HANDLER_UNKNOWN: 'fatal',
-  ON_FAILURE_HANDLER_NOT_REACTIVE: 'fatal',
-  ON_FAILURE_HANDLER_MISSING_WATCHER: 'fatal',
   // D-118 — data.service platform.
   SERVICE_NOT_FOUND: 'error',
   SERVICE_TEMPLATE_UNAVAILABLE: 'fatal',
@@ -879,9 +864,6 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   ARCHIVE_IMPORT_IN_PROGRESS: 'Another archive import is already running. Wait for it to finish before starting a new one.',
   COLLECTION_RECORD_NOT_FOUND: 'No record matches that id in this collection.',
   EVENT_TRIGGER_BACKPRESSURE: 'An event trigger fired faster than the recipe could keep up. Recued dropped the surplus events.',
-  ON_FAILURE_HANDLER_UNKNOWN: 'This recipe’s on_failure handler is not installed. Install the handler recipe first, then install this one.',
-  ON_FAILURE_HANDLER_NOT_REACTIVE: 'This recipe’s on_failure handler is not a reactive recipe. Handlers must declare trigger_steps so the engine can wire the failure signal.',
-  ON_FAILURE_HANDLER_MISSING_WATCHER: 'This recipe’s on_failure handler is missing a recipe-watcher trigger step. Add one so failures can reach the handler.',
   // D-118 — data.service platform.
   SERVICE_NOT_FOUND: 'No service is enrolled under that slug. Add it under Server → Services or pick a different one in this recipe.',
   SERVICE_TEMPLATE_UNAVAILABLE: 'The service template this recipe needs is not installed on the server. Install it from the marketplace.',
@@ -1100,9 +1082,6 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   ARCHIVE_IMPORT_IN_PROGRESS: 'environment',
   COLLECTION_RECORD_NOT_FOUND: 'environment',
   EVENT_TRIGGER_BACKPRESSURE: 'environment',
-  ON_FAILURE_HANDLER_UNKNOWN: 'choice',
-  ON_FAILURE_HANDLER_NOT_REACTIVE: 'choice',
-  ON_FAILURE_HANDLER_MISSING_WATCHER: 'choice',
   SERVICE_NOT_FOUND: 'choice',
   SERVICE_TEMPLATE_UNAVAILABLE: 'choice',
   SERVICE_PLATFORM_MISMATCH: 'choice',

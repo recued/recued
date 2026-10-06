@@ -248,13 +248,12 @@ describe('D-137 Wave 2.1 — Tier 2 catalog enumeration (§ A.1.1)', () => {
   });
 });
 
-describe('D-137 Wave 2.1 — Mary\'s per-kind catalog scope gate plumbing', () => {
-  it('Tier 2 entry requires_kinds is the substrate filter-tools keys off via kindGatedTier2Names', () => {
-    // Whitebox check that the projection + filter-tools gate compose
-    // correctly: a recipe touching the `file` kind, with Mary's per-
-    // kind toggle leaving `file` unchecked, should end up in the
-    // caller-supplied `kindGatedTier2Names` set (the caller builds it
-    // from `entry.requires_kinds ∩ Mary's disabled-kinds`).
+describe('D-137 Wave 2.1 — Tier 2 requires_kinds derivation', () => {
+  it('a Tier 2 entry carries the kinds its steps touch', () => {
+    // The projection derives `requires_kinds` from the recipe's ingredient
+    // steps. ⛔ It no longer gates chat — the per-kind scope that keyed off it
+    // is retired (D-137 W2.2, 2026-10-04) — but the MCP door's grant checklist
+    // still groups tools by it.
     const manifestById = new Map<string, IngredientManifest>([
       [
         'file-write',
@@ -281,16 +280,8 @@ describe('D-137 Wave 2.1 — Mary\'s per-kind catalog scope gate plumbing', () =
       recipes,
       createManifestKindLookup((slug) => manifestById.get(slug) ?? null),
     );
-    // The caller (chat orchestrator) builds kindGatedTier2Names as:
-    //   { recipe.name | recipe.requires_kinds intersects Mary.disabled }
-    const maryDisabled: ReadonlySet<IngredientKind> = new Set<IngredientKind>(['storage']);
-    const kindGated = new Set<string>(
-      catalog
-        .filter((e) =>
-          (e.requires_kinds ?? []).some((k) => maryDisabled.has(k)),
-        )
-        .map((e: ToolEntry) => e.name),
-    );
-    expect(kindGated.has('mary/archive')).toBe(true);
+    expect(catalog.map((e: ToolEntry) => [e.name, e.requires_kinds])).toEqual([
+      ['mary/archive', ['storage']],
+    ]);
   });
 });

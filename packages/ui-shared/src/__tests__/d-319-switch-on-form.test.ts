@@ -160,4 +160,20 @@ describe('what starts it', () => {
     expect(whatStartsIt({ event_triggers: [{ on: 'mail_fact.shipment', where: { state: 'delivered' } }] as never }))
       .toBe('It starts when mail about a shipment is read and its state is delivered.');
   });
+
+  /** 2026-10-05 — a trigger whose folder a setting fills says which one, as a
+   *  run of the dish reads it: the dish's value, else the recipe's default. */
+  it('says the folder, mailbox or calendar a trigger’s setting names', () => {
+    const arrivals = {
+      variables: { file_slug: { label: 'Folder to watch', type: 'file_slug' } },
+      event_triggers: [{ event: 'data.file.{{config.file_slug}}.*.created' }],
+    } as never;
+    expect(whatStartsIt(arrivals, { file_slug: 'scans' })).toBe('It starts when a file arrives in the “scans” folder.');
+    expect(whatStartsIt(arrivals)).toBe('It starts when a file arrives in the folder you choose.');
+    expect(whatStartsIt(arrivals, { file_slug: '' })).toBe('It starts when a file arrives in the folder you choose.');
+    expect(whatStartsIt({
+      variables: { mail_slug: { label: 'Mailbox to read', type: 'mail_slug', default: 'work' } },
+      event_triggers: [{ event: 'data.mail.{{config.mail_slug}}.*.created' }],
+    } as never)).toBe('It starts when an email arrives in the “work” mailbox.');
+  });
 });

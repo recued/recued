@@ -37,6 +37,7 @@ import {
   type ChatOrchestratorBundle,
 } from '../composition/bin/wire-chat-orchestrator.js';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import type { ScheduleHandlerDeps } from '../schedule-handler.js';
 import type { EventBus } from '../events/bus.js';
 import {
   bridgeEnrichmentCascade,
@@ -93,7 +94,6 @@ import {
 import type { ChatConnectionMcpStore } from '../storage/chat-connection-mcp-store.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 import type { ChatStore } from '../storage/chat-store.js';
-import type { ChatToolCatalogStore } from '../storage/chat-tool-catalog-store.js';
 import {
   createConnectionStore,
   type ConnectionStoreSqlite,
@@ -272,6 +272,9 @@ export interface AppContextChatLateBoundGetters {
   getCollectionRegistry: () => CollectionRegistry | undefined;
   getExecutorConfig: () => ServerExecutorConfig | undefined;
   getExecuteDeps: () => ExecuteHandlerDeps | undefined;
+  /** D-193 amendment — chat's `recipe.schedule` reaches the schedule store
+   *  through these (the maintenance composition builds it later). */
+  getScheduleDeps: () => ScheduleHandlerDeps | undefined;
 }
 
 export interface ComposeAppContextOptions {
@@ -337,7 +340,6 @@ export interface AppContext extends LlmSubstrate {
   annotationDeps: AnnotationRpcDeps | undefined;
   annotationStoreRef: AnnotationStore | undefined;
   chatStoreRef: ChatStore | undefined;
-  chatToolCatalogStoreRef: ChatToolCatalogStore | undefined;
   chatConnectionMcpStoreRef: ChatConnectionMcpStore | undefined;
   chatInboundTokenStoreRef: ChatInboundTokenStore | undefined;
   chatOrchestratorRef: ChatOrchestrator | undefined;
@@ -929,6 +931,7 @@ export const composeAppContext = (
       getConnectionStore: () => connectionStoreRef,
       getExecutorConfig: () => chatLateBound.getExecutorConfig(),
       getExecuteDeps: () => chatLateBound.getExecuteDeps(),
+      getScheduleDeps: () => chatLateBound.getScheduleDeps(),
       // D-177 rule 5 (5.c) — late-bound: contractStoreRef is created below.
       getContractStore: () => contractStoreRef,
       // D-192 read resolution — work.search / work.read. Both refs are
@@ -1656,7 +1659,6 @@ export const composeAppContext = (
     annotationDeps,
     annotationStoreRef,
     chatStoreRef: chatBundle?.chatStore,
-    chatToolCatalogStoreRef: chatBundle?.toolCatalogStore,
     chatConnectionMcpStoreRef: chatBundle?.connectionMcpStore,
     chatInboundTokenStoreRef: chatBundle?.inboundTokenStore,
     chatOrchestratorRef: chatBundle?.orchestrator,

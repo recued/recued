@@ -219,6 +219,11 @@ export const ensureChatSchema = (db: Database.Database): void => {
       updated_at      INTEGER NOT NULL,
       FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS chat_mail_work_evidence (
+      session_id TEXT PRIMARY KEY,
+      evidence_encrypted TEXT NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+    );
   `);
 
   // § Contract Tightening — one row per turn. The bulk message
@@ -1542,6 +1547,10 @@ export interface ChatStore {
   readSessionBrief(session_id: string): Promise<string | null>;
   writeSessionBrief(session_id: string, brief_json: string, now?: number): Promise<void>;
   deleteSessionBrief(session_id: string): void;
+  /** Exact, bounded work observations; optional for older Chat adapters. */
+  readMailWorkEvidence?(session_id: string): Promise<string | null>;
+  writeMailWorkEvidence?(session_id: string, json: string, beforeCommit?: () => void): Promise<void>;
+  deleteMailWorkEvidence?(session_id: string): void;
   setTitle(session_id: string, title: string, now?: number): boolean;
   setArchived(session_id: string, archived: boolean, now?: number): boolean;
   bumpSessionLastActiveAt(session_id: string, now?: number): boolean;
@@ -2271,6 +2280,31 @@ export const createChatStore = (
   const deleteSessionBrief = (session_id: string): void => {
     delBriefStmt.run({ session_id });
   };
+
+  const getMailEvidenceStmt = db.prepare<{ session_id: string }>(
+    'SELECT evidence_encrypted FROM chat_mail_work_evidence WHERE session_id = @session_id',
+  );
+  const setMailEvidenceStmt = db.prepare(
+    'INSERT OR REPLACE INTO chat_mail_work_evidence (session_id, evidence_encrypted) VALUES (@session_id, @evidence_encrypted)',
+  );
+  const deleteMailEvidenceStmt = db.prepare('DELETE FROM chat_mail_work_evidence WHERE session_id = ?');
+  const readMailWorkEvidence = async (session_id: string): Promise<string | null> => {
+    const row = getMailEvidenceStmt.get({ session_id }) as { evidence_encrypted: string } | undefined;
+    if (!row) return null;
+    try {
+      return await decodeChatContentFromStorage(row.evidence_encrypted,
+        { session_id, message_id: 'mail_work_evidence' }, getKey);
+    } catch { return null; }
+  };
+  const writeMailWorkEvidence = async (session_id: string, json: string, beforeCommit?: () => void): Promise<void> => {
+    const evidence_encrypted = await encodeChatContentForStorage(json,
+      { session_id, message_id: 'mail_work_evidence' }, getKey);
+    // Recheck the active turn AFTER encryption's await, immediately before SQL.
+    beforeCommit?.();
+    if (getSession(session_id) === null) throw new Error('Chat session no longer exists');
+    setMailEvidenceStmt.run({ session_id, evidence_encrypted });
+  };
+  const deleteMailWorkEvidence = (session_id: string): void => { deleteMailEvidenceStmt.run(session_id); };
 
   const createSession = (input: CreateSessionInput): ChatSession => {
     const now = input.now ?? Date.now();
@@ -3395,6 +3429,9 @@ export const createChatStore = (
     readSessionBrief,
     writeSessionBrief,
     deleteSessionBrief,
+    readMailWorkEvidence,
+    writeMailWorkEvidence,
+    deleteMailWorkEvidence,
     setTitle,
     setArchived,
     bumpSessionLastActiveAt,

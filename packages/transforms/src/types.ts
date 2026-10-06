@@ -1,5 +1,5 @@
 import type { Condition, EnrichmentScope, RecipeOutputAction } from '@recued/contracts';
-import type { PiiLedgerStore } from './pii-alias.js';
+import type { PiiKnownValueSource, PiiLedgerStore } from './pii-alias.js';
 
 export type TransformFn = (params: Record<string, unknown>, context: TransformContext) => unknown;
 
@@ -52,6 +52,13 @@ export interface TransformContext {
    *  the run ends. Undefined on hosts that don't thread a store — the
    *  transforms fall back to a process singleton. */
   piiLedgerStore?: PiiLedgerStore;
+  /** D-316 amendment — the server's whole-warehouse known-value matcher, which
+   *  `pii-protect` runs over every `content`-tagged value it is given (the chat's
+   *  match, for that call). A getter: building the matcher reads the warehouse,
+   *  so it is called only when a step actually tags present content. Undefined
+   *  on hosts with no warehouse — a `content` tag then hides only what the
+   *  step's identifier tags seeded. */
+  piiKnownValues?: () => PiiKnownValueSource | undefined;
 }
 
 export type ReduceOp = 'sum' | 'count' | 'avg' | 'min' | 'max';

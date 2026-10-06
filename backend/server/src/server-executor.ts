@@ -35,6 +35,8 @@ import type { RunTokenUsageSink } from './run-token-usage.js';
 import { isBatchCapableAISlug, isTempFileRef } from '@recued/contracts';
 import type { ChunkedUploadAuditInfo, ConnectionKind, ExecutionSource, GatewayCallAudit, TempFileRef, WebChatTab } from '@recued/contracts';
 import type { CacheStore } from '@recued/cache';
+import type { PiiKnownValueSource } from '@recued/transforms';
+import type { RunKnownValues } from './run-known-values.js';
 import type { NamespaceStores } from '@recued/contracts';
 import { CONNECTION_GATEWAY_AUDIT_SOURCE, resolveDeep } from '@recued/contracts';
 import { readConfinedTempFile } from './execution/run-scratch.js';
@@ -140,6 +142,23 @@ export interface ServerExecutorConfig {
    *  attribution it never reads, or the anchor to accept a total it cannot
    *  attribute. Both are called for the same provider result. */
   runTokenUsage?: RunTokenUsageSink;
+  /** D-316 amendment — the whole-warehouse known-value matcher the chat aliases
+   *  tool results with (`createContactKnownValueIndexBuilder`), lent to a recipe's
+   *  own PII tags: every `content`-tagged value of an `ai-*` step's
+   *  `llm.pii_fields` (this executor's AI adapter + the preapproval review, which
+   *  must build the same request) and of a `pii-protect` step (the execute
+   *  handler's engine context). Recipe PII stays authored; a `content` tag now
+   *  hides the known contacts and emails in it, for that call. Absent ⇒ a
+   *  `content` tag hides only what the call's identifier tags seeded.
+   *  The preapproval review builds per request with this; a RUN shares one
+   *  matcher through `piiKnownValuesRuns`. */
+  piiKnownValues?: () => PiiKnownValueSource | undefined;
+  /** D-316 amendment (2026-10-06) — the same matcher built at most once per run
+   *  (`run-known-values.ts`): the AI adapter reads it by the call's `run_id`, the
+   *  execute handler hands it to the run's engine context and releases it at the
+   *  run's end. Built once per config from `piiKnownValues` so the two readers
+   *  share one cache. */
+  piiKnownValuesRuns?: RunKnownValues;
   /** Optional cache store. When set, createBoundExecutor wraps with
    *  withIngredientCache so HTTP/AI/warehouse reads memoize under the
    *  canonical cacheKey format. Omit for tests or ephemeral servers. */
@@ -607,6 +626,8 @@ const createLLMAdapter = (
   fileRead?: FileReadFn,
   resolveLlmConfig?: () => LLMConfig | undefined,
   runTokenUsage?: RunTokenUsageSink,
+  piiKnownValues?: () => PiiKnownValueSource | undefined,
+  piiKnownValuesRuns?: RunKnownValues,
 ): Adapter => {
   const adapters = createDefaultRegistry();
   const embeddingsAdapters = createDefaultEmbeddingsRegistry();
@@ -675,6 +696,11 @@ const createLLMAdapter = (
       reviewed ? recordId => reviewed.readAiFile(recordId) : fileRead,
       resolved.stepMeta?.run_id,
     );
+    // The run's shared matcher when the call carries its run id (the same
+    // `stepMeta.run_id` the token sink keys on); else one built for this call.
+    const knownValues = piiKnownValuesRuns
+      ? piiKnownValuesRuns.forRun(resolved.stepMeta?.run_id)
+      : piiKnownValues;
     return executeLLM(manifest, input, {
       config,
       adapters,
@@ -682,6 +708,7 @@ const createLLMAdapter = (
       tabProbe,
       webChatSupported,
       onTokenUsage: emitUsage,
+      ...(knownValues ? { piiKnownValues: knownValues } : {}),
       ...(reviewed ? { matchContext: () => ({ pinSlot: reviewed.aiSlot() }) } : {}),
       beforeComplete: async (request: import('@recued/llm').LLMProviderInvocation) => {
         assertPreapprovalOrdinaryRun(); await reviewed?.beforeAiProvider(resolved, request);
@@ -736,6 +763,8 @@ export const createServerExecutor = (
       config.fileRead,
       config.resolveLlmConfig,
       config.runTokenUsage,
+      config.piiKnownValues,
+      config.piiKnownValuesRuns,
     ),
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises
@@ -869,6 +898,8 @@ export const createBoundExecutor = (
       config.fileRead,
       config.resolveLlmConfig,
       config.runTokenUsage,
+      config.piiKnownValues,
+      config.piiKnownValuesRuns,
     ),
     chat: config.wsServer ? createChatDelegationAdapter(config.wsServer) : undefined,
     // D-169 P0 follow-on — DOM-ingredient runner consumer. Materialises

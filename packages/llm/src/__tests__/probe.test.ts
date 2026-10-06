@@ -10,6 +10,9 @@ import {
   classifyProviderError,
   hydrateEndpointCapabilities,
   diagnoseProbeFailure,
+  imageInputSeen,
+  PICTURE_PROBE_TIMEOUT_MS,
+  PROBE_PICTURE,
   probeLlmSource,
   resetEndpointCapabilities,
 } from '../index.js';
@@ -288,5 +291,121 @@ describe('probeLlmSource', () => {
     const onUsage = vi.fn();
     await probeLlmSource({ adapter, slot: slot(), onUsage, now: clock() });
     expect(onUsage).toHaveBeenCalledWith(9);
+  });
+});
+
+/** Test connection is the one place a chat model proves it can see pictures
+ *  (`endpoint-capabilities` § Picture input). The default is "cannot", so these
+ *  pin both halves: what counts as a verdict, and what must NOT be taken as one. */
+describe('probeLlmSource — the picture check', () => {
+  const FP = 'openai-compatible http://localhost:11434 local-llama';
+  const pictureOf = (messages: LLMMessage[]) =>
+    messages.flatMap((m) => m.content_parts ?? []).find((p) => p.type === 'image');
+
+  /** An adapter that answers the connection check "ok" and the picture with
+   *  `onPicture` — a string to say, or an error to throw. */
+  const answeringPicture = (onPicture: string | Error) => {
+    const sent: Array<{ messages: LLMMessage[]; options: LLMCompletionOptions }> = [];
+    const adapter: LLMAdapter = {
+      provider: 'openai-compatible',
+      complete: vi.fn(async (_s: LLMSlot, messages: LLMMessage[], options: LLMCompletionOptions) => {
+        sent.push({ messages, options });
+        if (pictureOf(messages) === undefined) return OK;
+        if (onPicture instanceof Error) throw onPicture;
+        return { ...OK, text: onPicture };
+      }),
+    };
+    return { adapter, sent };
+  };
+
+  it('shows the bundled picture after the connection answered, and proves a model that reads it', async () => {
+    const { adapter, sent } = answeringPicture('4827');
+    const onUsage = vi.fn();
+    const result = await probeLlmSource({
+      adapter, slot: slot(), now: clock(), onUsage, pictures: true,
+    });
+
+    expect(result).toMatchObject({ ok: true, sees_pictures: true, picture_answer: '4827' });
+    expect(imageInputSeen(slot())).toBe(true);
+    expect(sent).toHaveLength(2);
+    const [first, second] = sent;
+    expect(pictureOf(first!.messages)).toBeUndefined();
+    // The real request shape: one user turn, the picture as a content part, no
+    // JSON mode (the answer is a number), and its own, longer time box.
+    expect(second!.messages.map((m) => m.role)).toEqual(['user']);
+    expect(pictureOf(second!.messages)?.source).toEqual({
+      kind: 'base64', media_type: 'image/png', data: PROBE_PICTURE.data_b64,
+    });
+    expect(second!.options.json).toBe(false);
+    expect(second!.options.timeout_ms).toBe(PICTURE_PROBE_TIMEOUT_MS);
+    // Both requests are metered.
+    expect(onUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts the number however the model words it', async () => {
+    const { adapter } = answeringPicture('The number is 4,827.');
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), pictures: true });
+    expect(result.sees_pictures).toBe(true);
+  });
+
+  /** ⛔ THE CASE THE NUMBER EXISTS FOR: an endpoint that drops the picture and
+   *  lets the model answer anyway. Anything but the number is "cannot see",
+   *  and it withdraws a proof an earlier Test recorded. */
+  it('calls a model that answers without the picture blind, withdrawing an earlier proof', async () => {
+    hydrateEndpointCapabilities([{ fingerprint: FP, image_input_seen: true }]);
+    const { adapter } = answeringPicture('I cannot see any picture. Please upload it.');
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), pictures: true });
+    expect(result).toMatchObject({
+      sees_pictures: false, picture_answer: 'I cannot see any picture. Please upload it.',
+    });
+    expect(imageInputSeen(slot())).toBe(false);
+  });
+
+  it('takes a refusal of the picture as "cannot see"', async () => {
+    const { adapter } = answeringPicture(classifyProviderError(
+      400, '{"error":{"message":"image input is not supported by this model"}}', null,
+    ));
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), pictures: true });
+    expect(result.ok).toBe(true);
+    expect(result.sees_pictures).toBe(false);
+    expect(result.picture_detail).toContain('image input is not supported');
+  });
+
+  /** ⛔ NOT A VERDICT. The default is "cannot", so recording any of these as
+   *  "cannot" would switch off the owner's camera checks over a failure that
+   *  was never about pictures. */
+  it.each([
+    ['a rate limit', classifyProviderError(429, 'slow down', null)],
+    ['a timeout', new LLMError('AI_TIMEOUT', 'LLM call timed out after 30000ms')],
+    ['an outage', classifyProviderError(503, 'down', null)],
+    ['an empty answer', ''],
+  ] as const)('reaches no verdict on %s, and keeps the earlier proof', async (_name, onPicture) => {
+    hydrateEndpointCapabilities([{ fingerprint: FP, image_input_seen: true }]);
+    const { adapter } = answeringPicture(onPicture);
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), pictures: true });
+    expect(result.ok).toBe(true);
+    expect(result.sees_pictures).toBeUndefined();
+    expect(result.picture_detail).toBeDefined();
+    expect(imageInputSeen(slot())).toBe(true);
+  });
+
+  it('shows no picture when the connection itself failed, and keeps the proof', async () => {
+    hydrateEndpointCapabilities([{ fingerprint: FP, image_input_seen: true }]);
+    const adapter: LLMAdapter = {
+      provider: 'openai-compatible',
+      complete: vi.fn(async () => { throw classifyProviderError(401, 'bad key', null); }),
+    };
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock(), pictures: true });
+    expect(result.ok).toBe(false);
+    expect(result.sees_pictures).toBeUndefined();
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(imageInputSeen(slot())).toBe(true);
+  });
+
+  it('shows no picture unless asked', async () => {
+    const { adapter, sent } = answeringPicture('4827');
+    const result = await probeLlmSource({ adapter, slot: slot(), now: clock() });
+    expect(sent).toHaveLength(1);
+    expect(result.sees_pictures).toBeUndefined();
   });
 });

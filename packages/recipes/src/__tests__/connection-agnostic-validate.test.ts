@@ -264,7 +264,7 @@ describe('validateRecipe — core.watch.* is trigger-position only (D-182 watche
     // must catch it as a multi-discriminator error, not wave it through.
     const r = mkRecipe({
       auto_run: { interval_ms: 600_000 },
-      trigger_steps: [{ id: 'morning', op: 'core.watch.time', ingredient: 'mail-watcher', args: {} }],
+      trigger_steps: [{ id: 'morning', op: 'core.watch.time', ingredient: 'http-watcher', args: {} }],
     });
     const cs = errorCodes(r);
     expect(cs).toContain('trigger_step_multi_discriminator');

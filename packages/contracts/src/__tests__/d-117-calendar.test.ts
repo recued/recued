@@ -18,15 +18,12 @@ import {
   CALENDAR_POLL_SECONDS_DEFAULT,
   CALENDAR_QUOTA_BYTES_DEFAULT,
   CALENDAR_RETENTION_DAYS_DEFAULT,
-  CALENDAR_STARTING_SOON_DEFAULT_MINUTES,
-  CALENDAR_WATCHER_CURSOR_PREFIX,
   CalendarAdapterError,
   type CalendarAdapterErrorCode,
   type CalendarCollectionCaps,
   type CalendarCollectionHealth,
   type CalendarRecordHotFields,
   type CalendarRecordStat,
-  type CalendarWatcherItem,
   type CanonicalEvent,
   type CollectionHealth,
   type CollectionPlatform,
@@ -40,19 +37,6 @@ describe('D-117 calendar constants', () => {
 
   it('poll cadence default is five minutes', () => {
     expect(CALENDAR_POLL_SECONDS_DEFAULT).toBe(300);
-  });
-
-  it('starting_soon default is 15 minutes', () => {
-    expect(CALENDAR_STARTING_SOON_DEFAULT_MINUTES).toBe(15);
-  });
-
-  it('watcher cursor prefix is scoped under calendar.watcher', () => {
-    // The prefix lives in the `prefs` namespace (D-102 pair transport).
-    // Guard against accidental rename — watchers build their cursor
-    // keys by concatenating `<prefix><recipe_id>`, and a change here
-    // would orphan every existing cursor.
-    expect(CALENDAR_WATCHER_CURSOR_PREFIX).toBe('calendar.watcher.');
-    expect(CALENDAR_WATCHER_CURSOR_PREFIX.endsWith('.')).toBe(true);
   });
 
   it('retention default is 365 days', () => {
@@ -221,79 +205,6 @@ describe('CalendarRecordStat', () => {
       last_modified_at: 1_700_000_000_000,
     };
     expect(present.attendee_count).toBe(3);
-  });
-});
-
-describe('CalendarWatcherItem', () => {
-  it('emits unix-ms, ISO 8601, and IANA timezone on every item', () => {
-    const item: CalendarWatcherItem = {
-      source_id: 'src-1',
-      ical_uid: 'uid-1',
-      calendar_id: 'primary',
-      summary: 'Sync',
-      status: 'confirmed',
-      start_at: 1_700_000_000_000,
-      end_at: 1_700_003_600_000,
-      start_iso: '2023-11-14T22:13:20-05:00',
-      end_iso: '2023-11-14T23:13:20-05:00',
-      timezone: 'America/New_York',
-      prior: null,
-    };
-    // Load-bearing: start_at is unix-ms for math, start_iso is the
-    // display string with the event's own offset, timezone is IANA
-    // for custom `date_format` templates.
-    expect(typeof item.start_at).toBe('number');
-    expect(item.start_iso.endsWith('-05:00')).toBe(true);
-    expect(item.timezone).toBe('America/New_York');
-  });
-
-  it('prior is null on first sync of an event', () => {
-    const item: CalendarWatcherItem = {
-      source_id: 'src-2',
-      ical_uid: 'uid-2',
-      calendar_id: 'primary',
-      summary: 'Kickoff',
-      status: 'confirmed',
-      start_at: 0,
-      end_at: 0,
-      start_iso: '',
-      end_iso: '',
-      timezone: 'UTC',
-      prior: null,
-    };
-    expect(item.prior).toBeNull();
-  });
-
-  it('prior carries a full CanonicalEvent on subsequent overwrites', () => {
-    const priorEvent: CanonicalEvent = {
-      source_id: 'src-3',
-      ical_uid: 'uid-3',
-      calendar_id: 'primary',
-      summary: 'Old summary',
-      start_at: 1_700_000_000_000,
-      end_at: 1_700_003_600_000,
-      timezone: 'UTC',
-      is_all_day: false,
-      status: 'confirmed',
-      created_at: 1_699_000_000_000,
-      updated_at: 1_700_000_000_000,
-    };
-    const item: CalendarWatcherItem = {
-      source_id: 'src-3',
-      ical_uid: 'uid-3',
-      calendar_id: 'primary',
-      summary: 'New summary',
-      status: 'confirmed',
-      start_at: 1_700_100_000_000,
-      end_at: 1_700_103_600_000,
-      start_iso: '',
-      end_iso: '',
-      timezone: 'UTC',
-      prior: priorEvent,
-    };
-    // Prior is warehouse-scoped: it is the previous row payload, not
-    // the recipe's last sighting. Diff recipes use it directly.
-    expect(item.prior?.summary).toBe('Old summary');
   });
 });
 

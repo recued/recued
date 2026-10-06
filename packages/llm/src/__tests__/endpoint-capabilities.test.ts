@@ -32,6 +32,8 @@ import {
   noteContextAccepted,
   noteContextRefused,
   provenAcceptedInput,
+  imageInputSeen,
+  noteImageInput,
 } from '../index.js';
 import { classifyProviderError } from '../adapters/anthropic.js';
 import { estimateConservativeMessagesTokens } from '../context-budget.js';
@@ -490,6 +492,73 @@ describe('durable endpoint capabilities', () => {
       { role: 'system', content: 'S' },
       { role: 'user', content: 'U' },
     ], OPTIONS)).resolves.toEqual(OK);
+  });
+});
+
+// ── Picture input ───────────────────────────────────────────────────
+//
+// ⛔ The one capability here that is a PROOF with a pessimistic default. Two
+// things follow, and both are what these tests pin: only a picture check's own
+// verdict may move it, and nothing that "forgets" an endpoint for re-probing
+// may take it away.
+describe('picture input — a proof, moved only by a verdict', () => {
+  const FP = 'openai-compatible http://localhost:11434 local-llama';
+  afterEach(() => {
+    onEndpointCapabilityLearned(undefined);
+  });
+
+  it('announces each verdict explicitly, in both directions', () => {
+    const notes: unknown[] = [];
+    onEndpointCapabilityLearned((note) => { notes.push(note); });
+    noteImageInput(slot(), true);
+    expect(imageInputSeen(slot())).toBe(true);
+    noteImageInput(slot(), false);
+    expect(imageInputSeen(slot())).toBe(false);
+    expect(notes).toEqual([
+      { fingerprint: FP, image_input_seen: true },
+      { fingerprint: FP, image_input_seen: false },
+    ]);
+  });
+
+  /** ⛔ THE LOCKED-BOOT CASE. A boot that could not read the store hydrates no
+   *  proof; if every announcement carried "seen: false" from the memory, the
+   *  next unrelated learning would write that emptiness over the owner's proof. */
+  it('says nothing about pictures when it announces something else', async () => {
+    noteImageInput(slot(), true);
+    const notes: Array<Record<string, unknown>> = [];
+    onEndpointCapabilityLearned((note) => { notes.push({ ...note }); });
+
+    const { adapter } = refusesSystem();
+    await completeWithFallbacks(adapter, slot(), [
+      { role: 'system', content: 'S' },
+      { role: 'user', content: 'U' },
+    ], OPTIONS);
+    forgetEndpoint(slot());
+
+    expect(notes.length).toBeGreaterThanOrEqual(2);
+    for (const note of notes) expect(note).not.toHaveProperty('image_input_seen');
+  });
+
+  /** Forgetting is how Test connection re-detects a REFUSAL, whose default is
+   *  harmless. Forgetting a proof would switch off camera checks over a Test
+   *  that then failed for a reason that was never about pictures. */
+  it('keeps the proof when an endpoint is forgotten for re-probing', () => {
+    noteImageInput(slot(), true);
+    forgetEndpoint(slot());
+    expect(imageInputSeen(slot())).toBe(true);
+  });
+
+  it('is keyed on the model: the same address with another model is not proven', () => {
+    noteImageInput(slot(), true);
+    expect(imageInputSeen(slot({ model: 'other' }))).toBe(false);
+    expect(imageInputSeen({ provider: 'openai-compatible', base_url: 'http://localhost:11434', model: 'local-llama' }))
+      .toBe(true);
+  });
+
+  it('restores a stored proof and lists it in the snapshot', () => {
+    hydrateEndpointCapabilities([{ fingerprint: FP, image_input_seen: true }]);
+    expect(imageInputSeen(slot())).toBe(true);
+    expect(snapshotEndpointCapabilities()).toEqual([{ fingerprint: FP, image_input_seen: true }]);
   });
 });
 

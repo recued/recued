@@ -339,7 +339,9 @@ export interface ExecutionContext {
    * from recipe JSON, execution context data, tool args or resume markers. */
   reviewedExecution?: {
     invoke(call: { slug: string; input: Record<string, unknown>; output: Record<string, string> | undefined;
-      catalog: boolean; connection_name: string; stepMeta: StepMeta | undefined },
+      catalog: boolean; connection_name: string; stepMeta: StepMeta | undefined;
+      /** `StepOptions.pii_fields`: the dispatch hashes these keys in the resolved input. */
+      pii_fields?: readonly string[] },
       dispatch: () => Promise<unknown>): Promise<unknown>;
     catalogApproved(call: { slug: string; operation_id: string; connection_name: string; stepMeta: StepMeta | undefined }): Promise<boolean>;
     delegate(call: { slug: string; input: Record<string, unknown>; stepMeta: StepMeta | undefined },
@@ -453,6 +455,8 @@ export interface ExecutionContext {
     filename: string;
     mime_type: string;
     source_id: string;
+    /** The op's `response_capture.ai_enrichment`, carried to the stored file. */
+    ai_enrichment?: 'opt_out';
   }) => Promise<{ record_id: string }>;
   /** D-217 slice 2b-ii-β2 — size + content pin for the file a CHUNKED upload
    *  will send, read from the file record's metadata.
@@ -583,6 +587,11 @@ export interface ExecutionContext {
    *  restore steps in pure process RAM and are dropped (GC'd) when the run
    *  returns — no cross-run sharing. Threaded into every `TransformContext`. */
   piiLedgerStore?: import('@recued/transforms').PiiLedgerStore;
+  /** D-316 amendment — the server's whole-warehouse known-value matcher (the
+   *  chat's), which `pii-protect` runs over every `content`-tagged value. A
+   *  getter, called only when a step tags present content. Threaded into every
+   *  `TransformContext`; absent on hosts with no warehouse. */
+  piiKnownValues?: () => import('@recued/transforms').PiiKnownValueSource | undefined;
   /** D-165 P0 — resolve the LOCAL-ONLY per-connection operation profile
    *  (grants + risk/approval overrides) for a catalog-form dispatch. The
    *  engine calls this when a step targets a catalog-form ingredient

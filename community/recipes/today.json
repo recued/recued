@@ -1,7 +1,7 @@
 {
   "recipe_id": "today",
   "chat_exposed": true,
-  "version": 2,
+  "version": 3,
   "ttl": 60,
   "metadata": {
     "name": "Today",
@@ -13,9 +13,11 @@
   },
   "variables": {
     "calendar_slug": {
-      "label": "Primary calendar slug to read today's events from",
+      "label": "Calendar to read today's events from",
       "type": "string",
-      "default": "primary"
+      "optional": true,
+      "default": "",
+      "help": "Its name under Connections → Calendar. Leave empty to read every calendar."
     },
     "start_hour": {
       "label": "Window start hour (local TZ)",

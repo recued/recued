@@ -67,6 +67,7 @@
  *  recreates exactly the setting this design was built to avoid, and it will
  *  look like a simplification when it does. */
 
+import { createHash } from 'node:crypto';
 import type { ContentPart, LLMMessage, LLMSlot } from './types.js';
 import { LLMError } from './types.js';
 import { joinTextParts } from './adapters/content-parts.js';
@@ -113,7 +114,9 @@ export const isSystemRoleRejection = (e: unknown): boolean =>
  *  local server + model must share one answer. `api_key` is deliberately absent
  *  — rotating a key does not change a chat template, and keying on a secret
  *  would put it in a process-lifetime map. */
-export const endpointFingerprint = (slot: LLMSlot): string =>
+export const endpointFingerprint = (
+  slot: Pick<LLMSlot, 'provider' | 'base_url' | 'model'>,
+): string =>
   `${slot.provider} ${slot.base_url ?? ''} ${slot.model}`;
 
 const unsupported = new Set<string>();
@@ -135,8 +138,55 @@ export const systemRoleUnsupported = (slot: LLMSlot): boolean =>
 export const resetEndpointCapabilities = (): void => {
   unsupported.clear();
   jsonUnsupported.clear();
+  schemaUnsupported.clear();
   contextBounds.clear();
+  imageSeen.clear();
 };
+
+// ── Picture input ───────────────────────────────────────────────────
+//
+// ⛔⛔ THE ONE CAPABILITY HERE THAT IS PROVEN, NOT REFUSED — AND THE DEFAULT IS
+// THE OTHER WAY ROUND. The facts above are learned from a refusal and default
+// to "supported", because guessing wrong costs one extra round trip. A picture
+// cannot work that way: a model that cannot see sometimes REFUSES the image
+// (a 400) and sometimes accepts the request, drops the image and answers
+// anyway — "no, there is nobody at the door" from a model that never saw the
+// door. Nothing in the response tells the two apart. So picture input is only
+// believed once Test connection has shown the model a picture whose answer
+// cannot be guessed and read the answer back (`probeLlmSource`).
+//
+// Before this existed, a source could only see pictures if `modalities.image`
+// was typed into its stored config, and nothing in the product could type it:
+// no screen, no CLI flag. Every `ai-*` step given a picture, and the unattended
+// caption producer, refused with AI_MODALITY_UNSUPPORTED for every owner.
+//
+// ⚠ NOT FORGOTTEN BY `forgetEndpoint`, unlike everything above. Forgetting is
+// harmless for a refusal (the default is optimistic, the next call re-learns)
+// and harmful here: the default is "cannot", so a Test that failed for an
+// unrelated reason — a rate limit, a timeout — would switch off every camera
+// check the owner relies on, silently. Only a picture check that reached a
+// VERDICT changes this, in either direction.
+
+const imageSeen = new Set<string>();
+
+type EndpointIdentity = Pick<LLMSlot, 'provider' | 'base_url' | 'model'>;
+
+/** Record a picture check's verdict for this endpoint: `true` once the model
+ *  read the test picture back, `false` when it refused it or answered wrong. */
+export const noteImageInput = (slot: EndpointIdentity, seen: boolean): void => {
+  const key = endpointFingerprint(slot);
+  if (seen) imageSeen.add(key);
+  else imageSeen.delete(key);
+  // The verdict rides the announcement EXPLICITLY — see `EndpointCapabilityNote
+  // .image_input_seen` for why storage must not read it off the memory.
+  announce(key, { image_input_seen: seen });
+};
+
+/** Has this endpoint been shown to see pictures? Keyed on provider + base_url
+ *  + model like everything here, so pointing a source at another model starts
+ *  from "not shown" and two sources on one model share the answer. */
+export const imageInputSeen = (slot: EndpointIdentity): boolean =>
+  imageSeen.has(endpointFingerprint(slot));
 
 /** Drop everything learned about ONE endpoint, so the next call re-detects.
  *
@@ -152,11 +202,14 @@ export const forgetEndpoint = (slot: LLMSlot): void => {
   const key = endpointFingerprint(slot);
   unsupported.delete(key);
   jsonUnsupported.delete(key);
+  schemaUnsupported.delete(key);
   // ⛔ The learned window is forgotten too. The module header's governing
   // constraint is CLEARABILITY, and a bound is the one learned fact here that
   // silently shrinks what the model can see — so it is the LAST thing that
   // should survive an owner asking for a re-probe.
   contextBounds.delete(key);
+  // ⚠ `imageSeen` is deliberately KEPT — see "Picture input" above: a proof is
+  // overturned by a picture check's verdict, never by the start of a probe.
   // ⚠ ANNOUNCE THE FORGETTING TOO, or the clear lasts only until the next
   // boot. Storage is written from `snapshotEndpointCapabilities()`, and a
   // fully-forgotten fingerprint drops out of that snapshot — but only if
@@ -173,6 +226,17 @@ export interface EndpointCapabilityNote {
   fingerprint: string;
   system_role_unsupported?: boolean;
   json_mode_unsupported?: boolean;
+  /** A picture check's VERDICT, present only on the announcement that check
+   *  made (and on hydrate / snapshot, where `true` is the stored proof).
+   *
+   *  ⛔ ABSENT MEANS "THIS NOTE SAYS NOTHING ABOUT PICTURES", NOT "CANNOT SEE".
+   *  The other two flags can be written from the memory on every announcement
+   *  because their default is the harmless one. This one cannot: after a boot
+   *  that hydrated nothing (a locked store) the memory holds no proof, and the
+   *  next system-role or JSON learning would otherwise write that emptiness
+   *  over a proof the owner earned — a camera check that stops working because
+   *  some other call hit a 400. */
+  image_input_seen?: boolean;
 }
 
 type LearnListener = (note: EndpointCapabilityNote) => void;
@@ -196,10 +260,13 @@ const noteFor = (fingerprint: string): EndpointCapabilityNote => ({
   ...(jsonUnsupported.has(fingerprint) ? { json_mode_unsupported: true } : {}),
 });
 
-const announce = (fingerprint: string): void => {
+const announce = (
+  fingerprint: string,
+  verdict?: Pick<EndpointCapabilityNote, 'image_input_seen'>,
+): void => {
   if (!onLearned) return;
   try {
-    onLearned(noteFor(fingerprint));
+    onLearned({ ...noteFor(fingerprint), ...verdict });
   } catch {
     // Persistence is an optimisation. Losing it costs one probe next boot;
     // letting it throw would fail a call that had already succeeded.
@@ -213,13 +280,17 @@ export const hydrateEndpointCapabilities = (
   for (const note of notes) {
     if (note.system_role_unsupported === true) unsupported.add(note.fingerprint);
     if (note.json_mode_unsupported === true) jsonUnsupported.add(note.fingerprint);
+    if (note.image_input_seen === true) imageSeen.add(note.fingerprint);
   }
 };
 
 /** Everything currently known, for a caller that wants to prune or inspect. */
 export const snapshotEndpointCapabilities = (): EndpointCapabilityNote[] => {
-  const keys = new Set([...unsupported, ...jsonUnsupported]);
-  return [...keys].map(noteFor);
+  const keys = new Set([...unsupported, ...jsonUnsupported, ...imageSeen]);
+  return [...keys].map((key) => ({
+    ...noteFor(key),
+    ...(imageSeen.has(key) ? { image_input_seen: true } : {}),
+  }));
 };
 
 // ── Native JSON mode ────────────────────────────────────────────────
@@ -233,6 +304,24 @@ export const snapshotEndpointCapabilities = (): EndpointCapabilityNote[] => {
 // it gets the same treatment.
 
 const jsonUnsupported = new Set<string>();
+
+// A refused schema does not mean JSON-object mode, or every other schema, is
+// unsupported. Keep this bounded, process-local optimization specific to the
+// exact emitted schema. Changed host code naturally receives a fresh attempt;
+// the ordinary endpoint forget/re-probe operation also clears it.
+const schemaUnsupported = new Map<string, Set<string>>();
+const schemaFingerprint = (schema: Record<string, unknown>): string =>
+  createHash('sha256').update(JSON.stringify(schema)).digest('hex');
+export const jsonSchemaUnsupported = (slot: LLMSlot, schema: Record<string, unknown>): boolean =>
+  schemaUnsupported.get(endpointFingerprint(slot))?.has(schemaFingerprint(schema)) === true;
+export const noteJsonSchemaUnsupported = (slot: LLMSlot, schema: Record<string, unknown>): void => {
+  const key = endpointFingerprint(slot);
+  const hashes = schemaUnsupported.get(key) ?? new Set<string>();
+  hashes.add(schemaFingerprint(schema));
+  if (hashes.size > 64) hashes.delete(hashes.values().next().value!);
+  schemaUnsupported.set(key, hashes);
+  if (schemaUnsupported.size > 64) schemaUnsupported.delete(schemaUnsupported.keys().next().value!);
+};
 
 /** Did this error come from the provider REJECTING the native JSON-mode param
  *  (`response_format` / `responseMimeType`), as opposed to a genuine failure?

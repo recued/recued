@@ -93,6 +93,7 @@ const inertLateGetters = () => ({
   getConnectionStore: vi.fn(() => undefined),
   getExecutorConfig: vi.fn(() => undefined),
   getExecuteDeps: vi.fn(() => undefined),
+  getScheduleDeps: vi.fn(() => undefined),
 });
 
 const buildDeps = (

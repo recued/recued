@@ -43,7 +43,6 @@ import type { ServerExecutorConfig } from '../server-executor.js';
 import type { AnnotationStore } from '../storage/annotation-store.js';
 import { createAnnotationStore } from '../storage/annotation-store.js';
 import { createBlobStore } from '../storage/blob-store.js';
-import { createScheduleStore } from '../schedule-store.js';
 import { createMailSendClaimStore } from '../storage/mail-send-claim-store.js';
 import { createKernelAdapter } from '@recued/ingredients';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -173,10 +172,6 @@ const alwaysKernelKeys = [
   'mailSentReconcile',
   'mailThreadRead',
   'notificationSend',
-  // D-193 — schedule_recipe is wired unconditionally (installed-recipe
-  // scheduling); the dispatcher fails closed at call time when no
-  // schedule store is late-bound.
-  'scheduleRecipe',
   'watcher',
 ] as const satisfies readonly (keyof KernelDispatchers)[];
 
@@ -412,11 +407,6 @@ const buildDeps = (
   // D-210 WS3 — the intake→contact sealed-email resolver. Absent here: this
   // harness composes no reception intake substrate.
   resolveSealedVisitorEmail: undefined,
-  // D-193 — the schedule_recipe dispatcher wires the local RecipeStore
-  // (installed-recipe-only) + the late-bound schedule deps. Neither is
-  // exercised by these composition assertions, so a minimal stub suffices.
-  recipeStore: { get: () => null } as unknown as ComposeExecutorConfigDeps['recipeStore'],
-  getScheduleDeps: undefined,
   sellerStore: undefined,
   sellerOrderStore: undefined,
   contractStore: undefined,
@@ -1828,58 +1818,5 @@ describe('the CSV ops read a named file through the file stack', () => {
     await expect(adapter({
       slug: 'csv-rows', input: { slug: 'vault', path: 'a.csv', column: 'Name', match: '' },
     } as never)).rejects.toThrow(/named file instance/);
-  });
-});
-
-describe('the core.schedule.recipe step checks the recipe\'s packs, as the webclient route does', () => {
-  /** Found live 2026-09-25: the Schedule recipe armed a cron for the month-end
-   *  reminder on a server without Ledger book. The webclient's `schedules.create`
-   *  refuses that recipe, and the step composed the same handler without the
-   *  check. Real handler, real store; only the recipe and the inventory are fed. */
-  const nudge = { recipe_id: 'month-end-closer-nudge', depends_on: ['recued-core.ledger-book'] };
-  const today = { recipe_id: 'today' };
-  const withStore = () => {
-    const store = createScheduleStore(new BetterSqlite3(':memory:'));
-    return {
-      store,
-      overrides: {
-        recipeStore: {
-          get: (id: string) => (id === nudge.recipe_id ? nudge : id === today.recipe_id ? today : null),
-        } as unknown as ComposeExecutorConfigDeps['recipeStore'],
-        getScheduleDeps: () => ({ store, instanceId: 'i-1' }) as never,
-      },
-    };
-  };
-  const schedule = (kernel: KernelDispatchers, recipe_id: string) =>
-    kernel.scheduleRecipe!({ recipe_id, mode: 'recurring', cron_expression: '0 9 1 * *' } as never);
-
-  it('⛔ refuses a recipe whose pack is not installed, and arms nothing', async () => {
-    const { store, overrides } = withStore();
-    const { config } = await composeWith({
-      ...overrides,
-      contractStore: { scan: () => [] } as unknown as ComposeExecutorConfigDeps['contractStore'],
-    });
-    await expect(schedule(kernelOf(config), nudge.recipe_id)).rejects.toMatchObject({
-      code: 'pack_not_installed',
-      details: { missing_packs: ['recued-core.ledger-book'] },
-    });
-    expect(store.list()).toEqual([]);
-  });
-
-  it('schedules a recipe that declares no pack', async () => {
-    const { store, overrides } = withStore();
-    const { config } = await composeWith({
-      ...overrides,
-      contractStore: { scan: () => [] } as unknown as ComposeExecutorConfigDeps['contractStore'],
-    });
-    await schedule(kernelOf(config), today.recipe_id);
-    expect(store.list().map((row) => row.recipe_id)).toEqual(['today']);
-  });
-
-  it('with no contract store it refuses nothing, as that route does', async () => {
-    const { store, overrides } = withStore();
-    const { config } = await composeWith(overrides);
-    await schedule(kernelOf(config), nudge.recipe_id);
-    expect(store.list()).toHaveLength(1);
   });
 });

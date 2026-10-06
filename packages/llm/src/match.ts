@@ -10,6 +10,7 @@ import type {
   Modalities,
 } from './types.js';
 import { hasModalityDemand, LLMError, normalizeLLMSlot, supportsModalities } from './types.js';
+import { imageInputSeen } from './endpoint-capabilities.js';
 import type { QuotaTracker } from './quota.js';
 
 /** Numeric rank for speed-tier comparison. Higher = more capable.
@@ -101,8 +102,24 @@ interface CapabilityFilter {
   require_modalities?: Modalities;
 }
 
+/** What a candidate can take in: its declared `modalities`, plus picture input
+ *  once Test connection has shown it a picture it read back
+ *  (`endpoint-capabilities` § Picture input) — held in memory, and stored on
+ *  the source as `image_input_ok`. Both are read: the memory is filled at boot
+ *  from what is stored, and a boot that could not read the store (locked)
+ *  leaves it empty while the per-use config read still finds the stored proof.
+ *  ⚠ The proof only ever ADDS: a declaration typed into the config is the
+ *  owner's to keep. */
+const modalitiesOf = (
+  source: Pick<LLMSlot, 'provider' | 'base_url' | 'model' | 'modalities' | 'image_input_ok'>,
+): Modalities | undefined =>
+  source.modalities?.image !== true
+    && (source.image_input_ok === true || imageInputSeen(source))
+    ? { ...source.modalities, image: true }
+    : source.modalities;
+
 /** D-172 P5 — true iff the filter has a modality demand the candidate's
- *  declared `modalities` cannot cover. No demand → always passes. */
+ *  modalities cannot cover. No demand → always passes. */
 const failsModalities = (caps: Modalities | undefined, f: CapabilityFilter): boolean =>
   f.require_modalities !== undefined
   && hasModalityDemand(f.require_modalities)
@@ -112,7 +129,7 @@ const apiEntryMatches = (e: FreePoolApiEntry, f: CapabilityFilter): boolean => {
   if (e.speed !== f.speed) return false;
   if (f.require_json && !e.supports_json) return false;
   if (f.require_search && !e.supports_search) return false;
-  if (failsModalities(e.modalities, f)) return false;
+  if (failsModalities(modalitiesOf(e), f)) return false;
   return true;
 };
 
@@ -120,7 +137,7 @@ const slotMatches = (s: LLMSlot, f: CapabilityFilter): boolean => {
   if (s.speed !== f.speed) return false;
   if (f.require_json && !s.supports_json) return false;
   if (f.require_search && !s.supports_search) return false;
-  if (failsModalities(s.modalities, f)) return false;
+  if (failsModalities(modalitiesOf(s), f)) return false;
   return true;
 };
 

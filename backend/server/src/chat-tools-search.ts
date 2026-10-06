@@ -18,19 +18,18 @@
  *    - completely inert in full mode / when the knob is off — the wrapper
  *      returns `inner` untouched, so a stray call resolves `unknown_tool`
  *      exactly as before this slice;
- *    - kind-scope honest — the dispatch closure applies Mary's per-kind
- *      catalog gate to the search corpus, so a kind the user disabled can
- *      never be rediscovered through search.
+ *    - grant honest — the dispatch closure narrows the search corpus to the
+ *      Tier-2 set the turn's grant admits (D-247), the same set the main
+ *      catalog shows, so search can never surface a recipe the catalog would
+ *      not. (The per-kind scope it also applied is retired — D-137 W2.2.)
  *
  *  It stays read-only (classification `'read'`, no risk tier, no vault, no
  *  writes) so dispatch bypasses the plan-approval gate like the other
  *  `*.search` primitives. */
 
 import {
-  computeKindGatedTier2Names,
   type ChatDispatchContext,
   type ChatDispatchResult,
-  type ChatToolCatalogScopeState,
   type ExecutionSource,
   type InternalToolRegistry,
   type ToolEntry,
@@ -40,7 +39,6 @@ import { searchToolCatalog } from '@recued/recipes';
 import {
   anyCatalogModeUsesToolsSearch,
   catalogModeUsesToolsSearch,
-  resolveEnabledKinds,
   type ChatCatalogDeliveryMode,
 } from './chat-orchestrator.js';
 import {
@@ -67,7 +65,7 @@ export const TOOLS_SEARCH_TOOL_ENTRY: ToolEntry = {
   name: TOOLS_SEARCH_TOOL_NAME,
   tier: 1,
   description:
-    "Find installed recipe tools by capability. Recipe tools that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` of KEYWORDS describing the capability — the nouns and verbs that name it, not the user's sentence (\"follow-up email draft\", \"summarize PDF\", \"overdue invoices\", \"buildings properties\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. This ALSO searches the documentation for THIS server and returns any matching sections as `doc_matches` — use it for \"how does X work\" / \"where do I set X up\" questions, which nothing in your own knowledge can answer about this product — but still search it by KEYWORDS (\"connection enrol\", \"pack version pin\"), not by typing the question in. If a search returns no match at all, do NOT retry with reworded queries: satisfy the request with the core tools, or tell the user that no matching recipe is installed and the documentation does not cover it.",
+    "Find installed recipe tools and pack actions by capability. Recipe tools and actions that \"available_tools\" does not fully show — listed with only a one-line summary and no argument schema (index mode), or not listed at all (lean-core mode) — are recovered here: pass a short `query` of KEYWORDS describing the capability — the nouns and verbs that name it, not the user's sentence (\"follow-up email draft\", \"summarize PDF\", \"overdue invoices\", \"buildings properties\") and it returns every matching tool, each with the `args_schema` you then call directly by `recipe_slug` (pass `limit` only if you want fewer). The always-listed core tools (contact / mail / calendar / memory / enrichment / deal / account / work search + read, recipe.run) are ALREADY fully defined — never search for those. This ALSO searches the documentation for THIS server and returns any matching sections as `doc_matches` — use it for \"how does X work\" / \"where do I set X up\" questions, which nothing in your own knowledge can answer about this product — but still search it by KEYWORDS (\"connection enrol\", \"pack version pin\"), not by typing the question in. If a search returns no match at all, do NOT retry with reworded queries: satisfy the request with the core tools, or tell the user that no matching recipe or action is installed and the documentation does not cover it.",
   arg_schema: {
     type: 'object',
     properties: {
@@ -101,13 +99,13 @@ const TOOLS_SEARCH_MATCHES_GUIDANCE =
  *  knowledge of this product, so improvising here is how a plausible, wrong set
  *  of menu steps gets stated with confidence. */
 const TOOLS_SEARCH_DOCS_ONLY_GUIDANCE =
-  'No installed recipe tool matches this request, but the documentation below '
+  'No installed recipe tool or action matches this request, but the documentation below '
   + 'covers it. Answer from those sections and cite the `url`. Do NOT retry '
   + 'tools.search with reworded queries, and do NOT describe menus, settings or '
   + 'steps that the sections do not actually mention.';
 
 const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
-  'No installed recipe tool matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe is installed.';
+  'No installed recipe tool or action matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe or action is installed.';
 
 const resolveToolsSearchLimit = (raw: unknown): number => {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return Number.POSITIVE_INFINITY;
@@ -125,9 +123,6 @@ export interface ToolsSearchWrapOptions {
   /** True in index mode. False → the wrapper returns `inner` untouched, so
    *  tools.search is absent everywhere and resolves `unknown_tool`. */
   enabled: boolean;
-  /** Mary's live per-kind catalog scope (same source the main-turn
-   *  projection reads), so the search corpus honors the kind gate. */
-  getScope: () => ChatToolCatalogScopeState | null;
   /** D-247 D9 — Tier-2 reachability for the turn's source. */
   tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean;
   /** D-247 D9 — see `createChatOwnerCatalogGuard`. Refuses rather than filters:
@@ -136,12 +131,15 @@ export interface ToolsSearchWrapOptions {
   ownerCatalogGuard?: (source?: ExecutionSource) => void;
   /** D-247 D8 — the owner's unfiltered-then-granted Tier-2 set. */
   tier2OwnerCatalog?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry> | null;
+  /** The turn's granted raw pack actions (`recued_op_*`) — the SAME source the
+   *  main catalog presents and the dispatch resolves by name. See
+   *  `dispatchToolsSearch` for why search must read it. */
+  rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>;
 }
 
 /** Dispatch the search over the registry's OWN exposed Tier-2 set (so the
  *  corpus is identical to the main-turn projection — same exposure filter,
- *  same `requires_kinds` from the registry's manifest/op lookups), minus
- *  the kind-gated entries. Returns full entries (with `args_schema`).
+ *  same grant). Returns full entries (with `args_schema`).
  *
  *  Anti-loop (substrate-support): a no-match still returns `ok: true` — an
  *  `ok: false` reads to a weak model as a failure it retries. Only a
@@ -149,7 +147,6 @@ export interface ToolsSearchWrapOptions {
  *  a correction signal, not a retry-loop trigger. */
 const dispatchToolsSearch = (
   inner: InternalToolRegistry,
-  getScope: () => ChatToolCatalogScopeState | null,
   /** D-247 D9 — Tier-2 reachability for this turn's source. ⛔ `tools.search`
    *  RETURNS Tier-2 matches straight to the model, so it is an EXPOSURE surface
    *  in its own right: filtering only the main catalog would leave a revoked
@@ -164,6 +161,14 @@ const dispatchToolsSearch = (
    *  reads the OWNER's registry, and `tier2GrantFilter` returns `() => true`
    *  for a door by design, so the filter below cannot narrow one. */
   ownerCatalogGuard?: (source?: ExecutionSource) => void,
+  /** ⛔ A raw pack action is Tier 2, so lean-core drops it from the listing
+   *  like any recipe — but it is not a REGISTRY entry, so the recipe corpus
+   *  above never held it either. Granted, dispatchable by name, and findable
+   *  nowhere: live, "take a snapshot of the camera" searched three times and
+   *  concluded no installed tool could. The contract granted it; lean-core is a
+   *  presentation choice and must not withdraw the grant. Already grant-filtered
+   *  per source, so search widens nothing the dispatch would refuse. */
+  rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
 ): ((raw: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>) =>
   async (raw, ctx) => {
     // ⛔ FIRST, before the query is even parsed — a door must not learn what a
@@ -191,14 +196,12 @@ const dispatchToolsSearch = (
     // catalog and silently did not in search.
     const ownerTier2 = tier2OwnerCatalog?.(ctx?.execution_source) ?? null;
     const tier2 = ownerTier2 ?? inner.listByTier(2);
-    const gated = computeKindGatedTier2Names(tier2, resolveEnabledKinds(getScope()));
     // ⚠ `ctx?.` — a handler invoked by a bare harness may pass none, and a
     // throw here would turn a missing fixture into a failed search.
     const reachable = ownerTier2 !== null ? undefined : tier2GrantFilter?.(ctx?.execution_source);
-    const visible = tier2.filter(
-      (entry) => !gated.has(entry.name) && (reachable === undefined || reachable(entry.name)),
-    );
-    const matches = searchToolCatalog(visible, args.query, limit);
+    const visible = reachable === undefined ? tier2 : tier2.filter((entry) => reachable(entry.name));
+    const rawOps = rawOpSource?.(ctx?.execution_source) ?? [];
+    const matches = searchToolCatalog([...visible, ...rawOps], args.query, limit);
     // ⛔ SEARCHED ALWAYS, RETURNED SECOND. The docs answer "how does this work"
     // where the catalog answers "what can I run", and a question often wants
     // both — but a tool is a thing the model can DO, so it leads. Doc hits are
@@ -269,11 +272,9 @@ export const insertToolEntryAfterTier1 = (
 export const wrapChatRegistryForCatalogMode = (
   inner: InternalToolRegistry,
   mode: ChatCatalogDeliveryMode,
-  getScope: () => ChatToolCatalogScopeState | null,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
     enabled: catalogModeUsesToolsSearch(mode),
-    getScope,
   });
 
 /** Per-slot wire seam — enable `tools.search` if ANY of the possible per-source
@@ -289,7 +290,6 @@ export const wrapChatRegistryForCatalogMode = (
 export const wrapChatRegistryForCatalogModes = (
   inner: InternalToolRegistry,
   modes: Iterable<ChatCatalogDeliveryMode>,
-  getScope: () => ChatToolCatalogScopeState | null,
   /** D-247 D9 — threaded through to the `tools.search` handler, which is the
    *  second of three Tier-2 exposure surfaces. */
   tier2GrantFilter?: (source?: ExecutionSource) => (toolName: string) => boolean,
@@ -302,13 +302,16 @@ export const wrapChatRegistryForCatalogModes = (
    *  threaded but UNREAD before 2026-08-20 — the grant worked in the catalog
    *  and silently did not in search". */
   ownerCatalogGuard?: (source?: ExecutionSource) => void,
+  /** The turn's granted raw pack actions — POSITIONAL for the same reason as
+   *  the guard above: this is the only constructor of the search surface. */
+  rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
     enabled: anyCatalogModeUsesToolsSearch(modes),
-    getScope,
     ...(tier2GrantFilter ? { tier2GrantFilter } : {}),
     ...(tier2OwnerCatalog ? { tier2OwnerCatalog } : {}),
     ...(ownerCatalogGuard ? { ownerCatalogGuard } : {}),
+    ...(rawOpSource ? { rawOpSource } : {}),
   });
 
 export const wrapRegistryWithToolsSearch = (
@@ -318,8 +321,7 @@ export const wrapRegistryWithToolsSearch = (
   if (!opts.enabled) return inner;
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
   const dispatchSearch = dispatchToolsSearch(
-    inner, opts.getScope, opts.tier2GrantFilter, opts.tier2OwnerCatalog,
-    opts.ownerCatalogGuard,
+    inner, opts.tier2GrantFilter, opts.tier2OwnerCatalog, opts.ownerCatalogGuard, opts.rawOpSource,
   );
   return {
     list: () => insertToolEntryAfterTier1(inner.list(), entry),

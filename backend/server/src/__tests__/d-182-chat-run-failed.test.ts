@@ -104,10 +104,12 @@ describe('D-182 — persisted tool-call provenance honours run_failed (the row S
     expect(entry.result_ref).toBe('sess:turn:recipe.run');
     expect(entry.run_id).toBe('run-logged-1');
     expect(entry.dish_id).toBe('dsh_logged_1');
-    expect(entry.dish_promotable).toBeUndefined();
+    expect(entry).not.toHaveProperty('dish_promotable');
   });
 
-  it('marks only a terminal successful ad-hoc run as dish-promotable', () => {
+  // D-259 §6.1 retired (2026-10-05): chat no longer offers to keep a run as a
+  // dish, so no call is marked for it — a completed ad-hoc run included.
+  it('marks no run for keeping as a dish, completed or held', () => {
     const completed = provEntry({
       ok: true,
       result: { rows: [] },
@@ -120,9 +122,10 @@ describe('D-182 — persisted tool-call provenance honours run_failed (the row S
       run_id: 'run-held',
     });
 
-    expect(completed.dish_promotable).toBe(true);
+    expect(completed.run_id).toBe('run-promotable');
+    expect(completed).not.toHaveProperty('dish_promotable');
     expect(held.run_id).toBe('run-held');
-    expect(held.dish_promotable).toBeUndefined();
+    expect(held).not.toHaveProperty('dish_promotable');
   });
 
   it('a failed/cancelled dispatch keeps its durable addresses and detail', () => {

@@ -747,6 +747,8 @@ export type ActivityAction =
   // carries `{enabled_kinds}` so the audit feed can render "Mary
   // enabled mail / disabled connection". Non-reserve: settings-style
   // event, not forensically critical.
+  // ⛔ No longer written: the scope is retired (2026-10-04). Kept so rows an
+  // older server wrote still read.
   | 'chat_tool_catalog_scope_set'
   // D-167 chat provider-threading — the per-pair global chat-model default
   // changed. `target` = `'chat_default_model_pref'` (singleton); `detail`

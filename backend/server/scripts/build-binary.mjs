@@ -164,51 +164,47 @@ const blobPath = join(OUT, 'recued.blob');
 // sidecar already has (`build-binary-docker.mjs` builds both in one container).
 // Embedding does not relax it; it just moves the bytes.
 const EMBED_ADDON = process.env.RECUED_EMBED_ADDON === '1';
-let addonPath;
-if (EMBED_ADDON) {
-  // Resolve through the package, not a guessed path — the addon is hoisted to
-  // the workspace root here, and would not be in a non-hoisting install.
-  addonPath = process.env.RECUED_ADDON_PATH ?? (() => {
-    try {
-      const pkg = createRequire(import.meta.url).resolve(
-        'better-sqlite3-multiple-ciphers/package.json',
-      );
-      return join(dirname(pkg), 'build', 'Release', 'better_sqlite3.node');
-    } catch {
-      return '';
-    }
-  })();
-  if (!existsSync(addonPath)) {
-    fail(
-      `RECUED_EMBED_ADDON=1 but no addon at ${addonPath}. `
-        + 'Set RECUED_ADDON_PATH, or build it (npm rebuild better-sqlite3-multiple-ciphers) first. '
-        + 'Refusing to emit a binary that claims to be self-contained and is not.',
+
+/** The cipher driver's addon, resolved through its package rather than a
+ *  guessed path — it is hoisted to the workspace root here, and would not be in
+ *  a non-hoisting install. '' when the package is absent. Shared by the embed
+ *  path and the macOS sidecar (4b). */
+const resolveCipherAddon = () => {
+  try {
+    const pkg = createRequire(import.meta.url).resolve(
+      'better-sqlite3-multiple-ciphers/package.json',
     );
+    return join(dirname(pkg), 'build', 'Release', 'better_sqlite3.node');
+  } catch {
+    return '';
   }
-  // ⛔⛔ AND ITS ABI, NOT ONLY ITS EXISTENCE. The comment above states the
-  // invariant — the addon must match the Node ABI of THIS process, because
-  // `process.execPath` is what becomes the SEA — and nothing enforced it. A
-  // mismatched addon produces the worst artifact we know how to build: it boots,
-  // prints a healthy banner, serves `/health` and `/webclient/` with 200s, and
-  // fails only on the one path that matters. That is the `ws` outage of
-  // 2026-08-27 with a different cause, and no test can see it, because every
-  // suite runs from source where `node_modules` is right there.
-  //
-  // The cause is mundane and recurs: `npm rebuild` run under a different Node
-  // than the build. It happened in this tree on 2026-08-28 — both addons went to
-  // ABI 141 while the release target is Node 24 — and was found only by hand.
-  //
-  // 🔑 PROBED IN A CHILD, NOT HERE. `process.dlopen` in this process would LOAD a
-  // matching addon into the builder as a side effect. A child of the same
-  // `process.execPath` answers the same question and leaves the build clean.
+};
+
+/** ⛔⛔ AND ITS ABI, NOT ONLY ITS EXISTENCE. The comment above states the
+ *  invariant — the addon must match the Node ABI of THIS process, because
+ *  `process.execPath` is what becomes the SEA — and nothing enforced it. A
+ *  mismatched addon produces the worst artifact we know how to build: it boots,
+ *  prints a healthy banner, serves `/health` and `/webclient/` with 200s, and
+ *  fails only on the one path that matters. That is the `ws` outage of
+ *  2026-08-27 with a different cause, and no test can see it, because every
+ *  suite runs from source where `node_modules` is right there.
+ *
+ *  The cause is mundane and recurs: `npm rebuild` run under a different Node
+ *  than the build. It happened in this tree on 2026-08-28 — both addons went to
+ *  ABI 141 while the release target is Node 24 — and was found only by hand.
+ *
+ *  🔑 PROBED IN A CHILD, NOT HERE. `process.dlopen` in this process would LOAD a
+ *  matching addon into the builder as a side effect. A child of the same
+ *  `process.execPath` answers the same question and leaves the build clean. */
+const assertAddonMatchesThisNode = (path) => {
   const probeSrc =
-    'try{process.dlopen({exports:{}},' + JSON.stringify(addonPath) + ');console.log("ok")}'
+    'try{process.dlopen({exports:{}},' + JSON.stringify(path) + ');console.log("ok")}'
     + 'catch(e){var m=/NODE_MODULE_VERSION (\\d+)/.exec(e.message);'
     + 'console.log(m?m[1]:"load-failed")}';
   const probe = execFileSync(process.execPath, ['-e', probeSrc], { encoding: 'utf8' }).trim();
   if (probe !== 'ok') {
     fail(
-      `the addon at ${addonPath} does not match the Node this build embeds.\n`
+      `the addon at ${path} does not match the Node this build embeds.\n`
         + `  this build embeds Node ${process.versions.node} (ABI ${process.versions.modules}); `
         + `the addon reports ${/^\d+$/.test(probe) ? `ABI ${probe}` : probe}.\n`
         + '  Rebuild it under THIS Node, not whichever one is on PATH:\n'
@@ -220,6 +216,19 @@ if (EMBED_ADDON) {
   console.log(
     `[build-binary] addon ABI ${process.versions.modules} matches the embedded Node — ok`,
   );
+};
+
+let addonPath;
+if (EMBED_ADDON) {
+  addonPath = process.env.RECUED_ADDON_PATH ?? resolveCipherAddon();
+  if (!existsSync(addonPath)) {
+    fail(
+      `RECUED_EMBED_ADDON=1 but no addon at ${addonPath}. `
+        + 'Set RECUED_ADDON_PATH, or build it (npm rebuild better-sqlite3-multiple-ciphers) first. '
+        + 'Refusing to emit a binary that claims to be self-contained and is not.',
+    );
+  }
+  assertAddonMatchesThisNode(addonPath);
   console.log(`[build-binary] embedding addon as SEA asset: ${addonPath}`);
 }
 
@@ -313,6 +322,55 @@ try {
   );
 }
 
+// ── 4b. macOS: leave a binary that RUNS ─────────────────────────────────
+//
+// ⛔ postject strips the signature, and Apple Silicon kills an unsigned binary
+// at exec — exit 137, no output. Signed, it still cannot open a database
+// without `lib/better_sqlite3.node` beside it (D178_SIDECAR_MISSING). The
+// release driver has always done both, with a Developer ID; a plain
+// `npm run build:binary` did neither, so a from-source macOS build was an
+// artifact that could not run at all. Measured 2026-10-05 on a clone of the
+// public repo, where this script is the binary build a contributor can reach.
+//
+// ⇒ Stage the addon, ad-hoc sign both files with the release signer itself
+// (`sign-macos.mjs` — one signing implementation, with its measured
+// entitlements), then run the result. Ad-hoc runs on this Mac and fails
+// Gatekeeper once downloaded: a local build, never a distributable.
+//
+// The release driver sets RECUED_CALLER_SIGNS=1 — it stages the addon it rebuilt
+// for the target arch and signs both with the Developer ID — so it still gets
+// the bare injected binary.
+const CALLER_SIGNS = process.env.RECUED_CALLER_SIGNS === '1';
+if (process.platform === 'darwin' && !CALLER_SIGNS) {
+  const sidecar = EMBED_ADDON ? addonPath : resolveCipherAddon();
+  if (!sidecar || !existsSync(sidecar)) {
+    fail(
+      `no native addon to put beside the binary (${sidecar || 'better-sqlite3-multiple-ciphers is not installed'}).\n`
+        + '  Run npm ci first — the binary cannot open a database without it.',
+    );
+  }
+  // The embed path probed it already; a sidecar is probed here, because an
+  // addon of the wrong ABI is the boots-then-cannot-pair binary refused above.
+  if (!EMBED_ADDON) assertAddonMatchesThisNode(sidecar);
+  mkdirSync(join(OUT, 'lib'), { recursive: true });
+  copyFileSync(sidecar, join(OUT, 'lib', 'better_sqlite3.node'));
+  console.log(`[build-binary] staged lib/better_sqlite3.node beside ${binName}`);
+  try {
+    execFileSync(process.execPath, [join(__dirname, 'sign-macos.mjs'), '--dir', OUT], {
+      stdio: 'inherit',
+    });
+  } catch {
+    fail('ad-hoc signing failed — see the sign-macos output above.');
+  }
+  // A signed binary is not a working one: run it.
+  try {
+    const reported = execFileSync(binPath, ['--version'], { encoding: 'utf8', timeout: 60_000 }).trim();
+    console.log(`[build-binary] ${binName} --version → ${reported}`);
+  } catch (err) {
+    fail(`the signed binary does not run: ${(err?.stderr || err?.message || err).toString().trim()}`);
+  }
+}
+
 // ── 5. Convenience checksum (S2's signer re-derives the authoritative one) ─
 const sha256 = await new Promise((res, rej) => {
   const h = createHash('sha256');
@@ -326,7 +384,10 @@ writeFileSync(join(OUT, `${binName}.sha256`), `${sha256}  ${binName}\n`);
 console.log(`[build-binary] done → ${binPath}`);
 console.log(`[build-binary] sha256: ${sha256}`);
 console.log(
-  process.platform === 'darwin'
-    ? '[build-binary] NEXT: Developer ID sign + notarize (S4) → receipt → Minisign + manifest (S2).'
-    : '[build-binary] NEXT: native smoke receipt → Minisign + manifest (S2).',
+  process.platform !== 'darwin'
+    ? '[build-binary] NEXT: native smoke receipt → Minisign + manifest (S2).'
+    : CALLER_SIGNS
+      ? '[build-binary] NEXT: Developer ID sign + notarize (S4) → receipt → Minisign + manifest (S2).'
+      : `[build-binary] ad-hoc signed, lib/better_sqlite3.node beside it — runs on this Mac, not `
+        + 'distributable. A release build is scripts/build-binary-macos.mjs.',
 );

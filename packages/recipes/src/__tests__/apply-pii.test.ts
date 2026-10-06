@@ -432,7 +432,25 @@ describe('applyAutoPiiProtection', () => {
     expect(residualOutcomes(result)).toEqual(['self_referential_stop_when']);
   });
 
-  it('records content_only for content findings that cannot seed an identifier ledger', () => {
+  // D-316 amendment (owner ruling 2026-10-05): a `content` tag is no longer
+  // decorative — on a server it hides the known contacts and every email in
+  // the text — so auto-PII adds content-only tags too.
+  it('injects a content tag into a batch-capable step whose only finding is content', () => {
+    const recipe = recipeWith([
+      source('message', 'message-source'),
+      aiClassify({ 'llm.data': '{{step.message}}' }),
+    ]);
+
+    const result = applyAutoPiiProtection(recipe, classifierFrom({
+      'message-source': { body: ['content'] },
+    }));
+
+    expect(result.changed).toBe(true);
+    expect(inputOf(stepById(result.recipe, 'ai'))['llm.pii_fields']).toEqual({ body: 'content' });
+    expect(result.residual).toEqual([]);
+  });
+
+  it('brackets a content-only finding on a structured source', () => {
     const recipe = recipeWith([
       source('message', 'message-source'),
       aiPrompt({ 'llm.prompt': '{{step.message}}' }),
@@ -442,8 +460,43 @@ describe('applyAutoPiiProtection', () => {
       'message-source': { body: ['content'] },
     }));
 
+    expect(result.changed).toBe(true);
+    expect(result.brackets).toHaveLength(1);
+    expect(result.brackets[0]!.sources[0]!.fields).toEqual({ body: 'content' });
+    const protect = stepsOf(result.recipe).find((s) => s.transform === 'pii-protect')!;
+    expect(protect.fields).toEqual([{ path: 'body', kind: 'content' }]);
+    expect(inputOf(stepById(result.recipe, 'ai'))['llm.prompt']).toBe(`{{step.${String(protect.id)}.aliased}}`);
+    expect(result.residual).toEqual([]);
+  });
+
+  it('a content value interpolated whole into the prompt has no path to tag', () => {
+    const recipe = recipeWith([
+      source('message', 'message-source'),
+      aiPrompt({ 'llm.prompt': 'Summarize: {{step.message.body}}' }),
+    ]);
+
+    const result = applyAutoPiiProtection(recipe, classifierFrom({
+      'message-source': { body: ['content'] },
+    }));
+
     expect(result.changed).toBe(false);
-    expect(residualOutcomes(result)).toEqual(['content_only']);
+    expect(residualOutcomes(result)).toEqual(['no_bracketable_source']);
+  });
+
+  it('⛔ a content-only bracket that would leave content untagged is rolled back, never called protected', () => {
+    // `notes` is a nested list this source's shape cannot tag beside `body`,
+    // so a bracket would cover `body` alone.
+    const recipe = recipeWith([
+      source('message', 'message-source'),
+      aiPrompt({ 'llm.prompt': '{{step.message}}' }),
+    ]);
+
+    const result = applyAutoPiiProtection(recipe, classifierFrom({
+      'message-source': { body: ['content'], 'notes.[].text': ['content'] },
+    }));
+
+    expect(result.changed).toBe(false);
+    expect(residualOutcomes(result)).toEqual(['verification_failed']);
   });
 
   it('records no_bracketable_source for untraced gaps', () => {

@@ -2,15 +2,15 @@
  *
  * The chat-only, index-mode-only injection of the `tools.search`
  * catalog-recall meta-tool. Pins: full inertness when disabled, correct
- * injection + dispatch when enabled, the kind-scope gate on the search
- * corpus, and the anti-loop result shapes.
+ * injection + dispatch when enabled, the search corpus's membership (no kind
+ * gate — the per-kind scope is retired, D-137 W2.2), and the anti-loop
+ * result shapes.
  */
 
 import { describe, expect, it } from 'vitest';
 import type {
   ChatDispatchContext,
   ChatDispatchResult,
-  ChatToolCatalogScopeState,
   InternalToolRegistry,
   ToolEntry,
 } from '@recued/contracts';
@@ -71,10 +71,6 @@ const CATALOG: ReadonlyArray<ToolEntry> = [
   mkEntry('peer.tool', 3),
 ];
 
-const scope = (kinds: string[]): ChatToolCatalogScopeState => ({
-  enabled_kinds: kinds as ChatToolCatalogScopeState['enabled_kinds'],
-  updated_at: 1,
-});
 
 describe('TOOLS_SEARCH_TOOL_ENTRY description is mode-agnostic (index AND lean-core)', () => {
   // The one entry is injected in BOTH thinning modes, so its self-describing
@@ -110,12 +106,11 @@ describe('wrapChatRegistryForCatalogMode — the wire seam maps mode → injecti
   // mode, not a raw boolean). Locking it here kills the codex HIGH mutation:
   // a regression to `mode === 'index'` would drop tools.search in lean-core
   // while the system prompt still tells the model to call it.
-  const getScope = () => null;
   const catalog: ReadonlyArray<ToolEntry> = [mkEntry('mail.search', 1), mkEntry('recued/recipe.a', 2)];
 
   it('injects tools.search for BOTH thinning modes (index AND lean-core)', () => {
     for (const mode of ['index', 'lean-core'] as ReadonlyArray<ChatCatalogDeliveryMode>) {
-      const reg = wrapChatRegistryForCatalogMode(mkInner(catalog), mode, getScope);
+      const reg = wrapChatRegistryForCatalogMode(mkInner(catalog), mode);
       expect(reg.getByName(TOOLS_SEARCH_TOOL_NAME)).not.toBeNull();
       expect(reg.list().some((e) => e.name === TOOLS_SEARCH_TOOL_NAME)).toBe(true);
       expect(reg.listByTier(1).some((e) => e.name === TOOLS_SEARCH_TOOL_NAME)).toBe(true);
@@ -123,7 +118,7 @@ describe('wrapChatRegistryForCatalogMode — the wire seam maps mode → injecti
   });
 
   it('leaves full mode fully inert (tools.search absent, unknown_tool on dispatch)', async () => {
-    const reg = wrapChatRegistryForCatalogMode(mkInner(catalog), 'full', getScope);
+    const reg = wrapChatRegistryForCatalogMode(mkInner(catalog), 'full');
     expect(reg.getByName(TOOLS_SEARCH_TOOL_NAME)).toBeNull();
     expect(reg.list().some((e) => e.name === TOOLS_SEARCH_TOOL_NAME)).toBe(false);
     expect(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'x' }, CTX)).toMatchObject({
@@ -137,18 +132,17 @@ describe('wrapChatRegistryForCatalogModes — per-slot enable-if-any-source-thin
   // The per-slot wire seam: the wrapper is construction-time (can't be per-turn),
   // and per-source modes are LIVE, so it enables tools.search whenever ANY source
   // could thin (a superset dispatch; presentation drops it on full turns).
-  const getScope = () => null;
   const catalog: ReadonlyArray<ToolEntry> = [mkEntry('mail.search', 1), mkEntry('recued/recipe.a', 2)];
 
   it('injects tools.search if ANY of the possible per-source modes thins', () => {
     // free_pool → index while BYOK slots stay full: some source thins → enabled.
-    const reg = wrapChatRegistryForCatalogModes(mkInner(catalog), ['full', 'index'], getScope);
+    const reg = wrapChatRegistryForCatalogModes(mkInner(catalog), ['full', 'index']);
     expect(reg.getByName(TOOLS_SEARCH_TOOL_NAME)).not.toBeNull();
     expect(reg.list().some((e) => e.name === TOOLS_SEARCH_TOOL_NAME)).toBe(true);
   });
 
   it('stays inert when EVERY possible mode is full (no source thins)', () => {
-    const reg = wrapChatRegistryForCatalogModes(mkInner(catalog), ['full', 'full'], getScope);
+    const reg = wrapChatRegistryForCatalogModes(mkInner(catalog), ['full', 'full']);
     expect(reg.getByName(TOOLS_SEARCH_TOOL_NAME)).toBeNull();
     expect(reg.list().some((e) => e.name === TOOLS_SEARCH_TOOL_NAME)).toBe(false);
   });
@@ -159,7 +153,6 @@ describe('wrapRegistryWithToolsSearch — disabled (full mode) is fully inert', 
     const inner = mkInner(CATALOG);
     const wrapped = wrapRegistryWithToolsSearch(inner, {
       enabled: false,
-      getScope: () => null,
     });
     expect(wrapped).toBe(inner);
     expect(wrapped.list().map((e) => e.name)).not.toContain(TOOLS_SEARCH_TOOL_NAME);
@@ -176,9 +169,8 @@ describe('wrapRegistryWithToolsSearch — disabled (full mode) is fully inert', 
 describe('wrapRegistryWithToolsSearch — enabled (index mode) injection', () => {
   const wrapped = (
     catalog: ReadonlyArray<ToolEntry> = CATALOG,
-    getScope: () => ChatToolCatalogScopeState | null = () => null,
   ): InternalToolRegistry =>
-    wrapRegistryWithToolsSearch(mkInner(catalog), { enabled: true, getScope });
+    wrapRegistryWithToolsSearch(mkInner(catalog), { enabled: true });
 
   it('injects tools.search immediately after the last Tier-1 entry', () => {
     const names = wrapped().list().map((e) => e.name);
@@ -210,7 +202,7 @@ describe('wrapRegistryWithToolsSearch — enabled (index mode) injection', () =>
       seen.push({ name, args, ctx });
       return { ok: true, result: { ran: name } };
     });
-    const reg = wrapRegistryWithToolsSearch(inner, { enabled: true, getScope: () => null });
+    const reg = wrapRegistryWithToolsSearch(inner, { enabled: true });
     const args = { q: 'x', limit: 3 };
     await expect(reg.dispatch('contact.search', args, CTX)).resolves.toEqual({
       ok: true,
@@ -222,10 +214,8 @@ describe('wrapRegistryWithToolsSearch — enabled (index mode) injection', () =>
 });
 
 describe('wrapRegistryWithToolsSearch — dispatch search', () => {
-  const reg = (
-    getScope: () => ChatToolCatalogScopeState | null = () => null,
-  ): InternalToolRegistry =>
-    wrapRegistryWithToolsSearch(mkInner(CATALOG), { enabled: true, getScope });
+  const reg = (): InternalToolRegistry =>
+    wrapRegistryWithToolsSearch(mkInner(CATALOG), { enabled: true });
 
   it('returns matching Tier-2 entries with full args_schema + match guidance', async () => {
     const res = await reg().dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'follow-up email' }, CTX);
@@ -277,32 +267,38 @@ describe('wrapRegistryWithToolsSearch — dispatch search', () => {
     ).resolves.toMatchObject({ ok: false, reason: 'invalid_args' });
   });
 
-  it('honors Mary per-kind catalog scope — a disabled-kind recipe is not rediscoverable', async () => {
-    // draft-followup requires the 'http' kind; summarize-pdf requires 'storage'.
+  it('finds a recipe whatever kind it needs — there is no kind gate on the corpus', async () => {
+    // ⛔ D-137 W2.2 — the per-kind scope is retired (2026-10-04). Its default
+    // kept every `connection` / `cli` / `dom` recipe out of this corpus, so a
+    // Home Assistant or local-program recipe could never be found. Search must
+    // return what the main catalog would show: membership is the grant's call.
     const catalog: ReadonlyArray<ToolEntry> = [
       mkEntry('contact.search', 1),
-      mkEntry('recued-core/draft-followup-email', 2, {
-        topic_tags: ['email'],
-        description: 'Draft a follow-up email',
-        requires_kinds: ['http'],
+      mkEntry('recued-core/check-house-home-assistant', 2, {
+        topic_tags: ['home'],
+        description: 'Check the house before you leave',
+        requires_kinds: ['connection'],
       }),
-      mkEntry('recued-core/summarize-pdf', 2, {
-        topic_tags: ['pdf'],
-        description: 'Summarize a PDF email attachment',
-        requires_kinds: ['storage'],
+      mkEntry('recued-core/transcribe-house-meeting', 2, {
+        topic_tags: ['audio'],
+        description: 'Transcribe the house meeting recording',
+        requires_kinds: ['cli'],
+      }),
+      mkEntry('recued-core/read-house-listing-page', 2, {
+        topic_tags: ['web'],
+        description: 'Read the house listing page in the open tab',
+        requires_kinds: ['dom'],
       }),
     ];
-    // Scope enables only 'storage' → the 'http' recipe is kind-gated out.
-    const reg = wrapRegistryWithToolsSearch(mkInner(catalog), {
-      enabled: true,
-      getScope: () => scope(['storage']),
-    });
-    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
+    const reg = wrapRegistryWithToolsSearch(mkInner(catalog), { enabled: true });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'house' }, CTX);
     const result = (res as { result: Record<string, unknown> }).result;
     const slugs = (result.matches as Array<{ recipe_slug: string }>).map((m) => m.recipe_slug);
-    // Both descriptions contain "email", but the http-kind recipe is gated out.
-    expect(slugs).toContain('recued-core/summarize-pdf');
-    expect(slugs).not.toContain('recued-core/draft-followup-email');
+    expect(slugs.sort()).toEqual([
+      'recued-core/check-house-home-assistant',
+      'recued-core/read-house-listing-page',
+      'recued-core/transcribe-house-meeting',
+    ]);
   });
 });
 
@@ -324,7 +320,6 @@ describe('wrapRegistryWithToolsSearch — no imposed result cap (2026-08-20)', (
   it('returns EVERY match when no limit is passed (23 > the old 5/20 caps)', async () => {
     const reg = wrapRegistryWithToolsSearch(mkInner(wideCatalog), {
       enabled: true,
-      getScope: () => null,
     });
     const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
     const result = (res as { result: Record<string, unknown> }).result;
@@ -334,7 +329,6 @@ describe('wrapRegistryWithToolsSearch — no imposed result cap (2026-08-20)', (
   it('a model-passed limit still bounds the result', async () => {
     const reg = wrapRegistryWithToolsSearch(mkInner(wideCatalog), {
       enabled: true,
-      getScope: () => null,
     });
     const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email', limit: 2 }, CTX);
     const result = (res as { result: Record<string, unknown> }).result;
@@ -355,7 +349,6 @@ describe('wrapRegistryWithToolsSearch — D-247 D8 owner Tier-2 projection', () 
   it('the owner projection REPLACES the exposed Tier-2 corpus — a hidden granted recipe is findable', async () => {
     const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
       enabled: true,
-      getScope: () => null,
       tier2OwnerCatalog: () => [hiddenGranted],
     });
     const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
@@ -371,7 +364,6 @@ describe('wrapRegistryWithToolsSearch — D-247 D8 owner Tier-2 projection', () 
   it('the reachability filter is NOT applied over the owner projection (it is already grant-decided)', async () => {
     const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
       enabled: true,
-      getScope: () => null,
       tier2GrantFilter: () => () => false, // would reject everything
       tier2OwnerCatalog: () => [hiddenGranted],
     });
@@ -383,11 +375,58 @@ describe('wrapRegistryWithToolsSearch — D-247 D8 owner Tier-2 projection', () 
   it('without an owner projection the D-247 D9 grant filter still gates the corpus', async () => {
     const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
       enabled: true,
-      getScope: () => null,
       tier2GrantFilter: () => () => false,
     });
     const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'email' }, CTX);
     const result = (res as { result: Record<string, unknown> }).result;
     expect(result.match_count).toBe(0);
+  });
+});
+
+describe('wrapRegistryWithToolsSearch — granted raw pack actions are findable', () => {
+  // ⛔ A raw pack action is Tier 2, so lean-core drops it from the listing like
+  // any recipe — and it is not a registry entry, so the recipe corpus never held
+  // it. Live, "take a snapshot of the camera" searched three times and found
+  // nothing, while the owner's contract granted the action and the dispatch would
+  // have run it by name.
+  const SNAPSHOT = 'recued_op_recued-core.home-assistant.camera.snapshot';
+  const rawAction = mkEntry(SNAPSHOT, 2, {
+    description: '[read] Take the current picture from one camera (pack recued-core.home-assistant)',
+    arg_schema: { type: 'object', properties: { entity_id: { type: 'string' }, connection: { type: 'string' } } },
+  });
+  const OWNER_SOURCE = { channel: 'chat', actor: 'user_self', chat_session_id: 'cs1', user_id: 'owner' } as const;
+  const ownerCtx = { ...CTX, execution_source: OWNER_SOURCE } as unknown as ChatDispatchContext;
+
+  it('finds a granted action a lean turn never lists, with the schema to call it', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), { enabled: true, rawOpSource: () => [rawAction] });
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'camera snapshot' }, ownerCtx);
+    const result = (res as { result: { matches: Array<{ recipe_slug: string; args_schema: unknown }> } }).result;
+    const hit = result.matches.find((m) => m.recipe_slug === SNAPSHOT);
+    expect(hit?.args_schema).toEqual(rawAction.arg_schema);
+  });
+
+  it("asks for THIS turn's granted actions, so search widens nothing the dispatch would refuse", async () => {
+    const seen: unknown[] = [];
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      // A source granted nothing gets nothing back, as from the real source.
+      rawOpSource: (source) => { seen.push(source); return source === OWNER_SOURCE ? [rawAction] : []; },
+    });
+    const owner = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'camera snapshot' }, ownerCtx);
+    const other = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'camera snapshot' }, CTX);
+    const slugs = (r: unknown) => ((r as { result: { matches: Array<{ recipe_slug: string }> } }).result.matches)
+      .map((m) => m.recipe_slug);
+    expect(slugs(owner)).toContain(SNAPSHOT);
+    expect(slugs(other)).not.toContain(SNAPSHOT);
+    expect(seen).toEqual([OWNER_SOURCE, undefined]);
+  });
+
+  it('is threaded through the per-slot constructor the wire uses (positional, last)', async () => {
+    const reg = wrapChatRegistryForCatalogModes(
+      mkInner(CATALOG), ['lean-core'], undefined, undefined, undefined, () => [rawAction],
+    );
+    const res = await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'camera snapshot' }, ownerCtx);
+    const result = (res as { result: { matches: Array<{ recipe_slug: string }> } }).result;
+    expect(result.matches.map((m) => m.recipe_slug)).toContain(SNAPSHOT);
   });
 });

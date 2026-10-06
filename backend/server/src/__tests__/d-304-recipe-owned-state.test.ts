@@ -38,6 +38,8 @@ import { recipeOwnedStateOf, removeRecipeOwnedState, type RecipeOwnedStateDeps }
 import { createRecipeStore } from '../recipe-store.js';
 import { createScheduleStore } from '../schedule-store.js';
 import { createEventTriggersStore } from '../triggers/store.js';
+import { ensureTimeRelativeWatcherSchema, forgetTimeRelativeWatcherRecipe } from '../watchers/time-relative-watcher.js';
+import { ensureHttpWatcherMemorySchema, forgetHttpWatcherRecipe } from '../watchers/http-watcher-memory.js';
 
 const recipe = (recipe_id: string): RecipeDefinition => ({
   recipe_id,
@@ -70,7 +72,18 @@ const server = (hook = true, bundled: readonly RecipeDefinition[] = []) => {
   const autoRun = createAutoRunSettingsStore(db);
   const triggers = createEventTriggersStore(db);
   const circuit = createCircuitBreakerStore(db);
-  const owned: RecipeOwnedStateDeps = { recipes, dishes, dishContext, schedules, autoRun, triggers, autoRunCircuit: circuit };
+  ensureTimeRelativeWatcherSchema(db);
+  ensureHttpWatcherMemorySchema(db);
+  const owned: RecipeOwnedStateDeps = {
+    recipes, dishes, dishContext, schedules, autoRun, triggers, autoRunCircuit: circuit,
+    // As `compose-listeners.ts` builds it.
+    watcherState: {
+      clear: (id) => {
+        forgetTimeRelativeWatcherRecipe(db, id);
+        forgetHttpWatcherRecipe(db, id);
+      },
+    },
+  };
   if (hook) recipes.addOnDeleted!((id) => removeRecipeOwnedState(id, owned));
   return { db, recipes, dishes, dishContext, groups, schedules, autoRun, triggers, circuit, owned, packDir };
 };
@@ -107,7 +120,20 @@ const setUp = (s: Server, recipe_id: string) => {
   // Its timer tripped after failing: run health, not an owner's setting.
   s.circuit.set({ dish_id: `dsh_auto_${recipe_id}`, recipe_id, consecutive_failures: 3, auto_disabled: true,
     last_failure_at: 1, last_failure_reason: 'boom' });
+  // Its watchers' state: a time-relative firing and start point, the page a
+  // page watcher remembers. (The calendar watcher's cursor went with it,
+  // 2026-10-05.)
+  s.db.prepare('INSERT INTO time_relative_watcher_state (recipe_id, slug, record_id, offset_label, fired_at) VALUES (?, ?, ?, ?, ?)')
+    .run(recipe_id, 'w', 'cal:1', '-30m', 1);
+  s.db.prepare('INSERT INTO time_relative_watcher_armed (recipe_id, slug, armed_at) VALUES (?, ?, ?)').run(recipe_id, 'w', 1);
+  s.db.prepare('INSERT INTO http_watcher_memory (recipe_id, target_url, hash, body) VALUES (?, ?, ?, ?)')
+    .run(recipe_id, 'https://example.com/pricing', 'h1', '<p>Plan A $10</p>');
 };
+
+const watcherRows = (s: Server, recipe_id: string): number =>
+  (s.db.prepare('SELECT COUNT(*) AS n FROM time_relative_watcher_state WHERE recipe_id = ?').get(recipe_id) as { n: number }).n
+  + (s.db.prepare('SELECT COUNT(*) AS n FROM time_relative_watcher_armed WHERE recipe_id = ?').get(recipe_id) as { n: number }).n
+  + (s.db.prepare('SELECT COUNT(*) AS n FROM http_watcher_memory WHERE recipe_id = ?').get(recipe_id) as { n: number }).n;
 
 const stateOf = (s: Server, recipe_id: string) => ({
   dishes: s.dishes.listByRecipe(recipe_id).map((d) => d.dish_id).sort(),
@@ -116,6 +142,7 @@ const stateOf = (s: Server, recipe_id: string) => ({
   timers: s.autoRun.list().filter((t) => t.recipe_id === recipe_id).map((t) => t.dish_id),
   continuity: s.dishContext.get(`dsh_weekly_${recipe_id}`),
   tripped: s.circuit.list().some((c) => c.recipe_id === recipe_id),
+  watchers: watcherRows(s, recipe_id),
 });
 
 describe('removeRecipeOwnedState — what belongs to the recipe, and nothing else', () => {
@@ -134,10 +161,14 @@ describe('removeRecipeOwnedState — what belongs to the recipe, and nothing els
       // ⛔ Found driving a live server: left behind, the trip made the reinstalled
       // recipe start out tripped, before it had ever run.
       tripped: false,
+      // Left behind, a reinstall resumed from them: a time-relative watch fired
+      // every boundary since the FIRST install (2026-10-05).
+      watchers: 0,
     });
     // Another recipe keeps everything, and the shared group stays for it.
     expect(stateOf(s, 'other-recipe').dishes).toHaveLength(4);
     expect(stateOf(s, 'other-recipe').tripped).toBe(true);
+    expect(stateOf(s, 'other-recipe').watchers).toBe(3);
     expect(stateOf(s, 'other-recipe').schedules).toEqual(['sch_other-recipe']);
     expect(s.groups.get('dgrp_team')).not.toBeNull();
   });
@@ -301,6 +332,8 @@ describe('the composition registers it on the one seam every uninstall reaches',
     // whether the recipe was on the roster BEFORE removing, and rebuilds when it was,
     // even with no owner-made automation (the live drive's case).
     expect(source).toMatch(/autoRunCircuit: rpc\.autoRunDeps\.circuitStore/);
+    // Its watchers' state, from the stores the watchers themselves use.
+    expect(source).toMatch(/watcherState: \{\s*clear: \(recipe_id: string\) => \{\s*if \(storage\.db\) \{\s*forgetTimeRelativeWatcherRecipe\(storage\.db, recipe_id\);\s*forgetHttpWatcherRecipe\(storage\.db, recipe_id\);/);
     expect(hook).toMatch(/const onRoster = \[\.\.\.\(autoRun\?\.roster\.values\(\) \?\? \[\]\)\]\.some\(\(entry\) => entry\.recipe_id === recipe_id\);[\s\S]*removeRecipeOwnedState\(/);
     expect(hook).toMatch(/if \(removed\.automations > 0 \|\| onRoster\) \{[^}]*autoRun\?\.refreshRoster\(\)/);
   });

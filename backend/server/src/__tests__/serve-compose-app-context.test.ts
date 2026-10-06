@@ -62,6 +62,7 @@ describe('composeAppContext', () => {
           getCollectionRegistry: () => undefined,
           getExecutorConfig: () => undefined,
           getExecuteDeps: () => undefined,
+          getScheduleDeps: () => undefined,
         },
       });
 
@@ -91,7 +92,6 @@ describe('composeAppContext', () => {
       expect(app.annotationStoreRef).toBeDefined();
       expect(app.annotationDeps?.store).toBe(app.annotationStoreRef);
       expect(app.chatStoreRef).toBeDefined();
-      expect(app.chatToolCatalogStoreRef).toBeDefined();
       expect(app.chatConnectionMcpStoreRef).toBeDefined();
       expect(app.chatInboundTokenStoreRef).toBeDefined();
       expect(app.chatOrchestratorRef).toBeDefined();

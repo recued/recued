@@ -503,10 +503,9 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   },
 
   // ── D-117 calendar reactive helpers ──────────────────────
-  // `events` is the `{{trigger.cal.items}}` array from the
-  // calendar-watcher output; `since_ms` is the high-watermark the
-  // recipe supplies (via `{{trigger.cal.last_seen_at}}` snapshotted
-  // into `shared.*`, or via `{{context.now}} - window`).
+  // `events` is an array of calendar rows (`core.calendar.list`);
+  // `since_ms` is the high-watermark the recipe supplies (a mark kept in
+  // `shared.*`, or `{{context.now}} - window`).
   calendar_changed_since: {
     events: REQ('array'),
     since_ms: REQ('number'),

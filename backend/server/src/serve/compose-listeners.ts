@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
 import { createCliBinaryReachabilityProbe } from '../cli-binary-reachability.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
-import { composeWebhookAndHookListeners } from '../composition/bin/wire-webhook-and-hook-listeners.js';
+import { composeWebhookListeners } from '../composition/bin/wire-webhook-listeners.js';
 import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingress.js';
@@ -72,7 +72,10 @@ import {
   composeInstallConfigResolver,
   composeRecipeOpResolver,
 } from '../recipe-capability-wiring.js';
-import type { WebhookDoorEnrollDeps } from '../webhook-door-enroll.js';
+import {
+  followMainDishWebhookDoors,
+  type WebhookDoorEnrollDeps,
+} from '../webhook-door-enroll.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../records/non-owner-exposure.js';
 import { readRootProjections, readRootProjectionsBatch } from '../records/root-projection.js';
 import type { TimelineRollup } from '@recued/contracts';
@@ -169,8 +172,13 @@ import {
 } from '../watch/source-registry.js';
 import { emitAutomationRule, emitSchedule } from '../events/emit-sites.js';
 import { removeRecipeOwnedState, type RecipeOwnedStateDeps } from '../recipe-owned-state.js';
+import { removeRetiredShippedRecipes } from '../retired-recipe-removal.js';
+import { forgetTimeRelativeWatcherRecipe } from '../watchers/time-relative-watcher.js';
+import { forgetHttpWatcherRecipe } from '../watchers/http-watcher-memory.js';
 import { createDishAutomation } from '../dish-automation.js';
 import { mainDishFor } from '../dish-handler.js';
+import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
+import { startsOnItsOwn } from '@recued/contracts';
 import { deleteSchedule, listSchedules, updateSchedule } from '../schedule-handler.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import { switchOffUserTriggers } from '../triggers/handler.js';
@@ -438,7 +446,6 @@ export interface ComposeListenersOptions {
   collection: Pick<
     CollectionContext,
     | 'collectionRegistry'
-    | 'webhookWatcherQueue'
     | 'watcherDispatcher'
     | 'calendarStack'
     | 'mailStack'
@@ -728,11 +735,10 @@ export const composeListeners = async (
     emitAutomationRule(storage.eventBus, 'watch'),
   );
 
-  const { webhookListener, hookListener, connectionWebhookListener } =
-    await composeWebhookAndHookListeners({
+  const { webhookListener, connectionWebhookListener } =
+    await composeWebhookListeners({
       webhookPort,
       collectionRegistry: collection.collectionRegistry,
-      webhookWatcherQueue: collection.webhookWatcherQueue,
       // D-128 P3 vendor-connection webhook receiver + the webhook
       // push-source provider (WatchSource generalization — this wires
       // the receiver module that existed unwired since D-128).
@@ -1339,6 +1345,10 @@ export const composeListeners = async (
           prefilledArgs,
           buildResolverDeps(storage.localManifestStore),
         ),
+      // An action whose pack declares no reviewable fields: its declared request
+      // fields, read from the same installed catalog (display only).
+      lookupRequestSchema: (operationId) =>
+        buildResolverDeps(storage.localManifestStore).lookupOperation(operationId)?.request_schema,
       // ⛔ REQUIRED or every batched ask fails closed and renders no rows — the
       // same silent feature-off the `/ask` page had before its own membership
       // read was threaded. Not passing it is not a smaller feature, it is none.
@@ -2041,6 +2051,14 @@ export const composeListeners = async (
       ? { autoRun: rpc.autoRunDeps.settingsStore, autoRunCircuit: rpc.autoRunDeps.circuitStore }
       : {}),
     ...(eventTriggersBundle ? { triggers: eventTriggersBundle.store } : {}),
+    watcherState: {
+      clear: (recipe_id: string) => {
+        if (storage.db) {
+          forgetTimeRelativeWatcherRecipe(storage.db, recipe_id);
+          forgetHttpWatcherRecipe(storage.db, recipe_id);
+        }
+      },
+    },
   };
   rpc.publishRecipeOwnedState(() => recipeOwnedState);
   execution.executeDeps.recipeStore.addOnDeleted?.((recipe_id) => {
@@ -2068,6 +2086,23 @@ export const composeListeners = async (
       watchBundle?.manager.recompute();
     });
   }
+  // D-193 amendment — a shipped recipe Recued retired and that can never run
+  // again goes at boot (`retired-recipe-removal.ts`). HERE, because this is
+  // where its deletion hooks are live (the owned-state cleanup above, the grant
+  // purge, the reconcile), and before any scheduler starts. Never fatal: a
+  // failure leaves the recipe as it was, refused at every run, and the next
+  // boot tries again.
+  try {
+    const retired = removeRetiredShippedRecipes(execution.executeDeps.recipeStore);
+    if (retired.removed.length > 0) {
+      console.warn(`[recipes] removed retired recipe(s) Recued no longer ships: ${retired.removed.join(', ')}`);
+    }
+  } catch (error) {
+    console.warn(
+      '[recipes] removing retired recipes failed, retrying next boot: '
+        + (error instanceof Error ? error.message : String(error)),
+    );
+  }
   // D-315 §5.2 — the templates recipes bring. An install creates or re-applies
   // each recipe's starter (the pack install reads this late, like the saved
   // views), an uninstall removes it, "Duplicate to edit" re-points the settings
@@ -2094,6 +2129,21 @@ export const composeListeners = async (
   if (dishDeps) {
     dishDeps.publisherOf = (recipe_id) =>
       execution.executeDeps.recipeStore.getStored(recipe_id)?.publisher_id ?? null;
+    // Switching on a recipe the server only ships would start nothing: its
+    // timer and triggers are read from the installed recipes (`listStored`).
+    dishDeps.recipeInstall = (recipe_id) => {
+      const recipes = execution.executeDeps.recipeStore;
+      const recipe = recipes.get(recipe_id);
+      if (recipe === null) return null;
+      const installed = recipes.getStored(recipe_id) !== null;
+      const starts = startsOnItsOwn(recipe);
+      return {
+        installed,
+        startsOnItsOwn: starts,
+        name: recipe.metadata?.name?.trim() || recipe_id,
+        packs: installed || !starts ? [] : bundledPacksShippingRecipe(recipe_id),
+      };
+    };
     dishDeps.automation = createDishAutomation({
       ...(eventTriggersBundle
         ? {
@@ -2493,6 +2543,35 @@ export const composeListeners = async (
           ...(resolveWebhookRecipeOp ? { resolveOp: resolveWebhookRecipeOp } : {}),
         }
       : undefined;
+
+  // D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH. Late-bound onto the
+  // dish rpc here because the door substrate composes after the dish stores.
+  // Reads the SAME door deps the install and save paths mint with, so a door a
+  // settings save makes is one the Gateway sees.
+  if (dishDeps && webhookDoorDeps && app.webhookConsumerStoreRef) {
+    const consumerStore = app.webhookConsumerStoreRef;
+    const doorDeps = webhookDoorDeps;
+    dishDeps.webhookDoors = {
+      mainDishChanged: (recipe_id) => {
+        // The store the dish bindings above read, and the webhook runner runs from.
+        const recipe = execution.executeDeps.recipeStore.get(recipe_id);
+        if (recipe === null) return [];
+        const changes = followMainDishWebhookDoors(
+          { recipe_id, recipe },
+          { ...doorDeps, consumerStore },
+        );
+        for (const change of changes) {
+          if (change.state === 'unchanged') continue;
+          console.info(
+            `[dish] webhook door for '${recipe_id}' ${change.state}`
+              + (change.reason !== undefined ? ` — ${change.reason}` : '')
+              + (change.added !== undefined && change.added.length > 0 ? ` (adds ${change.added.join(', ')})` : ''),
+          );
+        }
+        return changes;
+      },
+    };
+  }
 
   const webhookRuntimeComposable = app.webhookIngressStoreRef !== undefined
     && app.webhookDeliveryStoreRef !== undefined
@@ -3041,10 +3120,8 @@ export const composeListeners = async (
     collectionDeps,
     webhookListener,
     ...(webhookProfileListener ? { webhookProfileListener } : {}),
-    ...(hookListener ? { hookListener } : {}),
     ...(vendorWebhookListener ? { vendorWebhookListener } : {}),
     ...(connectionWebhookListener ? { connectionWebhookListener } : {}),
-    watcherRpcDeps: { watcherDispatcher: collection.watcherDispatcher },
     triggerTestRpcDeps: { watcherDispatcher: collection.watcherDispatcher },
     recipeListDeps: rpc.observabilityBundle.recipeListDeps,
     recipeSaveDeps: {

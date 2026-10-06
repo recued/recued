@@ -259,12 +259,6 @@ export interface ServerConfig {
    *  `search` / `get` / `runRetention` / `listEndpoints`. When
    *  absent, those methods return `not_configured`. */
   collectionDeps?: import('./collections/collection-handler.js').CollectionHandlerDeps;
-  /** D-115 Phase 6C `/hook/{recipe_id}/{slug}` listener. Same gate
-   *  as the Phase D webhook listener below — only mounted when
-   *  `webhook_port>0` so self-hosters must bring their own public
-   *  address. Enqueues into the webhook-watcher queue consumed by
-   *  reactive recipes' `trigger_steps`. */
-  hookListener?: import('./watchers/webhook-hook-listener.js').HookRequestHandler;
   /** Phase D webhook listener (D-106). When wired, enables
    *  `POST /webhook/{slug}`. bin.ts wires this only when
    *  `public_reachable=true` AND `webhook_port>0` — D-096 keeps
@@ -295,16 +289,9 @@ export interface ServerConfig {
    *  to the floor 404, preserving the spec's "don't fingerprint which
    *  vendors are wired" posture. */
   vendorWebhookListener?: import('./composition/bin/wire-vendor-webhook-port.js').VendorWebhookPortHandler;
-  /** D-115 Phase 6D — `runtime.runWatcher` rpc deps. Backs the pair-
-   *  rpc forwarder the extension's local watcher dispatcher uses for
-   *  warehouse-routed slugs (mail / file / calendar / webhook).
-   *  Absent → the rpc returns `not_configured` and the ext kernel
-   *  adapter surfaces it as `SERVER_NOT_REACHABLE` for those slugs. */
-  watcherRpcDeps?: import('./watcher-rpc-handler.js').WatcherRpcDeps;
   /** D-116 Phase 3 — `runtime.testTrigger` rpc deps. Backs Kitchen's
-   *  warehouse-routed trigger-test forward. Shares the same watcher
-   *  dispatcher binding as `runtime.runWatcher`. Absent → the rpc
-   *  returns `not_configured`. */
+   *  warehouse-routed trigger-test forward. Absent → the rpc returns
+   *  `not_configured`. */
   triggerTestRpcDeps?: import('./trigger-test-rpc-handler.js').TriggerTestRpcDeps;
   /** D-116 follow-up — `/status` + `/status.json` HTML/JSON mirror of
    *  the auto-disabled list. Bearer-token gated. Absent → both routes
@@ -754,7 +741,7 @@ export interface ServerConfig {
 /** D-148 W3.5b — closed-list legacy alias map.
  *
  *  Maps existing path shapes (`/auth/pair`, `/status*`, `/webhook/*`,
- *  `/v1/connection/webhook/*`, `/hook/*`) to
+ *  `/v1/connection/webhook/*`) to
  *  the appropriate canonical role. Production wiring (bin.ts) and the
  *  test-side `startServer` shim both thread this through `createPathListenerSet`
  *  so existing paths keep dispatching. A follow-up slice retires the
@@ -785,7 +772,8 @@ export const SERVER_LEGACY_PATH_ALIASES: ReadonlyArray<PathRouterLegacyAlias> = 
   { kind: 'prefix', prefix: '/webhook/', role: 'webhooks' },
   { kind: 'prefix', prefix: '/v1/webhooks/', role: 'webhooks' },
   { kind: 'prefix', prefix: '/v1/connection/webhook/', role: 'webhooks' },
-  { kind: 'prefix', prefix: '/hook/', role: 'webhooks' },
+  // `/hook/{recipe_id}/{slug}` (D-115 6C) went with the webhook watcher it fed,
+  // 2026-10-05: it verified nothing, and a marketplace recipe's id is public.
 ];
 
 /** Per-role handler set returned by `createServerHandlerSet`. The
@@ -1335,37 +1323,6 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
         return;
       }
 
-      // D-115 Phase 6C — `POST /hook/<recipe_id>/<slug>` reactive recipe webhook.
-      if (pathname.startsWith('/hook/') && method === 'POST' && config.hookListener) {
-        const parts = pathname.slice('/hook/'.length).split('/');
-        if (parts.length !== 2 || parts[0].length === 0 || parts[1].length === 0) {
-          respond(res, {
-            ok: false,
-            status: 400,
-            error: {
-              code: 'bad_request',
-              message: '/hook path must be /hook/{recipe_id}/{slug}',
-            },
-          });
-          return;
-        }
-        const recipe_id = safeDecodeURIComponent(parts[0]);
-        const slug = safeDecodeURIComponent(parts[1]);
-        if (recipe_id === null || slug === null) {
-          respond(res, {
-            ok: false,
-            status: 400,
-            error: {
-              code: 'bad_request',
-              message: '/hook path must be /hook/{recipe_id}/{slug}',
-            },
-          });
-          return;
-        }
-        await config.hookListener(req, res, recipe_id, slug);
-        return;
-      }
-
       // No match — vendor-agnostic 404 (spec § A.6.2 fingerprint discipline).
       respond(res, { ok: false, status: 404, error: { code: 'not_found', message: 'no webhook handler matched' } });
     } catch {
@@ -1557,7 +1514,6 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     lifecycleHandlers: config.lifecycleHandlers,
     lifecycleState: config.lifecycleState,
     collectionDeps: config.collectionDeps,
-    watcherRpcDeps: config.watcherRpcDeps,
     triggerTestRpcDeps: config.triggerTestRpcDeps,
     recipeListDeps: config.recipeListDeps,
     recipeSaveDeps: config.recipeSaveDeps,

@@ -150,8 +150,11 @@ $env:RECUED_FORCE = '1'
 $r = Invoke-Install 'v2' $p1
 Remove-Item Env:RECUED_FORCE -ErrorAction SilentlyContinue
 $secondHash = Sha $exe1
-$ok = ($r.Code -eq 0) -and ($firstHash -ne 'absent') -and ($secondHash -ne $firstHash)
-Report 'rerun-replaces' $ok "code=$($r.Code) changed=$($secondHash -ne $firstHash)"
+# The commit-time re-check must not repeat the replace note for an unchanged
+# version: this arm's output said it twice until 2026-10-04.
+$replacingNotes = ([regex]::Matches($r.Out, 'RECUED_FORCE=1 - replacing')).Count
+$ok = ($r.Code -eq 0) -and ($firstHash -ne 'absent') -and ($secondHash -ne $firstHash) -and ($replacingNotes -eq 1)
+Report 'rerun-replaces' $ok "code=$($r.Code) changed=$($secondHash -ne $firstHash) replacing_notes=$replacingNotes"
 
 # -- 3a. A late-current pair still repairs the separately committed UI -------
 # Start from an empty prefix. The feed driver parks the first binary GET for
