@@ -190,6 +190,8 @@ In this repo:
 
 ## Run from source
 
+On Linux and macOS:
+
 ```sh
 npm ci
 npm run build
@@ -197,6 +199,20 @@ npm run build:server
 npm run build:webclient
 RECUED_WEBCLIENT_DIR="$PWD/apps/webclient/build" npm start
 ```
+
+On Windows, in PowerShell:
+
+```powershell
+npm.cmd ci
+npm.cmd run build
+npm.cmd run build:server
+npm.cmd run build:webclient
+$env:RECUED_WEBCLIENT_DIR = "$PWD\apps\webclient\build"
+npm.cmd start
+```
+
+Type `npm.cmd`, not `npm`. By default, PowerShell blocks the script a plain
+`npm` runs. `npm.cmd` is the same npm, without that script.
 
 The server listens on port `7717`. Open <http://localhost:7717/webclient/>.
 You can also use the stable static webclient at <https://app.recued.com/>.

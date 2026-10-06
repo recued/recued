@@ -77,6 +77,8 @@ Only if you want to run from a clone — the released binary needs none of this.
 
 ### Build from a clone
 
+Linux and macOS:
+
 ```sh
 git clone https://github.com/recued/recued.git
 cd recued
@@ -86,12 +88,42 @@ npm run build:server
 npm run build:webclient
 ```
 
+Windows, in PowerShell:
+
+```powershell
+git clone https://github.com/recued/recued.git
+cd recued
+npm.cmd ci
+npm.cmd run build
+npm.cmd run build:server
+npm.cmd run build:webclient
+```
+
+In PowerShell, type `npm.cmd`, not `npm`. On Windows 10 and 11, PowerShell's default execution policy refuses the `npm.ps1` script that a plain `npm` runs ("running scripts is disabled on this system"); `npm.cmd` is the same npm and needs no policy change. In Command Prompt, plain `npm` works.
+
+No Git on Windows? Download the source instead of cloning it, then run the `npm.cmd` lines above from inside `recued-main`:
+
+```powershell
+Invoke-WebRequest https://github.com/recued/recued/archive/refs/heads/main.zip -OutFile recued.zip
+Expand-Archive recued.zip -DestinationPath .
+cd recued-main
+```
+
 `npm ci` installs exactly the dependency versions recorded in the public lockfile. The build commands type-check the public workspace graph, bundle the server, and create the production webclient under `apps/webclient/build/`.
 
 ### Start the server and local webclient
 
+Linux and macOS:
+
 ```sh
 RECUED_WEBCLIENT_DIR="$PWD/apps/webclient/build" npm start
+```
+
+Windows, in PowerShell:
+
+```powershell
+$env:RECUED_WEBCLIENT_DIR = "$PWD\apps\webclient\build"
+npm.cmd start
 ```
 
 The server listens on port `7717` by default. Open:
@@ -100,11 +132,7 @@ The server listens on port `7717` by default. Open:
 http://localhost:7717/webclient/
 ```
 
-For a watched server process during development:
-
-```sh
-RECUED_WEBCLIENT_DIR="$PWD/apps/webclient/build" npm run dev
-```
+For a watched server process during development, run `npm run dev` (Windows: `npm.cmd run dev`) in place of `npm start`, with `RECUED_WEBCLIENT_DIR` set the same way.
 
 Runtime databases, identity material, logs, and local environment files are ignored by Git. Keep recovery material and credentials outside the repository.
 

@@ -21,6 +21,12 @@ npm run build:webclient
 RECUED_WEBCLIENT_DIR="$PWD/apps/webclient/build" npm start
 ```
 
+On Windows, in PowerShell, type `npm.cmd` for each `npm` (the default execution
+policy refuses the `npm.ps1` script a plain `npm` runs), and set the webclient
+directory before starting: `$env:RECUED_WEBCLIENT_DIR = "$PWD\apps\webclient\build"`,
+then `npm.cmd start`. [INSTALL.md](./INSTALL.md#build-from-source) has the full
+Windows sequence, including getting the source without Git.
+
 The server listens on `7717`. With the webclient built as above, open
 <http://localhost:7717/webclient/>.
 
