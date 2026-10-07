@@ -2,10 +2,14 @@
 
 # Recued
 
-Recued holds the space between you and AI. Recued is where your work really
-lives: the records, the routines, the decisions. People and AI both take part
-in it. Each one is an actor whose powers were declared ahead of time. So
-neither one runs the other. And every action crosses a line you drew in advance.
+Recued is a server you run yourself. It sits between AI agents and your
+accounts. Your mail, calendar, files, and CRM records stay on a machine you
+control. An agent gets in over MCP, through a contract that lists exactly what
+it may do. Every action it takes passes one gate. By default, anything that
+writes or deletes waits for your yes. Recued does not replace the AI you use.
+Claude, ChatGPT, Codex, or a local model still does the thinking. Recued is
+where that thinking meets your data and your accounts, on terms you set. That
+is the space it holds, between you and AI.
 
 This repo holds the complete self-hosted **server** and the **webclient**. It
 also holds the workspace packages they are built from.
