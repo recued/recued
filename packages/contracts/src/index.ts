@@ -756,7 +756,7 @@ export {
   INSTALL_ACCESS_TIERS, INSTALL_SCOPE_WHO,
   isInstallGrantSelection, isInstallAudienceSelection,
   // D-310 — the Access tiers a pack's install offers, for it and the packs it brings in.
-  installGrantableOps, installAccessOptions,
+  installGrantableOps, installAccessOptions, installRecipeRiskFromPreview,
   // Install-vs-browse marker on the apex install-manifest fetch (shared by the
   // server-side sender and the D-180 SSR worker that reads it).
   INSTALL_MANIFEST_MARKER_HEADER,
@@ -869,6 +869,13 @@ export * from './kernel-ops.js';
 // ingredient files. Composes with `kernel-ops.ts` (every op's domain must be a
 // registered closed-kind domain).
 export * from './kernel-op-registry.js';
+// Whether a held kernel write provably changes only Recued's own stores — the
+// approval ask's "in Recued" vs "outside Recued" sentence.
+export {
+  kernelWriteStaysInRecued,
+  RESERVED_LOCAL_CALENDAR_SLUG,
+  WRITE_STAYS_IN_RECUED_CLAUSE,
+} from './kernel-write-locality.js';
 
 // D-116 — Kitchen "Test trigger" shared shapes.
 export type {
@@ -1016,12 +1023,15 @@ export type {
   CliHeartbeatProgressSpec, CliFileGrowthProgressSpec,
   CliProgressAdapter,
   CliOutputCaptureSpec, CliDetachedMarkerCompletion,
-  // The three `CliOutputCaptureSpec` arms. `dir_arg` is the historical
+  // The four `CliOutputCaptureSpec` arms. `dir_arg` is the historical
   // engine-owned output dir; `from_input_arg` captures the file the tool edited
   // in place at its materialized input path; `from_stdout` streams what the tool
   // PRINTED to an engine-owned file — the arm that lets a stdout-only filter
-  // (csvgrep, ripgrep, jq) read a warehouse file at all.
+  // (csvgrep, ripgrep, jq) read a warehouse file at all; `from_progress_answer`
+  // keeps only the final answer the heartbeat adapter read off an agent's event
+  // stream (Claude Code), not the stream.
   CliOutputDirCaptureSpec, CliOutputInPlaceCaptureSpec, CliOutputStdoutCaptureSpec,
+  CliOutputProgressAnswerCaptureSpec,
   CliDetachedCancelSpec, CliDetachedJobSpec, CliDetachedSupervisionSpec,
   LegacyCliDetachedSupervisionSpec, ReadyCliDetachedSupervisionSpec,
   ConnectorEventSpec,
@@ -1056,9 +1066,9 @@ export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
   // Capture-arm narrowing. Both validators and the executor discriminate
   // through these helpers rather than sniffing keys.
-  isInPlaceCapture, isStdoutCapture, isD259CliProgressSpec,
+  isInPlaceCapture, isStdoutCapture, isProgressAnswerCapture, isD259CliProgressSpec,
   isReadyCliDetachedSupervisionSpec,
-  CLI_PROGRESS_ADAPTERS,
+  CLI_PROGRESS_ADAPTERS, CLI_PROGRESS_ANSWER_ADAPTERS,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -3230,6 +3240,14 @@ export {
   localDayAsDateOnly,
   timedDueMs,
 } from './due-day.js';
+// An all-day calendar event is stored the same way, as days: one rule for every
+// reader (Data → Calendar listed a 24 Dec holiday under 23 Dec in Los Angeles).
+export {
+  allDayEventDays,
+  eventSpanIn,
+  isAllDaySpanNormal,
+  normalizeAllDaySpan,
+} from './calendar-days.js';
 
 // Phase B — pressure details (heartbeat + server.getStatus shared shape).
 export {

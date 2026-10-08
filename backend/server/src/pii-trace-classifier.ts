@@ -78,6 +78,20 @@ const KERNEL_INGREDIENT_PROFILES: Readonly<Record<string, PiiPathProfile>> = {
     'records.[].variables': ['content'],
     'records.[].data': ['content'],
   },
+  // ── D-315 slice 7 — a stored calendar file ──
+  // An invite is mail content, so each event is content as a whole subtree (a
+  // summary, a place, a description), and its people are addresses — tagged
+  // `email` so auto-PII aliases them before a model sees one.
+  'ics-read': {
+    event: ['content'],
+    'event.organizer.email': ['email'],
+    'event.attendees.[].email': ['email'],
+    'event.you.email': ['email'],
+    events: ['content'],
+    'events.[].organizer.email': ['email'],
+    'events.[].attendees.[].email': ['email'],
+    'events.[].you.email': ['email'],
+  },
   // ── accepted Reception responses ──
   // The form schema is deliberately free-form, so submitted values and
   // promotion metadata stay content-tainted as whole subtrees. The one typed

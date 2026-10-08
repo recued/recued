@@ -97,7 +97,7 @@ const PURE_TRANSFORMS: ReadonlySet<string> = new Set([
   // Numeric
   'round', 'clamp', 'to_number', 'math', 'weighted_score',
   // Date — `date_add` is NOT here (see above)
-  'date_format', 'date_parse',
+  'date_format', 'date_parse', 'event_when',
   // Logic
   'compare', 'coalesce', 'switch', 'all', 'any', 'count', 'default',
   'not', 'ternary', 'pluralize',
@@ -167,7 +167,14 @@ export const analyzeStep = async (
   let ingredientCandidate = false;
   if (kind === 'transform') {
     const name = raw.transform as string;
-    cacheable = PURE_TRANSFORMS.has(name);
+    // ⛔ A `map` is only as pure as the transform it applies to each row
+    // (2026-10-07). `apply: "is_future"` or `apply: "date_diff"` to "now" read
+    // the clock, and the key holds the rows, not the time: an event listed as
+    // upcoming stayed upcoming after it began, for as long as the rows did not
+    // change — and each hit slides the 24 h expiry. 48 shipped steps.
+    const applied = name === 'map' ? raw.apply : undefined;
+    cacheable = PURE_TRANSFORMS.has(name)
+      && (applied === undefined || (typeof applied === 'string' && PURE_TRANSFORMS.has(applied)));
   } else if (kind === 'guard') {
     cacheable = true;
   } else if (kind === 'ingredient') {

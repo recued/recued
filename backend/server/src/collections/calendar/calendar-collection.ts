@@ -41,6 +41,7 @@ import type {
   CollectionSearchQuery,
   CollectionState,
 } from '@recued/contracts';
+import { normalizeAllDaySpan } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { BlobStore } from '../../storage/blob-store.js';
@@ -61,6 +62,7 @@ import type {
 } from '../types.js';
 import {
   CALENDAR_INLINE_CUTOFF_BYTES,
+  CALENDAR_MAX_LIST_LIMIT,
   calendarEventChanges,
   createCalendarTable,
   type CalendarCollectionTable,
@@ -69,6 +71,8 @@ import {
 } from './calendar-table.js';
 import type {
   CalendarProvider,
+  CalendarSeriesSnapshot,
+  CalendarSnapshot,
   CalendarSyncEvent,
   ProviderEventPayload,
 } from './provider.js';
@@ -281,9 +285,12 @@ export const createCalendarCollection = (
     if (prev) {
       // Only a change is an update, named by what changed: a restart's scan
       // lists every stored event again, and each would otherwise wake every
-      // `updated` trigger.
+      // `updated` trigger. A correction is no change to the event either:
+      // the provider's copy is the same, read differently now.
       const changed = calendarEventChanges(prev.event, payload.event);
-      if (changed.length > 0) emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
+      if (changed.length > 0 && payload.correction !== true) {
+        emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>, changed);
+      }
     } else emitter.created(recordId);
     lastIndexedAt = nowOf();
     // If stop raced the synchronous commit, reject anyway: replaying this
@@ -303,6 +310,30 @@ export const createCalendarCollection = (
     emitter.deleted(recordId, result.prior.hot as unknown as Record<string, unknown>);
   };
 
+  /** CalDAV: remove the rows inside the window that the provider no longer
+   *  makes — of one event (`ical_uid`), or of a whole calendar after a scan
+   *  that read all of it. Read in full before any is removed, so a page
+   *  boundary cannot skip one. */
+  const reconcileRows = (snapshot: CalendarSeriesSnapshot | CalendarSnapshot): void => {
+    const keep = new Set(snapshot.keep);
+    const stale: string[] = [];
+    for (let offset = 0; ; offset += CALENDAR_MAX_LIST_LIMIT) {
+      const rows = table.list({
+        calendar_id: snapshot.calendar_id,
+        ...('ical_uid' in snapshot ? { ical_uid: snapshot.ical_uid } : {}),
+        start_since: snapshot.window.start,
+        start_until: snapshot.window.end + 1,
+        order_by: 'start_at',
+        direction: 'asc',
+        limit: CALENDAR_MAX_LIST_LIMIT,
+        offset,
+      });
+      for (const row of rows) if (!keep.has(row.source_id)) stale.push(row.source_id);
+      if (rows.length < CALENDAR_MAX_LIST_LIMIT) break;
+    }
+    for (const source_id of stale) deleteSource(source_id);
+  };
+
   const onSyncEvent = async (
     event: CalendarSyncEvent,
     shouldContinue: () => boolean,
@@ -310,6 +341,12 @@ export const createCalendarCollection = (
     try {
       if (event.kind === 'deleted') {
         deleteSource(event.source_id);
+        return;
+      }
+      if (event.kind === 'series') {
+        if (!event.series) throw new Error(`calendar sync series '${event.source_id}' is missing its rows`);
+        if (!shouldContinue()) throw new Error('calendar sync generation is no longer active');
+        reconcileRows(event.series);
         return;
       }
       if (!event.payload) {
@@ -323,7 +360,7 @@ export const createCalendarCollection = (
       // A resolved callback is an acknowledgement to cursor-bearing providers.
       // Keep the collection diagnostic but reject so gcal/Graph/CalDAV retain
       // the event's checkpoint and retry it instead of silently skipping it.
-      if (event.payload !== undefined || event.kind === 'deleted') {
+      if (event.payload !== undefined || event.kind === 'deleted' || event.kind === 'series') {
         bumpError(`calendar sync ingest failed for ${event.source_id}`, err);
       }
       throw err;
@@ -333,8 +370,37 @@ export const createCalendarCollection = (
   const isCurrentGeneration = (generation: number): boolean =>
     !closed && syncGeneration === generation;
 
+  /** ⛔ All-day rows stored before every write was held to days (2026-10-07,
+   *  `calendar-days.ts`): an intake form's local midnight, a model's choice, a
+   *  time picked for the event. Every reader would place them a day off.
+   *  Corrected in place and quietly — the event did not change, only how it was
+   *  stored; mostly the local calendar's, since a provider's sync rewrites its
+   *  own. */
+  const repairAllDayRows = (): void => {
+    let rows: CalendarRowSnapshot[];
+    try {
+      rows = table.listAllDayOffDays();
+    } catch (err) {
+      bumpError('calendar all-day repair failed', err);
+      return;
+    }
+    for (const row of rows) {
+      const days = normalizeAllDaySpan(row.event.start_at, row.event.end_at, row.event.timezone);
+      table.upsert({
+        event: { ...row.event, ...days },
+        size_bytes: row.size_bytes,
+        ...(row.body_inline !== null ? { body_inline: row.body_inline } : {}),
+        ...(row.blob_hash !== null ? { blob_hash: row.blob_hash } : {}),
+        ...(row.etag !== null ? { etag: row.etag } : {}),
+        now: nowOf(),
+      });
+    }
+    if (rows.length > 0) log?.('info', `calendar ${slug}: stored ${rows.length} all-day event(s) as days`);
+  };
+
   const runSyncStart = async (generation: number): Promise<void> => {
     state = stateName('syncing');
+    repairAllDayRows();
     try {
       await provider.connect();
     } catch (err) {
@@ -377,6 +443,14 @@ export const createCalendarCollection = (
           if (!isCurrentGeneration(generation)) return false;
           backfillRecorder.recordImport(payload.event.start_at);
           return true;
+        },
+        onSeries: async (series) => {
+          if (!isCurrentGeneration(generation)) return;
+          reconcileRows(series);
+        },
+        onCalendar: async (calendar) => {
+          if (!isCurrentGeneration(generation)) return;
+          reconcileRows(calendar);
         },
       });
       if (!isCurrentGeneration(generation)) return;

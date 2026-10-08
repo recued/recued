@@ -31,6 +31,8 @@ import {
 } from '../calendar-collection.js';
 import type {
   CalendarProvider,
+  CalendarSeriesSnapshot,
+  CalendarSnapshot,
   CalendarSyncCallback,
   CalendarSyncEvent,
   CreateEventInput,
@@ -59,6 +61,10 @@ const baseEvent = (overrides: Partial<CanonicalEvent> = {}): CanonicalEvent => (
 
 interface StubControl {
   initialEvents: ProviderEventPayload[];
+  /** Handed to `onSeries` after the events, as the CalDAV adapter does. */
+  initialSeries?: CalendarSeriesSnapshot[];
+  /** Handed to `onCalendar` last. */
+  initialCalendars?: CalendarSnapshot[];
   connectWait?: Promise<void>;
   connectCount: number;
   closeCount: number;
@@ -88,6 +94,8 @@ const makeStubProvider = (control: StubControl): CalendarProvider => {
         const keep = await opts.onEvent(payload);
         if (!keep) break;
       }
+      for (const series of control.initialSeries ?? []) await opts.onSeries?.(series);
+      for (const calendar of control.initialCalendars ?? []) await opts.onCalendar?.(calendar);
     },
     async startSync(callback) {
       if (control.fail.startSync) throw new Error('start boom');
@@ -314,6 +322,132 @@ describe('CalendarCollection — only a change is an update (D-124)', () => {
     await h.collection.sync.start();
     expect(h.events.map((e) => [e.event_kind, e.changed_fields])).toEqual([['updated', ['end_at', 'start_at', 'updated_at']]]);
     expect(h.events[0]!.prev).toMatchObject({ start_at: 1_700_000_000_000 });
+  });
+});
+
+describe('CalendarCollection — a CalDAV resource\'s rows (2026-10-07)', () => {
+  const WEEK = 7 * 86_400_000;
+  const T0 = 1_800_000_000_000;
+  const row = (source_id: string, overrides: Partial<CanonicalEvent> = {}): ProviderEventPayload => ({
+    event: baseEvent({ source_id, ical_uid: 'u-1', calendar_id: 'cal-1', start_at: T0, end_at: T0 + 1_800_000, ...overrides }),
+    description_bytes: 0,
+  });
+
+  it('removes the rows of that event in the window it no longer makes; history and other events stay', async () => {
+    h = newHarness();
+    h.control.initialEvents = [
+      row('cal-1:u-1'),
+      row(`cal-1:u-1:${T0 + WEEK}`, { start_at: T0 + WEEK, end_at: T0 + WEEK + 1_800_000 }),
+      row(`cal-1:u-1:${T0 + 2 * WEEK}`, { start_at: T0 + 2 * WEEK, end_at: T0 + 2 * WEEK + 1_800_000 }),
+      // Before the window: history, never reconciled.
+      row(`cal-1:u-1:${T0 - 9 * WEEK}`, { start_at: T0 - 9 * WEEK, end_at: T0 - 9 * WEEK + 1_800_000 }),
+      // Another event, and the same UID on another calendar.
+      row('cal-1:u-2', { ical_uid: 'u-2' }),
+      row('cal-2:u-1', { calendar_id: 'cal-2' }),
+    ];
+    await h.collection.sync.start();
+    h.events.length = 0;
+    await h.control.pushSyncEvent({
+      kind: 'series',
+      source_id: 'cal-1:u-1',
+      series: {
+        calendar_id: 'cal-1',
+        ical_uid: 'u-1',
+        window: { start: T0 - WEEK, end: T0 + 2 * WEEK },
+        keep: ['cal-1:u-1', `cal-1:u-1:${T0 + 2 * WEEK}`],
+      },
+    });
+    expect(h.events.map((e) => [e.event_kind, e.record_id])).toEqual([['deleted', `cal:work:cal-1:u-1:${T0 + WEEK}`]]);
+    expect(h.collection.table.get(`cal-1:u-1:${T0 + WEEK}`)).toBeNull();
+    for (const kept of ['cal-1:u-1', `cal-1:u-1:${T0 + 2 * WEEK}`, `cal-1:u-1:${T0 - 9 * WEEK}`, 'cal-1:u-2', 'cal-2:u-1']) {
+      expect(h.collection.table.get(kept)).not.toBeNull();
+    }
+  });
+
+  it('removes every row of a gone event inside the window when none is kept', async () => {
+    h = newHarness();
+    h.control.initialEvents = [row('cal-1:u-1'), row(`cal-1:u-1:${T0 + WEEK}`, { start_at: T0 + WEEK })];
+    await h.collection.sync.start();
+    await h.control.pushSyncEvent({
+      kind: 'series',
+      source_id: 'cal-1:u-1',
+      series: { calendar_id: 'cal-1', ical_uid: 'u-1', window: { start: T0 - WEEK, end: T0 + WEEK }, keep: [] },
+    });
+    expect(h.collection.table.get('cal-1:u-1')).toBeNull();
+    expect(h.collection.table.get(`cal-1:u-1:${T0 + WEEK}`)).toBeNull();
+  });
+
+  it('the initial scan reconciles through onSeries', async () => {
+    h = newHarness();
+    h.control.initialEvents = [row('cal-1:u-1'), row(`cal-1:u-1:${T0 + WEEK}`, { start_at: T0 + WEEK })];
+    await h.collection.sync.start();
+    await h.collection.sync.stop();
+    h.control.initialEvents = [row('cal-1:u-1')];
+    h.control.initialSeries = [{ calendar_id: 'cal-1', ical_uid: 'u-1', window: { start: T0 - WEEK, end: T0 + 2 * WEEK }, keep: ['cal-1:u-1'] }];
+    await h.collection.sync.start();
+    expect(h.collection.table.get(`cal-1:u-1:${T0 + WEEK}`)).toBeNull();
+    expect(h.collection.table.get('cal-1:u-1')).not.toBeNull();
+  });
+
+  it("a scan that read the whole calendar removes what no event made — a row filed under an alert's UID included", async () => {
+    h = newHarness();
+    h.control.initialEvents = [
+      row('cal-1:u-1'),
+      // What the reader before 2026-10-07 stored: the same event, under its
+      // alert's UID.
+      row('cal-1:alarm-uid', { ical_uid: 'alarm-uid' }),
+      row(`cal-1:u-1:${T0 - 9 * WEEK}`, { start_at: T0 - 9 * WEEK, end_at: T0 - 9 * WEEK + 1_800_000 }),
+      row('cal-2:other', { calendar_id: 'cal-2', ical_uid: 'other' }),
+    ];
+    h.control.initialCalendars = [{ calendar_id: 'cal-1', window: { start: T0 - WEEK, end: T0 + WEEK }, keep: ['cal-1:u-1'] }];
+    await h.collection.sync.start();
+    expect(h.collection.table.get('cal-1:alarm-uid')).toBeNull();
+    for (const kept of ['cal-1:u-1', `cal-1:u-1:${T0 - 9 * WEEK}`, 'cal-2:other']) {
+      expect(h.collection.table.get(kept)).not.toBeNull();
+    }
+  });
+
+  it('a correction rewrites the row and wakes no update; a change of the same rows does', async () => {
+    h = newHarness();
+    h.control.initialEvents = [row('cal-1:u-1')];
+    await h.collection.sync.start();
+    h.events.length = 0;
+    await h.control.pushSyncEvent({
+      kind: 'updated',
+      source_id: 'cal-1:u-1',
+      payload: { ...row('cal-1:u-1', { start_at: T0 + 3_600_000, end_at: T0 + 5_400_000 }), correction: true },
+    });
+    expect(h.collection.table.get('cal-1:u-1')?.event.start_at).toBe(T0 + 3_600_000);
+    expect(h.events).toEqual([]);
+    await h.control.pushSyncEvent({
+      kind: 'updated',
+      source_id: 'cal-1:u-1',
+      payload: row('cal-1:u-1', { start_at: T0 + 7_200_000, end_at: T0 + 9_000_000 }),
+    });
+    expect(h.events.map((e) => e.event_kind)).toEqual(['updated']);
+  });
+});
+
+describe('CalendarCollection — all-day rows are stored as days (2026-10-07)', () => {
+  it('rewrites an all-day row stored off its days at sync start, quietly', async () => {
+    h = newHarness();
+    // What an intake form wrote before every write was held to days: Paris
+    // midnights of 20 and 23 July (19 and 22 July, 22:00 UTC).
+    h.collection.table.upsert({
+      event: baseEvent({
+        source_id: 'stay', is_all_day: true, timezone: 'Europe/Paris',
+        start_at: Date.parse('2026-07-19T22:00:00Z'), end_at: Date.parse('2026-07-22T22:00:00Z'),
+      }),
+      size_bytes: 0,
+    });
+    h.collection.table.upsert({ event: baseEvent({ source_id: 'timed' }), size_bytes: 0 });
+    await h.collection.sync.start();
+    expect(h.collection.table.get('stay')?.event).toMatchObject({
+      start_at: Date.UTC(2026, 6, 20), end_at: Date.UTC(2026, 6, 23), timezone: 'Europe/Paris',
+    });
+    expect(h.collection.table.get('timed')?.event.start_at).toBe(baseEvent().start_at);
+    expect(h.events.filter((e) => e.event_kind === 'updated')).toEqual([]);
+    expect(h.collection.table.listAllDayOffDays()).toEqual([]);
   });
 });
 

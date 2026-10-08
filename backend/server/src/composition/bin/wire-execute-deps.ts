@@ -59,7 +59,8 @@ import type {
   RemoteChannel,
 } from '@recued/notification';
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
-import type { ReceptionInboxFanoutMode } from '@recued/contracts';
+import { resolveServerTimeZone, type ReceptionInboxFanoutMode } from '@recued/contracts';
+import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { McpActionStore } from '../../mcp-action-store.js';
 import type { GatedActionStore } from '../../gated-action-store.js';
@@ -137,6 +138,14 @@ import { upsertOwnerOperationOverride } from '../../contract-handler.js';
  *  conditional spread for the "key absent when undefined" fields
  *  (`db`, `enrichmentStore`, `commitStore`,
  *  `checkpointStore`, plus the resumer-derived `preflightNotifier`). */
+
+/** The owner's zone, read per call: the owner's setting when there is one,
+ *  else the host's (`resolveServerTimeZone`). */
+const ownerTimeZoneOf = (db: Database.Database): (() => string) => {
+  const store = createServerTimeZoneStore(db);
+  return () => resolveServerTimeZone(store.read(), Intl.DateTimeFormat().resolvedOptions().timeZone);
+};
+
 export interface ComposeExecuteDepsDeps {
   /** D-137 — late-bound chat sink for a run that settled after its turn.
    *  A GETTER because chat composes in the app context and this in the
@@ -889,6 +898,10 @@ export const composeExecuteDeps = (
     auditLog: deps.auditLog,
     instanceId: deps.serverInstanceId,
     serverName: deps.serverDisplayName,
+    // D-315 slice 7 — the owner's zone as `context.server.time_zone`: the setting
+    // when there is one, else the host's, read per run like the housekeeping
+    // sweeps read it.
+    ...(deps.db ? { ownerTimeZone: ownerTimeZoneOf(deps.db) } : {}),
     sharedStore: deps.sharedStore,
     // D-231 — the owner's curated knowledge behind `{{data.memory.*}}`.
     // ⛔ THREADING THIS IS THE WHOLE FEATURE. The resolver in

@@ -51,9 +51,10 @@ export const ALLOW_UPGRADE_VARIABLE = 'allow_llm_upgrade';
  *  variables it designates (ruling 42). No verb: creation counts as a change
  *  of every variable read, and `fields` picks which changes wake it
  *  (`last_email_at` = every new email about the thing). An entry takes only
- *  `on`, `fields` and `where`; `where` takes variables, `complete` and
- *  `template`, and is STRICT: a variable the fact's kind lacks, or a `null`,
- *  never matches. See `trigger-sugar.ts`). Verbs: created | changed | removed.
+ *  `on`, `fields`, `where` and `template_variable` (below); `where` takes
+ *  variables, `complete` and `template`, and is STRICT: a variable the fact's
+ *  kind lacks, or a `null`, never matches. See `trigger-sugar.ts`).
+ *  Verbs: created | changed | removed.
  *
  *  DOM watch sugar — `on: "element.changed"` + `url` + `selector`:
  *    { "on": "element.changed",

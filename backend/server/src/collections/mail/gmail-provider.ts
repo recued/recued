@@ -725,8 +725,14 @@ export const createGmailProvider = (
     out: InboundMailAttachmentPart[] = [],
   ): InboundMailAttachmentPart[] => {
     if (!part) return out;
-    const filename = part.filename ?? '';
     const body = part.body;
+    // D-315 slice 7 — an invite's calendar part usually has no filename: it is
+    // the `text/calendar` alternative beside the HTML. Kept by name alone, it
+    // was dropped whenever anything else in the email had one — an agenda PDF
+    // beside an Outlook invite left no invite at all.
+    const calendarType = normalizeMailAttachmentMimeType(part.mimeType);
+    const isCalendar = calendarType === 'text/calendar' || calendarType === 'application/ics';
+    const filename = part.filename || (isCalendar ? 'invite.ics' : '');
     if (filename.length > 0 && (body?.attachmentId || body?.data)) {
       const sourcePartId = body.attachmentId ?? part.partId ?? path;
       const size = typeof body.size === 'number' && Number.isFinite(body.size)

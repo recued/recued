@@ -33,6 +33,16 @@ import {
 export interface ContextServer {
   available: boolean;
   name?: string;
+  /** The owner's IANA zone, set by the server on every run it hosts —
+   *  `date_parse`'s `time_zone` reads a day in it:
+   *
+   *      { "transform": "date_parse", "input": "2026-10-20T00:00:00",
+   *        "time_zone": "{{context.server.time_zone}}" }
+   *
+   *  A recipe's date transforms otherwise read the server PROCESS's clock,
+   *  which on a server in UTC is hours from the owner's (D-315 slice 7: a
+   *  date-only stay booked on the evening before, west of UTC). */
+  time_zone?: string;
 }
 
 /** `context.caller` — the trusted, minimal recipe-visible projection of

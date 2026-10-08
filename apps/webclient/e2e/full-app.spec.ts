@@ -725,7 +725,8 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
     level: 3,
   })).toBeVisible();
   await expect(dialog).toContainText('2 items are waiting for you.');
-  await expect(dialog).toContainText('Connected action · Answer to continue');
+  // An ask is tagged with how long it has waited (2026-10-07).
+  await expect(dialog).toContainText(/(Waiting \S+|Raised just now) · Answer to continue/);
   await expect(dialog).toContainText(
     'Approval · HubSpot contact update · Changes data',
   );

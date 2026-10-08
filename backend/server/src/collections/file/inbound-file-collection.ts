@@ -526,11 +526,15 @@ export const createInboundFileCollection = (
     }
     if (publication.written) {
       gate.setUsed(totalBytes());
+      // D-315 slice 7 — a received file's event carries its hot fields, so a
+      // trigger can wake on one kind of file (`record.mime_type`) without a
+      // run for every other: an invite recipe started on every attachment of
+      // every email is a run per PDF that does nothing.
       if (publication.previous) {
         // Only a change is an update, named by what changed.
         const changed = changedHotFields(publication.previous.hot_fields, table.get(record_id)?.hot_fields ?? {});
-        if (changed.length > 0) emitter.updated(record_id, publication.previous.hot_fields, changed, { in_drain: input.in_drain === true });
-      } else emitter.created(record_id, { in_drain: input.in_drain === true });
+        if (changed.length > 0) emitter.updated(record_id, publication.previous.hot_fields, changed, { in_drain: input.in_drain === true, record: record.hot_fields });
+      } else emitter.created(record_id, { in_drain: input.in_drain === true, record: record.hot_fields });
       lastIndexedAt = stamp;
     }
     return result;
@@ -587,8 +591,8 @@ export const createInboundFileCollection = (
     const prev = upsertWithRef(next, existing.storage_ref);
     db.prepare('UPDATE collection_file_attachment_versions SET scan_status=? WHERE content_hash=?')
       .run(status, existing.hot_fields.content_hash);
-    if (prev) emitter.updated(record_id, prev.hot_fields);
-    else emitter.created(record_id);
+    if (prev) emitter.updated(record_id, prev.hot_fields, undefined, { record: next.hot_fields });
+    else emitter.created(record_id, { record: next.hot_fields });
     lastIndexedAt = nowOf();
     return hydrate(table.get(record_id))!;
   };
@@ -677,8 +681,8 @@ export const createInboundFileCollection = (
       );
       const prev = upsertWithRef(record, storage_ref);
       gate.setUsed(totalBytes());
-      if (prev) emitter.updated(record.record_id, prev.hot_fields);
-      else emitter.created(record.record_id);
+      if (prev) emitter.updated(record.record_id, prev.hot_fields, undefined, { record: record.hot_fields });
+      else emitter.created(record.record_id, { record: record.hot_fields });
       lastIndexedAt = nowOf();
     },
     delete(record_id) {

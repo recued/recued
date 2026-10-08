@@ -935,6 +935,45 @@ describe('GcalProvider — createEvent', () => {
     expect(postCall).toBeTruthy();
   });
 
+  it("D-315 slice 7 — an event that keeps an emailed invite's UID is IMPORTED, with the UID", async () => {
+    const store = seedStore();
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (init?.method === 'POST' && url.includes('/calendars/primary/events')) {
+        const body = JSON.parse(init.body ?? '{}') as Record<string, unknown>;
+        posts.push({ url, body });
+        const reply = {
+          id: 'imported-1',
+          iCalUID: (body.iCalUID as string | undefined) ?? 'google-own@google.com',
+          status: 'confirmed',
+          summary: body.summary,
+          start: { dateTime: '2026-10-15T14:00:00Z' },
+          end: { dateTime: '2026-10-15T15:00:00Z' },
+          created: '2026-10-01T10:00:00Z',
+          updated: '2026-10-01T10:00:00Z',
+        };
+        return { status: 200, ok: true, async json() { return reply; }, async text() { return JSON.stringify(reply); } };
+      }
+      return { status: 404, ok: false, async json() { return {}; }, async text() { return 'unmapped'; } };
+    };
+    const provider = createGcalProvider({
+      slug: 'work', config: mkConfig(), accountStore: store, providerConfig, fetcher, scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    const event = {
+      calendar_id: 'primary', summary: 'Quarterly planning', start_at: Date.parse('2026-10-15T14:00:00Z'),
+      end_at: Date.parse('2026-10-15T15:00:00Z'), timezone: 'UTC', is_all_day: false, status: 'confirmed' as const,
+    };
+    const imported = await provider.createEvent('primary', { ...event, ical_uid: 'abc123@google.com' });
+    expect(posts[0]!.url).toMatch(/\/calendars\/primary\/events\/import$/);
+    expect(posts[0]!.body).toMatchObject({ iCalUID: 'abc123@google.com', summary: 'Quarterly planning' });
+    expect(imported.event.ical_uid).toBe('abc123@google.com');
+    // Without one, an ordinary insert, as before.
+    await provider.createEvent('primary', event);
+    expect(posts[1]!.url).toMatch(/\/calendars\/primary\/events$/);
+    expect(posts[1]!.body).not.toHaveProperty('iCalUID');
+  });
+
   it('maps 404 to event_not_found', async () => {
     const store = seedStore();
     const { fetcher } = makeRouter([

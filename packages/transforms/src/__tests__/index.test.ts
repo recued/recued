@@ -3,9 +3,11 @@ import { TRANSFORMS, getTransform } from '../index.js';
 
 describe('TRANSFORMS registry', () => {
   // 90 as of `enrich_by` (the relational join the recipe language lacked — see
-  // its header in `collection.ts`). The count is a deliberate ratchet: an
-  // addition must be a decision, not a drift, and this is where it gets noticed.
-  it('has 93 transforms', () => expect(TRANSFORMS.size).toBe(93));
+  // its header in `collection.ts`); 94 as of `event_when` (an event's time on
+  // the owner's clock, all-day or not — see `date.ts`). The count is a
+  // deliberate ratchet: an addition must be a decision, not a drift, and this
+  // is where it gets noticed.
+  it('has 94 transforms', () => expect(TRANSFORMS.size).toBe(94));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {

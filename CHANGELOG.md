@@ -7,6 +7,118 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.8 — 2026-10-08
+
+Recued now acts on the email it already reads. Bills, parcels, subscriptions,
+reservations, orders and calendar invites each start a workflow that keeps
+track of what the email means: a bill's due date, a return window, a booking,
+an invite on your calendar. None of them uses AI. Calendar times are now right
+wherever you are: CalDAV calendars keep each event's time zone, all-day events
+stay on their own days, and the calendar workflows read your day on your clock.
+A Claude Code pack joins the Codex pack, and `recued unlock` works again.
+
+⚠ The first sync after you update reads every CalDAV event once more. It
+corrects events that were stored hours off or under the wrong ID, and starts no
+workflow while it does. All-day events stored off their days are corrected too.
+
+⚠ Focus Block Proposer's working hours are now in your time zone. If you had set
+them in UTC to match your day, set them back to your own hours.
+
+⚠ `recued lock` and `recued auth-status` are retired. Both had failed since
+26.8.1, and they now say what to use instead. `recued unlock` takes only your
+24-word recovery key.
+
+⚠ The updated calendar workflows need this release. A server on 26.10.6 or older
+refuses them, so update the server before you update the workflows.
+
+### Added
+
+- **Workflows that start on your email.** One pack per kind of email, and none
+  of them uses AI:
+  - **Bills** turns a bill into a reminder due on its due date. A later email
+    that changes the date or the amount updates it, and one that says the bill
+    was paid closes it.
+  - **Parcels** opens a 30-day return window when a parcel is delivered.
+  - **Requests by email** makes a task or a note when you email your own address
+    with `+task` or `+note` before the `@`, linked to the thread.
+  - **Subscriptions** lists the subscriptions your mail shows, and turns a
+    renewal or a trial that is ending into a decision due by its date. A price
+    change starts the price-increase check.
+  - **Bookings** turns a reservation into a booking with its time, price and
+    confirmation code, and moves or cancels it when a later email says so. Two
+    emails about one reservation make one booking. Travel-day prep now checks
+    the stays and trips in your mail.
+  - **Receipts** watches for the refund of a cancelled order, and the monthly
+    receipts packet lists the month's orders and bills.
+  - **Calendar Invites** turns an appointment invite into a booking, puts an
+    invite on the calendar you choose, reminds you to answer, and tells you when
+    someone answers an invite you sent or cancels one you received. An update
+    moves the event; a cancellation or your decline marks it cancelled. Mail
+    keeps the invite from Google, Outlook and other senders, and one invite
+    starts one run.
+- **A Claude Code pack** runs Claude Code on a local repository, sandboxed like
+  Codex. It checks that Claude Code is signed in, runs a task, continues the
+  last or a chosen session, writes a commit message and reviews your changes.
+- **The Codex pack** returns Codex's own answer, lets one command run for up to
+  45 minutes, continues the last or a chosen session, reviews your uncommitted
+  changes, and can commit each issue (off unless you turn it on).
+- **`recued status` says why the last start failed**, for a server started at
+  login or by systemd, where there is no terminal to show the error.
+- **For workflow authors:** `date_period`, `date_format` and `date_parse` take
+  `time_zone` (pass `{{context.server.time_zone}}`); `date_period` adds
+  `tomorrow` and a `date` to measure from; `event_when` says when a calendar
+  event happens, all-day or not. A table column can name a field inside each
+  row, such as `value.score`.
+
+### Changed
+
+- **Calendar workflows read your day on your clock.** Today, the morning brief,
+  the daily note, the end-of-day review, the weekly report, meeting notes, the
+  conflict detector, focus blocks, travel-day prep, meeting prep, follow-ups,
+  meeting alerts and Reschedule show times in your time zone and an all-day
+  event as "All day", on its own day. An all-day event no longer counts as
+  hours booked, and an alert before one no longer calls it a meeting.
+- **An approval for a change that stays in Recued** (a booking, a commitment,
+  an event on Recued's own calendar) says so, and shows its times as dates in
+  your time zone instead of numbers.
+- **The attention tray says how long each ask has waited.**
+- **A trigger says in words what starts it**, filter included ("when a calendar
+  invite arrives"). The raw pattern moves to the trigger's details.
+- **Installing a pack** lists each workflow only under the access level that
+  lets it run.
+- **Data → Calendar** marks cancelled and tentative events, offers no Reschedule
+  for a cancelled one, and reschedules an all-day event by its days.
+
+### Fixed
+
+- **CalDAV calendars** (Apple, Fastmail, Nextcloud and others) read each time in
+  its own time zone. Events from Apple, Outlook-style zones and floating times
+  were stored hours off. An event with an alert is no longer filed under the
+  alert's ID. An edit changes only what you changed in the server's file, so the
+  event keeps its zone, alerts and deleted dates, and moving one occurrence of a
+  repeating event moves only that one. Changes and deletions made on the server
+  now reach Recued.
+- **All-day events stay on their days.** Data → Calendar listed a 24 December
+  holiday under 23 December west of UTC, Today dropped an Outlook all-day event
+  after midnight UTC, and a reminder "a day before" a holiday fired at 4 pm two
+  days before. An all-day event created by a form or by your AI landed on the
+  wrong day.
+- **Moving an event reaches Google and Outlook.** Reschedule and an invite update
+  changed nothing there, and Outlook placed an event in another time zone at the
+  wrong hour. An invite's event is now created in your time zone, not UTC, and a
+  stay with no time is booked on your day, not the server's.
+- **`recued unlock` reaches the server again.** It had failed with "401" since
+  26.8.1. It reads the recovery key without showing it, and accepts it from a
+  pipe.
+- **Windows installer.** Installing the x64 build on an ARM PC no longer fails at
+  the last step on a file Windows still holds, and a fresh install that fails
+  never leaves files that look finished.
+- **Workflows that flag something as upcoming, past or a number of days old**
+  work it out again on every run. They had been replayed from a cache for as
+  long as the list they read stayed the same.
+- **A table on a reception page, or in the server's text output,** shows a
+  column that names a field inside each row. It showed "—".
+
 ## 26.10.6 — 2026-10-06
 
 A Home Assistant pack lets you check on and control a self-hosted Home Assistant

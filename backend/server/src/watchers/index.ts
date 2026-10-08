@@ -125,6 +125,7 @@ export const createWatcherDispatcher = (
             ...(deps.collectionRegistry ? { registry: deps.collectionRegistry } : {}),
             ...(deps.workEntityStore ? { workEntityStore: deps.workEntityStore } : {}),
             ...(deps.now ? { now: deps.now } : {}),
+            ...(deps.serverTimeZone ? { timeZone: deps.serverTimeZone } : {}),
           },
           args as unknown as TimeRelativeWatcherArgs,
         );

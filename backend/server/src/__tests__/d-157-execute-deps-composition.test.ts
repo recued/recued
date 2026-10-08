@@ -121,6 +121,9 @@ const conditionalExecuteDepKeys = [
   'dishStore',
   'dishGroupStore',
   'dishContextStore',
+  // D-315 slice 7 — the owner's zone, as `context.server.time_zone`: db-gated
+  // (the zone setting is a row), read per run.
+  'ownerTimeZone',
   // D-192 Slices 6b + 6c — the same notification block again, threaded as the
   // container-pick and create-plan notifier seams (both ride the identical
   // conditional spread as preflightNotifier). This ratchet had drifted stale

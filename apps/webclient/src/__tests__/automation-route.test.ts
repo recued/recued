@@ -567,7 +567,8 @@ describe('Automation route — rendering', () => {
     expect(rig.route.getActiveSection()).toBe('triggers');
     expectOnlySection(rig.host.innerHTML, 'event_trigger');
     expect(rig.host.innerHTML).toContain('Deal watch');
-    expect(rig.host.innerHTML).toContain('data.mail.**');
+    // The row says its pattern in words; the raw form is on its Details.
+    expect(rig.host.innerHTML).toContain('when an email arrives, changes or is removed');
     expect(rig.host.innerHTML).not.toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="auto_run:ticker"`);
 
     clickSubnav(rig.host, 'schedules');
@@ -2618,12 +2619,40 @@ describe('Automation route — a trigger on facts read from mail (D-315)', () =>
     expect(detail).not.toContain('<dt>Fields</dt>');
   });
 
+  it('says a file trigger in words, its filter included, and keeps the raw form on Details', async () => {
+    // Live drive, 2026-10-07: each Calendar Invites recipe read
+    // `on data.file.received.*.created` beside `record.mime_type = text/calendar`.
+    const rig = mountRoute({
+      initialSection: 'triggers',
+      triggersListCaller: async () => ({
+        triggers: [trigger({
+          recipe_id: 'add-invite-to-calendar',
+          origin: 'recipe',
+          pattern: 'data.file.received.*.created',
+          filter: { 'record.mime_type': 'text/calendar' },
+        })],
+      }),
+    });
+    await rig.route.whenLoaded();
+    const html = rig.host.innerHTML;
+    expect(html).toContain('<span>when a calendar invite arrives</span>');
+    expect(html).not.toContain('record.mime_type');
+    expect(html).not.toContain('<code>data.file.received');
+
+    clickAction(rig.host, 'detail:event_trigger', 't-1');
+    const detail = rig.host.innerHTML;
+    expect(detail).toContain('<dt>Starts when</dt><dd>a calendar invite arrives</dd>');
+    expect(detail).toContain('<dt>Pattern</dt><dd><code>data.file.received.*.created</code></dd>');
+    // The filter used to be missing from Details entirely.
+    expect(detail).toContain('<dt>Filter</dt><dd><code>record.mime_type = text/calendar</code></dd>');
+  });
+
   it('reads no templates for triggers that are not on facts', async () => {
     const mailFactTemplatesCaller = vi.fn(async () => ({ templates: [] }));
     const rig = mountRoute({ initialSection: 'triggers', mailFactTemplatesCaller });
     await rig.route.whenLoaded();
     expect(mailFactTemplatesCaller).not.toHaveBeenCalled();
-    expect(rig.host.innerHTML).toContain('on <code>data.mail.**</code>');
+    expect(rig.host.innerHTML).toContain('when an email arrives, changes or is removed');
   });
 
   it('says “one template”, never a deleted one, when the templates could not be read', async () => {

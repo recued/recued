@@ -12,7 +12,7 @@
 
 import { CONNECTION_NAME_REGEX } from '@recued/ui-shared';
 import { renderAttentionSlot } from '@recued/ui-shared/top-bar';
-import { askDetailLabel } from '@recued/ui-shared/approval-card';
+import { askDetailLabel, formatAskAge } from '@recued/ui-shared/approval-card';
 import {
   CONNECTION_AUTH_TYPES,
   connectionCredentialRejectionCorrection,
@@ -1284,8 +1284,15 @@ const renderGatewayAskDetails = (ask: ServerPendingAsk): string => {
 const renderGatewayAskRow = (
   ask: ServerPendingAsk,
   resolving: ReadonlySet<string>,
+  now: number,
 ): string => {
   const title = ask.title?.trim() || 'Gateway ask';
+  // ⛔ This tag said "Connected action" on EVERY ask — a booking held on
+  // Recued's own data included (live drive, 2026-10-07), and a question from
+  // another server too. How long it has waited is true of all of them, and it
+  // is how the Approvals card says it (`formatAskAge`).
+  const age = formatAskAge(ask.created_at, now);
+  const waited = age === '' ? 'Waiting' : age === 'just now' ? 'Raised just now' : `Waiting ${age}`;
   const showBody = ask.title !== undefined && ask.title.trim() !== '';
   const busy = resolving.has(ask.ask_id);
   const optionButtons = ask.options
@@ -1316,7 +1323,7 @@ const renderGatewayAskRow = (
       ${ATTENTION_GATEWAY_ASK_ROW_ATTR}="${escapeHtml(ask.ask_id)}">
       <div class="attention-row-body">
         <h3 class="attention-row-title">${escapeHtml(title)}</h3>
-        <span class="attention-row-meta">Connected action &middot; Answer to continue</span>
+        <span class="attention-row-meta">${escapeHtml(waited)} &middot; Answer to continue</span>
         ${renderGatewayAskDetails(ask)}
         ${showBody ? renderGatewayAskBody(ask.text) : ''}
       </div>
@@ -2371,7 +2378,7 @@ const renderUnifiedPopover = (state: {
                     state.armedApprovals,
                   )
                 : row.kind === 'ask'
-                  ? renderGatewayAskRow(row.ask, state.resolvingAsks)
+                  ? renderGatewayAskRow(row.ask, state.resolvingAsks, state.now)
                   : row.kind === 'plan'
                     ? renderChatPlanRow(row.plan, state.resolvingPlans)
                     : row.kind === 'connection_recovery'

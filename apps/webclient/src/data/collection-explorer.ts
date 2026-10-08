@@ -22,9 +22,12 @@
 
 import { renderFileCloudCapture } from './file-cloud-capture.js';
 import {
+  DAY_MS,
+  allDayEventDays,
   getCollectionDisplaySchema,
   readDisplayField,
   type CanonicalCollectionName,
+  type CollectionDisplaySchema,
   type CollectionInstanceRow,
   type CollectionRecord,
 } from '@recued/contracts';
@@ -174,6 +177,47 @@ const formatFieldValue = (field: string, value: unknown, now: number): string =>
   }
 };
 
+type AllDayField = NonNullable<CollectionDisplaySchema['all_day']>;
+
+/** Today where the viewer is, as a stored day (its UTC midnight). */
+const todayAsDay = (now: number): number => {
+  const d = new Date(now);
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+/** A stored day (a UTC midnight) as the viewer reads it — "today", "tomorrow",
+ *  "in 5d", "2d ago", or its date further out. ⛔ The date it NAMES, read in
+ *  UTC: as an instant, a 24 December holiday was 23 December, 16:00 in Los
+ *  Angeles, and the list said so. */
+const formatDay = (dayMs: number, now: number): string => {
+  const diff = Math.round((dayMs - todayAsDay(now)) / DAY_MS);
+  if (diff === 0) return 'today';
+  if (diff === 1) return 'tomorrow';
+  if (diff === -1) return 'yesterday';
+  if (Math.abs(diff) < 30) return diff > 0 ? `in ${diff}d` : `${-diff}d ago`;
+  return new Date(dayMs).toLocaleDateString(undefined, { timeZone: 'UTC' });
+};
+
+/** An all-day record's start and end as the days they name (`calendar-days.ts`)
+ *  — the end as the LAST day, not the stored day after it. `null` when the
+ *  schema has no all-day rule or this record is not all-day. */
+const allDayValues = (
+  record: CollectionRecord,
+  allDay: AllDayField | undefined,
+  now: number,
+): ReadonlyMap<string, string> | null => {
+  if (allDay === undefined) return null;
+  const rec = record as unknown as Record<string, unknown>;
+  const flag = readDisplayField(rec, allDay.field);
+  const start = readDisplayField(rec, allDay.start);
+  if ((flag !== true && flag !== 1) || typeof start !== 'number') return null;
+  const end = allDay.end === undefined ? undefined : readDisplayField(rec, allDay.end);
+  const days = allDayEventDays({ start_at: start, end_at: typeof end === 'number' ? end : start + DAY_MS });
+  const out = new Map<string, string>([[allDay.start, formatDay(Date.parse(days.first), now)]]);
+  if (allDay.end !== undefined) out.set(allDay.end, formatDay(Date.parse(days.last), now));
+  return out;
+};
+
 /** The record's title = the first of the schema's title fields present on the
  *  record (`primary_field`, then `primary_field_fallbacks` in order), falling
  *  back to the `record_id` so a row with none of them still identifies itself.
@@ -196,18 +240,45 @@ const recordTitle = (
   return record.record_id;
 };
 
+type StateField = NonNullable<CollectionDisplaySchema['state_field']>;
+
+/** Stable hook on a record's state badge; the value is the raw state. */
+export const COLLECTION_STATE_ATTR = 'data-recued-collection-state';
+
+/** The record's value for the schema's state field, when it is a string. */
+const stateValue = (record: CollectionRecord, stateField: StateField | undefined): string | null => {
+  if (stateField === undefined) return null;
+  const raw = readDisplayField(record as unknown as Record<string, unknown>, stateField.field);
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+};
+
+/** The badge beside a record's title — only for a state the schema names
+ *  (`cancelled`), never for the usual one, which every other row shares.
+ *  ⚠ A SIBLING of the title, never inside it: the list title ellipsizes, and a
+ *  long event name would cut off the one word that says it is cancelled. */
+const renderStateBadge = (record: CollectionRecord, stateField: StateField | undefined): string => {
+  const value = stateValue(record, stateField);
+  const word = value === null ? undefined : stateField?.badges[value];
+  return word === undefined
+    ? ''
+    : `<span class="col-explorer-state" ${COLLECTION_STATE_ATTR}="${e(value!)}">${e(word)}</span>`;
+};
+
 /** One list row — the primary field as title + the summary fields as sub-text. */
 const renderRow = (
   record: CollectionRecord,
   titleFields: readonly string[],
   summaryFields: readonly string[],
+  stateField: StateField | undefined,
+  allDay: AllDayField | undefined,
   now: number,
   actionAttr: string,
 ): string => {
   const title = recordTitle(record, titleFields);
+  const days = allDayValues(record, allDay, now);
   const summary = summaryFields
     .map((f) => {
-      const val = formatFieldValue(
+      const val = days?.get(f) ?? formatFieldValue(
         f,
         readDisplayField(record as unknown as Record<string, unknown>, f),
         now,
@@ -220,7 +291,7 @@ const renderRow = (
     .join('');
   return `<li class="col-explorer-row">
     <button type="button" class="col-explorer-row-btn" ${actionAttr}="${COLLECTION_OPEN_RECORD_ACTION}" ${COLLECTION_RECORD_ID_ATTR}="${e(record.record_id)}">
-      <span class="col-explorer-row-title">${e(title)}</span>
+      <span class="col-explorer-row-head"><span class="col-explorer-row-title">${e(title)}</span>${renderStateBadge(record, stateField)}</span>
       ${summary ? `<span class="col-explorer-row-summary">${summary}</span>` : ''}
     </button>
   </li>`;
@@ -286,6 +357,8 @@ const renderDetail = (
    *  Empty for every collection the route doesn't populate it for (calendar
    *  today). */
   detailTimelineHtml: string,
+  stateField: StateField | undefined,
+  allDay: AllDayField | undefined,
 ): string => {
   const back = `<button type="button" class="col-explorer-btn" ${actionAttr}="${COLLECTION_DETAIL_CLOSE_ACTION}">← Back</button>`;
   let body: string;
@@ -309,11 +382,22 @@ const renderDetail = (
     const rec = record as unknown as Record<string, unknown>;
     const title = recordTitle(record, titleFields);
     // Field list: the schema's summary fields + the always-present meta.
+    const days = allDayValues(record, allDay, now);
     const metaFields: Array<[string, string]> = [
       ...summaryFields.map(
-        (f) => [fieldLabel(f), formatFieldValue(f, readDisplayField(rec, f), now)] as [string, string],
+        (f) => [fieldLabel(f), days?.get(f) ?? formatFieldValue(f, readDisplayField(rec, f), now)] as [string, string],
       ),
     ];
+    if (days !== null) metaFields.push(['All day', 'Yes']);
+    // The state, in every state — the usual one included, since the detail is
+    // where a reader checks it. A named state reads as its badge word.
+    const state = stateValue(record, stateField);
+    if (state !== null && stateField !== undefined) {
+      metaFields.push([
+        fieldLabel(stateField.field),
+        stateField.badges[state] ?? `${state.charAt(0).toUpperCase()}${state.slice(1)}`,
+      ]);
+    }
     const appendMetaField = (
       label: string,
       value: string,
@@ -397,7 +481,7 @@ const renderDetail = (
     }
     body = `<div class="col-explorer-detail-head">
         <span class="col-explorer-detail-scope">${e(collection)}</span>
-        <h2 class="col-explorer-detail-title" ${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">${e(title)}</h2>
+        <h2 class="col-explorer-detail-title" ${COLLECTION_DETAIL_HEADING_ATTR} tabindex="-1">${e(title)}</h2>${renderStateBadge(record, stateField)}
       </div>
       ${fields ? `<dl class="col-explorer-detail-fields">${fields}</dl>` : ''}
       ${collection === 'file' ? renderFileCloudCapture(record.hot_fields?.cloud_capture) : ''}
@@ -421,6 +505,8 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     ? [schema.primary_field, ...(schema.primary_field_fallbacks ?? [])]
     : [];
   const summaryFields = schema?.summary_fields ?? [];
+  const stateField = schema?.state_field;
+  const allDay = schema?.all_day;
   const detail = props.detail ?? null;
 
   // View stack: detail > list.
@@ -437,6 +523,8 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
       props.detailActionsHtml ?? '',
       props.singleCollection ?? false,
       props.detailTimelineHtml ?? '',
+      stateField,
+      allDay,
     )}</section>`;
   }
 
@@ -466,7 +554,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     body = `<p class="col-explorer-empty">No records in this collection yet.</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
-      .map((r) => renderRow(r, titleFields, summaryFields, props.now, props.actionAttr))
+      .map((r) => renderRow(r, titleFields, summaryFields, stateField, allDay, props.now, props.actionAttr))
       .join('')}</ul>`;
   }
 
@@ -510,9 +598,14 @@ export const COLLECTION_EXPLORER_STYLES = `
   border-radius: 0.5rem; background: var(--surface); color: var(--fg); cursor: pointer;
 }
 .col-explorer-row-btn:hover { background: var(--surface-sunk); }
+.col-explorer-row-head { min-width: 0; display: flex; align-items: baseline; gap: 0.375rem; }
 .col-explorer-row-title {
   min-width: 0;
   font-size: 0.875rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.col-explorer-state {
+  flex: none; padding: 0 0.375rem; border-radius: 999px; border: 1px solid currentColor;
+  font-size: 0.6875rem; font-weight: 600; color: var(--warn);
 }
 .col-explorer-row-summary { min-width: 0; display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.8125rem; color: var(--fg-muted); }
 .col-explorer-field { min-width: 0; max-width: 100%; display: inline-flex; flex-wrap: wrap; gap: 0.3125rem; align-items: baseline; overflow-wrap: anywhere; }

@@ -210,7 +210,8 @@ export const createLocalCalendarProvider = (
         >),
         calendar_id,
         source_id,
-        ical_uid: `${source_id}@local.recued`,
+        // D-315 slice 7 — an invite added here keeps the invite's UID.
+        ical_uid: event.ical_uid ?? `${source_id}@local.recued`,
         created_at: ts,
         updated_at: ts,
       };

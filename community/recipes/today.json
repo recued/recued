@@ -1,7 +1,7 @@
 {
   "recipe_id": "today",
   "chat_exposed": true,
-  "version": 3,
+  "version": 4,
   "ttl": 60,
   "metadata": {
     "name": "Today",
@@ -81,7 +81,8 @@
     {
       "id": "today_window",
       "transform": "date_period",
-      "period": "today"
+      "period": "today",
+      "time_zone": "{{context.server.time_zone}}"
     },
     {
       "id": "today_start_ms",
@@ -92,6 +93,13 @@
       "id": "today_end_ms",
       "transform": "date_parse",
       "input": "{{step.today_window.end}}"
+    },
+    {
+      "id": "today_label",
+      "transform": "date_format",
+      "date": "{{step.today_window.start}}",
+      "format": "YYYY-MM-DD",
+      "time_zone": "{{context.server.time_zone}}"
     },
     {
       "id": "calendar_events",
@@ -151,7 +159,7 @@
         { "label": "Top open-loop targets", "value": "{{step.open_loop_targets_text}}" },
         { "label": "Active projects without next action", "value": "{{step.gap_count:number}}" },
         { "label": "Top project gaps", "value": "{{step.gap_targets_text}}" },
-        { "label": "Window", "value": "{{step.today_window.start}} → {{step.today_window.end}}" }
+        { "label": "Window", "value": "{{step.today_label}}" }
       ]
     }
   ],

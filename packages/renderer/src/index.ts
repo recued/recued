@@ -38,6 +38,7 @@ export { renderBlockLabel } from './label.js';
 export { renderSummaryBlock } from './summary.js';
 export { renderChecklistBlock } from './checklist.js';
 export { renderTableBlock } from './table.js';
+export { tableFieldValue } from './table-field.js';
 export { renderAiAnalysisBlock } from './ai-analysis.js';
 export { renderTextBlock } from './text.js';
 export { renderCopyableBlock } from './copyable.js';

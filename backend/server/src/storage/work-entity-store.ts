@@ -2232,6 +2232,9 @@ export interface WorkEntityStore {
   countCommitments(query?: WorkEntityListQuery): number;
   // ── bookings (D-210) ───────────────────────────────────────────
   writeBooking(input: BookingWriteInput, now?: number): Booking;
+  /** Atomic create-if-absent for a caller-derived stable local booking id
+   *  (see `ensureTask`). */
+  ensureBooking(input: BookingWriteInput & { id: string }, now?: number): { booking: Booking; created: boolean };
   readBooking(id: string): Booking | null;
   listBookings(query?: WorkEntityListQuery): Booking[];
   findBooking(
@@ -3880,6 +3883,17 @@ export const createWorkEntityStore = (
     });
     return apply.immediate();
   };
+
+  const ensureBooking: WorkEntityStore['ensureBooking'] = (input, now = Date.now()) => {
+    validateBookingInput(input);
+    if (input.id.length === 0) throw new WorkEntityValidationError('id is required', 'id');
+    const apply = db.transaction((): { booking: Booking; created: boolean } => {
+      const existing = readBooking(input.id);
+      if (existing !== null) return { booking: existing, created: false };
+      return { booking: writeBooking(input, now), created: true };
+    });
+    return apply.immediate();
+  };
   return {
     summarizeContactRelationships,
     writeTask,
@@ -3909,6 +3923,7 @@ export const createWorkEntityStore = (
     deleteCommitment,
     countCommitments,
     writeBooking,
+    ensureBooking,
     readBooking,
     listBookings,
     findBooking,

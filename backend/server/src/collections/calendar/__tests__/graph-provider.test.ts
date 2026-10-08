@@ -1576,3 +1576,77 @@ function mkJson(
     },
   };
 }
+
+describe('GraphCalProvider — a time is sent as the wall clock of its zone', () => {
+  // ⛔ Graph reads `dateTime` as a time IN `timeZone`. The UTC clock was sent
+  // under every zone, so a 10:00 Los Angeles event landed at 17:00 Los Angeles
+  // — invisible while every caller sent `UTC` (found 2026-10-07).
+  const START = Date.parse('2026-10-17T17:00:00Z');
+  const sent = async (
+    call: (p: ReturnType<typeof createGraphCalProvider>) => Promise<unknown>,
+  ): Promise<Record<string, { dateTime: string; timeZone: string }>> => {
+    const bodies: string[] = [];
+    const { fetcher } = makeRouter([
+      {
+        match: (u, init) => {
+          const hit = (u.endsWith('/me/calendars/cal-1/events') && init?.method === 'POST')
+            || (u.endsWith('/me/events/evt-1') && init?.method === 'PATCH');
+          // The router's own type for a request names only its method.
+          const body = (init as { body?: unknown } | undefined)?.body;
+          if (hit && typeof body === 'string') bodies.push(body);
+          return hit;
+        },
+        response: {
+          status: 200,
+          body: {
+            id: 'evt-1', iCalUId: 'u', subject: 'x',
+            start: { dateTime: '2026-10-17T17:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-10-17T18:00:00', timeZone: 'UTC' },
+            createdDateTime: '2026-10-07T00:00:00Z', lastModifiedDateTime: '2026-10-07T00:00:00Z',
+          },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work', config: mkConfig(), accountStore: seedStore(), providerConfig, fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await call(provider);
+    return JSON.parse(bodies[0]!) as Record<string, { dateTime: string; timeZone: string }>;
+  };
+  const create = (timezone: string, is_all_day = false, start_at = START) =>
+    (p: ReturnType<typeof createGraphCalProvider>) => p.createEvent('cal-1', {
+      calendar_id: 'cal-1', summary: 'x', start_at, end_at: start_at + 3_600_000,
+      timezone, is_all_day, status: 'confirmed',
+    });
+
+  it('a timed event in a named zone', async () => {
+    const body = await sent(create('America/Los_Angeles'));
+    expect(body.start).toEqual({ dateTime: '2026-10-17T10:00:00', timeZone: 'America/Los_Angeles' });
+    expect(body.end).toEqual({ dateTime: '2026-10-17T11:00:00', timeZone: 'America/Los_Angeles' });
+  });
+
+  it('UTC as before', async () => {
+    expect((await sent(create('UTC'))).start).toEqual({ dateTime: '2026-10-17T17:00:00', timeZone: 'UTC' });
+  });
+
+  it('an all-day event keeps its date, whatever the zone', async () => {
+    const midnight = Date.parse('2026-10-17T00:00:00Z');
+    expect((await sent(create('America/Los_Angeles', true, midnight))).start)
+      .toEqual({ dateTime: '2026-10-17T00:00:00', timeZone: 'America/Los_Angeles' });
+  });
+
+  it('a zone it cannot read is sent as the same instant in UTC', async () => {
+    expect((await sent(create('Pacific Standard Time'))).start)
+      .toEqual({ dateTime: '2026-10-17T17:00:00', timeZone: 'UTC' });
+  });
+
+  it('a move is sent in its zone too', async () => {
+    const body = await sent((p) => p.updateEvent({
+      calendar_id: 'cal-1', source_id: 'evt-1',
+      patch: { start_at: START, end_at: START + 3_600_000, timezone: 'Europe/London', is_all_day: false },
+    }));
+    expect(body.start).toEqual({ dateTime: '2026-10-17T18:00:00', timeZone: 'Europe/London' });
+  });
+});

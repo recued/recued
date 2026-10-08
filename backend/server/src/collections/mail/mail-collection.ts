@@ -43,6 +43,7 @@ import type {
   MailSendAuditDetail,
 } from '@recued/contracts';
 import { MAIL_SEND_AUDIT_RECIPIENT_REDACTION_THRESHOLD } from '@recued/contracts';
+import { icsInviteKey } from '@recued/transforms';
 import {
   MAIL_SEND_ATTACHMENT_MAX_BYTES,
   MAIL_SEND_ATTACHMENT_OVERSIZE_WARNING,
@@ -923,6 +924,12 @@ export const createMailCollection = (
       if (!shouldContinue()) return materialized;
     }
 
+    // D-315 slice 7 — one invite starts one run. Google sends an invite twice in
+    // one email, inline and as `invite.ics`, and IMAP keeps both: each copy
+    // stored is a received file, and each would start every invite recipe — two
+    // asks for one invite. A copy of an invite this email already carried is
+    // stored as the email has it, and starts nothing.
+    const invitesSeen = new Set<string>();
     for (const [idx, part] of attachments.entries()) {
       if (!shouldContinue()) return materialized;
       const sourcePartId = part.source_part_id || `part-${idx}`;
@@ -930,6 +937,9 @@ export const createMailCollection = (
         const bytes = await part.fetchBytes();
         if (!shouldContinue()) return materialized;
         const mimeType = detectMailAttachmentMimeType(bytes, part.mime_type);
+        const inviteKey = mimeType === 'text/calendar' ? icsInviteKey(bytes) : null;
+        const repeatedInvite = inviteKey !== null && invitesSeen.has(inviteKey);
+        if (inviteKey !== null) invitesSeen.add(inviteKey);
         const legacySourceId = legacyMailAttachmentSourceId(mailRecordId, sourcePartId);
         const legacyFileId = mailAttachmentFileId(legacySourceId);
         const legacyLinks = links.filter((link) => link.to_id === legacyFileId);
@@ -947,7 +957,7 @@ export const createMailCollection = (
           // with its mailbox: a trigger saw that file, and would run twice.
           // ⚠ An attachment first stored late — its email landed, the fetch
           // failed — still tells the trigger: no trigger has seen it yet.
-          ...(!backfillComplete() || (existed && !keepLegacy && attachmentFileStored(deps, legacyFileId))
+          ...(!backfillComplete() || repeatedInvite || (existed && !keepLegacy && attachmentFileStored(deps, legacyFileId))
             ? { in_drain: true } : {}),
           now: nowOf(),
         });

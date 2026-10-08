@@ -2027,11 +2027,21 @@ export interface ConnectorMethodBinding {
  * executor code and tests; manifests cannot turn arbitrary output noise into
  * progress by inventing a name. */
 export const CLI_PROGRESS_ADAPTERS = [
+  'claude-stream-json',
   'codex-jsonl',
   'ffmpeg-progress',
   'yt-dlp-progress',
 ] as const;
 export type CliProgressAdapter = (typeof CLI_PROGRESS_ADAPTERS)[number];
+
+/** The adapters whose protocol carries the tool's FINAL ANSWER, and whose host
+ *  code reads it — the only ones an `output_capture.from_progress_answer` op
+ *  may declare. Claude Code prints its answer only inside its `stream-json`
+ *  result record and offers no flag to write it to a file; Codex has
+ *  `--output-last-message`, so `codex-jsonl` is not here. */
+export const CLI_PROGRESS_ANSWER_ADAPTERS = [
+  'claude-stream-json',
+] as const satisfies readonly CliProgressAdapter[];
 
 /** D-259 semantic heartbeat declaration. `adapter` names registered host code
  * that recognizes real forward progress; arbitrary stdout is not a heartbeat. */
@@ -2082,7 +2092,8 @@ export const isD259CliProgressSpec = (spec: CliProgressSpec): spec is D259CliPro
 export type CliOutputCaptureSpec =
   | CliOutputDirCaptureSpec
   | CliOutputInPlaceCaptureSpec
-  | CliOutputStdoutCaptureSpec;
+  | CliOutputStdoutCaptureSpec
+  | CliOutputProgressAnswerCaptureSpec;
 
 export interface CliOutputDirCaptureSpec {
   /** The argv-template token (e.g. `output_dir`) the executor fills with the
@@ -2158,6 +2169,39 @@ export interface CliOutputStdoutCaptureSpec {
   dir_arg?: never;
   from_input_arg?: never;
 }
+
+/** ANSWER capture — the op's output IS the final answer the op's heartbeat
+ *  adapter read off the tool's event stream, written to an engine-owned file.
+ *
+ *  For an agent CLI whose stdout is the event stream the heartbeat watches, and
+ *  which offers no flag to write its answer to a file (Claude Code: the answer
+ *  is the `result` field of its last `stream-json` result record). A
+ *  `from_stdout` capture would ingest the whole stream — every tool output of
+ *  the session — when the caller wants the answer.
+ *
+ *  The posture is the stdout arm's: the bytes go to a path the ENGINE chose and
+ *  come back only as a Gateway-gated `file_ref`, never as a value, and the path
+ *  is never handed to the recipe. Which protocols carry an answer is host code,
+ *  not manifest data — the op MUST declare a heartbeat whose adapter is in
+ *  `CLI_PROGRESS_ANSWER_ADAPTERS`. A run whose stream carried no successful
+ *  answer fails as `bad_output`; an empty answer is captured as an empty file. */
+export interface CliOutputProgressAnswerCaptureSpec {
+  /** Discriminator. Always `true`. */
+  from_progress_answer: true;
+  /** mime_type stamped on the captured record. */
+  mime_type: string;
+  /** Display filename for the captured record — the tool names nothing. */
+  filename: string;
+  dir_arg?: never;
+  from_input_arg?: never;
+  from_stdout?: never;
+}
+
+/** Narrow a capture spec to the answer variant. */
+export const isProgressAnswerCapture = (
+  capture: CliOutputCaptureSpec,
+): capture is CliOutputProgressAnswerCaptureSpec =>
+  (capture as CliOutputProgressAnswerCaptureSpec).from_progress_answer === true;
 
 /** Narrow a capture spec to the stdout variant. */
 export const isStdoutCapture = (

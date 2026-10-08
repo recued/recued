@@ -78,7 +78,7 @@ const SORT_DIRECTIONS = ['asc', 'desc'] as const;
 
 /** Source of truth: DATE_PERIODS in ../date.ts */
 const DATE_PERIOD_NAMES = [
-  'today', 'yesterday',
+  'today', 'yesterday', 'tomorrow',
   'this_week', 'last_week',
   'this_month', 'last_month',
   'this_quarter', 'last_quarter',
@@ -294,6 +294,7 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   date_format: {
     date: REQ('any'),
     format: REQ('string'),
+    time_zone: OPT('string'),
   },
   date_add: {
     date: REQ('any'),
@@ -303,6 +304,7 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   date_parse: {
     input: REQ('any'),
     require_offset: OPT('boolean'),
+    time_zone: OPT('string'),
   },
   is_past: {
     date: REQ('any'),
@@ -312,6 +314,14 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
   },
   date_period: {
     period: REQ_ENUM(DATE_PERIOD_NAMES),
+    time_zone: OPT('string'),
+    date: OPT('any'),
+  },
+  event_when: {
+    event: REQ('object'),
+    time_zone: OPT('string'),
+    // Source of truth: EVENT_WHEN_PARTS in ../date.ts
+    part: OPT_ENUM(['start', 'end', 'day', 'time', 'date_time', 'text']),
   },
 
   // ── Logic ─────────────────────────────────────────────────
@@ -580,6 +590,8 @@ export const APPLY_VALUE_PARAM: Record<string, string> = {
   date_diff: 'from',
   date_add: 'date',
   date_format: 'date',
+  // A whole row, from a `map` with no `field`.
+  event_when: 'event',
   is_past: 'date',
   is_future: 'date',
   compare: 'left',

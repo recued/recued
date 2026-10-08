@@ -165,6 +165,7 @@ export const KERNEL_REQUIRED_INPUTS: Record<string, readonly string[]> = {
   'file-set-scan-status': ['record_id'],
   'form-response-get': ['submission_id'],
   'form-response-set-state': ['submission_id'],
+  'ics-read': ['record_id'],
   'link-create': ['kind'],
   'mail-body-read': ['record_id', 'slug'],
   'mail-draft-save-to-mailbox': ['draft_id'],

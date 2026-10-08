@@ -49,6 +49,7 @@ import {
   type MailMutationResult,
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
+import { looksLikeIcs } from '@recued/transforms';
 
 export type {
   // D-239 — re-exported so the providers + dispatcher import the write-back
@@ -202,6 +203,11 @@ export const detectMailAttachmentMimeType = (
   ) {
     return 'image/gif';
   }
+  // D-315 slice 7 — an invite is a calendar whatever it was sent as. Google's
+  // own `invite.ics` is `application/ics`, a hand-saved `.ics` is often
+  // `application/octet-stream`, and either fell to `text/plain` below: a recipe
+  // that waits for `text/calendar` never heard of them.
+  if (looksLikeIcs(bytes)) return 'text/calendar';
   const normalized = normalizeMailAttachmentMimeType(reported);
   if (head.length === 0 || looksLikeText(head)) {
     return normalized.startsWith('text/') ? normalized : 'text/plain';

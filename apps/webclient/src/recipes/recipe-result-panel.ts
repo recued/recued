@@ -52,6 +52,9 @@ import {
   renderJsonBlock,
   renderLinkButtonBlock,
   renderRecordFieldsBlock,
+  // The one reader of a column's path, shared with the reception table block
+  // and the server's text output so the three cannot disagree again.
+  tableFieldValue,
 } from '@recued/renderer';
 import {
   e,
@@ -1486,19 +1489,6 @@ const displayResultFileMoney = (
   return `${amountMinor.toLocaleString('en-US')} ${currency.toUpperCase()} in the smallest coins`;
 };
 
-const getPathValue = (row: unknown, path: string): unknown => {
-  let current: unknown = row;
-  for (const part of path.split('.')) {
-    if (part.length === 0) return undefined;
-    const record = asRecord(current);
-    if (record === null || !Object.prototype.hasOwnProperty.call(record, part)) {
-      return undefined;
-    }
-    current = record[part];
-  }
-  return current;
-};
-
 const sectionTitle = (section: RenderedOutputSection): string => {
   if (typeof section.label === 'string' && section.label.trim().length > 0) {
     return section.label;
@@ -2170,7 +2160,7 @@ const renderTableResultSection = (
     const UNGROUPED = '\u0000ungrouped';
     const buckets = new Map<string, ResultBodyEntry[]>();
     for (const entry of flat) {
-      const raw = getPathValue(entry.row, groupField);
+      const raw = tableFieldValue(entry.row, groupField);
       const empty = raw === undefined || raw === null || String(raw).trim() === '';
       const key = empty ? UNGROUPED : String(raw);
       let bucket = buckets.get(key);
@@ -2277,7 +2267,7 @@ const renderTableResultSection = (
           selectState!.busy ? ' disabled' : ''} /></td>`;
       })()}
               ${columns.map((column) => {
-                const cell = getPathValue(row, column.field);
+                const cell = tableFieldValue(row, column.field);
                 if (editState !== null && editable.has(column.field)) {
                   // A cell the owner may type into. The value comes from the
                   // GRID state, not from the row — an edit survives a re-render

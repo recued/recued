@@ -37,7 +37,7 @@ import type {
 } from '@recued/contracts';
 // Same byte formatter the Records explorer uses — these are the same quota
 // ceilings, shown one screen earlier.
-import { formatPressureBytes } from '@recued/contracts';
+import { formatPressureBytes, installRecipeRiskFromPreview } from '@recued/contracts';
 import {
   ACCESS_LABEL,
   OWN_NEEDS_WHAT,
@@ -363,7 +363,9 @@ export const resolveInstallDialogAccess = (
 
 /** The Access model the dialog offers for `manifest`: its operations, plus its
  *  recipes at the per-recipe risk `packs.install_preview` resolved (absent or
- *  unresolved ⇒ each recipe `read`, as before D-247).
+ *  unresolved ⇒ each recipe `read`, as before D-247). A resolved preview that
+ *  does not list a recipe means the install writes it closed, so no tier lists
+ *  it (`installRecipeRiskFromPreview`).
  *
  *  ⛔ ONE model for the dialog AND the panel that validates the owner's pick and
  *  builds the install's `install_scope`. The panel built its own WITHOUT the
@@ -374,10 +376,7 @@ export const installDialogGrantModel = (
   manifest: BulkPackManifest,
   preview: InstallPreview | undefined,
 ): InstallGrantPickerModel | null => {
-  const recipeRisk = preview?.resolved === true
-    ? new Map(preview.will_enable.map((r) => [r.recipe_id, r.top_risk ?? 'read' as const]))
-    : undefined;
-  return installGrantModelFromManifest(manifest, recipeRisk);
+  return installGrantModelFromManifest(manifest, installRecipeRiskFromPreview(preview));
 };
 
 /** D-182 §7.2 — the effective scope: the owner's pick, or `owner` (the safe

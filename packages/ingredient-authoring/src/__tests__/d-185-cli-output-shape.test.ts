@@ -225,3 +225,74 @@ describe('stdout output_capture — the arm that lets a printing tool read a war
     expect(issuesWithCode(result, 'composition_cli_output_capture_dir_arg')).toEqual([]);
   });
 });
+
+/** A Claude Code–shaped op: its stdout is the event stream the heartbeat
+ *  reads, and the op keeps only the final answer the adapter found there. */
+const answerCapture = (
+  captureExtra: Record<string, unknown> = {},
+  bindExtra: Record<string, unknown> = {},
+): CompositionIngredient =>
+  cliComposition(
+    {
+      shape: 'ref',
+      progress: { contract: 'heartbeat', adapter: 'claude-stream-json', stall_ms: 5_000 },
+      output_capture: {
+        from_progress_answer: true,
+        mime_type: 'text/markdown',
+        filename: 'answer.md',
+        ...captureExtra,
+      },
+      ...bindExtra,
+    } as Partial<CliMethodBinding>,
+    ['gh', 'run', '--', '{match}'],
+  );
+
+const catalogAnswerIssues = (result: { issues: Array<{ code: string; message: string }> }) =>
+  result.issues.filter((issue) => issue.code === 'CATALOG_BINDING_INVALID'
+    && issue.message.includes('from_progress_answer'));
+
+describe('answer output_capture — keep the final answer an agent printed in its event stream', () => {
+  it('accepts an answer capture on an adapter that reads one', () => {
+    const result = validateComposition(answerCapture());
+    expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
+  });
+
+  /** ⛔ The answer comes from the adapter's host code. An op whose adapter
+   *  reads none would pass here and then fail every run with nothing to keep —
+   *  refused at authoring AND at install, which validates the catalog alone. */
+  it.each([
+    ['an adapter that reads no answer', { progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 5_000 } }],
+    ['no progress at all', { progress: undefined }],
+    ['a growing file', { progress: { contract: 'file-growth', watch_path: '/tmp/x', stall_ms: 5_000 } }],
+  ])('refuses it on %s', (_label, bindExtra) => {
+    const result = validateComposition(answerCapture({}, bindExtra));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_answer_adapter')).toHaveLength(1);
+    expect(catalogAnswerIssues(result)).toHaveLength(1);
+  });
+
+  it('requires a filename, because the tool supplies none', () => {
+    const result = validateComposition(answerCapture({ filename: undefined }));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_answer_filename')).toHaveLength(1);
+  });
+
+  it('refuses a non-literal from_progress_answer', () => {
+    const result = validateComposition(answerCapture({ from_progress_answer: 'yes' }));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_answer_flag')).toHaveLength(1);
+    expect(catalogAnswerIssues(result)).toHaveLength(1);
+  });
+
+  it.each([
+    ['dir_arg', { dir_arg: 'out' }],
+    ['from_input_arg', { from_input_arg: 'source' }],
+    ['from_stdout', { from_stdout: true }],
+  ])('refuses from_progress_answer alongside %s', (_label, extra) => {
+    const result = validateComposition(answerCapture(extra));
+    expect(issuesWithCode(result, 'composition_cli_output_capture_answer_exclusive')).toHaveLength(1);
+  });
+
+  /** Like the stdout arm, nothing in argv names the output. */
+  it('requires no output token in argv', () => {
+    const result = validateComposition(answerCapture());
+    expect(issuesWithCode(result, 'composition_cli_output_capture_dir_arg')).toEqual([]);
+  });
+});

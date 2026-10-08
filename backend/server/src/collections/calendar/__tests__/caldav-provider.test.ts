@@ -940,8 +940,11 @@ describe('CalDavProvider — startSync (ETag diff)', () => {
     includeEvent = false;
     const rejected = makeProvider();
     cleanup.push(() => rejected.close());
+    // A gone resource's rows go as a reconcile that keeps none of them
+    // (2026-10-07): the old `deleted` event was keyed on the href's hash,
+    // which no row had.
     await rejected.startSync(async (event) => {
-      if (event.kind === 'deleted') throw new Error('collection unavailable');
+      if (event.kind === 'series') throw new Error('collection unavailable');
     });
     await rejected.close();
     expect(etagStore.data.size).toBe(1);
@@ -952,7 +955,10 @@ describe('CalDavProvider — startSync (ETag diff)', () => {
     await recovered.startSync(async (event) => { replayed.push(event); });
 
     expect(replayed).toEqual([
-      expect.objectContaining({ kind: 'deleted' }),
+      expect.objectContaining({
+        kind: 'series',
+        series: expect.objectContaining({ ical_uid: 'a', keep: [] }),
+      }),
     ]);
     expect(etagStore.data.size).toBe(0);
   });
@@ -1015,6 +1021,52 @@ describe('CalDavProvider — createEvent', () => {
     expect(putBody).toContain('BEGIN:VEVENT');
     expect(payload.event.summary).toBe('Made it');
   });
+
+  it("D-315 slice 7 — keeps an emailed invite's UID when it can name the file; one it cannot gets ours", async () => {
+    const homeXml = `<?xml version="1.0"?>
+<multistatus xmlns="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <response>
+    <href>/calendars/alice/work/</href>
+    <propstat><prop><displayname>Work</displayname><resourcetype><collection/><c:calendar/></resourcetype></prop></propstat>
+  </response>
+</multistatus>`;
+    const puts: Array<{ url: string; body: string }> = [];
+    const fetcher: HttpFetcher = async (url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'PUT') {
+        puts.push({ url, body: (init.body as string) ?? '' });
+        return mkText(201, '');
+      }
+      return mkText(404, 'unmapped');
+    };
+    const provider = createCalDavProvider({
+      slug: 'personal',
+      config: mkConfig(),
+      fetcher,
+      etagStore: makeEtagStore(),
+      scheduler: () => () => undefined,
+      now: () => Date.UTC(2026, 3, 23),
+    });
+    cleanup.push(() => provider.close());
+    const event = {
+      calendar_id: '/calendars/alice/work/',
+      summary: 'Quarterly planning',
+      start_at: Date.UTC(2026, 9, 15, 14),
+      end_at: Date.UTC(2026, 9, 15, 15),
+      timezone: 'UTC',
+      is_all_day: false,
+      status: 'confirmed' as const,
+    };
+    const kept = await provider.createEvent('/calendars/alice/work/', { ...event, ical_uid: 'abc123@google.com' });
+    expect(puts[0]!.url).toMatch(/\/calendars\/alice\/work\/abc123@google\.com\.ics$/);
+    expect(puts[0]!.body).toContain('UID:abc123@google.com\r\n');
+    expect(kept.event.ical_uid).toBe('abc123@google.com');
+    expect(kept.event.source_id.split(':')[1]).toBe('abc123@google.com');
+
+    const ours = await provider.createEvent('/calendars/alice/work/', { ...event, ical_uid: 'urn:uuid:1/2' });
+    expect(ours.event.ical_uid).toMatch(/^[0-9a-f]{40}@recued$/);
+    expect(puts[1]!.url).toContain(`/${ours.event.ical_uid}.ics`);
+  });
 });
 
 describe('CalDavProvider — updateEvent', () => {
@@ -1076,7 +1128,7 @@ describe('CalDavProvider — updateEvent', () => {
     return provider;
   };
 
-  it('this_instance edit rewrites the single VEVENT in place', async () => {
+  it('this_instance edit writes the occurrence an override and leaves the series (2026-10-07)', async () => {
     const puts: PutCapture[] = [];
     const provider = mkProvider((cap) => {
       puts.push(cap);
@@ -1089,11 +1141,15 @@ describe('CalDavProvider — updateEvent', () => {
     });
     expect(puts).toHaveLength(1);
     expect(puts[0].url).toContain('/series-uid.ics');
-    expect(puts[0].body).toContain('SUMMARY:Standup v2');
-    // RRULE carried forward; no UNTIL cap on a single-instance edit.
+    // The series is untouched: its name, its rule, no UNTIL cap.
+    expect(puts[0].body).toContain('SUMMARY:Standup\r\n');
     expect(puts[0].body).toContain('RRULE:FREQ=DAILY');
     expect(puts[0].body).not.toContain('UNTIL=');
+    // Its first occurrence has its own copy, renamed.
+    expect(puts[0].body).toContain('RECURRENCE-ID:20260601T090000Z\r\n');
+    expect(puts[0].body).toContain('SUMMARY:Standup v2\r\n');
     expect(payload.event.summary).toBe('Standup v2');
+    expect(payload.event.start_at).toBe(SERIES_START);
   });
 
   it('this_and_future on a later instance truncates the master + creates a new series', async () => {
@@ -1301,8 +1357,16 @@ describe('CalDavProvider — deleteEvent', () => {
   </response>
 </multistatus>`;
     let deleteUrl = '';
+    // A one-off event: deleting it deletes its file. (The file is read first:
+    // an occurrence of a series is deleted as an EXDATE instead.)
+    const single = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'BEGIN:VEVENT', 'UID:evt-1',
+      'DTSTART:20260423T120000Z', 'DTEND:20260423T130000Z', 'SUMMARY:One-off',
+      'END:VEVENT', 'END:VCALENDAR',
+    ].join('\r\n');
     const fetcher: HttpFetcher = async (url, init) => {
       if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'GET') return mkText(200, single);
       if (init?.method === 'DELETE') {
         deleteUrl = url;
         return mkText(204, '');

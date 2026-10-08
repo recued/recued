@@ -210,6 +210,27 @@ describe('executeRecipe — L2 cache and the clock', () => {
     expect(read(r2, 'line')).toBe(`joined ${new Date(later).toISOString()}`);
   });
 
+  // ⛔ A map is only as pure as what it applies (2026-10-07): `meeting-prep-brief`
+  // flags upcoming events with `apply: "is_future"`, and the key holds the rows,
+  // not the time — an event kept its "upcoming" flag after it began.
+  it('a map applying is_future reads the clock on every run', async () => {
+    const startsBetweenRuns = Date.UTC(2026, 8, 29, 2, 13, 30);
+    const { r1, r2, read, secondRun } = await runTwice([
+      { id: 'flagged', transform: 'map', array: [{ start_at: startsBetweenRuns }], apply: 'is_future', field: 'start_at', output_field: 'upcoming' } as never,
+    ]);
+    expect(read(r1, 'flagged')).toEqual([{ start_at: startsBetweenRuns, upcoming: true }]);
+    expect(read(r2, 'flagged')).toEqual([{ start_at: startsBetweenRuns, upcoming: false }]);
+    expect(secondRun).not.toContain('hit');
+  });
+
+  it('a map applying a pure transform still replays', async () => {
+    const { read, r2, secondRun } = await runTwice([
+      { id: 'when', transform: 'map', array: [{ start_at: 0, end_at: 0, is_all_day: false }], apply: 'event_when', time_zone: 'UTC', output_field: 'when' } as never,
+    ]);
+    expect((read(r2, 'when') as Array<{ when: { day: string } }>)[0]!.when.day).toBe('1970-01-01');
+    expect(secondRun).toContain('hit');
+  });
+
   it('a date step fed a fixed time still replays — only the clock is excluded', async () => {
     const { r2, read, secondRun } = await runTwice([
       { id: 'parsed', transform: 'date_parse', input: '2026-09-28T12:00:00Z' } as never,

@@ -7,14 +7,18 @@
  * server, extracts that tarball into a deployment-shaped directory with no
  * `community/`, and boots `dist/bin.js` from there.
  *
+ * The realm is the one a launch-era owner has: all four historical v1 packs
+ * installed. Three of them are in the D-259 ledger; codex-pack left it at v5.
+ *
  * Three arms prove the launch boundary:
- *   1. HTTP serve: all four exact historical v1 bodies are v2 by the first
- *      accepted /health response, authority rows survive byte-for-byte, and a
- *      second boot is a quiet no-op.
+ *   1. HTTP serve: the three ledger packs are on their reviewed target by the
+ *      first accepted /health response, codex-pack is left exactly as installed
+ *      and named to the owner, authority rows on both survive byte-for-byte,
+ *      and a second boot is a quiet no-op.
  *   2. stdio MCP: an initialize/tools-list exchange queued at process spawn is
- *      answered only after the same four migrations are durable.
- *   3. held source: an unreviewed v1 body is not overwritten, HTTP still comes
- *      up, and the owner receives the durable Packs deep-link ask.
+ *      answered only after the same three migrations are durable.
+ *   3. held source: an unreviewed v1 body of a ledger pack is not overwritten,
+ *      HTTP still comes up, and the owner is notified with a Packs deep link.
  *
  * Run from the repository root under Node 24:
  *   npm run test:pack-reconciliation-artifact -- --source HEAD
@@ -40,7 +44,7 @@ import {
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import Database from 'better-sqlite3';
 import {
@@ -68,8 +72,24 @@ const repoRoot = resolve(scriptDir, '..', '..', '..');
 /** The parent of `8917a62b3` (Implement D-259 execution semantics). These are
  * the exact v1 files an already-installed launch realm could have persisted. */
 const HISTORICAL_V1_SOURCE = 'a468cc3b554b0d5cc75ed314085a065ecbaf1fed';
-const PACKS = ['codex-pack', 'yt-dlp', 'cloudflared', 'ollama'] as const;
+
+/** The packs the D-259 ledger repairs at boot. Each must land on its reviewed
+ *  target before the first request is answered.
+ *
+ *  ⛔ MEMBERSHIP IS A COPY TOO. codex-pack left the ledger at v5 (`1815a8944`)
+ *  and stayed listed here, so the 26.10.8 cut failed on `codex-pack candidate
+ *  target version 6 !== 3`. `assertLedgerMembership` now compares this list
+ *  with the candidate's embedded targets before anything is built. */
+const LEDGER_PACKS = ['yt-dlp', 'cloudflared', 'ollama'] as const;
+/** Installed at launch, outside the ledger now. The boot must leave each exactly
+ *  as installed and name it to the owner: its update needs the reviewed install
+ *  dialog, never a silent rewrite. */
+const OUT_OF_LEDGER_PACKS = ['codex-pack'] as const;
+const PACKS = [...LEDGER_PACKS, ...OUT_OF_LEDGER_PACKS] as const;
 type PackSlug = (typeof PACKS)[number];
+
+const isLedgerPack = (slug: PackSlug): boolean =>
+  (LEDGER_PACKS as readonly string[]).includes(slug);
 
 const CATALOG_SLUG: Readonly<Record<PackSlug, string>> = {
   'codex-pack': 'codex',
@@ -78,20 +98,48 @@ const CATALOG_SLUG: Readonly<Record<PackSlug, string>> = {
   ollama: 'ollama',
 };
 
-const AUTHORITY_ROWS = [
+/** Owner choices a normal reinstall would replace or clear. They sit on a pack
+ *  the ledger MIGRATES (the apply path must preserve them) and on the pack it
+ *  must not touch at all. The group and operation names are the v1 bodies'. */
+interface OwnerAuthority {
+  pack: PackSlug;
+  catalog: string;
+  connection: string;
+  group: string;
+  operation: string;
+}
+
+const AUDIENCE_CONTRACT = 'ct_artifact_rehearsal';
+const OWNER_AUTHORITY: readonly OwnerAuthority[] = [
   {
-    scope: 'grant',
-    segments: ['codex-pack', 'codex', 'artifact-owner-picked-account', 'codex.codex.write'],
+    pack: 'yt-dlp',
+    catalog: 'yt-dlp',
+    connection: 'artifact-owner-picked-media-account',
+    group: 'yt-dlp.media.write',
+    operation: 'recued-core/yt-dlp.media.download',
   },
   {
-    scope: 'connection_catalog_binding',
-    segments: ['artifact-owner-picked-account'],
+    pack: 'codex-pack',
+    catalog: 'codex',
+    connection: 'artifact-owner-picked-account',
+    group: 'codex.codex.write',
+    operation: 'recued-core/codex.codex.review',
   },
-  {
-    scope: 'contract_grant',
-    segments: ['ct_artifact_rehearsal', 'recued-core/codex.codex.review'],
-  },
-] as const;
+];
+
+interface AuthorityKey {
+  scope: string;
+  segments: readonly string[];
+}
+
+const authorityKeys = (fixtures: readonly { slug: PackSlug }[]): AuthorityKey[] =>
+  OWNER_AUTHORITY
+    .filter((owner) => fixtures.some((fixture) => fixture.slug === owner.pack))
+    .flatMap((owner) => [
+      { scope: 'grant', segments: [owner.pack, owner.catalog, owner.connection, owner.group] },
+      { scope: 'connection_catalog_binding', segments: [owner.connection] },
+      { scope: 'contract_grant', segments: [AUDIENCE_CONTRACT, owner.operation] },
+    ]);
 
 /** ⚠ RETIRED BY D-259, AND KEPT SO ITS ABSENCE CAN BE ASSERTED. The ask this
  *  named no longer exists; arm 3 proves no row is minted rather than merely not
@@ -99,7 +147,9 @@ const AUTHORITY_ROWS = [
 const ASK_KIND = 'packs.unrunnable.ping';
 /** Title of the notification that replaced it. */
 const NOTICE_TITLE = 'Packs need updating';
-const PACK_DETAIL_LINK = 'https://home.example.net/#packs/codex-pack';
+/** The ledger pack arm 3 holds. */
+const HELD_PACK: PackSlug = 'yt-dlp';
+const PACK_DETAIL_LINK = `https://home.example.net/#packs/${HELD_PACK}`;
 const DEFAULT_TIMEOUT_MS = 90_000;
 
 const say = (message: string): void => console.log(`[pack-artifact] ${message}`);
@@ -156,7 +206,9 @@ interface PackFixture {
   slug: PackSlug;
   catalogSlug: string;
   legacy: DecomposedFixture;
-  target: DecomposedFixture;
+  /** The reviewed body a ledger pack must land on; null for a pack outside the
+   *  ledger, which must keep its legacy body. */
+  target: DecomposedFixture | null;
 }
 
 const isComposition = (value: unknown): value is CompositionIngredient => {
@@ -257,8 +309,43 @@ const loadFixtures = (worktree: string): PackFixture[] => PACKS.map((slug) => ({
   slug,
   catalogSlug: CATALOG_SLUG[slug],
   legacy: decompose(compositionFromHistoricalPack(slug), `${slug} v1`),
-  target: decompose(compositionFromTarget(loadTargetPack(worktree, slug)), `${slug} v2`),
+  target: isLedgerPack(slug)
+    ? decompose(
+      compositionFromTarget(loadTargetPack(worktree, slug)),
+      `${slug} v${LAUNCH_SAFE_TARGET_VERSION}`,
+    )
+    : null,
 }));
+
+/** Fail before the build, and say which list to change, when this rehearsal and
+ *  the candidate disagree about who is in the ledger. The candidate's embedded
+ *  target set is what its packaged server can repair without `community/`. */
+const assertLedgerMembership = async (worktree: string): Promise<void> => {
+  const generator = join(
+    worktree,
+    'backend',
+    'server',
+    'scripts',
+    'gen-bundled-pack-reconciliation.mjs',
+  );
+  const loaded = record(
+    await import(pathToFileURL(generator).href) as unknown,
+    'candidate reconciliation target generator',
+  );
+  const slugs = loaded.PACK_RECONCILIATION_TARGET_SLUGS;
+  if (!Array.isArray(slugs) || !slugs.every((slug) => typeof slug === 'string')) {
+    throw new Error(`${generator} no longer exports PACK_RECONCILIATION_TARGET_SLUGS`);
+  }
+  const candidate = [...slugs].sort();
+  const expected = [...LEDGER_PACKS].sort();
+  assert.deepEqual(
+    candidate,
+    expected,
+    `the candidate repairs ${candidate.join(', ')} at boot; this rehearsal expects `
+      + `${expected.join(', ')}. Move a pack that left the ledger to OUT_OF_LEDGER_PACKS, `
+      + 'and give a pack that joined it a v1 fixture in LEDGER_PACKS.',
+  );
+};
 
 interface NpmPackResult {
   filename: string;
@@ -388,9 +475,7 @@ interface PackState {
   entitySchemas: EntitySchemaIngredientInput[];
 }
 
-interface AuthorityState {
-  scope: string;
-  segments: readonly string[];
+interface AuthorityState extends AuthorityKey {
   row: ContractRow | null;
 }
 
@@ -414,7 +499,7 @@ const inspectRealm = (dbPath: string, fixtures: readonly PackFixture[]): RealmSt
         manifest: local.getManifest(catalogSlug),
         entitySchemas: local.getEntitySchemas(catalogSlug),
       })),
-      authority: AUTHORITY_ROWS.map(({ scope, segments }) => ({
+      authority: authorityKeys(fixtures).map(({ scope, segments }) => ({
         scope,
         segments,
         row: contracts.get(scope, segments),
@@ -466,31 +551,43 @@ const seedRealm = async (
       });
     }
 
-    if (fixtures.some((fixture) => fixture.slug === 'codex-pack')) {
+    for (const owner of OWNER_AUTHORITY) {
+      if (!fixtures.some((fixture) => fixture.slug === owner.pack)) continue;
       createContractGrantStore(contracts).grantPackGroup(
-        'codex-pack',
-        'codex',
-        'artifact-owner-picked-account',
-        'codex.codex.write',
+        owner.pack,
+        owner.catalog,
+        owner.connection,
+        owner.group,
       );
       createConnectionCatalogBindingStore(contracts).bind(
-        'artifact-owner-picked-account',
-        'codex',
-        'codex-pack',
+        owner.connection,
+        owner.catalog,
+        owner.pack,
       );
       createContractGrantEntryStore(contracts).set(
-        'ct_artifact_rehearsal',
-        'recued-core/codex.codex.review',
+        AUDIENCE_CONTRACT,
+        owner.operation,
         true,
         7,
-        'codex-pack',
+        owner.pack,
       );
     }
     db.pragma('wal_checkpoint(TRUNCATE)');
   } finally {
     db.close();
   }
-  return inspectRealm(dbPath, fixtures);
+  const seeded = inspectRealm(dbPath, fixtures);
+  // ⚠ Every later comparison is `after` against this. A row that never got
+  // written compares null to null and passes, so prove the seed first.
+  for (const pack of seeded.packs) {
+    requiredRow(pack.inventory, `${pack.slug} seeded inventory`);
+    assert.ok(pack.manifest !== null, `${pack.slug} seeded manifest is missing`);
+  }
+  for (const authority of seeded.authority) {
+    requiredRow(authority.row, `seeded ${authority.scope} ${authority.segments.join('/')}`);
+  }
+  assert.ok(seeded.authority.length > 0, 'the realm was seeded with no owner authority');
+  return seeded;
 };
 
 const stateFor = (state: RealmState, slug: PackSlug): PackState => {
@@ -513,6 +610,14 @@ const assertMigrated = (
   for (const fixture of fixtures) {
     const prior = stateFor(before, fixture.slug);
     const current = stateFor(after, fixture.slug);
+    if (fixture.target === null) {
+      assert.deepEqual(
+        current,
+        prior,
+        `${fixture.slug} is outside the D-259 ledger and was changed at boot`,
+      );
+      continue;
+    }
     const priorInventory = requiredRow(prior.inventory, `${fixture.slug} prior inventory`);
     const currentInventory = requiredRow(current.inventory, `${fixture.slug} current inventory`);
     assert.deepEqual(
@@ -534,7 +639,7 @@ const assertMigrated = (
     assert.deepEqual(
       current.manifest,
       fixture.target.manifest,
-      `${fixture.slug} did not land on the reviewed v2 body`,
+      `${fixture.slug} did not land on the reviewed v${LAUNCH_SAFE_TARGET_VERSION} body`,
     );
     assert.deepEqual(
       current.entitySchemas,
@@ -790,6 +895,31 @@ const readNotificationsFired = (dbPath: string): Record<string, unknown>[] => {
 const packNotices = (dbPath: string): Record<string, unknown>[] =>
   readNotificationsFired(dbPath).filter((row) => row.title === NOTICE_TITLE);
 
+/** The reconciler's own account of a first boot: every ledger pack moved,
+ *  nothing was held, and no pack outside the ledger is in the line at all. */
+const assertLedgerReport = (output: string, label: string): void => {
+  const updated = output.split('\n').find((line) =>
+    line.includes('[packs] launch-safe reconciliation updated'));
+  if (updated === undefined) {
+    throw new Error(`${label} reported no ledger migration:\n${output.slice(-4000)}`);
+  }
+  assert.match(
+    updated,
+    new RegExp(`updated ${LEDGER_PACKS.length} pack\\(s\\):`),
+    `${label} migrated the wrong number of packs: ${updated}`,
+  );
+  for (const slug of LEDGER_PACKS) {
+    assert.ok(
+      updated.includes(`${slug} v1→v${LAUNCH_SAFE_TARGET_VERSION}`),
+      `${label} did not migrate ${slug}: ${updated}`,
+    );
+  }
+  for (const slug of OUT_OF_LEDGER_PACKS) {
+    assert.ok(!updated.includes(slug), `${label} migrated ${slug}, which is outside the ledger`);
+  }
+  assert.doesNotMatch(output, /launch-safe reconciliation held/, `${label} held a pack for review`);
+};
+
 const runServeArm = async (
   artifact: ArtifactLayout,
   fixtures: readonly PackFixture[],
@@ -810,11 +940,16 @@ const runServeArm = async (
     await waitForHealth(first, firstPort);
     const atFirstIntake = inspectRealm(dbPath, fixtures);
     assertMigrated(before, atFirstIntake, fixtures);
-    assert.match(
-      first.output(),
-      /\[packs\] launch-safe reconciliation updated 4 pack\(s\):/,
-      'first artifact boot did not report all four migrations',
-    );
+    assertLedgerReport(first.output(), 'first artifact boot');
+    // What the ledger leaves alone is still the owner's to update, so the boot
+    // names it. This server has no public name and the notice carries no link:
+    // a dead link reads as "nothing here".
+    const notice = await pollUntil('out-of-ledger owner notification', () =>
+      packNotices(dbPath).at(-1) ?? null, 20_000);
+    for (const slug of OUT_OF_LEDGER_PACKS) {
+      assert.match(String(notice.text ?? ''), new RegExp(slug), `owner notice does not name ${slug}`);
+    }
+    assert.equal(notice.link_url, undefined, 'a server with no public name linked the notice');
   } finally {
     await stopArtifact(first);
   }
@@ -839,7 +974,9 @@ const runServeArm = async (
   } finally {
     await stopArtifact(second);
   }
-  say('arm 1/3 PASS: first intake saw v2; authority survived; restart was quiet');
+  say(`arm 1/3 PASS: first intake saw v${LAUNCH_SAFE_TARGET_VERSION}; `
+    + `${OUT_OF_LEDGER_PACKS.join(', ')} left as installed and named; authority survived; `
+    + 'restart was quiet');
 };
 
 interface McpDriveResult {
@@ -955,35 +1092,39 @@ const runMcpArm = async (
   const result = record(toolsList.result, 'MCP tools/list result');
   assert.ok(Array.isArray(result.tools), 'MCP tools/list result carries tools[]');
   assertMigrated(before, drive.stateAtToolsList, fixtures);
-  assert.match(
-    drive.stderr,
-    /\[packs\] launch-safe reconciliation updated 4 pack\(s\):/,
-    'MCP artifact did not report all four migrations',
-  );
-  say('arm 2/3 PASS: queued MCP intake answered only after all four v2 bodies were durable');
+  assertLedgerReport(drive.stderr, 'MCP artifact boot');
+  say(`arm 2/3 PASS: queued MCP intake answered only after all ${LEDGER_PACKS.length} `
+    + `v${LAUNCH_SAFE_TARGET_VERSION} bodies were durable`);
 };
 
-const makeHeldCodexBody = (slug: PackSlug, body: IngredientManifest): IngredientManifest => {
-  if (slug !== 'codex-pack') return body;
-  const surfaces = record(body.surfaces, 'held codex surfaces');
-  const connector = record(surfaces.connector, 'held codex connector');
-  const executes = record(connector.executes, 'held codex executes');
-  const binding = record(executes['codex.review'], 'held codex review binding');
-  // Preserve the legacy detached declaration (so the current validator rejects
-  // it), but move executable bytes off the reviewed source fingerprint.
-  binding.argv_template = ['codex', 'review', '--base', 'main', '{task}'];
+/** A local edit nobody reviewed: the download may now read the browser's
+ *  cookies. The authority projection is unchanged (an argv is execution, not
+ *  authority), so what holds it is the SOURCE fingerprint alone. The legacy
+ *  detached declaration stays, so the current validator still rejects it. */
+const makeHeldBody = (slug: PackSlug, body: IngredientManifest): IngredientManifest => {
+  if (slug !== HELD_PACK) return body;
+  const surfaces = record(body.surfaces, 'held yt-dlp surfaces');
+  const connector = record(surfaces.connector, 'held yt-dlp connector');
+  const executes = record(connector.executes, 'held yt-dlp executes');
+  const binding = record(executes['media.download'], 'held yt-dlp download binding');
+  const argv = binding.argv_template;
+  assert.ok(
+    Array.isArray(argv) && argv.includes('--no-cookies-from-browser'),
+    'held yt-dlp fixture no longer carries the flag the edit removes',
+  );
+  binding.argv_template = argv.filter((arg) => arg !== '--no-cookies-from-browser');
   return body;
 };
 
 const runHeldArm = async (
   artifact: ArtifactLayout,
-  codexFixture: PackFixture,
+  heldFixture: PackFixture,
   armRoot: string,
 ): Promise<void> => {
   say('arm 3/3: unreviewed source is held while owner notification and HTTP intake survive');
-  const fixtures = [codexFixture];
+  const fixtures = [heldFixture];
   const dbPath = join(armRoot, 'realm.db');
-  const before = await seedRealm(dbPath, fixtures, makeHeldCodexBody);
+  const before = await seedRealm(dbPath, fixtures, makeHeldBody);
   const port = await freePort();
   const configPath = configFor(armRoot);
   const processHandle = startArtifact(artifact, [
@@ -1004,7 +1145,7 @@ const runHeldArm = async (
     assert.equal(notice.link_url, PACK_DETAIL_LINK, 'owner notification links to the held pack');
     assert.match(
       String(notice.text ?? ''),
-      /codex-pack/,
+      new RegExp(HELD_PACK),
       'owner notification names the held pack rather than "some packs"',
     );
     // ⛔ THE ASK IS RETIRED — ASSERT ITS ABSENCE, do not merely stop looking for
@@ -1016,7 +1157,7 @@ const runHeldArm = async (
     );
     assert.match(
       processHandle.output(),
-      /codex-pack \(source_body_not_approved\)/,
+      new RegExp(`held 1 pack\\(s\\) for owner review: ${HELD_PACK} \\(source_body_not_approved\\)`),
       'artifact did not log the source-fingerprint hold',
     );
     // ⚠ THE VALIDATOR CODES MOVED, THEY DID NOT VANISH. They used to be read off
@@ -1093,15 +1234,18 @@ const main = async (): Promise<void> => {
     worktreeAdded = true;
     assert.equal(gitStatus(worktree), '', 'detached candidate checkout starts clean');
 
+    await assertLedgerMembership(worktree);
     const fixtures = loadFixtures(worktree);
     assert.deepEqual(fixtures.map((fixture) => fixture.slug), [...PACKS]);
     const artifact = buildPackedArtifact(worktree, tempRoot);
 
     await runServeArm(artifact, fixtures, join(tempRoot, 'serve-arm'));
     await runMcpArm(artifact, fixtures, join(tempRoot, 'mcp-arm'));
-    const codex = fixtures.find((fixture) => fixture.slug === 'codex-pack');
-    if (codex === undefined) throw new Error('codex-pack fixture is missing');
-    await runHeldArm(artifact, codex, join(tempRoot, 'held-arm'));
+    const held = fixtures.find((fixture) => fixture.slug === HELD_PACK);
+    if (held === undefined || held.target === null) {
+      throw new Error(`${HELD_PACK} is not a ledger fixture`);
+    }
+    await runHeldArm(artifact, held, join(tempRoot, 'held-arm'));
 
     say(`PASS: ${source.slice(0, 12)} packaged reconciliation is launch-safe`);
   } finally {

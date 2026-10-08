@@ -68,6 +68,24 @@ describe('analyzeStep — transform classification', () => {
   });
 });
 
+describe('analyzeStep — a map is as pure as what it applies', () => {
+  it('a map applying a clock-reading transform is NOT cacheable', async () => {
+    for (const apply of ['is_past', 'is_future', 'date_diff', 'date_add', 'date_period']) {
+      const seed = await analyzeStep({ id: 's', transform: 'map', array: '{{step.rows}}', apply, field: 'at' } as unknown as RecipeStep);
+      expect(seed.cacheable, `map apply ${apply}`).toBe(false);
+    }
+  });
+
+  it('a map applying a pure transform, or with an expression, is', async () => {
+    for (const apply of ['date_format', 'event_when', 'compare']) {
+      const seed = await analyzeStep({ id: 's', transform: 'map', array: '{{step.rows}}', apply } as unknown as RecipeStep);
+      expect(seed.cacheable, `map apply ${apply}`).toBe(true);
+    }
+    const expression = await analyzeStep({ id: 's', transform: 'map', array: '{{step.rows}}', expression: '{{item.a}}' } as unknown as RecipeStep);
+    expect(expression.cacheable).toBe(true);
+  });
+});
+
 describe('analyzeStep — ingredient + guard', () => {
   it('ingredient steps are candidates (policy decides at execute time)', async () => {
     const seed = await analyzeStep({

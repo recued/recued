@@ -39,6 +39,7 @@ import {
   mailFactVocabulary,
   mailFactWhereOptions,
 } from './mail-fact-trigger.js';
+import { eventTriggerInWords } from '../dish-lead.js';
 import { configTextAsDish, parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
 import type { RunModalState, RunModalTab } from './types.js';
 
@@ -522,13 +523,16 @@ const renderTriggerTab = (
   const rows = state.triggers
     .map((t) => {
       const fact = describeMailFactTrigger(t, state.mail_fact_templates, state.mail_fact_types);
+      const words = fact === null ? eventTriggerInWords(t) : null;
       const actionName = (action: string): string =>
-        e(`${action} trigger ${fact ?? t.pattern} (${t.trigger_id})`);
+        e(`${action} trigger ${fact ?? `when ${words}`} (${t.trigger_id})`);
+      // Said in words, with the raw pattern kept on the meta line: this tab's
+      // Add form takes patterns, so the one a row matches stays readable here.
       return `
   <li class="run-modal-rule-row">
     <div>
-      <div>${fact !== null ? `on ${e(fact)}` : `on <code>${e(t.pattern)}</code>`}${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}${dishOfRow(dishes, t.dish_id)}</div>
-      <div class="run-modal-meta">last fired ${
+      <div>${fact !== null ? `on ${e(fact)}` : `when ${e(words!)}`}${t.enabled ? '' : ' — paused'}${t.origin === 'recipe' ? ' · from recipe' : ''}${dishOfRow(dishes, t.dish_id)}</div>
+      <div class="run-modal-meta">${fact === null ? `<code>${e(t.pattern)}</code> · ` : ''}last fired ${
         t.last_fired_at !== null ? e(new Date(t.last_fired_at).toLocaleString()) : 'never'
       }${t.last_error ? ` · ${e(t.last_error)}` : ''}</div>
     </div>

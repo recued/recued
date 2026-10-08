@@ -1,4 +1,5 @@
 import { formatPairTtlLabel } from '../pairing.js';
+import { markStartedListening } from '../cli/last-start-error.js';
 import type { RuntimeConfigStore } from '@recued/config';
 import type { NotificationBlock } from '@recued/notification';
 
@@ -242,6 +243,9 @@ export const startPostHousekeepingTail = (
     backgroundServices: options.backgroundServices,
   });
 
+  // The server is listening: a failed start recorded earlier is history now,
+  // and a later crash must not read as one (`cli/last-start-error.ts`).
+  markStartedListening(options.dbPath);
   logBootBanner({
     version: SERVER_VERSION,
     port: options.server.port,

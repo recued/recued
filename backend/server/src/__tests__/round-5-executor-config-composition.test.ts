@@ -148,6 +148,10 @@ const alwaysKernelKeys = [
   'csvFilter',
   'csvRows',
   'csvStats',
+  // D-315 slice 7 — `ics-read`, wired with the CSV ops for their reason: it
+  // reads a file the caller already named, and fails closed at call time if
+  // the store is absent.
+  'icsRead',
   'filePersist',
   'filePutRef',
   // D-274 — the READ sibling of filePersist, always wired for the same

@@ -17,6 +17,7 @@
  */
 
 import { selectValidReceptionLinkButtons } from '@recued/contracts';
+import { tableFieldValue } from '@recued/renderer';
 
 import type { ExecuteResponse } from './types.js';
 
@@ -143,7 +144,7 @@ const renderTable = (data: unknown): string => {
   const headers = columns.map(c => c.label ?? c.field);
   const cells = rows.map(row =>
     columns.map((c) => {
-      const cell = (row as Record<string, unknown>)?.[c.field];
+      const cell = tableFieldValue(row, c.field);
       return c.type === 'action'
         ? renderRecipeActionGroup(cell)
         : formatValue(cell);

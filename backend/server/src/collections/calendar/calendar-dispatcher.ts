@@ -39,7 +39,16 @@
  *  sync tick to reconcile whatever actually landed on the provider.
  */
 
-import { collectionSourceFreshnessOf, deriveCollectionSourceFreshness, RpcError } from '@recued/contracts';
+import {
+  collectionSourceFreshnessOf,
+  DAY_MS,
+  deriveCollectionSourceFreshness,
+  eventSpanIn,
+  isAllDaySpanNormal,
+  localDayAsDateOnly,
+  normalizeAllDaySpan,
+  RpcError,
+} from '@recued/contracts';
 import type { CollectionSourceFreshness } from '@recued/contracts';
 import type {
   CalendarCollectionCaps,
@@ -56,7 +65,12 @@ import {
 import { CalendarAdapterError } from '@recued/contracts';
 import { callCalendarAdapter } from './errors.js';
 import type { CalendarCollection } from './calendar-collection.js';
-import { calendarListLimit, type CalendarListQuery } from './calendar-table.js';
+import {
+  calendarListLimit,
+  type CalendarListQuery,
+  type CalendarCollectionTable,
+  type CalendarListRow,
+} from './calendar-table.js';
 import type {
   CalendarMutationScope,
   CreateEventInput,
@@ -73,6 +87,10 @@ export interface CalendarDispatcherDeps {
    *  (enroll-in-progress, crash-loop recovery, …). The composition
    *  root in bin.ts (Phase 9) supplies this hook. */
   getCollection: (slug: string) => CalendarCollection | undefined;
+  /** The owner's IANA zone, read per call. `calendar-list`'s `since` / `until`
+   *  meet an all-day event at the local midnight its first day begins there.
+   *  Absent: at the UTC midnight it is stored as. */
+  ownerTimeZone?: () => string;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -158,6 +176,47 @@ const leastCurrent = (
   };
 };
 
+/** When a row starts on the owner's clock: an all-day event at the local
+ *  midnight of its first day, a timed one at its own instant. */
+const localStartOf = (row: CalendarListRow, timeZone: string | undefined): number =>
+  row.is_all_day ? eventSpanIn(row, timeZone).start : row.start_at;
+
+/** `since` / `until` SELECT EVENTS BY WHEN THEY START ON THE OWNER'S CLOCK
+ *  (2026-10-07).
+ *
+ *  ⛔ They filtered the stored `start_at`, and an all-day event is stored as
+ *  the UTC midnight of its day (`calendar-days.ts`). A window for the owner's
+ *  day — their local midnight to the next — missed that day's all-day events
+ *  west of UTC and took the next day's: for an owner in Los Angeles, today's
+ *  holiday began at 4 pm yesterday. Each shipped "today" recipe asked for its
+ *  window that way once it read days on the owner's clock.
+ *
+ *  An all-day event starts at the local midnight of its first day, so the days
+ *  whose midnight falls inside `[since, until)` are a run of whole days; they
+ *  are found exactly and read as UTC midnights, beside the timed events read as
+ *  before. Both halves are cut to the limit, then merged in local start order
+ *  (a day's all-day events before its first meeting). */
+const listOnOwnerClock = (
+  table: Pick<CalendarCollectionTable, 'list'>,
+  query: CalendarListQuery,
+  timeZone: string | undefined,
+): CalendarListRow[] => {
+  const { start_since: since, start_until: until } = query;
+  if (since === undefined && until === undefined) return table.list(query);
+  const timed = table.list({ ...query, is_all_day: false });
+  const allDay = table.list({
+    ...query,
+    is_all_day: true,
+    // The first day whose local midnight is at or after `since`; the day
+    // after the last whose local midnight is before `until`.
+    ...(since === undefined ? {} : { start_since: localDayAsDateOnly(since - 1, timeZone) + DAY_MS }),
+    ...(until === undefined ? {} : { start_until: localDayAsDateOnly(until - 1, timeZone) + DAY_MS }),
+  });
+  return [...allDay, ...timed]
+    .sort((a, b) => localStartOf(a, timeZone) - localStartOf(b, timeZone))
+    .slice(0, calendarListLimit(query.limit));
+};
+
 /** Every calendar's events (2026-10-05), for a list that names no calendar.
  *
  *  Eight shipped recipes defaulted their calendar to `primary` and read it
@@ -171,9 +230,10 @@ const listEveryCalendar = (
   deps: CalendarDispatcherDeps,
   query: CalendarListQuery,
   now: number,
-): { records: Array<CalendarRecordHotFields & { collection_slug: string }>; source_freshness: CollectionSourceFreshness } => {
+): { records: Array<CalendarListRow & { collection_slug: string }>; source_freshness: CollectionSourceFreshness } => {
   const slugs = deps.instances.list('calendar').map((row) => row.slug).sort();
-  const records: Array<CalendarRecordHotFields & { collection_slug: string }> = [];
+  const timeZone = deps.ownerTimeZone?.();
+  const records: Array<CalendarListRow & { collection_slug: string }> = [];
   const verdicts: CollectionSourceFreshness[] = [];
   for (const slug of slugs) {
     const collection = deps.getCollection(slug);
@@ -181,11 +241,11 @@ const listEveryCalendar = (
       verdicts.push(deriveCollectionSourceFreshness(null, now));
       continue;
     }
-    for (const record of collection.table.list(query)) records.push({ ...record, collection_slug: slug });
+    for (const record of listOnOwnerClock(collection.table, query, timeZone)) records.push({ ...record, collection_slug: slug });
     verdicts.push(collectionSourceFreshnessOf(collection.health, now));
   }
   // Stable: a tie keeps calendar order, then each calendar's own order.
-  records.sort((a, b) => a.start_at - b.start_at);
+  records.sort((a, b) => localStartOf(a, timeZone) - localStartOf(b, timeZone));
   return {
     records: records.slice(0, calendarListLimit(query.limit)),
     source_freshness: leastCurrent(verdicts, now),
@@ -198,17 +258,20 @@ export const handleCalendarList = async (
     /** The calendar to read. Empty or absent: every calendar. */
     slug?: string;
     calendar_id?: string;
+    /** D-315 slice 7 — every row of one iCalendar UID. */
+    ical_uid?: string;
     since?: number;
     until?: number;
     status?: CanonicalEvent['status'];
     limit?: number;
   },
 ): Promise<{
-  records: Array<CalendarRecordHotFields & { collection_slug?: string }>;
+  records: Array<CalendarListRow & { collection_slug?: string }>;
   source_freshness: CollectionSourceFreshness;
 }> => {
   const query: CalendarListQuery = {
     ...(input.calendar_id !== undefined ? { calendar_id: input.calendar_id } : {}),
+    ...(typeof input.ical_uid === 'string' && input.ical_uid.length > 0 ? { ical_uid: input.ical_uid } : {}),
     ...(input.since !== undefined ? { start_since: input.since } : {}),
     ...(input.until !== undefined ? { start_until: input.until } : {}),
     ...(input.status !== undefined ? { status: input.status } : {}),
@@ -218,7 +281,7 @@ export const handleCalendarList = async (
     return listEveryCalendar(deps, query, (deps.now ?? Date.now)());
   }
   const { collection } = requireRead(deps, input.slug);
-  const records = collection.table.list(query);
+  const records = listOnOwnerClock(collection.table, query, deps.ownerTimeZone?.());
   // D-236 — calendar has its OWN kernel ingredients and its own dispatcher, so
   // it does NOT ride the `collection.list` path the mail/file/webhook verdict
   // travels. Its `health()` supplies the same fields (`last_indexed_at` is the
@@ -287,6 +350,46 @@ export const handleCalendarStat = async (
 // Write handlers — verified-then-reflected
 // ────────────────────────────────────────────────────────────────
 
+/** An all-day event's times as the days they name (`calendar-days.ts`).
+ *
+ *  ⛔ Every reader takes an all-day event's `start_at` / `end_at` as UTC
+ *  midnights, and every adapter writes them to its provider that way (Google
+ *  and Outlook by their UTC date, CalDAV as `VALUE=DATE`). A writer is not
+ *  held to it anywhere else: an intake form sends the local midnight in its
+ *  zone, a model whatever it chose, a time picked for the event whatever was
+ *  picked. Stored as is, the event sat a day off for every reader west (or
+ *  east) of UTC — the local calendar kept it, and Google truncated it to the
+ *  wrong date. So every write is held to it here, where all of them pass. */
+const withAllDayDays = <T extends { start_at: number; end_at: number; timezone: string; is_all_day: boolean }>(
+  event: T,
+): T =>
+  !event.is_all_day || isAllDaySpanNormal(event)
+    ? event
+    : { ...event, ...normalizeAllDaySpan(event.start_at, event.end_at, event.timezone) };
+
+/** The same for a patch: when the event it leaves is all-day and the patch
+ *  moves it, or makes a timed event all-day, its times become days. */
+const withAllDayPatch = (
+  patch: Partial<CanonicalEvent>,
+  existing: CanonicalEvent,
+): Partial<CanonicalEvent> => {
+  const allDay = patch.is_all_day ?? existing.is_all_day;
+  const becomesAllDay = patch.is_all_day === true && !existing.is_all_day;
+  if (!allDay || (patch.start_at === undefined && patch.end_at === undefined && !becomesAllDay)) return patch;
+  const days = withAllDayDays({
+    start_at: patch.start_at ?? existing.start_at,
+    end_at: patch.end_at ?? existing.end_at,
+    timezone: patch.timezone || existing.timezone,
+    is_all_day: true,
+  });
+  // Only the times the patch named, or that becoming days changed.
+  return {
+    ...patch,
+    ...(patch.start_at !== undefined || days.start_at !== existing.start_at ? { start_at: days.start_at } : {}),
+    ...(patch.end_at !== undefined || days.end_at !== existing.end_at ? { end_at: days.end_at } : {}),
+  };
+};
+
 export const handleCalendarCreate = async (
   deps: CalendarDispatcherDeps,
   input: {
@@ -296,8 +399,9 @@ export const handleCalendarCreate = async (
   },
 ): Promise<{ source_id: string; ical_uid: string }> => {
   const { collection } = requireWrite(deps, input.slug, 'create_event');
+  const event = withAllDayDays(input.event);
   const payload = await callCalendarAdapter(input.slug, 'calendar-create', () =>
-    collection.provider.createEvent(input.calendar_id, input.event),
+    collection.provider.createEvent(input.calendar_id, event),
   );
   await collection.applyVerifiedUpsert(payload);
   return { source_id: payload.event.source_id, ical_uid: payload.event.ical_uid };
@@ -312,6 +416,34 @@ export const handleCalendarCreate = async (
  *  can decide. CalDAV does the same split locally inside its adapter
  *  (single call) since it holds the ICS — the dispatcher just forwards
  *  the scope through and upserts the returned new-series payload. */
+/** A patch that moves an event, with the event's own zone and all-day flag
+ *  filled in where it names neither.
+ *
+ *  ⛔⛔ WITHOUT THEM A MOVE ON GOOGLE OR OUTLOOK WAS DROPPED, AND THE STEP
+ *  SUCCEEDED. Both adapters send a new start / end only alongside
+ *  `patch.timezone` (`fromUpdatePatch`), so `{start_at, end_at}` alone — what
+ *  the Reschedule button's recipe and the invite recipe's "the organizer moved
+ *  it" step both send — reached the provider as an empty change, and the
+ *  verified read-back stored the OLD time while the run reported success.
+ *  Found 2026-10-07 while giving the invite recipe the owner's zone.
+ *
+ *  ⚠ The event's own values, never a guess: a move keeps the zone the event
+ *  is shown in and stays timed or all-day as it was. An empty stored zone (an
+ *  all-day CalDAV event with no TZID) reads as UTC, the all-day convention. */
+const withEventClock = (
+  patch: Partial<CanonicalEvent>,
+  existing: CanonicalEvent,
+): Partial<CanonicalEvent> => {
+  if (patch.start_at === undefined && patch.end_at === undefined) return patch;
+  return {
+    ...patch,
+    ...(patch.timezone === undefined || patch.timezone === ''
+      ? { timezone: existing.timezone || 'UTC' }
+      : {}),
+    ...(patch.is_all_day === undefined ? { is_all_day: existing.is_all_day } : {}),
+  };
+};
+
 export const handleCalendarUpdate = async (
   deps: CalendarDispatcherDeps,
   input: {
@@ -332,6 +464,7 @@ export const handleCalendarUpdate = async (
   }
   const calendar_id = existing.event.calendar_id;
   const scope: CalendarMutationScope = input.scope ?? 'this_instance';
+  const patch = withAllDayPatch(withEventClock(input.patch, existing.event), existing.event);
 
   if (scope === 'this_and_future') {
     // CalDAV holds the whole series as one ICS file, so its adapter
@@ -346,21 +479,21 @@ export const handleCalendarUpdate = async (
           collection.provider.updateEvent({
             calendar_id,
             source_id: input.source_id,
-            patch: input.patch,
+            patch,
             scope: 'this_and_future',
           }),
       );
       await collection.applyVerifiedUpsert(payload);
       return { source_id: payload.event.source_id };
     }
-    return executeThisAndFuture(deps, collection, input, existing.event, calendar_id);
+    return executeThisAndFuture(deps, collection, { ...input, patch }, existing.event, calendar_id);
   }
 
   const payload = await callCalendarAdapter(input.slug, 'calendar-update', () =>
     collection.provider.updateEvent({
       calendar_id,
       source_id: input.source_id,
-      patch: input.patch,
+      patch,
       scope,
     }),
   );
@@ -405,7 +538,7 @@ const executeThisAndFuture = async (
   // start with the requested patch applied. If this fails, the
   // master series is already truncated — surface the unverified
   // outcome explicitly via io_error.
-  const newSeriesEvent = mergeCreateBody(existing, input.patch);
+  const newSeriesEvent = withAllDayDays(mergeCreateBody(existing, input.patch));
   let newSeries: ProviderEventPayload;
   try {
     newSeries = await callCalendarAdapter(

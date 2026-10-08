@@ -374,6 +374,20 @@ describe('calendar dispatcher — read handlers', () => {
     expect(res.records.map((r) => r.summary)).toEqual(['Standup']);
   });
 
+  it("D-315 slice 7 — list finds every row of one UID wherever its time moved, each with the source_id a write takes", async () => {
+    h.seedEvent({ source_id: 'evt-1', ical_uid: 'abc123@google.com', start_at: 100 });
+    h.seedEvent({ source_id: 'evt-2', ical_uid: 'other@google.com', start_at: 200 });
+    h.seedEvent({ source_id: 'evt-3', ical_uid: 'abc123@google.com', start_at: 9_000_000 });
+    const res = await handleCalendarList(h.deps, { slug: 'work', ical_uid: 'abc123@google.com' });
+    expect(res.records.map((r) => [r.source_id, r.ical_uid])).toEqual([
+      ['evt-1', 'abc123@google.com'],
+      ['evt-3', 'abc123@google.com'],
+    ]);
+    // Across every calendar too, each row naming its own.
+    const everywhere = await handleCalendarList(h.deps, { ical_uid: 'abc123@google.com' });
+    expect(everywhere.records.map((r) => r.source_id)).toEqual(['evt-1', 'evt-3']);
+  });
+
   it('get returns the canonical event JSON or null', async () => {
     h.seedEvent({ source_id: 'evt-1', summary: 'Hello' });
     const found = await handleCalendarGet(h.deps, { slug: 'work', source_id: 'evt-1' });
@@ -427,6 +441,72 @@ describe('calendar dispatcher — read handlers', () => {
     expect(res.exists).toBe(true);
     expect(res.attendee_count).toBe(2);
     expect(res.start_at).toBe(1_700_000_000_000);
+  });
+});
+
+/** `since` / `until` are read on the owner's clock (2026-10-07). An all-day
+ *  event is stored as the UTC midnight of its day, so a window for the owner's
+ *  day took the wrong all-day events west of UTC. */
+describe('calendar-list — a window on the owner clock', () => {
+  const DAY = 86_400_000;
+  const at = (iso: string): number => Date.parse(iso);
+  const day = (iso: string): number => Date.parse(`${iso}T00:00:00Z`);
+  let h: Harness;
+  beforeEach(() => { h = buildHarness(); h.enrollInstance('work'); });
+  afterEach(() => { h.db.close(); });
+  const allDay = (source_id: string, first: string, days = 1): void => {
+    h.seedEvent({ source_id, ical_uid: `${source_id}@x`, summary: source_id, start_at: day(first), end_at: day(first) + days * DAY, is_all_day: true });
+  };
+  const timed = (source_id: string, iso: string): void => {
+    h.seedEvent({ source_id, ical_uid: `${source_id}@x`, summary: source_id, start_at: at(iso), end_at: at(iso) + 3_600_000 });
+  };
+  const inZone = (timeZone: string): CalendarDispatcherDeps => ({ ...h.deps, ownerTimeZone: () => timeZone });
+  const summaries = (out: { records: Array<{ summary: string }> }): string[] => out.records.map((r) => r.summary);
+
+  it("Los Angeles: the day's own all-day event, not the next day's", async () => {
+    allDay('holiday-7', '2026-10-07');
+    allDay('holiday-8', '2026-10-08');
+    timed('standup', '2026-10-07T16:00:00Z'); // 09:00 PDT
+    timed('last-night', '2026-10-07T03:00:00Z'); // 20:00 PDT on the 6th
+    const window = { since: at('2026-10-07T07:00:00Z'), until: at('2026-10-08T06:59:59.999Z') };
+    expect(summaries(await handleCalendarList(inZone('America/Los_Angeles'), { slug: 'work', ...window })))
+      .toEqual(['holiday-7', 'standup']);
+    // Every calendar is read the same way.
+    expect(summaries(await handleCalendarList(inZone('America/Los_Angeles'), window)))
+      .toEqual(['holiday-7', 'standup']);
+    // ⛔ Read at the stored UTC midnights, the window took tomorrow's holiday and lost today's.
+    expect(summaries(await handleCalendarList(h.deps, { slug: 'work', ...window })))
+      .toEqual(['standup', 'holiday-8']);
+  });
+
+  it("Tokyo: a day's all-day event comes before its first meeting", async () => {
+    allDay('holiday-6', '2026-10-06');
+    allDay('holiday-7', '2026-10-07');
+    timed('breakfast', '2026-10-06T23:00:00Z'); // 08:00 JST on the 7th
+    const window = { since: at('2026-10-06T15:00:00Z'), until: at('2026-10-07T14:59:59.999Z') };
+    expect(summaries(await handleCalendarList(inZone('Asia/Tokyo'), { slug: 'work', ...window })))
+      .toEqual(['holiday-7', 'breakfast']);
+    // Merged across every calendar in the same order — stored, the holiday is 09:00 JST.
+    expect(summaries(await handleCalendarList(inZone('Asia/Tokyo'), window)))
+      .toEqual(['holiday-7', 'breakfast']);
+  });
+
+  it('a window open at either end, cut to the limit after the two halves merge', async () => {
+    allDay('a', '2026-10-07');
+    timed('b', '2026-10-07T16:00:00Z');
+    allDay('c', '2026-10-08');
+    timed('d', '2026-10-08T16:00:00Z');
+    const la = inZone('America/Los_Angeles');
+    expect(summaries(await handleCalendarList(la, { slug: 'work', since: at('2026-10-07T07:00:00Z'), limit: 3 })))
+      .toEqual(['a', 'b', 'c']);
+    expect(summaries(await handleCalendarList(la, { slug: 'work', until: at('2026-10-08T07:00:00Z') })))
+      .toEqual(['a', 'b']);
+  });
+
+  it('an all-day event that began before the window is not one that starts in it', async () => {
+    allDay('offsite', '2026-10-06', 3);
+    const window = { since: at('2026-10-07T07:00:00Z'), until: at('2026-10-08T06:59:59.999Z') };
+    expect(summaries(await handleCalendarList(inZone('America/Los_Angeles'), { slug: 'work', ...window }))).toEqual([]);
   });
 });
 
@@ -526,6 +606,70 @@ describe('calendar dispatcher — write handlers', () => {
       patch: { summary: 'changed' },
     });
     expect(h.calls.update[0].scope).toBe('this_instance');
+  });
+
+  it('a move that names no zone carries the event\'s own zone and all-day flag', async () => {
+    // ⛔ gcal / graph send a new start or end only beside `patch.timezone`, so
+    // `{start_at, end_at}` alone — the Reschedule button's patch — was dropped
+    // at the provider while the step succeeded (found 2026-10-07).
+    h.seedEvent({ timezone: 'Europe/London', is_all_day: false });
+    await handleCalendarUpdate(h.deps, {
+      slug: 'work',
+      source_id: 'evt-1',
+      patch: { start_at: 5_000, end_at: 6_000 },
+    });
+    expect(h.calls.update[0].patch).toEqual({
+      start_at: 5_000, end_at: 6_000, timezone: 'Europe/London', is_all_day: false,
+    });
+  });
+
+  it('a move keeps a zone the patch names, and a patch that moves nothing is passed as it came', async () => {
+    h.seedEvent({ timezone: 'Europe/London' });
+    await handleCalendarUpdate(h.deps, {
+      slug: 'work', source_id: 'evt-1',
+      patch: { start_at: 5_000, timezone: 'Asia/Tokyo', is_all_day: false },
+    });
+    expect(h.calls.update[0].patch).toEqual({ start_at: 5_000, timezone: 'Asia/Tokyo', is_all_day: false });
+    await handleCalendarUpdate(h.deps, { slug: 'work', source_id: 'evt-1', patch: { summary: 'x' } });
+    expect(h.calls.update[1].patch).toEqual({ summary: 'x' });
+  });
+
+  it('a patch naming an EMPTY zone is filled like one naming none', async () => {
+    // The adapters test `patch.timezone` for truth, so '' drops the move too.
+    h.seedEvent({ timezone: 'Europe/London', is_all_day: false });
+    await handleCalendarUpdate(h.deps, {
+      slug: 'work', source_id: 'evt-1', patch: { start_at: 5_000, timezone: '' },
+    });
+    expect(h.calls.update[0].patch).toEqual({ start_at: 5_000, timezone: 'Europe/London', is_all_day: false });
+  });
+
+  it('an event stored with no zone moves in UTC, the all-day convention', async () => {
+    h.seedEvent({ timezone: '', is_all_day: true, start_at: Date.UTC(2026, 11, 24), end_at: Date.UTC(2026, 11, 25) });
+    await handleCalendarUpdate(h.deps, { slug: 'work', source_id: 'evt-1', patch: { end_at: Date.UTC(2026, 11, 26) } });
+    expect(h.calls.update[0].patch).toEqual({ end_at: Date.UTC(2026, 11, 26), timezone: 'UTC', is_all_day: true });
+  });
+
+  it("holds every write of an all-day event to days (2026-10-07): a writer's local midnight, a picked time", async () => {
+    // An intake form in Paris sends 20 July's local midnight (19 July, 22:00 UTC).
+    await handleCalendarCreate(h.deps, {
+      slug: 'work', calendar_id: 'primary',
+      event: {
+        calendar_id: 'primary', summary: 'Stay', status: 'confirmed', is_all_day: true, timezone: 'Europe/Paris',
+        start_at: Date.parse('2026-07-19T22:00:00Z'), end_at: Date.parse('2026-07-22T22:00:00Z'),
+      },
+    });
+    expect(h.calls.create[0]!.event).toMatchObject({ start_at: Date.UTC(2026, 6, 20), end_at: Date.UTC(2026, 6, 23) });
+    // A time picked for an all-day event (15:00 in Los Angeles) moves it to that day.
+    h.seedEvent({ timezone: 'America/Los_Angeles', is_all_day: true, start_at: Date.UTC(2026, 11, 24), end_at: Date.UTC(2026, 11, 25) });
+    await handleCalendarUpdate(h.deps, {
+      slug: 'work', source_id: 'evt-1',
+      patch: { start_at: Date.parse('2026-12-26T23:00:00Z'), end_at: Date.parse('2026-12-27T23:00:00Z') },
+    });
+    expect(h.calls.update[0]!.patch).toMatchObject({ start_at: Date.UTC(2026, 11, 26), end_at: Date.UTC(2026, 11, 27) });
+    // Making a timed event all-day makes its times days.
+    h.seedEvent({ timezone: 'America/Los_Angeles', is_all_day: false, start_at: Date.parse('2026-12-24T18:00:00Z'), end_at: Date.parse('2026-12-24T19:00:00Z') });
+    await handleCalendarUpdate(h.deps, { slug: 'work', source_id: 'evt-1', patch: { is_all_day: true } });
+    expect(h.calls.update[1]!.patch).toEqual({ is_all_day: true, start_at: Date.UTC(2026, 11, 24), end_at: Date.UTC(2026, 11, 25) });
   });
 
   it('update with scope=this_and_future on caldav forwards a single adapter call (adapter owns the split)', async () => {

@@ -27,6 +27,7 @@ import {
   isD259CliProgressSpec,
   isReadyCliDetachedSupervisionSpec,
   isInPlaceCapture,
+  isProgressAnswerCapture,
   isStdoutCapture,
   isPinnedCasFileRef,
   isTempFileRef,
@@ -613,6 +614,15 @@ export interface StdoutFileSink {
   write: (chunk: Buffer) => void;
 }
 
+/** Where a successful run leaves the final answer its heartbeat adapter read
+ *  off the protocol. Passed only by the `from_progress_answer` capture branch,
+ *  which writes it to an engine-owned file — never into the result value. */
+interface ProgressAnswerOut {
+  answer?: string;
+  /** The tool's own failure report, for a run that ended without an answer. */
+  failure?: string;
+}
+
 const runForeground = async (
   call: CliInvocationCall,
   argv: string[],
@@ -623,6 +633,7 @@ const runForeground = async (
   killProcessTree: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
   reapProcessTreeAfterExit: ((pid: number, signal: NodeJS.Signals) => void) | undefined,
   stdoutSink?: StdoutFileSink,
+  answerOut?: ProgressAnswerOut,
 ): Promise<unknown> =>
   new Promise((resolve, reject) => {
     if (argv.length === 0) {
@@ -861,6 +872,12 @@ const runForeground = async (
         result.progress_signal_count = monitor.signalCount;
         if (progressFlagged) result.progress_flagged = true;
       }
+      // Identifiers the progress adapter read off the protocol (Codex: the
+      // session id that `codex.resume_session` takes) ride beside the output,
+      // never over a field the executor set.
+      for (const [key, value] of Object.entries(semanticHeartbeat?.facts?.() ?? {})) {
+        if (!Object.prototype.hasOwnProperty.call(result, key)) result[key] = value;
+      }
       if (capturesStdoutValue(call.binding)) {
         result.stdout = capturedText(stdout);
       }
@@ -900,8 +917,12 @@ const runForeground = async (
         return;
       }
       if (!isSuccessfulExit(call.binding.exit_code_handling, exitCode)) {
+        // The tool's own report, when its protocol carries one: Claude Code
+        // puts "API Error: 400 …" or "No conversation found …" only in its
+        // result record, and stderr is often empty.
+        const toolFailure = semanticHeartbeat?.failure?.();
         reject(makeCliFailureError(
-          `cli tool '${cmd}' exited with code ${exitCode}`,
+          `cli tool '${cmd}' exited with code ${exitCode}${toolFailure ? `: ${toolFailure}` : ''}`,
           {
             reason: 'nonzero_exit',
             ...cliFailureIdentity(call, cmd),
@@ -949,6 +970,10 @@ const runForeground = async (
           ));
           return;
         }
+      }
+      if (answerOut !== undefined) {
+        answerOut.answer = semanticHeartbeat?.answer?.();
+        answerOut.failure = semanticHeartbeat?.failure?.();
       }
       resolve(result);
     });
@@ -1615,6 +1640,64 @@ export const createCliInvocationExecutor = (
         };
       } finally {
         closeFd();
+        rmSync(outDir, { recursive: true, force: true });
+      }
+    }
+
+    // ANSWER capture: the tool's stdout is the event stream its heartbeat
+    // adapter reads, and the op keeps only the final answer the adapter found
+    // there (Claude Code). The engine writes it to a path it chose; like the
+    // stdout arm, the bytes come back only as a Gateway-gated `file_ref`.
+    if (isProgressAnswerCapture(capture)) {
+      const answerOut: ProgressAnswerOut = {};
+      const base = (await runForeground(
+        call,
+        resolveArgv(call),
+        spawn,
+        now,
+        tuning,
+        registry,
+        processTreeKiller,
+        settledProcessTreeReaper,
+        undefined,
+        answerOut,
+      )) as Record<string, unknown>;
+      if (answerOut.answer === undefined) {
+        throw capturedOutputError(
+          call,
+          `cli_invocation output_capture: '${call.operation_id}' ended without a final answer${answerOut.failure ? `: ${answerOut.failure}` : ''}`,
+        );
+      }
+      const outDir = mkdtempSync(join(tempRoot, 'recued-cli-out-'));
+      try {
+        const selected = { filePath: join(outDir, basename(capture.filename)), filename: basename(capture.filename) };
+        writeFileSync(selected.filePath, answerOut.answer, 'utf8');
+        if (storage === 'temp') {
+          const scratchDir = allocateRunScratchDir(call.stepMeta?.run_id ?? '');
+          const keptPath = join(scratchDir, selected.filename);
+          copyFileSync(selected.filePath, keptPath);
+          return {
+            ...base,
+            ...captureToolOutputToTemp({ filePath: keptPath, filename: selected.filename }, capture),
+          };
+        }
+        if (!ingestToolOutput && !ingestToolOutputFile) {
+          throw new Error(
+            `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
+          );
+        }
+        return {
+          ...base,
+          ...await captureToolOutputToCas(
+            selected,
+            capture,
+            call,
+            ingestToolOutput,
+            ingestToolOutputFile,
+            outputCaptureMaxBytes,
+          ),
+        };
+      } finally {
         rmSync(outDir, { recursive: true, force: true });
       }
     }

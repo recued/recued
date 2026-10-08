@@ -15,6 +15,7 @@
 import type Database from 'better-sqlite3';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 import type { AuditLogStore } from '@recued/storage';
+import { resolveServerTimeZone } from '@recued/contracts';
 
 import type { ServerAccountStore } from '../../account-store.js';
 import type { GateRegistry } from '../../storage-gates.js';
@@ -29,6 +30,7 @@ import { createCalendarTable } from '../../collections/calendar/calendar-table.j
 import { createGcalAdapterFactory } from '../../collections/calendar/gcal-provider.js';
 import { createGraphCalAdapterFactory } from '../../collections/calendar/graph-provider.js';
 import { createCalDavAdapterFactory } from '../../collections/calendar/caldav-provider.js';
+import { createServerTimeZoneStore } from '../../storage/server-timezone-store.js';
 import {
   createLocalCalendarAdapterFactory,
   DEFAULT_LOCAL_CALENDAR_SLUG,
@@ -100,6 +102,14 @@ export const composeCalendarBoot = (
 
   if (!db || !cacheBlobs) return undefined;
 
+  // The owner's zone — their setting, else the host's — read per use: a
+  // CalDAV time naming no zone is read in it. Its store opens on first use.
+  let timeZoneStore: ReturnType<typeof createServerTimeZoneStore> | undefined;
+  const ownerTimeZone = (): string => {
+    timeZoneStore ??= createServerTimeZoneStore(db);
+    return resolveServerTimeZone(timeZoneStore.read(), Intl.DateTimeFormat().resolvedOptions().timeZone);
+  };
+
   // gcal / graph factories take the OAuth account store as their
   // token-persistence backend. Tests + dbless harnesses skip OAuth
   // entirely and the no-op double surfaces `not_configured` on the
@@ -163,6 +173,8 @@ export const composeCalendarBoot = (
       // as `wire-mail-stack.ts` — this composer is the one mail was modelled on.
       ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
+      // `calendar-list` reads a day on the owner's clock, all-day events too.
+      ownerTimeZone,
       factories: [
         // D-173 P4.3 — the credential-free local calendar. Always
         // registered (no OAuth client / vault key to gate on); backs the
@@ -203,6 +215,7 @@ export const composeCalendarBoot = (
         // `caldav.<slug>.etag.*` so they coexist with that password +
         // the OAuth token storage on the shared account store.
         createCalDavAdapterFactory({
+          timeZone: ownerTimeZone,
           etagStore: accountStore
             ? {
                 get: (k) => accountStore.get(k),

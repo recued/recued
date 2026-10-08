@@ -43,8 +43,9 @@ import type { PortUpgradeHandler } from '@recued/server-tls';
  *  is right there and the require succeeds. The defect exists only in the
  *  artifact we ship, which is the one thing the suite never executes.
  *
- *  A static import is also what three other server modules already do
- *  (`mcp-ws-connector`, `cli/rpc-client`, `messenger-ingress/local-runners`), so
+ *  A static import is also what other server modules already did
+ *  (`mcp-ws-connector`, `messenger-ingress/local-runners`, and `cli/rpc-client`
+ *  until its commands were retired, 2026-10-07), so
  *  `ws` was in the bundle the whole time — only this call site failed to reach
  *  it. Static means a missing `ws` is now a BUILD failure instead of a silent
  *  runtime downgrade, which is the correct place to find out. */

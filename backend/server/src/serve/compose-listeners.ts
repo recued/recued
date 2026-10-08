@@ -1353,6 +1353,12 @@ export const composeListeners = async (
       // same silent feature-off the `/ask` page had before its own membership
       // read was threaded. Not passing it is not a smaller feature, it is none.
       ...(execution.getBatch !== undefined ? { getBatch: execution.getBatch } : {}),
+      // The owner's zone, read per ask — the same one a recipe's date
+      // transforms use. Without it a time renders in the host's zone, which
+      // is the owner's only when they never set one.
+      ...(execution.executeDeps.ownerTimeZone !== undefined
+        ? { timeZone: execution.executeDeps.ownerTimeZone }
+        : {}),
     })
     : undefined;
 

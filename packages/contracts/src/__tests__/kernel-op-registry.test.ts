@@ -81,7 +81,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // 19 → 23 on 2026-08-16: D-244 csv.filter/columns/stats, D-245 file.put-ref.
   // 25 → 26 on 2026-09-23: csv.rows, the reading twin of csv.filter.
   // 26 → 27 on 2026-09-28: shared.patch, the field-level update of one record.
-  storage: 27,
+  // 27 → 28 on 2026-10-07: ics.read, a stored calendar file read as an invite
+  // (D-315 slice 7).
+  storage: 28,
   schedule: 1,
   // D-207 §4.5 — 14 offer/order + the 4 D-196 `customer-access` ops merged in
   // from their retired top-level domain (`core.seller.customer-access.*`), + the
@@ -351,6 +353,9 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.storage.file.set-scan-status|storage|file-set-scan-status|write',
       'core.storage.file.stat|storage|file-stat|read',
       'core.storage.file.write|storage|file-write|write',
+      // D-315 slice 7 — a stored calendar file read as an invite; reads file content,
+      // so it is fenced as `data.file` with the CSV ops.
+      'core.storage.ics.read|storage|ics-read|read',
       'core.storage.shared.compare-and-set|storage|shared-compare-and-set|write',
       'core.storage.shared.delete-prefix|storage|shared-delete-prefix|destructive',
       'core.storage.shared.delete|storage|shared-delete|write',

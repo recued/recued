@@ -616,17 +616,21 @@ describe('run-modal render', () => {
       CAPS_FULL,
     );
     expect(triggers).toContain(
-      'aria-label="Pause trigger data.mail.** (t1)"',
+      'aria-label="Pause trigger when an email arrives, changes or is removed (t1)"',
     );
     expect(triggers).toContain(
-      'aria-label="Pause trigger data.mail.** (t2)"',
+      'aria-label="Pause trigger when an email arrives, changes or is removed (t2)"',
     );
     expect(triggers).toContain(
-      'aria-label="Remove trigger data.mail.** (t1)"',
+      'aria-label="Remove trigger when an email arrives, changes or is removed (t1)"',
     );
     expect(triggers).toContain(
-      'aria-label="Remove trigger data.mail.** (t2)"',
+      'aria-label="Remove trigger when an email arrives, changes or is removed (t2)"',
     );
+    // The row says it in words; the raw pattern stays on its meta line, since
+    // this tab's Add form takes patterns.
+    expect(triggers).toContain('<div>when an email arrives, changes or is removed');
+    expect(triggers).toContain('<code>data.mail.**</code> · last fired');
   });
 
   it('keeps Add schedule focusable but inert during a mutation', () => {

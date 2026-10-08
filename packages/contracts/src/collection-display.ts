@@ -50,6 +50,30 @@ export interface CollectionDisplaySchema {
    *  a domain-specific layout (mail header + body, calendar
    *  when/where/attendees, file path + size + content). */
   detail_renderer?: CollectionDetailRenderer;
+  /** A field whose value can say the record is NOT in its usual state — a
+   *  cancelled or tentative calendar event. Each value in `badges` shows as a
+   *  word beside the record's title, in the list and in the detail; any other
+   *  value (the usual state) shows nothing in the list, so "confirmed" on every
+   *  row does not bury the one that is cancelled. The detail always lists the
+   *  field.
+   *
+   *  ⛔ Without it a cancelled event looked exactly like a live one in both
+   *  views: the status was on the record and only in the collapsed raw JSON
+   *  (found on a live drive, 2026-10-07). */
+  state_field?: {
+    readonly field: string;
+    readonly badges: Readonly<Record<string, string>>;
+  };
+  /** Where a record's times are DAYS: when `field` is true, `start` holds the
+   *  UTC midnight of its first day and `end` the UTC midnight after its last
+   *  (an all-day calendar event, `calendar-days.ts`). Read as instants they
+   *  land a day early west of UTC; read as days they say the days the record
+   *  covers. */
+  all_day?: {
+    readonly field: string;
+    readonly start: string;
+    readonly end?: string;
+  };
 }
 
 /** The closed registry — one schema per canonical collection. New
@@ -80,6 +104,9 @@ export const COLLECTION_DISPLAY_SCHEMAS: Readonly<
     primary_field: 'summary',
     summary_fields: ['start_at', 'end_at', 'location'],
     detail_renderer: 'calendar',
+    // `CanonicalEvent.status`; `confirmed` is the usual state.
+    state_field: { field: 'status', badges: { cancelled: 'Cancelled', tentative: 'Tentative' } },
+    all_day: { field: 'is_all_day', start: 'start_at', end: 'end_at' },
   },
   file: {
     primary_field: 'path',

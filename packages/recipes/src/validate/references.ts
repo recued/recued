@@ -33,6 +33,7 @@ import {
   matchVendorEnrichmentAlias,
   matchCrmAlias,
   WORK_ENTITY_KINDS,
+  mailTemplateStarters,
   type ConnectionVendorEntity,
   type CrmAlias,
   type EnrichmentDefinition,
@@ -366,9 +367,12 @@ export const validateReferences = (
     );
   }
 
-  // Unused variables
+  // Unused variables. A `mail_template` variable that brings a starter is used
+  // by installing: the install creates its template (D-315 §5.2), and a recipe
+  // may exist only to bring one (rulings 31, 45) — none of its steps need read it.
+  const starterVars = new Set(mailTemplateStarters(variables).map((s) => s.variable));
   for (const v of declaredVars) {
-    if (!referencedVars.has(v)) {
+    if (!referencedVars.has(v) && !starterVars.has(v)) {
       add('warn', 'unused_variable', `variables.${v}`,
         `variable "${v}" is declared but never referenced — remove or use it`);
     }

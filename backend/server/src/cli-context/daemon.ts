@@ -87,22 +87,22 @@ export async function runDaemonProfile(options: DaemonProfileOptions): Promise<v
       await cmdLogs({ dbPath, follow: getFlag(options.args, 'follow') || getFlag(options.args, 'f') });
       return;
     }
-    case 'auth-status': {
-      options.bootTrace?.markImport('../commands/auth.js');
-      const { cmdAuthStatus } = await import('../commands/auth.js');
-      await cmdAuthStatus({ dbPath, port: resolvePort() });
-      return;
-    }
     case 'unlock': {
       options.bootTrace?.markImport('../commands/auth.js');
       const { cmdUnlock } = await import('../commands/auth.js');
-      await cmdUnlock({ dbPath, port: resolvePort(), useRecoveryKey: getFlag(options.args, 'recovery-key') });
+      // `--recovery-key` is still accepted: the key is the only way now.
+      await cmdUnlock({ port: resolvePort() });
       return;
     }
+    // Retired 2026-10-07: the server refused both (401) on every release from
+    // 26.8.1. The names still answer with what to do instead — an unknown
+    // name would print the help screen and say nothing about why.
+    case 'auth-status':
     case 'lock': {
       options.bootTrace?.markImport('../commands/auth.js');
-      const { cmdLock } = await import('../commands/auth.js');
-      await cmdLock({ dbPath, port: resolvePort() });
+      const { retiredEncryptionCommandLines } = await import('../commands/auth.js');
+      for (const line of retiredEncryptionCommandLines(subcommand)) console.error(line);
+      process.exitCode = 1;
       return;
     }
     default:

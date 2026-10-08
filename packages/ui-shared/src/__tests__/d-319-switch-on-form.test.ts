@@ -13,7 +13,7 @@ import {
   requiredSettingProblem,
   wireConfigEditorOverlay,
 } from '../config-editor-overlay.js';
-import { intervalInWords, whatStartsIt } from '../dish-lead.js';
+import { eventTriggerInWords, intervalInWords, whatStartsIt } from '../dish-lead.js';
 
 interface FakeElement {
   className: string;
@@ -175,5 +175,41 @@ describe('what starts it', () => {
       variables: { mail_slug: { label: 'Mailbox to read', type: 'mail_slug', default: 'work' } },
       event_triggers: [{ event: 'data.mail.{{config.mail_slug}}.*.created' }],
     } as never)).toBe('It starts when an email arrives in the “work” mailbox.');
+  });
+});
+
+/** 2026-10-07 — a trigger's `filter` is part of what starts the recipe. The
+ *  Calendar Invites recipes start only on a `text/calendar` file, and each said
+ *  "It starts when a file arrives" (live drive). */
+describe('what starts it — a trigger narrowed by its filter', () => {
+  const invite = { event: 'data.file.received.*.created', filter: { 'record.mime_type': 'text/calendar' } };
+
+  it('names the kind of file a mime-type filter narrows to', () => {
+    expect(whatStartsIt({ event_triggers: [invite] } as never))
+      .toBe('It starts when a calendar invite arrives.');
+    expect(whatStartsIt({ event_triggers: [{ ...invite, filter: { 'record.mime_type': 'application/pdf' } }] } as never))
+      .toBe('It starts when a PDF arrives.');
+    expect(whatStartsIt({ event_triggers: [{ ...invite, filter: { 'record.mime_type': 'application/zip' } }] } as never))
+      .toBe('It starts when a file of type “application/zip” arrives.');
+  });
+
+  it('names a record by the kind a filter narrows to, and says any other narrowing', () => {
+    expect(whatStartsIt({ event_triggers: [{ event: 'record.created', filter: { kind: 'job_event' } }] } as never))
+      .toBe('It starts when a job event record arrives.');
+    expect(whatStartsIt({ event_triggers: [{ event: 'data.file.received.*.created', filter: { 'record.origin': 'mail' } }] } as never))
+      .toBe('It starts when a file arrives, only when origin is “mail”.');
+  });
+
+  it('a row says the same, its instance part included', () => {
+    expect(eventTriggerInWords({ pattern: invite.event, filter: invite.filter }))
+      .toBe('a calendar invite arrives');
+    // `received` is the store of files that arrive, not a folder.
+    expect(eventTriggerInWords({ pattern: 'data.file.received.*.created' })).toBe('a file arrives');
+    expect(eventTriggerInWords({ pattern: 'data.file.scans.*.created' }))
+      .toBe('a file arrives in the “scans” folder');
+    expect(eventTriggerInWords({ pattern: 'data.calendar.local.*.updated' }))
+      .toBe('a calendar event changes in the “local” calendar');
+    // A wildcard last part is every change, not just one.
+    expect(eventTriggerInWords({ pattern: 'data.mail.**' })).toBe('an email arrives, changes or is removed');
   });
 });

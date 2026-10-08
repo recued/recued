@@ -119,6 +119,55 @@ describe('collection-explorer — schema-driven list', () => {
     expect(html).not.toContain('just now');
   });
 
+  it('lists an all-day event by the days it covers, not the evening before (2026-10-07)', () => {
+    // Local noon on 20 Dec where the test runs: "today" is the viewer's day.
+    const now = new Date(2026, 11, 20, 12, 0).getTime();
+    const day = (y: number, m: number, d: number): number => Date.UTC(y, m - 1, d);
+    const html = renderCollectionExplorer(base({
+      collection: 'calendar',
+      now,
+      records: [
+        mkRecord({ record_id: 'a', hot_fields: { summary: 'Office closed', is_all_day: true, start_at: day(2026, 12, 20), end_at: day(2026, 12, 21) } }),
+        mkRecord({ record_id: 'b', hot_fields: { summary: 'Holiday', is_all_day: true, start_at: day(2026, 12, 21), end_at: day(2026, 12, 23) } }),
+        mkRecord({ record_id: 'c', hot_fields: { summary: 'Conference', is_all_day: true, start_at: day(2027, 2, 14), end_at: day(2027, 2, 15) } }),
+      ],
+    }));
+    const rowOf = (title: string): string => html.slice(html.indexOf(title), html.indexOf('</li>', html.indexOf(title)));
+    // Stored at the UTC midnights of its days; read as instants they were
+    // hours off ("16h ago" / "in 8h" in Los Angeles), never "today".
+    expect(rowOf('Office closed')).toMatch(/Start<\/span>today.*End<\/span>today/s);
+    // The end is the LAST day, not the stored day after it.
+    expect(rowOf('Holiday')).toMatch(/Start<\/span>tomorrow.*End<\/span>in 2d/s);
+    const far = new Date(day(2027, 2, 14)).toLocaleDateString(undefined, { timeZone: 'UTC' });
+    expect(rowOf('Conference')).toContain(far);
+  });
+
+  it("says a record is all-day in its detail, and leaves a timed one's times as they were", () => {
+    const now = new Date(2026, 11, 20, 12, 0).getTime();
+    const allDay = renderCollectionExplorer(base({
+      collection: 'calendar',
+      now,
+      detail: {
+        record_id: 'h1',
+        loading: false,
+        record: mkRecord({ record_id: 'h1', hot_fields: { summary: 'Holiday', is_all_day: true, start_at: Date.UTC(2026, 11, 21), end_at: Date.UTC(2026, 11, 22) } }),
+      },
+    }));
+    expect(allDay).toContain('<dt>All day</dt><dd>Yes</dd>');
+    expect(allDay).toContain('<dt>Start</dt><dd>tomorrow</dd>');
+    const timed = renderCollectionExplorer(base({
+      collection: 'calendar',
+      now,
+      detail: {
+        record_id: 't1',
+        loading: false,
+        record: mkRecord({ record_id: 't1', hot_fields: { summary: 'Call', is_all_day: false, start_at: now + 3 * 3_600_000, end_at: now + 4 * 3_600_000 } }),
+      },
+    }));
+    expect(timed).not.toContain('All day');
+    expect(timed).toContain('<dt>Start</dt><dd>in 3h</dd>');
+  });
+
   it('escapes field values (XSS)', () => {
     const html = renderCollectionExplorer(base({
       records: [mkRecord({ record_id: 'r1', hot_fields: { subject: '<script>alert(1)</script>' } })],
@@ -404,5 +453,53 @@ describe('collection-explorer — record detail', () => {
       detailTimelineHtml: timeline,
     }));
     expect(list).not.toContain('data-recued-calendar-timeline');
+  });
+});
+
+describe('collection-explorer — a record not in its usual state says so', () => {
+  // ⛔ A cancelled event looked exactly like a live one in both views: the
+  // status was on the record and only in the collapsed raw JSON (live drive,
+  // 2026-10-07). The calendar schema now names `status` as its state field.
+  const event = (record_id: string, status: string, summary = 'Dental check-up'): CollectionRecord =>
+    mkRecord({ record_id, hot_fields: { summary, start_at: 1_700_100_000_000, status } });
+  const calendar = (o: Partial<CollectionExplorerProps> = {}): string => renderCollectionExplorer(base({
+    collection: 'calendar',
+    instances: [mkInstance('local', 'local')],
+    selectedSlug: 'local',
+    ...o,
+  }));
+
+  it('badges a cancelled or tentative event in the list, and leaves a confirmed one alone', () => {
+    const html = calendar({
+      records: [event('e1', 'cancelled'), event('e2', 'tentative'), event('e3', 'confirmed')],
+    });
+    expect(html).toContain('data-recued-collection-state="cancelled">Cancelled<');
+    expect(html).toContain('data-recued-collection-state="tentative">Tentative<');
+    expect(html).not.toContain('data-recued-collection-state="confirmed"');
+    expect(html).not.toContain('>Confirmed<');
+  });
+
+  it('keeps the badge OUTSIDE the title, which ellipsizes a long name', () => {
+    const html = calendar({ records: [event('e1', 'cancelled', 'A'.repeat(200))] });
+    const title = html.match(/<span class="col-explorer-row-title">([^<]*)<\/span>/);
+    expect(title?.[1]).toBe('A'.repeat(200));
+    expect(html).toMatch(/col-explorer-row-title">A+<\/span><span class="col-explorer-state"/);
+  });
+
+  it('the detail lists the status in every state and badges only an unusual one', () => {
+    const cancelled = calendar({ detail: { record_id: 'e1', loading: false, record: event('e1', 'cancelled') } });
+    expect(cancelled).toContain('<dt>Status</dt><dd>Cancelled</dd>');
+    expect(cancelled).toContain('data-recued-collection-state="cancelled"');
+
+    const confirmed = calendar({ detail: { record_id: 'e3', loading: false, record: event('e3', 'confirmed') } });
+    expect(confirmed).toContain('<dt>Status</dt><dd>Confirmed</dd>');
+    expect(confirmed).not.toContain('data-recued-collection-state=');
+  });
+
+  it('a collection with no state field renders as before', () => {
+    const html = renderCollectionExplorer(base({
+      records: [mkRecord({ record_id: 'r1', hot_fields: { subject: 'Hi', status: 'cancelled' } })],
+    }));
+    expect(html).not.toContain('data-recued-collection-state');
   });
 });

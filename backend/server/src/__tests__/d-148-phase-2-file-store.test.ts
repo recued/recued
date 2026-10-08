@@ -216,7 +216,7 @@ describe('D-148 P2 — file-backed ServerKeyStore (passphrase-encrypted)', () =>
     }
   });
 
-  it('opening encrypted file without passphrase fails', async () => {
+  it('opening encrypted file without passphrase fails — saying which file and what to set', async () => {
     const dir = makeTempDir();
     try {
       const path = join(dir, 'keys.enc.json');
@@ -226,9 +226,15 @@ describe('D-148 P2 — file-backed ServerKeyStore (passphrase-encrypted)', () =>
       });
       ensureServerIdentityKeys(store);
       await flushFileServerKeyStore(store);
-      await expect(createFileServerKeyStore({ filePath: path })).rejects.toThrow(
-        /encrypted but no passphrase/,
-      );
+      // This message is a passphrase-sealed server's WHOLE boot output, so it
+      // must say what to do: it used to say only "file is encrypted but no
+      // passphrase supplied" while the installer promised a server that waits
+      // for `recued unlock` (2026-10-07).
+      const opened = createFileServerKeyStore({ filePath: path });
+      await expect(opened).rejects.toThrow(/sealed with a passphrase/);
+      await expect(opened).rejects.toThrow(/RECUED_IDENTITY_PASSPHRASE is not set/);
+      await expect(opened).rejects.toThrow(path);
+      await expect(opened).rejects.toThrow(/service's own environment/);
     } finally {
       cleanupDir(dir);
     }
@@ -272,7 +278,7 @@ describe('D-148 P2 — file-backed ServerKeyStore (passphrase-encrypted)', () =>
 
       // And it now genuinely requires that passphrase.
       await expect(createFileServerKeyStore({ filePath: path }))
-        .rejects.toThrow(/encrypted but no passphrase/);
+        .rejects.toThrow(/sealed with a passphrase, and RECUED_IDENTITY_PASSPHRASE is not set/);
       const reopened = await createFileServerKeyStore({
         filePath: path, passphrase: 'foo', argon2_params: FAST_ARGON2,
       });

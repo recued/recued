@@ -4,8 +4,10 @@
  *  installs) with a floor that is reachable on every platform: an operator
  *  MAY run unsealed, and the thing that makes that acceptable is that the
  *  posture stays **legible and standing**. That floor only holds if every
- *  surface renders it — the CLI (`recued auth-status`) and the bridge side
- *  panel already do; this is the webclient's half.
+ *  surface renders it — the bridge side panel does, and this is the
+ *  webclient's half. (The CLI's `recued auth-status` was retired 2026-10-07:
+ *  the server had refused it on every release from 26.8.1, so this page is
+ *  where an owner actually reads the posture.)
  *
  *  ⛔⛔ `'none'` IS NOT `null`, and this module exists mostly to keep them
  *  apart. `null` is the ordinary not-wired case this shape uses for its

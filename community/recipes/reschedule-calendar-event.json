@@ -1,7 +1,7 @@
 {
   "recipe_id": "reschedule-calendar-event",
   "chat_exposed": false,
-  "version": 1,
+  "version": 2,
   "ttl": 60,
   "requires": [],
   "metadata": {
@@ -71,6 +71,26 @@
       "operator": "is_not_null"
     },
     {
+      "id": "moved_event",
+      "skip_when": "{{step.moved}} not_equal true",
+      "op": "core.data.calendar.get",
+      "args": {
+        "slug": "{{config.calendar_slug}}",
+        "source_id": "{{config.event_source_id}}"
+      }
+    },
+    {
+      "id": "new_time",
+      "transform": "event_when",
+      "event": {
+        "start_at": "{{step.moved_event.record.start_at}}",
+        "end_at": "{{step.moved_event.record.end_at}}",
+        "is_all_day": "{{step.moved_event.record.is_all_day}}"
+      },
+      "part": "text",
+      "time_zone": "{{context.server.time_zone}}"
+    },
+    {
       "id": "card",
       "transform": "to_summary",
       "fields": [
@@ -83,12 +103,8 @@
           "value": "{{step.moved}}"
         },
         {
-          "label": "New start",
-          "value": "{{config.new_start_at:date}}"
-        },
-        {
-          "label": "New end",
-          "value": "{{config.new_end_at:date}}"
+          "label": "New time",
+          "value": "{{step.new_time}}"
         }
       ]
     }

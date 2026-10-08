@@ -46,10 +46,7 @@ export function cmdHelp(version: string): void {
     logs -f                             Follow the daemon log (tail -f)
 
   Encryption:
-    auth-status                         Show lock state + migration status
-    unlock                              Unlock the server (prompts for password)
-    unlock --recovery-key               Unlock with the 24-word recovery key
-    lock                                Lock the server and zero the keys
+    unlock                              Unlock a running server with its 24-word recovery key
 
   LLM config:
     llm                                 Show the llm subcommand help

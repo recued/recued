@@ -32,6 +32,8 @@ import { createWorkEntityStore, ensureWorkEntitySchema } from '../storage/work-e
 import { createNotificationKindPolicyStore } from '../storage/notification-kind-policy-store.js';
 import { createQuietHoursStore } from '../storage/quiet-hours-store.js';
 import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
+import { createCalendarTable } from '../collections/calendar/calendar-table.js';
+import { createInstanceStore } from '../collections/instance-store.js';
 
 const TASK_ID = 'work-entity-reminder-sweep';
 const DUE_TASK_ID = 'work-entity-due-status-sweep';
@@ -46,7 +48,12 @@ afterEach(clearDefaultHousekeepingRegistry);
 
 /** Compose the real substrate over a real db, with one task due inside the
  *  horizon, and hand back the notify sink the composer wired. */
-const compose = async (over: { quiet?: { from: number; to: number }; zone?: string } = {}) => {
+const compose = async (over: {
+  quiet?: { from: number; to: number };
+  zone?: string;
+  /** Rows on an enrolled calendar, the calendar kind switched on. */
+  calendar?: Array<{ source_id: string; summary: string; start_at: number; end_at: number; is_all_day: boolean }>;
+} = {}) => {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   ensureWorkEntitySchema(db);
@@ -66,6 +73,23 @@ const compose = async (over: { quiet?: { from: number; to: number }; zone?: stri
   // ⚠ A DECLARED zone, not `follows_host`: the window is a wall clock and the
   // composition only wires `isQuiet` when the zone resolves.
   serverTimeZoneStore.write('fixed', over.zone ?? 'UTC', NOW);
+  if (over.calendar) {
+    notificationKindPolicyStore.write('calendar', { enabled: true, offset_ms: 13 * HOUR }, NOW);
+    createInstanceStore({ db }).upsert({
+      platform: 'calendar', slug: 'work', adapter_type: 'local', config: {},
+      caps: {} as never, auth_state: 'healthy', last_synced_at: null,
+    });
+    const table = createCalendarTable({ db, slug: 'work' });
+    for (const e of over.calendar) {
+      table.upsert({
+        event: {
+          ...e, ical_uid: `${e.source_id}@x`, calendar_id: 'primary', timezone: 'UTC',
+          status: 'confirmed', created_at: NOW, updated_at: NOW,
+        },
+        size_bytes: 0,
+      });
+    }
+  }
   if (over.quiet) {
     quietHoursStore.write({
       enabled: true, from_minute: over.quiet.from, to_minute: over.quiet.to,
@@ -122,6 +146,21 @@ describe('D-269 — the composition root wires the reminder sweep to REAL rows',
     expect(sent).toHaveLength(1);
     expect(sent[0]!.title).toBe('Task due soon');
     expect(sent[0]!.text).toContain('renew the domain');
+  });
+
+  it("⛔ a calendar's timed event is reminded of, and an ALL-DAY one is not — the flag reaches the sweep (2026-10-07)", async () => {
+    // An all-day event is stored at the UTC midnight of its day; "starting
+    // soon" for it arrived at 4 pm the day before in Los Angeles. The sweep
+    // skips it only if the composer passes the flag through.
+    const { sent, task } = await compose({
+      calendar: [
+        { source_id: 'holiday', summary: 'Holiday', is_all_day: true, start_at: Date.parse('2026-06-16T00:00:00Z'), end_at: Date.parse('2026-06-17T00:00:00Z') },
+        { source_id: 'call', summary: 'Call with Ana', is_all_day: false, start_at: NOW + HOUR, end_at: NOW + 2 * HOUR },
+      ],
+    });
+    await runTask(task);
+    const calendar = sent.filter((m) => m.title === 'Starting soon');
+    expect(calendar.map((m) => m.text.split(' — ')[0])).toEqual(['Call with Ana']);
   });
 
   it('⛔⛔ and an armed window HOLDS it — quiet hours is wired, not merely present', async () => {

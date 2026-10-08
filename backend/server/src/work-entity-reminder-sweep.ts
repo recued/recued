@@ -112,7 +112,7 @@ export interface ReminderSweepDeps {
    *  the kind of query that is fine on a test fixture and ruinous on a real
    *  account. */
   listCalendar?: (from: number, to: number) => Array<{
-    record_id: string; summary: string; start_at: number; status?: string;
+    record_id: string; summary: string; start_at: number; status?: string; is_all_day?: boolean;
   }>;
   /** Tasks with a due date. ⚠ Same bounded-read posture as the calendar: the
    *  caller pages, this sweep does not ask for everything. */
@@ -239,6 +239,11 @@ export const runReminderSweep = (deps: ReminderSweepDeps): ReminderSweepResult =
       // prunes it; reminding about one is the same defect as reminding about a
       // cancelled booking.
       if (e.status === 'cancelled') continue;
+      // ⛔ An all-day event is not a slot: it has days, not a time to be at
+      // (`calendar-days.ts`). Its stored start is a UTC midnight, so "starting
+      // soon" arrived at 4 pm the day before in Los Angeles, naming
+      // "…T00:00:00.000Z".
+      if (e.is_all_day === true) continue;
       result.calendar_visited += 1;
       if (!isOwed(e.start_at, now, calendarPolicy.offset_ms)) continue;
       candidates.push({

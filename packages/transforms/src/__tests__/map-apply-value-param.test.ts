@@ -85,6 +85,8 @@ describe('apply-mode value-param injection (the heal pins)', () => {
       // `join` reads `array` and was receiving the item value as `input`,
       // writing "" into every row until it was listed.
       join: 'array',
+      // Reads a whole event; `map` hands it the row when no `field` is named.
+      event_when: 'event',
     });
     for (const [target, param] of Object.entries(APPLY_VALUE_PARAM)) {
       expect(TRANSFORM_SCHEMAS[target], `schema for ${target}`).toBeDefined();

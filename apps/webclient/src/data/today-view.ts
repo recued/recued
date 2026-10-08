@@ -77,8 +77,12 @@ const dateLabel = (value: number): string => new Date(value).toLocaleDateString(
 const syncLabel = (last: number | null | undefined): string =>
   validDate(last) ? `Last brought in ${new Date(last).toLocaleString()}.` : 'Nothing has been brought in yet.';
 
-// Google and CalDAV encode date-only events as UTC midnight, not instants.
-// Translate only those adapters: Graph/local events already carry instants.
+// An all-day event is stored as days — the UTC midnight of its first day and of
+// the day after its last — by every adapter, and the calendar dispatcher holds
+// every write to it (`calendar-days.ts`). ⛔ This once translated Google and
+// CalDAV only, on the belief that Outlook and the local calendar carried
+// instants: Outlook's all-day event showed a day early west of UTC and dropped
+// out of Today once UTC midnight passed.
 const localDayAsUtc = (value: number): number => {
   const date = new Date(value);
   const utc = new Date(0);
@@ -251,11 +255,10 @@ export const loadToday = async (
     calendarSources.push(source);
     if (opts.collectionListCaller === undefined) { fail(instance.slug, new Error('Recued cannot reach your calendar.')); return; }
     const seen = new Set<string>();
-    const dateOnlyAdapter = instance.adapter_type === 'gcal' || instance.adapter_type === 'caldav';
-    const windows = dateOnlyAdapter ? [
+    const windows = [
       { from: now, before: span.before, allDay: false },
       { from: localDayAsUtc(now), before: localDayAsUtc(span.before), allDay: true },
-    ] : [{ from: now, before: span.before }];
+    ];
     let pages = 0;
     try {
       for (const window of windows) {
@@ -264,7 +267,7 @@ export const loadToday = async (
           if (pages++ >= MAX_PAGES) { fail(instance.slug, new Error('Recued stopped after 100 pages. Open Calendar to see more.')); return; }
           const result = await opts.collectionListCaller({ platform: 'calendar', slug: instance.slug,
             calendar_window: { from: window.from, before: window.before }, limit: PAGE_SIZE, offset,
-            ...('allDay' in window ? { filters: { is_all_day: window.allDay } } : {}) });
+            filters: { is_all_day: window.allDay } });
           if (!isCurrent()) return;
           source.freshness = calendarFreshness(result.source_freshness, instance);
           let added = 0;
@@ -275,8 +278,8 @@ export const loadToday = async (
             const fields = record.hot_fields;
             if (!validDate(fields.start_at) || !validDate(fields.end_at)) continue;
             const allDay = fields.is_all_day === true || fields.is_all_day === 1;
-            const start = allDay && dateOnlyAdapter ? utcDayAsLocal(fields.start_at) : fields.start_at;
-            const end = allDay && dateOnlyAdapter ? utcDayAsLocal(fields.end_at) : fields.end_at;
+            const start = allDay ? utcDayAsLocal(fields.start_at) : fields.start_at;
+            const end = allDay ? utcDayAsLocal(fields.end_at) : fields.end_at;
             if (end <= now || start >= span.before || fields.status === 'cancelled') continue;
             items.push({
               key: `${source.key}:${record.record_id}`, title: typeof fields.summary === 'string' && fields.summary.trim() ? fields.summary : 'Untitled event',

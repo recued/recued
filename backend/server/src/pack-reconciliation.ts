@@ -16,6 +16,13 @@
  * reviewed v2 Codex, yt-dlp, cloudflared, and Ollama manifests, so an unattended
  * or offline server can repair their now-rejected v1 execution declarations
  * before a listener accepts work.
+ *
+ * codex-pack LEFT the ledger at v5 (2026-10-07). v5 adds operations (resume,
+ * review of uncommitted changes), and an added operation is never
+ * authority-equivalent, so no boot could apply it. A still-stranded v1/v2 codex
+ * install now takes the path the 2026-09-04 ruling set for everything outside the
+ * ledger: the boot check names it unrunnable, the owner is notified with a link,
+ * and the update goes through the reviewed dialog.
  */
 
 import { isDeepStrictEqual } from 'node:util';
@@ -51,7 +58,9 @@ interface ApprovedPackTransition {
    *  `source_body_hashes` — the set widens WHICH installs are eligible, never what
    *  they are repaired to. */
   from_versions: readonly number[];
-  to_version: 3;
+  /** The exact shipped version the target artifact must declare, per pack — the
+   *  entries need not move together. */
+  to_version: number;
   catalog_slug: string;
   /** SHA-256 over canonical JSON, not file bytes (formatting is immaterial). */
   target_hash: string;
@@ -66,22 +75,9 @@ interface ApprovedPackTransition {
 const LAUNCH_SAFE_PACK_TRANSITIONS: Readonly<
   Record<string, ApprovedPackTransition>
 > = Object.freeze({
-  'codex-pack': {
-    publisher: 'recued-core',
-    from_versions: [1, 2],
-    to_version: 3,
-    catalog_slug: 'codex',
-    target_hash: '8a794a0cc7797b1f7efe70555a8f6b0e7fcf5204a96a7f091d953b2efa18839b',
-    source_body_hashes: [
-      // bcf0b30f2 (immediate pre-D-259 body) and the authority-equivalent
-      // 99da7a1f6 shape predating the D-185 output-field cleanup.
-      'b4ff50ac549b1108bdeb152c16cba1bc3f13b3b342e2618dfac1660b15b5e281',
-      'c4450525beb7f642512175ff55a9851e2107b6fb00c1dff2201791e2b9ec2e08',
-      // v2 (the previously reviewed target). Its ONLY delta to v3 is the
-      // ADDED closed request schema, which narrows and grants nothing.
-      '29ac1e3a71546c1c6e2dd204b304c02fac850c5f49ea92b9474f6275cc2a39e2',
-    ],
-  },
+  // ⛔ NO `codex-pack` ENTRY, ON PURPOSE — see the header. From v5 its target adds
+  // operations, which `comparePackUpdateAuthority` refuses by design, so an entry
+  // could only ever hold. Re-adding it needs a target with v1's operation set.
   'yt-dlp': {
     publisher: 'recued-core',
     from_versions: [1, 2],

@@ -45,27 +45,93 @@ const PLACE: ReadonlyArray<readonly [RegExp, string]> = [
   [/^data\.file(\.|$)/, 'folder'],
 ];
 
+/** A last part that matches any change. */
+const ANY_CHANGE = 'arrives, changes or is removed';
+
+/** What a file of one type is called, for a trigger narrowed to it. */
+const FILE_KIND: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^(?:text\/calendar|application\/ics)$/i, 'a calendar invite'],
+  [/^application\/pdf$/i, 'a PDF'],
+  [/^image\//i, 'an image'],
+  [/^audio\//i, 'an audio file'],
+  [/^video\//i, 'a video'],
+  [/^text\/csv$/i, 'a CSV file'],
+];
+
+const fileKindOf = (mime: string): string =>
+  FILE_KIND.find(([test]) => test.test(mime))?.[1] ?? `a file of type “${mime}”`;
+
+/** A trigger's `filter` in words. A narrowing that names WHAT it watches
+ *  replaces the noun — `record.mime_type` on a file ("a calendar invite"),
+ *  `kind` on a record ("a job event record") — and any other reads as "only
+ *  when …".
+ *
+ *  ⛔ WITHOUT THIS THE SENTENCE OVERSTATED WHAT STARTS THE RECIPE. The invite
+ *  recipes start only on a `text/calendar` file, and every one of them said
+ *  "Starts when a file arrives", the narrowing shown beside it as
+ *  `record.mime_type = text/calendar` (live drive, 2026-10-07). */
+const filterInWords = (
+  pattern: string,
+  filter: Readonly<Record<string, unknown>> | undefined,
+): { readonly noun?: string; readonly only: readonly string[] } => {
+  let noun: string | undefined;
+  const only: string[] = [];
+  for (const [key, value] of Object.entries(filter ?? {})) {
+    if (/^data\.file(\.|$)/.test(pattern) && key === 'record.mime_type' && typeof value === 'string') {
+      noun = fileKindOf(value);
+    } else if (/^record(\.|$)/.test(pattern) && key === 'kind' && typeof value === 'string') {
+      noun = `a ${value.replace(/[_-]+/g, ' ')} record`;
+    } else {
+      const field = key.replace(/^record\./, '').replace(/[_.-]+/g, ' ');
+      const said = typeof value === 'boolean' ? (value ? 'yes' : 'no') : `“${String(value)}”`;
+      only.push(`only when ${field} is ${said}`);
+    }
+  }
+  return { ...(noun !== undefined ? { noun } : {}), only };
+};
+
 /** One raw bus pattern in words ("an email arrives"). A part a setting fills
  *  (`data.file.{{config.file_slug}}.*.created`) says which one, as `settingOf`
  *  reads it: "a file arrives in the “scans” folder", or, with none chosen,
- *  "in the folder you choose". */
-const rawEventInWords = (pattern: string, settingOf: (setting: string) => unknown): string => {
-  const vendor = /^data\.connection\.api\.([a-z0-9_-]+)\.([a-z0-9_-]+)/.exec(pattern);
-  const noun = vendor !== null
-    ? `a ${vendor[1]} ${vendor[2]}`
-    : NOUN.find(([test]) => test.test(pattern))?.[1] ?? 'something it watches';
+ *  "in the folder you choose". A part already filled in (a trigger ROW's
+ *  pattern) is said the same way, and `filter` narrows the rest. */
+const rawEventInWords = (
+  pattern: string,
+  settingOf: (setting: string) => unknown,
+  filter?: Readonly<Record<string, unknown>>,
+): string => {
   const segments = eventPatternSegments(pattern);
   const last = segments.at(-1) ?? '';
   if (/^run(\.|$)/.test(pattern)) return last === 'failed' ? 'a run fails' : 'a run finishes';
-  const setting = segments.map(settingOfEventSegment).find((name): name is string => name !== null);
-  if (setting === undefined) return `${noun} ${VERB[last] ?? 'changes'}`;
+  const vendor = /^data\.connection\.api\.([a-z0-9_-]+)\.([a-z0-9_-]+)/.exec(pattern);
+  const narrowed = filterInWords(pattern, filter);
+  const noun = narrowed.noun ?? (vendor !== null
+    ? `a ${vendor[1]} ${vendor[2]}`
+    : NOUN.find(([test]) => test.test(pattern))?.[1] ?? 'something it watches');
+  const verb = last === '*' || last === '**' ? ANY_CHANGE : VERB[last] ?? 'changes';
   const place = PLACE.find(([test]) => test.test(pattern))?.[1];
-  const value = settingOf(setting);
-  const where = typeof value === 'string' && value.length > 0
-    ? `in the “${value}”${place === undefined ? '' : ` ${place}`}`
-    : `in the ${place ?? 'one'} you choose`;
-  return `${noun} ${VERB[last] ?? 'changes'} ${where}`;
+  const setting = segments.map(settingOfEventSegment).find((name): name is string => name !== null);
+  // `data.<mail|calendar|file>.<instance>.…`; `received` is the store of files
+  // that arrive (mail attachments, uploads), not a folder.
+  const instance = place !== undefined && setting === undefined ? segments[2] : undefined;
+  let where = '';
+  if (setting !== undefined) {
+    const value = settingOf(setting);
+    where = typeof value === 'string' && value.length > 0
+      ? ` in the “${value}”${place === undefined ? '' : ` ${place}`}`
+      : ` in the ${place ?? 'one'} you choose`;
+  } else if (instance !== undefined && !/^\*{1,2}$/.test(instance)
+    && !(place === 'folder' && instance === 'received')) {
+    where = ` in the “${instance}” ${place}`;
+  }
+  return [`${noun} ${verb}${where}`, ...narrowed.only].join(', ');
 };
+
+/** One trigger ROW in words — "a calendar invite arrives". A row's pattern is
+ *  already concrete, so nothing is read from settings. */
+export const eventTriggerInWords = (
+  trigger: { readonly pattern: string; readonly filter?: Readonly<Record<string, unknown>> },
+): string => rawEventInWords(trigger.pattern, () => undefined, trigger.filter);
 
 /** One declared trigger in words; a setting it names is read as `settingOf`
  *  reads it. */
@@ -92,7 +158,7 @@ const declarationInWords = (entry: RecipeEventTrigger, settingOf: (setting: stri
       ? `${/^[aeiou]/.test(thing) ? 'an' : 'a'} ${thing.replace(/_/g, ' ')} ${verb === 'changed' ? 'changes' : verb === 'created' ? 'arrives' : verb}`
       : null;
   }
-  return typeof entry.event === 'string' ? rawEventInWords(entry.event, settingOf) : null;
+  return typeof entry.event === 'string' ? rawEventInWords(entry.event, settingOf, entry.filter) : null;
 };
 
 /** What starts the recipe, as a verb phrase: "starts when a shipment’s state

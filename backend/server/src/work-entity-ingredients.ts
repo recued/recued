@@ -1251,6 +1251,7 @@ const IDEMPOTENCY_MARK = {
   note: 'recued_note_idempotency_key',
   commitment: 'recued_commitment_idempotency_key',
   project: 'recued_project_idempotency_key',
+  booking: 'recued_booking_idempotency_key',
 } as const;
 
 /** The check INSIDE the write, for a note / commitment / project create — the
@@ -2573,6 +2574,8 @@ const commitmentDelete = (deps: WorkEntityIngredientDeps) =>
 const bookingCreate = (deps: WorkEntityIngredientDeps) =>
   async (input: {
     title: string;
+    /** Create-or-reuse on one stable local id (`idempotentCreateKey`). */
+    idempotency_key?: string;
     lifecycle_state?: BookingLifecycleState;
     slot_start_at?: number;
     slot_end_at?: number;
@@ -2583,25 +2586,50 @@ const bookingCreate = (deps: WorkEntityIngredientDeps) =>
     source_extension_blob?: Record<string, unknown>;
   } & WorkEntityCreateOrigin): Promise<{ booking: Booking }> => {
     input = withDateInputs(input, ['slot_start_at', 'slot_end_at']);
-    const source = resolveCreateSource(deps, 'booking', input.source_id, input);
+    const idempotent = idempotentCreateKey('booking', input.idempotency_key, input.source_id);
+    const source = resolveCreateSource(
+      deps,
+      'booking',
+      idempotent === null ? input.source_id : RECUED_BUILTIN_SOURCE_ID('booking'),
+      input,
+    );
     const writeInput: BookingWriteInput = {
       source_id: source.id,
       title: input.title,
     };
-    if (input.lifecycle_state !== undefined) writeInput.lifecycle_state = input.lifecycle_state;
+    if (idempotent !== null) writeInput.id = idempotent.id;
+    // `!= null` treats both `null` and `undefined` as "absent", as the
+    // commitment create does: a recipe surfaces `null` for a value a skipped
+    // step or an unread fact did not give, and the store's destructuring and
+    // checks assume a field is present-and-valid or absent — a null price
+    // threw at commit time.
+    if (input.lifecycle_state != null) writeInput.lifecycle_state = input.lifecycle_state;
     // Passed through INDEPENDENTLY rather than as a pre-checked pair: the
     // store owns both-or-neither and throws with the field names, so a
     // half-supplied slot surfaces as one error from one place instead of
     // two rules that can drift apart.
-    if (input.slot_start_at !== undefined) writeInput.slot_start_at = input.slot_start_at;
-    if (input.slot_end_at !== undefined) writeInput.slot_end_at = input.slot_end_at;
-    if (input.monetary_value !== undefined) writeInput.monetary_value = input.monetary_value;
-    if (input.counterparty_contact_id !== undefined)
+    if (input.slot_start_at != null) writeInput.slot_start_at = input.slot_start_at;
+    if (input.slot_end_at != null) writeInput.slot_end_at = input.slot_end_at;
+    if (input.monetary_value != null) writeInput.monetary_value = input.monetary_value;
+    if (input.counterparty_contact_id != null)
       writeInput.counterparty_contact_id = input.counterparty_contact_id;
-    if (input.reception_record_id !== undefined)
+    if (input.reception_record_id != null)
       writeInput.reception_record_id = input.reception_record_id;
     if (input.source_extension_blob != null)
       writeInput.source_extension_blob = input.source_extension_blob;
+    if (idempotent !== null) {
+      writeInput.source_extension_blob = {
+        ...(writeInput.source_extension_blob ?? {}),
+        [IDEMPOTENCY_MARK.booking]: idempotent.key,
+      };
+      const ensured = deps.store.ensureBooking(writeInput as BookingWriteInput & { id: string }, deps.now?.());
+      if (!ensured.created) {
+        verifyIdempotentReuse('booking', ensured.booking, idempotent.key);
+        return { booking: ensured.booking };
+      }
+      emitWorkEntityEvent(deps, 'booking', 'created', tagWorkEntity('booking', ensured.booking));
+      return { booking: ensured.booking };
+    }
     const booking = deps.store.writeBooking(writeInput, deps.now?.());
     emitWorkEntityEvent(deps, 'booking', 'created', tagWorkEntity('booking', booking));
     return { booking };

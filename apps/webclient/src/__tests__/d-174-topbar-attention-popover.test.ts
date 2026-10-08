@@ -2702,9 +2702,10 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       'gateway.preflight ask for a reception inbox awaiting_approval hold',
     );
-    expect(topbar.innerHTML).toContain(
-      'Connected action &middot; Answer to continue',
-    );
+    // How long it has waited, never a category ("Connected action" was on
+    // every ask, a held local booking included).
+    expect(topbar.innerHTML).toMatch(/Waiting \d+w &middot; Answer to continue/);
+    expect(topbar.innerHTML).not.toContain('Connected action');
     expect(topbar.innerHTML).not.toContain('notification.pending_asks');
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-reception-inbox-preflight"`,
@@ -2843,6 +2844,25 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
+  it('tags an ask with how long it has waited, as the Approvals card does', async () => {
+    const raised = 1_700_000_000_000;
+    const open = async (now: number): Promise<string> => {
+      const { topbar, handle } = mountFor({
+        rows: () => [],
+        asks: () => [ask('gw-age', { created_at: raised })],
+        now: () => now,
+      });
+      await handle.whenLoaded();
+      topbar.fireAction({ 'data-action': 'open-attention' });
+      const html = topbar.innerHTML;
+      handle.dispose();
+      return html;
+    };
+    expect(await open(raised + 5 * 60_000)).toContain('Waiting 5m &middot; Answer to continue');
+    expect(await open(raised + 3 * 3_600_000)).toContain('Waiting 3h &middot; Answer to continue');
+    expect(await open(raised + 10_000)).toContain('Raised just now &middot; Answer to continue');
+  });
+
   it('renders pending notification.pending_asks entries in the popover list with gateway labels', async () => {
     const { topbar, handle } = mountFor({
       rows: () => [],
@@ -2862,9 +2882,10 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain('class="attention-list"');
     expect(topbar.innerHTML).toContain('Review HubSpot write');
     expect(topbar.innerHTML).toContain('Allow update to HubSpot contact?');
-    expect(topbar.innerHTML).toContain(
-      'Connected action &middot; Answer to continue',
-    );
+    // How long it has waited, never a category ("Connected action" was on
+    // every ask, a held local booking included).
+    expect(topbar.innerHTML).toMatch(/Waiting \d+w &middot; Answer to continue/);
+    expect(topbar.innerHTML).not.toContain('Connected action');
     expect(topbar.innerHTML).not.toContain('notification.pending_asks');
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-1"`,

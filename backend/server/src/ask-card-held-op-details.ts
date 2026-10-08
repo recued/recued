@@ -42,6 +42,7 @@ import type { PendingAsk } from '@recued/notification';
 
 import { buildAskLandingDetails } from './ask-landing-held-op-details.js';
 import { defaultReviewDetails } from './ask-card-default-details.js';
+import { kernelReviewDetails } from './ask-card-kernel-details.js';
 import { holdCoversSeveralItems } from './foreach-approval-items.js';
 // ⛔ THE OPERATION ID IS IMPORTED, NOT RE-DERIVED. It selects the
 // `editable_args` allowlist, so a second copy drifting would have the card and
@@ -67,8 +68,10 @@ export interface AskCardDetailResolverDeps {
   readonly getBatch?: (
     batch_id: string,
   ) => Promise<{ readonly members: readonly unknown[] } | null>;
-  /** IANA zone every `datetime` row renders in and NAMES. */
-  readonly timeZone?: string;
+  /** IANA zone every `datetime` row renders in and NAMES. A function is read
+   *  per ask, so the owner's zone setting applies without a restart. Absent ⇒
+   *  the host's zone. */
+  readonly timeZone?: string | (() => string);
   /** The installed action's `request_schema`, for the rows of an action whose
    *  pack declares no reviewable fields (`ask-card-default-details.ts`). Absent
    *  ⇒ such an action shows no block, the behaviour before the default. */
@@ -131,8 +134,10 @@ const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
  *      one checkpoint: its approval covers them all, and the prose lists them;
  *    - no `checkpoint_id`, an unknown checkpoint, a missing anchor, or a run no
  *      longer `awaiting_approval`;
- *    - an operation whose allowlist is empty — nothing is declared reviewable,
- *      so there is nothing this block may honestly show.
+ *    - an operation whose allowlist is empty and whose declared inputs cannot
+ *      be read — not a Recued built-in (`ask-card-kernel-details.ts`) and no
+ *      installed `request_schema` (`ask-card-default-details.ts`) — so there
+ *      is nothing this block may honestly show.
  *
  *  ⛔ AND NEVER A PARTIAL BLOCK. `buildAskLandingDetails` emits one row per
  *  ALLOWLIST field, so the set is the allowlist or it is nothing. Four rows
@@ -141,7 +146,10 @@ const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
 export const createAskCardDetailResolver = (
   deps: AskCardDetailResolverDeps,
 ): ((ask: PendingAsk) => Promise<readonly ServerPendingAskDetail[] | null>) => {
-  const timeZone = deps.timeZone ?? resolveDefaultTimeZone();
+  const zoneOf = (): string => {
+    const zone = typeof deps.timeZone === 'function' ? deps.timeZone() : deps.timeZone;
+    return zone ?? resolveDefaultTimeZone();
+  };
   return async (ask: PendingAsk): Promise<readonly ServerPendingAskDetail[] | null> => {
     if (ask.handler_kind !== PREFLIGHT_HANDLER_KIND) return null;
     const batch_id = ask.handler_payload.batch_id;
@@ -190,9 +198,17 @@ export const createAskCardDetailResolver = (
     let shown = args;
     try {
       arg_schema = deps.resolveArgEditSchema(operation_id, args);
-      // A pack that declared nothing reviewable still says what the call will
-      // change: the action's own declared fields, secrets hidden. Display only.
-      if (arg_schema.fields.length === 0 && deps.lookupRequestSchema !== undefined) {
+      // A Recued built-in action is never installed, so neither lookup above
+      // or below can see it: its rows come from its bundled manifest.
+      const kernel = arg_schema.fields.length === 0
+        ? kernelReviewDetails(operation_id, args)
+        : null;
+      if (kernel !== null) {
+        arg_schema = { fields: kernel.fields };
+        shown = kernel.args;
+      } else if (arg_schema.fields.length === 0 && deps.lookupRequestSchema !== undefined) {
+        // A pack that declared nothing reviewable still says what the call will
+        // change: the action's own declared fields, secrets hidden. Display only.
         const fallback = defaultReviewDetails(deps.lookupRequestSchema(operation_id), args);
         if (fallback === null) return null;
         arg_schema = { fields: fallback.fields };
@@ -203,7 +219,7 @@ export const createAskCardDetailResolver = (
     }
     const built = buildAskLandingDetails(
       { args: shown, arg_schema, proposed_action: '' },
-      { timeZone },
+      { timeZone: zoneOf() },
     );
     return built.details.length > 0
       ? built.details.map((d) => ({ label: d.label, value: d.value }))

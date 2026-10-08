@@ -770,19 +770,56 @@ export const createGraphCalProvider = (
     }
   };
 
+  /** `at` as the wall clock Graph reads it in: `dateTime` carries no offset,
+   *  and Graph takes it as a time IN `timeZone`.
+   *
+   *  ⛔⛔ IT USED TO SEND THE UTC CLOCK UNDER ANY ZONE, so an event created or
+   *  moved with `timezone: 'America/Los_Angeles'` landed seven hours late. It
+   *  held only while every caller sent `'UTC'` — found 2026-10-07, when the
+   *  Calendar Invites recipe began giving events the owner's zone.
+   *
+   *  An all-day event's `at` is midnight UTC of its date (the canonical
+   *  convention), and Graph wants that date's midnight in the zone, so its UTC
+   *  clock is already right. A zone `Intl` cannot read (a Windows name Graph
+   *  would accept) falls back to the UTC clock labelled UTC: the same instant,
+   *  shown in UTC. */
   const toGraphDateTime = (
     at: number,
     timezone: string,
-  ): GraphCalDateTime => ({
-    dateTime: new Date(at).toISOString().replace(/\.\d{3}Z$/, ''),
-    timeZone: timezone || 'UTC',
-  });
+    isAllDay = false,
+  ): GraphCalDateTime => {
+    const utc = new Date(at).toISOString().replace(/\.\d{3}Z$/, '');
+    const zone = timezone || 'UTC';
+    if (isAllDay || zone === 'UTC') return { dateTime: utc, timeZone: zone };
+    try {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: zone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      }).formatToParts(new Date(at));
+      const part = (type: Intl.DateTimeFormatPartTypes): string =>
+        parts.find((p) => p.type === type)?.value ?? '';
+      // Some ICU builds still say midnight as 24.
+      const hour = part('hour') === '24' ? '00' : part('hour');
+      return {
+        dateTime: `${part('year')}-${part('month')}-${part('day')}T${hour}:${part('minute')}:${part('second')}`,
+        timeZone: zone,
+      };
+    } catch {
+      return { dateTime: utc, timeZone: 'UTC' };
+    }
+  };
 
   const fromCreateInput = (input: CreateEventInput): Record<string, unknown> => {
     const body: Record<string, unknown> = {
       subject: input.summary,
-      start: toGraphDateTime(input.start_at, input.timezone),
-      end: toGraphDateTime(input.end_at, input.timezone),
+      start: toGraphDateTime(input.start_at, input.timezone, input.is_all_day),
+      end: toGraphDateTime(input.end_at, input.timezone, input.is_all_day),
       isAllDay: input.is_all_day,
     };
     if (input.description !== undefined) {
@@ -819,10 +856,10 @@ export const createGraphCalProvider = (
       body.location = { displayName: patch.location };
     }
     if (patch.timezone && patch.start_at !== undefined) {
-      body.start = toGraphDateTime(patch.start_at, patch.timezone);
+      body.start = toGraphDateTime(patch.start_at, patch.timezone, patch.is_all_day ?? false);
     }
     if (patch.timezone && patch.end_at !== undefined) {
-      body.end = toGraphDateTime(patch.end_at, patch.timezone);
+      body.end = toGraphDateTime(patch.end_at, patch.timezone, patch.is_all_day ?? false);
     }
     if (patch.is_all_day !== undefined) body.isAllDay = patch.is_all_day;
     if (patch.attendees) {

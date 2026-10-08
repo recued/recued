@@ -163,9 +163,13 @@ export interface TriggerEventPayload {
    *  normally). The reconciler emits its meta snapshot minus stamping
    *  fields — meta keys are the canonical projection vocabulary, so
    *  both sources speak the same `record.<field>` language. Absent on
-   *  adapter-sourced events (mail / calendar / file — those recipes
-   *  re-read via their own fetch step) and on `deleted` (no current
-   *  state — `prev` carries the last known projection). */
+   *  adapter-sourced events (mail / calendar — those recipes re-read via
+   *  their own fetch step) and on `deleted` (no current state — `prev`
+   *  carries the last known projection). ⚠ Received files
+   *  (`data.file.received`) DO carry it since D-315 slice 7: their hot
+   *  fields — filename, mime_type, size, origin, scan_status — so a trigger
+   *  `filter` such as `{"record.mime_type": "text/calendar"}` wakes on one
+   *  kind of file without a run for every other. */
   record?: Record<string, unknown>;
   /** Canonical field keys whose values differ from the prior snapshot.
    *  Present on poll- and reconciler-sourced `updated` events whose

@@ -4,12 +4,12 @@
   "publisher": "recued-core",
   "name": "Reception — Scheduling",
   "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 3 ready-to-run workflows. Actions that change data use Recued's approval controls.",
-  "version": 4,
+  "version": 5,
   "pre_install": true,
   "recipes": [
     {
       "slug": "reschedule-calendar-event",
-      "version": 1
+      "version": 2
     },
     {
       "slug": "reschedule-booking",

@@ -132,13 +132,18 @@ describe('the REAL kernel manifests', () => {
     // "reaches owner content" — which is the distinction `risk_tier` alone was
     // never going to express, and the reason this list is authored.
     //
+    // ── D-315 slice 7, 2026-10-07 — `ics-read` (read). It reaches no more than
+    //    `data-file-read` already does: the same stored file, by the record_id
+    //    the caller names, behind the same `data.file` fence — read as an
+    //    invite's method and events instead of as bytes.
+    //
     // ⚠ The `preapproval.` / `mail.drafts.` RPC namespaces are the OTHER half of
     // the same decision, and they went the other way: both are in
     // `MCP_RESERVED_RPC_PREFIXES`, so the owner control plane stays unreachable
     // from this channel. An agent gets the governed kernel ops and nothing else.
     expect(flagged).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'ics-read', 'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
   });
@@ -151,7 +156,7 @@ describe('the REAL kernel manifests', () => {
     // are reachable, not the file's layout.
     expect(reachable.map((m) => m.slug).sort()).toEqual([
       'csv-columns', 'csv-filter', 'csv-rows', 'csv-stats', 'data-file-read',
-      'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
+      'ics-read', 'mail-draft-create', 'mail-draft-delete', 'mail-draft-read',
       'mail-draft-update', 'preapproval-request',
     ]);
   });

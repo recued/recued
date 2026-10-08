@@ -28,8 +28,12 @@ export const promptSecret = async (label: string): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
       const rl = createInterface({ input: process.stdin });
       rl.once('line', (line) => {
-        rl.close();
+        // ⛔ RESOLVE BEFORE CLOSING. `close()` emits 'close' synchronously, and
+        // that listener resolves '' — so closing first returned '' for EVERY
+        // piped secret: a scripted `recued unlock`, `recover-keyfile` or
+        // `rotate-passphrase` read an empty value (found 2026-10-07).
         resolve(line);
+        rl.close();
       });
       rl.once('close', () => resolve(''));
       rl.once('error', reject);
@@ -85,8 +89,9 @@ export const promptLine = async (label: string): Promise<string> => {
   return new Promise<string>((resolve, reject) => {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     rl.once('line', (line) => {
-      rl.close();
+      // Resolve before closing — see `promptSecret`.
       resolve(line);
+      rl.close();
     });
     rl.once('close', () => resolve(''));
     rl.once('error', reject);

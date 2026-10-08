@@ -48,6 +48,28 @@ describe('date_parse', () => {
     expect(date_parse({ input: '' }, c)).toBeNull();
   });
 
+  describe("time_zone (D-315 slice 7 — a wall clock in the owner's zone, not the server's)", () => {
+    it('a day, or a time with no offset, is read in the zone named — on either side of UTC', () => {
+      expect(date_parse({ input: '2026-10-20T00:00:00', time_zone: 'America/Los_Angeles' }, c)).toBe(Date.UTC(2026, 9, 20, 7));
+      expect(date_parse({ input: '2026-10-20', time_zone: 'America/Los_Angeles' }, c)).toBe(Date.UTC(2026, 9, 20, 7));
+      expect(date_parse({ input: '2026-10-20T00:00:00', time_zone: 'Pacific/Auckland' }, c)).toBe(Date.UTC(2026, 9, 19, 11));
+    });
+
+    it('a value with its own offset keeps it', () => {
+      expect(date_parse({ input: '2026-10-20T09:00:00Z', time_zone: 'Asia/Tokyo' }, c)).toBe(Date.UTC(2026, 9, 20, 9));
+      expect(date_parse({ input: '2026-10-20T09:00:00-04:00', time_zone: 'Asia/Tokyo' }, c)).toBe(Date.UTC(2026, 9, 20, 13));
+    });
+
+    it('an unknown zone, or a wall clock that is not one, is null — never read in another zone', () => {
+      expect(date_parse({ input: '2026-10-20T00:00:00', time_zone: 'Mars/Olympus' }, c)).toBeNull();
+      expect(date_parse({ input: 'next Tuesday', time_zone: 'America/Los_Angeles' }, c)).toBeNull();
+    });
+
+    it('an empty zone — a run with no server — reads as before', () => {
+      expect(date_parse({ input: '2026-04-08T00:00:00.000Z', time_zone: '' }, c)).toBe(Date.UTC(2026, 3, 8));
+    });
+  });
+
   describe('require_offset (D-193 — reject an ambiguous offset-less instant)', () => {
     it('accepts a Z (UTC) datetime', () => {
       expect(date_parse({ input: '2026-07-04T15:00:00Z', require_offset: true }, c))

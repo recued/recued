@@ -115,6 +115,15 @@ if (getFlag(inputArgs, 'require-enrolled')) {
   // unenrolled realm still exits 0, and an unopenable one exits non-zero and
   // says what actually broke.
   if (probeError) {
+    // This path exits without throwing, so the router never records it: say it
+    // here, for `recued status` — an autostart has no terminal to read.
+    const { recordLastStartError } = await import('./cli/last-start-error.js');
+    recordLastStartError(dbPath, {
+      at: Date.now(),
+      version: SERVER_VERSION,
+      message: `cannot open the realm database ${String(dbPath)}: `
+        + (probeError instanceof Error ? probeError.message : String(probeError)),
+    });
     console.error('[recued] cannot open the realm database: ' + String(dbPath));
     console.error('[recued]   ' + (probeError instanceof Error ? probeError.message : String(probeError)));
     console.error('[recued] This is NOT "not set up yet" — enrolment state is unknown because');

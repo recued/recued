@@ -81,6 +81,33 @@ describe('a mail_template variable (§5.2)', () => {
   });
 });
 
+describe('a recipe that only brings a template (§5.2, rulings 31, 45)', () => {
+  const warnings = (variables: Record<string, unknown>): string[] =>
+    (parseRecipe({
+      recipe_id: 'parcels',
+      version: 1,
+      ttl: 0,
+      metadata: { name: 'Parcels', description: 'x', author: 'test', supported_platforms: [] },
+      variables,
+      prefetch_steps: [],
+      steps: [{ id: 'x', transform: 'coalesce', values: ['{{meta.recipe_id}}'] }],
+      output: { render: [{ type: 'summary', source: 'step.x' }] },
+    }).issues ?? [])
+      .filter((issue) => issue.code === 'unused_variable')
+      .map((issue) => issue.path ?? '');
+
+  it('is not told its starter variable is unused: installing it creates the template, whatever its steps read', () => {
+    expect(warnings({ template: { label: 'Template', type: 'mail_template', starter } })).toEqual([]);
+  });
+
+  it('is still told about a template variable with no starter, or any other, that nothing reads', () => {
+    expect(warnings({
+      template: { label: 'Template', type: 'mail_template' },
+      note: { label: 'Note', type: 'text' },
+    }).sort()).toEqual(['variables.note', 'variables.template']);
+  });
+});
+
 describe('a fact trigger narrowed to the recipe’s template (§5.1)', () => {
   const template = { label: 'Template', type: 'mail_template', starter };
 

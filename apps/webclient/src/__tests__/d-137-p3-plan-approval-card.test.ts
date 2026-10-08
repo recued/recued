@@ -1112,6 +1112,35 @@ describe('D-137 P3 plan-approval chat route', () => {
     h.route.dispose();
   });
 
+  it("reads a calendar event's times, and an all-day event's days, instead of raw milliseconds (2026-10-07)", async () => {
+    const h = mountChatRoute({ messages: [assistantMessage('msg_anchor', 'Anchor.')] });
+    await openMountedRoute(h);
+    const timedStart = Date.UTC(2026, 9, 17, 17);
+    h.publish(planProposed({
+      plan_id: 'plan_timed', turn_id: 'turn_timed', tool: 'calendar.create',
+      args: { summary: 'Dentist', start_at: timedStart, end_at: timedStart + 3_600_000 },
+    }));
+    // Stored as the UTC midnights of 24 Dec and of the day after 25 Dec.
+    h.publish(planProposed({
+      plan_id: 'plan_days', turn_id: 'turn_days', tool: 'calendar.create', cursor: 4,
+      args: { summary: 'Holiday', is_all_day: true, start_at: Date.UTC(2026, 11, 24), end_at: Date.UTC(2026, 11, 26) },
+    }));
+    await tick();
+    // The readable details; "The technical bits" keep the raw arguments.
+    const timed = allText(requireChildClass(requirePlanCard(h.root, 'plan_timed'), 'chat-plan-card-details'));
+    expect(timed).toContain(new Date(timedStart).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+    expect(timed).not.toContain(String(timedStart));
+    const days = allText(requireChildClass(requirePlanCard(h.root, 'plan_days'), 'chat-plan-card-details'));
+    const dayText = (ms: number): string => new Intl.DateTimeFormat(undefined, {
+      weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+    }).format(new Date(ms));
+    expect(days).toContain(`${dayText(Date.UTC(2026, 11, 24))} (all day)`);
+    // The end reads as the LAST day, not the stored day after it.
+    expect(days).toContain(`${dayText(Date.UTC(2026, 11, 25))} (all day)`);
+    expect(days).not.toContain(String(Date.UTC(2026, 11, 24)));
+    h.route.dispose();
+  });
+
   it('approves once while keeping the pending action focusable', async () => {
     const approve = deferred<{ plan: ChatPlanProposal }>();
     const h = mountChatRoute({

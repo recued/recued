@@ -130,11 +130,11 @@ afterEach(() => {
 // idempotent create — note / commitment / project (a task's contract)
 // ────────────────────────────────────────────────────────────────
 
-describe('idempotent create for notes, commitments and projects', () => {
+describe('idempotent create for notes, commitments, projects and bookings', () => {
   // The check INSIDE the write: a repeat with the same key returns the record
   // the first made, whatever an earlier read saw — the cache cannot answer it,
   // and two runs racing get one record. Same contract a task create has.
-  type Kind = 'note' | 'commitment' | 'project';
+  type Kind = 'note' | 'commitment' | 'project' | 'booking';
   const KINDS: Record<Kind, {
     create: (extra: Record<string, unknown>) => Promise<Record<string, unknown>>;
     count: () => number;
@@ -168,6 +168,15 @@ describe('idempotent create for notes, commitments and projects', () => {
       count: () => store.countProjects(),
       remove: (id) => dispatchers.projectDelete({ id }),
       plant: (id) => { store.writeProject({ id, source_id: RECUED_BUILTIN_SOURCE_ID('project'), title: 'Unrelated' }, NOW); },
+      text: 'title',
+    },
+    // D-315 slice 7 — a reservation read from mail makes one, and its runs hold
+    // for the owner, so two emails about it could otherwise mint two.
+    booking: {
+      create: async (extra) => (await dispatchers.bookingCreate({ title: 'Harbour Hotel stay', ...extra } as never)).booking as never,
+      count: () => store.countBookings(),
+      remove: (id) => dispatchers.bookingDelete({ id }),
+      plant: (id) => { store.writeBooking({ id, source_id: RECUED_BUILTIN_SOURCE_ID('booking'), title: 'Unrelated' }, NOW); },
       text: 'title',
     },
   };
@@ -211,6 +220,15 @@ describe('idempotent create for notes, commitments and projects', () => {
     const made = await k.create({ idempotency_key: 'workflow:deleted' });
     await k.remove(String(made.id));
     await expect(k.create({ idempotency_key: 'workflow:deleted' })).rejects.toThrow(/tombstoned/);
+  });
+
+  it('a booking create takes a null field as absent, as a commitment create does — a recipe sends null for a value it did not read', async () => {
+    const { booking } = await dispatchers.bookingCreate({
+      title: 'Table for two', monetary_value: null, slot_start_at: null, slot_end_at: null, lifecycle_state: null,
+    } as never);
+    expect(booking).toMatchObject({ title: 'Table for two', lifecycle_state: 'confirmed' });
+    expect(booking.monetary_value).toBeUndefined();
+    expect(booking.slot_start_at).toBeUndefined();
   });
 
   it('a task’s id is unchanged by the shared helper', () => {

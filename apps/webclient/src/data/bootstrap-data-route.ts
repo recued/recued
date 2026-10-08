@@ -119,7 +119,7 @@ import {
   sameSavedDataViewDefinition, DEFAULT_TASK_VIEW_FILTERS, parseTaskViewFilters,
   resolveTaskListFilter, RECORDS_MAX_PREDICATES,
 } from '@recued/contracts';
-import { rankSearchable, timedDueMs } from '@recued/contracts';
+import { allDayEventDays, calendarDayMs, DAY_MS, rankSearchable, readDisplayField, timedDueMs } from '@recued/contracts';
 import {
   getContactSourceDeclaration,
   CONTACT_SOURCE_ID_DERIVED,
@@ -5492,7 +5492,7 @@ export const bootstrapDataRoute = (
   // `null` = closed (only the "Reschedule" button shows); open holds the datetime
   // input's value + submit state. Reset whenever the detail changes so a stale
   // form never carries across events.
-  let rescheduleForm: { value: string; submitting: boolean; error: string | null } | null = null;
+  let rescheduleForm: { value: string; submitting: boolean; error: string | null; allDay?: boolean } | null = null;
   let pendingRescheduleOpenFocusId: string | null = null;
   // D-210 Appendix B — the "Copy reschedule link" affordance state for the OPEN
   // calendar event. `busy` while the mint rpc is in flight; `notice` is the
@@ -5925,7 +5925,7 @@ export const bootstrapDataRoute = (
    *  runs `reschedule-calendar-event` (see `submitReschedule`), which moves the
    *  event; the reactive notify recipe then tells any booking visitor. */
   const renderRescheduleControl = (
-    form: { value: string; submitting: boolean; error: string | null } | null,
+    form: { value: string; submitting: boolean; error: string | null; allDay?: boolean } | null,
   ): string => {
     if (form === null) {
       // Visitor manage links belong to Reception-origin booking detail. This
@@ -5944,8 +5944,8 @@ export const bootstrapDataRoute = (
         ? `<p class="data-reschedule-error" role="alert">${e(form.error)}</p>`
         : '';
     return `<div class="data-reschedule-form">
-      <label class="data-reschedule-label">New start
-        <input type="datetime-local" class="data-input" ${DATA_ROUTE_ACTION_ATTR}="reschedule-input" value="${e(form.value)}"${inputDisabled} />
+      <label class="data-reschedule-label">${form.allDay === true ? 'New day' : 'New start'}
+        <input type="${form.allDay === true ? 'date' : 'datetime-local'}" class="data-input" ${DATA_ROUTE_ACTION_ATTR}="reschedule-input" value="${e(form.value)}"${inputDisabled} />
       </label>
       <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-submit"${actionDisabled}${form.submitting ? ' aria-busy="true"' : ''}>${form.submitting ? 'Rescheduling…' : 'Save'}</button>
       <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-cancel"${actionDisabled}>Cancel</button>
@@ -6003,9 +6003,13 @@ export const bootstrapDataRoute = (
     // gated to calendar (like the timeline above) + only when the execute caller
     // is wired. Mutually exclusive with the Files download control (different
     // tabs), so they share the one detail-bar slot.
+    // ⛔ NOT ON A CANCELLED EVENT. Moving one keeps it cancelled — the
+    // reschedule recipe patches the times only — so the button offered a
+    // change that changes nothing anyone would see (live drive, 2026-10-07).
     const rescheduleControl =
       collectionName === 'calendar'
       && detail?.record != null
+      && readDisplayField(detail.record as unknown as Record<string, unknown>, 'status') !== 'cancelled'
       && opts.recipeExecuteCaller !== undefined
         ? renderRescheduleControl(rescheduleForm)
         : '';
@@ -12785,9 +12789,14 @@ export const bootstrapDataRoute = (
       focusRescheduleAction('reschedule-input');
       return;
     }
-    const newStart = new Date(rescheduleForm.value).getTime();
+    // An all-day event moves by days: the picked day as it is stored (its UTC
+    // midnight), the same number of days long. A timed one by local time.
+    const allDay = rescheduleForm.allDay === true;
+    const newStart = allDay
+      ? calendarDayMs(rescheduleForm.value) ?? Number.NaN
+      : new Date(rescheduleForm.value).getTime();
     if (!Number.isFinite(newStart)) {
-      rescheduleForm = { ...rescheduleForm, error: 'Pick a new start time.' };
+      rescheduleForm = { ...rescheduleForm, error: allDay ? 'Pick a new day.' : 'Pick a new start time.' };
       render();
       focusRescheduleAction('reschedule-input');
       return;
@@ -12798,7 +12807,7 @@ export const bootstrapDataRoute = (
     const durationMs =
       Number.isFinite(curStart) && Number.isFinite(curEnd) && curEnd > curStart
         ? curEnd - curStart
-        : 0;
+        : allDay ? DAY_MS : 0;
     const recordId = explorerDetail?.record_id ?? '';
     const keepValue = rescheduleForm.value;
     // Snapshot the explorer generation (NOT a bump — we start no load) so a
@@ -12821,7 +12830,7 @@ export const bootstrapDataRoute = (
       });
       if (disposed || seq !== explorerSeq) return;
       if (res.awaiting_approval === true) {
-        rescheduleForm = { value: keepValue, submitting: false, error: 'This move needs you to say yes.' };
+        rescheduleForm = { value: keepValue, submitting: false, error: 'This move needs you to say yes.', allDay };
         render();
         return;
       }
@@ -12832,11 +12841,11 @@ export const bootstrapDataRoute = (
         void refresh;
         return;
       }
-      rescheduleForm = { value: keepValue, submitting: false, error: 'Recued could not move it. Try again.' };
+      rescheduleForm = { value: keepValue, submitting: false, error: 'Recued could not move it. Try again.', allDay };
       render();
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
-      rescheduleForm = { value: keepValue, submitting: false, error: errMessage(err) };
+      rescheduleForm = { value: keepValue, submitting: false, error: errMessage(err), allDay };
       render();
     }
   };
@@ -14269,13 +14278,21 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'reschedule-open') {
-      // Prefill the picker with the event's current start (local wall-clock).
+      // Prefill the picker with the event's current start (local wall-clock) —
+      // or, for an all-day event, its first DAY: its times are days, and a time
+      // picked for one was stored as a time (`calendar-days.ts`).
       const record = explorerDetail?.record ?? null;
       const startAt = record != null ? Number(record.hot_fields.start_at) : NaN;
+      const allDay = record != null && (record.hot_fields.is_all_day === true || record.hot_fields.is_all_day === 1);
       rescheduleForm = {
-        value: Number.isFinite(startAt) ? toDatetimeLocal(startAt) : '',
+        value: !Number.isFinite(startAt)
+          ? ''
+          : allDay
+            ? allDayEventDays({ start_at: startAt, end_at: startAt + DAY_MS }).first
+            : toDatetimeLocal(startAt),
         submitting: false,
         error: null,
+        allDay,
       };
       render();
       focusRescheduleAction('reschedule-input');

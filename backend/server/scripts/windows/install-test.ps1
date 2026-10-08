@@ -21,6 +21,38 @@ $startupLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Recued.lnk'
 $programsLnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Recued.lnk'
 Remove-Item -Force $startupLnk, $programsLnk -ErrorAction SilentlyContinue
 
+# !! THE INSTALLER ADDS EVERY PREFIX IT INSTALLS TO THE USER Path, and nothing
+# here took them back out: 10 of the guest's 18 user Path entries were prefixes
+# under this run's own $root, long deleted (2026-10-06). Drop those first -- they
+# point into a folder this script owns and empties -- then keep the raw value
+# AND its registry kind, and put both back in the cleanup at the end.
+function Read-RawUserPath {
+  $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+  $v = $k.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+  $kind = if ($null -ne $v) { $k.GetValueKind('Path') } else { $null }
+  $k.Close()
+  return @{ Value = $v; Kind = $kind }
+}
+function Write-RawUserPath($Value, $Kind) {
+  $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+  if ($null -eq $Value) { $k.DeleteValue('Path', $false) } else { $k.SetValue('Path', $Value, $Kind) }
+  $k.Close()
+  # A raw registry write broadcasts nothing; a set + unset through the
+  # Environment API does, so Explorer re-reads the Path just written.
+  [Environment]::SetEnvironmentVariable('RECUED_PS1_TEST_BROADCAST', '1', 'User')
+  [Environment]::SetEnvironmentVariable('RECUED_PS1_TEST_BROADCAST', $null, 'User')
+}
+$userPath = Read-RawUserPath
+$staleEntries = @()
+if ($null -ne $userPath.Value) {
+  $entries = @($userPath.Value -split ';')
+  $staleEntries = @($entries | Where-Object { $_ -match '\\recued-ps1-test\\[^\\]+\\?$' })
+  if ($staleEntries.Count -gt 0) {
+    Write-RawUserPath ((@($entries | Where-Object { $staleEntries -notcontains $_ })) -join ';') $userPath.Kind
+    $userPath = Read-RawUserPath
+  }
+}
+
 # !! NOTHING UNCAPTURED INSIDE A VALUE-RETURNING FUNCTION. In PowerShell every
 # uncaptured expression becomes part of the return value, so a stray progress
 # line comes back concatenated onto the result. All installer output goes to a
@@ -523,8 +555,10 @@ Report 'unsafe-swap-marker-refused' $ok "code=$($r.Code) said=$saidUnsafe victim
 # a candidate) that must stop the run before the parked pair or the marker goes.
 # For a RESTORED previous pair (12b, 12d) the flush is best effort -- those bytes
 # were on disk before the run -- so the restore completes, warns, and retires
-# the marker. 12e/12f: a committed marker is recognised. Each arm fails against
-# an installer without its rule.
+# the marker. 12e/12f: a committed marker is recognised. 12g: a holder that lets
+# go inside the flush's retry window does not fail the commit. 12h/12i: a failed
+# FRESH install keeps its marker while its files are held, and waits out a holder
+# that lets go. Each arm fails against an installer without its rule.
 #
 # 12a/12b drive the SHIPPED transaction functions, extracted via the AST as in
 # arm 9: a commit-time failure cannot be staged through a whole install without
@@ -611,6 +645,101 @@ $undoDone = ($undoReturned.Count -eq 1) -and ($undoReturned[0] -eq $true) -and (
             ((Read-Text $u.Exe) -eq 'old-exe') -and ((Read-Text $u.Lib) -eq 'old-lib')
 $ok = $undoWarned -and $undoDone
 Report 'undo-restored-pair-flush-best-effort' $ok "returned=$($undoReturned -join ',') warned=$undoWarned restored_and_retired=$undoDone"
+
+# -- 12g. A holder that LETS GO inside the retry window does not fail the commit --
+# Under x64 emulation the probed recued.exe stays locked ~0.3 s after each run, so
+# the commit's flush met a sharing violation from a process already gone and the
+# whole install failed. Here the hold is released from another thread after 1.5 s:
+# the commit must wait it out and finish -- and must actually have waited, since a
+# hold that never blocked would commit at once and pass for the wrong reason.
+$g = New-SwapFixture 'pflushletgo'
+$hold = [IO.File]::Open($g.Lib, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$releaser = [powershell]::Create().AddScript({ param($h) Start-Sleep -Milliseconds 1500; $h.Dispose() }).AddArgument($hold)
+$releasing = $releaser.BeginInvoke()
+$waited = [Diagnostics.Stopwatch]::StartNew()
+$priorEap = $ErrorActionPreference
+$letGoThrew = $false
+try { $ErrorActionPreference = 'Stop'; Complete-RecuedInstallSwap } catch { $letGoThrew = $true } finally { $ErrorActionPreference = $priorEap }
+$waited.Stop()
+[void]$releaser.EndInvoke($releasing)
+$releaser.Dispose()
+$hold.Dispose()
+$letGoCommitted = (-not $letGoThrew) -and (-not (Test-Path $g.PrevExe)) -and (-not (Test-Path $g.PrevLib)) -and `
+                  (-not (Test-Path $g.Marker)) -and (-not $script:InstallSwapInProgress) -and ((Read-Text $g.Lib) -eq 'new-lib')
+$waitedS = [math]::Round($waited.Elapsed.TotalSeconds, 2)
+$ok = $letGoCommitted -and ($waitedS -ge 1.4)
+Report 'commit-flush-waits-out-a-holder-letting-go' $ok "committed=$letGoCommitted waited_s=$waitedS"
+
+# A mid-swap FRESH install: the new pair is live and nothing was installed
+# before it, so the marker names no parked files.
+function New-FreshSwapFixture($Name) {
+  $dir = Join-Path $root $Name
+  New-Item -ItemType Directory -Force -Path (Join-Path $dir 'lib') | Out-Null
+  $fx = @{
+    Exe = Join-Path $dir 'recued.exe'
+    Lib = Join-Path $dir 'lib\better_sqlite3.node'
+    Marker = Join-Path $dir '.swap-in-progress'
+  }
+  Set-Content -Path $fx.Exe -Value 'new-exe' -Encoding ASCII
+  Set-Content -Path $fx.Lib -Value 'new-lib' -Encoding ASCII
+  $fxMarker = @{
+    schema_version = 1; expected_version = '9.9.10'; had_prev_exe = $false; had_prev_lib = $false
+    prev_exe = ''; prev_lib = ''
+  } | ConvertTo-Json -Compress
+  Set-Content -Path $fx.Marker -Value $fxMarker -Encoding ASCII
+  $script:InstallSwapInProgress = $true
+  $script:InstallSwapPrefix = $dir
+  $script:InstallSwapPrevExe = ''
+  $script:InstallSwapPrevLib = ''
+  $script:InstallSwapExpectedVersion = '9.9.10'
+  return $fx
+}
+
+# -- 12h. A failed FRESH install never leaves its files looking finished -------
+# The undo deleted what it could with a silent Remove-Item, closed the swap and
+# deleted the marker, then warned about a "restored previous pair" there never
+# was -- so a library still held open stayed behind as an unfinished install
+# with nothing recording it. Held for the whole undo, the marker must now stay
+# (the next run settles it) under a warning that names the unfinished file;
+# with the hold gone, the same armed undo finishes the job.
+$fh = New-FreshSwapFixture 'pfreshheld'
+$hold = [IO.File]::Open($fh.Lib, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try { $freshOut = @(Undo-RecuedInstallSwap 3>&1) } finally { $hold.Dispose() }
+$freshReturned = @($freshOut | Where-Object { $_ -is [bool] })
+$freshWarnings = @($freshOut | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+$saidUnfinished = @($freshWarnings | Where-Object { $_ -match "could not remove this run's unfinished" }).Count -gt 0
+$saidRestored = @($freshWarnings | Where-Object { $_ -match 'restored previous pair' }).Count -gt 0
+$freshKept = ($freshReturned.Count -eq 1) -and ($freshReturned[0] -eq $false) -and (Test-Path $fh.Marker) -and `
+             $script:InstallSwapInProgress -and (-not (Test-Path $fh.Exe)) -and (Test-Path $fh.Lib)
+$settleOut = @(Undo-RecuedInstallSwap 3>&1)
+$settleReturned = @($settleOut | Where-Object { $_ -is [bool] })
+$freshSettled = ($settleReturned.Count -eq 1) -and ($settleReturned[0] -eq $true) -and (-not (Test-Path $fh.Lib)) -and `
+                (-not (Test-Path $fh.Marker)) -and (-not $script:InstallSwapInProgress)
+$ok = $saidUnfinished -and (-not $saidRestored) -and $freshKept -and $freshSettled
+Report 'fresh-install-undo-keeps-marker-while-held' $ok "said_unfinished=$saidUnfinished said_restored=$saidRestored marker_kept=$freshKept then_settled=$freshSettled"
+
+# -- 12i. ...and a holder that lets go inside the window leaves nothing behind --
+# Under x64 emulation the probed recued.exe stays locked ~0.3 s after each run,
+# which is exactly when an undo tries to delete it. Released from another thread
+# after 1.5 s, the file must be gone with no warning -- and the undo must really
+# have waited, or a hold that never blocked would pass for the wrong reason.
+$fl = New-FreshSwapFixture 'pfreshletgo'
+$hold = [IO.File]::Open($fl.Lib, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+$releaser = [powershell]::Create().AddScript({ param($h) Start-Sleep -Milliseconds 1500; $h.Dispose() }).AddArgument($hold)
+$releasing = $releaser.BeginInvoke()
+$waited = [Diagnostics.Stopwatch]::StartNew()
+$letGoOut = @(Undo-RecuedInstallSwap 3>&1)
+$waited.Stop()
+[void]$releaser.EndInvoke($releasing)
+$releaser.Dispose()
+$hold.Dispose()
+$letGoReturned = @($letGoOut | Where-Object { $_ -is [bool] })
+$letGoWarned = @($letGoOut | Where-Object { $_ -is [System.Management.Automation.WarningRecord] }).Count -gt 0
+$letGoClean = ($letGoReturned.Count -eq 1) -and ($letGoReturned[0] -eq $true) -and (-not (Test-Path $fl.Exe)) -and `
+              (-not (Test-Path $fl.Lib)) -and (-not (Test-Path $fl.Marker)) -and (-not $script:InstallSwapInProgress)
+$waitedS = [math]::Round($waited.Elapsed.TotalSeconds, 2)
+$ok = $letGoClean -and (-not $letGoWarned) -and ($waitedS -ge 1.4)
+Report 'fresh-install-undo-waits-out-a-holder-letting-go' $ok "clean=$letGoClean warned=$letGoWarned waited_s=$waitedS"
 
 # Real fixture pairs for the end-to-end recovery arms: 9.9.10 from p1 (arm 3)
 # and 9.9.9 from p7 (arm 7).
@@ -821,4 +950,13 @@ Report 'webclient-update-skipped-while-backup-name-held' $ok "holder_alive=$hold
 # -- cleanup: leave the host as we found it --------------------------------
 Remove-Item -Force $startupLnk, $programsLnk -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+# The user Path as it stood after the stale entries went (see the top): every
+# arm above installed a prefix, and each one appended itself.
+$pathBeforeRestore = Read-RawUserPath
+$addedEntries = @(@($pathBeforeRestore.Value -split ';') | Where-Object { $_ -and (@($userPath.Value -split ';') -notcontains $_) }).Count
+Write-RawUserPath $userPath.Value $userPath.Kind
+$pathAfter = Read-RawUserPath
+$ok = ("$($pathAfter.Value)" -ceq "$($userPath.Value)") -and ("$($pathAfter.Kind)" -eq "$($userPath.Kind)") -and `
+      (@(@($pathAfter.Value -split ';') | Where-Object { $_ -match '\\recued-ps1-test\\[^\\]+\\?$' }).Count -eq 0)
+Report 'user-path-left-as-found' $ok "stale_dropped=$($staleEntries.Count) added_by_arms=$addedEntries restored_kind=$($pathAfter.Kind)"
 Write-Host 'ARMS-DONE'

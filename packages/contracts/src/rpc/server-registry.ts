@@ -2418,14 +2418,6 @@ export type ServerRpcRegistry = {
    *  and never route through this method. */
   'runtime.testTrigger': RpcMethodSpec<TriggerTestRequest, TriggerTestResponse>;
 
-  /** D-116 — User-initiated rearm of an auto-disabled reactive recipe.
-   *  Zeros the circuit-breaker counter on the scheduler and mints a
-   *  fresh `process_id` so the next tick fires cleanly. Extension UI
-   *  buttons forward here when the disabled recipe runs on the paired
-   *  server; extension-local recipes call the in-process scheduler
-   *  directly without pair-rpc. */
-  'runtime.resetCircuit': RpcMethodSpec<{ recipe_id: string }, { ok: true; process_id: string }>;
-
   /** D-119 Phase 5 — list installed recipes on the server. Backs the
    *  server-scope sidebar (`recipe.list`). Bundled + pair-sync recipes
    *  are returned together; the `source` field lets the UI distinguish
@@ -8079,7 +8071,6 @@ export const SERVER_RPC_METHODS = [
   'pro.current',
   'execute',
   'runtime.testTrigger',
-  'runtime.resetCircuit',
   'shared.write',
   'shared.compare-and-set',
   'shared.read',

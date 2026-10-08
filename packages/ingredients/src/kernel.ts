@@ -890,6 +890,21 @@ export interface KernelDispatchers {
     column_found: boolean;
     columns: readonly string[];
   }>;
+  /** D-315 slice 7 — backs `ics-read`: one stored iCalendar file read into its
+   *  method and events, the owner placed in each. The event shape is
+   *  `IcsEvent` in `@recued/transforms`, which this package does not import;
+   *  `found: false` is a file that is no calendar. */
+  icsRead?: (input: { record_id: string; addresses?: readonly string[] | string }) => Promise<{
+    found: boolean;
+    record_id: string;
+    filename: string | null;
+    method: string;
+    event: object | null;
+    events: readonly object[];
+    event_count: number;
+    truncated: boolean;
+    problems: readonly string[];
+  }>;
   /** D-245 — backs `file-put-ref`: writes a REF's bytes into a record the RECIPE
    *  named, server-side. The bytes never enter an op-step value, which is what
    *  separates "a file I own at a name I chose" from a base64 round trip. */
@@ -1066,12 +1081,15 @@ export interface KernelDispatchers {
      *  (`collection_slug`). */
     slug?: string;
     calendar_id?: string;
+    /** D-315 slice 7 — every row of one iCalendar UID. */
+    ical_uid?: string;
     since?: number;
     until?: number;
     status?: 'confirmed' | 'cancelled' | 'tentative';
     limit?: number;
   }) => Promise<{
-    records: Array<KernelCalendarHotFields & { collection_slug?: string }>;
+    /** Each row's `source_id` is the id the calendar write ops take. */
+    records: Array<KernelCalendarHotFields & { collection_slug?: string; source_id?: string }>;
     source_freshness?: CollectionSourceFreshness;
   }>;
 
@@ -1881,6 +1899,8 @@ export interface KernelDispatchers {
    *  row's fact. Both or neither; duration is derived, never sent. */
   bookingCreate?: (input: {
     title: string;
+    /** Create-or-reuse one Recued-local booking under this key (`taskCreate`'s contract). */
+    idempotency_key?: string;
     lifecycle_state?: BookingLifecycleState;
     slot_start_at?: number;
     slot_end_at?: number;
@@ -2673,6 +2693,26 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           ...(typeof input.ignore_case === 'boolean' ? { ignore_case: input.ignore_case } : {}),
           ...(typeof input.delimiter === 'string' ? { delimiter: input.delimiter } : {}),
           ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+        });
+      }
+      case 'ics-read': {
+        if (!dispatchers.icsRead) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'ics-read unavailable — no paired server or file reader',
+            { slug },
+          );
+        }
+        const input = call.input as { record_id?: unknown; addresses?: unknown };
+        if (typeof input.record_id !== 'string' || input.record_id.trim().length === 0) {
+          throw new IngredientError('BAD_INPUT', "ics-read: 'record_id' is required", { slug });
+        }
+        const addresses = Array.isArray(input.addresses)
+          ? input.addresses.filter((a): a is string => typeof a === 'string')
+          : typeof input.addresses === 'string' ? input.addresses : undefined;
+        return dispatchers.icsRead({
+          record_id: input.record_id,
+          ...(addresses !== undefined ? { addresses } : {}),
         });
       }
       case 'file-put-ref': {

@@ -8,6 +8,7 @@
  *    recued-server.log   — stdout + stderr
  */
 
+import { lastStartErrorLines, readLastStartError } from './cli/last-start-error.js';
 import { spawn } from 'node:child_process';
 import { createServer as netCreateServer } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
@@ -432,6 +433,12 @@ export const daemonStatus = async (
     } else {
       console.log('Status: stopped');
     }
+    // 🔑 SAY WHY, when a start failed. An autostart service has no terminal, so
+    // its error went nowhere an owner looks — a passphrase-sealed key file whose
+    // service lacks RECUED_IDENTITY_PASSPHRASE just read "stopped" here
+    // (`cli/last-start-error.ts`). Cleared by the next start that listens.
+    const lastStart = readLastStartError(opts.dbPath);
+    if (lastStart) for (const line of lastStartErrorLines(lastStart, Date.now())) console.log(line);
     if (autoDisabledBlock) console.log(autoDisabledBlock);
     return;
   }

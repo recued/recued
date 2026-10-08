@@ -28,6 +28,8 @@
  *
  *  Spec: D-169 § N.5 #4 / I-11 / I-12 / TR-9. */
 
+import { WRITE_STAYS_IN_RECUED_CLAUSE } from '@recued/contracts';
+
 import { formatClientDateTime } from '../date-time.js';
 
 /** One answer choice — mirrors the D-158 `AskOption` ({ id, label }) and
@@ -65,7 +67,8 @@ export interface AskCardModel {
    *  ⛔⛔ THE CARD HAS ALWAYS SHOWN VALUES — BY REGEX OVER ITS OWN PROSE.
    *  `projectGeneratedApprovalAsk(model.text)` parses the rendered sentence,
    *  keeps at most THREE fields chosen from a hardcoded key list
-   *  (`to · subject · title · body · top_tier_kind`), and buries the rest behind
+   *  (`to · subject · title · statement · summary · event.summary · body ·
+   *  top_tier_kind`), and buries the rest behind
    *  "The technical bits". So an operation whose decisive field is not on that
    *  list shows none of it in the summary, and every value is whatever the prose
    *  happened to say rather than what the held op currently holds.
@@ -220,7 +223,33 @@ interface ProjectedApprovalAsk {
   origin: string | null;
   fields: ReadonlyArray<{ key: string; value: string }>;
   highlights: ReadonlyArray<{ key: string; value: string }>;
+  /** What the action changes, in the composer's words — see
+   *  {@link askConsequence}. Null ⇒ the card states no consequence. */
+  consequence: string | null;
 }
+
+/** The composer's "why it was held" clause — line 2 of a generated ask
+ *  (`buildPreflightAsk`): *"Write actions change your data in Recued, so
+ *  Recued held it for you."* → *"Write actions change your data in Recued."*
+ *
+ *  ⛔ THE CARD USED TO HARDCODE "This action changes data outside Recued." on
+ *  every projected ask — a second derivation of a fact the composer already
+ *  states, and a false one for a booking, a commitment or an event on the local
+ *  calendar, none of which leave the server (found on a live drive,
+ *  2026-10-07). It was wrong for `destructive` too, which removes data rather
+ *  than changing it elsewhere. The card now repeats the composer.
+ *
+ *  ⚠ LINE 2 ONLY, and only under a generated opening. `Reason:` is interpolated
+ *  into the body raw and lands later, so scanning for the pattern anywhere
+ *  would let a reason supply the sentence the owner reads as Recued's. */
+const askConsequence = (text: string): string | null => {
+  const lines = text.split(/\r?\n/);
+  if (!/^(?:Recipe .+ wants to run |An AI agent wants to run )/.test(lines[0]?.trim() ?? '')) {
+    return null;
+  }
+  const held = (lines[1] ?? '').trim().match(/^(.+), so Recued held (?:it|them) for you\.$/);
+  return held === null ? null : `${held[1]!}.`;
+};
 
 /** The notification block's generated approval prose has a stable first line
  *  followed by an indented key/value payload. Project it conservatively; an
@@ -298,7 +327,10 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
 
   const fieldByKey = new Map(fields.map((field) => [field.key, field.value]));
   const highlights: Array<{ key: string; value: string }> = [];
-  for (const key of ['to', 'subject', 'title', 'body', 'top_tier_kind']) {
+  // `statement` names a commitment and `event.summary` a calendar event: without
+  // them those cards showed only the action, their subject hidden in the
+  // technical bits. (Server-resolved rows replace this list when they resolve.)
+  for (const key of ['to', 'subject', 'title', 'statement', 'summary', 'event.summary', 'body', 'top_tier_kind']) {
     const value = fieldByKey.get(key);
     if (value !== undefined && value !== '' && value !== '(null)') {
       highlights.push({ key, value });
@@ -315,6 +347,7 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
     origin,
     fields,
     highlights,
+    consequence: askConsequence(text),
   };
 };
 
@@ -391,10 +424,17 @@ export const renderAskCard = (
     body.textContent = model.text;
     card.appendChild(body);
   } else {
-    const consequence = doc.createElement('p');
-    consequence.className = 'rx-ask-card-consequence';
-    consequence.textContent = 'This action changes data outside Recued.';
-    card.appendChild(consequence);
+    if (projected.consequence !== null) {
+      const consequence = doc.createElement('p');
+      // The warning colour is for a consequence that warns. A write that stays
+      // in Recued is still held, but painting its sentence red says the
+      // opposite of what it says in words.
+      consequence.className = projected.consequence === `${WRITE_STAYS_IN_RECUED_CLAUSE}.`
+        ? 'rx-ask-card-consequence rx-ask-card-consequence--local'
+        : 'rx-ask-card-consequence';
+      consequence.textContent = projected.consequence;
+      card.appendChild(consequence);
+    }
 
     const summary = doc.createElement('dl');
     summary.className = 'rx-ask-card-summary';
@@ -580,7 +620,12 @@ export const renderAskCard = (
   confirmation.className = 'rx-ask-card-confirm';
   confirmation.setAttribute(ASK_CARD_CONFIRM_ATTR, model.ask_id);
   confirmation.setAttribute('role', 'status');
-  confirmation.textContent = 'Say yes to this. It may change things outside Recued.';
+  // The composer's own clause when the ask carries one; the hedge only when it
+  // does not (a custom ask, or one composed with no tier).
+  const consequenceText = askConsequence(model.text);
+  confirmation.textContent = consequenceText !== null
+    ? `Say yes to this. ${consequenceText}`
+    : 'Say yes to this. It may change things outside Recued.';
   confirmation.hidden = true;
 
   const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
@@ -1372,6 +1417,9 @@ export const ASK_CARD_STYLES = `
   line-height: 1.4;
   color: var(--danger);
   font-weight: 600;
+}
+.rx-ask-card-consequence--local {
+  color: var(--fg);
 }
 .rx-ask-card-summary,
 .rx-ask-card-details dl {

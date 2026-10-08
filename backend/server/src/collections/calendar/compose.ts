@@ -183,6 +183,10 @@ export interface CalendarAdapterBundle {
   /** Test-friendly HTTP fetcher hook. */
   fetcher?: import('../mail/oauth.js').HttpFetcher;
   now?: () => number;
+  /** The owner's IANA zone, read per call — `calendar-list` reads windows on
+   *  their clock. Absent (a harness): an all-day event is met at its stored
+   *  UTC midnight. */
+  ownerTimeZone?: () => string;
   /** Vault-lock predicate — when it returns false (server vault LOCKED), a live
    *  collection's poll loop is deferred (`sync.start()` skipped) so no provider
    *  fetch happens while sealed. Mirrors the mail stack; `resumeSync()` starts
@@ -356,6 +360,7 @@ export const composeCalendarStack = (
   const dispatchDeps: CalendarDispatcherDeps = {
     instances,
     getCollection: (slug) => live.get(slug),
+    ...(bundle.ownerTimeZone ? { ownerTimeZone: bundle.ownerTimeZone } : {}),
   };
 
   // Kernel slots type events as `Record<string, unknown>` (the loose

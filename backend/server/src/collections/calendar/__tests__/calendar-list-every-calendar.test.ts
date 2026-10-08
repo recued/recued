@@ -46,9 +46,14 @@ const deps = (calendars: Record<string, { rows: CalendarRecordHotFields[]; healt
       if (!calendar) return undefined;
       return {
         table: {
+          // The filters a windowed read varies: timed and all-day are asked
+          // for apart (`listOnOwnerClock`).
           list: (query: CalendarListQuery) => {
             queries.push({ slug, query });
-            return calendar.rows.slice(0, query.limit ?? 100);
+            return calendar.rows
+              .filter((r) => query.is_all_day === undefined || r.is_all_day === query.is_all_day)
+              .filter((r) => query.start_since === undefined || r.start_at >= query.start_since)
+              .slice(0, query.limit ?? 100);
           },
         },
         health: () => calendar.health,
@@ -70,8 +75,10 @@ describe('calendar-list naming no calendar', () => {
         ['Standup', 'work'], ['Dentist', 'local'], ['Review', 'work'],
       ]);
     }
-    // Each calendar is asked with the same filters.
-    expect(queries[0]!.query).toEqual({ start_since: NOW, status: 'confirmed' });
+    // Each calendar is asked with the same filters: its timed events from
+    // `since`, its all-day events from the first day that begins after it.
+    expect(queries[0]!.query).toEqual({ start_since: NOW, status: 'confirmed', is_all_day: false });
+    expect(queries[1]!.query).toEqual({ start_since: Math.ceil(NOW / 86_400_000) * 86_400_000, status: 'confirmed', is_all_day: true });
   });
 
   it('cuts the merged rows to the limit, after ordering them', async () => {

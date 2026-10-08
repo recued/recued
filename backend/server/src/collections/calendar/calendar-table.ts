@@ -191,6 +191,10 @@ export interface CalendarListQuery {
   modified_since?: number;
   /** Filter to a specific calendar on the account. */
   calendar_id?: string;
+  /** D-315 slice 7 — every row of one iCalendar UID: a one-off event, or each
+   *  stored occurrence of a series. How a recipe finds the event an emailed
+   *  invite is about, wherever its time has moved. */
+  ical_uid?: string;
   /** Filter on event status. */
   status?: CanonicalEvent['status'];
   /** `'start_at'` (ascending) is the natural order for look-aheads;
@@ -200,6 +204,11 @@ export interface CalendarListQuery {
   direction?: 'asc' | 'desc';
   limit?: number;
 }
+
+/** A `list` row: the hot fields, and the provider id the write ops take.
+ *  ⚠ NOT added to `CalendarRecordHotFields`, which is also what an event's
+ *  `prev` carries: `source_id` is the row's address, not one of its fields. */
+export type CalendarListRow = CalendarRecordHotFields & { readonly source_id: string };
 
 export interface CalendarSearchQuery {
   /** Raw FTS5 MATCH expression. Callers sanitize user input. */
@@ -239,14 +248,19 @@ export interface CalendarCollectionTable {
   stat(source_id: string): CalendarRecordStat;
   /** Filtered hot-field listing. Returns hot fields only — full
    *  payload isn't materialized, so this is cheap for watcher
-   *  queries. */
-  list(query: CalendarListQuery): CalendarRecordHotFields[];
+   *  queries — plus each row's `source_id`, the id every write op
+   *  (`calendar-update` / `-delete` / `-rsvp`) takes. */
+  list(query: CalendarListQuery): CalendarListRow[];
   /** Same filter shape as `list`, but returns full row snapshots
    *  (current + prior payloads + inline body + etag), so a reader gets
    *  `prior` without a second round-trip per event. */
   listSnapshots(query: CalendarListQuery): CalendarRowSnapshot[];
   /** FTS5 search over summary + description + location. */
   search(query: CalendarSearchQuery): CalendarSearchMatch[];
+  /** All-day rows whose times are not days: a start or end off a UTC
+   *  midnight, or an end not after the start (`calendar-days.ts`). Rows
+   *  written before every write was held to the rule (2026-10-07). */
+  listAllDayOffDays(): CalendarRowSnapshot[];
 
   /** Metadata-only exact participant aggregate. Matches any supplied canonical
    * or merged email as organizer/attendee, excludes cancelled events, and
@@ -761,6 +775,10 @@ export const createCalendarTable = (
       where.push('calendar_id = ?');
       params.push(query.calendar_id);
     }
+    if (query.ical_uid !== undefined) {
+      where.push('ical_uid = ?');
+      params.push(query.ical_uid);
+    }
     if (query.status !== undefined) {
       where.push('status = ?');
       params.push(query.status);
@@ -782,15 +800,22 @@ export const createCalendarTable = (
     return { sql, params };
   };
 
-  const list = (query: CalendarListQuery): CalendarRecordHotFields[] => {
+  const list = (query: CalendarListQuery): CalendarListRow[] => {
     const { sql, params } = buildListQuery(query);
     const rows = db.prepare(sql).all(...params) as Row[];
-    return rows.map(rowHotFields);
+    return rows.map((row) => ({ ...rowHotFields(row), source_id: row.source_id }));
   };
 
   const listSnapshots = (query: CalendarListQuery): CalendarRowSnapshot[] => {
     const { sql, params } = buildListQuery(query);
     const rows = db.prepare(sql).all(...params) as Row[];
+    return rows.map(rowToSnapshot);
+  };
+
+  const listAllDayOffDays = (): CalendarRowSnapshot[] => {
+    const rows = db.prepare(
+      `SELECT * FROM ${tableName} WHERE is_all_day = 1 AND (start_at % 86400000 != 0 OR end_at % 86400000 != 0 OR end_at <= start_at)`,
+    ).all() as Row[];
     return rows.map(rowToSnapshot);
   };
 
@@ -999,6 +1024,7 @@ export const createCalendarTable = (
     referencedBlobHashes,
     eventCount,
     upcomingCount,
+    listAllDayOffDays,
     overlapCount,
     pruneOlderThan,
     dropSchema,

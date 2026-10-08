@@ -126,7 +126,7 @@ export const map: TransformFn = (p, ctx) => {
     });
   }
 
-  // Apply mode: { array, apply, field, ...params, output_field }
+  // Apply mode: { array, apply, field?, ...params, output_field }
   if (p.apply) {
     // An unknown apply target is a silent-corruption hazard, not a degrade
     // case: returning the array unchanged ships rows whose output_field is
@@ -167,7 +167,10 @@ export const map: TransformFn = (p, ctx) => {
     const outputField = p.output_field as string;
     const { array: _, apply: __, output_field: ___, ...subParams } = p;
     return arr.map(item => {
-      const input = { ...subParams, [valueParam]: getField(item, p.field as string) };
+      // No `field`: the target gets the whole row — what one that reads a
+      // record rather than a value needs (`event_when`).
+      const value = p.field === undefined ? item : getField(item, p.field as string);
+      const input = { ...subParams, [valueParam]: value };
       const result = fn(input as Record<string, unknown>, ctx);
       const out = { ...(item as Record<string, unknown>) };
       setSafe(out, outputField, result);

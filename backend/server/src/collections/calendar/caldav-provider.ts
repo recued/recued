@@ -49,11 +49,46 @@ import {
   CalendarAdapterError,
   type CanonicalEvent,
 } from '@recued/contracts';
+import {
+  icsClock,
+  readIcsDateTime,
+  readIcsDuration,
+  unescapeIcsText,
+  type IcsClock,
+  type IcsContentLine,
+} from '@recued/transforms';
 import { makeBoundedOriginHttpFetcher } from '../../bounded-origin-http-fetcher.js';
 
+import {
+  addComponentProperties,
+  cloneComponentLines,
+  componentProps,
+  componentsNamed,
+  createIcsEditor,
+  escapeIcsText,
+  firstProp,
+  foldIcsLine,
+  icsDateTimeValue,
+  icsDateValue,
+  icsLine,
+  icsTimeLine,
+  icsTimeLineFromWall,
+  instantInForm,
+  isUtcZoneName,
+  parseIcsDoc,
+  propParam,
+  setComponentProperty,
+  vtimezoneLines,
+  wallInForm,
+  type IcsDoc,
+  type IcsDocComponent,
+  type IcsEditor,
+  type IcsTimeForm,
+} from './caldav-ics.js';
 import type {
   CalendarProvider,
   CalendarProviderHealth,
+  CalendarSeriesSnapshot,
   CalendarSyncCallback,
   CalendarSyncEvent,
   CreateEventInput,
@@ -123,12 +158,15 @@ export interface CreateCalDavProviderOptions {
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
+  /** The owner's IANA zone, read per use. A time naming no zone (a floating
+   *  one) is read in the calendar's own zone, else this one; absent, UTC. */
+  timeZone?: () => string | undefined;
 }
 
-/** Persistent per-event ETag cache. Keyed by `(calendar_id, href)` ↦
- *  etag. Same shape as the OAuth account store so tests can share the
- *  in-memory double; production wires this to a dedicated sqlite
- *  backing table. */
+/** Persistent per-event ETag cache. Keyed by `(calendar_id, href)` ↦ the
+ *  resource's ETag and UID (`{"v":2,…}`; a bare ETag before 2026-10-07).
+ *  Same shape as the OAuth account store so tests can share the in-memory
+ *  double; production wires this to the server's account store. */
 export interface CalDavEtagStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -263,9 +301,22 @@ export const parseCalendarQuery = (xml: string): CalDavReportEntry[] => {
 };
 
 // ────────────────────────────────────────────────────────────────
-// iCalendar parser (narrow — VEVENT only; ignores VTODO, VJOURNAL,
-// VTIMEZONE; unescapes \\n, \\,, \\;)
+// iCalendar — an event resource read as its zones say
 // ────────────────────────────────────────────────────────────────
+//
+// ⛔⛔ A TIME IS READ IN ITS OWN ZONE (2026-10-07). This adapter read
+// `DTSTART;TZID=America/Los_Angeles:20261017T100000` as 10:00 UTC — 03:00 in
+// Los Angeles — so every timed event Apple Calendar, Fastmail or Nextcloud
+// wrote with its zone sat hours off in Recued, by the zone's offset. A time
+// is now read the way invites are (`@recued/transforms`' `icsClock`): the
+// object's own `VTIMEZONE` rules, then the IANA name, then — for a time
+// naming no zone — the calendar's `X-WR-TIMEZONE`, else the owner's zone.
+//
+// A series is counted on its own clock: a weekly 10:00 stays 10:00 across a
+// change of clocks. An occurrence's id keeps the wall clock it starts at in
+// the series' zone (the digits read as UTC), which is the number this adapter
+// always wrote there — so the ids of stored occurrences did not change when
+// their times were corrected.
 
 export interface ParsedAttendee {
   email: string;
@@ -279,17 +330,22 @@ export interface ParsedVEvent {
   summary?: string;
   description?: string;
   location?: string;
-  /** Unix-ms UTC of DTSTART. All-day → midnight UTC of the date. */
+  /** Unix-ms UTC of DTSTART, read in its zone. All-day → midnight UTC of the
+   *  date. */
   dtstart: number;
   /** Unix-ms UTC of DTEND (or DTSTART + DURATION). */
   dtend: number;
-  /** IANA timezone if DTSTART;TZID was set; "UTC" for Z-suffixed
-   *  datetimes; "" when the VEVENT is all-day without a TZID. */
+  /** The `TZID` as written; `"UTC"` for a `Z` time; for a floating time, the
+   *  zone it was read in. An all-day event keeps a `TZID` it carries, else
+   *  `"UTC"`. */
   timezone: string;
   isAllDay: boolean;
   status: 'confirmed' | 'cancelled' | 'tentative';
   rrule?: string;
+  /** Every EXDATE value — a line may hold several — as an instant (all-day:
+   *  midnight UTC of the date). */
   exdates: number[];
+  /** An override's RECURRENCE-ID, as an instant. */
   recurrenceId?: number;
   organizer?: { email: string; displayName?: string };
   attendees?: ParsedAttendee[];
@@ -298,252 +354,230 @@ export interface ParsedVEvent {
   sequence: number;
 }
 
-const ICAL_LINE_PATTERN = /^([A-Z][A-Z0-9-]*)((?:;[A-Z][A-Z0-9-]*=[^:;]*)*):(.*)$/i;
+/** One VEVENT as read, with what writing it back needs. */
+export interface CalDavVEvent extends ParsedVEvent {
+  readonly component: IcsDocComponent;
+  /** How its DTSTART is written: every time written for it takes this form,
+   *  so an edit keeps the zone the event's own app gave it. */
+  readonly startForm: IcsTimeForm;
+  /** DTSTART's wall clock in that form (`dtstart` for UTC and all-day). */
+  readonly startWall: number;
+  readonly exdateValues: ReadonlyArray<{ readonly at: number; readonly dateOnly: boolean }>;
+  /** An override's RECURRENCE-ID, as written: a day, and its wall clock. */
+  readonly recurrenceDateOnly: boolean;
+  readonly recurrenceWall?: number;
+}
 
-const unescapeIcal = (s: string): string =>
-  s
-    .replace(/\\n/gi, '\n')
-    .replace(/\\,/g, ',')
-    .replace(/\\;/g, ';')
-    .replace(/\\\\/g, '\\');
+/** One calendar object resource: its file, the clock its times are read on,
+ *  the series (or single event), and the occurrences it overrides. */
+export interface CalDavObject {
+  readonly doc: IcsDoc;
+  readonly clock: IcsClock;
+  readonly uid: string;
+  /** The VEVENT without a RECURRENCE-ID; `null` when the file holds only
+   *  occurrences of a series kept elsewhere (an invite to one of them). */
+  readonly master: CalDavVEvent | null;
+  readonly overrides: readonly CalDavVEvent[];
+}
 
-const unfoldIcalLines = (raw: string): string[] => {
-  // RFC 5545 line folding: a line starting with a space or tab is a
-  // continuation of the previous line.
-  const lines = raw.split(/\r?\n/);
-  const out: string[] = [];
-  for (const line of lines) {
-    if ((line.startsWith(' ') || line.startsWith('\t')) && out.length > 0) {
-      out[out.length - 1] += line.slice(1);
-    } else {
-      out.push(line);
-    }
-  }
-  return out;
+export interface CalDavReadOptions {
+  /** The owner's IANA zone, for a time naming no zone. */
+  readonly timeZone?: string;
+  readonly warn?: (message: string) => void;
+}
+
+/** A UID this adapter can keep as given (D-315 slice 7): it names the event's
+ *  `.ics` file and sits in a `source_id` split on `:`, so no `:`, `/`, `%` or
+ *  space. Google's, Outlook's, Apple's and the booking services' all fit. */
+const CALDAV_SAFE_UID = /^[A-Za-z0-9][A-Za-z0-9@._+-]{0,254}$/;
+
+const DAY_MS = 86_400_000;
+
+/** The form a time in this TZID is written in. */
+const zoneForm = (tzid: string | undefined, clock: IcsClock, warn?: (m: string) => void): IcsTimeForm => {
+  const floating = clock.zone(undefined, false);
+  if (tzid === undefined || tzid.length === 0) return { kind: 'floating', zone: floating };
+  const zone = clock.zone(tzid, false);
+  if (zone.basis !== 'unresolved') return { kind: 'zoned', tzid, zone };
+  // ⚠ A zone nothing reads: no rules in the file and no name the platform
+  // knows. The invite reader leaves such a time unread; a calendar mirror
+  // must hold every event, so it is read — and written back — on the
+  // calendar's, else the owner's clock, under the TZID it came with.
+  warn?.(`caldav: time zone "${tzid}" is not one this server can read; its times are read in the owner's zone`);
+  return { kind: 'zoned', tzid, zone: { ...floating, name: tzid } };
 };
 
-const parseIcalParams = (segment: string): Record<string, string> => {
-  const out: Record<string, string> = {};
-  if (!segment) return out;
-  for (const part of segment.split(';')) {
-    if (!part) continue;
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    out[part.slice(0, eq).toUpperCase()] = part.slice(eq + 1);
-  }
-  return out;
-};
+interface ReadTime {
+  readonly at: number;
+  readonly wall: number;
+  readonly dateOnly: boolean;
+  readonly form: IcsTimeForm;
+}
 
-const parseIcalDateTime = (
+const readTime = (
+  prop: IcsContentLine,
   value: string,
-  params: Record<string, string>,
-): { at: number; timezone: string; allDay: boolean } => {
-  if (/^\d{8}$/.test(value)) {
-    // YYYYMMDD (all-day)
-    const y = Number(value.slice(0, 4));
-    const m = Number(value.slice(4, 6));
-    const d = Number(value.slice(6, 8));
-    return {
-      at: Date.UTC(y, m - 1, d),
-      timezone: params.TZID ?? 'UTC',
-      allDay: true,
-    };
+  clock: IcsClock,
+  warn?: (m: string) => void,
+): ReadTime | null => {
+  const raw = readIcsDateTime(value, propParam(prop, 'VALUE'));
+  if (raw === null) return null;
+  if (raw.dateOnly) return { at: raw.wall, wall: raw.wall, dateOnly: true, form: { kind: 'date' } };
+  if (raw.utc) return { at: raw.wall, wall: raw.wall, dateOnly: false, form: { kind: 'utc' } };
+  const form = zoneForm(propParam(prop, 'TZID')?.trim(), clock, warn);
+  const at = instantInForm(raw.wall, form);
+  return at === null ? null : { at, wall: raw.wall, dateOnly: false, form };
+};
+
+/** A stamp (CREATED, LAST-MODIFIED): UTC by the RFC; a floating one is read as
+ *  UTC too. */
+const readStamp = (prop: IcsContentLine | undefined): number | undefined => {
+  if (prop === undefined) return undefined;
+  const raw = readIcsDateTime(prop.value);
+  return raw === null ? undefined : raw.wall;
+};
+
+const mailtoOf = (value: string): string | null => {
+  const at = value.toLowerCase().indexOf('mailto:');
+  if (at < 0) return null;
+  const email = value.slice(at + 'mailto:'.length).trim();
+  return email.length > 0 ? email : null;
+};
+
+const partstatOf = (prop: IcsContentLine): ParsedAttendee['responseStatus'] => {
+  const part = (propParam(prop, 'PARTSTAT') ?? '').toUpperCase();
+  return part === 'ACCEPTED'
+    ? 'accepted'
+    : part === 'DECLINED'
+      ? 'declined'
+      : part === 'TENTATIVE'
+        ? 'tentative'
+        : 'needs_action';
+};
+
+const attendeeOf = (prop: IcsContentLine): ParsedAttendee | null => {
+  const email = mailtoOf(prop.value);
+  if (email === null) return null;
+  const cn = propParam(prop, 'CN');
+  return { email, ...(cn ? { displayName: cn } : {}), responseStatus: partstatOf(prop) };
+};
+
+/** Read one VEVENT — its own properties only, so a reminder's DESCRIPTION or
+ *  ATTENDEE stays the reminder's. `null` without a UID or a readable start. */
+const readVEvent = (
+  doc: IcsDoc,
+  component: IcsDocComponent,
+  clock: IcsClock,
+  warn?: (m: string) => void,
+): CalDavVEvent | null => {
+  const one = (name: string): IcsContentLine | undefined => firstProp(doc, component, name);
+  const uid = one('UID')?.value.trim();
+  const dtstartProp = one('DTSTART');
+  if (!uid || dtstartProp === undefined) return null;
+  const start = readTime(dtstartProp, dtstartProp.value, clock, warn);
+  if (start === null) return null;
+  const isAllDay = start.dateOnly;
+
+  let dtend = isAllDay ? start.at + DAY_MS : start.at;
+  const dtendProp = one('DTEND');
+  const durationProp = one('DURATION');
+  if (dtendProp !== undefined) {
+    const end = readTime(dtendProp, dtendProp.value, clock, warn);
+    if (end !== null && end.dateOnly === isAllDay) dtend = end.at;
+  } else if (durationProp !== undefined) {
+    const duration = readIcsDuration(durationProp.value);
+    if (duration !== null) {
+      // Days on the calendar, then the exact time, on the start's own clock.
+      const dayShifted = duration.days === 0
+        ? start.at
+        : instantInForm(start.wall + duration.days * DAY_MS, start.form);
+      dtend = (dayShifted ?? start.at + duration.days * DAY_MS) + duration.ms;
+    }
   }
-  // Accept "YYYYMMDDTHHMMSS" or "YYYYMMDDTHHMMSSZ".
-  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/i.exec(value);
-  if (!m) return { at: 0, timezone: params.TZID ?? 'UTC', allDay: false };
-  const [, yy, mm, dd, hh, mi, ss, z] = m;
-  if (z) {
-    return {
-      at: Date.UTC(
-        Number(yy),
-        Number(mm) - 1,
-        Number(dd),
-        Number(hh),
-        Number(mi),
-        Number(ss),
-      ),
-      timezone: 'UTC',
-      allDay: false,
-    };
+  if (dtend < start.at) dtend = start.at;
+
+  const exdateValues: Array<{ at: number; dateOnly: boolean }> = [];
+  for (const { prop } of componentProps(doc, component, 'EXDATE')) {
+    for (const item of prop.value.split(',')) {
+      const t = readTime(prop, item.trim(), clock, warn);
+      if (t !== null) exdateValues.push({ at: t.at, dateOnly: t.dateOnly });
+    }
   }
-  // Floating / TZID-anchored datetimes — we don't resolve to UTC
-  // because full IANA offset tables aren't shipped here. Treat the
-  // datetime as UTC for storage and surface the TZID so display
-  // layers can re-project. Good enough for meetings where the raw
-  // offset within 24h is what matters.
+  const ridProp = one('RECURRENCE-ID');
+  const rid = ridProp === undefined ? null : readTime(ridProp, ridProp.value, clock, warn);
+
+  const statusValue = (one('STATUS')?.value ?? '').trim().toUpperCase();
+  const status: ParsedVEvent['status'] =
+    statusValue === 'CANCELLED' ? 'cancelled' : statusValue === 'TENTATIVE' ? 'tentative' : 'confirmed';
+  const organizerProp = one('ORGANIZER');
+  const organizer = organizerProp === undefined ? null : attendeeOf(organizerProp);
+  const attendees = componentProps(doc, component, 'ATTENDEE')
+    .map(({ prop }) => attendeeOf(prop))
+    .filter((a): a is ParsedAttendee => a !== null);
+  const text = (name: string): string | undefined => {
+    const prop = one(name);
+    return prop === undefined ? undefined : unescapeIcsText(prop.value);
+  };
+  const createdAt = readStamp(one('CREATED'));
+  const lastModifiedAt = readStamp(one('LAST-MODIFIED'));
+  const sequence = Number((one('SEQUENCE')?.value ?? '0').trim());
+  const timezone = isAllDay
+    ? (propParam(dtstartProp, 'TZID')?.trim() || 'UTC')
+    : start.form.kind === 'utc'
+      ? 'UTC'
+      : start.form.kind === 'zoned'
+        ? start.form.tzid
+        : start.form.kind === 'floating'
+          ? start.form.zone.name
+          : 'UTC';
   return {
-    at: Date.UTC(
-      Number(yy),
-      Number(mm) - 1,
-      Number(dd),
-      Number(hh),
-      Number(mi),
-      Number(ss),
-    ),
-    timezone: params.TZID ?? 'UTC',
-    allDay: false,
+    uid,
+    summary: text('SUMMARY'),
+    description: text('DESCRIPTION'),
+    location: text('LOCATION'),
+    dtstart: start.at,
+    dtend,
+    timezone,
+    isAllDay,
+    status,
+    rrule: one('RRULE')?.value.trim() || undefined,
+    exdates: exdateValues.map((e) => e.at),
+    recurrenceId: rid?.at,
+    organizer: organizer === null
+      ? undefined
+      : { email: organizer.email, ...(organizer.displayName ? { displayName: organizer.displayName } : {}) },
+    attendees: attendees.length > 0 ? attendees : undefined,
+    createdAt: createdAt ?? start.at,
+    lastModifiedAt: lastModifiedAt ?? createdAt ?? start.at,
+    sequence: Number.isFinite(sequence) && sequence >= 0 ? sequence : 0,
+    component,
+    startForm: start.form,
+    startWall: start.wall,
+    exdateValues,
+    recurrenceDateOnly: rid?.dateOnly ?? false,
+    ...(rid !== null ? { recurrenceWall: rid.wall } : {}),
   };
 };
 
-const parseAttendeeLine = (
-  value: string,
-  params: Record<string, string>,
-): ParsedAttendee | null => {
-  const lower = value.toLowerCase();
-  const mailtoIdx = lower.indexOf('mailto:');
-  if (mailtoIdx < 0) return null;
-  const email = value.slice(mailtoIdx + 'mailto:'.length).trim();
-  if (!email) return null;
-  const part = (params.PARTSTAT ?? '').toUpperCase();
-  const responseStatus: ParsedAttendee['responseStatus'] =
-    part === 'ACCEPTED'
-      ? 'accepted'
-      : part === 'DECLINED'
-        ? 'declined'
-        : part === 'TENTATIVE'
-          ? 'tentative'
-          : 'needs_action';
-  const cn = params.CN ? decodeIcalCn(params.CN) : undefined;
-  return {
-    email,
-    ...(cn ? { displayName: cn } : {}),
-    responseStatus,
-  };
+/** Read a calendar object resource: the series (or single event) and the
+ *  occurrences it overrides. `null` when it holds no event this can read. */
+export const readCalDavObject = (raw: string, opts: CalDavReadOptions = {}): CalDavObject | null => {
+  const doc = parseIcsDoc(raw);
+  const clock = icsClock(raw, opts.timeZone !== undefined ? { timeZone: opts.timeZone } : {});
+  const events = componentsNamed(doc, 'VEVENT')
+    .map((component) => readVEvent(doc, component, clock, opts.warn))
+    .filter((e): e is CalDavVEvent => e !== null);
+  if (events.length === 0) return null;
+  const master = events.find((e) => e.recurrenceId === undefined) ?? null;
+  const uid = (master ?? events[0]!).uid;
+  const overrides = events.filter((e) => e.recurrenceId !== undefined && e.uid === uid);
+  return { doc, clock, uid, master, overrides };
 };
 
-const decodeIcalCn = (s: string): string => {
-  const trimmed = s.replace(/^"/, '').replace(/"$/, '');
-  return trimmed;
-};
-
-/** Parse a single VEVENT block. Returns null when the block is
- *  malformed. */
-export const parseVEvent = (raw: string): ParsedVEvent | null => {
-  const lines = unfoldIcalLines(raw);
-  let inside = false;
-  const v: Partial<ParsedVEvent> & {
-    exdates: number[];
-    attendees: ParsedAttendee[];
-  } = {
-    exdates: [],
-    attendees: [],
-    sequence: 0,
-  };
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === 'BEGIN:VEVENT') {
-      inside = true;
-      continue;
-    }
-    if (trimmed === 'END:VEVENT') {
-      inside = false;
-      break;
-    }
-    if (!inside) continue;
-    const m = ICAL_LINE_PATTERN.exec(trimmed);
-    if (!m) continue;
-    const [, rawName, rawParams, rawValue] = m;
-    const name = rawName.toUpperCase();
-    const params = parseIcalParams(rawParams ?? '');
-    const value = rawValue;
-    switch (name) {
-      case 'UID':
-        v.uid = value;
-        break;
-      case 'SUMMARY':
-        v.summary = unescapeIcal(value);
-        break;
-      case 'DESCRIPTION':
-        v.description = unescapeIcal(value);
-        break;
-      case 'LOCATION':
-        v.location = unescapeIcal(value);
-        break;
-      case 'DTSTART': {
-        const parsed = parseIcalDateTime(value, params);
-        v.dtstart = parsed.at;
-        v.timezone = parsed.timezone;
-        v.isAllDay = parsed.allDay;
-        break;
-      }
-      case 'DTEND': {
-        const parsed = parseIcalDateTime(value, params);
-        v.dtend = parsed.at;
-        break;
-      }
-      case 'STATUS': {
-        const s = value.toUpperCase();
-        v.status =
-          s === 'CANCELLED'
-            ? 'cancelled'
-            : s === 'TENTATIVE'
-              ? 'tentative'
-              : 'confirmed';
-        break;
-      }
-      case 'RRULE':
-        v.rrule = value;
-        break;
-      case 'EXDATE': {
-        const parsed = parseIcalDateTime(value, params);
-        v.exdates.push(parsed.at);
-        break;
-      }
-      case 'RECURRENCE-ID': {
-        const parsed = parseIcalDateTime(value, params);
-        v.recurrenceId = parsed.at;
-        break;
-      }
-      case 'ORGANIZER': {
-        const att = parseAttendeeLine(value, params);
-        if (att) {
-          v.organizer = {
-            email: att.email,
-            ...(att.displayName ? { displayName: att.displayName } : {}),
-          };
-        }
-        break;
-      }
-      case 'ATTENDEE': {
-        const att = parseAttendeeLine(value, params);
-        if (att) v.attendees.push(att);
-        break;
-      }
-      case 'CREATED':
-        v.createdAt = parseIcalDateTime(value, params).at;
-        break;
-      case 'LAST-MODIFIED':
-        v.lastModifiedAt = parseIcalDateTime(value, params).at;
-        break;
-      case 'SEQUENCE': {
-        const n = Number(value);
-        if (Number.isFinite(n)) v.sequence = n;
-        break;
-      }
-    }
-  }
-  if (!v.uid || typeof v.dtstart !== 'number') return null;
-  if (typeof v.dtend !== 'number') v.dtend = v.dtstart;
-  return {
-    uid: v.uid,
-    summary: v.summary,
-    description: v.description,
-    location: v.location,
-    dtstart: v.dtstart,
-    dtend: v.dtend,
-    timezone: v.timezone ?? 'UTC',
-    isAllDay: v.isAllDay ?? false,
-    status: v.status ?? 'confirmed',
-    rrule: v.rrule,
-    exdates: v.exdates,
-    recurrenceId: v.recurrenceId,
-    organizer: v.organizer,
-    attendees: v.attendees.length > 0 ? v.attendees : undefined,
-    createdAt: v.createdAt ?? v.dtstart,
-    lastModifiedAt: v.lastModifiedAt ?? v.createdAt ?? v.dtstart,
-    sequence: v.sequence ?? 0,
-  };
+/** The series' VEVENT (or the single event), else the first override. */
+export const parseVEvent = (raw: string, opts: CalDavReadOptions = {}): ParsedVEvent | null => {
+  const object = readCalDavObject(raw, opts);
+  return object === null ? null : (object.master ?? object.overrides[0] ?? null);
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -594,8 +628,10 @@ export const parseRRuleString = (rrule: string): ParsedRRule => {
     kv.COUNT !== undefined ? Math.max(0, Number(kv.COUNT)) : undefined;
   let until: number | undefined;
   if (kv.UNTIL) {
-    const parsed = parseIcalDateTime(kv.UNTIL, {});
-    if (parsed.at > 0) until = parsed.at;
+    // The digits as UTC: a `Z` UNTIL is that instant, and a series counted
+    // on its own clock passes its wall-clock UNTIL to `expandRRule` instead.
+    const parsed = readIcsDateTime(kv.UNTIL);
+    if (parsed !== null && parsed.wall > 0) until = parsed.wall;
   }
   const byday = kv.BYDAY
     ? new Set(
@@ -609,8 +645,11 @@ export const parseRRuleString = (rrule: string): ParsedRRule => {
 };
 
 /** Expand an RRULE against the configured window. Returns sorted
- *  occurrence timestamps in unix-ms UTC. Includes DTSTART only when
- *  it falls within the window.
+ *  occurrence starts on the clock `dtstart` is on — unix-ms UTC for a UTC
+ *  series; for a zoned or floating one, wall clocks (the digits read as UTC),
+ *  which `expandCalDavObject` turns into instants so a weekly 10:00 stays
+ *  10:00 across a change of clocks. Includes DTSTART only when it falls
+ *  within the window.
  *
  *  Supported: FREQ × INTERVAL × {COUNT | UNTIL} × BYDAY (WEEKLY).
  *  Anything else returns only the DTSTART instance; caller should
@@ -625,6 +664,9 @@ export const expandRRule = (
   rrule: string | undefined,
   exdates: number[],
   window: RRuleExpansionWindow,
+  /** The rule's last start on the clock `dtstart` is on — a `Z` UNTIL moved
+   *  onto a zoned series' wall clock. Absent: the rule's UNTIL as written. */
+  bounds: { readonly until?: number } = {},
 ): { instances: number[]; partial: boolean } => {
   const exclude = new Set(exdates);
   if (!rrule) {
@@ -666,7 +708,7 @@ export const expandRRule = (
   // ~27 years of daily occurrences — plenty for meeting-scale
   // calendars with practical expansion windows.
   const HARD_CAP = 10_000;
-  const limitUntil = parsed.until ?? window.windowEnd;
+  const limitUntil = bounds.until ?? parsed.until ?? window.windowEnd;
   const limitCount = parsed.count ?? HARD_CAP;
   let emitted = 0;
   for (let n = 0; emitted < limitCount && n < HARD_CAP; n++) {
@@ -760,46 +802,168 @@ export const newSeriesRRule = (
 };
 
 // ────────────────────────────────────────────────────────────────
-// Canonicalization
+// Occurrences and canonicalization
 // ────────────────────────────────────────────────────────────────
 
-const canonicalFromVEvent = (
-  base: ParsedVEvent,
-  occurrenceAt: number,
-  href: string,
+/** One occurrence: the slot it fills in its series — its key, the wall clock
+ *  it starts at on the series' clock — and the VEVENT that says what it is:
+ *  the series, or the override written for that slot. */
+export interface CalDavOccurrence {
+  readonly key: number;
+  readonly event: CalDavVEvent;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** No zone is more than 14 hours from UTC: a series is expanded this far past
+ *  each end of the window on its own clock, then cut to the window by
+ *  instant. */
+const ZONE_SLACK_MS = 15 * 3_600_000;
+
+const timeOfDay = (wall: number): number => ((wall % DAY_MS) + DAY_MS) % DAY_MS;
+
+/** The key of a time naming one of a series' occurrences (an EXDATE, a
+ *  RECURRENCE-ID): its wall clock on the series' clock. A day names the
+ *  series' occurrence on that day. */
+const occurrenceKey = (series: CalDavVEvent, at: number, dateOnly: boolean): number | null => {
+  if (dateOnly) return series.startForm.kind === 'date' ? at : at + timeOfDay(series.startWall);
+  if (series.startForm.kind === 'date') return Math.floor(at / DAY_MS) * DAY_MS;
+  return wallInForm(at, series.startForm);
+};
+
+const overrideKey = (object: CalDavObject, override: CalDavVEvent): number | null => {
+  if (override.recurrenceId === undefined) return null;
+  if (object.master === null) return override.recurrenceWall ?? null;
+  return occurrenceKey(object.master, override.recurrenceId, override.recurrenceDateOnly);
+};
+
+/** The series' UNTIL on its own clock: a `Z` UNTIL (the RFC's form for a
+ *  zoned series) moved onto the series' wall clock. */
+const untilWallOf = (series: CalDavVEvent): number | undefined => {
+  const until = (series.rrule ?? '')
+    .split(';')
+    .map((p) => p.trim())
+    .find((p) => p.toUpperCase().startsWith('UNTIL='))
+    ?.slice('UNTIL='.length);
+  if (until === undefined) return undefined;
+  const raw = readIcsDateTime(until);
+  if (raw === null) return undefined;
+  if (raw.dateOnly) return series.startForm.kind === 'date' ? raw.wall : raw.wall + DAY_MS - 1000;
+  if (raw.utc) return wallInForm(raw.wall, series.startForm) ?? undefined;
+  return raw.wall;
+};
+
+/** Every occurrence of a calendar object starting inside the window: the
+ *  series counted on its own clock, each override in its slot, its EXDATEs
+ *  left out. `partial` when the rule is one this cannot expand. */
+export const expandCalDavObject = (
+  object: CalDavObject,
+  window: RRuleExpansionWindow,
+): { occurrences: CalDavOccurrence[]; partial: boolean } => {
+  const inWindow = (at: number): boolean => at >= window.windowStart && at <= window.windowEnd;
+  const occurrences: CalDavOccurrence[] = [];
+  const master = object.master;
+  if (master === null) {
+    for (const o of object.overrides) {
+      const key = overrideKey(object, o);
+      if (key !== null && inWindow(o.dtstart)) occurrences.push({ key, event: o, start: o.dtstart, end: o.dtend });
+    }
+    occurrences.sort((a, b) => a.start - b.start);
+    return { occurrences, partial: false };
+  }
+  const excluded = new Set<number>();
+  for (const e of master.exdateValues) {
+    const key = occurrenceKey(master, e.at, e.dateOnly);
+    if (key !== null) excluded.add(key);
+  }
+  const overrides = new Map<number, CalDavVEvent>();
+  for (const o of object.overrides) {
+    const key = overrideKey(object, o);
+    if (key !== null && !overrides.has(key)) overrides.set(key, o);
+  }
+  const until = untilWallOf(master);
+  const { instances, partial } = expandRRule(
+    master.startWall,
+    master.rrule,
+    [],
+    { windowStart: window.windowStart - ZONE_SLACK_MS, windowEnd: window.windowEnd + ZONE_SLACK_MS },
+    until !== undefined ? { until } : {},
+  );
+  const duration = master.dtend - master.dtstart;
+  const placed = new Set<number>();
+  for (const key of instances) {
+    if (excluded.has(key)) continue;
+    const slot = instantInForm(key, master.startForm);
+    const override = overrides.get(key);
+    if (override !== undefined) {
+      placed.add(key);
+      if (inWindow(override.dtstart) || (slot !== null && inWindow(slot))) {
+        occurrences.push({ key, event: override, start: override.dtstart, end: override.dtend });
+      }
+      continue;
+    }
+    if (slot === null || !inWindow(slot)) continue;
+    occurrences.push({ key, event: master, start: slot, end: slot + duration });
+  }
+  // An override whose slot the expansion did not reach: moved in from outside
+  // the window, or of a rule this cannot expand.
+  for (const [key, o] of overrides) {
+    if (placed.has(key) || excluded.has(key) || !inWindow(o.dtstart)) continue;
+    occurrences.push({ key, event: o, start: o.dtstart, end: o.dtend });
+  }
+  occurrences.sort((a, b) => a.start - b.start);
+  return { occurrences, partial };
+};
+
+/** The occurrence a key names — the series' first when `null` — as its
+ *  override, else the series' slot. `null` when the object has none there. */
+const occurrenceOf = (object: CalDavObject, key: number | null): CalDavOccurrence | null => {
+  const master = object.master;
+  if (master === null) {
+    if (key === null) return null;
+    const o = object.overrides.find((x) => overrideKey(object, x) === key);
+    return o === undefined ? null : { key, event: o, start: o.dtstart, end: o.dtend };
+  }
+  const k = key ?? master.startWall;
+  const override = object.overrides.find((x) => overrideKey(object, x) === k);
+  if (override !== undefined) return { key: k, event: override, start: override.dtstart, end: override.dtend };
+  const start = instantInForm(k, master.startForm);
+  return start === null ? null : { key: k, event: master, start, end: start + (master.dtend - master.dtstart) };
+};
+
+const canonicalOf = (
+  object: CalDavObject,
+  occurrence: CalDavOccurrence,
   calendarId: string,
   calendarName?: string,
 ): CanonicalEvent => {
-  const duration = base.dtend - base.dtstart;
-  const endAt = occurrenceAt + duration;
-  const source_id = occurrenceAt === base.dtstart
-    ? `${calendarId}:${base.uid}`
-    : `${calendarId}:${base.uid}:${occurrenceAt}`;
-  const canonical: CanonicalEvent = {
-    source_id,
-    ical_uid: base.uid,
+  const ev = occurrence.event;
+  const seriesId = `${calendarId}:${object.uid}`;
+  const first = object.master !== null && occurrence.key === object.master.startWall;
+  const rrule = object.master?.rrule;
+  return {
+    source_id: first ? seriesId : `${seriesId}:${occurrence.key}`,
+    ical_uid: object.uid,
     calendar_id: calendarId,
     ...(calendarName ? { calendar_name: calendarName } : {}),
-    summary: base.summary ?? '',
-    ...(base.description ? { description: base.description } : {}),
-    ...(base.location ? { location: base.location } : {}),
-    start_at: occurrenceAt,
-    end_at: endAt,
-    timezone: base.timezone,
-    is_all_day: base.isAllDay,
-    ...(base.organizer
+    summary: ev.summary ?? '',
+    ...(ev.description ? { description: ev.description } : {}),
+    ...(ev.location ? { location: ev.location } : {}),
+    start_at: occurrence.start,
+    end_at: occurrence.end,
+    timezone: ev.timezone,
+    is_all_day: ev.isAllDay,
+    ...(ev.organizer
       ? {
           organizer: {
-            email: base.organizer.email,
-            ...(base.organizer.displayName
-              ? { display_name: base.organizer.displayName }
-              : {}),
+            email: ev.organizer.email,
+            ...(ev.organizer.displayName ? { display_name: ev.organizer.displayName } : {}),
           },
         }
       : {}),
-    ...(base.attendees && base.attendees.length > 0
+    ...(ev.attendees && ev.attendees.length > 0
       ? {
-          attendees: base.attendees.map((a) => ({
+          attendees: ev.attendees.map((a) => ({
             email: a.email,
             ...(a.displayName ? { display_name: a.displayName } : {}),
             response_status: a.responseStatus,
@@ -807,40 +971,74 @@ const canonicalFromVEvent = (
           })),
         }
       : {}),
-    status: base.status,
-    ...(base.rrule ? { recurrence_rule: base.rrule } : {}),
-    ...(occurrenceAt !== base.dtstart
-      ? { recurring_event_id: `${calendarId}:${base.uid}` }
-      : {}),
-    created_at: base.createdAt,
-    updated_at: base.lastModifiedAt,
+    status: ev.status,
+    ...(rrule ? { recurrence_rule: rrule } : {}),
+    ...(!first ? { recurring_event_id: seriesId } : {}),
+    created_at: ev.createdAt,
+    updated_at: ev.lastModifiedAt,
   };
-  // Silence unused-param lint — href is kept on the signature so
-  // future adapters can store it into a provider-specific side table.
-  void href;
-  return canonical;
 };
 
-const buildPayloadFromExpanded = (
-  base: ParsedVEvent,
-  occurrenceAt: number,
-  href: string,
+const payloadOf = (
+  object: CalDavObject,
+  occurrence: CalDavOccurrence,
   etag: string,
-  calendarId: string,
-  calendarName?: string,
+  calendar: { id: string; displayname: string },
+  correction = false,
 ): ProviderEventPayload => {
-  const canonical = canonicalFromVEvent(
-    base,
-    occurrenceAt,
-    href,
-    calendarId,
-    calendarName,
-  );
-  const descriptionBytes = canonical.description
-    ? Buffer.byteLength(canonical.description, 'utf8')
-    : 0;
-  return { event: canonical, description_bytes: descriptionBytes, etag };
+  const event = canonicalOf(object, occurrence, calendar.id, calendar.displayname);
+  return {
+    event,
+    description_bytes: event.description ? Buffer.byteLength(event.description, 'utf8') : 0,
+    etag,
+    ...(correction ? { correction: true } : {}),
+  };
 };
+
+// ────────────────────────────────────────────────────────────────
+// What the adapter remembers per event resource
+// ────────────────────────────────────────────────────────────────
+
+/** A resource's ETag and — since its times are read in their zones
+ *  (2026-10-07) — the UID it holds, so a resource gone from the server can be
+ *  found among the stored rows. A value written before then is the bare ETag:
+ *  `legacy`, and its resource is read once more even when unchanged, to
+ *  correct its rows. */
+interface StoredResource {
+  readonly etag: string;
+  readonly uid: string | null;
+  readonly legacy: boolean;
+}
+
+const STORED_RESOURCE_VERSION = 2;
+
+const encodeStored = (etag: string, uid: string): string =>
+  JSON.stringify({ v: STORED_RESOURCE_VERSION, etag, uid });
+
+const decodeStored = (value: string | null | undefined): StoredResource | null => {
+  if (value === null || value === undefined) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed !== null && typeof parsed === 'object') {
+      const record = parsed as { v?: unknown; etag?: unknown; uid?: unknown };
+      if (record.v === STORED_RESOURCE_VERSION && typeof record.etag === 'string') {
+        return { etag: record.etag, uid: typeof record.uid === 'string' ? record.uid : null, legacy: false };
+      }
+    }
+  } catch {
+    // a bare ETag
+  }
+  return { etag: value, uid: null, legacy: true };
+};
+
+const PARTSTAT_VALUE: Readonly<Record<string, string>> = {
+  accepted: 'ACCEPTED',
+  declined: 'DECLINED',
+  tentative: 'TENTATIVE',
+  needs_action: 'NEEDS-ACTION',
+};
+
+type EventPatch = UpdateEventInput['patch'];
 
 // ────────────────────────────────────────────────────────────────
 // Error mapping
@@ -1092,50 +1290,76 @@ export const createCalDavProvider = (
     return { body };
   };
 
+  /** The owner's zone, read per use: the owner can change it. */
+  const ownerZone = (): string | undefined => {
+    try {
+      return opts.timeZone?.();
+    } catch {
+      return undefined;
+    }
+  };
+
+  const readObject = (raw: string): CalDavObject | null => {
+    const timeZone = ownerZone();
+    return readCalDavObject(raw, {
+      ...(timeZone !== undefined ? { timeZone } : {}),
+      warn: (message) => opts.log?.('warn', message),
+    });
+  };
+
+  /** The window occurrences are expanded in, and a resource's rows inside it
+   *  reconciled. */
+  const expansionWindow = (): RRuleExpansionWindow => ({
+    windowStart: nowOf() - opts.config.expansion_past_days * 86_400_000,
+    windowEnd: nowOf() + opts.config.expansion_future_days * 86_400_000,
+  });
+
+  /** Read one event resource, hand on its occurrences, then the whole set of
+   *  rows it makes in the window — so an occurrence it no longer makes (a
+   *  date deleted, a series cut short, an occurrence moved away) leaves the
+   *  warehouse — and remember its ETag and UID. */
   const ingestEvent = async (
     calendar: { id: string; href: string; displayname: string },
     eventHref: string,
     etag: string,
     calendarData: string | undefined,
-    emit: (event: ProviderEventPayload) => Promise<void>,
+    prior: StoredResource | null,
+    window: RRuleExpansionWindow,
+    emit: (payload: ProviderEventPayload) => Promise<boolean>,
+    reconcile: (series: CalendarSeriesSnapshot) => Promise<void>,
   ): Promise<void> => {
     let icsBody = calendarData;
     if (!icsBody) {
       icsBody = (await fetchEventIcs(calendar.href, eventHref)).body;
     }
-    const parsed = parseVEvent(icsBody);
-    if (!parsed) {
+    const object = readObject(icsBody);
+    if (object === null) {
       markError(`caldav unparseable VEVENT href=${eventHref}`, null);
       // Do not stamp this ETag or let an initial scan certify completion. The
       // provider resource is still present but has not been durably represented
       // in the collection; retaining the old/no ETag makes it retryable.
       throw new Error(`caldav event '${eventHref}' could not be parsed`);
     }
-    const window: RRuleExpansionWindow = {
-      windowStart:
-        nowOf() - opts.config.expansion_past_days * 86_400_000,
-      windowEnd:
-        nowOf() + opts.config.expansion_future_days * 86_400_000,
-    };
-    const { instances, partial } = expandRRule(
-      parsed.dtstart,
-      parsed.rrule,
-      parsed.exdates,
-      window,
-    );
+    const { occurrences, partial } = expandCalDavObject(object, window);
     if (partial) pendingSeriesExpansions++;
-    for (const occurrenceAt of instances) {
-      const payload = buildPayloadFromExpanded(
-        parsed,
-        occurrenceAt,
-        eventHref,
-        etag,
-        calendar.id,
-        calendar.displayname,
-      );
-      await emit(payload);
+    // ⚠ The server's copy is the one this adapter already read: any difference
+    // now is only how Recued reads it (its zones, 2026-10-07). The rows are
+    // corrected without waking `updated` triggers — a reschedule tracker would
+    // otherwise count every event on the calendar once.
+    const correction = prior !== null && prior.legacy && prior.etag === etag;
+    const keep: string[] = [];
+    for (const occurrence of occurrences) {
+      const payload = payloadOf(object, occurrence, etag, calendar, correction);
+      keep.push(payload.event.source_id);
+      if (!(await emit(payload))) return;
     }
-    await opts.etagStore.set(etagKey(calendar.id, eventHref), etag);
+    await reconcile({
+      calendar_id: calendar.id,
+      ical_uid: object.uid,
+      window: { start: window.windowStart, end: window.windowEnd },
+      keep,
+    });
+    await opts.etagStore.set(etagKey(calendar.id, eventHref), encodeStored(etag, object.uid));
   };
 
   // ── initial scan ────────────────────────────────────────────
@@ -1145,6 +1369,7 @@ export const createCalDavProvider = (
     const calendars = await discoverCalendars();
     const windowStart = nowOf() - scanOpts.backfill_days * 86_400_000;
     const windowEnd = nowOf() + scanOpts.expansion_future_days * 86_400_000;
+    const window = expansionWindow();
     let aborted = false;
     for (const cal of calendars) {
       if (aborted) break;
@@ -1159,17 +1384,41 @@ export const createCalDavProvider = (
         'REPORT calendar-query (initial scan)',
       );
       const entries = parseCalendarQuery(res.text);
+      const kept: string[] = [];
       for (const entry of entries) {
         if (aborted) break;
-        let continueScan = true;
-        await ingestEvent(cal, entry.href, entry.etag, entry.calendarData, async (payload) => {
-          if (!continueScan) return;
-          const cont = await scanOpts.onEvent(payload);
-          lastSuccessfulSyncAt = nowOf();
-          if (!cont) {
-            continueScan = false;
-            aborted = true;
-          }
+        const prior = decodeStored(await opts.etagStore.get(etagKey(cal.id, entry.href)));
+        await ingestEvent(
+          cal,
+          entry.href,
+          entry.etag,
+          entry.calendarData,
+          prior,
+          window,
+          async (payload) => {
+            const cont = await scanOpts.onEvent(payload);
+            lastSuccessfulSyncAt = nowOf();
+            if (!cont) aborted = true;
+            return cont;
+          },
+          async (series) => {
+            kept.push(...series.keep);
+            await scanOpts.onSeries?.(series);
+          },
+        );
+      }
+      // ⛔ Every resource of the calendar was read, so a stored row of it in
+      // the window that none made is gone: deleted while Recued was not
+      // watching, or filed by the reader before 2026-10-07 under another
+      // identity — it read a VEVENT's lines up to its END, so an alert's own
+      // `UID` (Apple writes one in every VALARM) replaced the event's, and
+      // its rows sat under the alert's id, which no write could find. The
+      // window is the one both the query and the expansion covered.
+      if (!aborted) {
+        await scanOpts.onCalendar?.({
+          calendar_id: cal.id,
+          window: { start: Math.max(window.windowStart, windowStart), end: Math.min(window.windowEnd, windowEnd) },
+          keep: kept,
         });
       }
     }
@@ -1178,8 +1427,10 @@ export const createCalDavProvider = (
   // ── incremental sync tick ───────────────────────────────────
   const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
     const calendars = await discoverCalendars();
-    const windowStart = nowOf() - opts.config.expansion_past_days * 86_400_000;
-    const windowEnd = nowOf() + opts.config.expansion_future_days * 86_400_000;
+    const window = expansionWindow();
+    const reconcile = async (series: CalendarSeriesSnapshot): Promise<void> => {
+      await cb({ kind: 'series', source_id: `${series.calendar_id}:${series.ical_uid}`, series });
+    };
     for (const cal of calendars) {
       const res = await davRequest(
         absolute(cal.href, cal.href),
@@ -1188,7 +1439,7 @@ export const createCalDavProvider = (
           Depth: '1',
           'Content-Type': 'application/xml; charset=utf-8',
         },
-        calendarQueryBody(windowStart, windowEnd, false),
+        calendarQueryBody(window.windowStart, window.windowEnd, false),
         'REPORT calendar-query (sync tick)',
       );
       const current = parseCalendarQuery(res.text);
@@ -1200,8 +1451,8 @@ export const createCalDavProvider = (
       for (const entry of current) {
         const k = etagKey(cal.id, entry.href);
         currentKeys.add(k);
-        const prevEtag = prevMap.get(k);
-        if (prevEtag && prevEtag === entry.etag) continue; // unchanged
+        const prior = decodeStored(prevMap.get(k));
+        if (prior !== null && !prior.legacy && prior.etag === entry.etag) continue; // unchanged
 
         pendingQueueSize++;
         try {
@@ -1210,6 +1461,8 @@ export const createCalDavProvider = (
             entry.href,
             entry.etag,
             entry.calendarData,
+            prior,
+            window,
             async (payload) => {
               const sync: CalendarSyncEvent = {
                 kind: 'updated',
@@ -1218,7 +1471,9 @@ export const createCalDavProvider = (
               };
               await cb(sync);
               lastSuccessfulSyncAt = nowOf();
+              return true;
             },
+            reconcile,
           );
         } catch (err) {
           markError(`caldav ingest failed href=${entry.href}`, err);
@@ -1227,14 +1482,24 @@ export const createCalDavProvider = (
         }
       }
 
-      // Missing hrefs → deletions.
-      for (const [k] of prevMap) {
+      // A resource the window no longer lists was deleted on the server, or
+      // moved or aged out of the window. Either way its rows inside the window
+      // go; rows before the window stay, as history.
+      for (const [k, value] of prevMap) {
         if (currentKeys.has(k)) continue;
+        const stored = decodeStored(value);
         try {
-          await cb({
-            kind: 'deleted',
-            source_id: `${cal.id}:${k.slice(etagPrefix(cal.id).length)}`,
-          });
+          // ⚠ A value written before 2026-10-07 names no UID, so nothing it
+          // made can be found: this adapter emitted a deletion keyed on the
+          // href's hash, which no row ever had, so a deleted event stayed.
+          if (stored?.uid) {
+            await reconcile({
+              calendar_id: cal.id,
+              ical_uid: stored.uid,
+              window: { start: window.windowStart, end: window.windowEnd },
+              keep: [],
+            });
+          }
           // The ETag row is the only durable evidence that this href used to
           // exist. Remove it only after the collection acknowledges the delete;
           // otherwise the next REPORT has no way to replay the tombstone.
@@ -1254,74 +1519,15 @@ export const createCalDavProvider = (
     });
 
   // ── write-back ──────────────────────────────────────────────
-  const serialiseDateTime = (at: number, isAllDay: boolean): string => {
-    const d = new Date(at);
-    const pad = (n: number): string => String(n).padStart(2, '0');
-    if (isAllDay) {
-      return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
-    }
-    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
-  };
-
-  const escapeIcal = (s: string): string =>
-    s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
-
-  const icsLine = (name: string, value: string, params: string = ''): string =>
-    `${name}${params}:${value}\r\n`;
-
-  const buildVEvent = (
-    uid: string,
-    event: Omit<CanonicalEvent, 'source_id' | 'ical_uid' | 'created_at' | 'updated_at'>,
-    now: number,
-  ): string => {
-    const stamp = serialiseDateTime(now, false);
-    const lines: string[] = [
-      'BEGIN:VCALENDAR\r\n',
-      'VERSION:2.0\r\n',
-      'PRODID:-//recued//caldav-adapter//EN\r\n',
-      'BEGIN:VEVENT\r\n',
-      icsLine('UID', uid),
-      icsLine('DTSTAMP', stamp),
-      icsLine(
-        'DTSTART',
-        serialiseDateTime(event.start_at, event.is_all_day),
-        event.is_all_day ? ';VALUE=DATE' : '',
-      ),
-      icsLine(
-        'DTEND',
-        serialiseDateTime(event.end_at, event.is_all_day),
-        event.is_all_day ? ';VALUE=DATE' : '',
-      ),
-      icsLine('SUMMARY', escapeIcal(event.summary)),
-    ];
-    if (event.description)
-      lines.push(icsLine('DESCRIPTION', escapeIcal(event.description)));
-    if (event.location)
-      lines.push(icsLine('LOCATION', escapeIcal(event.location)));
-    lines.push(icsLine('STATUS', event.status.toUpperCase()));
-    if (event.organizer) {
-      const cn = event.organizer.display_name
-        ? `;CN=${event.organizer.display_name}`
-        : '';
-      lines.push(icsLine('ORGANIZER', `mailto:${event.organizer.email}`, cn));
-    }
-    if (event.attendees) {
-      for (const a of event.attendees) {
-        const parts: string[] = [];
-        if (a.display_name) parts.push(`CN=${a.display_name}`);
-        const partstat =
-          a.response_status === 'needs_action'
-            ? 'NEEDS-ACTION'
-            : a.response_status.toUpperCase();
-        parts.push(`PARTSTAT=${partstat}`);
-        const params = `;${parts.join(';')}`;
-        lines.push(icsLine('ATTENDEE', `mailto:${a.email}`, params));
-      }
-    }
-    if (event.recurrence_rule) lines.push(icsLine('RRULE', event.recurrence_rule));
-    lines.push('END:VEVENT\r\n', 'END:VCALENDAR\r\n');
-    return lines.join('');
-  };
+  //
+  // ⛔⛔ THE SERVER'S FILE IS EDITED IN PLACE, NEVER REBUILT (2026-10-07; see
+  // `caldav-ics.ts`). Each write fetches the event's file, changes the lines
+  // the edit names, and puts back every other line as the server sent it — its
+  // zone, reminders, deleted dates and changed occurrences included.
+  //
+  // An occurrence of a series is edited as an override (RFC 5545 §3.8.4.4) and
+  // deleted as an EXDATE: a `this_instance` edit or delete — the default —
+  // rewrote, or deleted, the whole series.
 
   const resolveCalendarHref = async (
     calendarId: string,
@@ -1342,72 +1548,13 @@ export const createCalDavProvider = (
     return match;
   };
 
-  // Project a parsed master VEVENT + a partial patch into the
-  // `buildVEvent` input shape. Mirrors the merge the single-PUT update
-  // path applies; factored so the `this_and_future` split reuses it
-  // (empty patch → carry the master forward unchanged).
-  const mergedFromParsed = (
-    p: ParsedVEvent,
-    patch: UpdateEventInput['patch'],
-    calId: string,
-  ): Omit<
-    CanonicalEvent,
-    'source_id' | 'ical_uid' | 'created_at' | 'updated_at'
-  > => ({
-    calendar_id: calId,
-    summary: patch.summary ?? p.summary ?? '',
-    ...(patch.description !== undefined
-      ? { description: patch.description }
-      : p.description
-        ? { description: p.description }
-        : {}),
-    ...(patch.location !== undefined
-      ? { location: patch.location }
-      : p.location
-        ? { location: p.location }
-        : {}),
-    start_at: patch.start_at ?? p.dtstart,
-    end_at: patch.end_at ?? p.dtend,
-    timezone: patch.timezone ?? p.timezone,
-    is_all_day: patch.is_all_day ?? p.isAllDay,
-    ...(p.organizer
-      ? {
-          organizer: {
-            email: p.organizer.email,
-            ...(p.organizer.displayName
-              ? { display_name: p.organizer.displayName }
-              : {}),
-          },
-        }
-      : {}),
-    ...(patch.attendees
-      ? { attendees: patch.attendees }
-      : p.attendees
-        ? {
-            attendees: p.attendees.map((a) => ({
-              email: a.email,
-              ...(a.displayName ? { display_name: a.displayName } : {}),
-              response_status: a.responseStatus,
-            })),
-          }
-        : {}),
-    status: patch.status ?? p.status,
-    ...(patch.recurrence_rule !== undefined
-      ? patch.recurrence_rule
-        ? { recurrence_rule: patch.recurrence_rule }
-        : {}
-      : p.rrule
-        ? { recurrence_rule: p.rrule }
-        : {}),
-  });
-
-  // Decode the triggering occurrence from a caldav source_id's optional
-  // trailing `:${at}` (unix-ms). A present-but-non-numeric suffix is
-  // malformed for our format — fail CLOSED rather than silently
-  // widening a `this_and_future` edit into a whole-series edit. (A UID
-  // that itself contains ':' is a separate, pre-existing convention
-  // limitation: `parts[1]` is taken as the uid, which 404s for such
-  // servers — first-party UIDs are colon-free `<hash>@recued`.)
+  // A caldav source_id's optional trailing `:${key}` names one occurrence of
+  // a series: the wall clock it starts at on the series' clock, the digits
+  // read as UTC. A present-but-non-numeric suffix is malformed for our format
+  // — fail CLOSED rather than silently widening an occurrence's edit into a
+  // whole-series edit. (A UID that itself contains ':' is a separate,
+  // pre-existing convention limitation: `parts[1]` is taken as the uid, which
+  // 404s for such servers — first-party UIDs are colon-free `<hash>@recued`.)
   const occurrenceSuffix = (
     parts: string[],
     source_id: string,
@@ -1423,94 +1570,407 @@ export const createCalDavProvider = (
     return Number(parts[2]);
   };
 
-  // Truncate the master VEVENT so the series ends strictly before
-  // `splitAt`. Surgically swaps ONLY the RRULE line in the original ICS
-  // and PUTs the rest verbatim, so every other property the master
-  // carries — EXDATE (pre-split exceptions), TZID, VALARM, SEQUENCE,
-  // X-* — survives untouched. (Rebuilding through `buildVEvent` would
-  // drop EXDATE, resurrecting deleted occurrences, and flatten TZID to
-  // bare UTC, shifting timed events.) Shared by the `this_and_future`
-  // update + delete paths.
-  const putTruncatedMaster = async (
-    cal: { id: string; href: string; displayname: string },
-    href: string,
-    rawIcs: string,
-    parsed: ParsedVEvent,
-    splitAt: number,
-  ): Promise<void> => {
-    // UNTIL is inclusive, so cut one second before the split point to
-    // drop the triggering occurrence while keeping its predecessor.
-    // `serialiseDateTime` emits a UTC DATE-TIME (timed) or DATE
-    // (all-day) to match the master's DTSTART value type.
-    const untilValue = serialiseDateTime(splitAt - 1000, parsed.isAllDay);
-    const truncated = capRRuleUntil(parsed.rrule ?? '', untilValue);
-    // Match the RRULE property line plus any folded continuations.
-    const rruleLine = /^RRULE[;:].*(?:\r?\n[ \t].*)*/im;
-    if (!rruleLine.test(rawIcs)) {
+  interface WriteContext {
+    readonly editor: IcsEditor;
+    readonly clock: IcsClock;
+    readonly now: number;
+    /** Zones whose VTIMEZONE this write has added. */
+    readonly addedZones: Set<string>;
+  }
+
+  const newContext = (object: CalDavObject): WriteContext => ({
+    editor: createIcsEditor(object.doc),
+    clock: object.clock,
+    now: nowOf(),
+    addedZones: new Set<string>(),
+  });
+
+  const stampValue = (at: number): string => `${icsDateTimeValue(at)}Z`;
+
+  const calendarEndOf = (doc: IcsDoc): number =>
+    doc.roots.find((c) => c.name === 'VCALENDAR')?.end ?? doc.lines.length;
+
+  /** DTSTAMP and LAST-MODIFIED say when. SEQUENCE goes up for a change of
+   *  time, rule or status (RFC 5545 §3.8.7.4), so the event's own apps take
+   *  the new copy over theirs. */
+  const touch = (ctx: WriteContext, component: IcsDocComponent, sequence: number, significant: boolean): void => {
+    setComponentProperty(ctx.editor, component, 'DTSTAMP', icsLine('DTSTAMP', stampValue(ctx.now)));
+    setComponentProperty(ctx.editor, component, 'LAST-MODIFIED', icsLine('LAST-MODIFIED', stampValue(ctx.now)));
+    if (significant) setComponentProperty(ctx.editor, component, 'SEQUENCE', icsLine('SEQUENCE', String(sequence + 1)));
+  };
+
+  /** A zone's rules, before the file's first event. */
+  const addVTimezone = (ctx: WriteContext, zone: string, lines: readonly string[]): void => {
+    if (ctx.addedZones.has(zone)) return;
+    ctx.addedZones.add(zone);
+    const doc = ctx.editor.doc;
+    const calendar = doc.roots.find((c) => c.name === 'VCALENDAR');
+    const firstEvent = (calendar?.children ?? doc.roots).find((c) => c.name === 'VEVENT');
+    ctx.editor.insertBefore(firstEvent?.begin ?? calendar?.end ?? doc.lines.length, lines);
+  };
+
+  /** The form an edited event writes its times in: its own, unless the edit
+   *  names another zone, or makes it all-day or timed. A zone the file has no
+   *  rules for gets them, from the platform's tables. */
+  const formForWrite = (
+    ctx: WriteContext,
+    ev: CalDavVEvent,
+    allDay: boolean,
+    zone: string | undefined,
+    around: number,
+  ): IcsTimeForm => {
+    if (allDay) return { kind: 'date' };
+    const wanted = (zone ?? '').trim();
+    if (ev.startForm.kind !== 'date' && (wanted === '' || wanted === ev.timezone)) return ev.startForm;
+    if (wanted === '' || isUtcZoneName(wanted)) return { kind: 'utc' };
+    const reader = ctx.clock.zone(wanted, false);
+    if (reader.basis === 'unresolved') return { kind: 'utc' };
+    if (!ctx.clock.hasRules(wanted)) {
+      const rules = vtimezoneLines(wanted, around);
+      if (rules === null) return { kind: 'utc' };
+      addVTimezone(ctx, wanted, rules);
+    }
+    return { kind: 'zoned', tzid: wanted, zone: reader };
+  };
+
+  /** Replace the guest list, keeping what the file says about each guest it
+   *  already had (role, RSVP, type) beyond the name and answer Recued holds. */
+  const writeAttendees = (
+    ctx: WriteContext,
+    component: IcsDocComponent,
+    attendees: NonNullable<CanonicalEvent['attendees']>,
+  ): void => {
+    const existing = componentProps(ctx.editor.doc, component, 'ATTENDEE');
+    const byEmail = new Map<string, IcsContentLine>();
+    for (const { prop } of existing) {
+      const email = mailtoOf(prop.value);
+      if (email !== null) byEmail.set(email.toLowerCase(), prop);
+    }
+    const lines = attendees.map((a) => {
+      const prior = byEmail.get(a.email.toLowerCase());
+      const params: Array<readonly [string, string | readonly string[]]> = [];
+      const cn = a.display_name ?? (prior ? propParam(prior, 'CN') : undefined);
+      if (cn) params.push(['CN', cn]);
+      if (prior) {
+        for (const [name, values] of prior.params) {
+          if (name !== 'CN' && name !== 'PARTSTAT') params.push([name, values]);
+        }
+      }
+      params.push(['PARTSTAT', PARTSTAT_VALUE[a.response_status] ?? 'NEEDS-ACTION']);
+      return icsLine('ATTENDEE', `mailto:${a.email}`, params);
+    });
+    for (const { index } of existing) ctx.editor.deleteLine(index);
+    addComponentProperties(ctx.editor, component, lines);
+  };
+
+  /** Apply a patch to one VEVENT's own lines. A time is written in the form
+   *  the event's own app wrote it in. */
+  const applyPatch = (
+    ctx: WriteContext,
+    ev: CalDavVEvent,
+    patch: EventPatch,
+    allow: { readonly rrule: boolean },
+  ): void => {
+    const { editor } = ctx;
+    const component = ev.component;
+    let significant = false;
+    if (patch.summary !== undefined) {
+      setComponentProperty(editor, component, 'SUMMARY', icsLine('SUMMARY', escapeIcsText(patch.summary)));
+    }
+    if (patch.description !== undefined) {
+      setComponentProperty(editor, component, 'DESCRIPTION', patch.description ? icsLine('DESCRIPTION', escapeIcsText(patch.description)) : null);
+    }
+    if (patch.location !== undefined) {
+      setComponentProperty(editor, component, 'LOCATION', patch.location ? icsLine('LOCATION', escapeIcsText(patch.location)) : null);
+    }
+    if (patch.status !== undefined && patch.status !== ev.status) {
+      setComponentProperty(editor, component, 'STATUS', icsLine('STATUS', patch.status.toUpperCase()));
+      significant = true;
+    }
+    const allDay = patch.is_all_day ?? ev.isAllDay;
+    const start = patch.start_at ?? ev.dtstart;
+    const end = patch.end_at ?? (patch.start_at !== undefined ? start + (ev.dtend - ev.dtstart) : ev.dtend);
+    const zoneChange = patch.timezone !== undefined && patch.timezone !== '' && patch.timezone !== ev.timezone;
+    if (start !== ev.dtstart || end !== ev.dtend || allDay !== ev.isAllDay || zoneChange) {
+      const form = formForWrite(ctx, ev, allDay, patch.timezone, start);
+      const startLine = icsTimeLine('DTSTART', start, form);
+      const endLine = icsTimeLine('DTEND', Math.max(end, start), form);
+      if (startLine === null || endLine === null) {
+        throw new CalendarAdapterError('io_error', `caldav: the event's zone cannot write ${new Date(start).toISOString()}`);
+      }
+      setComponentProperty(editor, component, 'DTSTART', startLine);
+      setComponentProperty(editor, component, 'DTEND', endLine);
+      setComponentProperty(editor, component, 'DURATION', null);
+      significant = true;
+    }
+    if (allow.rrule && patch.recurrence_rule !== undefined && (patch.recurrence_rule || undefined) !== ev.rrule) {
+      setComponentProperty(editor, component, 'RRULE', patch.recurrence_rule ? icsLine('RRULE', patch.recurrence_rule) : null);
+      significant = true;
+    }
+    if (patch.attendees !== undefined) writeAttendees(ctx, component, patch.attendees);
+    touch(ctx, component, ev.sequence, significant);
+  };
+
+  /** The override an edit of one occurrence writes: a copy of the series'
+   *  VEVENT for that occurrence (RFC 5545 §3.8.4.4), the edit applied. */
+  const overrideLines = (
+    ctx: WriteContext,
+    object: CalDavObject,
+    master: CalDavVEvent,
+    key: number,
+    patch: EventPatch,
+  ): string[] => {
+    const slot = instantInForm(key, master.startForm);
+    const endLine = slot === null ? null : icsTimeLine('DTEND', slot + (master.dtend - master.dtstart), master.startForm);
+    if (slot === null || endLine === null) {
+      throw new CalendarAdapterError('io_error', `caldav: occurrence ${key} cannot be written on its series' clock`);
+    }
+    const texts = cloneComponentLines(object.doc, master.component, {
+      set: new Map([
+        ['RECURRENCE-ID', [icsTimeLineFromWall('RECURRENCE-ID', key, master.startForm)]],
+        ['DTSTART', [icsTimeLineFromWall('DTSTART', key, master.startForm)]],
+        ['DTEND', [endLine]],
+      ]),
+      drop: new Set(['RRULE', 'RDATE', 'EXDATE', 'EXRULE', 'DURATION']),
+    });
+    // The copy is edited as any event is: one reader, one writer.
+    const doc = parseIcsDoc(texts.join('\r\n'));
+    const copy = doc.roots[0] === undefined ? null : readVEvent(doc, doc.roots[0], ctx.clock);
+    if (copy === null) throw new CalendarAdapterError('io_error', 'caldav: an occurrence copy failed to read back');
+    const editor = createIcsEditor(doc);
+    applyPatch({ ...ctx, editor }, copy, patch, { rrule: false });
+    return editor.texts();
+  };
+
+  /** A rule's UNTIL moved by a wall-clock delta, in the form it was written. */
+  const shiftedUntil = (rule: string, delta: number): string =>
+    rule
+      .split(';')
+      .map((part) => {
+        const trimmed = part.trim();
+        if (!trimmed.toUpperCase().startsWith('UNTIL=')) return part;
+        const raw = readIcsDateTime(trimmed.slice('UNTIL='.length));
+        if (raw === null) return part;
+        if (raw.dateOnly) return `UNTIL=${icsDateValue(raw.wall + Math.round(delta / DAY_MS) * DAY_MS)}`;
+        return `UNTIL=${icsDateTimeValue(raw.wall + delta)}${raw.utc ? 'Z' : ''}`;
+      })
+      .join(';');
+
+  /** A whole-series edit, named from one of its occurrences: the series moves
+   *  as far as that occurrence moves, and its deleted dates and overrides move
+   *  with it, so each still names the occurrence it named. Returns the named
+   *  occurrence's key after, `null` when it cannot be told. */
+  const editSeries = (
+    ctx: WriteContext,
+    object: CalDavObject,
+    master: CalDavVEvent,
+    key: number,
+    patch: EventPatch,
+  ): number | null => {
+    const moves = patch.start_at !== undefined || patch.end_at !== undefined;
+    const reforms = (patch.is_all_day !== undefined && patch.is_all_day !== master.isAllDay)
+      || (patch.timezone !== undefined && patch.timezone !== '' && patch.timezone !== master.timezone);
+    if (!moves && !reforms) {
+      applyPatch(ctx, master, patch, { rrule: true });
+      return key;
+    }
+    if (reforms && (master.exdateValues.length > 0 || object.overrides.length > 0)) {
       throw new CalendarAdapterError(
-        'io_error',
-        `caldav this_and_future: no RRULE line to truncate in ${href}`,
+        'rrule_unsupported',
+        "caldav: a repeating event with changed or deleted occurrences keeps its zone and all-day setting here; change them in the calendar's own app",
       );
     }
-    const rewritten = rawIcs.replace(rruleLine, () => `RRULE:${truncated}`);
+    const slot = instantInForm(key, master.startForm);
+    if (slot === null) throw new CalendarAdapterError('io_error', `caldav: occurrence ${key} cannot be read on its series' clock`);
+    const newStart = patch.start_at ?? slot;
+    const newEnd = patch.end_at ?? newStart + (master.dtend - master.dtstart);
+    if (reforms) {
+      // Nothing to keep in step: the series moves as far as this occurrence.
+      const shift = newStart - slot;
+      applyPatch(ctx, master, { ...patch, start_at: master.dtstart + shift, end_at: master.dtstart + shift + (newEnd - newStart) }, { rrule: true });
+      return null;
+    }
+    const newWall = wallInForm(newStart, master.startForm);
+    if (newWall === null) throw new CalendarAdapterError('io_error', `caldav: ${new Date(newStart).toISOString()} cannot be written on the series' clock`);
+    const delta = newWall - key;
+    const rule = patch.recurrence_rule !== undefined ? patch.recurrence_rule : (master.rrule ?? '');
+    if (
+      delta !== 0
+      && /(?:^|;)\s*BY[A-Z]+=/i.test(rule)
+      && Math.floor((master.startWall + delta) / DAY_MS) !== Math.floor(master.startWall / DAY_MS)
+    ) {
+      throw new CalendarAdapterError(
+        'rrule_unsupported',
+        'caldav: moving a repeating event to another day would no longer match its rule; change the rule, or move one occurrence',
+      );
+    }
+    const masterStart = instantInForm(master.startWall + delta, master.startForm);
+    if (masterStart === null) throw new CalendarAdapterError('io_error', "caldav: the series' new start cannot be read on its clock");
+    applyPatch(ctx, master, {
+      ...patch,
+      start_at: masterStart,
+      end_at: masterStart + (newEnd - newStart),
+      ...(delta !== 0 && rule ? { recurrence_rule: shiftedUntil(rule, delta) } : {}),
+    }, { rrule: true });
+    if (delta !== 0) {
+      const form = master.startForm;
+      for (const { index } of componentProps(ctx.editor.doc, master.component, 'EXDATE')) ctx.editor.deleteLine(index);
+      addComponentProperties(ctx.editor, master.component, master.exdateValues
+        .map((e) => occurrenceKey(master, e.at, e.dateOnly))
+        .filter((k): k is number => k !== null)
+        .map((k) => icsTimeLineFromWall('EXDATE', k + delta, form)));
+      for (const o of object.overrides) {
+        const k = overrideKey(object, o);
+        if (k !== null) setComponentProperty(ctx.editor, o.component, 'RECURRENCE-ID', icsTimeLineFromWall('RECURRENCE-ID', k + delta, form));
+      }
+    }
+    return key + delta;
+  };
+
+  /** Cut a series before an occurrence. UNTIL is inclusive, so it names the
+   *  last start before the split — a day for an all-day series, a floating
+   *  time for a floating one, else UTC (RFC 5545 §3.3.10). The overrides of
+   *  occurrences from the split on go with the half that is moving. */
+  const truncateSeries = (ctx: WriteContext, object: CalDavObject, master: CalDavVEvent, splitKey: number): void => {
+    const form = master.startForm;
+    const splitAt = instantInForm(splitKey, form);
+    if (splitAt === null) throw new CalendarAdapterError('io_error', `caldav: occurrence ${splitKey} cannot be read on its series' clock`);
+    const untilValue = form.kind === 'date'
+      ? icsDateValue(splitKey - DAY_MS)
+      : form.kind === 'floating'
+        ? icsDateTimeValue(splitKey - 1000)
+        : `${icsDateTimeValue(splitAt - 1000)}Z`;
+    setComponentProperty(ctx.editor, master.component, 'RRULE', icsLine('RRULE', capRRuleUntil(master.rrule ?? '', untilValue)));
+    for (const o of object.overrides) {
+      const k = overrideKey(object, o);
+      if (k !== null && k >= splitKey) ctx.editor.deleteComponent(o.component);
+    }
+    touch(ctx, master.component, master.sequence, true);
+  };
+
+  /** The series from an occurrence on, as a new resource: the file's own
+   *  header and zones, the series' VEVENT with a new UID, its rule carried
+   *  forward, its deleted dates from the split on, the edit applied. */
+  const newSeriesIcs = (
+    object: CalDavObject,
+    master: CalDavVEvent,
+    splitKey: number,
+    patch: EventPatch,
+    newUid: string,
+  ): string => {
+    const ctx = newContext(object);
+    for (const vevent of componentsNamed(object.doc, 'VEVENT')) ctx.editor.deleteComponent(vevent);
+    const form = master.startForm;
+    const slot = instantInForm(splitKey, form);
+    const endLine = slot === null ? null : icsTimeLine('DTEND', slot + (master.dtend - master.dtstart), form);
+    if (slot === null || endLine === null) {
+      throw new CalendarAdapterError('io_error', `caldav: occurrence ${splitKey} cannot be written on its series' clock`);
+    }
+    const carried = patch.recurrence_rule !== undefined
+      ? patch.recurrence_rule
+      : newSeriesRRule(master.rrule ?? '', master.startWall, splitKey);
+    // A moved split moves the deleted dates with it, so each still names the
+    // occurrence it named; a new zone or all-day setting drops them.
+    const reforms = (patch.is_all_day !== undefined && patch.is_all_day !== master.isAllDay)
+      || (patch.timezone !== undefined && patch.timezone !== '' && patch.timezone !== master.timezone);
+    const movedWall = patch.start_at === undefined ? splitKey : wallInForm(patch.start_at, form);
+    const delta = movedWall === null ? 0 : movedWall - splitKey;
+    const exdates = reforms
+      ? []
+      : master.exdateValues
+        .map((e) => occurrenceKey(master, e.at, e.dateOnly))
+        .filter((k): k is number => k !== null && k >= splitKey)
+        .map((k) => icsTimeLineFromWall('EXDATE', k + delta, form));
+    const set = new Map<string, readonly string[]>([
+      ['UID', [icsLine('UID', newUid)]],
+      ['DTSTART', [icsTimeLineFromWall('DTSTART', splitKey, form)]],
+      ['DTEND', [endLine]],
+      ['SEQUENCE', ['SEQUENCE:0']],
+      ['DTSTAMP', [icsLine('DTSTAMP', stampValue(ctx.now))]],
+    ]);
+    if (carried) set.set('RRULE', [icsLine('RRULE', carried)]);
+    if (exdates.length > 0) set.set('EXDATE', exdates);
+    const drop = new Set(['RECURRENCE-ID', 'DURATION', 'CREATED', 'LAST-MODIFIED', 'RDATE', 'EXRULE', 'EXDATE', 'RRULE']);
+    const texts = cloneComponentLines(object.doc, master.component, { set, drop });
+    const doc = parseIcsDoc(texts.join('\r\n'));
+    const copy = doc.roots[0] === undefined ? null : readVEvent(doc, doc.roots[0], object.clock);
+    if (copy === null) throw new CalendarAdapterError('io_error', 'caldav: the new series failed to read back');
+    const editor = createIcsEditor(doc);
+    const { recurrence_rule: _rule, ...rest } = patch;
+    void _rule;
+    applyPatch({ ...ctx, editor }, copy, rest, { rrule: false });
+    ctx.editor.insertBefore(calendarEndOf(object.doc), editor.texts());
+    return ctx.editor.render();
+  };
+
+  const putEvent = async (
+    cal: { href: string },
+    href: string,
+    body: string,
+    operation: string,
+    create = false,
+  ): Promise<void> => {
     const res = await fetcher(absolute(cal.href, href), {
       method: 'PUT',
       headers: {
         Authorization: authHeader,
         'Content-Type': 'text/calendar; charset=utf-8',
+        ...(create ? { 'If-None-Match': '*' } : {}),
       },
-      body: rewritten,
+      body,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw toCalDavError(res.status, text, 'PUT (this_and_future truncate)');
+      throw toCalDavError(res.status, text, operation);
     }
   };
 
+  /** The payload of what was written, read back as a sync would read it: the
+   *  occurrence the caller named, else the event's first. */
+  const payloadAfterWrite = (
+    ics: string,
+    key: number | null,
+    cal: { id: string; displayname: string },
+    operation: string,
+  ): ProviderEventPayload => {
+    const object = readObject(ics);
+    const occurrence = object === null ? null : (occurrenceOf(object, key) ?? occurrenceOf(object, null));
+    if (object === null || occurrence === null) {
+      throw new CalendarAdapterError(
+        'io_error',
+        `caldav ${operation}: locally produced VEVENT failed round-trip parse`,
+      );
+    }
+    return payloadOf(object, occurrence, '', cal);
+  };
+
   // CalDAV `this_and_future` UPDATE. CalDAV holds the whole series as
-  // one VEVENT file, so the adapter — not the dispatcher — owns the
-  // split (gcal/graph defer theirs to the dispatcher per provider
-  // quirks). Step 1: truncate the master. Step 2: PUT a fresh series
-  // (new UID) carrying the patch forward from `splitAt` with the
-  // original cadence. Returns the NEW series' first-occurrence payload
-  // — the event the "edit this and following" gesture creates. Earlier
-  // occurrences + the truncated tail reconcile on the next sync tick
-  // (the adapter's existing eventually-consistent mutation contract).
+  // one file, so the adapter — not the dispatcher — owns the split
+  // (gcal/graph defer theirs to the dispatcher per provider quirks).
+  // Step 1: cut the series before the occurrence. Step 2: PUT the rest
+  // as a new series (new UID) carrying the patch forward. Returns the
+  // NEW series' first-occurrence payload — the event the "edit this and
+  // following" gesture creates. Earlier occurrences + the cut tail
+  // reconcile on the next sync tick (the adapter's existing
+  // eventually-consistent mutation contract).
   const splitSeriesUpdate = async (
     cal: { id: string; href: string; displayname: string },
     uid: string,
     href: string,
-    rawIcs: string,
-    parsed: ParsedVEvent,
-    patch: UpdateEventInput['patch'],
-    splitAt: number,
+    object: CalDavObject,
+    master: CalDavVEvent,
+    patch: EventPatch,
+    splitKey: number,
   ): Promise<ProviderEventPayload> => {
-    await putTruncatedMaster(cal, href, rawIcs, parsed, splitAt);
+    const ctx = newContext(object);
+    truncateSeries(ctx, object, master, splitKey);
+    await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)');
 
-    const duration = parsed.dtend - parsed.dtstart;
-    const newStart = patch.start_at ?? splitAt;
-    const newEnd = patch.end_at ?? newStart + duration;
-    // Carry the original cadence forward (COUNT-adjusted so the split
-    // can't manufacture phantom occurrences). Honour a patched rule
-    // verbatim when the caller supplied one.
-    const carriedRule =
-      patch.recurrence_rule !== undefined
-        ? patch.recurrence_rule
-        : newSeriesRRule(parsed.rrule ?? '', parsed.dtstart, splitAt);
-    const newSeries: Omit<
-      CanonicalEvent,
-      'source_id' | 'ical_uid' | 'created_at' | 'updated_at'
-    > = {
-      ...mergedFromParsed(parsed, patch, cal.id),
-      start_at: newStart,
-      end_at: newEnd,
-      ...(carriedRule ? { recurrence_rule: carriedRule } : {}),
-    };
     const newUid = `${createHash('sha1')
-      .update(`${cal.id}:${nowOf()}:${newSeries.summary}:${newStart}`)
+      .update(`${cal.id}:${nowOf()}:${patch.summary ?? master.summary ?? ''}:${splitKey}`)
       .digest('hex')}@recued`;
     const newHref = `${cal.href.replace(/\/$/, '')}/${newUid}.ics`;
-    const newIcs = buildVEvent(newUid, newSeries, nowOf());
+    const newIcs = newSeriesIcs(object, master, splitKey, patch, newUid);
     const createRes = await fetcher(absolute(cal.href, newHref), {
       method: 'PUT',
       headers: {
@@ -1531,21 +1991,56 @@ export const createCalDavProvider = (
         `caldav this_and_future: master series ${uid} truncated but the new series PUT failed (${createRes.status}). The next sync tick will reflect provider state. ${text}`.trim(),
       );
     }
-    const reparsed = parseVEvent(newIcs);
-    if (!reparsed) {
-      throw new CalendarAdapterError(
-        'io_error',
-        'caldav PUT (this_and_future): locally produced VEVENT failed round-trip parse',
-      );
+    return payloadAfterWrite(newIcs, null, cal, 'PUT (this_and_future)');
+  };
+
+  /** A new event's file. A timed event is written in its zone, with that
+   *  zone's rules, so its own apps show it in the zone it was made for and a
+   *  repeating one keeps its local time across a change of clocks. */
+  const buildCalendarObject = (uid: string, event: CreateEventInput, now: number): string => {
+    const zone = (event.timezone ?? '').trim();
+    let form: IcsTimeForm = event.is_all_day ? { kind: 'date' } : { kind: 'utc' };
+    let rules: string[] | null = null;
+    if (!event.is_all_day && zone !== '' && !isUtcZoneName(zone)) {
+      rules = vtimezoneLines(zone, event.start_at);
+      if (rules !== null) form = { kind: 'zoned', tzid: zone, zone: icsClock('').zone(zone, false) };
     }
-    return buildPayloadFromExpanded(
-      reparsed,
-      reparsed.dtstart,
-      newHref,
-      '',
-      cal.id,
-      cal.displayname,
-    );
+    const start = icsTimeLine('DTSTART', event.start_at, form);
+    const end = icsTimeLine('DTEND', Math.max(event.end_at, event.start_at), form);
+    if (start === null || end === null) {
+      throw new CalendarAdapterError('io_error', `caldav PUT (create): ${zone} cannot write the event's times`);
+    }
+    const lines: string[] = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//recued//caldav-adapter//EN',
+      ...(rules ?? []),
+      'BEGIN:VEVENT',
+      icsLine('UID', uid),
+      icsLine('DTSTAMP', stampValue(now)),
+      start,
+      end,
+      icsLine('SUMMARY', escapeIcsText(event.summary)),
+    ];
+    if (event.description) lines.push(icsLine('DESCRIPTION', escapeIcsText(event.description)));
+    if (event.location) lines.push(icsLine('LOCATION', escapeIcsText(event.location)));
+    lines.push(icsLine('STATUS', event.status.toUpperCase()));
+    if (event.organizer) {
+      lines.push(icsLine(
+        'ORGANIZER',
+        `mailto:${event.organizer.email}`,
+        event.organizer.display_name ? [['CN', event.organizer.display_name]] : [],
+      ));
+    }
+    for (const a of event.attendees ?? []) {
+      lines.push(icsLine('ATTENDEE', `mailto:${a.email}`, [
+        ...(a.display_name ? [['CN', a.display_name] as const] : []),
+        ['PARTSTAT', PARTSTAT_VALUE[a.response_status] ?? 'NEEDS-ACTION'],
+      ]));
+    }
+    if (event.recurrence_rule) lines.push(icsLine('RRULE', event.recurrence_rule));
+    lines.push('END:VEVENT', 'END:VCALENDAR');
+    return `${lines.flatMap(foldIcsLine).join('\r\n')}\r\n`;
   };
 
   return {
@@ -1599,45 +2094,24 @@ export const createCalDavProvider = (
 
     async createEvent(calendarId: string, event: CreateEventInput) {
       const cal = await resolveCalendarHref(calendarId, 'PUT (create)');
-      const uid = `${createHash('sha1')
-        .update(`${cal.id}:${nowOf()}:${event.summary}:${event.start_at}`)
-        .digest('hex')}@recued`;
+      // D-315 slice 7 — an invite's own UID is kept when it can name the
+      // `.ics` file and sit in a `source_id` (`<calendar>:<uid>`, split on
+      // `:`); otherwise the event gets one of ours.
+      const uid = event.ical_uid !== undefined && CALDAV_SAFE_UID.test(event.ical_uid)
+        ? event.ical_uid
+        : `${createHash('sha1')
+          .update(`${cal.id}:${nowOf()}:${event.summary}:${event.start_at}`)
+          .digest('hex')}@recued`;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
-      const ics = buildVEvent(uid, event, nowOf());
-      const res = await fetcher(absolute(cal.href, href), {
-        method: 'PUT',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'text/calendar; charset=utf-8',
-          'If-None-Match': '*',
-        },
-        body: ics,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw toCalDavError(res.status, text, 'PUT (create)');
-      }
-      const parsed = parseVEvent(ics);
-      if (!parsed) {
-        throw new CalendarAdapterError(
-          'io_error',
-          'caldav PUT (create): locally produced VEVENT failed round-trip parse',
-        );
-      }
-      return buildPayloadFromExpanded(
-        parsed,
-        parsed.dtstart,
-        href,
-        '',
-        cal.id,
-        cal.displayname,
-      );
+      const ics = buildCalendarObject(uid, event, nowOf());
+      await putEvent(cal, href, ics, 'PUT (create)', true);
+      return payloadAfterWrite(ics, null, cal, 'PUT (create)');
     },
 
     async updateEvent(input: UpdateEventInput) {
       const cal = await resolveCalendarHref(input.calendar_id, 'PUT (update)');
-      // Source_id shape: `${cal.id}:${uid}` or `${cal.id}:${uid}:${at}`
-      // — peel the uid (the .ics file) and the triggering occurrence.
+      // Source_id shape: `${cal.id}:${uid}` or `${cal.id}:${uid}:${key}`
+      // — peel the uid (the .ics file) and the occurrence named.
       const parts = input.source_id.split(':');
       const uid = parts[1];
       if (!uid) {
@@ -1646,64 +2120,47 @@ export const createCalDavProvider = (
           `caldav update: malformed source_id ${input.source_id}`,
         );
       }
+      const key = occurrenceSuffix(parts, input.source_id, 'update') ?? null;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
       const existing = await fetchEventIcs(cal.href, href);
-      const parsed = parseVEvent(existing.body);
-      if (!parsed) {
+      const object = readObject(existing.body);
+      if (object === null) {
         throw new CalendarAdapterError(
           'event_not_found',
           `caldav update: remote VEVENT unparseable uid=${uid}`,
         );
       }
-      if (input.scope === 'this_and_future') {
-        const splitAt =
-          occurrenceSuffix(parts, input.source_id, 'update') ??
-          parsed.dtstart;
-        // A real split only applies past the first occurrence of an
-        // actual series. Editing from the first occurrence (or a
-        // non-recurring event) is a whole-series edit — fall through
-        // to the single-PUT path below.
-        if (parsed.rrule && splitAt > parsed.dtstart) {
-          return await splitSeriesUpdate(
-            cal,
-            uid,
-            href,
-            existing.body,
-            parsed,
-            input.patch,
-            splitAt,
-          );
+      const scope = input.scope ?? 'this_instance';
+      const master = object.master;
+      const ctx = newContext(object);
+      let written: number | null = key;
+      if (master === null) {
+        // The file holds only occurrences of a series kept elsewhere.
+        const override = object.overrides.find((o) => overrideKey(object, o) === key);
+        if (override === undefined) {
+          throw new CalendarAdapterError('event_not_found', `caldav update: no occurrence ${input.source_id}`);
         }
+        applyPatch(ctx, override, input.patch, { rrule: false });
+      } else if (!master.rrule) {
+        applyPatch(ctx, master, input.patch, { rrule: true });
+        written = null;
+      } else if (scope === 'this_and_future' && key !== null && key > master.startWall) {
+        return await splitSeriesUpdate(cal, uid, href, object, master, input.patch, key);
+      } else if (scope === 'series' || scope === 'this_and_future') {
+        // A whole-series edit — `this_and_future` from the first occurrence
+        // is one.
+        written = editSeries(ctx, object, master, key ?? master.startWall, input.patch);
+      } else {
+        // One occurrence: its override, written now if it has none.
+        const k = key ?? master.startWall;
+        const override = object.overrides.find((o) => overrideKey(object, o) === k);
+        if (override !== undefined) applyPatch(ctx, override, input.patch, { rrule: false });
+        else ctx.editor.insertBefore(calendarEndOf(object.doc), overrideLines(ctx, object, master, k, input.patch));
+        written = k;
       }
-      const merged = mergedFromParsed(parsed, input.patch, cal.id);
-      const ics = buildVEvent(uid, merged, nowOf());
-      const res = await fetcher(absolute(cal.href, href), {
-        method: 'PUT',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'text/calendar; charset=utf-8',
-        },
-        body: ics,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw toCalDavError(res.status, text, 'PUT (update)');
-      }
-      const reparsed = parseVEvent(ics);
-      if (!reparsed) {
-        throw new CalendarAdapterError(
-          'io_error',
-          'caldav PUT (update): locally produced VEVENT failed round-trip parse',
-        );
-      }
-      return buildPayloadFromExpanded(
-        reparsed,
-        reparsed.dtstart,
-        href,
-        '',
-        cal.id,
-        cal.displayname,
-      );
+      const ics = ctx.editor.render();
+      await putEvent(cal, href, ics, 'PUT (update)');
+      return payloadAfterWrite(ics, written, cal, 'PUT (update)');
     },
 
     async deleteEvent(input: DeleteEventInput) {
@@ -1716,26 +2173,56 @@ export const createCalDavProvider = (
           `caldav delete: malformed source_id ${input.source_id}`,
         );
       }
+      const key = occurrenceSuffix(parts, input.source_id, 'delete') ?? null;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
-      if (input.scope === 'this_and_future') {
-        // Drop the triggering occurrence + everything after it by
-        // capping the master RRULE. No new series. Falls through to a
-        // whole-file DELETE when the split lands on (or before) the
-        // first occurrence, or the event isn't recurring.
+      const scope = input.scope ?? 'this_instance';
+      if (scope !== 'series') {
+        // Whether this removes the file or one occurrence in it depends on
+        // what the file holds.
         const existing = await fetchEventIcs(cal.href, href);
-        const parsed = parseVEvent(existing.body);
-        if (!parsed) {
+        const object = readObject(existing.body);
+        if (object === null) {
           throw new CalendarAdapterError(
             'event_not_found',
             `caldav delete: remote VEVENT unparseable uid=${uid}`,
           );
         }
-        const splitAt =
-          occurrenceSuffix(parts, input.source_id, 'delete') ??
-          parsed.dtstart;
-        if (parsed.rrule && splitAt > parsed.dtstart) {
-          await putTruncatedMaster(cal, href, existing.body, parsed, splitAt);
-          return;
+        const master = object.master;
+        if (master === null) {
+          const override = object.overrides.find((o) => overrideKey(object, o) === key);
+          if (override === undefined) {
+            throw new CalendarAdapterError('event_not_found', `caldav delete: no occurrence ${input.source_id}`);
+          }
+          if (object.overrides.length > 1) {
+            const ctx = newContext(object);
+            ctx.editor.deleteComponent(override.component);
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)');
+            return;
+          }
+          // Its last occurrence: the file goes.
+        } else if (master.rrule) {
+          if (scope === 'this_and_future') {
+            // Drop the occurrence + everything after it by capping the
+            // series. From the first occurrence it is the whole series.
+            if (key !== null && key > master.startWall) {
+              const ctx = newContext(object);
+              truncateSeries(ctx, object, master, key);
+              await putEvent(cal, href, ctx.editor.render(), 'PUT (this_and_future truncate)');
+              return;
+            }
+          } else {
+            // One occurrence leaves the series as an EXDATE, its override
+            // with it.
+            const k = key ?? master.startWall;
+            const ctx = newContext(object);
+            addComponentProperties(ctx.editor, master.component, [icsTimeLineFromWall('EXDATE', k, master.startForm)]);
+            for (const o of object.overrides) {
+              if (overrideKey(object, o) === k) ctx.editor.deleteComponent(o.component);
+            }
+            touch(ctx, master.component, master.sequence, true);
+            await putEvent(cal, href, ctx.editor.render(), 'PUT (delete occurrence)');
+            return;
+          }
         }
       }
       const res = await fetcher(absolute(cal.href, href), {
@@ -1770,98 +2257,40 @@ export const createCalDavProvider = (
           `caldav rsvp: malformed source_id ${input.source_id}`,
         );
       }
+      const key = occurrenceSuffix(parts, input.source_id, 'rsvp') ?? null;
       const href = `${cal.href.replace(/\/$/, '')}/${uid}.ics`;
       const existing = await fetchEventIcs(cal.href, href);
-      const parsed = parseVEvent(existing.body);
-      if (!parsed) {
+      const object = readObject(existing.body);
+      if (object === null) {
         throw new CalendarAdapterError(
           'event_not_found',
           `caldav rsvp: remote VEVENT unparseable uid=${uid}`,
         );
       }
+      // The occurrence's own copy when it has one; else the series, as before.
+      const named = occurrenceOf(object, key);
+      const target = named !== null && named.event.recurrenceId !== undefined ? named.event : (object.master ?? named?.event ?? null);
       const selfEmail = input.self_email?.toLowerCase() ?? '';
-      const attendees = parsed.attendees ?? [];
-      const selfIdx = attendees.findIndex(
-        (a) => selfEmail && a.email.toLowerCase() === selfEmail,
-      );
-      if (selfIdx === -1) {
+      const mine = target === null || !selfEmail
+        ? undefined
+        : componentProps(object.doc, target.component, 'ATTENDEE').find((a) => mailtoOf(a.prop.value)?.toLowerCase() === selfEmail);
+      if (target === null || mine === undefined) {
         throw new CalendarAdapterError(
           'attendee_not_self',
           `caldav rsvp: signed-in user is not an attendee on event ${uid}`,
         );
       }
-      const nextStatus: ParsedAttendee['responseStatus'] =
-        input.response === 'accepted'
-          ? 'accepted'
-          : input.response === 'declined'
-            ? 'declined'
-            : 'tentative';
-      const nextAttendees = attendees.map((a, i) =>
-        i === selfIdx ? { ...a, responseStatus: nextStatus } : a,
-      );
-      parsed.attendees = nextAttendees;
-      const merged: Omit<
-        CanonicalEvent,
-        'source_id' | 'ical_uid' | 'created_at' | 'updated_at'
-      > = {
-        calendar_id: cal.id,
-        summary: parsed.summary ?? '',
-        ...(parsed.description ? { description: parsed.description } : {}),
-        ...(parsed.location ? { location: parsed.location } : {}),
-        start_at: parsed.dtstart,
-        end_at: parsed.dtend,
-        timezone: parsed.timezone,
-        is_all_day: parsed.isAllDay,
-        ...(parsed.organizer
-          ? {
-              organizer: {
-                email: parsed.organizer.email,
-                ...(parsed.organizer.displayName
-                  ? { display_name: parsed.organizer.displayName }
-                  : {}),
-              },
-            }
-          : {}),
-        attendees: nextAttendees.map((a) => ({
-          email: a.email,
-          ...(a.displayName ? { display_name: a.displayName } : {}),
-          response_status: a.responseStatus,
-        })),
-        status: parsed.status,
-        ...(parsed.rrule ? { recurrence_rule: parsed.rrule } : {}),
-      };
-      const ics = buildVEvent(uid, merged, nowOf());
-      const res = await fetcher(absolute(cal.href, href), {
-        method: 'PUT',
-        headers: {
-          Authorization: authHeader,
-          'Content-Type': 'text/calendar; charset=utf-8',
-        },
-        body: ics,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw toCalDavError(res.status, text, 'PUT (rsvp)');
-      }
+      const ctx = newContext(object);
+      const params = [...mine.prop.params].filter(([name]) => name !== 'PARTSTAT');
+      ctx.editor.replaceLine(mine.index, [icsLine('ATTENDEE', mine.prop.value, [...params, ['PARTSTAT', PARTSTAT_VALUE[input.response] ?? 'NEEDS-ACTION']])]);
+      touch(ctx, target.component, target.sequence, false);
+      const ics = ctx.editor.render();
       // Skip the scheduling-outbox iTIP POST here — not every server
       // supports it even when the outbox is advertised. The PUT above
       // lands the PARTSTAT change locally; the server propagates it
       // to other attendees on its own cadence.
-      const reparsed = parseVEvent(ics);
-      if (!reparsed) {
-        throw new CalendarAdapterError(
-          'io_error',
-          'caldav rsvp: locally produced VEVENT failed round-trip parse',
-        );
-      }
-      return buildPayloadFromExpanded(
-        reparsed,
-        reparsed.dtstart,
-        href,
-        '',
-        cal.id,
-        cal.displayname,
-      );
+      await putEvent(cal, href, ics, 'PUT (rsvp)');
+      return payloadAfterWrite(ics, key, cal, 'rsvp');
     },
   };
 };
@@ -1876,6 +2305,8 @@ export interface CreateCalDavAdapterFactoryOptions {
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
+  /** The owner's IANA zone, read per use — a floating time is read in it. */
+  timeZone?: () => string | undefined;
 }
 
 const parseCalDavConfig = (
@@ -2021,6 +2452,7 @@ export const createCalDavAdapterFactory = (
       now: opts.now,
       log: opts.log ?? ctx.log,
       scheduler: opts.scheduler,
+      ...(opts.timeZone !== undefined ? { timeZone: opts.timeZone } : {}),
     });
   },
 });

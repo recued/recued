@@ -1227,26 +1227,37 @@ describe('production router', () => {
     }))).toEqual([]);
   });
 
-  it('routes auth-status through the daemon profile context when the daemon is unreachable', () => {
-    const dir = makeTmp();
-    const dbPath = join(dir, 'server.db');
-    const tracePath = join(dir, 'daemon-auth-status-modules.jsonl');
-    seedAuthDb(dbPath);
+  // ⛔ RETIRED 2026-10-07. Both reached the server over the rpc socket with the
+  // raw realm token, refused (401) on every release from 26.8.1 — and this test
+  // asserted exactly that, `connection_error`, as its pass condition. The names
+  // still route through the daemon profile and say what to do instead, rather
+  // than falling through to the help screen.
+  for (const [command, says] of [
+    ['auth-status', 'recued auth-status has been removed.'],
+    ['lock', 'recued lock has been removed.'],
+  ] as const) {
+    it(`${command} is retired — it says so, and what to do instead`, () => {
+      const dir = makeTmp();
+      const dbPath = join(dir, 'server.db');
+      const tracePath = join(dir, `daemon-${command}-modules.jsonl`);
+      seedAuthDb(dbPath);
 
-    const result = runBin(['auth-status', '--db', dbPath, '--port', '1'], {
-      loaderTracePath: tracePath,
-    });
-    const loaded = readModuleLoads(tracePath);
+      const result = runBin([command, '--db', dbPath, '--port', '1'], {
+        loaderTracePath: tracePath,
+      });
+      const loaded = readModuleLoads(tracePath);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).not.toContain('has not migrated profile');
-    expect(result.stderr).toContain('connection_error');
-    expect(loaded.length).toBeGreaterThan(0);
-    expect(loaded.filter((entry) => profileBoundaryForbiddenLoadedModule(entry, {
-      allowedCommands: ['auth'],
-      allowedContexts: ['daemon'],
-    }))).toEqual([]);
-  }, 30_000);
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain('has not migrated profile');
+      expect(result.stderr).toContain(says);
+      expect(result.stderr).not.toContain('connection_error');
+      expect(loaded.length).toBeGreaterThan(0);
+      expect(loaded.filter((entry) => profileBoundaryForbiddenLoadedModule(entry, {
+        allowedCommands: ['auth'],
+        allowedContexts: ['daemon'],
+      }))).toEqual([]);
+    }, 30_000);
+  }
 
   it('has no forbidden router static imports', () => {
     const source = readFileSync(binPath, 'utf8');

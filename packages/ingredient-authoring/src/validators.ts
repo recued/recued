@@ -30,6 +30,7 @@ import {
   isOperationPaginationPlacement,
   CLI_OUTPUT_SHAPES,
   CLI_OUTPUT_STORAGES,
+  CLI_PROGRESS_ANSWER_ADAPTERS,
   SERVICE_RESTART_POLICIES,
   isClosedRequestSchema,
   HTTP_UPLOAD_MAX_BYTES_CEILING,
@@ -460,6 +461,31 @@ const validateCliOutputCapture = (
   // recipe. (A DETACHED job also redirects stdout to a file and is refused
   // alongside `input_materialize` — because it RETURNS its `log_path`. Capturing
   // is safe; handing back the path is not.)
+  // ANSWER capture (`from_progress_answer`) — the op keeps the final answer its
+  // heartbeat adapter read off the tool's event stream (Claude Code prints its
+  // answer only there). Same posture as the stdout arm; what differs is the
+  // source, so the op must declare a heartbeat whose host code reads an answer.
+  // Without one the run could only ever fail with nothing to capture.
+  const fromAnswer = capture.from_progress_answer;
+  if (fromAnswer !== undefined) {
+    if (fromAnswer !== true) {
+      add('error', 'composition_cli_output_capture_answer_flag', `${capturePath}.from_progress_answer`, 'output_capture.from_progress_answer must be literal true when present');
+      return;
+    }
+    if (capture.dir_arg !== undefined || capture.from_input_arg !== undefined || capture.from_stdout !== undefined) {
+      add('error', 'composition_cli_output_capture_answer_exclusive', capturePath, 'output_capture declares from_progress_answer alongside dir_arg, from_input_arg or from_stdout — declare exactly one arm');
+      return;
+    }
+    if (typeof capture.filename !== 'string' || capture.filename.length === 0) {
+      add('error', 'composition_cli_output_capture_answer_filename', `${capturePath}.filename`, 'output_capture.filename must be a non-empty string for an answer capture — the tool names nothing, and a record with no extension cannot be classified downstream');
+    }
+    const progress = row.bind.progress;
+    const adapter = isPlainObject(progress) && progress.contract === 'heartbeat' ? progress.adapter : undefined;
+    if (typeof adapter !== 'string' || !(CLI_PROGRESS_ANSWER_ADAPTERS as readonly string[]).includes(adapter)) {
+      add('error', 'composition_cli_output_capture_answer_adapter', `${path}.bind.progress`, `output_capture.from_progress_answer requires a heartbeat progress whose adapter reads a final answer (${CLI_PROGRESS_ANSWER_ADAPTERS.join(' | ')}) — the answer comes from that adapter`);
+    }
+    return;
+  }
   const fromStdout = capture.from_stdout;
   if (fromStdout !== undefined) {
     if (fromStdout !== true) {

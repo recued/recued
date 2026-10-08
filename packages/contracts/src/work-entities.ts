@@ -145,14 +145,18 @@ export const taskIdFromIdempotencyKey = (key: string): string | null =>
 
 /** The creates that take an `idempotency_key` — the check INSIDE the write: a
  *  repeat with the same key returns the first record, whatever any earlier read
- *  saw, and two runs racing get one record. Same key rule for every kind. */
-export type IdempotentCreateKind = 'task' | 'note' | 'commitment' | 'project';
+ *  saw, and two runs racing get one record. Same key rule for every kind. A
+ *  booking joined them for D-315 slice 7: a reservation read from mail makes
+ *  one, and its runs hold for the owner, so a second email about it before the
+ *  first is approved would otherwise mint a second booking. */
+export type IdempotentCreateKind = 'task' | 'note' | 'commitment' | 'project' | 'booking';
 
 const IDEMPOTENT_ID_PREFIX: Readonly<Record<IdempotentCreateKind, string>> = {
   task: TASK_IDEMPOTENCY_ID_PREFIX,
   note: 'note-idempotent-',
   commitment: 'commitment-idempotent-',
   project: 'project-idempotent-',
+  booking: 'booking-idempotent-',
 };
 
 /** Stable local id for an idempotent create of `kind` — a task's is exactly
@@ -963,6 +967,9 @@ export interface ProjectArchiveInput {
 
 export interface BookingCreateInput extends SourceSelectInput {
   title: string;
+  /** Create-or-reuse one Recued-local booking under this stable business key
+   *  (the contract a task's has): a repeat returns the record it made. */
+  idempotency_key?: string;
   lifecycle_state?: BookingLifecycleState;
   /** Reschedule tuple: both or neither. */
   slot_start_at?: number;

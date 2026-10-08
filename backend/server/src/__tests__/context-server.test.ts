@@ -75,6 +75,26 @@ describe('handleExecute — context.server injection', () => {
     expect(wasSkipped(result, 'gated_off_server')).toBe(true);
   });
 
+  it("D-315 slice 7 — the owner's zone rides context.server, a caller's snapshot or the server's own", async () => {
+    const ZONE_PROBE = {
+      ...PROBE_RECIPE,
+      recipe_id: 'probe-context-zone',
+      steps: [
+        { id: 'zone_is_owners', transform: 'template', template: 'ran', skip_when: '{{context.server.time_zone}} not_equal Pacific/Auckland' },
+      ],
+    } as unknown as RecipeDefinition;
+    const deps = makeDeps({ ownerTimeZone: () => 'Pacific/Auckland' });
+    deps.recipeStore.register(ZONE_PROBE);
+    const own = await handleExecute(deps, { recipe_id: 'probe-context-zone' });
+    expect(wasSkipped(own, 'zone_is_owners')).toBe(false);
+    // A caller's reachability snapshot still wins — and gains the zone it cannot know.
+    const snapshot = await handleExecute(deps, { recipe_id: 'probe-context-zone', context: { server: { available: false } } });
+    expect(wasSkipped(snapshot, 'zone_is_owners')).toBe(false);
+    // No zone offered, none appears.
+    const none = await handleExecute(makeDeps(), { recipe: ZONE_PROBE } as never);
+    expect(wasSkipped(none, 'zone_is_owners')).toBe(true);
+  });
+
   it('caller-supplied context.server={available:false} wins (no overwrite)', async () => {
     const deps = makeDeps({ serverName: 'Should-Not-Win' });
     const result = await handleExecute(deps, {

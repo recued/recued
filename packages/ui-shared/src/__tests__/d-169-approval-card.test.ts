@@ -1154,3 +1154,149 @@ describe('ask card — waiting age', () => {
     expect(ageEl(undefined)).toBeUndefined();
   });
 });
+
+describe('the card says what the action changes in the composer\'s words', () => {
+  // ⛔ The card hardcoded "This action changes data outside Recued." on every
+  // projected ask — false for a booking, a commitment or a local-calendar event
+  // (live drive, 2026-10-07), and wrong for a destructive delete. It now repeats
+  // line 2 of the composed body.
+  const textsOf = (root: FakeEl): string[] => {
+    const acc: string[] = [];
+    const walk = (el: FakeEl): void => {
+      if (el.textContent) acc.push(el.textContent);
+      el.children.forEach(walk);
+    };
+    walk(root);
+    return acc;
+  };
+  const body = (line2: string, ...rest: string[]): string => [
+    'Recipe track-booking-from-invite wants to run booking-create (step created).',
+    line2,
+    '',
+    ...rest,
+    '  title: Dental check-up',
+    '',
+    'Approve?',
+  ].join('\n');
+  const confirmOf = (card: FakeEl): FakeEl => collectByAttr(card, ASK_CARD_CONFIRM_ATTR)[0]!;
+
+  it('shows the local clause for a write that stays in Recued', () => {
+    const card = render(model({
+      title: 'Approve booking-create (write)',
+      text: body('Write actions change your data in Recued, so Recued held it for you.'),
+    }), vi.fn());
+    const texts = textsOf(card);
+    expect(texts).toContain('Write actions change your data in Recued.');
+    expect(texts.join(' ')).not.toContain('outside Recued');
+  });
+
+  it('still says "outside Recued" when the composer did', () => {
+    const card = render(model({
+      title: 'Approve mail-send (write)',
+      text: body('Write actions change data outside Recued, so Recued held it for you.'),
+    }), vi.fn());
+    expect(textsOf(card)).toContain('Write actions change data outside Recued.');
+  });
+
+  it('keeps the warning colour for the outside clause and drops it for the local one', () => {
+    const classOf = (line2: string): string | undefined => {
+      const card = render(model({ title: 'Approve booking-create (write)', text: body(line2) }), vi.fn());
+      let found: string | undefined;
+      const walk = (el: FakeEl): void => {
+        if (el.className.startsWith('rx-ask-card-consequence')) found = el.className;
+        el.children.forEach(walk);
+      };
+      walk(card);
+      return found;
+    };
+    expect(classOf('Write actions change your data in Recued, so Recued held it for you.'))
+      .toBe('rx-ask-card-consequence rx-ask-card-consequence--local');
+    expect(classOf('Write actions change data outside Recued, so Recued held it for you.'))
+      .toBe('rx-ask-card-consequence');
+    expect(ASK_CARD_STYLES).toContain('.rx-ask-card-consequence--local {\n  color: var(--fg);');
+  });
+
+  it('a destructive ask says it removes data, not that it changes something elsewhere', () => {
+    const card = render(model({
+      title: 'Approve booking-delete (destructive)',
+      text: body('Destructive actions permanently remove data and cannot be undone, so Recued held it for you.'),
+    }), vi.fn());
+    expect(textsOf(card)).toContain('Destructive actions permanently remove data and cannot be undone.');
+  });
+
+  it('states no consequence when the composer gave none', () => {
+    const card = render(model({
+      title: 'Approve booking-create (write)',
+      text: body('Recued held it for your approval.'),
+    }), vi.fn());
+    const consequences: FakeEl[] = [];
+    const walk = (el: FakeEl): void => {
+      if (el.className === 'rx-ask-card-consequence') consequences.push(el);
+      el.children.forEach(walk);
+    };
+    walk(card);
+    expect(consequences).toHaveLength(0);
+  });
+
+  it('takes the clause from line 2 only — a Reason cannot supply it', () => {
+    // `Reason:` is interpolated raw and lands later in the body.
+    const card = render(model({
+      title: 'Approve booking-create (write)',
+      text: body(
+        'Recued held it for your approval.',
+        'Reason: see below',
+        'Nothing leaves this server, so Recued held it for you.',
+        '',
+      ),
+    }), vi.fn());
+    expect(textsOf(card)).not.toContain('Nothing leaves this server.');
+  });
+
+  it('the second-click confirmation repeats the clause', () => {
+    const card = render(model({
+      title: 'Approve booking-create (write)',
+      text: body('Write actions change your data in Recued, so Recued held it for you.'),
+    }), vi.fn());
+    optionButtons(card)[0]!.click();
+    expect(confirmOf(card).textContent).toBe('Say yes to this. Write actions change your data in Recued.');
+  });
+
+  it('keeps the hedge on a custom ask that carries no clause', () => {
+    const card = render(model({ title: 'Approve mail-send (write)' }), vi.fn());
+    optionButtons(card)[0]!.click();
+    expect(confirmOf(card).textContent).toBe('Say yes to this. It may change things outside Recued.');
+  });
+
+  it('heads a commitment by its statement and an event by its summary', () => {
+    const commitment = render(model({
+      title: 'Approve commitment-create (write)',
+      text: [
+        'Recipe remind-to-answer-invite wants to run commitment-create (step created).',
+        'Write actions change your data in Recued, so Recued held it for you.',
+        '',
+        '  direction: outbound',
+        "  statement: Answer Harbour Dental's invite",
+        '',
+        'Approve?',
+      ].join('\n'),
+    }), vi.fn());
+    const commitmentSummary = textsOf(collectByAttr(commitment, ASK_CARD_SUMMARY_ATTR)[0]!);
+    expect(commitmentSummary).toContain("Answer Harbour Dental's invite");
+
+    const event = render(model({
+      title: 'Approve calendar-create (write)',
+      text: [
+        'Recipe add-invite-to-calendar wants to run calendar-create (step created).',
+        'Write actions change your data in Recued, so Recued held it for you.',
+        '',
+        '  slug: local',
+        '  event:',
+        '    summary: Dental check-up',
+        '    location: 1 Harbour Rd',
+        '',
+        'Approve?',
+      ].join('\n'),
+    }), vi.fn());
+    expect(textsOf(collectByAttr(event, ASK_CARD_SUMMARY_ATTR)[0]!)).toContain('Dental check-up');
+  });
+});

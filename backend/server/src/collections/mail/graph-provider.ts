@@ -46,6 +46,8 @@ import {
   MICROSOFT_TOKEN_URL,
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
+import { looksLikeIcs } from '@recued/transforms';
+import { simpleParser } from 'mailparser';
 import {
   assertProviderPageUrl,
   ProviderPaginationGuard,
@@ -184,6 +186,10 @@ export interface GraphMessagePayload {
   id: string;
   /** Present on `@removed` entries only — absent on regular entries. */
   '@removed'?: { reason: string };
+  /** The message's own type when it is a kind of message — an annotation
+   *  Graph returns whatever `$select` asks for. A meeting email is
+   *  `#microsoft.graph.eventMessage`, or its `…Request` / `…Response`. */
+  '@odata.type'?: string;
   subject?: string;
   /** RFC 5322 Message-ID. Included in the provider's explicit projection. */
   internetMessageId?: string;
@@ -419,6 +425,43 @@ const graphGet = async <T>(
   return { ok: true, data };
 };
 
+/** A GET whose answer is a message's raw MIME (`$value`), not JSON. Read as
+ *  text, which is all `HttpFetcher` offers: MIME is 7-bit or UTF-8 on the wire
+ *  in practice, and the one part read from it, an invite, is UTF-8 by RFC 5545. */
+const graphGetBytes = async (
+  url: string,
+  opts: { accessToken: string; fetcher: HttpFetcher },
+): Promise<{ ok: true; data: Buffer } | { ok: false; status: number; text: string }> => {
+  const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
+  const res = await opts.fetcher(safeUrl, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${opts.accessToken}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    return { ok: false, status: res.status, text };
+  }
+  return { ok: true, data: Buffer.from(await res.text(), 'utf8') };
+};
+
+/** D-315 slice 7 — a meeting email. Exchange turns an emailed invite, a guest's
+ *  answer or a cancellation into a meeting item, and Graph lists no `.ics`
+ *  among its attachments; the message's raw MIME still carries it. */
+export const isGraphMeetingMessage = (msg: GraphMessagePayload): boolean =>
+  typeof msg['@odata.type'] === 'string'
+  && msg['@odata.type'].toLowerCase().startsWith('#microsoft.graph.eventmessage');
+
+/** The invite inside a raw MIME message: the first part that is a calendar,
+ *  by its bytes, whatever its type says. */
+export const inviteFromMime = async (mime: Buffer): Promise<Buffer | null> => {
+  const parsed = await simpleParser(mime);
+  for (const attachment of parsed.attachments) {
+    const content = Buffer.from(attachment.content);
+    if (looksLikeIcs(content)) return content;
+  }
+  return null;
+};
+
 // ────────────────────────────────────────────────────────────────
 // Provider
 // ────────────────────────────────────────────────────────────────
@@ -512,6 +555,37 @@ export const createGraphProvider = (
     noteReadFailure(first.status, `graph ${url} → ${first.status}`, first.text);
     return null;
   };
+
+  /** `getWithRetry` for bytes. Throws on failure: its one caller is an
+   *  attachment's fetch, whose failure ingest logs per part. */
+  const getBytesWithRetry = async (url: string): Promise<Buffer> => {
+    const first = await graphGetBytes(url, { accessToken: await ensureToken(false), fetcher });
+    if (first.ok) return first.data;
+    const second = first.status === 401
+      ? await graphGetBytes(url, { accessToken: await ensureToken(true), fetcher })
+      : first;
+    if (second.ok) return second.data;
+    noteReadFailure(second.status, `graph ${url} → ${second.status}`, second.text);
+    throw new Error(`graph ${url} → ${second.status}`);
+  };
+
+  /** D-315 slice 7 — a meeting email's invite, read from its raw MIME only
+   *  when ingest stores it: one more call per meeting email, none for the
+   *  rest. A meeting item whose MIME carries no calendar fails as a part
+   *  that could not be fetched — logged, and the email's other parts kept. */
+  const meetingInvitePart = (messageId: string): InboundMailAttachmentPart => ({
+    filename: 'invite.ics',
+    mime_type: 'text/calendar',
+    size: 0,
+    source_part_id: 'meeting-invite',
+    disposition: 'attachment',
+    async fetchBytes() {
+      const mime = await getBytesWithRetry(`${GRAPH_API_BASE}/me/messages/${encodeURIComponent(messageId)}/$value`);
+      const invite = await inviteFromMime(mime);
+      if (invite === null) throw new Error(`graph meeting message ${messageId} carries no invite`);
+      return invite;
+    },
+  });
 
   /** Source-truth reconciliation must distinguish provider failure from a
    * complete empty result, unlike best-effort background sync. */
@@ -622,7 +696,15 @@ export const createGraphProvider = (
   const fetchGraphAttachmentParts = async (
     msg: GraphMessagePayload,
   ): Promise<InboundMailAttachmentPart[]> => {
-    if (!msg.hasAttachments) return [];
+    const parts = msg.hasAttachments ? await listGraphAttachmentParts(msg) : [];
+    const carriesInvite = parts.some((p) => p.mime_type === 'text/calendar' || /\.ics$/i.test(p.filename));
+    if (isGraphMeetingMessage(msg) && !carriesInvite) parts.push(meetingInvitePart(msg.id));
+    return parts;
+  };
+
+  const listGraphAttachmentParts = async (
+    msg: GraphMessagePayload,
+  ): Promise<InboundMailAttachmentPart[]> => {
     const parts: InboundMailAttachmentPart[] = [];
     let url: string | undefined =
       `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(msg.id)}/attachments`;

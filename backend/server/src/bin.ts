@@ -266,6 +266,11 @@ const dispatch = async (): Promise<void> => {
           { mkdir: () => {}, note: () => {} },
         );
         const dataDir = dirname(resolve(dbPath));
+        // Each attempt starts clean, so `recued status` shows only THIS attempt's
+        // failure — never an older one after a start that died without throwing
+        // (`cli/last-start-error.ts`).
+        const { clearLastStartError } = await import('./cli/last-start-error.js');
+        clearLastStartError(dbPath);
         const webclientDir = webclientBundleDirForDataDir(
           dataDir,
           process.env.RECUED_WEBCLIENT_DIR,
@@ -338,7 +343,21 @@ const dispatch = async (): Promise<void> => {
         }
         bootTrace.markImport('./serve-entry.js');
         const { serve } = await import('./serve-entry.js');
-        await serve(serveArgs);
+        try {
+          await serve(serveArgs);
+        } catch (err) {
+          // Under autostart nobody reads this process's stderr, so a start that
+          // failed leaves its error beside the database for `recued status`
+          // (`cli/last-start-error.ts`). A throw after the server listened is
+          // not recorded: that module's flag says so.
+          const { recordLastStartError } = await import('./cli/last-start-error.js');
+          recordLastStartError(dbPath, {
+            at: Date.now(),
+            version: SERVER_VERSION,
+            message: err instanceof Error ? err.message : String(err),
+          });
+          throw err;
+        }
       } finally {
         // Normal boot consumes this immediately after claiming the realm. This
         // fallback covers any failure before that handoff (including addon load).

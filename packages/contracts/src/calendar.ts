@@ -64,9 +64,12 @@ export interface CanonicalEvent {
   description?: string;
   location?: string;
 
-  /** Unix-ms UTC. */
+  /** Unix-ms UTC. ⛔ For an all-day event, a DAY: the UTC midnight of its
+   *  first day, whatever `timezone` says — read it with `allDayEventDays` /
+   *  `eventSpanIn` (`calendar-days.ts`), never as an instant. */
   start_at: number;
-  /** Unix-ms UTC. */
+  /** Unix-ms UTC. For an all-day event, the UTC midnight of the day AFTER its
+   *  last (exclusive). */
   end_at: number;
   /** IANA timezone, e.g. "America/New_York". */
   timezone: string;

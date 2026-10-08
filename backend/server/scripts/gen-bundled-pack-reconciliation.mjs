@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Generate the four closed D-259 reconciliation targets as TypeScript data.
+ * Generate the closed D-259 reconciliation targets as TypeScript data.
  *
  * `community/` is repository-only: npm packages and Docker runtime images ship
  * `dist/`, not the pack corpus. The boot reconciler must therefore carry its
@@ -8,15 +8,15 @@
  * prefers an exact root pack file when one exists (source/development layout),
  * and independently checks the canonical target hash either way.
  *
- * Regenerate whenever one of the four target manifests changes:
+ * Regenerate whenever one of the target manifests changes:
  *   npm run gen:pack-reconciliation
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// codex-pack left the ledger at v5 (operations added); see pack-reconciliation.ts.
 export const PACK_RECONCILIATION_TARGET_SLUGS = Object.freeze([
-  'codex-pack',
   'yt-dlp',
   'cloudflared',
   'ollama',

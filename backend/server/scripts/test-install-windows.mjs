@@ -277,6 +277,18 @@ const sshBase = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/de
   '-o', 'LogLevel=ERROR', '-o', 'NumberOfPasswordPrompts=1',
   '-o', 'PreferredAuthentications=password', '-o', 'PubkeyAuthentication=no'];
 
+// !!! SSH ASKS FOR THE PASSWORD ITSELF -- NO sshpass. sshpass types it when it
+// spots the prompt on a pty, and against OpenSSH 10.3 that lost the race: 4 of
+// 12 back-to-back logins were refused with "Permission denied (publickey,
+// password,keyboard-interactive)", and 5 of 6 runs died at a fixture login,
+// while the guest's sshd logged nothing for any of them -- the password was
+// never sent. With SSH_ASKPASS_REQUIRE=force ssh runs this program for it, no
+// prompt to spot: 12 of 12 (2026-10-06). The script holds no secret; it prints
+// WIN_VM_PASS from the environment ssh hands it.
+const askpass = join(work, 'askpass.sh');
+writeFileSync(askpass, '#!/bin/sh\nprintf \'%s\\n\' "$WIN_VM_PASS"\n', { mode: 0o700 });
+const sshEnv = { SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: 'force', WIN_VM_PASS: VM.pass };
+
 /** Compile the minimum executable contract the installer itself calls. Add-Type
  * runs on the Windows guest, so this is a genuine PE that both ARM64 and x64
  * Windows can execute as an AnyCPU .NET Framework console application.
@@ -386,8 +398,8 @@ Write-Output FIXTURE-OK`;
       + 'Windows command-line ceiling. Shorten the C# source (comments belong in this file, '
       + 'not in `source` -- UTF-16 + base64 makes each C# byte cost ~2.7 here).');
   }
-  const result = await run('sshpass', ['-e', 'ssh', ...sshBase, '-p', VM.port,
-    `${VM.user}@${VM.host}`, `powershell -NoProfile -EncodedCommand ${encoded}`], { SSHPASS: VM.pass });
+  const result = await run('ssh', [...sshBase, '-p', VM.port,
+    `${VM.user}@${VM.host}`, `powershell -NoProfile -EncodedCommand ${encoded}`], sshEnv);
   if (result.code !== 0 || !result.out.includes('FIXTURE-OK')) {
     fail(`could not compile Windows ${version} installer fixture:\n${result.out}`);
   }
@@ -448,16 +460,16 @@ say(`feeds: ${readdirSync(feedRoot).join(', ')}`);
 const remotePs1 = `C:/Users/${VM.user}/recued-install-test.ps1`;
 
 say('copying the payload to the guest');
-const scp = await run('sshpass', ['-e', 'scp', ...sshBase, '-P', VM.port, PAYLOAD,
-  `${VM.user}@${VM.host}:${remotePs1}`], { SSHPASS: VM.pass });
-if (scp.code !== 0) fail(`scp failed (is sshpass installed? brew install sshpass):\n${scp.out}`);
+const scp = await run('scp', [...sshBase, '-P', VM.port, PAYLOAD,
+  `${VM.user}@${VM.host}:${remotePs1}`], sshEnv);
+if (scp.code !== 0) fail(`scp failed:\n${scp.out}`);
 
 // !! `powershell -File` passes arguments LITERALLY -- no quote processing -- so
 // both values below are deliberately quote-free tokens.
 const remoteCmd = `powershell -NoProfile -ExecutionPolicy Bypass -File ${remotePs1.replace(/\//g, '\\')} -Base ${BASE} -PubKey ${PUB}`;
 say('running the arms on the guest');
-const r = await run('sshpass', ['-e', 'ssh', ...sshBase, '-p', VM.port,
-  `${VM.user}@${VM.host}`, remoteCmd], { SSHPASS: VM.pass });
+const r = await run('ssh', [...sshBase, '-p', VM.port,
+  `${VM.user}@${VM.host}`, remoteCmd], sshEnv);
 
 srv.close();
 console.log('');

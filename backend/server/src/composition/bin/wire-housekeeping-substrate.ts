@@ -924,7 +924,7 @@ export const composeHousekeepingScheduler = async (
           listTasks: () => workEntityStore.listTasks({ sync_states: ['live'] }),
           listCommitments: () => workEntityStore.listCommitments({ sync_states: ['live'] }),
           listCalendar: (from, to) => {
-            const out: Array<{ record_id: string; summary: string; start_at: number; status?: string }> = [];
+            const out: Array<{ record_id: string; summary: string; start_at: number; status?: string; is_all_day: boolean }> = [];
             for (const instance of instances.list('calendar')) {
               // ⚠ BOUNDED BY THE HORIZON the caller passed. An unbounded read
               // over a synced account is fine on a fixture and ruinous in life.
@@ -935,6 +935,7 @@ export const composeHousekeepingScheduler = async (
                   record_id: `${instance.slug}:${row.ical_uid ?? row.summary}:${row.start_at}`,
                   summary: row.summary,
                   start_at: row.start_at,
+                  is_all_day: row.is_all_day === true,
                   ...(row.status !== undefined ? { status: row.status } : {}),
                 });
               }

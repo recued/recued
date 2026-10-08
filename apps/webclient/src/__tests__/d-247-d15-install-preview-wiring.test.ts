@@ -301,6 +301,43 @@ describe('D-247 D15 — the preview seam is actually called', () => {
     expect(findByAttr(dialog!, INSTALL_RECIPE_DISCLOSURE_ATTR)).toBeNull();
   });
 
+  it('a recipe the preview does not list is closed: the dialog offers it at NO tier', async () => {
+    // Live drive, 2026-10-07: a pack of trigger-driven recipes (none chat-exposed)
+    // offered "Read only — Look at things only" with every recipe under it,
+    // though the install writes them closed at any tier and three of them write.
+    const h = setup(async () => ({ resolved: true, will_enable: [], hidden_count: 1 }));
+    await openDialog(h);
+    const dialog = findByAttr(h.host, PACKS_DIALOG_ATTR);
+    expect(dialog).not.toBeNull();
+    expect(findByAttr(dialog!, INSTALL_GRANT_PICKER_ATTR)).toBeNull();
+    expect(h.mount.getDialogAccessTier()).toBeNull();
+  });
+
+  it('a listed recipe is offered at its own tier, and Read no longer claims it', async () => {
+    const h = setup(async () => preview);
+    await openDialog(h);
+    const picker = findByAttr(findByAttr(h.host, PACKS_DIALOG_ATTR)!, INSTALL_GRANT_PICKER_ATTR);
+    expect(picker).not.toBeNull();
+    const textOf = (n: FakeElement): string =>
+      [n.textContent ?? '', ...n.children.map(textOf)].join(' ');
+    // Each tier is an `li.igp-access-row`: its radio carries the tier, its
+    // caption what that tier adds.
+    const rows: FakeElement[] = [];
+    const walk = (n: FakeElement): void => {
+      if (n.className === 'igp-access-row') rows.push(n);
+      n.children.forEach(walk);
+    };
+    walk(picker!);
+    const byTier = new Map(rows.map((row) => [
+      findByAttr(row, INSTALL_GRANT_ACCESS_OPTION_ATTR)!.getAttribute('data-access'),
+      textOf(row),
+    ]));
+    // `refund-payment-square` is destructive: Full access adds it, Read does not.
+    expect([...byTier.keys()]).toEqual(['read', 'all']);
+    expect(byTier.get('all')).toContain('Adds: recued-core/refund-payment-square');
+    expect(byTier.get('read')).not.toContain('Adds:');
+  });
+
   it('no seam wired ⇒ the dialog still opens (an older host)', async () => {
     const h = setup(undefined);
     await openDialog(h);

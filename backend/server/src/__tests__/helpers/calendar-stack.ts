@@ -28,11 +28,16 @@ export interface SeedEvent {
   calendar?: string;
   attendees?: CanonicalEvent['attendees'];
   location?: string;
+  /** Stored as days: `start_at` a UTC midnight, `minutes` whole days. */
+  is_all_day?: boolean;
 }
 
 export const createTestCalendarStack = async (opts: {
   now: () => number;
   calendars?: readonly string[];
+  /** The owner's zone, as the server reads it: `calendar-list` windows meet
+   *  an all-day event at its local midnight there. */
+  timeZone?: string;
 }) => {
   const calendars = opts.calendars ?? ['work'];
   const db = new Database(':memory:');
@@ -57,6 +62,7 @@ export const createTestCalendarStack = async (opts: {
       }),
     }] as never,
     now: opts.now,
+    ...(opts.timeZone === undefined ? {} : { ownerTimeZone: () => opts.timeZone! }),
   });
   for (const slug of calendars) {
     createInstanceStore({ db }).upsert({
@@ -72,7 +78,7 @@ export const createTestCalendarStack = async (opts: {
       event: {
         source_id: event.source_id, ical_uid: `${event.source_id}@x`, calendar_id: 'primary',
         summary: event.summary ?? event.source_id, start_at: event.start_at,
-        end_at: event.start_at + (event.minutes ?? 30) * 60_000, timezone: 'UTC', is_all_day: false,
+        end_at: event.start_at + (event.minutes ?? 30) * 60_000, timezone: 'UTC', is_all_day: event.is_all_day === true,
         status: 'confirmed', created_at: 1, updated_at: 1,
         ...(event.attendees ? { attendees: event.attendees } : {}),
         ...(event.location ? { location: event.location } : {}),

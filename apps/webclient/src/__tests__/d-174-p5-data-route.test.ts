@@ -4548,6 +4548,24 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it('a CANCELLED event offers no Reschedule — moving it would keep it cancelled', async () => {
+    // Live drive, 2026-10-07: the cancelled dental appointment still offered it.
+    const cancelled = { ...reschedCalRecord, hot_fields: { ...reschedCalRecord.hot_fields, status: 'cancelled' } };
+    const rig = mountCalendar({
+      collectionListCaller: vi.fn(async () => ({ records: [cancelled] })) as never,
+      collectionGetCaller: vi.fn(async () => ({ record: cancelled })) as never,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('calendar');
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: 'evt-1' });
+    await flushOpen();
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Booking with Alex'); // the record did open
+    expect(html).toContain('<dt>Status</dt><dd>Cancelled</dd>');
+    expect(html).not.toContain('reschedule-open');
+    rig.route.dispose();
+  });
+
   it('Save runs reschedule-calendar-event with the slug, source_id, and new start/end (end shifts by duration)', async () => {
     const recipeExecuteCaller = vi.fn<
       NonNullable<BootstrapDataRouteOptions['recipeExecuteCaller']>
@@ -4577,6 +4595,51 @@ describe('D-174 P5 Data route', () => {
         event_source_id: 'evt-1',
         new_start_at: expectedStart,
         new_end_at: expectedStart + (RESCHED_T2 - RESCHED_T1),
+      },
+    });
+    rig.route.dispose();
+  });
+
+  it('an ALL-DAY event is moved by days: a day picker on its first day, the same number of days long (2026-10-07)', async () => {
+    // Stored as the UTC midnights of 24 Dec and of the day after 25 Dec. The
+    // time picker read it as an instant (23 Dec, 16:00 in Los Angeles) and
+    // wrote the picked TIME into a day event.
+    const holiday = {
+      ...reschedCalRecord,
+      hot_fields: { summary: 'Holiday', is_all_day: true, start_at: Date.UTC(2026, 11, 24), end_at: Date.UTC(2026, 11, 26) },
+    };
+    const recipeExecuteCaller = vi.fn<
+      NonNullable<BootstrapDataRouteOptions['recipeExecuteCaller']>
+    >(async (args) => executeResponse(args.recipe_id));
+    const rig = mountCalendar({
+      recipeExecuteCaller,
+      collectionListCaller: vi.fn(async () => ({ records: [holiday] })) as never,
+      collectionGetCaller: vi.fn(async () => ({ record: holiday })) as never,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('calendar');
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: 'evt-1' });
+    await flushOpen();
+    emitClick(rig.root.children[0]!, 'reschedule-open');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('New day');
+    expect(html).toContain('type="date"');
+    expect(html).toContain('value="2026-12-24"');
+    expect(html).not.toContain('datetime-local');
+    emitInput(rig.root.children[0]!, {
+      value: '2027-01-04',
+      hasAttribute: () => false,
+      getAttribute: (k) => (k === 'data-recued-data-action' ? 'reschedule-input' : null),
+    });
+    emitClick(rig.root.children[0]!, 'reschedule-submit');
+    await flushOpen();
+    expect(recipeExecuteCaller).toHaveBeenCalledWith({
+      recipe_id: 'reschedule-calendar-event',
+      config: {
+        calendar_slug: 'local',
+        event_source_id: 'evt-1',
+        new_start_at: Date.UTC(2027, 0, 4),
+        new_end_at: Date.UTC(2027, 0, 6),
       },
     });
     rig.route.dispose();

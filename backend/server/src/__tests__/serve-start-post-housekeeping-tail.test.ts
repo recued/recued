@@ -184,6 +184,28 @@ describe('startPostHousekeepingTail', () => {
     });
   });
 
+  it('clears a recorded failed start once the server is listening', async () => {
+    // `recued status` shows the last failed start until a start gets this far
+    // (`cli/last-start-error.ts`); a stale one would blame a server that is up.
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const lastStart = await import('../cli/last-start-error.js');
+    const realm = mkdtempSync(join(tmpdir(), 'tail-last-start-'));
+    try {
+      const dbPath = join(realm, 'recued-server.db');
+      lastStart.resetLastStartErrorForTests();
+      lastStart.recordLastStartError(dbPath, { at: 1, version: 'v', message: 'an earlier start failed' });
+      expect(lastStart.readLastStartError(dbPath)).not.toBeNull();
+
+      startPostHousekeepingTail(makeOptions({ dbPath }));
+
+      expect(lastStart.readLastStartError(dbPath)).toBeNull();
+    } finally {
+      lastStart.resetLastStartErrorForTests();
+      rmSync(realm, { recursive: true, force: true });
+    }
+  });
+
   it('keeps banner enrollment status false without a recovery-key store', () => {
     const options = makeOptions({
       storage: {

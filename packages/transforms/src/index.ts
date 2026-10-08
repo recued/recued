@@ -17,8 +17,25 @@ export {
   type CsvFilterOptions, type CsvFilterResult, type CsvRowsOptions, type CsvRowsResult,
   type CsvColumnsOptions, type CsvMatchMode, type CsvStatsResult, type CsvColumnStats,
 } from './csv-file.js';
+/** D-315 slice 7 — reading an iCalendar file (an invite, a reply, a
+ *  cancellation), as pure functions on text or bytes. For the kernel op that
+ *  owns the read (`core.storage.ics.read`) and for mail ingest, which stores an
+ *  invite as `text/calendar` and lets one copy of it start a recipe. */
+export {
+  parseIcs, looksLikeIcs, icsInviteKey,
+  ICS_MAX_BYTES, ICS_MAX_EVENTS, ICS_MAX_ATTENDEES, ICS_MAX_DESCRIPTION,
+  type IcsParseResult, type IcsParseOptions, type IcsEvent, type IcsAttendee, type IcsPerson,
+  type IcsYou, type IcsMethod, type IcsPartstat, type IcsRole, type IcsAttendeeKind, type IcsTimeBasis,
+} from './ics.js';
+/** The same reader's parts, for the CalDAV adapter, which keeps a calendar's
+ *  own file to edit it in place: content lines, date values, durations, text,
+ *  and the zones an object's times are read in (its own rules first). */
+export {
+  icsClock, parseIcsLine, readIcsDateTime, readIcsDuration, unescapeIcsText,
+  type IcsClock, type IcsZone, type IcsContentLine,
+} from './ics.js';
 import { round, clamp, to_number, math, weighted_score } from './numeric.js';
-import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date } from './date.js';
+import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date, event_when } from './date.js';
 import { compare, coalesce, switch_, all, any, count, default_, defaults_, not_, ternary, pluralize } from './logic.js';
 import { hash_replace, hash_restore, redact } from './privacy.js';
 // A step's legacy `pii_fields`, hashed at dispatch over the RESOLVED input.
@@ -156,7 +173,7 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   // Date
   ['date_diff', date_diff], ['date_format', date_format], ['date_add', date_add],
   ['date_parse', date_parse], ['is_past', is_past], ['is_future', is_future], ['date_period', date_period],
-  ['to_recent_date', to_recent_date],
+  ['to_recent_date', to_recent_date], ['event_when', event_when],
   // Logic
   ['compare', compare], ['coalesce', coalesce], ['switch', switch_], ['all', all], ['any', any], ['count', count],
   ['default', default_], ['defaults', defaults_], ['not', not_], ['ternary', ternary], ['pluralize', pluralize],

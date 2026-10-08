@@ -51,6 +51,10 @@ export interface CollectionEmitOptions {
   /** Published while another collection drained its initial backfill
    *  (`WarehouseEvent.in_drain`). */
   readonly in_drain?: boolean;
+  /** The record as written (`WarehouseEvent.record`), for a collection whose
+   *  rows are small enough to ride the event: a trigger's `filter` reads it
+   *  before a run is queued. */
+  readonly record?: Readonly<Record<string, unknown>>;
 }
 
 export interface CollectionEventEmitter {
@@ -107,6 +111,7 @@ export const createCollectionEmitter = (
       ...(prev !== undefined ? { prev } : {}),
       ...(changed_fields !== undefined ? { changed_fields: [...changed_fields] } : {}),
       ...(options?.in_drain === true ? { in_drain: true as const } : {}),
+      ...(options?.record !== undefined ? { record: { ...options.record } } : {}),
     });
   };
 

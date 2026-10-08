@@ -3,8 +3,9 @@
  *  Each column carries an optional `format` (`currency`, `percent`,
  *  `number`, `date`, `relative`); the cell value for that column runs
  *  through `formatValue(cell, column.format)`. Columns resolve cell
- *  values by `field` key on each row object; rows that aren't objects
- *  render as empty cells.
+ *  values by `field` — a path into each row (`value.score`,
+ *  `attendees.0.email`; `table-field.ts`); rows that aren't objects render as
+ *  empty cells.
  *
  *  ⛔⛔ D-282 B2 — EVERY HEADER USED TO CARRY `data-sort-field`, `class="sortable-th"`
  *  and an empty `<span class="sort-arrow">`, above a `<table data-sortable>`. The header
@@ -26,6 +27,7 @@ import { formatValue } from './format.js';
 import { renderBlockError, renderEmptyCollection } from './block-error.js';
 import { renderBlockLabel } from './label.js';
 import { renderActionGroupInline } from './action.js';
+import { tableFieldValue } from './table-field.js';
 import type { TableData } from './types.js';
 import { NUMERIC_FIELD_KINDS, type ResolvedRecordColumnsDescriptor } from '@recued/contracts';
 
@@ -63,9 +65,7 @@ const groupRows = (
   const buckets = new Map<string, { key: string; label: string; rows: unknown[] }>();
   const UNGROUPED = '\u0000ungrouped';
   for (const row of rows) {
-    const raw = row && typeof row === 'object'
-      ? (row as Record<string, unknown>)[field]
-      : undefined;
+    const raw = tableFieldValue(row, field);
     const empty = raw === undefined || raw === null || String(raw).trim() === '';
     const key = empty ? UNGROUPED : String(raw);
     const existing = buckets.get(key);
@@ -127,9 +127,7 @@ export const renderTableBlock = (
               <tr>
                 ${columns
                   .map((c) => {
-                    const cell = row && typeof row === 'object'
-                      ? (row as Record<string, unknown>)[c.field]
-                      : undefined;
+                    const cell = tableFieldValue(row, c.field);
                     return `<td${(c as { numeric?: boolean }).numeric === true ? ' class="is-numeric"' : ''}>${c.type === 'action'
                       ? renderActionGroupInline(cell)
                       : e(formatValue(cell, c.format))}</td>`;

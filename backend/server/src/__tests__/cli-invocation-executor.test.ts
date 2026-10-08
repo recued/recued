@@ -103,6 +103,37 @@ describe('cli_invocation executor', () => {
     })).rejects.toThrow(/cwd .* must resolve to an existing directory/);
   });
 
+  it('returns the session id the Codex adapter read off the stream, beside the output', async () => {
+    const exec = createCliInvocationExecutor();
+    const lines = [
+      { type: 'thread.started', thread_id: '01a11547-8fbc-7fe0-a797-15386c92c9db' },
+      { type: 'item.completed', item: { id: '1', type: 'agent_message', text: 'done' } },
+      { type: 'turn.completed' },
+    ].map((line) => JSON.stringify(line)).join('\n');
+
+    const result = await exec({
+      slug: 'codex',
+      operation_key: 'codex.review',
+      operation_id: 'recued-core/codex.review',
+      args: {},
+      timeout_ms: 5_000,
+      binding: {
+        kind: 'cli_invocation',
+        argv_template: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(lines)} + "\\n")`],
+        shape: 'text',
+        exit_code_handling: 'zero_is_success',
+        progress: { contract: 'heartbeat', adapter: 'codex-jsonl', stall_ms: 5_000 },
+      },
+    }) as Record<string, unknown>;
+
+    expect(result).toMatchObject({
+      exit_code: 0,
+      session_id: '01a11547-8fbc-7fe0-a797-15386c92c9db',
+    });
+    // The executor's own fields are untouched: the fact only rides beside them.
+    expect(String(result.stdout)).toContain('thread.started');
+  });
+
   it('rejects foreground non-success exit codes', async () => {
     const exec = createCliInvocationExecutor();
 

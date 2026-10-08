@@ -710,3 +710,48 @@ describe('projectBatchedApprovalPayload', () => {
     });
   });
 });
+
+describe('an instant reads as a date, not a millisecond count', () => {
+  // Found on a live drive (2026-10-07): a booking, a commitment's deadline and
+  // a calendar event each asked for approval as `slot_start_at: 1792256400000`.
+  it('renders a millisecond *_at as a named UTC time', () => {
+    expect(summarizeArgsPreview({ slot_start_at: 1792256400000 }))
+      .toBe('slot_start_at: 17 Oct 2026, 17:00 UTC');
+    // Seconds only when there are some.
+    expect(summarizeArgsPreview({ at: 1792256412000 }))
+      .toBe('at: 17 Oct 2026, 17:00:12 UTC');
+  });
+
+  it('renders it inside a nested object too, in the item block', () => {
+    const block = renderBatchItemsBlock([{
+      summary: 'event',
+      args_preview: { slug: 'local', event: { summary: 'Dental', start_at: 1792256400000 } },
+    }]);
+    expect(block).toContain('start_at: 17 Oct 2026, 17:00 UTC');
+    expect(block).not.toContain('1792256400000');
+    // And inside a list of objects, which renders inline rather than flattened.
+    expect(summarizeArgsPreview({ slots: [{ start_at: 1792256400000 }] }))
+      .toBe('slots: 1: {start_at: 17 Oct 2026, 17:00 UTC}');
+  });
+
+  it('leaves everything that is not a millisecond instant alone', () => {
+    // Epoch SECONDS would read as January 1970 — the range is the guard.
+    expect(summarizeArgsPreview({ expires_at: 1792256400 })).toBe('expires_at: 1792256400');
+    // Not an `_at` key, even with a millisecond-sized value.
+    expect(summarizeArgsPreview({ amount: 1792256400000 })).toBe('amount: 1792256400000');
+    // `format` ends in "at" but is not an instant key.
+    expect(summarizeArgsPreview({ format: 1792256400000 })).toBe('format: 1792256400000');
+    // A string time is already readable and passes through.
+    expect(summarizeArgsPreview({ due_at: '2026-10-17' })).toBe('due_at: 2026-10-17');
+  });
+
+  it('decides hoisting on the raw value, never the rendering', () => {
+    // Two members a second apart render to the same minute; they must NOT
+    // hoist into "All 2 share", which would claim one time for both.
+    const block = renderBatchItemsBlock([
+      { summary: 'a', args_preview: { title: 'x', slot_start_at: 1792256400000 } },
+      { summary: 'b', args_preview: { title: 'x', slot_start_at: 1792256400500 } },
+    ]);
+    expect(block).not.toMatch(/share[^\n]*slot_start_at/);
+  });
+});

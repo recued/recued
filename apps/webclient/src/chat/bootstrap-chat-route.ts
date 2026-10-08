@@ -5,6 +5,8 @@ import { CHAT_DELIVERY_STYLES, createChatDeliveryView, type ChatDeliveryClient }
 import { createMessengerSessionList, CHAT_MESSENGER_LIST_STYLES } from './messenger-session-list.js';
 import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES } from './history-filters.js';
 import {
+  DAY_MS,
+  allDayEventDays,
   chatSessionMatchesFilters,
   hasChatHistoryFilters,
   isChatToolCallRecord,
@@ -3092,6 +3094,30 @@ const planDetailValue = (value: unknown): string => {
   return formatPlanArgs(value);
 };
 
+const PLAN_DAY = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC',
+});
+
+/** A `*_at` the model sent, as epoch ms — it showed as the raw number. A
+ *  moment reads in the viewer's zone. ⛔ An all-day event's start and end are
+ *  DAYS (`calendar-days.ts`): as a moment, a 24 December holiday was 23
+ *  December, 4:00 pm in Los Angeles; the end reads as its last day. */
+const planInstantValue = (
+  key: string,
+  value: unknown,
+  args: Record<string, unknown>,
+): string | null => {
+  if (typeof value !== 'number' || !/_at$/.test(key) || !Number.isInteger(value) || value < 1e11 || value >= 1e14) {
+    return null;
+  }
+  if (args.is_all_day === true && (key === 'start_at' || key === 'end_at')) {
+    const start = typeof args.start_at === 'number' ? args.start_at : value;
+    const days = allDayEventDays({ start_at: start, end_at: typeof args.end_at === 'number' ? args.end_at : start + DAY_MS });
+    return `${PLAN_DAY.format(new Date(`${key === 'start_at' ? days.first : days.last}T00:00:00Z`))} (all day)`;
+  }
+  return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+};
+
 const planDetailEntries = (
   args: unknown,
 ): ReadonlyArray<readonly [label: string, value: string]> => {
@@ -3100,10 +3126,14 @@ const planDetailEntries = (
     && typeof args === 'object'
     && !Array.isArray(args)
   ) {
-    const entries = Object.entries(args as Record<string, unknown>);
+    const record = args as Record<string, unknown>;
+    const entries = Object.entries(record);
     if (entries.length > 0) {
       return entries.map(
-        ([key, value]) => [planDetailLabel(key), planDetailValue(value)] as const,
+        ([key, value]) => [
+          planDetailLabel(key),
+          planInstantValue(key, value, record) ?? planDetailValue(value),
+        ] as const,
       );
     }
   }

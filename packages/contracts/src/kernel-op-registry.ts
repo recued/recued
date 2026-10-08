@@ -803,6 +803,11 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.storage.csv.rows', 'storage', 'csv-rows', 'read', 'file'),
   op('core.storage.csv.stats', 'storage', 'csv-stats', 'read', 'file'),
   op('core.storage.csv.columns', 'storage', 'csv-columns', 'read', 'file'),
+  /** D-315 slice 7 (ruling 34) — read a stored iCalendar file (an invite, a
+   *  guest's answer, a cancellation) into its method and events, the owner
+   *  placed in each. Reads file content, so it is fenced as `data.file` with
+   *  the CSV ops. */
+  op('core.storage.ics.read', 'storage', 'ics-read', 'read', 'file'),
   op('core.storage.data-file-read', 'storage', 'data-file-read', 'read', 'file'),
 
   // ── schedule — D-193 installed-recipe scheduling control plane.

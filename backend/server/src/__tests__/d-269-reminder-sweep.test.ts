@@ -100,6 +100,27 @@ describe('D-269 — a reminder is OWED inside [now, now + offset]', () => {
   });
 });
 
+describe('an ALL-DAY event is not "starting soon" (2026-10-07)', () => {
+  it('reminds of a timed calendar event, and never of an all-day one', () => {
+    // An all-day event is stored at the UTC midnight of its day
+    // (`calendar-days.ts`): inside the window, it was "starting soon" at 4 pm
+    // the day before in Los Angeles, naming "…T00:00:00.000Z".
+    const sent: string[] = [];
+    const day = Date.parse('2026-06-16T00:00:00Z'); // 12 hours ahead of NOW
+    const result = runReminderSweep(deps({
+      listBookings: () => [],
+      policy: () => ({ enabled: true, offset_ms: 13 * HOUR, respects_quiet_hours: false }),
+      listCalendar: () => [
+        { record_id: 'holiday', summary: 'Holiday', start_at: day, is_all_day: true },
+        { record_id: 'call', summary: 'Call', start_at: NOW + HOUR, is_all_day: false },
+      ],
+      notify: (m) => { sent.push(`${m.title}: ${m.text}`); },
+    }));
+    expect(sent).toEqual([expect.stringMatching(/^Starting soon: Call — /)]);
+    expect(result.calendar_visited).toBe(1);
+  });
+});
+
 describe('D-269 — ⛔⛔ the dedup key carries the ANCHOR', () => {
   it('reminds once, not every cycle', () => {
     const sent: string[] = [];

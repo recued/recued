@@ -312,8 +312,16 @@ const decodeInner = async (
   }
   if (doc.encrypted) {
     if (!passphrase) {
+      // The whole boot output of a server that cannot open its keyfile, so it
+      // says what to DO. It used to say only "file is encrypted but no
+      // passphrase supplied" — while the installer told owners such a server
+      // starts LOCKED and waits for `recued unlock`. It does not: it exits
+      // here, and nothing can unlock a server that is not running.
       throw new Error(
-        'createFileServerKeyStore: file is encrypted but no passphrase supplied',
+        `createFileServerKeyStore: ${keyfilePath} is sealed with a passphrase, and RECUED_IDENTITY_PASSPHRASE is not set. `
+        + 'Start with that variable set to the passphrase. A service started at boot or login needs it in '
+        + "the service's own environment (a systemd EnvironmentFile, a launchd EnvironmentVariables entry); "
+        + "it does not see your shell's.",
       );
     }
     if (!doc.kdf_salt_b64 || !doc.kdf_params) {

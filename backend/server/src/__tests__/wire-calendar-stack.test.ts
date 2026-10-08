@@ -58,6 +58,7 @@ import { createGcalAdapterFactory } from '../collections/calendar/gcal-provider.
 import { createGraphCalAdapterFactory } from '../collections/calendar/graph-provider.js';
 import { createCalDavAdapterFactory } from '../collections/calendar/caldav-provider.js';
 import { deriveContactsFromCalendar } from '../warehouse/contact-derive.js';
+import { createServerTimeZoneStore } from '../storage/server-timezone-store.js';
 import {
   composeCalendarBoot,
   type ComposeCalendarStackBootDeps,
@@ -441,6 +442,38 @@ describe('composeCalendarBoot', () => {
     composeCalendarBoot(buildDeps({ accountStore: undefined }));
     [, , bundle] = lastComposeCall();
     expect(Object.hasOwn(bundle, 'accountStore')).toBe(false);
+  });
+
+  it("hands the CalDAV adapter the owner's zone, read from their setting each time (2026-10-07)", async () => {
+    // A floating CalDAV time is read in it. Read per use: an owner who
+    // corrects their zone reads the next sync in the new one.
+    const BetterSqlite = (await import('better-sqlite3')).default;
+    const real = new BetterSqlite(':memory:');
+    try {
+      composeCalendarBoot(buildDeps({ db: real }));
+      const caldavOptions = vi.mocked(createCalDavAdapterFactory).mock.calls[0]![0];
+      createServerTimeZoneStore(real).write('fixed', 'Asia/Tokyo', 1);
+      expect(caldavOptions.timeZone?.()).toBe('Asia/Tokyo');
+      createServerTimeZoneStore(real).write('fixed', 'Europe/Berlin', 2);
+      expect(caldavOptions.timeZone?.()).toBe('Europe/Berlin');
+    } finally {
+      real.close();
+    }
+  });
+
+  it("hands the calendar reads the same zone — `calendar-list` reads a day on the owner's clock (2026-10-07)", async () => {
+    const BetterSqlite = (await import('better-sqlite3')).default;
+    const real = new BetterSqlite(':memory:');
+    try {
+      composeCalendarBoot(buildDeps({ db: real }));
+      const [, , bundle] = lastComposeCall();
+      createServerTimeZoneStore(real).write('fixed', 'America/Los_Angeles', 1);
+      expect(bundle.ownerTimeZone?.()).toBe('America/Los_Angeles');
+      createServerTimeZoneStore(real).write('fixed', 'Asia/Tokyo', 2);
+      expect(bundle.ownerTimeZone?.()).toBe('Asia/Tokyo');
+    } finally {
+      real.close();
+    }
   });
 
   it('uses an empty CalDAV etagStore list when accountStore is undefined', async () => {

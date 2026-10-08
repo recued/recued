@@ -314,6 +314,9 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   is_past: { rule: 'destroy' },
   is_future: { rule: 'destroy' },
   date_period: { rule: 'destroy' },
+  // event_when reads an event's times and all-day flag only; what it returns is
+  // dates and clock times, never the event's text.
+  event_when: { rule: 'destroy' },
   // ── Logic ──
   compare: { rule: 'destroy' },
   coalesce: { rule: 'union_values', args: ['values'] },

@@ -390,13 +390,15 @@ const COLLECTION_ARG_SLUGS: ReadonlySet<string> = new Set([
  *  collection's grant reach every other, which is precisely the hazard the
  *  annotation sidecar note above describes. It stays denied at a fenced door
  *  until the fence can express a pair; that is a design change, not a list entry. */
-/** The CSV kernel ops: each reads one stored file's content (by `record_id` or
+/** The kernel ops that parse a stored file — the CSV ops and `ics-read` (D-315
+ *  slice 7): each reads one stored file's content (by `record_id`, or a CSV op
  *  by a named instance's `{slug, path}`), so each is fenced as `data.file`. */
-const CSV_FILE_READ_SLUGS: ReadonlySet<string> = new Set([
+const STORED_FILE_PARSE_SLUGS: ReadonlySet<string> = new Set([
   'csv-columns',
   'csv-filter',
   'csv-rows',
   'csv-stats',
+  'ics-read',
 ]);
 
 const NO_GOVERNED_COLLECTION_SLUGS: ReadonlySet<string> = new Set([
@@ -455,13 +457,14 @@ export const deriveDispatchScope = (
     if (tool.slug === 'data-file-read') {
       return 'data.file';
     }
-    // ⛔ THE CSV OPS READ FILE CONTENT, so they face the same `data.file` fence.
-    // Their slug leads with `csv`, so the generic rule would derive `data.csv`,
-    // which no grant can name. It costs the owner nothing extra: the ops'
-    // entity is `file`, and the one Files toggle that grants them writes the
-    // `data.file` row too. Without this a door fenced away from files could
-    // read a named file through a CSV op, which `file.read` refuses.
-    if (CSV_FILE_READ_SLUGS.has(tool.slug)) {
+    // ⛔ THE CSV OPS READ FILE CONTENT, so they face the same `data.file` fence
+    // — and so does `ics-read`. Their slugs lead with `csv` / `ics`, so the
+    // generic rule would derive `data.csv` / `data.ics`, which no grant can
+    // name. It costs the owner nothing extra: the ops' entity is `file`, and
+    // the one Files toggle that grants them writes the `data.file` row too.
+    // Without this a door fenced away from files could read a named file
+    // through a CSV op, which `file.read` refuses.
+    if (STORED_FILE_PARSE_SLUGS.has(tool.slug)) {
       return 'data.file';
     }
     // FormResponses use the canonical underscore collection name. The generic

@@ -66,6 +66,7 @@ import {
   CLI_DETACHED_COMPLETION_KINDS,
   CLI_DETACHED_CANCEL_KINDS,
   CLI_PROGRESS_ADAPTERS,
+  CLI_PROGRESS_ANSWER_ADAPTERS,
   SERVICE_CHECK_KINDS,
   SERVICE_RESTART_POLICIES,
   CATALOG_CONNECTOR_INVOKE_TIMEOUT_CAP_MS,
@@ -2763,6 +2764,27 @@ const validateConnectorSurface = (
               add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_input_arg`,
                 `cli_invocation binding for '${opKey}' output_capture.from_input_arg '${fromInputArg}' must equal input_materialize.arg '${String(m.arg)}'`);
             }
+          }
+        }
+        // ANSWER capture — installed-catalog mirror of the authoring arm. The
+        // answer comes from the op's heartbeat adapter, so an op that declares
+        // the capture without an answer-reading adapter could only ever fail.
+        if (isObjectRecord(rawCapture) && rawCapture.from_progress_answer !== undefined) {
+          const progress = rawBinding.progress;
+          const adapter = isObjectRecord(progress) && progress.contract === 'heartbeat'
+            ? progress.adapter
+            : undefined;
+          if (rawCapture.from_progress_answer !== true) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_progress_answer`,
+              `cli_invocation binding for '${opKey}' output_capture.from_progress_answer must be literal true when present`);
+          } else if (rawCapture.dir_arg !== undefined || rawCapture.from_input_arg !== undefined
+            || rawCapture.from_stdout !== undefined) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture`,
+              `cli_invocation binding for '${opKey}' output_capture declares from_progress_answer alongside another arm — declare exactly one`);
+          } else if (typeof adapter !== 'string'
+            || !(CLI_PROGRESS_ANSWER_ADAPTERS as readonly string[]).includes(adapter)) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.progress`,
+              `cli_invocation binding for '${opKey}' output_capture.from_progress_answer requires a heartbeat adapter that reads a final answer (${CLI_PROGRESS_ANSWER_ADAPTERS.join('|')})`);
           }
         }
         // D-172 I-4 — input_materialize is foreground-only: a detached job redirects

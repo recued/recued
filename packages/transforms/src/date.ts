@@ -1,5 +1,13 @@
 import type { TransformFn, DateUnit } from './types.js';
-import { toRecentMs } from '@recued/contracts';
+import {
+  allDayEventDays,
+  calendarDayMs,
+  DAY_MS,
+  localDayAsDateOnly,
+  toRecentMs,
+  zonedWallClockToEpochMs,
+  zoneOffsetMsAt,
+} from '@recued/contracts';
 
 const DIVISORS: Record<DateUnit, number> = {
   seconds: 1_000,
@@ -152,6 +160,16 @@ export const date_parse: TransformFn = (p) => {
   // fail closed to null rather than schedule the wrong instant. Opt-in — the
   // default stays lenient for the many callers parsing already-anchored data.
   if (p.require_offset === true) return parseInstantWithOffset(raw);
+  // D-315 slice 7 — a WALL CLOCK (a day, or a time with no offset) read in the
+  // zone the recipe names, usually `{{context.server.time_zone}}`, the owner's.
+  // Without it `new Date()` reads the SERVER PROCESS's clock: on a server in UTC
+  // a date-only stay was booked from the evening before, west of UTC. A value
+  // that carries its own offset keeps it. An unknown zone, or a wall clock that
+  // is not one, is null — never read in some other zone instead.
+  const zone = typeof p.time_zone === 'string' ? p.time_zone.trim() : '';
+  if (zone.length > 0 && typeof raw === 'string' && !hasTimezoneOffset(raw)) {
+    return zonedWallClockToEpochMs(raw, zone);
+  }
   const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d.getTime();
 };
@@ -168,24 +186,77 @@ export const is_future: TransformFn = (p, ctx) => {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+/** The zone a step names in `time_zone`: `''` when it names none, `null` when
+ *  it names one the platform does not know — a typo, or a Windows name such as
+ *  "Pacific Standard Time". An unknown zone is refused, never replaced by
+ *  another clock, as `date_parse` refuses it. */
+const zoneParam = (v: unknown): string | null => {
+  const zone = typeof v === 'string' ? v.trim() : '';
+  if (zone === '') return '';
+  return zonedWallClockToEpochMs('2000-01-01', zone) === null ? null : zone;
+};
+
+interface WallClock {
+  readonly year: number; readonly month: number; readonly day: number;
+  readonly hour: number; readonly minute: number; readonly second: number;
+}
+
+const utcWallClock = (ms: number): WallClock => {
+  const d = new Date(ms);
+  return {
+    year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(),
+    hour: d.getUTCHours(), minute: d.getUTCMinutes(), second: d.getUTCSeconds(),
+  };
+};
+
+/** The wall clock an instant shows in `zone` — or, when the step names no zone,
+ *  on the server process's clock, which is all these transforms read before
+ *  they took one (UTC on most servers). */
+const wallClockAt = (ms: number, zone: string): WallClock => {
+  if (zone !== '') return utcWallClock(ms + zoneOffsetMsAt(ms, zone));
+  const d = new Date(ms);
+  return {
+    year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(),
+    hour: d.getHours(), minute: d.getMinutes(), second: d.getSeconds(),
+  };
+};
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+const formatWallClock = (c: WallClock, fmt: string): string =>
+  fmt
+    .replace('YYYY', String(c.year))
+    .replace('MMM', MONTHS[c.month - 1])
+    .replace('MM', pad2(c.month))
+    .replace('DD', pad2(c.day))
+    .replace('HH', pad2(c.hour))
+    .replace('mm', pad2(c.minute))
+    .replace('ss', pad2(c.second));
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/u;
+
+/** 2026-10-07 — `time_zone` formats the instant on the owner's clock. Without
+ *  one, `HH:mm` was the server PROCESS's time: on a server in UTC every event a
+ *  brief listed was hours off for anyone west or east of it. A date with no
+ *  time (`2026-10-07`) names a DAY, not an instant, and is that day in every
+ *  zone (as the renderer shows it); `new Date()` read it as UTC midnight and
+ *  printed the day before west of UTC. */
 export const date_format: TransformFn = (p) => {
   if (isNonDateValue(p.date)) return null;
+  const zone = zoneParam(p.time_zone);
+  if (zone === null) return null;
+  const fmt = String(p.format ?? 'YYYY-MM-DD');
+  if (typeof p.date === 'string' && DATE_ONLY.test(p.date.trim())) {
+    const day = calendarDayMs(p.date.trim());
+    return day === null ? null : formatWallClock(utcWallClock(day), fmt);
+  }
   const d = new Date(p.date as string);
   if (isNaN(d.getTime())) return null;
-  const fmt = String(p.format ?? 'YYYY-MM-DD');
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return fmt
-    .replace('YYYY', String(d.getFullYear()))
-    .replace('MMM', MONTHS[d.getMonth()])
-    .replace('MM', pad(d.getMonth() + 1))
-    .replace('DD', pad(d.getDate()))
-    .replace('HH', pad(d.getHours()))
-    .replace('mm', pad(d.getMinutes()))
-    .replace('ss', pad(d.getSeconds()));
+  return formatWallClock(wallClockAt(d.getTime(), zone), fmt);
 };
 
 export const DATE_PERIODS = [
-  'today', 'yesterday',
+  'today', 'yesterday', 'tomorrow',
   'this_week', 'last_week',
   'this_month', 'last_month',
   'this_quarter', 'last_quarter',
@@ -195,71 +266,159 @@ export const DATE_PERIODS = [
 ] as const;
 export type DatePeriod = typeof DATE_PERIODS[number];
 
+const isoDay = (dayMs: number): string => new Date(dayMs).toISOString().slice(0, 10);
+
 /** Named time windows → `{ start, end }` ISO strings. Computed off `ctx.now()`
- *  so scheduled/replayed runs are deterministic.
+ *  so scheduled/replayed runs are deterministic — or off `date`, when the step
+ *  names one: `today` is then the day that instant falls on.
  *
  *  Weeks use ISO convention (Monday start). All bounds are inclusive and
- *  snapped to day boundaries in UTC — use the output directly with CRM API
- *  date filters (`closed_at >= start AND closed_at <= end`). For "today"
- *  and sliding windows, `end` is 23:59:59.999 so equality filters on the
- *  last day still match.
+ *  snapped to day boundaries — use the output directly with CRM API date
+ *  filters (`closed_at >= start AND closed_at <= end`). `end` is the last
+ *  millisecond of the last day (23:59:59.999) so equality filters on the last
+ *  day still match.
+ *
+ *  🔑 2026-10-07 — `time_zone` makes the days the owner's: `today` runs from
+ *  their local midnight to the next, 23 or 25 hours across a change of clocks.
+ *  Without one the days are UTC days, and for an owner in Los Angeles "today"
+ *  began at 5 pm the day before: a morning brief listed last evening's events
+ *  and missed tonight's. An unknown zone is `null`.
  *
  *  Returns `null` for unknown period names — the validator's enum catches
  *  this at publish time, but a defensive null lets recipes chain
  *  `skip_when: "{{step.period}} is_null"` if ever needed. */
 export const date_period: TransformFn = (p, ctx) => {
   const period = String(p.period);
-  const now = ctx.now();
+  const zone = zoneParam(p.time_zone);
+  if (zone === null) return null;
+  // A `date` the step names but that is no date is refused, never read as now.
+  const at = Object.prototype.hasOwnProperty.call(p, 'date') ? toDate(p.date, ctx) : ctx.now();
+  if (at === null) return null;
 
-  const startOfDay = (d: Date) => { const r = new Date(d); r.setUTCHours(0, 0, 0, 0); return r; };
-  const endOfDay = (d: Date) => { const r = new Date(d); r.setUTCHours(23, 59, 59, 999); return r; };
-  const addDays = (d: Date, n: number) => new Date(d.getTime() + n * DIVISORS.days);
-  // ISO week: Monday = 0. JS getUTCDay(): Sun=0..Sat=6 → shift to Mon=0..Sun=6.
-  const startOfWeek = (d: Date) => startOfDay(addDays(d, -((d.getUTCDay() + 6) % 7)));
-  const startOfMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-  const endOfMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0, 23, 59, 59, 999));
-  const startOfQuarter = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), Math.floor(d.getUTCMonth() / 3) * 3, 1));
-  const endOfQuarter = (d: Date) => {
-    const q = Math.floor(d.getUTCMonth() / 3);
-    return new Date(Date.UTC(d.getUTCFullYear(), q * 3 + 3, 0, 23, 59, 59, 999));
-  };
+  // Days are computed as calendar dates (the UTC midnight that encodes each),
+  // then turned into instants on the clock the step names.
+  const today = zone === ''
+    ? Math.floor(at.getTime() / DAY_MS) * DAY_MS
+    : localDayAsDateOnly(at.getTime(), zone);
+  const t = new Date(today);
+  const y = t.getUTCFullYear();
+  const m = t.getUTCMonth();
+  const days = (n: number): number => today + n * DAY_MS;
+  // ISO week: Monday = 0. getUTCDay(): Sun=0..Sat=6 → shift to Mon=0..Sun=6.
+  const monday = days(-((t.getUTCDay() + 6) % 7));
+  const quarter = Math.floor(m / 3) * 3;
 
-  let start: Date, end: Date;
+  let first: number, last: number;
   switch (period) {
-    case 'today':         start = startOfDay(now); end = endOfDay(now); break;
-    case 'yesterday':     start = startOfDay(addDays(now, -1)); end = endOfDay(addDays(now, -1)); break;
-    case 'this_week':     start = startOfWeek(now); end = endOfDay(addDays(startOfWeek(now), 6)); break;
-    case 'last_week': {
-      const sow = startOfWeek(addDays(now, -7));
-      start = sow; end = endOfDay(addDays(sow, 6));
-      break;
-    }
-    case 'this_month':    start = startOfMonth(now); end = endOfMonth(now); break;
-    case 'last_month': {
-      const lm = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
-      start = lm; end = endOfMonth(lm);
-      break;
-    }
-    case 'this_quarter':  start = startOfQuarter(now); end = endOfQuarter(now); break;
-    case 'last_quarter': {
-      const lq = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, 1));
-      start = startOfQuarter(lq); end = endOfQuarter(lq);
-      break;
-    }
-    case 'this_year':
-      start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
-      end = new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
-      break;
-    case 'last_year':
-      start = new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
-      end = new Date(Date.UTC(now.getUTCFullYear() - 1, 11, 31, 23, 59, 59, 999));
-      break;
-    case 'last_7_days':   start = startOfDay(addDays(now, -6));  end = endOfDay(now); break;
-    case 'last_30_days':  start = startOfDay(addDays(now, -29)); end = endOfDay(now); break;
-    case 'last_90_days':  start = startOfDay(addDays(now, -89)); end = endOfDay(now); break;
-    case 'next_7_days':   start = startOfDay(now); end = endOfDay(addDays(now, 6)); break;
-    case 'next_30_days':  start = startOfDay(now); end = endOfDay(addDays(now, 29)); break;
+    case 'today':         first = today; last = today; break;
+    case 'yesterday':     first = days(-1); last = days(-1); break;
+    case 'tomorrow':      first = days(1); last = days(1); break;
+    case 'this_week':     first = monday; last = monday + 6 * DAY_MS; break;
+    case 'last_week':     first = monday - 7 * DAY_MS; last = monday - DAY_MS; break;
+    case 'this_month':    first = Date.UTC(y, m, 1); last = Date.UTC(y, m + 1, 0); break;
+    case 'last_month':    first = Date.UTC(y, m - 1, 1); last = Date.UTC(y, m, 0); break;
+    case 'this_quarter':  first = Date.UTC(y, quarter, 1); last = Date.UTC(y, quarter + 3, 0); break;
+    case 'last_quarter':  first = Date.UTC(y, quarter - 3, 1); last = Date.UTC(y, quarter, 0); break;
+    case 'this_year':     first = Date.UTC(y, 0, 1); last = Date.UTC(y, 11, 31); break;
+    case 'last_year':     first = Date.UTC(y - 1, 0, 1); last = Date.UTC(y - 1, 11, 31); break;
+    case 'last_7_days':   first = days(-6); last = today; break;
+    case 'last_30_days':  first = days(-29); last = today; break;
+    case 'last_90_days':  first = days(-89); last = today; break;
+    case 'next_7_days':   first = today; last = days(6); break;
+    case 'next_30_days':  first = today; last = days(29); break;
     default: return null;
   }
-  return { start: start.toISOString(), end: end.toISOString() };
+  const midnight = (day: number): number =>
+    zone === '' ? day : zonedWallClockToEpochMs(isoDay(day), zone) ?? day;
+  return {
+    start: new Date(midnight(first)).toISOString(),
+    end: new Date(midnight(last + DAY_MS) - 1).toISOString(),
+  };
+};
+
+/** A number, a numeric string or a date string, as Unix ms; `null` otherwise. */
+const instantOf = (v: unknown): number | null => {
+  const n = finiteNumber(v);
+  if (n !== null) return n;
+  if (typeof v !== 'string' || v.trim() === '') return null;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? ms : null;
+};
+
+const ymd = (c: WallClock): string => `${c.year}-${pad2(c.month)}-${pad2(c.day)}`;
+const hm = (c: WallClock): string => `${pad2(c.hour)}:${pad2(c.minute)}`;
+
+/** WHEN A CALENDAR EVENT HAPPENS, ON THE OWNER'S CLOCK (2026-10-07).
+ *
+ *  ⛔ A recipe that formatted an event's `start_at` itself got two things
+ *  wrong. The time was the server process's (`date_format` had no zone), and an
+ *  all-day event — stored as the UTC midnight of its day (`calendar-days.ts`) —
+ *  showed as "00:00", or "17:00 the day before" west of UTC. `map` cannot
+ *  branch per row, so no recipe could tell the two kinds apart.
+ *
+ *  Takes the event (`start_at`, `end_at`, `is_all_day` — a calendar row, a
+ *  `calendar-get` record, a watcher's `hot_fields`) and `time_zone`, usually
+ *  `{{context.server.time_zone}}`. Returns:
+ *  - `start` / `end` — Unix ms; an all-day event from the local midnight of its
+ *    first day to the one after its last, for windows and overlaps;
+ *  - `day` — the local day it starts on, `YYYY-MM-DD` (an all-day event: its first);
+ *  - `time` — `10:00`, or `All day`: the start in a list of one day;
+ *  - `date_time` — `2026-10-15 10:00`, or `2026-12-24, all day` /
+ *    `2026-12-24 – 2026-12-26, all day`;
+ *  - `text` — `2026-10-15 10:00–11:00` (`… 23:00 – 2026-10-16 01:00` across
+ *    midnight), or as `date_time` for an all-day event.
+ *
+ *  `part` names one of those to return alone: a `map` writes `part: "time"`
+ *  to `output_field: "starts_text"` and the table column stays a plain field
+ *  (a column may also read the path, `when.time`).
+ *
+ *  `null` when the event has no start, or the zone is unknown. With no zone,
+ *  times are on the server process's clock, as `date_format`'s are. In `map`,
+ *  `apply: "event_when"` with no `field` hands it each whole row. */
+export const EVENT_WHEN_PARTS = ['start', 'end', 'day', 'time', 'date_time', 'text'] as const;
+
+export const event_when: TransformFn = (p) => {
+  const when = eventWhen(p);
+  if (when === null || p.part === undefined) return when;
+  return (EVENT_WHEN_PARTS as readonly unknown[]).includes(p.part) ? when[p.part as typeof EVENT_WHEN_PARTS[number]] : null;
+};
+
+const eventWhen = (p: Record<string, unknown>): {
+  start: number; end: number; day: string; time: string; date_time: string; text: string;
+} | null => {
+  const event = p.event;
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) return null;
+  const e = event as Record<string, unknown>;
+  const start_at = instantOf(e.start_at);
+  if (start_at === null) return null;
+  const end_at = instantOf(e.end_at) ?? start_at;
+  const zone = zoneParam(p.time_zone);
+  if (zone === null) return null;
+
+  if (e.is_all_day === true || e.is_all_day === 1 || e.is_all_day === 'true') {
+    const { first, last } = allDayEventDays({ start_at, end_at });
+    const midnight = (day: string): number => {
+      if (zone !== '') return zonedWallClockToEpochMs(day, zone) ?? Date.parse(`${day}T00:00:00Z`);
+      const [yy, mm, dd] = day.split('-').map(Number);
+      return new Date(yy!, mm! - 1, dd!).getTime();
+    };
+    const days = first === last ? first : `${first} – ${last}`;
+    return {
+      start: midnight(first),
+      end: midnight(isoDay(Date.parse(`${last}T00:00:00Z`) + DAY_MS)),
+      day: first,
+      time: 'All day',
+      date_time: `${days}, all day`,
+      text: `${days}, all day`,
+    };
+  }
+
+  const starts = wallClockAt(start_at, zone);
+  const ends = wallClockAt(end_at, zone);
+  const day = ymd(starts);
+  const date_time = `${day} ${hm(starts)}`;
+  const text = end_at <= start_at ? date_time
+    : ymd(ends) === day ? `${date_time}–${hm(ends)}`
+      : `${date_time} – ${ymd(ends)} ${hm(ends)}`;
+  return { start: start_at, end: end_at, day, time: hm(starts), date_time, text };
 };

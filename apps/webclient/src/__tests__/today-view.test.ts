@@ -143,12 +143,16 @@ describe('Today projection', () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['gcal', 'caldav', 'graph', 'local'] as const)('preserves the %s adapter interpretation of all-day records', async (adapter_type) => {
+  // ⛔ Every adapter stores an all-day event as its days — the UTC midnights of
+  // its first day and the day after its last (2026-10-07, `calendar-days.ts`).
+  // This once built Outlook and local rows as local-midnight instants, the
+  // view's mistaken belief, and passed only because local midnight west of UTC
+  // falls on the same UTC date.
+  it.each(['gcal', 'caldav', 'graph', 'local'] as const)('reads a %s all-day record as the day it names', async (adapter_type) => {
     const date = new Date(now);
     const localStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-    const dateOnly = adapter_type === 'gcal' || adapter_type === 'caldav';
-    const start_at = dateOnly ? Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) : localStart;
-    const end_at = dateOnly ? start_at + 86_400_000 : tomorrow;
+    const start_at = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+    const end_at = start_at + 86_400_000;
     const row = event('all-day', start_at, end_at);
     row.hot_fields.is_all_day = true;
     const opts = readers([], [row]);

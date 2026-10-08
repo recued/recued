@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "70fc448f73ce4324f97235986d2575b6807ccf92",
-    "tree": "4de89dfa035d55b3a4aa6b5464d3c41b8fa3bd35",
-    "committed_at": "2026-10-06T08:17:21-07:00"
+    "commit": "d1d0e1e9e20ed0ff7f91dfb348c16db5507196a4",
+    "tree": "2208726f21cb5c815c3d20624ee89f574be671ed",
+    "committed_at": "2026-10-08T00:41:40-07:00"
   },
-  "export_manifest_sha256": "595cc248ef3646e065496131b11c3e9e00746c766d406c952403f64f10911dbf",
-  "version": "26.10.6",
+  "export_manifest_sha256": "051e21a880a69fa6726b171f7b13b2cad526f44ed6879fec6026a577d88e2fe6",
+  "version": "26.10.8",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -62,15 +62,21 @@
       "apps/webclient/src/storage/token-aad-migration-bridge.test.ts",
       "backend/server/src/__tests__/a-pack-brings-the-packs-its-recipes-call.test.ts",
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
+      "backend/server/src/__tests__/bills-pack-live.test.ts",
+      "backend/server/src/__tests__/bookings-pack-live.test.ts",
       "backend/server/src/__tests__/broadcast-kind-reachability.test.ts",
       "backend/server/src/__tests__/build-externals-declared.test.ts",
       "backend/server/src/__tests__/bundled-foundation-embed.test.ts",
       "backend/server/src/__tests__/byte-budget-char-slice.test.ts",
+      "backend/server/src/__tests__/calendar-invites-pack-live.test.ts",
+      "backend/server/src/__tests__/calendar-recipes-owner-clock.test.ts",
       "backend/server/src/__tests__/calendar-recipes-read-every-calendar.test.ts",
       "backend/server/src/__tests__/calendar-reminder-recipes.test.ts",
+      "backend/server/src/__tests__/chat-installed-pack-actions-composition.test.ts",
+      "backend/server/src/__tests__/claude-code-pack-live-drive.test.ts",
+      "backend/server/src/__tests__/codex-pack-live-drive.test.ts",
       "backend/server/src/__tests__/commitment-writes-reach-the-store.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
-      "backend/server/src/__tests__/d-137-chat-orchestrator-composition.test.ts",
       "backend/server/src/__tests__/d-145-pa10-pack-list-rpc.test.ts",
       "backend/server/src/__tests__/d-145-phase-10-foundation-pack-pre-install.test.ts",
       "backend/server/src/__tests__/d-149-phase-3-reception-rpc-handler.test.ts",
@@ -192,6 +198,7 @@
       "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
       "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
       "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
+      "backend/server/src/__tests__/helpers/mail-facts-live-server.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/home-assistant-camera-alert-pushed-run.test.ts",
       "backend/server/src/__tests__/home-assistant-camera-alert-webhook-capstone.test.ts",
@@ -227,6 +234,7 @@
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
+      "backend/server/src/__tests__/parcels-pack-live.test.ts",
       "backend/server/src/__tests__/peer-appointment-semi-live.test.ts",
       "backend/server/src/__tests__/photo-attribution-drive.test.ts",
       "backend/server/src/__tests__/photo-attribution-live-drive.test.ts",
@@ -245,12 +253,14 @@
       "backend/server/src/__tests__/queue-desk-door-mechanisms.test.ts",
       "backend/server/src/__tests__/queue-desk-mcp-staff-lane.test.ts",
       "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
+      "backend/server/src/__tests__/receipts-pack-live.test.ts",
       "backend/server/src/__tests__/recipe-list-handler-shipped-importer.test.ts",
       "backend/server/src/__tests__/records-pack-entry-points.test.ts",
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
       "backend/server/src/__tests__/release-build-config-validation.test.ts",
       "backend/server/src/__tests__/release-manifest-per-channel-path.test.ts",
       "backend/server/src/__tests__/rental-book-business-workflow.test.ts",
+      "backend/server/src/__tests__/requests-by-email-pack-live.test.ts",
       "backend/server/src/__tests__/revived-enrichment-producer-writes.test.ts",
       "backend/server/src/__tests__/ripgrep-find-live-drive.test.ts",
       "backend/server/src/__tests__/saga-write-seal.test.ts",
@@ -261,6 +271,7 @@
       "backend/server/src/__tests__/spreadsheet-import-corpus.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
+      "backend/server/src/__tests__/subscriptions-pack-live.test.ts",
       "backend/server/src/__tests__/supervisor-contract.test.ts",
       "backend/server/src/__tests__/supervisor-join.test.ts",
       "backend/server/src/__tests__/track-meeting-reschedule-patterns-live.test.ts",
@@ -671,7 +682,7 @@
       "packages/ui-shared/src/__tests__/calendar-reminder-switch-on.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "8481409271e4fc74ba7c4556c88e2dea05783e35ac1865c93b31302566808679",
+    "sha256": "9df1b69c63b3757394a3096e717d60b807964366094dc7cb56a4bf6118383407",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -785,7 +796,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6454,
-    "sha256": "2b71815281f147ffff90b0ef0fd4b761484adccab25df1bf1d51041c974978ed"
+    "file_count": 6476,
+    "sha256": "22e0fc348ff3b11a4f9adae9b3ad59f41e2d38cfc1c3cc81b77cfdf0df347a4d"
   }
 }

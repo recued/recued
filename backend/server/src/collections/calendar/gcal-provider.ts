@@ -904,12 +904,16 @@ export const createGcalProvider = (
 
     async createEvent(calendarId, event) {
       requireCalendarId(calendarId, 'events.insert');
-      const url = `${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events`;
+      // D-315 slice 7 — an event that keeps a given UID (an emailed invite's
+      // own) is IMPORTED: `events.insert` always assigns its own iCalUID, and
+      // `events.import` is Google's way to add a copy of someone else's event.
+      const imported = event.ical_uid !== undefined && event.ical_uid.length > 0;
+      const url = `${GCAL_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events${imported ? '/import' : ''}`;
       const data = await gcalMutate<GcalEvent>(
         url,
         'POST',
-        fromCreateInput(event),
-        'events.insert',
+        imported ? { ...fromCreateInput(event), iCalUID: event.ical_uid } : fromCreateInput(event),
+        imported ? 'events.import' : 'events.insert',
       );
       if (!data) {
         throw new CalendarAdapterError(

@@ -17,6 +17,17 @@ import { composeMessengerTurnIngest } from '../composition/bin/wire-messenger-tu
 import { createMessengerAccountResolver } from '../composition/bin/messenger-account-identity.js';
 import { buildConnectionRow, encodePlaintextAuth, stubConnectionStore } from './d-163-remote-channel-test-helpers.js';
 
+/** ⛔ `vi.waitFor` GIVES UP AFTER ONE SECOND unless told otherwise, and this
+ *  file waits on real work: a delivery pump, SQLite commits (one case on a file
+ *  that fsyncs), eleven queued chat turns. Idle, every wait here settles in one
+ *  50 ms poll. With four writers syncing to disk beside it, the file-backed case
+ *  took 260 ms, five times as long — and the full sweep builds a Docker image
+ *  while it runs. The file went red once (2026-10-07, `e4968eeb3`) and passed
+ *  every rerun, alone and starved. Each wait still fails a delivery that never
+ *  happens — at 8 s, inside the 30 s test limit — but no longer on a slow disk.
+ *  Same bound as the sibling `d-265-messenger-roundtrip.test.ts`. */
+const eventually = (assert: () => unknown | Promise<unknown>) => vi.waitFor(assert, { timeout: 8_000, interval: 10 });
+
 const close: Array<() => void> = [];
 afterEach(() => { for (const cleanup of close.splice(0).reverse()) cleanup(); });
 const signature = { server_kind: 'recued' as const, version: '1', instance_id: 'delivery-test' };
@@ -75,12 +86,12 @@ describe('D-265 verified bot identity', () => {
       send: async message => { f.sent.push(message); return { ok: true, vendor_message_id: String(f.sent.length) }; },
     });
     await f.add('one', 'original context');
-    await vi.waitFor(async () => expect(await state(f, 'one')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(f, 'one')).toMatchObject({ state: 'sent' }));
     token = 'rotated'; await f.add('two', 'same account');
-    await vi.waitFor(async () => expect(await state(f, 'two')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(f, 'two')).toMatchObject({ state: 'sent' }));
     expect(f.sent.map(message => message.token)).toEqual(['original', 'rotated']);
     token = 'replacement'; await f.add('three', 'must stay private');
-    await vi.waitFor(async () => expect(await state(f, 'three')).toMatchObject({ state: 'failed', error: 'binding_changed' }));
+    await eventually(async () => expect(await state(f, 'three')).toMatchObject({ state: 'failed', error: 'binding_changed' }));
     expect(f.sent).toHaveLength(2);
   });
 });
@@ -93,7 +104,7 @@ describe('D-265 durable delivery journal and fault recovery', () => {
     expect(await f.store.listMessages(f.bound.session_id)).toEqual([]);
     f.db.exec('DROP TRIGGER reject_delivery'); await f.add('m', 'retain atomically');
     expect(await state(f, 'm')).toMatchObject({ state: 'pending' });
-    f.register(); await vi.waitFor(async () => expect(await state(f, 'm')).toMatchObject({ state: 'sent' }));
+    f.register(); await eventually(async () => expect(await state(f, 'm')).toMatchObject({ state: 'sent' }));
     expect(f.sent.map(m => m.text)).toEqual(['retain atomically']);
   });
 
@@ -106,13 +117,13 @@ describe('D-265 durable delivery journal and fault recovery', () => {
       ? { ok: false, error: { kind: 'network', detail: 'receipt lost' } }
       : { ok: true, vendor_message_id: `id-${f.sent.length}` });
     await f.add('long', text); await f.add('later', 'must wait');
-    await vi.waitFor(async () => expect(await state(f, 'long')).toMatchObject({ state: 'unknown', sent_chunks: 1 }));
+    await eventually(async () => expect(await state(f, 'long')).toMatchObject({ state: 'unknown', sent_chunks: 1 }));
     const job = (await state(f, 'long'))!;
     expect(f.sent).toHaveLength(2); expect(await state(f, 'later')).toMatchObject({ state: 'pending' });
     expect(() => f.bridge.act(f.bound.session_id, job.delivery_id, 'retry', 'retry')).toThrow('Acknowledge');
     expect(JSON.stringify(f.db.prepare('SELECT payload FROM chat_delivery_chunks').all())).not.toContain('xxxx');
     fail = false; f.bridge.act(f.bound.session_id, job.delivery_id, 'retry', 'retry', true); f.bridge.kick();
-    await vi.waitFor(async () => expect(await state(f, 'later')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(f, 'later')).toMatchObject({ state: 'sent' }));
     expect(f.sent[0]!.text + f.sent.slice(2, -1).map(m => m.text).join('')).toBe(text);
     expect(f.sent[1]!.delivery_id).toBe(f.sent[2]!.delivery_id);
     const count = f.sent.length;
@@ -125,7 +136,7 @@ describe('D-265 durable delivery journal and fault recovery', () => {
     const f = fixture();
     f.register(async () => f.sent.length === 1 ? { ok: false, error: { kind: 'rate_limited', detail: 'wait' } } : { ok: true });
     await f.add('rate', 'one message');
-    await vi.waitFor(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'unknown', error: 'missing_receipt' }));
+    await eventually(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'unknown', error: 'missing_receipt' }));
     expect(f.sent).toHaveLength(2);
   });
 
@@ -133,14 +144,14 @@ describe('D-265 durable delivery journal and fault recovery', () => {
     const f = fixture(); const started = Date.now();
     f.register(async () => ({ ok: false, error: { kind: 'rate_limited', detail: 'wait', retry_after_ms: 180000 } }));
     await f.add('rate', 'one message');
-    await vi.waitFor(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'pending', error: 'rate_limited' }));
+    await eventually(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'pending', error: 'rate_limited' }));
     expect((f.db.prepare('SELECT next_attempt_at FROM chat_deliveries').get() as { next_attempt_at: number }).next_attempt_at)
       .toBeGreaterThanOrEqual(started + 180000);
     for (let attempt = 2; attempt <= 5; attempt++) {
       f.db.exec('UPDATE chat_deliveries SET next_attempt_at = 0'); f.bridge.kick();
-      await vi.waitFor(() => expect(f.sent).toHaveLength(attempt));
+      await eventually(() => expect(f.sent).toHaveLength(attempt));
     }
-    await vi.waitFor(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'failed', error: 'rate_limited' }));
+    await eventually(async () => expect(await state(f, 'rate')).toMatchObject({ state: 'failed', error: 'rate_limited' }));
   });
 
   it('reports a complete backlog count and remembers skips beyond the bounded detail window', async () => {
@@ -168,7 +179,7 @@ describe('D-265 durable delivery journal and fault recovery', () => {
 
   it('fences changed accounts and deleted sessions without retargeting pending text', async () => {
     const f = fixture(); await f.add('old', 'private old account'); f.account('slack:T2:B2'); f.register();
-    await vi.waitFor(async () => expect(await state(f, 'old')).toMatchObject({ state: 'failed', error: 'binding_changed' }));
+    await eventually(async () => expect(await state(f, 'old')).toMatchObject({ state: 'failed', error: 'binding_changed' }));
     expect(f.sent).toEqual([]);
     const replacement = f.bridge.bind('slack', 'C123', 'slack:T2:B2');
     expect(replacement.session_id).not.toBe(f.bound.session_id);
@@ -182,13 +193,13 @@ describe('D-265 durable delivery journal and fault recovery', () => {
     const path = join(dir, 'data.sqlite'); const first = fixture(path);
     await first.add('queued', 'survives restart'); first.bridge.close(); first.db.close();
     const second = fixture(path); second.register();
-    await vi.waitFor(async () => expect(await state(second, 'queued')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(second, 'queued')).toMatchObject({ state: 'sent' }));
     const job = (await state(second, 'queued'))!;
     second.db.prepare("UPDATE chat_delivery_chunks SET state = 'sending', vendor_message_id = NULL WHERE delivery_id = ?").run(job.delivery_id);
     second.db.prepare("UPDATE chat_deliveries SET state = 'sending', worker_pid = -1, worker_id = 'dead' WHERE delivery_id = ?").run(job.delivery_id);
     second.bridge.close(); second.db.close();
     const third = fixture(path, () => false); third.register();
-    await vi.waitFor(async () => expect(await state(third, 'queued')).toMatchObject({ state: 'unknown', error: 'restart_after_send' }));
+    await eventually(async () => expect(await state(third, 'queued')).toMatchObject({ state: 'unknown', error: 'restart_after_send' }));
     expect(third.sent).toEqual([]);
     const details = await third.bridge.snapshot(third.bound.session_id, { session_id: third.bound.session_id, details: true });
     expect(details.deliveries[0]!.details).toMatchObject({ message: { snippet: 'survives restart' },
@@ -197,7 +208,7 @@ describe('D-265 durable delivery journal and fault recovery', () => {
 
   it('maps an explicit owner reply to its target and the subsequent answer to that new owner message', async () => {
     const f = fixture(); f.register(); await f.add('original', 'earlier answer');
-    await vi.waitFor(async () => expect(await state(f, 'original')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(f, 'original')).toMatchObject({ state: 'sent' }));
     const queue = createChatTurnQueueStore(f.db, key);
     const accepted = await queue.admit({ family: 'chat', session_id: f.bound.session_id, message: 'follow-up',
       input: { reply_to_message_id: 'original' } }, 'follow-up');
@@ -205,7 +216,7 @@ describe('D-265 durable delivery journal and fault recovery', () => {
       target_server: 'self', picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'fixture', model_id: 'fixture' } });
     await f.store.appendMessage({ id: 'answer', session_id: f.bound.session_id, role: 'assistant', content: 'new answer', turn_id: accepted.turn_id,
       target_server: 'self', picker_at_send: { display_name: 'Self', signature }, model_used: { provider: 'fixture', model_id: 'fixture' } });
-    await vi.waitFor(async () => expect(await state(f, 'answer')).toMatchObject({ state: 'sent' }));
+    await eventually(async () => expect(await state(f, 'answer')).toMatchObject({ state: 'sent' }));
     expect(f.sent[1]).toMatchObject({ reply_to_message_id: 'posted-1', thread_id: 'posted-1' });
     expect(f.sent[1]!.text).toBe('Owner (via webclient)\nfollow-up');
     expect(f.sent[2]).toMatchObject({ reply_to_message_id: 'posted-2', thread_id: 'posted-1' });
@@ -221,10 +232,10 @@ describe('D-265 durable delivery journal and fault recovery', () => {
       return { ok: true, vendor_message_id: 'receipt-not-committed' };
     });
     await f.add('m', 'sent once');
-    await vi.waitFor(() => expect(f.sent).toHaveLength(1));
+    await eventually(() => expect(f.sent).toHaveLength(1));
     // The vendor write succeeded but no receipt/terminal write was possible.
     f.db.exec('DROP TRIGGER no_delivery_update'); f.bridge.kick();
-    await vi.waitFor(async () => expect(await state(f, 'm')).toMatchObject({ state: 'unknown' }));
+    await eventually(async () => expect(await state(f, 'm')).toMatchObject({ state: 'unknown' }));
     expect(f.sent).toHaveLength(1);
   });
 
@@ -295,15 +306,15 @@ it.each([
     return Response.json({ ok: true, ts: `posted-${posts.length}`, id: String(posts.length + 100), result: { message_id: posts.length + 100 } });
   } })!;
   await ingest(scenario.vendor, scenario.vendor, scenario.inbound);
-  await vi.waitFor(() => expect(posts).toHaveLength(1));
+  await eventually(() => expect(posts).toHaveLength(1));
   for (let i = 1; i <= 10; i++) await handleSend({ store: f.store, orchestrator, selfSignature: signature }, {
     session_id: f.bound.session_id, message: `web exchange ${i}`, submission_id: `web-${i}`, picker_state: { current: 'self' },
   });
-  await vi.waitFor(async () => expect((await f.store.listMessages(f.bound.session_id)).filter(m => m.role === 'assistant')).toHaveLength(11));
+  await eventually(async () => expect((await f.store.listMessages(f.bound.session_id)).filter(m => m.role === 'assistant')).toHaveLength(11));
   expect(aiCalls).toBe(11);
   expect(posts).toHaveLength(1);
   release();
-  await vi.waitFor(async () => expect((await f.bridge.snapshot(f.bound.session_id)).deliveries.every(d => d.state === 'sent')).toBe(true));
+  await eventually(async () => expect((await f.bridge.snapshot(f.bound.session_id)).deliveries.every(d => d.state === 'sent')).toBe(true));
   expect(await f.bridge.nativeReply(f.bound.session_id, scenario.vendor, scenario.vendor === 'slack' ? 'posted-21' : '121'))
     .toMatchObject({ role: 'assistant', text: 'answer 11' });
   expect(posts.map(p => p.text ?? p.content)).toEqual(['answer 1', ...Array.from({ length: 10 }, (_, i) => [`Owner (via webclient)\nweb exchange ${i + 1}`, `answer ${i + 2}`]).flat()]);

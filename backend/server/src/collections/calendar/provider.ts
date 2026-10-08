@@ -69,17 +69,50 @@ export interface ProviderEventPayload {
   /** CalDAV per-resource validator. Null for gcal / graph (their
    *  cursor lives on `collection_instances.config.sync_cursor`). */
   etag?: string;
+  /** The provider's copy did not change; Recued reads it differently now (a
+   *  CalDAV time read in its zone, 2026-10-07). The row is corrected without
+   *  an `updated` event — a reschedule tracker would otherwise count every
+   *  event once. */
+  correction?: true;
+}
+
+/** CalDAV: the complete set of rows one calendar object resource makes in a
+ *  window. A row of that event inside the window and not in `keep` is one the
+ *  resource no longer makes — a date deleted, a series cut short, the event
+ *  deleted (`keep` empty) — and is removed. Rows outside the window are
+ *  history, and stay. */
+export interface CalendarSeriesSnapshot {
+  calendar_id: string;
+  ical_uid: string;
+  /** Inclusive bounds on `start_at`. */
+  window: { start: number; end: number };
+  keep: readonly string[];
+}
+
+/** CalDAV: every row one calendar's resources make in a window, after a scan
+ *  that read every resource. A row of that calendar inside the window and not
+ *  in `keep` is one no resource makes: an event deleted while Recued was not
+ *  watching, or a row an older reader filed under another identity (it took
+ *  an alert's UID for its event's). It is removed. */
+export interface CalendarSnapshot {
+  calendar_id: string;
+  /** Inclusive bounds on `start_at`. */
+  window: { start: number; end: number };
+  keep: readonly string[];
 }
 
 /** One event delivered by the continuous sync loop. */
 export interface CalendarSyncEvent {
-  kind: 'created' | 'updated' | 'deleted';
+  /** `series` (CalDAV): reconcile one event's rows with `series`. */
+  kind: 'created' | 'updated' | 'deleted' | 'series';
   /** Stable identifier within this provider/account. gcal: event id,
-   *  graph: message id, caldav: hash of href. The collection hashes
-   *  into `record_id`. */
+   *  graph: message id, caldav: `<calendar>:<uid>[:<occurrence>]`. The
+   *  collection hashes into `record_id`. */
   source_id: string;
   /** Present on `created` / `updated`, omitted on `deleted`. */
   payload?: ProviderEventPayload;
+  /** Present on `series`. */
+  series?: CalendarSeriesSnapshot;
 }
 
 export type CalendarSyncCallback = (
@@ -114,6 +147,12 @@ export interface InitialScanOptions {
   /** Emits once per expanded instance. Return `false` to abort the
    *  scan (used in tests / budget-aware ingestion). */
   onEvent: (payload: ProviderEventPayload) => Promise<boolean>;
+  /** CalDAV: after a resource's instances, the set of rows it makes in the
+   *  window, so rows it no longer makes are removed. */
+  onSeries?: (series: CalendarSeriesSnapshot) => Promise<void>;
+  /** CalDAV: after a calendar's every resource was read, every row they make
+   *  in the window — so a row none makes is removed. */
+  onCalendar?: (calendar: CalendarSnapshot) => Promise<void>;
 }
 
 /** Recurrence scope for `updateEvent` / `deleteEvent` on series. */
@@ -127,7 +166,14 @@ export type CalendarMutationScope =
 export type CreateEventInput = Omit<
   CanonicalEvent,
   'source_id' | 'ical_uid' | 'created_at' | 'updated_at'
->;
+> & {
+  /** D-315 slice 7 — the iCalendar UID to give the event: an emailed
+   *  invite's own, so the organizer's later updates and cancellation find
+   *  the event by it. Kept by CalDAV (when it is safe as a file name), the
+   *  local calendar and Google (`events.import`); Outlook (Graph) always
+   *  assigns its own. Absent: the provider's own, as before. */
+  ical_uid?: string;
+};
 
 /** Payload for `updateEvent` — a partial patch on the canonical
  *  event, applied by the adapter to the provider. */

@@ -25,6 +25,7 @@ import {
   TIME_RELATIVE_FIRST_CHECK_GRACE_MS,
 } from '../watchers/time-relative-watcher.js';
 import { createTestCalendarStack } from './helpers/calendar-stack.js';
+import { createWatcherDispatcher } from '../watchers/index.js';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -34,6 +35,7 @@ let db: Database.Database;
 let close: () => void;
 let registry: CollectionRegistry;
 let seedEvent: (source_id: string, start_at: number, minutes?: number, calendar?: string) => void;
+let seedAllDay: (source_id: string, day: number) => void;
 let now: number;
 
 beforeEach(async () => {
@@ -43,6 +45,7 @@ beforeEach(async () => {
   ({ db, registry, close } = calendar);
   seedEvent = (source_id, start_at, minutes = 30, slug = 'work') =>
     calendar.seed({ source_id, start_at, minutes, calendar: slug });
+  seedAllDay = (source_id, day) => calendar.seed({ source_id, start_at: day, minutes: 24 * 60, is_all_day: true });
 });
 afterEach(() => close());
 
@@ -65,6 +68,47 @@ const firesOver = async (checks: number, args?: Parameters<typeof check>[0]): Pr
   }
   return fired;
 };
+
+describe('time-relative-watcher on an ALL-DAY event (2026-10-07)', () => {
+  // An all-day event is stored as days (`calendar-days.ts`): 24 Dec 2026 is its
+  // UTC midnight, which in Los Angeles is 23 Dec, 16:00. "A day before" it was
+  // reached at 22 Dec, 16:00 there; it is 23 Dec, 00:00 — 08:00 UTC in winter.
+  const allDayCheck = (at: number, timeZone?: string) => {
+    now = at;
+    return handleTimeRelativeWatcher({ db, registry, now: () => now, ...(timeZone ? { timeZone: () => timeZone } : {}) }, {
+      collection: 'data.calendar', anchor_field: 'start_at', offsets: ['-1d'], recipe_id: 'time-alert-before-event',
+    });
+  };
+
+  it("fires a day before the local midnight it starts at, where the owner is", async () => {
+    seedAllDay('holiday', Date.UTC(2026, 11, 24));
+    expect((await allDayCheck(Date.parse('2026-12-23T04:00:00Z'), 'America/Los_Angeles')).should_run).toBe(false);
+    const fired = await allDayCheck(Date.parse('2026-12-23T08:30:00Z'), 'America/Los_Angeles');
+    expect(fired.should_run).toBe(true);
+    expect(fired.anchor_at).toBe(Date.parse('2026-12-24T08:00:00Z'));
+  });
+
+  it("the watcher dispatcher hands it the server's zone — the one a cron schedule reads", async () => {
+    seedAllDay('holiday', Date.UTC(2026, 11, 24));
+    now = Date.parse('2026-12-23T08:30:00Z');
+    const watch = createWatcherDispatcher({
+      db, collectionRegistry: registry, now: () => now, serverTimeZone: () => 'America/Los_Angeles',
+    });
+    const fired = await watch({
+      slug: 'time-relative-watcher',
+      args: { collection: 'data.calendar', anchor_field: 'start_at', offsets: ['-1d'], recipe_id: 'time-alert-before-event' },
+    }) as { should_run: boolean; anchor_at: number | null };
+    expect(fired.should_run).toBe(true);
+    expect(fired.anchor_at).toBe(Date.parse('2026-12-24T08:00:00Z'));
+  });
+
+  it('reads the day in UTC when no zone is known — where the day already is', async () => {
+    seedAllDay('holiday', Date.UTC(2026, 11, 24));
+    const fired = await allDayCheck(Date.parse('2026-12-23T00:30:00Z'));
+    expect(fired.should_run).toBe(true);
+    expect(fired.anchor_at).toBe(Date.UTC(2026, 11, 24));
+  });
+});
 
 describe('time-relative-watcher on a calendar', () => {
   it('⛔ fires for a meeting due soon even with more than 500 occurrences further ahead', async () => {

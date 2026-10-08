@@ -35,7 +35,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -101,16 +101,68 @@ const docker = (args: string[], options: { encoding?: BufferEncoding } = {}): st
 const runImageShell = (script: string): string =>
   docker(['run', '--rm', '--entrypoint', 'sh', IMAGE_TAG, '-lc', script]);
 
+/** ⛔ A REGISTRY BLIP IS NOT A BROKEN IMAGE (2026-10-07).
+ *
+ *  Every build asks Docker Hub for the `# syntax=` frontend and for each `FROM`
+ *  tag, even with both cached, so this smoke depended on Docker Hub answering at
+ *  that second. Three sweeps went red in one day, each in the build's first 10 s,
+ *  and BuildKit's own record names the cause (`docker buildx history inspect`):
+ *  `failed to fetch anonymous token: Get "https://auth.docker.io/…": EOF` twice,
+ *  `node:24-slim: failed to do request: Head "https://registry-1.docker.io/…":
+ *  EOF` once. Every other build that week completed. The runner keeps only the
+ *  file's name, so it read as a flaky test.
+ *
+ *  Only a registry request that died in transit is retried. A step that fails,
+ *  a pull rate limit, a Dockerfile that does not parse — anything else — is the
+ *  image's (or the account's) failure and fails at once, with the log. */
+const isTransientRegistryFailure = (output: string): boolean =>
+  /(?:failed to fetch anonymous token|failed to authorize|failed to do request|failed to resolve source metadata)[^\n]*?(?::\s*(?:unexpected )?EOF\b|i\/o timeout|connection reset by peer|TLS handshake timeout|no such host|Client\.Timeout exceeded)/u
+    .test(output);
+
+const BUILD_ATTEMPTS = 3;
+
+const buildImage = (): void => {
+  for (let attempt = 1; attempt <= BUILD_ATTEMPTS; attempt += 1) {
+    const build = spawnSync(
+      'docker',
+      ['build', '-f', 'backend/server/Dockerfile', '-t', IMAGE_TAG, '.'],
+      { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+    );
+    if (build.status === 0) return;
+    const output = [build.error?.message, build.stdout, build.stderr].filter(Boolean).join('\n');
+    if (attempt === BUILD_ATTEMPTS || !isTransientRegistryFailure(output)) {
+      throw new Error(`docker build failed (attempt ${attempt} of ${BUILD_ATTEMPTS}):\n${output.slice(-6000)}`);
+    }
+    execFileSync('sleep', [String(10 * attempt)]);
+  }
+};
+
+describe('Phase E - which docker build failures are retried', () => {
+  // Docker Hub's own words, from the three builds that failed (2026-10-07).
+  it.each([
+    'ERROR: failed to solve: docker/dockerfile:1.7: failed to resolve source metadata for docker.io/docker/dockerfile:1.7: failed to authorize: failed to fetch anonymous token: Get "https://auth.docker.io/token?scope=repository%3Adocker%2Fdockerfile%3Apull&service=registry.docker.io": EOF',
+    'ERROR: failed to solve: node:24-slim: failed to resolve source metadata for docker.io/library/node:24-slim: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/24-slim": EOF',
+    'ERROR: failed to solve: node:24-slim: failed to do request: Head "https://registry-1.docker.io/v2/library/node/manifests/24-slim": dial tcp: lookup registry-1.docker.io: no such host',
+  ])('a registry request that died in transit is retried: %s', (output) => {
+    expect(isTransientRegistryFailure(output)).toBe(true);
+  });
+
+  it.each([
+    'ERROR: failed to solve: process "/bin/sh -c npm ci --ignore-scripts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: node:24-slim: failed to resolve source metadata for docker.io/library/node:24-slim: failed to copy: httpReadSeeker: failed open: unexpected status code https://registry-1.docker.io/v2/library/node/manifests/sha256:abc: 429 Too Many Requests - Server message: toomanyrequests: You have reached your pull rate limit.',
+    'ERROR: failed to solve: dockerfile parse error on line 12: unknown instruction: COPPY',
+    'Get "https://auth.docker.io/token": EOF\nERROR: failed to solve: process "/bin/sh -c node scripts/build.mjs" did not complete successfully: exit code: 2',
+  ])('anything else fails at once: %s', (output) => {
+    expect(isTransientRegistryFailure(output)).toBe(false);
+  });
+});
+
 const describeDocker = ENABLED ? describe : describe.skip;
 
 describeDocker('Phase E - Docker runtime artifact smoke', () => {
   beforeAll(() => {
     docker(['info', '--format', '{{.ServerVersion}}']);
-    execFileSync(
-      'docker',
-      ['build', '-f', 'backend/server/Dockerfile', '-t', IMAGE_TAG, '.'],
-      { cwd: REPO_ROOT, stdio: 'inherit' },
-    );
+    buildImage();
   }, 900_000);
 
   afterAll(() => {

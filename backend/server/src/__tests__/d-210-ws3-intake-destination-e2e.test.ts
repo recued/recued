@@ -350,8 +350,10 @@ describe('D-210 WS3 CAPSTONE — an intake lands on the real local calendar', ()
 
     // Day-scoped, because the START FIELD is a `date` — nothing else said so.
     expect(event.is_all_day).toBe(true);
-    // Midnight IN PARIS, not midnight UTC.
-    expect(new Date(event.start_at).toISOString()).toBe('2026-07-19T22:00:00.000Z');
+    // Stored as the DAY it names, as every calendar stores an all-day event
+    // (2026-10-07, `calendar-days.ts`): 20 July's UTC midnight. It was Paris
+    // midnight (19 July, 22:00 UTC), which every reader placed on 19 July.
+    expect(new Date(event.start_at).toISOString()).toBe('2026-07-20T00:00:00.000Z');
     // THREE nights: the check-out date is the exclusive end, which is how a
     // person reads it. Four would be the classic off-by-one.
     expect(event.end_at - event.start_at).toBe(3 * 24 * 60 * 60_000);

@@ -36,6 +36,7 @@ import {
   buildPackOperationIndex,
   installAccessOptions,
   installGrantableOps,
+  installRecipeRiskFromPreview,
   isInstallGrantSelection,
   isPureWorkflowRecipe,
   normalizeBulkPackInstallPlan,
@@ -2314,9 +2315,9 @@ export const installAccessNeedsFor = async (
       ...(deps.resolveMarketplaceRecipe ? { resolveMarketplaceRecipe: deps.resolveMarketplaceRecipe } : {}),
       getManifest: (slug: string) => deps.getManifest?.(slug),
     });
-    const recipeRisk = preview.resolved
-      ? new Map(preview.will_enable.map((r) => [r.recipe_id, r.top_risk ?? 'read' as const]))
-      : undefined;
+    // The dialog's own derivation, so a pack brought in is offered exactly the
+    // tiers its own install would offer.
+    const recipeRisk = installRecipeRiskFromPreview(preview);
     const need = needs.get(pack.slug);
     const installed = deps.contractStore !== undefined
       && findInstalledPackByAuthoredSlug(deps.contractStore, pack.slug) !== null;

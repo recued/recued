@@ -1042,6 +1042,10 @@ export interface ExecuteHandlerDeps {
   /** Server's display name — surfaces as `context.server.name` so
    *  recipes can render it. Optional; falls back to `'recued'`. */
   serverName?: string;
+  /** The owner's IANA zone — surfaces as `context.server.time_zone`, read
+   *  per run (the owner may change it). Absent: no zone is offered, and a
+   *  recipe's `date_parse` reads the server process's clock as before. */
+  ownerTimeZone?: () => string;
   /** Audit log store. When provided, every execution appends a
    *  redacted audit entry (same format as the extension). */
   auditLog?: AuditLogStore;
@@ -3093,8 +3097,22 @@ const handleExecuteInner = async (
   // forged request value is never preserved as a fallback or replay snapshot.
   const context: Record<string, unknown> = { ...baseContext };
   delete context.caller;
+  // The owner's zone is the SERVER's fact, so it is added to whatever
+  // `context.server` the run carries — a caller's snapshot of reachability
+  // wins, but it cannot know the zone.
+  const ownerTimeZone = deps.ownerTimeZone?.();
   if (!Object.prototype.hasOwnProperty.call(context, 'server')) {
-    context.server = { available: true, name: deps.serverName ?? 'recued' };
+    context.server = {
+      available: true,
+      name: deps.serverName ?? 'recued',
+      ...(ownerTimeZone !== undefined ? { time_zone: ownerTimeZone } : {}),
+    };
+  } else if (
+    ownerTimeZone !== undefined
+    && typeof context.server === 'object' && context.server !== null && !Array.isArray(context.server)
+    && (context.server as { time_zone?: unknown }).time_zone === undefined
+  ) {
+    context.server = { ...(context.server as Record<string, unknown>), time_zone: ownerTimeZone };
   }
   // Seal the property itself as well as the projection: exact `{{context}}`
   // refs preserve the parent object's identity, so freezing only the nested

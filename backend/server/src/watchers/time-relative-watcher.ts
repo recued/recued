@@ -52,7 +52,7 @@
 
 import type Database from 'better-sqlite3';
 import { IngredientError, type KernelTriggerOutput } from '@recued/ingredients';
-import type { Task } from '@recued/contracts';
+import { DAY_MS, eventSpanIn, type Task } from '@recued/contracts';
 import type { CollectionRegistry } from '../collections/registry.js';
 import type { WorkEntityStore } from '../storage/work-entity-store.js';
 
@@ -106,6 +106,9 @@ export interface TimeRelativeWatcherDeps {
   /** D-193 — work-entity task anchors for reminders. */
   workEntityStore?: Pick<WorkEntityStore, 'listTasks'>;
   now?: () => number;
+  /** The owner's zone: an all-day event's day begins at its local midnight
+   *  there. Absent, UTC. */
+  timeZone?: () => string | undefined;
 }
 
 const isRecuedReminderTask = (record: unknown): boolean => {
@@ -254,12 +257,27 @@ export const handleTimeRelativeWatcher = async (
   /** `floor`: boundaries that crossed before it are not fired (a collection
    *  watch's start point; the task path passes none). `instance`: where the
    *  record was found, handed to the recipe. */
+  const zone = deps.timeZone?.();
+  /** ⛔ An all-day calendar event's start and end are DAYS (`calendar-days.ts`):
+   *  it starts at the local midnight of its first day where the owner is, not
+   *  at the UTC midnight it is stored at. Read as stored, "a day before" a
+   *  holiday fired at 4 pm two days before it in Los Angeles. */
+  const anchorOf = (record: unknown): number | null => {
+    const anchor = readAnchor(record, args.anchor_field);
+    if (anchor === null || (args.anchor_field !== 'start_at' && args.anchor_field !== 'end_at')) return anchor;
+    const hot = (record as { hot_fields?: Record<string, unknown> }).hot_fields;
+    if (hot === undefined || (hot.is_all_day !== true && hot.is_all_day !== 1)) return anchor;
+    if (typeof hot.start_at !== 'number' || typeof hot.end_at !== 'number') return anchor;
+    const span = eventSpanIn({ start_at: hot.start_at, end_at: hot.end_at, is_all_day: true }, zone);
+    return args.anchor_field === 'start_at' ? span.start : span.end;
+  };
+
   const evaluateRecord = (
     record: unknown,
     floor = Number.NEGATIVE_INFINITY,
     instance: string | null = null,
   ): TimeRelativeWatcherOutput | null => {
-    const anchor = readAnchor(record, args.anchor_field);
+    const anchor = anchorOf(record);
     if (anchor === null) return null;
 
     // Optional filter — recipe authors gate by hot_fields. The full
@@ -313,7 +331,7 @@ export const handleTimeRelativeWatcher = async (
   const reminderFireCandidate = (
     record: unknown,
   ): { recordId: string; offsetLabel: string; anchor: number; priorFiredAt: number } | null => {
-    const anchor = readAnchor(record, args.anchor_field);
+    const anchor = anchorOf(record);
     if (anchor === null) return null;
     if (args.filter !== undefined && args.filter.length > 0) {
       const obj = record as { hot_fields?: unknown };
@@ -440,10 +458,12 @@ export const handleTimeRelativeWatcher = async (
   // is the event's start or end, only events whose boundary can fall in
   // [floor, now] are read: anchor in [floor - max(offset), now - min(offset)],
   // which the overlap window (`start_at < before`, `end_at > from`) contains.
+  // An all-day event is stored at UTC midnights, up to 14 hours from the
+  // local midnights it is anchored at: a day either side reads every one.
   const offsetsMs = args.offsets.map(parseOffsetMs);
   const window = platform === 'calendar'
     && (args.anchor_field === 'start_at' || args.anchor_field === 'end_at')
-    ? { from: floor - Math.max(...offsetsMs) - 1, before: now - Math.min(...offsetsMs) + 1 }
+    ? { from: floor - Math.max(...offsetsMs) - 1 - DAY_MS, before: now - Math.min(...offsetsMs) + 1 + DAY_MS }
     : undefined;
 
   for (const collection of instances) {

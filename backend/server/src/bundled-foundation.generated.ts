@@ -58,14 +58,14 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Personal Organizer Foundation",
     "description": "Use Personal Organizer Foundation in Recued for tasks, commitments, projects, and notes. It includes 9 ready-to-run workflows.",
-    "version": 7,
+    "version": 8,
     "bundled": true,
     "recipes": [],
     "contents": [
       {
         "type": "recipe",
         "slug": "today",
-        "version": 3,
+        "version": 4,
         "visible": true
       },
       {
@@ -561,12 +561,12 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Reception — Scheduling",
     "description": "Use Reception — Scheduling in Recued. It includes 1 built-in action and 3 ready-to-run workflows. Actions that change data use Recued's approval controls.",
-    "version": 4,
+    "version": 5,
     "pre_install": true,
     "recipes": [
       {
         "slug": "reschedule-calendar-event",
-        "version": 1
+        "version": 2
       },
       {
         "slug": "reschedule-booking",
@@ -2201,7 +2201,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "reschedule-calendar-event": {
     "recipe_id": "reschedule-calendar-event",
     "chat_exposed": false,
-    "version": 1,
+    "version": 2,
     "ttl": 60,
     "requires": [],
     "metadata": {
@@ -2271,6 +2271,26 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "operator": "is_not_null"
       },
       {
+        "id": "moved_event",
+        "skip_when": "{{step.moved}} not_equal true",
+        "op": "core.data.calendar.get",
+        "args": {
+          "slug": "{{config.calendar_slug}}",
+          "source_id": "{{config.event_source_id}}"
+        }
+      },
+      {
+        "id": "new_time",
+        "transform": "event_when",
+        "event": {
+          "start_at": "{{step.moved_event.record.start_at}}",
+          "end_at": "{{step.moved_event.record.end_at}}",
+          "is_all_day": "{{step.moved_event.record.is_all_day}}"
+        },
+        "part": "text",
+        "time_zone": "{{context.server.time_zone}}"
+      },
+      {
         "id": "card",
         "transform": "to_summary",
         "fields": [
@@ -2283,12 +2303,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
             "value": "{{step.moved}}"
           },
           {
-            "label": "New start",
-            "value": "{{config.new_start_at:date}}"
-          },
-          {
-            "label": "New end",
-            "value": "{{config.new_end_at:date}}"
+            "label": "New time",
+            "value": "{{step.new_time}}"
           }
         ]
       }
@@ -2746,7 +2762,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   "today": {
     "recipe_id": "today",
     "chat_exposed": true,
-    "version": 3,
+    "version": 4,
     "ttl": 60,
     "metadata": {
       "name": "Today",
@@ -2841,7 +2857,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       {
         "id": "today_window",
         "transform": "date_period",
-        "period": "today"
+        "period": "today",
+        "time_zone": "{{context.server.time_zone}}"
       },
       {
         "id": "today_start_ms",
@@ -2852,6 +2869,13 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
         "id": "today_end_ms",
         "transform": "date_parse",
         "input": "{{step.today_window.end}}"
+      },
+      {
+        "id": "today_label",
+        "transform": "date_format",
+        "date": "{{step.today_window.start}}",
+        "format": "YYYY-MM-DD",
+        "time_zone": "{{context.server.time_zone}}"
       },
       {
         "id": "calendar_events",
@@ -2928,7 +2952,7 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           },
           {
             "label": "Window",
-            "value": "{{step.today_window.start}} → {{step.today_window.end}}"
+            "value": "{{step.today_label}}"
           }
         ]
       }

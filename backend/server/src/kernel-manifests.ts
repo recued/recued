@@ -700,7 +700,7 @@ const MANIFESTS = [
   {
     "slug": "calendar-create",
     "name": "Create an event on a warehouse calendar collection",
-    "description": "Push a new event to the provider on the named calendar instance, then reflect the verified canonical event back into the warehouse. Not idempotent — re-fire creates duplicates; authors that might re-fire dedupe via `shared.*` snapshots keyed by `ical_uid`. Returns `{ source_id, ical_uid }` on verified success. Rejects with `CALENDAR_CAPABILITY_DENIED` when caps lack `create_event`, `CALENDAR_QUOTA_EXCEEDED` on provider 429, `CALENDAR_IO_ERROR` for network / 5xx (outcome unknown — may have landed on the provider; the next sync tick reflects whatever actually happened).",
+    "description": "Push a new event to the provider on the named calendar instance, then reflect the verified canonical event back into the warehouse. Not idempotent — re-fire creates duplicates; authors that might re-fire dedupe via `shared.*` snapshots keyed by `ical_uid`, or list by `ical_uid` first. `event.ical_uid` gives the event a UID of the caller's — an emailed invite's own, so its later updates find it by `calendar-list`'s `ical_uid` — kept by CalDAV (when safe as a file name), the local calendar and Google (as an import); Outlook assigns its own, and the returned `ical_uid` says which was kept. Returns `{ source_id, ical_uid }` on verified success. Rejects with `CALENDAR_CAPABILITY_DENIED` when caps lack `create_event`, `CALENDAR_QUOTA_EXCEEDED` on provider 429, `CALENDAR_IO_ERROR` for network / 5xx (outcome unknown — may have landed on the provider; the next sync tick reflects whatever actually happened).",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -781,7 +781,7 @@ const MANIFESTS = [
   {
     "slug": "calendar-list",
     "name": "List events from a warehouse calendar collection",
-    "description": "Read hot-field rows from `data.calendar.{slug}.*`, or from every calendar when `slug` is empty, ordered by `start_at` ascending. Rows read from every calendar carry `collection_slug`, the calendar each is in. Filters: `calendar_id` (target one calendar on the account), `since` / `until` (unix-ms range on `start_at`), `status` ('confirmed' | 'cancelled' | 'tentative'). Returns metadata only — descriptions and attendee detail come from `calendar-get`. Reads the warehouse only; the adapter is never consulted on this path. Returns empty when no events match the filter.",
+    "description": "Read hot-field rows from `data.calendar.{slug}.*`, or from every calendar when `slug` is empty, ordered by `start_at` ascending. Rows read from every calendar carry `collection_slug`, the calendar each is in. Filters: `calendar_id` (target one calendar on the account), `ical_uid` (every row of one iCalendar UID — the event an emailed invite is about, wherever its time has moved), `since` / `until` (unix-ms range on when an event starts on the owner's clock — an all-day event at the local midnight of its first day, so a window for the owner's day takes that day's all-day events), `status` ('confirmed' | 'cancelled' | 'tentative'). Rows come in that order, a day's all-day events before its first timed one. To show an event's time, `map` its rows through `event_when` with `time_zone: {{context.server.time_zone}}` — never `date_format` over `start_at`, which prints an all-day event as a clock time on the wrong day. Each row carries its `source_id`, the id `calendar-update` / `calendar-delete` / `calendar-rsvp` take. Returns metadata only — descriptions and attendee detail come from `calendar-get`. Reads the warehouse only; the adapter is never consulted on this path. Returns empty when no events match the filter.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -796,6 +796,7 @@ const MANIFESTS = [
     "input": {
       "slug": null,
       "calendar_id": null,
+      "ical_uid": null,
       "since": null,
       "until": null,
       "status": null,
@@ -2534,6 +2535,40 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "ics-read",
+    "name": "Read a stored calendar file",
+    "description": "Read one stored iCalendar file (a data.file.received record — an emailed invite, a guest's answer, a cancellation, a published event) by record_id, and save nothing. Returns found (false for a file that is not a calendar, with nothing read), method (request, cancel, reply, publish, add, refresh, counter, declinecounter, other, or none for a plain calendar file), event (the series or single event, not one moved occurrence), events, event_count, truncated and problems. Each event has uid, recurrence_id, sequence, status, summary, location, description, url, all_day, start and end (ISO), start_ms and end_ms, start_date and end_date (all-day only; the end is the day after the last), when (the time in the owner's zone, in words — use it rather than formatting start, which a recipe's date transforms read on the server's clock), time_zone, time_basis, recurring, rrule, organizer {email, name}, attendees [{email, name, status, role, rsvp, kind}], attendee_count, you {role: organizer|attendee|none, email, status, rsvp} and others_count (people other than the organizer and you; rooms and resources not counted). Times are read in the zone's own rules from the file (Outlook's Windows zone names included), else its IANA name; a floating time in the owner's zone. A zone nothing can read leaves start and end null with a problem — never a guessed hour. The owner is known by every connected mailbox's address, plus any in addresses. Reads file content, so it is gated under the data.file scope like data-file-read.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "mcp_exposed": true,
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "file",
+      "calendar",
+      "invite",
+      "read",
+      "warehouse"
+    ],
+    "input": {
+      "record_id": null,
+      "addresses": null
+    },
+    "output": {
+      "found": "found",
+      "record_id": "record_id",
+      "filename": "filename",
+      "method": "method",
+      "event": "event",
+      "events": "events",
+      "event_count": "event_count",
+      "truncated": "truncated",
+      "problems": "problems"
+    }
+  },
+  {
     "slug": "data-file-read",
     "name": "Read inbound file content",
     "description": "Read one inbound data.file.received record by record_id through the Gateway-gated content boundary. The handler re-reads the CAS blob and verifies its bytes against the content-addressed blob_hash. By default it returns base64-encoded bytes plus mime_type, filename, size_bytes, and blob_hash. With metadata_only=true, the kernel strips bytes_b64 before the result enters recipe step state while still requiring the verified blob read; this is the D-200 exact-artifact approval probe.",
@@ -3883,7 +3918,7 @@ const MANIFESTS = [
   {
     "slug": "booking-create",
     "name": "Create booking",
-    "description": "Create a booking \u2014 the BUSINESS record for a reservation: who the customer is, when it is, what it is worth, and how it ended. The booking carries its OWN appointment time in `slot_start_at` / `slot_end_at` (epoch ms). A booking is NOT a calendar event and never appears in the calendar. Supply both slot fields or neither \u2014 a start without an end is refused. Omit both when the time is not agreed yet. Do NOT send a duration: it is `slot_end_at` minus `slot_start_at`. `lifecycle_state` defaults to 'confirmed' (a booking is normally created at the moment it is approved); use 'pending' only for a flow with a real pre-confirmation step. You CANNOT set the originating reception record — that provenance is written by the server when a reservation is approved, and is not an argument here. `monetary_value` is both `amount` (decimal string, scale 2) and `currency` (ISO 4217) or neither. Returns the canonical booking record.",
+    "description": "Create a booking \u2014 the BUSINESS record for a reservation: who the customer is, when it is, what it is worth, and how it ended. The booking carries its OWN appointment time in `slot_start_at` / `slot_end_at` (epoch ms). A booking is NOT a calendar event and never appears in the calendar. Supply both slot fields or neither \u2014 a start without an end is refused. Omit both when the time is not agreed yet. Do NOT send a duration: it is `slot_end_at` minus `slot_start_at`. `lifecycle_state` defaults to 'confirmed' (a booking is normally created at the moment it is approved); use 'pending' only for a flow with a real pre-confirmation step. You CANNOT set the originating reception record — that provenance is written by the server when a reservation is approved, and is not an argument here. `monetary_value` is both `amount` (decimal string, scale 2) and `currency` (ISO 4217) or neither. Returns the canonical booking record. Optional idempotency_key switches to atomic create-or-reuse on one deterministic Recued-local id: a repeat with the same key returns the record it made (a deleted one is refused, not revived); it cannot route to a vendor Source.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -3897,6 +3932,7 @@ const MANIFESTS = [
     ],
     "input": {
       "title": null,
+      "idempotency_key": null,
       "lifecycle_state": null,
       "slot_start_at": null,
       "slot_end_at": null,

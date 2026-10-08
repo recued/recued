@@ -1507,6 +1507,42 @@ export const composeExecutorConfig = async (
         const { handleCsvColumns } = await import('../../collections/file/csv-filter-handler.js');
         return handleCsvColumns(await csvFileDeps(deps), input);
       },
+      // D-315 slice 7 — `ics-read`: a stored calendar file read into its method
+      // and events. The bytes come through the gated read `data-file-read` and
+      // the CSV ops use, capped at the parser's own limit; the owner is every
+      // connected mailbox's address, and the owner's zone the server's.
+      icsRead: async (input) => {
+        const { handleIcsRead } = await import('../../collections/file/ics-read-handler.js');
+        const { handleFileRead } = await import('../../collections/file/file-read-handler.js');
+        const { createServerTimeZoneStore } = await import('../../storage/server-timezone-store.js');
+        const { resolveServerTimeZone } = await import('@recued/contracts');
+        const remote = deps.getRemoteFileReadDeps?.();
+        const received = deps.collectionRegistry.get('file', 'received') as
+          | { get?: (record_id: string) => { hot_fields?: Record<string, unknown> } | null }
+          | undefined;
+        return handleIcsRead({
+          stat: (record_id) => received?.get?.(record_id)?.hot_fields ?? null,
+          readFile: (readInput, maxBytes) => handleFileRead(
+            {
+              registry: deps.collectionRegistry,
+              blobs: deps.cacheBlobs!,
+              ...(deps.auditLog ? { auditLog: deps.auditLog } : {}),
+              ...(remote ? { remote } : {}),
+            },
+            readInput,
+            undefined,
+            { maxBytes },
+          ),
+          ownerAddresses: () => deps.collectionRegistry.list()
+            .filter((c) => c.platform === 'mail')
+            .map((c) => (c as { accountEmail?: unknown }).accountEmail)
+            .filter((a): a is string => typeof a === 'string' && a.length > 0),
+          ownerTimeZone: () => resolveServerTimeZone(
+            deps.db ? createServerTimeZoneStore(deps.db).read() : null,
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ),
+        }, input);
+      },
       fileReadTemp: async (input) => {
         const { handleFileReadTemp } = await import('../../collections/file/file-read-temp-handler.js');
         return handleFileReadTemp(input);

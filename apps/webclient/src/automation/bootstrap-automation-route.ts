@@ -65,6 +65,7 @@ import {
   dishLineName,
   dishStartsLine,
   dishStatus,
+  eventTriggerInWords,
   intervalInWords,
   rowsOfDish,
   timerNextCheck,
@@ -155,9 +156,6 @@ export const AUTOMATION_ROUTE_ADD_ERROR_ATTR =
  *  Add disclosure (or Dishes config affordances) needs that inventory. */
 export const AUTOMATION_ROUTE_ADD_RETRY_ATTR =
   'data-recued-automation-add-retry';
-/** D-215 slice 4 — a subordinate managed dish's link to the rule that owns
- *  its lifecycle. Value = the owning rule id. */
-export const DISH_OWNER_LINK_ATTR = 'data-recued-dish-owner-link';
 /** D-215 slice 4b — the inline rename box on a dish row. Value = dish_id. */
 export const DISH_RENAME_INPUT_ATTR = 'data-recued-dish-rename';
 /** D-215 slice 5 — the dish detail's run-history list. Value = dish_id. */
@@ -1944,11 +1942,10 @@ export const bootstrapAutomationRoute = (
       }) };
     });
 
-  /** D-215 slice 3 — where a MANAGED dish's lifecycle actually lives.
-   *  Ruling (a): managed dishes are VISIBLE and badged, but their edit /
-   *  enable / remove actions belong to the owning row, never to the dish
-   *  (D-179 versions a managed dish immutably — one `dish_id` = one
-   *  config — so mutating it here would break that silently). */
+  /** A dish's badge: the recipe's main dish, or one the owner added.
+   *  D-319 retired the managed dishes D-215 badged here (one a schedule,
+   *  trigger or timer minted and owned), so every dish is the owner's own and
+   *  its row's actions write the dish itself. */
   const dishOrigin = (d: Dish): { label: string; badge: string } => {
     // D-319 — a schedule, trigger or timer belongs to a dish and mints none.
     if (d.is_default) return { label: 'Main', badge: 'main' };
@@ -1961,25 +1958,12 @@ export const bootstrapAutomationRoute = (
   const dishTitle = (d: Dish): string =>
     d.name !== '' ? d.name : nameFor(d.recipe_id);
 
-  /** D-215 slice 4 — WHERE a dish's mutations go. D-319 retired the managed
-   *  dishes (a schedule, trigger or timer belongs to a dish and owns none),
-   *  so every dish is the owner's own; the `one_shot` / `owner` branches this
-   *  page still carries are dead until the D-319 Automation rewrite (§ 5.4)
-   *  removes them. */
-  const dishWriteTarget = (
-    d: Dish,
-  ): { kind: 'own' } | { kind: 'one_shot'; schedule_id: string } | { kind: 'owner'; token: AutomationSectionToken; id: string } => {
-    return { kind: 'own' };
-  };
-
   /** D-215 slice 4b — a dish row's trailing affordances.
    *
    *  Composed, NOT nested. An earlier nesting hung Rename inside the
    *  `canConfigure` branch, so a recipe declaring no variables silently
    *  lost its Rename button — the two are independent and now read that
-   *  way. Rename is offered on a MANAGED dish too: `name` is a label, it
-   *  changes no resolution, and the slice-0 guard leaves it writable on
-   *  purpose (only `config_overlay` / `enabled` / `group_id` are frozen). */
+   *  way. */
   /** D-215 slice 5 — load the open dish's history. A request identity is
    *  required in addition to the dish id: the user can leave and reopen the
    *  same detail while its prior read is still settling. */
@@ -2026,8 +2010,6 @@ export const bootstrapAutomationRoute = (
       canConfigure: boolean;
       canRename: boolean;
       renaming: boolean;
-      target: ReturnType<typeof dishWriteTarget>;
-      origin: { label: string; badge: string };
     },
   ): string => {
     const title = dishTitle(d);
@@ -2058,12 +2040,6 @@ export const bootstrapAutomationRoute = (
         ? `<button type="button" class="automation-button"
              aria-label="${actionName(renameLabel)}"
              ${ACTION_ATTR}="rename:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'rename')}>${renameLabel}</button>`
-        : '',
-      ctx.target.kind === 'owner'
-        ? `<a class="recipes-inline-link"
-             href="${e(serializeShellRoute('automation', ctx.target.token, ctx.target.id))}"
-             ${DISH_OWNER_LINK_ATTR}="${e(ctx.target.id)}"
-             >Manage on its ${e(ctx.origin.badge)} →</a>`
         : '',
     ].filter((x) => x !== '');
     return parts.length === 0
@@ -2099,26 +2075,16 @@ export const bootstrapAutomationRoute = (
         const origin = dishOrigin(d);
         const last = dishLastRuns[d.dish_id];
         const overlayKeys = Object.keys(d.config_overlay).length;
-        const target = dishWriteTarget(d);
         // A row is actionable only when the rpcs it would need are wired.
-        const canWriteOwn = target.kind === 'own' && opts.dishesUpdateCaller !== undefined;
-        const canWriteOneShot =
-          target.kind === 'one_shot' && opts.schedulesUpdateCaller !== undefined;
-        const actionable = canWriteOwn || canWriteOneShot;
+        const actionable = opts.dishesUpdateCaller !== undefined;
         const canConfigure =
           actionable
           && (recipeEntries ?? []).some(
             (r) => r.recipe_id === d.recipe_id
               && Object.keys(r.recipe.variables ?? {}).length > 0,
           );
-        // ⚠ Rename is allowed on a MANAGED dish too — `name` is a label, it
-        // changes no resolution, and the slice-0 guard deliberately leaves
-        // it writable (only config_overlay / enabled / group_id are frozen).
-        // Naming the queued item is much of the point of listing it.
         const canRename = opts.dishesUpdateCaller !== undefined;
-        const canRemove =
-          (target.kind === 'own' && opts.dishesDeleteCaller !== undefined)
-          || (target.kind === 'one_shot' && opts.schedulesDeleteCaller !== undefined);
+        const canRemove = opts.dishesDeleteCaller !== undefined;
         return renderRow({
           section: 'dish',
           rule_id: d.dish_id,
@@ -2135,15 +2101,13 @@ export const bootstrapAutomationRoute = (
               : `last ${formatDateTime(last.started_at)} (${last.commit_status})`,
             overlayKeys === 0 ? 'recipe defaults' : `${overlayKeys} config value(s)`,
           ],
-          // D-215 slice 4 — a subordinate managed dish gets NO inline
-          // actions; the row links to the rule that owns its lifecycle.
           ...(actionable
             ? { toggleTo: !d.enabled, toggleLabel: d.enabled ? 'Pause' : 'Resume' }
             : {}),
           canDelete: canRemove,
           canDetail: true,
           extra: dishRowExtra(d, {
-            canConfigure, canRename, target, origin,
+            canConfigure, canRename,
             renaming: renamingDishId === d.dish_id,
           }),
           busy: busy.has(d.dish_id),
@@ -2184,9 +2148,13 @@ export const bootstrapAutomationRoute = (
         titleHref: recipeHref(t.recipe_id),
         armed,
         stateLabel: t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused',
+        // Any other trigger in words too — its filter included ("when a
+        // calendar invite arrives", not `data.file.received.*.created` beside
+        // `record.mime_type = text/calendar`). The raw pattern and filter stay
+        // on its Details.
         detail: fact !== null
           ? `<span>on ${e(fact)}</span>`
-          : `<span>on <code>${e(t.pattern)}</code></span>`,
+          : `<span>when ${e(eventTriggerInWords(t))}</span>`,
         meta: [
           `last fired ${formatDateTime(t.last_fired_at)}`,
           // G6 — declarative rows are reconciler-managed: badge the
@@ -2194,12 +2162,9 @@ export const bootstrapAutomationRoute = (
           // would re-create a deleted row; Pause is the gesture that
           // sticks.
           ...(fromRecipe ? ['from recipe'] : []),
-          // Authoring sugar — surface the compiled dispatch filter so
+          // Authoring sugar — surface the compiled changed-fields gate so
           // governance reads WHAT narrows a row, not just its pattern.
           ...(fact === null && t.fields && t.fields.length > 0 ? [`when ${t.fields.join(' / ')} changes`] : []),
-          ...(fact === null && t.filter && Object.keys(t.filter).length > 0
-            ? [Object.entries(t.filter).map(([k, v]) => `${k} = ${String(v)}`).join(', ')]
-            : []),
         ],
         error: t.last_error,
         toggleTo: !t.enabled,
@@ -2994,9 +2959,17 @@ export const bootstrapAutomationRoute = (
         body = `
           ${heading(`<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`)}
           ${facts([
-            fact !== null
-              ? ['Starts on', e(fact)]
-              : ['Pattern', `<code>${e(t.pattern)}</code>`],
+            ...(fact !== null
+              ? [['Starts on', e(fact)] as [string, string]]
+              : [
+                  ['Starts when', e(eventTriggerInWords(t))] as [string, string],
+                  ['Pattern', `<code>${e(t.pattern)}</code>`] as [string, string],
+                  // The narrowing the words above read, exactly as it matches.
+                  ...(t.filter && Object.keys(t.filter).length > 0
+                    ? [['Filter', `<code>${e(Object.entries(t.filter)
+                      .map(([k, v]) => `${k} = ${String(v)}`).join(', '))}</code>`] as [string, string]]
+                    : []),
+                ]),
             ['State', e(t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused')],
             ['Origin', e(t.origin === 'recipe' ? 'From a Recipe, looked after by Recued' : 'Manual')],
             ['Last fired', e(formatDateTime(t.last_fired_at))],
@@ -3832,19 +3805,10 @@ export const bootstrapAutomationRoute = (
       void runMutation(rule_id, section, () =>
         opts.watchUpdateCaller!({ watch_key: rule_id, enabled }), focus, undefined, action);
     } else if (section === 'dish') {
-      // D-215 slice 4 — route by write target, never by "it's a dish".
-      const d = dishes.find((x) => x.dish_id === rule_id);
-      if (d === undefined) return;
-      const target = dishWriteTarget(d);
-      if (target.kind === 'own' && opts.dishesUpdateCaller) {
+      if (!dishes.some((x) => x.dish_id === rule_id)) return;
+      if (opts.dishesUpdateCaller) {
         void runMutation(rule_id, section, () =>
           opts.dishesUpdateCaller!({ dish_id: rule_id, enabled }), focus, undefined, action);
-      } else if (target.kind === 'one_shot' && opts.schedulesUpdateCaller) {
-        // The § 3 exception: inline for the OWNER, but the write lands on
-        // the schedule — `dishes.update` would be refused by the slice-0
-        // guard, and rightly so.
-        void runMutation(rule_id, section, () =>
-          opts.schedulesUpdateCaller!({ schedule_id: target.schedule_id, enabled }), focus, undefined, action);
       }
     } else if (section === 'auto_run' && opts.autoRunUpdateCaller) {
       const entry = autoRun.find((a) => autoRunId(a) === rule_id);
@@ -3907,29 +3871,12 @@ export const bootstrapAutomationRoute = (
         action,
       );
     } else if (section === 'dish') {
-      const d = dishes.find((x) => x.dish_id === rule_id);
-      if (d === undefined) return;
-      const target = dishWriteTarget(d);
-      if (target.kind === 'own' && opts.dishesDeleteCaller) {
+      if (!dishes.some((x) => x.dish_id === rule_id)) return;
+      if (opts.dishesDeleteCaller) {
         void runMutation(
           rule_id,
           section,
           () => opts.dishesDeleteCaller!({ dish_id: rule_id }),
-          focus,
-          fallbackFocus,
-          action,
-        );
-      } else if (target.kind === 'one_shot' && opts.schedulesDeleteCaller) {
-        // D-215 § 5.2 — THE DISPOSAL PATH for a retained one-shot (an
-        // errored or skipped fire is kept, disabled, and cleared BY HAND).
-        // Deleting the SCHEDULE is what retires the pair: `retireSchedule`
-        // drops the row and dissolves the dish behind it. Calling
-        // `dishes.delete` here would be refused by the slice-0 guard AND
-        // would orphan the schedule if it were not.
-        void runMutation(
-          rule_id,
-          section,
-          () => opts.schedulesDeleteCaller!({ schedule_id: target.schedule_id }),
           focus,
           fallbackFocus,
           action,

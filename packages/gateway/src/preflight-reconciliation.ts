@@ -51,7 +51,9 @@
 import {
   RISK_TIERS,
   isOperationSpecHash,
+  kernelWriteStaysInRecued,
   renderBatchItemsBlock,
+  WRITE_STAYS_IN_RECUED_CLAUSE,
 } from '@recued/contracts';
 import type {
   BatchedApprovalItem,
@@ -389,6 +391,40 @@ const tierClause = (tier: string | undefined): string | undefined =>
     ? TIER_CLAUSE[tier as RiskTier]
     : undefined;
 
+/** The write clause for a write that provably stays in Recued — a booking, a
+ *  commitment, an event on the local calendar. `TIER_CLAUSE.write` told the
+ *  owner those changed data "outside Recued", which is false, and the approval
+ *  card repeats this sentence as its consequence line. The proof is
+ *  `kernelWriteStaysInRecued`; anything it cannot prove keeps the outside
+ *  wording, because a false warning is cheaper than a false reassurance. */
+const LOCAL_WRITE_CLAUSE = WRITE_STAYS_IN_RECUED_CLAUSE;
+
+const isArgsRecord = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/** The arguments of every call this ask covers, or `[]` when any of them is
+ *  unknown — a partial list would let one unread call ride on the others'
+ *  proof. A batch lists its members; a foreach cover lists its items when it
+ *  can; a single hold is the gated step's resolved input, which the engine
+ *  records on the checkpoint when it holds a step. */
+const coveredCallArgs = (
+  checkpoint: Checkpoint,
+  batch: PreflightAskContext['batch'],
+  cover: PreflightForeachCover | undefined,
+): ReadonlyArray<Record<string, unknown>> => {
+  const listed = batch?.items ?? cover?.items;
+  if (listed !== undefined) {
+    const args = listed.map((item) => item.args_preview);
+    return args.every(isArgsRecord) ? args : [];
+  }
+  if (cover !== undefined) return [];
+  const gated = checkpoint.gated_step_id !== undefined
+    ? checkpoint.step_state?.[checkpoint.gated_step_id]
+    : undefined;
+  const input = isArgsRecord(gated) ? gated.input : undefined;
+  return isArgsRecord(input) ? [input] : [];
+};
+
 /** The origin unit, in words. `turn` / `burst` / `fire` / `run` are the
  *  aggregation-key vocabulary (`deriveOriginUnit`) — precise internally,
  *  meaningless to a reader, and "3 pending actions in this burst" is not
@@ -636,7 +672,16 @@ export const buildPreflightAsk = (args: {
   // Sentence 2 — why it stopped here. The tier IS the reason; naming the
   // consequence answers "should I care?" in a way `risk_tier='write'`
   // never did.
-  const clause = tierClause(context.risk_tier);
+  const clause =
+    context.risk_tier === 'write'
+    && named !== undefined
+    && kernelWriteStaysInRecued(named, coveredCallArgs(checkpoint, batch, cover))
+      ? LOCAL_WRITE_CLAUSE
+      : tierClause(context.risk_tier);
+  // ⛔ THE SECOND LINE OF THE BODY, AND THE CARD READS IT THERE. The approval
+  // card (`projectGeneratedApprovalAsk`) shows this clause as its consequence
+  // line, and takes it ONLY from line 2 so nothing later in the body (a raw
+  // `Reason:`) can supply one. Keep `opening` to one line and this right after.
   const held =
     clause !== undefined
       ? `${clause}, so Recued held ${count === 1 ? 'it' : 'them'} for you.`

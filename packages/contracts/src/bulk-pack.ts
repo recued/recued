@@ -604,25 +604,56 @@ export interface InstallGrantableOp {
   readonly risk: OperationRiskTier;
 }
 
+/** D-247 D15.1 — the per-recipe tiers {@link installGrantableOps} reads, from a
+ *  `packs.install_preview` the server resolved; undefined when it did not.
+ *
+ *  ⛔ THE DIALOG MUST LIST A RECIPE UNDER THE TIER THAT ACTUALLY GRANTS IT, which
+ *  the seed decides (`recipe-grant-seed.ts`: `exposed && accessCoversRisk`):
+ *    - a recipe the preview does not list is not chat-exposed, so the install
+ *      writes it CLOSED at every tier — it is left out. It used to be listed
+ *      under "Read only", "Look at things only", which is how the Calendar
+ *      Invites pack's three recipes that create bookings, events and commitments
+ *      were described (live drive, 2026-10-07);
+ *    - a recipe whose tier is underivable (`null`) is granted only at Full
+ *      access, so it is listed there. It used to be listed under Read, which
+ *      does not grant it. */
+export const installRecipeRiskFromPreview = (
+  preview: {
+    readonly resolved: boolean;
+    readonly will_enable: ReadonlyArray<{
+      readonly recipe_id: string;
+      readonly top_risk: OperationRiskTier | null;
+    }>;
+  } | undefined,
+): ReadonlyMap<string, OperationRiskTier> | undefined =>
+  preview?.resolved === true
+    ? new Map(preview.will_enable.map((r) => [r.recipe_id, r.top_risk ?? 'destructive']))
+    : undefined;
+
 /** D-310 — what a pack's install Access choice grants.
  *
  *  ⛔ ONE DERIVATION for a pack's own install dialog and for the packs an install
  *  brings in with it (`packs.install_preview` `dependency_packs`), so a bundled
  *  pack is offered exactly the tiers its own dialog would offer.
  *
- *  `recipeRisk` is the per-recipe risk `packs.install_preview` resolved, keyed by
- *  recipe slug. A recipe it does not name is `read`, which is what shipped before
- *  D-247 and is only safe because the seed then lands it closed. An operation
- *  whose ingredient is missing from the composition counts as connection-backed:
- *  a malformed composition shows the choice rather than skip it. */
+ *  `recipeRisk` is the per-recipe risk a RESOLVED `packs.install_preview` gave
+ *  ({@link installRecipeRiskFromPreview}), keyed by recipe slug. A recipe it does
+ *  not name is one the install writes CLOSED, so no tier grants it and it is left
+ *  out. Without a resolved preview every recipe is `read`, as before D-247: the
+ *  dialog cannot tell, and the seed lands a recipe it cannot place closed. An
+ *  operation whose ingredient is missing from the composition counts as
+ *  connection-backed: a malformed composition shows the choice rather than skip
+ *  it. */
 export const installGrantableOps = (
   manifest: BulkPackManifest,
   recipeRisk?: ReadonlyMap<string, OperationRiskTier>,
 ): InstallGrantableOp[] => {
-  const ops: InstallGrantableOp[] = normalizeBulkPackInstallPlan(manifest).recipes.map((recipe) => ({
-    id: `${manifest.publisher}/${recipe.slug}`,
-    risk: recipeRisk?.get(recipe.slug) ?? 'read',
-  }));
+  const ops: InstallGrantableOp[] = normalizeBulkPackInstallPlan(manifest).recipes.flatMap((recipe) => {
+    const id = `${manifest.publisher}/${recipe.slug}`;
+    if (recipeRisk === undefined) return [{ id, risk: 'read' as const }];
+    const risk = recipeRisk.get(recipe.slug);
+    return risk === undefined ? [] : [{ id, risk }];
+  });
   for (const content of manifest.contents ?? []) {
     if (content.type !== 'composition') continue;
     const kindBySlug = new Map<string, string>(

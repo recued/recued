@@ -101,6 +101,13 @@ describe('D-173 P4.3 — local calendar adapter', () => {
       );
     });
 
+    it("D-315 slice 7 — an invite added here keeps the invite's UID", async () => {
+      const provider = createLocalCalendarProvider({ slug: 'local', now: () => FIXED_NOW, readEvent: () => null });
+      const payload = await provider.createEvent('local', { ...makeEvent(), ical_uid: 'abc123@google.com' });
+      expect(payload.event.ical_uid).toBe('abc123@google.com');
+      expect(payload.event.source_id).toMatch(/[0-9a-f-]{36}/);
+    });
+
     it('is not idempotent — distinct source_ids per call (matches the provider contract)', async () => {
       const provider = createLocalCalendarProvider({ slug: 'local', now: () => FIXED_NOW, readEvent: () => null });
       const a = await provider.createEvent('local', makeEvent());

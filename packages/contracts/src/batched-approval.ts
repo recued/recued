@@ -448,6 +448,48 @@ const isPlainRecord = (v: unknown): v is Record<string, unknown> =>
 
 const isScalar = (v: unknown): boolean => v === null || typeof v !== 'object';
 
+// ────────────────────────────────────────────────────────────────
+// Instants — a date a person can read, not a millisecond count
+// ────────────────────────────────────────────────────────────────
+//
+//  ⛔ `slot_start_at: 1792256400000` is a number the owner has to convert
+//  before they know WHEN they are approving something for — found on a live
+//  drive (2026-10-07), where a booking, a commitment's deadline and a calendar
+//  event all asked for approval in milliseconds. Recued's own `*_at` fields are
+//  epoch milliseconds, so a `*_at` leaf holding an integer in the millisecond
+//  range renders as a date.
+//
+//  ⚠ UTC, AND IT SAYS SO. This text goes everywhere the ask goes (Slack,
+//  Telegram, email, the card's technical bits) and this module has no zone to
+//  read. A named UTC time is always true; the paired surfaces show the same
+//  value in the owner's zone, resolved server-side (D-270's detail rows).
+//
+//  ⚠ The range is the guard against a `*_at` that is not milliseconds: epoch
+//  SECONDS for today are ~1.8e9 and stay a number, as does anything past year
+//  5138. `value` is untouched — commonality is decided on it, never on this.
+
+const INSTANT_MS_MIN = 1e11; // 1973-03-03
+const INSTANT_MS_MAX = 1e14; // year 5138
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** A raw leaf key that names an instant: `at`, or ending `_at`. */
+const isInstantKey = (key: string): boolean => /(?:^|_)at$/.test(key);
+
+/** `17 Oct 2026, 09:00 UTC` (seconds only when there are some), or undefined
+ *  when `key` / `v` is not a millisecond instant. */
+const renderInstant = (key: string, v: unknown): string | undefined => {
+  if (!isInstantKey(key) || typeof v !== 'number' || !Number.isInteger(v)) return undefined;
+  if (v < INSTANT_MS_MIN || v >= INSTANT_MS_MAX) return undefined;
+  const d = new Date(v);
+  const seconds = d.getUTCSeconds();
+  return `${pad2(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]!} ${d.getUTCFullYear()}, `
+    + `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`
+    + `${seconds !== 0 ? `:${pad2(seconds)}` : ''} UTC`;
+};
+
 /** Render one value on a single line, in words rather than JSON: a
  *  scalar as itself, a list of scalars comma-joined (no brackets — the
  *  reader needs to know WHO gets the mail, not that `to` is an array), a
@@ -478,7 +520,7 @@ const renderInline = (v: unknown, depth = 0): string => {
   if (entries.length === 0) return EMPTY_MARK;
   return clip(
     `{${entries
-      .map(([k, val]) => `${neutralize(k)}: ${renderInline(val, depth + 1)}`)
+      .map(([k, val]) => `${neutralize(k)}: ${renderInstant(k, val) ?? renderInline(val, depth + 1)}`)
       .join(FIELD_SEP)}}`,
     VALUE_CLIP,
   );
@@ -536,7 +578,7 @@ const toFields = (
       // ⚠ `rendered` is shortened; `value` is NOT. Commonality across batch
       // members is decided on `value`, so two different uuids can never
       // hoist into "All N share" on the strength of a shared 8-char prefix.
-      rendered: shortenIdentifiers(label, renderInline(v)),
+      rendered: renderInstant(k, v) ?? shortenIdentifiers(label, renderInline(v)),
     });
   }
   return out;
