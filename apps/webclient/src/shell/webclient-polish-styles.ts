@@ -32,8 +32,8 @@
  *  without ever fighting a styled control.
  *
  *  ── Webclient-local design knobs ────────────────────────────────────
- *  The `--wc-*` custom properties below are defined on SHELL so they
- *  cascade to every surface inside the app but never leak to the Bridge /
+ *  The `--wc-*` custom properties below are defined on SHELL and explicit
+ *  webclient portals so they cascade inside the app but never leak to the Bridge /
  *  dashboard / marketplace (which link the same `tokens.css` but have no
  *  shell host). Editing one knob retunes every control at once. */
 
@@ -41,7 +41,7 @@ export const WEBCLIENT_POLISH_STYLES_MARKER = 'data-recued-webclient-polish';
 
 export const WEBCLIENT_POLISH_STYLES = `
 /* ── Webclient-local design knobs + transparent-panel source fix ──── */
-[data-recued-webclient-shell] {
+[data-recued-webclient-shell], [data-recued-webclient-overlay] {
   --wc-radius: 9px;
   --wc-radius-lg: 14px;
   --wc-radius-pill: 999px;
@@ -93,16 +93,24 @@ export const WEBCLIENT_POLISH_STYLES = `
   padding: 8px 11px;
 }
 :where([data-recued-webclient-content]) textarea { resize: vertical; }
+/* WebKit's native popup selects discard min-height and padding. Give single
+   choices the shared control height; leave listboxes and multiple selects
+   free to show their rows. Route-specific heights still override this floor. */
+:where([data-recued-webclient-content]) :where(
+  select:not([multiple]):not([size]), select[size="1"]:not([multiple])
+) {
+  height: var(--wc-control-h);
+}
 :where([data-recued-webclient-content]) input::placeholder,
 :where([data-recued-webclient-content]) textarea::placeholder {
-  color: var(--fg-subtle);
+  color: var(--fg-muted);
 }
 
 /* ════════════════════════════════════════════════════════════════
    2 · Unified named buttons (data / runs / recipes / automation)
    ════════════════════════════════════════════════════════════════ */
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
-  .data-button, .runs-button, .recipes-button, .automation-button
+  .wc-button, .data-button, .runs-button, .recipes-button, .automation-button
 ) {
   display: inline-flex;
   align-items: center;
@@ -125,17 +133,23 @@ export const WEBCLIENT_POLISH_STYLES = `
   transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
-  .data-button, .runs-button, .recipes-button, .automation-button
+  .wc-button, .data-button, .runs-button, .recipes-button, .automation-button
 ):hover:not(:disabled) {
   background: var(--surface-sunk);
   border-color: var(--border-strong);
   transform: translateY(-1px);
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
-  .data-button, .runs-button, .recipes-button, .automation-button
+  .wc-button, .data-button, .runs-button, .recipes-button, .automation-button
 ):disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+/* User-authored labels can wrap inside a button; short action labels keep
+   their natural width and wrap as whole controls. */
+[data-recued-webclient-shell] [data-recued-webclient-content] .wc-button--wrap {
+  white-space: normal;
+  text-align: left;
 }
 /* Primary — solid accent, only the genuinely-primary action carries it. */
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
@@ -224,7 +238,7 @@ export const WEBCLIENT_POLISH_STYLES = `
   .work-entity-list-search-input, .work-entity-source-dropdown-select,
   .rx-input, .rx-select
 )::placeholder {
-  color: var(--fg-subtle);
+  color: var(--fg-muted);
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .data-input,
@@ -373,7 +387,8 @@ export const WEBCLIENT_POLISH_STYLES = `
    ════════════════════════════════════════════════════════════════ */
 [data-recued-webclient-shell] [data-recued-webclient-content] :is(
   .chat-route-title, .data-title, .recipes-title, .automation-title,
-  .connections-route-title, .contracts-title, .packs-route-title, .logs-title
+  .connections-route-title, .contracts-title, .packs-route-title, .logs-title,
+  .mail-route-title, [data-recued-today-route] .today-header h2
 ) {
   font-size: clamp(24px, 3vw, 29px);
   font-weight: 720;
@@ -527,8 +542,8 @@ export const WEBCLIENT_POLISH_STYLES = `
 }
 
 @media (max-width: 640px) {
-  [data-recued-webclient-shell] {
-    --wc-control-h: 40px;
+  [data-recued-webclient-shell], [data-recued-webclient-overlay] {
+    --wc-control-h: 44px;
     --wc-pad-x: 12px;
   }
 }

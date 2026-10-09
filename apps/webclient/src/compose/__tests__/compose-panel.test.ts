@@ -252,13 +252,13 @@ describe('D-174 P5 Compose local draft route', () => {
     expect(doc.styleElements).toHaveLength(1);
     expect(doc.styleElements[0]?.attrs.has(COMPOSE_ROUTE_STYLES_MARKER)).toBe(true);
     expect(doc.styleElements[0]?.textContent).toContain(
-      `[${COMPOSE_ROUTE_TARGET_CHIP_ATTR}] {\n  min-height: 36px;`,
+      `[${COMPOSE_ROUTE_TARGET_CHIP_ATTR}] {\n  min-height: var(--wc-control-h, 38px);`,
     );
     expect(doc.styleElements[0]?.textContent).toMatch(
-      /textarea,\n[^}]*input,\n[^}]*select\s*\{[^}]*min-height:\s*36px;/s,
+      /textarea,\n[^}]*input,\n[^}]*select\s*\{[^}]*min-height:\s*var\(--wc-control-h, 38px\);/s,
     );
     expect(doc.styleElements[0]?.textContent).toContain(
-      `[${COMPOSE_ROUTE_COMMIT_ATTR}] {\n  justify-self: start;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 36px;`,
+      `[${COMPOSE_ROUTE_COMMIT_ATTR}] {\n  justify-self: start;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  min-height: var(--wc-control-h, 38px);`,
     );
 
     route.dispose();

@@ -4,6 +4,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { createQueueFixture as CreateQueueFixture } from './harness/chat-queue-backend.js';
+import { openChatHistory } from './helpers/chat-history.js';
 
 const setup = async (browser: Browser) => {
   const target = resolve(`node_modules/.cache/d265-e2e/quoted-${crypto.randomUUID()}.mjs`);
@@ -131,6 +132,8 @@ test('a quote-only draft is protected during navigation and fits a narrow compos
     await a.setViewportSize({ width: 390, height: 844 });
     await a.emulateMedia({ colorScheme: 'dark' });
     await a.locator('[data-chat-reply-action="question-2"]').click();
+    // A phone shows the conversation list as its own pane.
+    await openChatHistory(a);
     await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
     await expect(a.locator('[data-recued-chat-route-history-draft-guard]')).toContainText('What you were writing will be lost');
     await a.getByRole('button', { name: 'Keep writing', exact: true }).click();
@@ -138,6 +141,7 @@ test('a quote-only draft is protected during navigation and fits a narrow compos
     await expect(input(a)).toBeFocused(); await expect(input(a)).toHaveValue('');
     expect(await a.locator('[data-chat-reply-draft]').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await a.locator('.chat-composer').screenshot({ path: testInfo.outputPath('quoted-reply-mobile.png') });
+    await openChatHistory(a);
     await a.getByRole('button', { name: /Another conversation.*0 messages/ }).click();
     await a.getByRole('button', { name: 'Throw it away and open', exact: true }).click();
     await expect(a.locator('[data-chat-reply-draft]')).toHaveCount(0);

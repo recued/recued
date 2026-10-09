@@ -630,7 +630,7 @@ describe('composeVendorSubstrate substrate construction', () => {
     );
   });
 
-  it('lookupConnection threads a live key provider when keys are initialized', async () => {
+  it('lookupConnection threads a live key provider whenever a key manager exists', async () => {
     const keys = keyManager();
     const store = connectionStore();
     store.upsert(rowInput({ auth_ciphertext: 'ciphertext-with-key' }));
@@ -639,7 +639,8 @@ describe('composeVendorSubstrate substrate construction', () => {
     const bundle = await compose(buildDeps({ connectionStore: store, keys }));
     await bundle.lookupConnection('crm');
 
-    expect(keys.state).toHaveBeenCalled();
+    // Not gated on `keys.state()` — a compose-time gate kept a new server's
+    // first session key-less (driven live 2026-10-08).
     expect(keys.keyProvider).toHaveBeenCalledWith('connection');
     expect(decodeAuthFromStorageMock.mock.calls[0]![2]).toBe(
       (keys.keyProvider as ReturnType<typeof vi.fn>).mock.results[0]!.value,

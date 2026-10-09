@@ -42,8 +42,8 @@ export function cmdHelp(version: string): void {
     audit clear                         Clear every audit entry
 
   Logs:
-    logs                                Print recent daemon log lines
-    logs -f                             Follow the daemon log (tail -f)
+    logs                                Print recent server log lines
+    logs -f                             Follow the server log
 
   Encryption:
     unlock                              Unlock a running server with its 24-word recovery key

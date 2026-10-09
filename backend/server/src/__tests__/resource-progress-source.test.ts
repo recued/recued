@@ -102,6 +102,12 @@ describe('ResourceProgressSource — real process tree', () => {
     // (measured). 500ms gives a 2%-of-a-core process a 10ms advance — a margin
     // wide enough that this is a real assertion, not a coin flip.
     const GAP = 500;
+    // ⚠ THE PRODUCTION RSS RULE, DELIBERATELY. A stopped process's RSS is the OS's to change:
+    // under memory pressure (sweeps run with swap in use) the kernel pages it out. At
+    // e98b086fc, while a shrink still counted, this case read still for a whole window and
+    // then "moved" in the next with the child stopped; d28e6d9a4 held it to CPU alone. Only
+    // growth counts now (D-274 §4a, amended 2026-10-09), so it runs on the default rule
+    // again. The boundaries are pinned on a scripted sampler below.
     const src = new ResourceProgressSource({
       pid: child.pid as number, sampleMs: 0, minComparisonMs: 100,
     });
@@ -111,10 +117,17 @@ describe('ResourceProgressSource — real process tree', () => {
     expect(await nextSample(src)).toBe(true);   // spinning ⇒ CPU advanced
 
     child.kill('SIGSTOP');
-    await sleep(60);
-    await nextSample(src);                  // re-baseline while stopped
+    // ⚠ A STOP IS NOT STILLNESS AT ONCE: CPU time accrued just before it can still reach
+    // `ps` on a later read. That is the machine catching up, not the child running, so
+    // wait for the first still window (bounded), then require stillness over a fresh one.
+    let still = false;
+    for (let i = 0; i < 20 && !still; i += 1) {
+      await sleep(GAP);
+      still = !(await nextSample(src));
+    }
+    expect(still, `a SIGSTOPped child never read as still within ${String(20 * GAP)}ms`).toBe(true);
     await sleep(GAP);
-    expect(await nextSample(src)).toBe(false);  // ⇒ the wedged signature (0 CPU, always)
+    expect(await nextSample(src)).toBe(false);  // ⇒ the wedged signature (0 CPU, always), held
 
     child.kill('SIGCONT');
     await sleep(GAP);
@@ -222,7 +235,7 @@ describe('ResourceProgressSource — fail-open', () => {
     expect(await nextSample(src)).toBe(false);  // 3: compares against the KEPT baseline
   });
 
-  it('counts a below-epsilon CPU advance as stillness, and RSS motion as movement', async () => {
+  it('counts a below-epsilon CPU advance as stillness, and RSS growth — never a shrink — as movement', async () => {
     let cur: TreeSample = { cpu_ms: 0, rss_bytes: 1_000_000, pids: 1 };
     const src = new ResourceProgressSource({
       pid: 1, sampleMs: 0, minComparisonMs: 0, cpuEpsilonMs: 10, rssEpsilonBytes: 4_096,
@@ -233,10 +246,50 @@ describe('ResourceProgressSource — fail-open', () => {
     expect(await nextSample(src)).toBe(false);
     cur = { cpu_ms: 10, rss_bytes: 1_000_000, pids: 1 }; // +5ms  — still under
     expect(await nextSample(src)).toBe(false);
-    cur = { cpu_ms: 10, rss_bytes: 1_100_000, pids: 1 }; // RSS moved
+    cur = { cpu_ms: 10, rss_bytes: 1_100_000, pids: 1 }; // RSS grew
     expect(await nextSample(src)).toBe(true);
-    cur = { cpu_ms: 40, rss_bytes: 1_100_000, pids: 1 }; // +30ms — over epsilon
+    // ⛔ A SHRINK IS THE OS's, NOT THE TREE's: a process that is not running at all loses
+    // resident pages under memory pressure. Counted, every trim restarted the stall clock,
+    // so a wedged op the OS kept paging out never flagged.
+    cur = { cpu_ms: 10, rss_bytes: 600_000, pids: 1 };   // shrank 500 KB, CPU flat
+    expect(await nextSample(src)).toBe(false);
+    cur = { cpu_ms: 10, rss_bytes: 604_095, pids: 1 };   // grew one byte short of a page
+    expect(await nextSample(src)).toBe(false);
+    cur = { cpu_ms: 10, rss_bytes: 608_191, pids: 1 };   // grew exactly a page
     expect(await nextSample(src)).toBe(true);
+    cur = { cpu_ms: 40, rss_bytes: 608_191, pids: 1 };   // +30ms — over epsilon
+    expect(await nextSample(src)).toBe(true);
+  });
+});
+
+describe('ResourceProgressSource — a tree whose members change', () => {
+  it('counts a child starting or ending as movement, even as both sums fall', async () => {
+    // ⛔ `ps` drops a reaped child's CPU and memory from the tree's totals, so a busy child
+    // exiting as the next starts makes both FALL while work goes on (measured 2,760 ms and
+    // 3.84 GB down to 0 and 3 MB across one exit). Growth alone would call that window still.
+    let cur: TreeSample = { cpu_ms: 2_760, rss_bytes: 3_840_000_000, pids: 2, members: [10, 11] };
+    const src = new ResourceProgressSource({
+      pid: 10, sampleMs: 0, minComparisonMs: 0, sampler: async () => cur,
+    });
+    await nextSample(src);                                                    // baseline
+    cur = { cpu_ms: 40, rss_bytes: 60_000_000, pids: 2, members: [10, 12] };  // 11 done, 12 new
+    expect(await nextSample(src)).toBe(true);
+    cur = { cpu_ms: 40, rss_bytes: 60_000_000, pids: 2, members: [10, 12] };  // same tree, idle
+    expect(await nextSample(src)).toBe(false);
+    cur = { cpu_ms: 40, rss_bytes: 50_000_000, pids: 1, members: [10] };      // 12 ended
+    expect(await nextSample(src)).toBe(true);
+    cur = { cpu_ms: 40, rss_bytes: 40_000_000, pids: 1, members: [10] };      // the OS trims it
+    expect(await nextSample(src)).toBe(false);
+  });
+
+  it('treats a sample without members as no change, not as one', async () => {
+    let cur: TreeSample = { cpu_ms: 10, rss_bytes: 1_000, pids: 1, members: [10] };
+    const src = new ResourceProgressSource({
+      pid: 10, sampleMs: 0, minComparisonMs: 0, sampler: async () => cur,
+    });
+    await nextSample(src);
+    cur = { cpu_ms: 10, rss_bytes: 1_000, pids: 1 };
+    expect(await nextSample(src)).toBe(false);
   });
 });
 

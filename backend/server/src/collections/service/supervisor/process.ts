@@ -9,6 +9,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 
+import { envForOthers } from '../../../supervision/env-for-others.js';
 import type { SpawnProcessFn } from './types.js';
 
 export const defaultSpawnProcess: SpawnProcessFn = (argv, opts) => {
@@ -23,7 +24,8 @@ export const defaultSpawnProcess: SpawnProcessFn = (argv, opts) => {
   const child = nodeSpawn(cmd, rest, {
     shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    // Never the server's environment whole: see `supervision/env-for-others.ts`.
+    env: envForOthers(opts.env),
     cwd: opts.cwd,
     detached: opts.detached ?? false,
   });

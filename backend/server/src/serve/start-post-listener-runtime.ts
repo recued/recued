@@ -632,9 +632,7 @@ export const startPostListenerRuntime = async (
     const mcpSeams = exec.executorConfig.connectionMcp;
     const probeDeps = {
       store,
-      ...(options.app.keys && options.app.keys.state() !== 'uninitialized'
-        ? { getEncryptionKey: options.app.keys.keyProvider('connection') }
-        : {}),
+      ...(options.app.keys ? { getEncryptionKey: options.app.keys.keyProvider('connection') } : {}),
       ...(mcpSeams?.wsConnect ? { wsConnect: mcpSeams.wsConnect } : {}),
       ...(mcpSeams?.spawnStdioMcp ? { spawnStdioMcp: mcpSeams.spawnStdioMcp } : {}),
     } as Parameters<typeof handleConnectionProbe>[0];

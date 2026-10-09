@@ -27,6 +27,8 @@ import {
   type PacksInstallPreviewCaller,
 } from '../settings/packs-panel.js';
 import {
+  PACKS_DIALOG_INSTALL_REFUSAL_ATTR,
+  installRefusalFromPreview,
   missingPacksFromFailure,
   missingPacksText,
   missingPacksToInstallFirst,
@@ -474,5 +476,73 @@ describe('the wire is read defensively', () => {
     expect(missingPacksText('Invoice Book', [
       { pack_ref: 'recued-core.pdftotext', needed_by: ['Invoice Book', 'Billable Hours'] },
     ])).toMatch(/^This Pack and Billable Hours need pdftotext\./);
+  });
+});
+
+describe('D-311 § 5 — the dialog says what the install would refuse, before the owner chooses anything', () => {
+  const NEEDS_NEWER_RECUED: InstallPreview = {
+    ...NOTHING_MISSING,
+    install_refusal: {
+      code: 'version_mismatch',
+      message: `packs.install: ${manifest.name} needs a newer version of Recued. This server does not have the `
+        + '"future-agent-json" progress adapter, which Future Agent Pack uses. '
+        + `Update Recued, then install ${manifest.name} again.`,
+    },
+  };
+
+  it('⛔ says it needs a newer Recued, in the server\'s words, and holds Install', async () => {
+    const h = setup({ preview: async () => NEEDS_NEWER_RECUED });
+    const dialog = await openDialog(h);
+    const notice = findByAttr(dialog, PACKS_DIALOG_INSTALL_REFUSAL_ATTR);
+    expect(notice?.getAttribute(PACKS_DIALOG_INSTALL_REFUSAL_ATTR)).toBe('version_mismatch');
+    expect(text(notice!)).toBe(
+      `⚠ ${manifest.name} needs a newer version of Recued. This server does not have the "future-agent-json" `
+        + `progress adapter, which Future Agent Pack uses. Update Recued, then install ${manifest.name} again.`,
+    );
+    const button = installButton(h);
+    expect(button.disabled).toBe(true);
+    expect(text(findById(dialog, button.getAttribute('aria-describedby')!)!)).toContain('needs a newer version of Recued');
+  });
+
+  it('⛔ the hold is the panel\'s too: a click that reaches the held button sends nothing', async () => {
+    const h = setup({ preview: async () => NEEDS_NEWER_RECUED });
+    await openDialog(h);
+    installButton(h).click();
+    await settle();
+    expect(h.installs).toEqual([]);
+    expect(h.mount.getDialogOpenFor()).toBe(entry.slug);
+  });
+
+  it('a pack it brings in that does not pass its checks is said with a lead, since its words are the validator\'s', async () => {
+    const h = setup({
+      preview: async () => ({
+        ...NOTHING_MISSING,
+        install_refusal: {
+          code: 'validator_rejected',
+          message: 'dependency pack "broken-agent-pack" does not pass its checks: packs.install: composition failed validation — x',
+        },
+      }),
+    });
+    const dialog = await openDialog(h);
+    expect(text(findByAttr(dialog, PACKS_DIALOG_INSTALL_REFUSAL_ATTR)!)).toBe(
+      '⚠ This Pack cannot be installed. dependency pack "broken-agent-pack" does not pass its checks: '
+        + 'packs.install: composition failed validation — x',
+    );
+    expect(installButton(h).disabled).toBe(true);
+  });
+
+  it('a preview with no refusal — an older server\'s, or nothing to refuse — holds nothing', async () => {
+    const h = setup({ preview: async () => NOTHING_MISSING });
+    const dialog = await openDialog(h);
+    expect(findByAttr(dialog, PACKS_DIALOG_INSTALL_REFUSAL_ATTR)).toBeNull();
+    expect(installButton(h).disabled).toBe(false);
+  });
+
+  it('a malformed refusal is dropped rather than drawn', () => {
+    const base = { resolved: true, will_enable: [], hidden_count: 0 };
+    expect(installRefusalFromPreview({ ...base, install_refusal: { code: 7, message: 'x' } as never })).toBeNull();
+    expect(installRefusalFromPreview({ ...base, install_refusal: { code: 'version_mismatch', message: '  ' } })).toBeNull();
+    expect(installRefusalFromPreview({ ...base, install_refusal: 'x' as never })).toBeNull();
+    expect(installRefusalFromPreview(undefined)).toBeNull();
   });
 });

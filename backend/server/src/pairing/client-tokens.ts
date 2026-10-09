@@ -211,6 +211,31 @@ export interface CreateClientTokenStoreOptions {
   now?: () => number;
 }
 
+const DUMMY_BEARER = '0'.repeat(64);
+const dummyRecords = new Map<string, Promise<TokenHashRecord>>();
+
+/** The dummy record a store verifies an unknown `token_id` against — one per
+ *  Argon2id parameter set for the whole process, not one per store.
+ *
+ *  ⛔ WHY PER PROCESS. Each store derived its own at construction (32 MiB
+ *  Argon2id, ~0.4 s of CPU), and every composed boot builds a store, so a test
+ *  file that boots six servers paid it six times. Nothing in the record needs to
+ *  be a store's own: its bearer is a fixed string and its salt is not a secret.
+ *  All it must do is cost what a real verify costs, with the parameters the
+ *  store verifies with — which the key keeps apart. A server builds one store
+ *  per process, so nothing changes for one. A failed derivation is forgotten, so
+ *  the next store tries again rather than inheriting the failure. */
+export const dummyRecordFor = (params: { t: number; m: number; p: number }): Promise<TokenHashRecord> => {
+  const key = `${params.t}/${params.m}/${params.p}`;
+  let pending = dummyRecords.get(key);
+  if (pending === undefined) {
+    pending = hashBearerToken(DUMMY_BEARER, params);
+    pending.catch(() => { if (dummyRecords.get(key) === pending) dummyRecords.delete(key); });
+    dummyRecords.set(key, pending);
+  }
+  return pending;
+};
+
 export const createClientTokenStore = (
   db: Database.Database,
   options: CreateClientTokenStoreOptions = {},
@@ -232,10 +257,10 @@ export const createClientTokenStore = (
   // ran one Argon2id; unknown path also had to derive the dummy
   // hash for the first time). The eager kickoff makes the first
   // legitimate verify wait on the dummy preparation if it hasn't
-  // landed yet, equalizing the cold-start cost across paths.
-  const dummyBearer = '0'.repeat(64);
+  // landed yet, equalizing the cold-start cost across paths. The
+  // record itself is shared across the process (`dummyRecordFor`).
   let dummyHashRecord: TokenHashRecord | null = null;
-  const dummyReady: Promise<TokenHashRecord> = hashBearerToken(dummyBearer, params)
+  const dummyReady: Promise<TokenHashRecord> = dummyRecordFor(params)
     .then((record) => {
       dummyHashRecord = record;
       return record;

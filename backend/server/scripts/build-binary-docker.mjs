@@ -39,7 +39,7 @@
  *   node scripts/build-binary-docker.mjs --serial --out /tmp/art
  */
 
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, createReadStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
@@ -257,8 +257,14 @@ const wsUpgradeSmoke = async (triple, outDir, port) => {
     copyFileSync(join(outDir, `recued-${triple}`), join(stage, 'recued'));
     copyFileSync(join(outDir, `better_sqlite3-${triple}.node`), join(stage, 'lib/better_sqlite3.node'));
     execFileSync('docker', [
-      'run', '-d', '--rm', '--name', name, '--platform', TARGETS[triple],
+      // ⛔ No `--rm`: a server that exits before its banner would take its logs
+      // with it, and the failure below has to say why. `cleanup` removes it.
+      'run', '-d', '--name', name, '--platform', TARGETS[triple],
       '-v', `${stage}:/opt/recued`, '-p', `127.0.0.1:${port}:${port}`, '-w', '/tmp',
+      // ⛔ A throwaway realm still needs a passphrase. Inside a container nothing
+      // else can seal its key file, so the server refuses a first boot without
+      // one (`CONTAINER_UNSEALED_REFUSAL`, D-212 amendment 2026-10-09).
+      '-e', 'RECUED_IDENTITY_PASSPHRASE=build-smoke-throwaway-realm',
       'debian:stable-slim',
       '/opt/recued/recued', 'serve', '--port', String(port),
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -272,9 +278,21 @@ const wsUpgradeSmoke = async (triple, outDir, port) => {
       try { logs = execFileSync('docker', ['logs', name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
       catch { /* container not up yet */ }
       if (logs.includes('Recued Server')) { booted = true; break; }
+      // A server that has already exited will not print one; stop waiting.
+      const state = spawnSync('docker', ['inspect', '-f', '{{.State.Status}}', name], { encoding: 'utf8' });
+      if (state.stdout?.trim() === 'exited') break;
       await new Promise((r) => setTimeout(r, 2000));
     }
-    if (!booted) return { ok: false, why: 'server never printed its banner within 120s' };
+    if (!booted) {
+      // Both streams: the server writes why it stopped to stderr.
+      const tail = spawnSync('docker', ['logs', '--tail', '15', name], { encoding: 'utf8' });
+      const lines = `${tail.stdout ?? ''}${tail.stderr ?? ''}`.trim();
+      return {
+        ok: false,
+        booted: false,
+        why: `the server never printed its banner${lines ? `. Its last log lines:\n${lines}` : ' (no logs)'}`,
+      };
+    }
 
     const reply = await new Promise((resolve) => {
       const sock = connect(port, '127.0.0.1', () => {
@@ -426,6 +444,12 @@ for (const r of results) {
     // boots healthy and silently drops every upgrade. See `wsUpgradeSmoke`.
     const wsPort = Number(flag('smoke-port', '7899'));
     const wsSmoke = await wsUpgradeSmoke(r.triple, OUT, wsPort);
+    if (!wsSmoke.ok && wsSmoke.booted === false) {
+      // Not the socket layer: the server never came up, and its logs say why.
+      failed += 1;
+      console.error(`[build-binary-docker]   ⛔ SERVER DID NOT BOOT — ${wsSmoke.why}`);
+      continue;
+    }
     if (!wsSmoke.ok) {
       failed += 1;
       console.error(

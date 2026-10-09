@@ -4793,9 +4793,10 @@ describe('D-174 P5 Data route', () => {
     expect(html).toContain(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
     expect(html).toContain('Webhook deliveries');
     // Grouped under the "Received" cluster label, before "Connected".
-    const received = html.indexOf('Received');
-    const webhook = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
-    const connected = html.indexOf('Connected');
+    const tablist = html.slice(html.indexOf('role="tablist"'));
+    const received = tablist.indexOf('Received');
+    const webhook = tablist.indexOf(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
+    const connected = tablist.indexOf('Connected');
     expect(received).toBeGreaterThanOrEqual(0);
     expect(received).toBeLessThan(webhook);
     expect(webhook).toBeLessThan(connected);

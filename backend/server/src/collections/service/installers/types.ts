@@ -41,7 +41,8 @@ export type SpawnFn = (
 ) => Promise<SpawnResult>;
 
 export interface SpawnOptions {
-  /** Extra env merged onto `process.env`. Templates resolve
+  /** Extra env merged onto `envForOthers()` (the server's environment minus
+   *  what is the server's alone). Templates resolve
    *  `{{vault.*}}` / `{{config.*}}` before reaching here. */
   env?: Record<string, string>;
   cwd?: string;

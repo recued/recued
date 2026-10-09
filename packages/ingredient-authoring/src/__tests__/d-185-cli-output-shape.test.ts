@@ -257,6 +257,13 @@ describe('answer output_capture — keep the final answer an agent printed in it
     expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
   });
 
+  it.each(['claude-stream-json', 'pi-json', 'opencode-json'])('accepts it on %s', (adapter) => {
+    const result = validateComposition(answerCapture({}, {
+      progress: { contract: 'heartbeat', adapter, stall_ms: 5_000 },
+    }));
+    expect(result.issues.filter((i) => i.severity === 'error')).toEqual([]);
+  });
+
   /** ⛔ The answer comes from the adapter's host code. An op whose adapter
    *  reads none would pass here and then fail every run with nothing to keep —
    *  refused at authoring AND at install, which validates the catalog alone. */

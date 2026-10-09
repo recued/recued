@@ -33,9 +33,9 @@ const runBin = (
   args: string[],
   options: { env?: Record<string, string | undefined>; loaderTracePath?: string } = {},
 ) => spawnSync(
-  'npx',
+  process.execPath,
   [
-    '--no-install',
+    '--import',
     'tsx',
     ...(options.loaderTracePath ? ['--loader', moduleLoadRecorderPath] : []),
     binPath,
@@ -275,10 +275,23 @@ const runServeUntilBanner = (dbPath: string): Promise<{
   stderr: string;
   timedOut: boolean;
 }> => new Promise((resolve) => {
+  // ⛔ THE BOOT OWNS ITS INSTALL. `serve` holds the update lease at
+  // `dirname(<its binary>)/recued-update.lock` while it starts, and on the
+  // default channel under tsx that binary is the Node runtime every spawned boot
+  // on the machine shares: `last-start-error`'s boot, checking the lease
+  // meanwhile, exited 4 — "an update is in progress on this install" (2 of 2
+  // runs, 2026-10-09). On `docker-thin` the binary is `RECUED_BIN_DIR/recued`,
+  // so a bin dir beside the realm makes the lease this boot's own, as in
+  // `d-261-boot.test.ts`. ⚠ Since `updateLeasePathForInstall` (2026-10-09) the
+  // default channel under tsx takes no lease at all
+  // (`unpackaged-update-lease.test.ts`); `docker-thin` keeps this boot on a
+  // channel that still takes one, in a folder of its own.
+  const binDir = join(dirname(dbPath), 'bin');
+  mkdirSync(binDir, { recursive: true });
   const child = spawn(
-    'npx',
+    process.execPath,
     [
-      '--no-install',
+      '--import',
       'tsx',
       binPath,
       'serve',
@@ -294,6 +307,8 @@ const runServeUntilBanner = (dbPath: string): Promise<{
         ...process.env,
         TSX_TSCONFIG_PATH: serverTsconfigPath,
         RECUED_BOOT_TRACE: '1',
+        RECUED_DISTRIBUTION_CHANNEL: 'docker-thin',
+        RECUED_BIN_DIR: binDir,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
@@ -394,9 +409,9 @@ const runMcpUntilToolsList = (
   exitCode: number | null;
 }> => new Promise((resolve) => {
   const child = spawn(
-    'npx',
+    process.execPath,
     [
-      '--no-install',
+      '--import',
       'tsx',
       ...(options.loaderTracePath ? ['--loader', moduleLoadRecorderPath] : []),
       binPath,

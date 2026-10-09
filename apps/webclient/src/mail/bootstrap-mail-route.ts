@@ -61,11 +61,15 @@ export const MAIL_ROUTE_STYLES = `
 ${FORM_RENDERER_STYLES}
 ${MAIL_COMPOSE_STYLES}
 ${FILE_PICK_STYLES}
-[${MAIL_ROUTE_HOST_ATTR}] { display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+[${MAIL_ROUTE_HOST_ATTR}] { display: flex; flex-direction: column; gap: 16px; padding: 16px; max-width: var(--wc-content-max, 1080px); margin: 0 auto; color: var(--fg); }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-header {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
 }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-title { margin: 0; font-size: 20px; font-weight: 600; }
+[${MAIL_ROUTE_HOST_ATTR}] a { color: var(--accent); }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] { display: grid; gap: 12px; justify-items: start; }
+[${MAIL_ROUTE_HOST_ATTR}] [data-mail-saved-drafts] h2 { margin: 0; font-size: 18px; }
+[${MAIL_ROUTE_HOST_ATTR}] .mail-route-draft { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--wc-radius, 9px); background: var(--surface); }
 [${MAIL_ROUTE_HOST_ATTR}] .mail-route-mailboxes {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px;
 }
@@ -119,13 +123,19 @@ const esc = (s: string): string =>
 export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
   const doc = options.document ?? options.root.ownerDocument;
   const root = options.root;
+  if (doc.head.querySelector(`style[${MAIL_ROUTE_STYLES_MARKER}]`) === null) {
+    const style = doc.createElement('style');
+    style.setAttribute(MAIL_ROUTE_STYLES_MARKER, '');
+    style.textContent = MAIL_ROUTE_STYLES;
+    doc.head.appendChild(style);
+  }
 
   root.innerHTML = `
     <section ${MAIL_ROUTE_HOST_ATTR}>
       <header class="mail-route-header">
         <h1 class="mail-route-title">Mail</h1>
         <a href="${serializeShellRoute('mail', 'work')}">Work you’re following</a>
-        <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="mail-route-compose">New mail</button>
+        <button type="button" ${MAIL_ROUTE_COMPOSE_ATTR} class="wc-button mail-route-compose">New mail</button>
       </header>
       <div class="mail-route-roster"></div>
       <div data-mail-saved-drafts></div>
@@ -168,15 +178,18 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     const title = doc.createElement('h2'); title.textContent = 'Saved drafts'; draftsHost.append(title);
     const button = (label: string, run: () => Promise<unknown>): HTMLButtonElement => {
       const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.disabled = draftBusy;
+      el.className = 'wc-button';
       el.onclick = () => { if (draftBusy) return; void run().catch(caught => paintDrafts(humanizeRpcError(caught))); }; return el;
     };
     draftsHost.append(button('Refresh drafts', () => refreshDrafts()));
     if (error) { const message = doc.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = error; draftsHost.append(message); }
     for (const row of draftRows) {
-      const item = doc.createElement('div'); item.dataset.mailDraftId = row.draft_id;
-      item.append(button(row.subject || 'Untitled draft', async () => {
+      const item = doc.createElement('div'); item.dataset.mailDraftId = row.draft_id; item.className = 'mail-route-draft';
+      const open = button(row.subject || 'Untitled draft', async () => {
         if (!await compose.openSaved(row.draft_id)) throw new Error('Close the message you have open before you open another draft.');
-      }), button('Delete draft', async () => {
+      });
+      open.classList.add('wc-button--wrap');
+      item.append(open, button('Delete draft', async () => {
         draftBusy = true; paintDrafts();
         try { await options.drafts!.delete({ draft_id: row.draft_id, expected_revision: row.revision }); await refreshDrafts(); }
         finally { draftBusy = false; paintDrafts(); }
@@ -209,7 +222,7 @@ export const bootstrapMailRoute = (options: MailRouteOptions): MailRoute => {
     if (readiness.status === 'unavailable') {
       roster.innerHTML = `<p class="mail-route-empty" role="status" ${MAIL_ROUTE_EMPTY_ATTR}="unavailable">
         Recued couldn’t check whether your mail can send right now.
-        <button type="button" ${MAIL_ROUTE_RETRY_ATTR}>Try again</button>
+        <button type="button" class="wc-button" ${MAIL_ROUTE_RETRY_ATTR}>Try again</button>
       </p>`;
       composeButton.disabled = true;
       return;

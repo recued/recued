@@ -39,3 +39,23 @@ export const mailWorkChatPrompt = (
     conversations: work.threads.map(({ slug, seed_record_id }) => ({ slug, seed_record_id })),
     resolution_note: work.resolution_note }, null, 2),
 ].filter(Boolean).join('\n\n');
+
+/** Presentation only. The exact owner request stays in storage, exports,
+ * replies and the model/privacy path; its supplied context is just folded in
+ * Chat. An ordinary message, malformed request or mismatched work link must
+ * still render in full. Never infer permission from this projection. */
+export const readMailWorkChatPrompt = (text: string): { purpose: string; href: string } | null => {
+  const match = /^Follow this work with me\.\n\nMy purpose: ([^\n]+)\.\n\nWork page: ([^\n]+)\n\nWork context for this investigation:\n\n([\s\S]+)$/u.exec(text);
+  if (!match) return null;
+  const [, purpose, href, raw] = match;
+  if (!purpose || !href || !raw || !Object.values(MAIL_WORK_INTENTS).some(label => label === purpose)) return null;
+  try {
+    const context: unknown = JSON.parse(raw);
+    if (context === null || typeof context !== 'object' || Array.isArray(context)
+      || !('work_id' in context) || typeof context.work_id !== 'string' || context.work_id.length === 0
+      || serializeShellRoute('mail', 'work', context.work_id) !== href) return null;
+    return { purpose, href };
+  } catch {
+    return null;
+  }
+};

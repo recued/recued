@@ -131,8 +131,8 @@ describe('runSelfTestProfile', () => {
     try {
       const repoRoot = resolve(import.meta.dirname, '..', '..', '..', '..');
       const r = spawnSync(
-        'npx',
-        ['--no-install', 'tsx', join(repoRoot, 'backend/server/src/bin.ts'), 'self-test'],
+        process.execPath,
+        ['--import', 'tsx', join(repoRoot, 'backend/server/src/bin.ts'), 'self-test'],
         {
           cwd: repoRoot,
           encoding: 'utf8',

@@ -121,9 +121,7 @@ export const createRemoteCredentialResolver = (
     if (row === null) return null;
 
     // Re-read state per call — see ComposeRemoteChannelDeps.keys doc.
-    const keyProvider = deps.keys && deps.keys.state() !== 'uninitialized'
-      ? deps.keys.keyProvider('connection')
-      : undefined;
+    const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
 
     const auth = await decodeAuthFromStorage(
       row.auth_ciphertext,

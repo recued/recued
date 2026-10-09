@@ -41,7 +41,7 @@ vi.mock('../keys/machine-secret.js', async (importOriginal) => {
   };
 });
 
-import { mkdtempSync, existsSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateRecoveryKey } from '@recued/crypto';
@@ -286,6 +286,23 @@ describe('D-212 §7.11 — regenerating a lost keyfile from the recovery key', (
     const reopened = await openDatabase(dbPath(), { keyEnvironment: {} });
     expect(() => reopened.prepare('select 1').get()).not.toThrow();
     reopened.close();
+  });
+
+  it('inside a container, refuses to regenerate it unsealed and puts the old keyfile back', async () => {
+    // Recovery writes a NEW keyfile, so the container rule that guards a first boot guards it
+    // too (audit 2026-10-09: this path skipped it and wrote one unsealed, holding the vault key).
+    const { mnemonic } = generateRecoveryKey();
+    await enrolledRealm(mnemonic);
+    const keyfile = resolveIdentityKeysPath(dbPath());
+    const before = readFileSync(keyfile);
+    fakeSecret = null;
+    fakeAvailable = false; // a container: nothing can seal it but a passphrase
+
+    await expect(regenerateKeyfileFromRecoveryKey({
+      dbPath: dbPath(), recoveryKey: mnemonic, env: { RECUED_SUPERVISOR_MODE: 'docker' }, now: () => 5,
+    })).rejects.toThrow(/Refusing to write the key file unsealed: inside a container/);
+    expect(readFileSync(keyfile)).toEqual(before);
+    expect(existsSync(`${keyfile}.unopenable-5`)).toBe(false);
   });
 
   it('regeneration is how the sealing factor changes — the fresh keyfile takes this host', async () => {

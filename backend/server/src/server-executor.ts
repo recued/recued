@@ -32,7 +32,7 @@ import {
 } from '@recued/llm';
 import { tokenUsageToReport } from './chat-token-usage.js';
 import type { RunTokenUsageSink } from './run-token-usage.js';
-import { isBatchCapableAISlug, isTempFileRef } from '@recued/contracts';
+import { filePreviewKind, isBatchCapableAISlug, isTempFileRef } from '@recued/contracts';
 import type { ChunkedUploadAuditInfo, ConnectionKind, ExecutionSource, GatewayCallAudit, TempFileRef, WebChatTab } from '@recued/contracts';
 import type { CacheStore } from '@recued/cache';
 import type { PiiKnownValueSource } from '@recued/transforms';
@@ -562,6 +562,34 @@ export const fileToContentPart = (file: { bytes_b64: string; mime_type: string }
   return { type, source: { kind: 'base64', media_type: mime, data: file.bytes_b64 } };
 };
 
+/** A text file (`text/*`, JSON, XML, …: `filePreviewKind`) as a TEXT part, or
+ *  `undefined` when it is not one.
+ *
+ *  ⛔⛔ WHY. `fileToContentPart` sends everything that is not a picture or a sound
+ *  as a `document`, and a document part demands a model that DECLARES document
+ *  input, which nothing in the product sets (`modalities` is hand-written JSON
+ *  only; Test connection proves pictures). Every shipped recipe that hands an AI
+ *  step a `file_ref` hands it TEXT: OCR, pdftotext, docling, markitdown and whisper
+ *  output, which the packs tell authors to pass this way. All 28 such steps
+ *  (`capture-receipt`, `invoice-intake-watch`, the transcription and meeting
+ *  recipes among them) therefore failed with AI_MODALITY_UNSUPPORTED on every
+ *  normal setup, while their drives stubbed the AI step. Text is what every model
+ *  reads, and an all-text part list demands no modality.
+ *
+ *  Decoded with the declared charset, else UTF-8, without failing on a bad byte:
+ *  a replacement character costs a model nothing. A NUL is binary labelled as
+ *  text, so that file keeps the document path rather than handing the model noise. */
+export const textFileContentPart = (
+  file: { bytes_b64: string; mime_type: string },
+): ContentPart | undefined => {
+  if (filePreviewKind(file.mime_type ?? '') !== 'text') return undefined;
+  const charset = /;\s*charset=([^;]+)/iu.exec(file.mime_type)?.[1]?.trim().replace(/^"|"$/gu, '');
+  let decoder: TextDecoder;
+  try { decoder = new TextDecoder(charset || 'utf-8'); } catch { decoder = new TextDecoder('utf-8'); }
+  const text = decoder.decode(Buffer.from(file.bytes_b64, 'base64'));
+  return text.includes('\u0000') ? undefined : { type: 'text', text };
+};
+
 /** D-172 P5 / N.8 — resolve an ai-* `llm.data` file ref into multimodal
  *  content parts. Returns a rewritten input carrying `llm.content_parts` (the
  *  media) + a textual `llm.data` placeholder (so the contracted prompt
@@ -571,13 +599,21 @@ export const fileToContentPart = (file: { bytes_b64: string; mime_type: string }
  *  / `ai-prompt` route their payload elsewhere), the caller already supplied
  *  `llm.content_parts`, or `llm.data` is not a file ref. The byte read goes
  *  through the Gateway-gated `fileRead` (A.8/I-4) — never the CAS directly.
+ *
+ *  `textAsText` sends a text file as a text part (`textFileContentPart`). It is
+ *  off for an owner-REVIEWED run: that review pinned the file by content hash, as
+ *  a document part, and its last check compares the request it reviewed with the
+ *  one about to leave; a text part would differ from it on every run.
  *  Exported for unit testing. */
 export const resolveAiFileRef = async (
   slug: string,
   input: Record<string, unknown>,
   fileRead?: FileReadFn,
   run_id?: string,
+  options: { textAsText?: boolean } = {},
 ): Promise<Record<string, unknown>> => {
+  const partFor = (file: { bytes_b64: string; mime_type: string }): ContentPart =>
+    (options.textAsText === true ? textFileContentPart(file) : undefined) ?? fileToContentPart(file);
   if (!isBatchCapableAISlug(slug)) return input;
   if (input['llm.content_parts'] !== undefined) return input;
   // D-185 Slice 2 — a `temp` ref resolves UNCONDITIONALLY (no Gateway file.read
@@ -588,7 +624,7 @@ export const resolveAiFileRef = async (
   const temp = extractTempFileRef(input['llm.data']);
   if (temp) {
     const file = readConfinedTempFile(temp, run_id ?? '');
-    const part = fileToContentPart(file);
+    const part = partFor(file);
     return {
       ...input,
       'llm.data': `[${part.type}: ${file.filename}]`,
@@ -600,7 +636,7 @@ export const resolveAiFileRef = async (
   const recordId = extractFileRecordId(input['llm.data']);
   if (!recordId) return input;
   const file = await fileRead(recordId);
-  const part = fileToContentPart(file);
+  const part = partFor(file);
   return {
     ...input,
     'llm.data': `[${part.type}: ${file.filename}]`,
@@ -695,6 +731,7 @@ const createLLMAdapter = (
       resolved.input,
       reviewed ? recordId => reviewed.readAiFile(recordId) : fileRead,
       resolved.stepMeta?.run_id,
+      { textAsText: !reviewed },
     );
     // The run's shared matcher when the call carries its run id (the same
     // `stepMeta.run_id` the token sink keys on); else one built for this call.

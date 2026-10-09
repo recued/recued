@@ -10,6 +10,7 @@
  *  test uses a fuller fake document (the grant-panel test's shape,
  *  widened with `innerHTML` / `contains` / `querySelector`). */
 
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { FoundationalOAuthEnv } from '../connections/foundational-oauth-popup.js';
 
@@ -66,12 +67,16 @@ import {
   type ProviderSetupContinuityStore,
 } from '../connections/provider-setup-continuity.js';
 import {
+  CONNECTION_VENDOR_PROVIDERS,
+  HUBSPOT_OAUTH_SCOPES,
+  SALESFORCE_OAUTH_AUTHORIZE_URL_SANDBOX,
   SALESFORCE_OAUTH_TOKEN_URL_SANDBOX,
   SALESFORCE_OAUTH_TOKEN_URL_PRODUCTION,
   OAUTH_CLOUD_CALLBACK_URL,
   RpcError,
   MAX_HEADER_AUTH_ENTRIES,
   getVendorProvider,
+  resolveVendorOAuthEndpoints,
   type ConnectionHealth,
   type ConnectionCredentialPostSafeStopVerificationSummary,
   type ConnectionCredentialRejectionCorrection,
@@ -11627,6 +11632,143 @@ describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server',
     // Self-serve is loopback-only: every other origin still needs the signed
     // state + a reachable server, and must not silently change behaviour.
     expect(runComplete).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  /** ⛔ A REGISTERED vendor at a loopback address never reached its sign-in
+   *  page. Its form has no `auth.authorize_url` (the registry holds it), and
+   *  this path built the link from that field alone: `new URL('')` threw, and
+   *  every HubSpot, Salesforce, Google … sign-in from localhost ended
+   *  "Authorization did not finish (error)". The link must come from the
+   *  registry entry the server's own start reads: its address (sandbox-aware),
+   *  its extra params, its scopes, and PKCE where the vendor uses it. */
+  const authorizeRegisteredVendor = async (
+    vendor: string,
+    fill: Readonly<Record<string, readonly [string, string?]>> = {},
+    result: { refresh_token: string; granted_scopes: string[]; instance_url?: string } = {
+      refresh_token: `RT-${vendor}`,
+      granted_scopes: [],
+    },
+  ) => {
+    const popup = makeFakePopup();
+    const oauthEnv = makeFakeOAuthEnv(popup);
+    const bus: { fire?: (ev: { origin: string; data: unknown }) => void } = {};
+    const runStart = vi.fn();
+    const runComplete = vi.fn(
+      async (_args: Parameters<ConnectionsCompleteVendorOAuthCaller>[0]) => result,
+    );
+    const { mount, click, field } = mountPanel({
+      connections: [],
+      oauth: {
+        env: oauthEnv.env,
+        runStart: runStart as never,
+        runComplete,
+        foundationalEnv: loopbackEnv(bus),
+      },
+    });
+    await mount.whenLoaded();
+    click({ action: 'connections-open-add' });
+    click({ action: 'connections-pick-vendor', vendor });
+    field('name', vendor);
+    field('display_name', `${vendor} on this machine`);
+    field('auth.type', 'oauth2_refresh', 'SELECT');
+    field('auth.client_id', 'cid');
+    field('auth.client_secret', 'sec');
+    for (const [key, [value, tagName]] of Object.entries(fill)) field(key, value, tagName);
+    click({ action: 'connections-authorize-vendor', vendor });
+    for (let i = 0; i < 6; i += 1) await flushAsync();
+    const sentTo = String(popup.location.href);
+    /** The same-origin relay page hands the code back; returns what the
+     *  exchange was sent. */
+    const relay = async (): Promise<Record<string, unknown> | undefined> => {
+      bus.fire?.({
+        origin: 'http://127.0.0.1:7841',
+        data: { kind: 'recued:oauth-code', code: 'CODE', state: 'frelay_nonce' },
+      });
+      await flushAsync();
+      await flushAsync();
+      return runComplete.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    };
+    return { mount, runStart, sentTo, relay };
+  };
+
+  it.each(CONNECTION_VENDOR_PROVIDERS.map((p) => p.vendor))(
+    'a registered vendor (%s) opens its own sign-in page, built as the server builds it',
+    async (vendor) => {
+      const provider = getVendorProvider(vendor)!;
+      const { mount, runStart, sentTo, relay } = await authorizeRegisteredVendor(vendor);
+
+      expect(runStart).not.toHaveBeenCalled();
+      expect(mount.getState().dialog.oauthError).toBeNull();
+      expect(sentTo.split('?')[0]).toBe(resolveVendorOAuthEndpoints(provider).authorize_url);
+      const q = new URL(sentTo).searchParams;
+      expect(q.get('response_type')).toBe('code');
+      expect(q.get('client_id')).toBe('cid');
+      expect(q.get('redirect_uri')).toBe('http://127.0.0.1:7841/webclient/oauth-callback.html');
+      expect(q.get('state')).toBe('frelay_nonce');
+      // The vendor's own scopes, which the server's start always requests.
+      expect(q.get('scope')).toBe(provider.oauth.scopes.join(' '));
+      for (const [k, v] of Object.entries(provider.oauth.authorize_params ?? {})) {
+        expect(q.get(k)).toBe(v);
+      }
+      const challenge = q.get('code_challenge');
+      if (provider.oauth.supports_pkce === true) {
+        expect(q.get('code_challenge_method')).toBe('S256');
+        expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      } else {
+        expect(challenge).toBeNull();
+      }
+
+      const sent = await relay();
+      expect(sent).toMatchObject({
+        vendor,
+        code: 'CODE',
+        redirect_uri: 'http://127.0.0.1:7841/webclient/oauth-callback.html',
+        client_id: 'cid',
+        client_secret: 'sec',
+        sandbox: false,
+      });
+      // The server reads a registered vendor's endpoints from its registry.
+      expect(sent).not.toHaveProperty('authorize_url');
+      expect(sent).not.toHaveProperty('token_endpoint');
+      if (challenge !== null) {
+        // The exchange proves the code was issued to THIS attempt.
+        expect(createHash('sha256').update(String(sent?.code_verifier)).digest('base64url'))
+          .toBe(challenge);
+      } else {
+        expect(sent).not.toHaveProperty('code_verifier');
+      }
+      expect(mount.getState().dialog.values['auth.refresh_token']).toBe(`RT-${vendor}`);
+      mount.dispose();
+    },
+  );
+
+  it('HubSpot: what the Scopes box adds is asked for on top of the vendor scopes', async () => {
+    const { mount, sentTo } = await authorizeRegisteredVendor('hubspot', {
+      'auth.scopes': ['crm.objects.deals.write'],
+    });
+    expect(new URL(sentTo).searchParams.get('scope'))
+      .toBe([...HUBSPOT_OAUTH_SCOPES, 'crm.objects.deals.write'].join(' '));
+    mount.dispose();
+  });
+
+  it('Salesforce sandbox: the sandbox sign-in page and exchange, and the org address lands in the form', async () => {
+    const { mount, sentTo, relay } = await authorizeRegisteredVendor(
+      'salesforce',
+      { 'config.sandbox': ['sandbox', 'SELECT'] },
+      {
+        refresh_token: 'RT-sf',
+        granted_scopes: ['api', 'refresh_token'],
+        instance_url: 'https://acme--dev.sandbox.my.salesforce.com',
+      },
+    );
+    expect(sentTo.split('?')[0]).toBe(SALESFORCE_OAUTH_AUTHORIZE_URL_SANDBOX);
+    const sent = await relay();
+    expect(sent?.sandbox).toBe(true);
+    const values = mount.getState().dialog.values;
+    expect(values['config.base_url']).toBe('https://acme--dev.sandbox.my.salesforce.com');
+    expect(values['auth.token_endpoint']).toBe(SALESFORCE_OAUTH_TOKEN_URL_SANDBOX);
+    expect(values['config.sandbox']).toBe('sandbox');
     mount.dispose();
   });
 });

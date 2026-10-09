@@ -10,6 +10,7 @@ import {
   readOpenerRelayTarget,
   pickOAuthCallbackHost,
   isLoopbackOrigin,
+  localhostOriginForNumberedLoopback,
   selfServesOAuthCallback,
   vendorOAuthCallbackUrlForPwa,
   vendorOAuthAlternateCallbackUrl,
@@ -351,6 +352,27 @@ describe('pickOAuthCallbackHost + isLoopbackOrigin (R26.2 Option B)', () => {
     // LAN webclient handler serves it.
     expect(WEBCLIENT_OAUTH_CALLBACK_PATH.startsWith(`${WEBCLIENT_PATH_PREFIX}/`)).toBe(true);
     expect(WEBCLIENT_OAUTH_CALLBACK_PATH.endsWith('.html')).toBe(true);
+  });
+
+  it('localhostOriginForNumberedLoopback names a numbered loopback page by name, same port', () => {
+    // HubSpot will not register a 127.0.0.1 redirect URL; `localhost` is the
+    // same server, so a page at a number is pointed there.
+    expect(localhostOriginForNumberedLoopback('http://127.0.0.1:7717')).toBe('http://localhost:7717');
+    expect(localhostOriginForNumberedLoopback('http://[::1]:8080')).toBe('http://localhost:8080');
+    expect(localhostOriginForNumberedLoopback('https://127.0.0.1:8443')).toBe('https://localhost:8443');
+    expect(localhostOriginForNumberedLoopback('http://127.0.0.1')).toBe('http://localhost');
+    for (const none of [
+      'http://localhost:7717', // already by name
+      OAUTH_CLOUD_CALLBACK_ORIGIN,
+      'https://alice.recued.net',
+      'http://192.168.1.50:7717',
+      'http://127.0.0.2:7717', // not loopback here (only 127.0.0.1 is)
+      'http://127.0.0.1:7717/webclient', // not a bare origin
+      'not-a-url',
+      '',
+    ]) {
+      expect(localhostOriginForNumberedLoopback(none), none).toBeNull();
+    }
   });
 });
 

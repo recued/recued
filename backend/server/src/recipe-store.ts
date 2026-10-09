@@ -158,24 +158,96 @@ export interface RecipeStore {
   addOnDeleted?(hook: (recipe_id: string) => void): void;
 }
 
-/** Scan a directory for *.json files and load each as a RecipeDefinition. */
+/** Read one recipe file; null when it is not one (unreadable, malformed, or no id). */
+const readRecipeFile = (path: string): RecipeDefinition | null => {
+  try {
+    const recipe = JSON.parse(readFileSync(path, 'utf-8')) as RecipeDefinition;
+    return recipe.recipe_id ? recipe : null;
+  } catch {
+    // Skip malformed files
+    return null;
+  }
+};
+
+/** Scan a directory for *.json files and load each as a RecipeDefinition. When two
+ *  files claim one recipe_id, the file named for it wins (otherwise the one listed
+ *  later) — the rule that lets `bundledRecipes` read one file per lookup. */
 const loadFromDirectory = (dir: string): Map<string, RecipeDefinition> => {
   const recipes = new Map<string, RecipeDefinition>();
   if (!existsSync(dir)) return recipes;
 
+  const named = new Set<string>();
   for (const file of readdirSync(dir)) {
     if (!file.endsWith('.json')) continue;
-    try {
-      const raw = readFileSync(join(dir, file), 'utf-8');
-      const recipe = JSON.parse(raw) as RecipeDefinition;
-      if (recipe.recipe_id) {
-        recipes.set(recipe.recipe_id, recipe);
-      }
-    } catch {
-      // Skip malformed files
-    }
+    const recipe = readRecipeFile(join(dir, file));
+    if (recipe === null) continue;
+    if (file === `${recipe.recipe_id}.json`) named.add(recipe.recipe_id);
+    else if (named.has(recipe.recipe_id)) continue;
+    recipes.set(recipe.recipe_id, recipe);
   }
   return recipes;
+};
+
+/** An id that can name its own file. ⛔ Anything else (a dot, a slash) could leave
+ *  the directory, so it is never made into a path: the full scan answers it. */
+const FILE_NAMED_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
+
+/** The bundled recipes, each read when first asked for.
+ *
+ *  ⛔ NOT AT CONSTRUCTION. `community/recipes` holds 2,413 files (18 MB, 2026-10-08),
+ *  and reading them all cost every store ~80 ms on an idle machine and ~350 ms in a
+ *  loaded run — for stores that mostly never read a bundled recipe: of the 1,149
+ *  stores built over it by the 273 test files that build stores, 1,030 only looked
+ *  recipes up by id. A lookup reads the one file named for the id (its recipe_id
+ *  checked); listing them (`size`, `ids`) or an id with no file of its own scans
+ *  the directory once, as construction used to. A recipe already handed out keeps
+ *  its identity across that scan.
+ *
+ *  ⚠ So a bundled file is read when first needed, not when the store is made. A
+ *  booting server (`serve`, `--mcp`) lists them all at once, so it still reads them
+ *  at boot; a test that rewrites a fixture directory under a live store would now
+ *  see its new contents. */
+const bundledRecipes = (dir: string, withFoundation: boolean) => {
+  const read = new Map<string, RecipeDefinition>();
+  let all: Map<string, RecipeDefinition> | undefined;
+  const loadAll = (): Map<string, RecipeDefinition> => {
+    if (all !== undefined) return all;
+    const loaded = loadFromDirectory(dir);
+    // Merge the embedded foundation recipes so a DEPLOYED server (npm/Docker ship
+    // no `community/` dir — `findCommunityDir` mis-resolves there, so the scan is
+    // empty) still resolves them via `get()` / `getBundled()`. A git-clone dev
+    // build has the FS files → those win (skip when already present), keeping dev
+    // behavior identical. Clone so a per-store consumer mutation can't corrupt the
+    // shared module constant across boots.
+    //
+    // ONLY on the DEFAULT path (`communityDir` unset). A test / caller that pins an
+    // explicit dir is supplying its own fixture and must not get the embedded
+    // foundation recipes silently injected.
+    if (withFoundation) {
+      for (const [recipeId, recipe] of Object.entries(BUNDLED_FOUNDATION_RECIPES)) {
+        if (!loaded.has(recipeId)) loaded.set(recipeId, structuredClone(recipe));
+      }
+    }
+    for (const [recipeId, recipe] of read) loaded.set(recipeId, recipe);
+    all = loaded;
+    return all;
+  };
+  return {
+    get(recipeId: string): RecipeDefinition | undefined {
+      if (all !== undefined) return all.get(recipeId);
+      const known = read.get(recipeId);
+      if (known !== undefined) return known;
+      if (FILE_NAMED_ID.test(recipeId)) {
+        const recipe = readRecipeFile(join(dir, `${recipeId}.json`));
+        if (recipe !== null && recipe.recipe_id === recipeId) {
+          read.set(recipeId, recipe);
+          return recipe;
+        }
+      }
+      return loadAll().get(recipeId);
+    },
+    keys: () => loadAll().keys(),
+  };
 };
 
 /** Resolve the community/recipes directory relative to the project root. */
@@ -212,22 +284,7 @@ export const createRecipeStore = (
   db?: import('better-sqlite3').Database,
 ): RecipeStore => {
   const dir = communityDir ?? findCommunityDir();
-  const bundled = loadFromDirectory(dir);
-  // Merge the embedded foundation recipes so a DEPLOYED server (npm/Docker ship
-  // no `community/` dir — `findCommunityDir` mis-resolves there, so `bundled` is
-  // empty) still resolves them via `get()` / `getBundled()`. A git-clone dev
-  // build has the FS files → those win (skip when already present), keeping dev
-  // behavior identical. Clone so a per-store consumer mutation can't corrupt the
-  // shared module constant across boots.
-  //
-  // ONLY on the DEFAULT path (`communityDir` unset). A test / caller that pins an
-  // explicit dir is supplying its own fixture and must not get the embedded
-  // foundation recipes silently injected.
-  if (communityDir === undefined) {
-    for (const [recipeId, recipe] of Object.entries(BUNDLED_FOUNDATION_RECIPES)) {
-      if (!bundled.has(recipeId)) bundled.set(recipeId, structuredClone(recipe));
-    }
-  }
+  const bundled = bundledRecipes(dir, communityDir === undefined);
 
   // Ensure recipes table exists when db is provided
   if (db) {

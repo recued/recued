@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openSavedViewList } from './helpers/saved-data-views.js';
 
 test.use({ timezoneId: 'America/Los_Angeles', viewport: { width: 390, height: 844 } });
 const URL_BASE = 'http://127.0.0.1:4319/full-app-harness.html?data=work-entities-paged&task_filters=1';
@@ -43,7 +44,7 @@ test('saved task filters survive reload and their relative dates advance on reop
   // D-291 — the list lives on `#views`; `#data` keeps only "Save current view".
   await page.evaluate(() => window.__app.setHash('#views'));
   await expect(tools.locator('details')).toBeVisible();
-  await tools.locator('summary').click();
+  await openSavedViewList(page);
   const link = tools.locator('details').getByRole('link', { name: 'Due today', exact: true });
   const href = await link.getAttribute('href');
   await link.click();
@@ -61,7 +62,12 @@ test('saved task filters survive reload and their relative dates advance on reop
   await row(page, 0).scrollIntoViewIfNeeded();
   const boxes = await page.getByRole('group', { name: 'Task filters' }).getByRole('combobox').evaluateAll((controls) =>
     controls.map((control) => { const rect = control.getBoundingClientRect(); return { left: rect.left, right: rect.right, height: rect.height }; }));
-  expect(boxes.every((box) => box.left >= 0 && box.right <= 390 && box.height >= 36)).toBe(true);
+  expect(boxes).toHaveLength(3);
+  for (const box of boxes) {
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(390);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
   await page.screenshot({ path: '/tmp/recued-task-data-view.png', fullPage: true });
 });
 

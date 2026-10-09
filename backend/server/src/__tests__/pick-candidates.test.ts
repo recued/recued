@@ -11,7 +11,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildPickAskInputForSlot,
+  concreteSlotCandidates,
   derivePickCandidates,
+  unboundConcreteConnectionSlots,
   type PickCandidateDeps,
 } from '../pick-candidates.js';
 
@@ -390,5 +392,92 @@ describe('buildPickAskInputForSlot', () => {
         vendor: 'hubspot',
       },
     ]);
+  });
+});
+
+/** A recipe resolved at install no longer has a canonical op-step: its fetch is
+ *  a concrete catalog step whose connection is `{{config.<var>}}`. Its empty
+ *  slot must reach the pick layer too — before, it went straight to the gateway
+ *  and a pack's view showed "on connection '' denied (no_connection_profile)"
+ *  (driven live 2026-10-08, the HubSpot pack). */
+describe('unboundConcreteConnectionSlots', () => {
+  const concrete = (
+    steps: ReadonlyArray<Record<string, unknown>>,
+    variables: Record<string, unknown> = { crm: connectionVar() },
+  ): RecipeDefinition =>
+    ({
+      recipe_id: 'concrete-slots',
+      version: 1,
+      variables,
+      prefetch_steps: [],
+      steps,
+    }) as unknown as RecipeDefinition;
+  const fetch = (id: string, operation: string, catalog = HUBSPOT_CATALOG, connection = '{{config.crm}}') => ({
+    id,
+    ingredient: catalog,
+    connection,
+    input: { operation, args: {} },
+  });
+
+  it('finds an empty connection setting behind a catalog fetch, with its catalogs and operations', () => {
+    const recipe = concrete([fetch('a__raw', 'contact.search'), fetch('b__raw', 'deal.search'), fetch('c__raw', 'contact.search')]);
+    expect(unboundConcreteConnectionSlots(recipe, {})).toEqual([
+      { variable: 'crm', catalogs: [HUBSPOT_CATALOG], operations: ['contact.search', 'deal.search'] },
+    ]);
+    // Whitespace only is still empty.
+    expect(unboundConcreteConnectionSlots(recipe, { crm: '  ' })).toHaveLength(1);
+  });
+
+  it('is not a slot once the run, or the setting\'s own default, names a connection', () => {
+    const recipe = concrete([fetch('a__raw', 'contact.search')]);
+    expect(unboundConcreteConnectionSlots(recipe, { crm: 'hubspot' })).toEqual([]);
+    const withDefault = concrete([fetch('a__raw', 'contact.search')], {
+      crm: { ...connectionVar(), default: 'hubspot' },
+    });
+    expect(unboundConcreteConnectionSlots(withDefault, {})).toEqual([]);
+  });
+
+  it('ignores a step that is not a pure ref to a declared connection setting', () => {
+    expect(unboundConcreteConnectionSlots(concrete([fetch('a', 'contact.search', HUBSPOT_CATALOG, 'hubspot')]), {})).toEqual([]);
+    expect(unboundConcreteConnectionSlots(concrete([fetch('a', 'contact.search', HUBSPOT_CATALOG, '{{config.crm}}-eu')]), {})).toEqual([]);
+    expect(unboundConcreteConnectionSlots(concrete([fetch('a', 'contact.search')], { crm: { label: 'CRM', type: 'string', default: '' } }), {})).toEqual([]);
+    expect(unboundConcreteConnectionSlots(concrete([{ id: 'a', connection: '{{config.crm}}', transform: 'pick' }]), {})).toEqual([]);
+  });
+
+  it('leaves alone a setting a step skips itself on — an optional connection', () => {
+    const recipe = concrete([
+      fetch('a__raw', 'contact.search'),
+      { ...fetch('b__raw', 'deal.search'), skip_when: '{{config.crm}} is_empty' },
+    ]);
+    expect(unboundConcreteConnectionSlots(recipe, {})).toEqual([]);
+  });
+});
+
+describe('concreteSlotCandidates', () => {
+  const slot = (catalogs: string[], operations: string[]) => ({ variable: 'crm', catalogs, operations });
+  const store = (entries: ReadonlyArray<readonly [string, ConnectionOperationProfile]>) => ({
+    list: () => entries,
+  });
+
+  it('offers a connection stamped with the catalog that grants every operation, sorted by name', () => {
+    const profiles = store([
+      ['zeta', { allowed_operations: ['contact.search', 'deal.search'], catalog_slug: HUBSPOT_CATALOG }],
+      ['alpha', { allowed_operations: ['contact.search', 'deal.search'], catalog_slug: HUBSPOT_CATALOG }],
+      ['narrow', { allowed_operations: ['contact.search'], catalog_slug: HUBSPOT_CATALOG }],
+      ['other-vendor', { allowed_operations: ['contact.search', 'deal.search'], catalog_slug: SALESFORCE_CATALOG }],
+      ['unstamped', { allowed_operations: ['contact.search', 'deal.search'] }],
+    ]);
+    const candidates: PickCandidate[] = concreteSlotCandidates(slot([HUBSPOT_CATALOG], ['contact.search', 'deal.search']), profiles);
+    expect(candidates).toEqual([
+      { connection_name: 'alpha', catalog_slug: HUBSPOT_CATALOG, vendor: 'hubspot' },
+      { connection_name: 'zeta', catalog_slug: HUBSPOT_CATALOG, vendor: 'hubspot' },
+    ]);
+  });
+
+  it('offers nothing for a slot whose steps fetch from two catalogs', () => {
+    const profiles = store([
+      ['hs', { allowed_operations: ['contact.search'], catalog_slug: HUBSPOT_CATALOG }],
+    ]);
+    expect(concreteSlotCandidates(slot([HUBSPOT_CATALOG, SALESFORCE_CATALOG], ['contact.search']), profiles)).toEqual([]);
   });
 });

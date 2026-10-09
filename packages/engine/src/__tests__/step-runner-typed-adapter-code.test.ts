@@ -14,8 +14,10 @@ import { describe, expect, it } from 'vitest';
 
 import { runStep } from '../step-runner.js';
 import type { ExecutionContext, IngredientExecutor } from '../types.js';
-import { ERR, RPC_CODES_LEFT_UNNAMED, RPC_REFUSAL_RECIPE_CODES } from '@recued/contracts';
-import type { NamespaceStores, RecipeDefinition, RecipeStep } from '@recued/contracts';
+import {
+  ERR, RecordsContractError, RECORDS_REFUSAL_RECIPE_CODES, RPC_CODES_LEFT_UNNAMED, RPC_REFUSAL_RECIPE_CODES,
+} from '@recued/contracts';
+import type { NamespaceStores, RecipeDefinition, RecipeStep, RecordsErrorCode } from '@recued/contracts';
 
 const minimalRecipe: RecipeDefinition = {
   recipe_id: 'run-ingredient',
@@ -211,4 +213,30 @@ describe('runStep — an adapter\'s typed code across the step seam', () => {
     expect(log.error!.code).toBe('MAIL_SEND_SELF_LOOP_TO');
     expect(JSON.stringify(log.error!.details)).not.toContain('@');
   });
+});
+
+describe('runStep — a Records store refusal across the step seam', () => {
+  /** The class the store really throws (`store.ts` `fail(...)`): a `records_*`
+   *  code and no status. Every one of them used to fall through to NETWORK_ERROR. */
+  const refusingCtx = (code: RecordsErrorCode, message: string): ExecutionContext => ({
+    recipe: minimalRecipe,
+    stores: makeStores(),
+    ingredientExecutor: async () => { throw new RecordsContractError(code, message); },
+  });
+
+  it('⛔⛔ a stale expected_version is CONFLICT, not "check your connection"', async () => {
+    // What invoice-book's billable-hours writes met after the 2026-09-25 release bump.
+    const log = await runStep(ingredientStep, refusingCtx('records_conflict', 'stale Records version/revision'));
+    expect(log.error!.code).toBe('CONFLICT');
+    expect(log.error!.message).toBe('stale Records version/revision');
+  });
+
+  it.each(Object.entries(RECORDS_REFUSAL_RECIPE_CODES))(
+    '⛔ the store\'s `%s` is %s',
+    async (recordsCode, recipeCode) => {
+      const log = await runStep(ingredientStep, refusingCtx(recordsCode as RecordsErrorCode, 'refused'));
+      expect(log.error!.code).toBe(recipeCode);
+      expect(log.error!.severity).toBe(ERR[recipeCode]);
+    },
+  );
 });

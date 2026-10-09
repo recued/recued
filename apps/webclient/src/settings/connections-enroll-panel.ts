@@ -79,6 +79,7 @@ import {
   defaultFoundationalOAuthEnv,
   type FoundationalOAuthEnv,
 } from '../connections/foundational-oauth-popup.js';
+import { mintPkceVerifier, pkceS256Challenge } from '../connections/pkce.js';
 import type {
   BulkPackManifest,
   ConnectionAuth,
@@ -119,7 +120,9 @@ import {
   connectionCredentialRejectionCorrection,
   connectionCredentialRejectionTriage,
   GENERIC_OAUTH_VENDOR,
+  buildVendorAuthorizeUrl,
   getVendorProvider,
+  vendorOAuthRequestedScopes,
   unionRequiredScopesForConnection,
   requiredScopesByConnection,
   MAX_HEADER_AUTH_ENTRIES,
@@ -483,6 +486,8 @@ export type ConnectionsCompleteVendorOAuthCaller = (args: {
   client_secret?: string;
   authorize_url?: string;
   token_endpoint?: string;
+  sandbox?: boolean;
+  code_verifier?: string;
 }) => Promise<{ refresh_token: string; granted_scopes: string[]; instance_url?: string }>;
 
 export interface VendorOAuthBrowserEnv {
@@ -2326,7 +2331,16 @@ export const mountConnectionsEnrollPanel = (
    *  ⚠ `noQueryMarker: true`. Entra rejects a query string in a registered
    *  redirect URI, and on the loopback page the marker is redundant anyway —
    *  that page is opener-relay-only and discriminates on the state prefix. It
-   *  also makes the registered URI byte-identical to what the form prints. */
+   *  also makes the registered URI byte-identical to what the form prints.
+   *
+   *  ⛔ A REGISTERED vendor's form has no `auth.authorize_url` (the registry
+   *  holds it), and this path used to build the link from that field alone:
+   *  `new URL('')` threw before the sign-in page opened, for every one of them
+   *  (HubSpot, Salesforce, Google, …). Its link comes from the registry through
+   *  `buildVendorAuthorizeUrl`, the builder the server's start uses: the
+   *  sandbox-aware address, the extra params, the vendor scopes plus the Scopes
+   *  box, and PKCE where the vendor uses it, its verifier kept in this closure
+   *  until the exchange. */
   const runLoopbackSelfServeOAuth = async (
     popup: VendorOAuthPopupHandle,
     vendor: string,
@@ -2341,6 +2355,9 @@ export const mountConnectionsEnrollPanel = (
     const client_id = (values['auth.client_id'] ?? '').trim();
     const client_secret = (values['auth.client_secret'] ?? '').trim();
     const scopes = (values['auth.scopes'] ?? '').trim();
+    const registered = getVendorProvider(vendor);
+    const sandbox = isVendorSandboxSelected(values);
+    let code_verifier: string | undefined;
 
     state.dialog.oauthInFlight = true;
     render();
@@ -2349,7 +2366,33 @@ export const mountConnectionsEnrollPanel = (
       // Same-origin by construction on loopback: the relay page is served from
       // this very origin, so the only sender we trust is ourselves.
       expectedSenderOrigin: new URL(redirect_uri).origin,
-      buildAuthorizeUrl: (oauthState) => {
+      buildAuthorizeUrl: async (oauthState) => {
+        if (registered !== null) {
+          // A blank box asks for what it would have been pre-filled with (the
+          // installed packs' needs), as the server's start unions them itself.
+          const packScopes = (scopes.length > 0 ? scopes : prefillVendorScopes(vendor))
+            .split(/\s+/)
+            .filter((s) => s.length > 0);
+          let code_challenge: string | undefined;
+          if (registered.oauth.supports_pkce === true) {
+            code_verifier = mintPkceVerifier();
+            code_challenge = await pkceS256Challenge(code_verifier);
+          }
+          return buildVendorAuthorizeUrl({
+            provider: {
+              ...registered,
+              oauth: {
+                ...registered.oauth,
+                scopes: vendorOAuthRequestedScopes(registered, packScopes),
+              },
+            },
+            client_id,
+            redirect_uri,
+            sandbox,
+            state: oauthState,
+            ...(code_challenge === undefined ? {} : { code_challenge }),
+          });
+        }
         const url = new URL(authorizeBase);
         url.searchParams.set('response_type', 'code');
         url.searchParams.set('client_id', client_id);
@@ -2381,17 +2424,27 @@ export const mountConnectionsEnrollPanel = (
         redirect_uri,
         client_id,
         ...(client_secret.length > 0 ? { client_secret } : {}),
-        // Ignored for a registered vendor — the server always prefers its
-        // registry config, so these can never weaken one.
-        ...(authorizeBase.length > 0 ? { authorize_url: authorizeBase } : {}),
-        ...(token_endpoint.length > 0 ? { token_endpoint } : {}),
+        ...(registered !== null
+          // The server reads a registered vendor's endpoints from its registry;
+          // it needs the environment the flow ran in, and the PKCE proof.
+          ? { sandbox, ...(code_verifier === undefined ? {} : { code_verifier }) }
+          : {
+              ...(authorizeBase.length > 0 ? { authorize_url: authorizeBase } : {}),
+              ...(token_endpoint.length > 0 ? { token_endpoint } : {}),
+            }),
       });
       if (disposed) return;
+      const patch: VendorOAuthResultValuePatch = {
+        refresh_token: result.refresh_token,
+        // The API host the token response named (a Salesforce org's, a
+        // Pipedrive company's), which the saved connection then calls.
+        ...(result.instance_url !== undefined ? { instance_url: result.instance_url } : {}),
+      };
       state.dialog.values = applyVendorOAuthResultValues(
         vendor,
         state.dialog.values,
-        { refresh_token: result.refresh_token },
-        {},
+        patch,
+        { sandbox },
       );
       state.dialog.oauthGrantedScopes = result.granted_scopes;
       state.dialog.oauthError = null;

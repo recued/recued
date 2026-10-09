@@ -115,6 +115,9 @@ const boot = async (dir: string, bearer: string) => {
   // strictly sequential on one `dir` (each `boot` follows a `stop`), which is the
   // real reacquire this fixture wants to exercise anyway. Same isolation the
   // spawned `bin-router` cases and `serve-realm-snapshot-boot-ordering` use.
+  // ⚠ Since `updateLeasePathForInstall` (2026-10-09) the default channel run
+  // unpackaged takes no lease at all (`unpackaged-update-lease.test.ts`), so the
+  // contention above is gone there; `docker-thin` keeps these boots taking one.
   const binDir = join(dir, 'bin'); mkdirSync(binDir, { recursive: true });
   const child = spawn(process.execPath, ['--import', 'tsx', join(root, 'backend/server/src/bin.ts'), 'serve',
     '--db', join(dir, 'realm.db'), '--config', join(dir, 'config.toml'), '--port', String(port)], {

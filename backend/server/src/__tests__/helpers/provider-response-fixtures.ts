@@ -113,3 +113,50 @@ export const SEC_TICKER_MAP = {
     "title": "Alphabet Inc."
   }
 } as const;
+
+/** SEC `GET https://data.sec.gov/api/xbrl/companyconcept/CIK0000320193/us-gaap/RevenueFromContractWithCustomerExcludingAssessedTax.json`
+ *
+ *  Recorded 2026-10-08 with UA `RecuedSecEdgarPack/1.0 (https://recued.dev)`, HTTP 200,
+ *  18,356 bytes, 117 facts, all under `units.USD`. Verified across every fact:
+ *  two key sets only, `(accn, end, filed, form, fp, fy, start, val)` and the same plus `frame`
+ *  (39 of 117).
+ *
+ *  ⛔⛔ THE SHAPE A HAND-WRITTEN FIXTURE GOT WRONG. One `end` date carries SEVERAL facts: a 10-Q
+ *  reports the quarter AND the year to date (`start` differs), and a later filing repeats earlier
+ *  periods as comparatives, carrying ITS OWN `fy` / `fp`. Only the fact the SEC aligned to a
+ *  calendar period carries a `frame` (`CY2026Q2` a quarter, `CY2025` a year). The earlier fixture
+ *  had one fact per date, no `start`, no `frame` — and so could not reach the defect it hid.
+ *
+ *  ⚠ `units.USD` is trimmed to the 18 facts ending on or after 2024-09-28 (Apple's FY2024
+ *  year end), each VERBATIM and in recorded order: 8 framed, 6 end dates with
+ *  more than one fact. Emitted from the recorded bytes by script, never retyped. */
+export const SEC_COMPANY_CONCEPT_AAPL_REVENUE = {
+  "cik": 320193,
+  "taxonomy": "us-gaap",
+  "tag": "RevenueFromContractWithCustomerExcludingAssessedTax",
+  "label": "Revenue from Contract with Customer, Excluding Assessed Tax",
+  "description": "Amount, excluding tax collected from customer, of revenue from satisfaction of performance obligation by transferring promised good or service to customer. Tax collected from customer is tax assessed by governmental authority that is both imposed on and concurrent with specific revenue-producing transaction, including, but not limited to, sales, use, value added and excise.",
+  "entityName": "Apple Inc.",
+  "units": {
+    "USD": [
+      {"start": "2023-10-01", "end": "2024-09-28", "val": 391035000000, "accn": "0000320193-24-000123", "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2024-11-01"},
+      {"start": "2023-10-01", "end": "2024-09-28", "val": 391035000000, "accn": "0000320193-25-000079", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31", "frame": "CY2024"},
+      {"start": "2024-09-29", "end": "2024-12-28", "val": 124300000000, "accn": "0000320193-25-000008", "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-01-31"},
+      {"start": "2024-09-29", "end": "2024-12-28", "val": 124300000000, "accn": "0000320193-26-000006", "fy": 2026, "fp": "Q1", "form": "10-Q", "filed": "2026-01-30", "frame": "CY2024Q4"},
+      {"start": "2024-09-29", "end": "2025-03-29", "val": 219659000000, "accn": "0000320193-25-000057", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-05-02"},
+      {"start": "2024-09-29", "end": "2025-03-29", "val": 219659000000, "accn": "0000320193-26-000013", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-05-01"},
+      {"start": "2024-12-29", "end": "2025-03-29", "val": 95359000000, "accn": "0000320193-25-000057", "fy": 2025, "fp": "Q2", "form": "10-Q", "filed": "2025-05-02"},
+      {"start": "2024-12-29", "end": "2025-03-29", "val": 95359000000, "accn": "0000320193-26-000013", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-05-01", "frame": "CY2025Q1"},
+      {"start": "2024-09-29", "end": "2025-06-28", "val": 313695000000, "accn": "0000320193-25-000073", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-08-01"},
+      {"start": "2024-09-29", "end": "2025-06-28", "val": 313695000000, "accn": "0000320193-26-000020", "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-07-31"},
+      {"start": "2025-03-30", "end": "2025-06-28", "val": 94036000000, "accn": "0000320193-25-000073", "fy": 2025, "fp": "Q3", "form": "10-Q", "filed": "2025-08-01"},
+      {"start": "2025-03-30", "end": "2025-06-28", "val": 94036000000, "accn": "0000320193-26-000020", "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-07-31", "frame": "CY2025Q2"},
+      {"start": "2024-09-29", "end": "2025-09-27", "val": 416161000000, "accn": "0000320193-25-000079", "fy": 2025, "fp": "FY", "form": "10-K", "filed": "2025-10-31", "frame": "CY2025"},
+      {"start": "2025-09-28", "end": "2025-12-27", "val": 143756000000, "accn": "0000320193-26-000006", "fy": 2026, "fp": "Q1", "form": "10-Q", "filed": "2026-01-30", "frame": "CY2025Q4"},
+      {"start": "2025-09-28", "end": "2026-03-28", "val": 254940000000, "accn": "0000320193-26-000013", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-05-01"},
+      {"start": "2025-12-28", "end": "2026-03-28", "val": 111184000000, "accn": "0000320193-26-000013", "fy": 2026, "fp": "Q2", "form": "10-Q", "filed": "2026-05-01", "frame": "CY2026Q1"},
+      {"start": "2025-09-28", "end": "2026-06-27", "val": 364357000000, "accn": "0000320193-26-000020", "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-07-31"},
+      {"start": "2026-03-29", "end": "2026-06-27", "val": 109417000000, "accn": "0000320193-26-000020", "fy": 2026, "fp": "Q3", "form": "10-Q", "filed": "2026-07-31", "frame": "CY2026Q2"},
+    ],
+  },
+} as const;

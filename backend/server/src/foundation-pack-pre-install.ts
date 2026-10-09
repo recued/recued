@@ -75,6 +75,7 @@ import {
 } from './ingredient-authoring/install-composition.js';
 import {
   findCommunityPackDir,
+  packTreeFingerprint,
   parseEmbeddedFoundationManifests,
   walkJsonFiles,
 } from './bundled-pack-source.js';
@@ -194,7 +195,7 @@ export interface PreInstallFoundationPacksInput {
  *  candidates. Malformed manifests are reported as `skipped_invalid_manifest`
  *  outcomes so silent disk corruption surfaces in the boot logs rather
  *  than silently dropping a pack. */
-const loadFoundationPackManifests = (
+const scanFoundationPackManifests = (
   packDir: string,
   includeEmbedded: boolean,
 ): { ok: BulkPackManifest[]; outcomes: FoundationPackOutcome[] } => {
@@ -299,6 +300,33 @@ const loadFoundationPackManifests = (
     }
   }
   return { ok, outcomes };
+};
+
+type FoundationScan = { ok: BulkPackManifest[]; outcomes: FoundationPackOutcome[] };
+const defaultScanCache = new Map<string, { fingerprint: string; scan: FoundationScan }>();
+
+/** {@link scanFoundationPackManifests}, kept per process for the DEFAULT pack
+ *  tree and re-validated by that tree's size + mtime fingerprint.
+ *
+ *  ⛔ WHY. The scan reads, parses and validates every manifest in the tree to
+ *  find the few marked `pre_install` — 1,093 files, 95 MB on a checkout
+ *  (2026-10-09), ~0.3 s of every boot's storage step. A server boots once per
+ *  process, so nothing changes for one; a test process that composes six
+ *  servers paid it six times. The fingerprint stats every file the scan reads
+ *  (`bundled-pack-source.ts`), so an edited, added or removed pack is seen.
+ *
+ *  ⚠ Only the default tree. An explicit `packDir` is a test's own fixture,
+ *  small and often rewritten between calls; it is scanned every time, as before.
+ *  Each call gets its own copy, as a fresh scan gave, since the install loop is
+ *  free to treat what it is handed as its own. */
+const loadFoundationPackManifests = (packDir: string, includeEmbedded: boolean): FoundationScan => {
+  if (!includeEmbedded) return scanFoundationPackManifests(packDir, includeEmbedded);
+  const fingerprint = packTreeFingerprint(packDir);
+  const hit = defaultScanCache.get(packDir);
+  if (hit !== undefined && hit.fingerprint === fingerprint) return structuredClone(hit.scan);
+  const scan = scanFoundationPackManifests(packDir, includeEmbedded);
+  defaultScanCache.set(packDir, { fingerprint, scan: structuredClone(scan) });
+  return scan;
 };
 
 /** Codex P2 fold — pre-install no-op pre-check.

@@ -403,6 +403,7 @@ import {
   dependencyPacksToChoose,
   installDialogGrantModel,
   installFailureCopy,
+  installRefusalFromPreview,
   missingPacksFromFailure,
   missingPacksToInstallFirst,
   renderPacksInstallDialog,
@@ -2826,7 +2827,9 @@ export const mountPacksPanel = (
         && dependenciesLoadingFor(target as PackListEntry & { manifest: BulkPackManifest }))
       // A pack it needs and does not bring in: the install would refuse, and the
       // dialog says which (the button is held there too).
-      || missingPacksToInstallFirst(installPreviewFor(submittingSlug, target.manifest)).length > 0) {
+      || missingPacksToInstallFirst(installPreviewFor(submittingSlug, target.manifest)).length > 0
+      // D-311 § 5 — nor what the install would refuse before writing anything.
+      || installRefusalFromPreview(installPreviewFor(submittingSlug, target.manifest)) !== null) {
       return Promise.resolve();
     }
     const webhookBindings = webhookChoices?.map((choice) => ({

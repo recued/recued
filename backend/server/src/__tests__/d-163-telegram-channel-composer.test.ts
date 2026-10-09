@@ -23,9 +23,11 @@ import {
   buildConnectionRow,
   stubConnectionStore,
   stubFetch,
+  liveKeyManager,
   stubKeyManager,
   type StubKeyManager,
 } from './d-163-remote-channel-test-helpers.js';
+import { encodeAuthForStorage } from '../connection-handler.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -222,39 +224,35 @@ describe('composeTelegramChannel — credential null branches (no fetch fires)',
 });
 
 describe('composeTelegramChannel — KeyManager integration', () => {
-  it('passes no key provider when keys are uninitialized (plaintext branch)', async () => {
+  it('refuses the credential while keys are uninitialized — no plaintext branch once a KeyManager exists', async () => {
+    // ⛔ This used to pass NO provider and read the row as base64 JSON. A new
+    // server's first pairing unlocks the vault in-process, so that branch kept
+    // the whole first session in plaintext mode; its rows then failed AEAD
+    // after a restart (driven live 2026-10-08).
     const keys = stubKeyManager('uninitialized');
     const { channel, fetch } = composeHarness({ keys });
-    await channel.deliverNotify({ text: 'ping' });
-    expect(fetch.calls).toHaveLength(1);
-    // `keyProvider('connection')` should NOT have been requested at
-    // resolve time when state is 'uninitialized'.
-    expect(keys.keyProvider).not.toHaveBeenCalled();
+    await expect(channel.deliverNotify({ text: 'ping' })).rejects.toThrow(/locked/);
+    expect(fetch.calls).toHaveLength(0);
+    expect(keys.keyProvider).toHaveBeenCalledWith('connection');
   });
 
-  it('re-reads keys.state() on every dispatch (transparent unlock invariant)', async () => {
-    const keys = stubKeyManager('uninitialized');
-    const stateSpy = vi.spyOn(keys, 'state');
-    const { channel } = composeHarness({ keys });
+  it('an unlock lands without rebuilding the channel (transparent unlock invariant)', async () => {
+    const key = new Uint8Array(32).fill(9);
+    const keys = liveKeyManager('uninitialized', key);
+    const auth = { type: 'bearer', token: '12345:secret-bot-token' } as const;
+    const row = {
+      ...buildTelegramRow({ auth, config: { chat_id: '@my_channel' } }),
+      auth_ciphertext: await encodeAuthForStorage(auth, { kind: 'notification', name: 'telegram' }, () => key),
+    };
+    const { channel, fetch } = composeHarness({ keys, row });
 
-    // First dispatch — plaintext branch (state === 'uninitialized').
-    await channel.deliverNotify({ text: 'first' });
-    const callsAfterFirst = stateSpy.mock.calls.length;
-    expect(callsAfterFirst).toBeGreaterThan(0);
-    expect(keys.keyProvider).not.toHaveBeenCalled();
+    await expect(channel.deliverNotify({ text: 'first' })).rejects.toThrow(/locked/);
+    expect(fetch.calls).toHaveLength(0);
 
-    // KeyManager transitions to a state that exercises the keyProvider
-    // branch. The composer holds `deps.keys` by reference (no compose-
-    // time snapshot), so the next resolveCredential call sees the new
-    // state. A real AEAD round-trip would need a real sub-DEK; we only
-    // assert the re-read happens — the keyProvider is requested, which
-    // is the observable invariant. The dispatch may throw (stubbed
-    // keyProvider returns null) — catch it to keep the test focused
-    // on the re-read.
+    // Same channel object: the provider closure re-reads the state per call.
     keys.setState('unlocked');
-    await channel.deliverNotify({ text: 'second' }).catch(() => undefined);
-    expect(stateSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
-    expect(keys.keyProvider).toHaveBeenCalledWith('connection');
+    await channel.deliverNotify({ text: 'second' });
+    expect(fetch.calls).toHaveLength(1);
   });
 
   it('skips keyProvider lookup entirely when no KeyManager is wired', async () => {

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { HARNESS_SERVER_PUBLIC_KEY } from './harness/server-identity.js';
+import { openChatHistory } from './helpers/chat-history.js';
 
 /**
  * Path B — the WHOLE webclient app booted in a real Chromium off the
@@ -1017,7 +1018,8 @@ test('the Account popover closes when keyboard focus leaves it', async ({ page }
   await page.keyboard.press('Tab');
 
   await expect(dialog).toBeHidden();
-  await expect(page.getByRole('button', { name: 'New chat' })).toBeFocused();
+  // On a phone the next control is the button that opens the chat list.
+  await expect(page.getByRole('button', { name: 'Chats', exact: true })).toBeFocused();
 });
 
 test('Account contains a maximum-length server name in switch review', async ({ page }) => {
@@ -8026,6 +8028,7 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   await search.fill('planning');
 
   await page.setViewportSize({ width: 390, height: 844 });
+  await openChatHistory(page);
   const historyBounds = await search.boundingBox();
   expect(historyBounds).not.toBeNull();
   expect(historyBounds!.x).toBeGreaterThanOrEqual(-0.5);
@@ -8060,6 +8063,7 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   await expect(sessionActions).toHaveJSProperty('open', false);
   await expect(search).toBeFocused();
 
+  await page.locator('[data-recued-chat-route-history-toggle]').click();
   await page.locator(`[${CHAT_HISTORY_CONTINUE}]`).click();
   await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
   await expect(page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`))
@@ -8116,6 +8120,7 @@ test('Chat contains long session titles and message tokens on a narrow phone', a
   expect(landingGeometry.routeScrollWidth)
     .toBeLessThanOrEqual(landingGeometry.routeClientWidth);
 
+  await openChatHistory(page);
   await page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`).click();
   await page.evaluate((content) => {
     window.__app.fireMessage({
@@ -8294,6 +8299,7 @@ test('Chat keeps a slow history open focused and single-flight', async ({ page }
     `${HARNESS_URL}?chat=session&hold_rpc=chat.session.get#chat`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
+  await openChatHistory(page);
 
   const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
   await row.focus();
@@ -8322,6 +8328,7 @@ test('Chat returns a rejected history open to the exact row', async ({ page }) =
     `${HARNESS_URL}?chat=session&chat_session_open_response=fail-slow#chat`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
+  await openChatHistory(page);
 
   const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
   await row.focus();
@@ -8488,6 +8495,7 @@ test('Chat returns rejected history actions to visible retry controls', async ({
     `${HARNESS_URL}?chat=session&chat_history_action_response=fail`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
+  await openChatHistory(page);
 
   const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
   await actions.locator('summary').click();
@@ -8866,6 +8874,7 @@ test('Chat send keeps the editable composer through ack and completion', async (
   await expect(activeHistory).not.toHaveAttribute('aria-disabled');
   await expect(activeHistory).not.toHaveAttribute('disabled');
   // The unsent draft owns the navigation guard while accepted work continues.
+  await openChatHistory(page);
   await newChat.click();
   const guard = page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`);
   await expect(guard).toBeFocused();
@@ -8911,6 +8920,7 @@ test('Chat send keeps the editable composer through ack and completion', async (
   await expect(activeHistory).not.toContainText('Working…');
   await expect(newChat).not.toHaveAttribute('aria-disabled');
   await expect(activeHistory).not.toHaveAttribute('aria-disabled');
+  await openChatHistory(page);
   await newChat.click();
   await expect(page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`)).toBeFocused();
   await expect(input).toHaveValue('Keep this next thought');
@@ -9246,6 +9256,7 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?chat=session&chat_plan_response=slow`);
   await page.waitForFunction(() => window.__app?.ready === true);
+  await openChatHistory(page);
 
   const session = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
   await session.click();
@@ -9410,6 +9421,7 @@ test('a safe-check closure keeps focus on its durable receipt', async ({ page })
     `${HARNESS_URL}?chat=session&chat_diagnosis_response=slow`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
+  await openChatHistory(page);
   await page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`).click();
 
   await page.evaluate(() => {
@@ -9497,7 +9509,7 @@ test('a safe-check closure keeps focus on its durable receipt', async ({ page })
 });
 
 test('Data keeps keyboard focus on a collection tab through its repaint', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.evaluate(() => window.__app.setHash('#data'));
 
   const tasks = page.locator(`[${DATA_TAB}="task"]`);
@@ -9512,7 +9524,7 @@ test('Data keeps keyboard focus on a collection tab through its repaint', async 
 });
 
 test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.evaluate(() => window.__app.setHash('#data'));
 
   const tablist = page.getByRole('tablist', { name: 'Data collections' });
@@ -9570,16 +9582,11 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   );
   expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
 
-  const collectionTabs = page.getByRole('tablist', {
-    name: 'Data collections',
-  }).getByRole('tab');
-  // D-290 — Today is its own route now, not one of these; D-315 added Mail
-  // facts under Received.
-  await expect(collectionTabs).toHaveCount(18);
-  const tabHeights = await collectionTabs.evaluateAll((tabs) =>
-    tabs.map((tab) => tab.getBoundingClientRect().height)
-  );
-  expect(Math.min(...tabHeights)).toBeGreaterThanOrEqual(36);
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  await expect(collections.locator('option')).toHaveCount(18);
+  await expect(collections).toBeVisible();
+  expect((await collections.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await expect(page.getByRole('tablist', { name: 'Data collections' })).toBeHidden();
 
   const memory = switcher.getByRole('button', { name: 'Memory' });
   await memory.focus();
@@ -11246,9 +11253,12 @@ test('Data protects unfinished form-response edits from Back', async ({ page }) 
   await expect(guard).toBeFocused();
   await expect(page.locator('.data-form-response-detail-content'))
     .toHaveAttribute('inert', '');
-  const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
-  await expect(contactTab).toHaveAttribute('aria-disabled', 'true');
-  await contactTab.dispatchEvent('click');
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  await expect(collections).toBeDisabled();
+  await collections.evaluate((select: HTMLSelectElement) => {
+    select.value = 'contact';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await expect(guard).toBeFocused();
   await expect(detail).toBeVisible();
   await page.keyboard.press('Escape');
@@ -11276,7 +11286,7 @@ test('Data protects unfinished form-response edits from Back', async ({ page }) 
   await expect(row).toBeFocused();
 });
 
-test('Data protects unfinished form-response edits from tab switches', async ({ page }) => {
+test('Data protects unfinished form-response edits from mobile collection changes', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -11287,28 +11297,27 @@ test('Data protects unfinished form-response edits from tab switches', async ({ 
 
   const detail = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
   const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
-  const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
   await email.fill('tab-switch-draft@example.test');
-  await contactTab.focus();
-  await page.keyboard.press('Enter');
+  await collections.focus();
+  await collections.selectOption('contact');
 
   const guard = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_GUARD}]`);
   await expect(detail).toBeVisible();
   await expect(guard).toBeFocused();
-  await expect(page.locator(`[${DATA_TAB}="form_response"]`))
-    .toHaveAttribute('aria-selected', 'true');
+  await expect(collections).toHaveValue('form_response');
 
   await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_KEEP}]`).click();
   await expect(guard).toHaveCount(0);
   await expect(email).toHaveValue('tab-switch-draft@example.test');
-  await expect(contactTab).toBeFocused();
+  await expect(collections).toBeFocused();
 
-  await page.keyboard.press('Enter');
+  await collections.selectOption('contact');
   await expect(guard).toBeFocused();
   await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_COMMIT}]`).click();
-  await expect(contactTab).toHaveAttribute('aria-selected', 'true');
+  await expect(collections).toHaveValue('contact');
   await expect(detail).toHaveCount(0);
-  await expect(contactTab).toBeFocused();
+  await expect(collections).toBeFocused();
 });
 
 test('Data protects unfinished form-response edits before Kitchen handoff', async ({ page }) => {
@@ -13499,14 +13508,14 @@ test('Data keeps collection detail recovery focused and retryable', async ({ pag
   await expect.poll(
     () => page.evaluate(() => window.__app.rpcCallCount('collection.get')),
   ).toBe(callsAfterInitialFailure + 2);
-  const mailTab = page.locator(`[${DATA_TAB}="mail"]`);
-  await mailTab.focus();
-  await expect(mailTab).toBeFocused();
+  const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
+  await collections.focus();
+  await expect(collections).toBeFocused();
   await expect(retry).toHaveText('Retry');
   await expect(alert).toHaveText(
     'Mail record detail is temporarily unavailable.',
   );
-  await expect(mailTab).toBeFocused();
+  await expect(collections).toBeFocused();
 
   await retry.focus();
   await page.keyboard.press('Enter');

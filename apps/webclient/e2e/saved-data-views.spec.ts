@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openSavedViewList } from './helpers/saved-data-views.js';
 
 const URL_BASE = 'http://127.0.0.1:4319/full-app-harness.html';
 const tools = (page: Page) => page.locator('[data-saved-data-views]');
@@ -31,7 +32,7 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await query(page).fill('Acme');
   await saveView(page, 'Acme <Team>');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   let link = tools(page).locator('details').getByRole('link', { name: 'Acme <Team>', exact: true });
   const href = await link.getAttribute('href');
   expect(href).toMatch(/^#views\/view_/);
@@ -49,7 +50,7 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await expect(page).toHaveURL(new RegExp(`${href}$`));
   await expect(query(page)).toHaveValue('Acme');
 
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Rename Acme <Team>', exact: true }).click();
   await tools(page).getByLabel('View name', { exact: true }).fill('Customers');
   await tools(page).getByRole('button', { name: 'Save view', exact: true }).click();
@@ -61,7 +62,7 @@ test('Saved views persist search settings through reload, rename, Back, and dele
   await expect(query(page)).toHaveValue('Acme');
   await expect(tools(page)).toContainText('Customers');
 
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Delete Customers', exact: true }).click();
   await expect(tools(page).getByRole('group', { name: 'Delete saved view' })).toContainText('Its records will stay');
   await tools(page).getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -95,7 +96,7 @@ test('Saved views still open from a pre-D-291 #data/view bookmark', async ({ pag
   await query(page).fill('Acme');
   await saveView(page, 'Acme');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   const href = await tools(page).locator('details a').getAttribute('href');
   const id = href!.replace('#views/', '');
 
@@ -156,7 +157,7 @@ test('Saved views keep a save single-flight and remain usable on a phone', async
   expect(await page.evaluate(() => window.__app.rpcCallCount('data_views.create'))).toBe(1);
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Saved');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await expect(tools(page).locator('details a')).toHaveCount(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: '/tmp/recued-saved-data-views.png', fullPage: true });
@@ -171,7 +172,7 @@ test('Saved views retain the exact Records publisher, pack, and kind', async ({ 
   await saveView(page, 'Publisher B jobs');
   // D-291 — the list is its own route now; `#data` only saves and links there.
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).locator('details a').click();
   await page.reload();
   await ready(page);
@@ -209,7 +210,7 @@ test('Saved views reopen a Memory origin and preserve keyboard cancellation', as
   await expect(tools(page).getByRole('button', { name: 'Save current view' })).toBeFocused();
   await saveView(page, 'My memories');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).locator('details a').click();
   await page.reload();
   await ready(page);
@@ -224,7 +225,7 @@ test('Saved views keep a conflicting rename for review before retrying', async (
   await ready(page);
   await saveView(page, 'Original');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Rename Original', exact: true }).click();
   await tools(page).getByLabel('View name', { exact: true }).fill('My edit');
   await page.evaluate(() => {
@@ -247,10 +248,13 @@ test('Saved views can be deleted without discarding an open Data draft', async (
   await ready(page);
   await saveView(page, 'Contacts');
   await openViewsList(page);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   const href = await tools(page).locator('details a').getAttribute('href');
   await tools(page).locator('details a').click();
-  await tools(page).locator('summary').click();
+  // Opening the view rebuilds this panel with its list folded. Unfolding it
+  // before then would read the open list it replaces.
+  await expect(tools(page).locator('.saved-data-opened')).toContainText('Opened from Contacts');
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Delete Contacts', exact: true }).click();
   await tools(page).getByRole('button', { name: 'Delete view', exact: true }).click();
   // A Data action can start while the independent view deletion is settling.

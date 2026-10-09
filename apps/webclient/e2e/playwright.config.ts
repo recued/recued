@@ -36,6 +36,9 @@ const HARNESS_ORIGIN = 'http://127.0.0.1:4319';
 
 export default defineConfig({
   testDir: '.',
+  // The real paired-workflow lane builds a binary and enrolls a throwaway
+  // realm. Run it explicitly with e2e:webclient:paired.
+  testIgnore: '**/paired/**',
   timeout: 60_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,

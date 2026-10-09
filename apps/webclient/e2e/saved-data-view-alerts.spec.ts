@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { SavedDataView } from '@recued/contracts';
+import { openSavedViewList } from './helpers/saved-data-views.js';
 
 const BASE = 'http://127.0.0.1:4319/full-app-harness.html';
 const ID = 'view_00000000-0000-4000-8000-000000000003';
@@ -110,7 +111,7 @@ test('Records alerts preserve saved filters across enable, reload, pause and res
     views[0].alert.status = 'unavailable';
     sessionStorage.setItem(key, JSON.stringify(views));
   }, KEY);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await expect(opened(page)).toContainText('Alerts resume when the data is available');
   await tools(page).screenshot({ path: '/tmp/recued-records-alert-controls.png' });
@@ -129,7 +130,7 @@ test('Refreshing updates alert health without changing filters or their revision
     views[0].alert.status = 'unavailable';
     sessionStorage.setItem(key, JSON.stringify(views));
   }, KEY);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await expect(opened(page)).toContainText('Alerts waiting for your tasks');
   await expect(search).toHaveValue('Unsaved');
@@ -144,7 +145,7 @@ test('Alert controls in the refreshed list use its reviewed revision while an ol
     views[0].alert = { enabled: false, time_zone: 'UTC', status: 'paused', last_checked_at: null, last_notified_at: null };
     sessionStorage.setItem(key, JSON.stringify(views));
   }, KEY);
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views', exact: true }).click();
   await tools(page).locator('details').getByRole('button', { name: 'Resume alerts for Overdue invoices', exact: true }).click();
   await expect(tools(page).locator('[data-view-notice]')).toContainText('Alerts on');

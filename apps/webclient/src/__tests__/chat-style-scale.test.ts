@@ -110,8 +110,9 @@ describe('chat panes keep clear of the connection banner', () => {
     )].map((m) => m[0]!);
     // Both panes, and they must agree — they sit side by side and a mismatch
     // would leave them ending at different heights.
-    expect(bounds).toHaveLength(2);
-    expect(new Set(bounds).size).toBe(1);
-    expect(bounds[0]).toContain(`var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px)`);
+    const desktopBounds = bounds.filter(bound => bound.includes('100vh'));
+    expect(desktopBounds).toHaveLength(2);
+    expect(new Set(desktopBounds).size).toBe(1);
+    for (const bound of bounds) expect(bound).toContain(`var(${CONNECTION_BANNER_HEIGHT_VAR}, 0px)`);
   });
 });

@@ -21,6 +21,7 @@ import {
   rotateKeyfilePassphrase,
 } from '../keyfile-passphrase-rotation.js';
 import { resolveIdentityKeysPath } from '../identity/boot.js';
+import { readIdentityPassphrase } from '../identity/passphrase-env.js';
 import { resolveRealmDbPath } from '../realm-db-path.js';
 
 export interface RotatePassphraseProfileOptions {
@@ -66,12 +67,14 @@ export async function runRotatePassphraseProfile(
   // is where the server reads it, so it is the value actually sealing the file
   // and asking the operator to retype it invites a typo that reads as "wrong
   // passphrase". Prompted only when the shell does not carry it.
-  const fromEnv = env.RECUED_IDENTITY_PASSPHRASE;
+  const fromEnv = readIdentityPassphrase(env);
   const currentPassphrase = fromEnv && fromEnv.length > 0
     ? fromEnv
     : await ask('Current passphrase: ');
   if (fromEnv && fromEnv.length > 0) {
-    out('Using the current passphrase from RECUED_IDENTITY_PASSPHRASE.');
+    out(env.RECUED_IDENTITY_PASSPHRASE_FILE
+      ? `Using the current passphrase from ${env.RECUED_IDENTITY_PASSPHRASE_FILE}.`
+      : 'Using the current passphrase from RECUED_IDENTITY_PASSPHRASE.');
   }
 
   const newPassphrase = await ask('New passphrase: ');
@@ -109,10 +112,11 @@ export async function runRotatePassphraseProfile(
     // it is skipped. Nothing here can verify a systemd unit or a compose file,
     // so the only honest move is to say it plainly and say it last.
     out('  ⚠ SET THE NEW PASSPHRASE BEFORE STARTING THE SERVER.');
-    out('    RECUED_IDENTITY_PASSPHRASE must carry the new value wherever the');
-    out('    server starts from — systemd EnvironmentFile, compose env_file, or');
-    out('    your secret manager. Until it does, the server will refuse to boot');
-    out('    rather than open the keyfile without it.');
+    out('    RECUED_IDENTITY_PASSPHRASE, or the file RECUED_IDENTITY_PASSPHRASE_FILE');
+    out('    names, must carry the new value wherever the server starts from —');
+    out('    systemd EnvironmentFile, a container secret, or your secret manager.');
+    out('    Until it does, the server will refuse to boot rather than open the');
+    out('    keyfile without it.');
     out('');
     out('  Once the server starts cleanly, the previous keyfile can be deleted.');
   } catch (err) {

@@ -2030,6 +2030,8 @@ export const CLI_PROGRESS_ADAPTERS = [
   'claude-stream-json',
   'codex-jsonl',
   'ffmpeg-progress',
+  'opencode-json',
+  'pi-json',
   'yt-dlp-progress',
 ] as const;
 export type CliProgressAdapter = (typeof CLI_PROGRESS_ADAPTERS)[number];
@@ -2037,11 +2039,40 @@ export type CliProgressAdapter = (typeof CLI_PROGRESS_ADAPTERS)[number];
 /** The adapters whose protocol carries the tool's FINAL ANSWER, and whose host
  *  code reads it — the only ones an `output_capture.from_progress_answer` op
  *  may declare. Claude Code prints its answer only inside its `stream-json`
- *  result record and offers no flag to write it to a file; Codex has
- *  `--output-last-message`, so `codex-jsonl` is not here. */
+ *  result record, pi only in its last assistant `message_end` under
+ *  `--mode json`, and opencode only in the text parts of `run --format json`;
+ *  none offers a flag to write it to a file. Codex has `--output-last-message`,
+ *  so `codex-jsonl` is not here. */
 export const CLI_PROGRESS_ANSWER_ADAPTERS = [
   'claude-stream-json',
+  'opencode-json',
+  'pi-json',
 ] as const satisfies readonly CliProgressAdapter[];
+
+/** The environment variables a `cli_invocation` op may pin for its process
+ *  (`CliMethodBinding.env`). A closed list, like the adapters: a manifest
+ *  cannot name another. Every member NARROWS what its tool loads or may do —
+ *  `OPENCODE_DISABLE_PROJECT_CONFIG` stops opencode applying the repository's
+ *  own `opencode.json`, which can start MCP commands and point the model
+ *  provider (with the owner's key) at another host; `OPENCODE_PERMISSION` lays
+ *  a permission policy over the owner's. ⚠ It does NOT keep repository CODE
+ *  out on every version: opencode 1.15.13 loaded no repository plugin under it,
+ *  1.18.35 loads `.opencode/plugin(s)/*` and plugin files a repository's
+ *  `opencode.json` names (measured 2026-10-08). OpenCode documents the variable
+ *  as a way past a broken config, not a safety switch; opencode-pack discloses
+ *  this instead of claiming it.
+ *  A name that could make a tool load other code — a loader or interpreter
+ *  variable (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH` …), `PATH` —
+ *  never joins: argv[0] is pinned to the declared binary, and an environment
+ *  variable must not reopen what that pin closes. */
+export const CLI_BINDING_ENV_NAMES = [
+  'OPENCODE_DISABLE_PROJECT_CONFIG',
+  'OPENCODE_PERMISSION',
+] as const;
+export type CliBindingEnvName = (typeof CLI_BINDING_ENV_NAMES)[number];
+
+/** The longest value a pinned environment variable may carry. */
+export const CLI_BINDING_ENV_VALUE_MAX = 4096;
 
 /** D-259 semantic heartbeat declaration. `adapter` names registered host code
  * that recognizes real forward progress; arbitrary stdout is not a heartbeat. */
@@ -2049,6 +2080,15 @@ export interface CliHeartbeatProgressSpec {
   contract: 'heartbeat';
   adapter: CliProgressAdapter;
   stall_ms: number;
+  /** The longest the tool may print NOTHING on its adapter's stream after it
+   *  starts; it is then stopped as a timeout. Any output ends the window, not
+   *  only progress: a tool whose progress comes when a step finishes can be
+   *  silent for a long first step and still be working. For a tool that
+   *  prints at once when healthy and hangs printing nothing when it cannot
+   *  start — opencode continuing another folder's session, or retrying a
+   *  model host it cannot reach — so a hang ends in minutes rather than at
+   *  `stall_ms`. Less than `stall_ms`. */
+  first_output_ms?: number;
 }
 
 /** D-259 growing-artifact declaration. The path is resolved only after the
@@ -2263,6 +2303,10 @@ export interface CliMethodBinding {
    *  `TempFileRef`) to the local path the cli reads. A pinned CAS carrier hashes
    *  the exact materialized buffer before spawn. Cleaned up in a `finally`. */
   input_materialize?: CliInputMaterializeSpec;
+  /** Environment variables pinned for this op's process, set over the server's
+   *  own environment. Names come only from `CLI_BINDING_ENV_NAMES`; values are
+   *  literal pack data, never templated from args, so no caller can steer them. */
+  env?: Partial<Readonly<Record<CliBindingEnvName, string>>>;
 }
 
 /** SMB-finance slice 3 — materialize a `file_ref` arg to a temp file for a cli

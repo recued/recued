@@ -327,9 +327,9 @@ const stopProcessGroup = (
 const driveRealStdioProfile = (dbPath: string): Promise<StdioDriveResult> =>
   new Promise((resolvePromise) => {
     const child = spawn(
-      'npx',
+      process.execPath,
       [
-        '--no-install',
+        '--import',
         'tsx',
         binPath,
         '--mcp',

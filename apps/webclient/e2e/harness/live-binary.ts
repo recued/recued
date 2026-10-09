@@ -176,6 +176,8 @@ export const bootLiveServer = async (
     timeoutMs = 60_000,
     mode = 'foreground',
     unsupervised = false,
+    env = {},
+    prepareRealm,
   }: {
     port?: number;
     timeoutMs?: number;
@@ -183,14 +185,25 @@ export const bootLiveServer = async (
     /** Force the server to resolve `dev` — nothing will respawn it. For the arm
      *  that asserts `update.apply` REFUSES rather than stranding the owner. */
     unsupervised?: boolean;
+    /** Overrides for this child only; never mutate the runner's environment. */
+    env?: NodeJS.ProcessEnv;
+    /** Seed synthetic records in the staged copy before the server opens it. */
+    prepareRealm?: (dbPath: string) => void | Promise<void>;
   } = {},
 ): Promise<LiveServer> => {
   const dir = stageRealm(config.seedDir, mode);
   const exe = placeBinary(dir, config.binary, config.sidecar);
 
   const dbPath = join(dir, 'verify.db');
+  try {
+    await prepareRealm?.(dbPath);
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
   const childEnv = {
     ...process.env,
+    ...env,
     ...(config.passphrase ? { RECUED_IDENTITY_PASSPHRASE: config.passphrase } : {}),
     // ⛔⛔ DECLARE A SUPERVISOR, BECAUSE THIS HARNESS IS ONE. `update.apply` now
     // refuses an apply that would exit a RUNNING server into nothing — under

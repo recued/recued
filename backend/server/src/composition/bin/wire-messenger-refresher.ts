@@ -55,9 +55,7 @@ export const getMessengerNotificationRefresher = (
     // Re-read per call, never captured: a boot→unlock transition must land
     // without rebuilding the refresher (the same rule the credential resolver
     // follows).
-    deps.keys && deps.keys.state() !== 'uninitialized'
-      ? deps.keys.keyProvider('connection')
-      : undefined;
+    deps.keys ? deps.keys.keyProvider('connection') : undefined;
 
   const refresher = createMessengerNotificationRefresher({
     now: () => Date.now(),

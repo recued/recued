@@ -34,7 +34,17 @@ export const RESOURCE_SAMPLE_MS = 15_000;
  *  have; higher would call a slow-but-working process idle. */
 export const CPU_EPSILON_MS = 10;
 
-/** Minimum RSS change (either direction) that counts as movement. One page. */
+/** Minimum RSS GROWTH that counts as movement. One page.
+ *
+ *  ⛔ GROWTH ONLY — a shrink is never movement (D-274 §4a, amended 2026-10-09).
+ *  Growing needs the tree to touch memory, which only running, or I/O landing for
+ *  it, does. Shrinking needs nothing from it: under memory pressure the OS pages
+ *  out, compresses or trims the resident set of a process that is not running at
+ *  all. Probed on darwin during a sweep: a SIGSTOPped child went 640 MB → 37.6 MB
+ *  in 25 steps, its CPU time unchanged across 1,026 samples. Windows trims a working
+ *  set the same way. One counted sample restarts the stall clock, so while a shrink
+ *  counted, a wedged op the OS kept trimming never flagged, on the memory-tight hosts
+ *  where the heavy tools hang. */
 export const RSS_EPSILON_BYTES = 4_096;
 
 /** Consecutive sampling failures before the source says so once. Three, so a
@@ -62,6 +72,9 @@ export interface TreeSample {
   rss_bytes: number;
   /** How many processes in the tree the sample found (telemetry / tests). */
   pids: number;
+  /** Which processes those were. A sample that carries it on both sides of a
+   *  comparison counts a change of membership as movement; see `sample()`. */
+  members?: readonly number[];
 }
 
 export type TreeSampler = (pid: number) => Promise<TreeSample | null>;
@@ -112,6 +125,7 @@ const foldTree = (pid: number, table: ProcessTable): TreeSample | null => {
   let cpu_ms = 0;
   let rss_bytes = 0;
   let pids = 0;
+  const members: number[] = [];
   const stack = [pid];
   const seen = new Set<number>();
   while (stack.length > 0) {
@@ -123,10 +137,20 @@ const foldTree = (pid: number, table: ProcessTable): TreeSample | null => {
       cpu_ms += st.cpu;
       rss_bytes += st.rss;
       pids += 1;
+      members.push(cur);
     }
     for (const c of table.children.get(cur) ?? []) stack.push(c);
   }
-  return { cpu_ms, rss_bytes, pids };
+  return { cpu_ms, rss_bytes, pids, members };
+};
+
+/** Whether two samples saw different processes in the tree. Unknown (either
+ *  side without `members`) is not a change. */
+const membershipChanged = (a: TreeSample, b: TreeSample): boolean => {
+  if (a.members === undefined || b.members === undefined) return false;
+  if (a.members.length !== b.members.length) return true;
+  const before = new Set(a.members);
+  return b.members.some((pid) => !before.has(pid));
 };
 
 const emptyTable = (): ProcessTable => ({ children: new Map(), stats: new Map() });
@@ -331,8 +355,15 @@ export class ResourceProgressSource implements ProgressSource {
         return;
       }
       const cpuAdvanced = current.cpu_ms - prev.cpu_ms >= this.cpuEpsilonMs;
-      const rssChanged = Math.abs(current.rss_bytes - prev.rss_bytes) >= this.rssEpsilonBytes;
-      this.moved = cpuAdvanced || rssChanged;
+      // Growth only: a shrink is the OS reclaiming, not the tree working (RSS_EPSILON_BYTES).
+      const rssGrew = current.rss_bytes - prev.rss_bytes >= this.rssEpsilonBytes;
+      // ⛔ A CHILD STARTING OR ENDING IS MOVEMENT. `ps` drops a reaped child's
+      // CPU and memory from the tree's sums, so a busy child exiting as the next
+      // starts makes both totals FALL: measured 2,760 ms and 3.84 GB down to 0
+      // and 3 MB across one exit (audit 2026-10-09). Growth-only reads that as
+      // stillness, and a tree that recycles a short-lived worker every window
+      // could be flagged while it worked. A wedged tree starts nothing new.
+      this.moved = cpuAdvanced || rssGrew || membershipChanged(prev, current);
     } catch {
       this.failures += 1;
       this.moved = true;

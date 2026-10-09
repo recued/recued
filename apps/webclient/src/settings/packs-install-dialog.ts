@@ -86,6 +86,10 @@ export const PACKS_DIALOG_DEPENDENCY_NEEDS_ATTR = 'data-recued-packs-dialog-depe
  *  with Install held) or `refusal` (under a refusal the preview did not foresee).
  *  Each link carries `data-pack-install-ref` = its `<publisher>.<pack>` ref. */
 export const PACKS_DIALOG_MISSING_PACKS_ATTR = 'data-recued-packs-dialog-missing-packs';
+/** D-311 § 5 — what the install would refuse with before writing anything, as
+ *  the preview names it (`install_refusal`); Install is held and points here.
+ *  Value: the refusal's code (`version_mismatch` when it needs a newer Recued). */
+export const PACKS_DIALOG_INSTALL_REFUSAL_ATTR = 'data-recued-packs-dialog-install-refusal';
 /** D-247 D15 — the "installing makes N recipes reachable" disclosure. Carries
  *  `data-count`, and each row carries `data-recipe` + `data-class`, so a test can
  *  assert the NAMES and the D10 class rather than a rendered sentence. */
@@ -444,6 +448,11 @@ export interface InstallPreview {
    *  install that need each. The install refuses while one is missing, so the
    *  dialog offers them first and holds Install. Absent from an older server. */
   readonly missing_packs?: ReadonlyArray<InstallMissingPack>;
+  /** D-311 § 5 — what the install would refuse with before writing anything: a
+   *  pack it writes needs a newer Recued (`version_mismatch`), or does not pass
+   *  its checks. The dialog says it and holds Install. Absent from an older
+   *  server, and when nothing would be refused. */
+  readonly install_refusal?: { readonly code: string; readonly message: string };
   /** D-315 §5.2 — the templates the recipes bring, and where one reads the
    *  same mail as a template already on. Absent from an older server. */
   readonly mail_templates?: readonly MailTemplateInstallPreview[];
@@ -544,6 +553,27 @@ export const missingPacksToInstallFirst = (
   return out;
 };
 
+/** The refusal the preview foresees, or null. A malformed answer is dropped, as
+ *  the other parts of the preview are: it must not take the dialog down. */
+export const installRefusalFromPreview = (
+  preview: InstallPreview | undefined,
+): { code: string; message: string } | null => {
+  const refusal: unknown = preview?.install_refusal;
+  if (refusal === null || typeof refusal !== 'object') return null;
+  const { code, message } = refusal as { code?: unknown; message?: unknown };
+  return typeof code === 'string' && code.length > 0 && typeof message === 'string' && message.trim().length > 0
+    ? { code, message: message.trim() }
+    : null;
+};
+
+/** What the owner reads for it: the server's own words, which name the pack and
+ *  say what to do. A "needs a newer version of Recued" refusal reads as it is;
+ *  a failed check gets a lead, since its words are the validator's. */
+export const installRefusalText = (refusal: { code: string; message: string }): string => {
+  const detail = refusal.message.replace(/^packs\.install:\s*/, '');
+  return refusal.code === 'version_mismatch' ? detail : `This Pack cannot be installed. ${detail}`;
+};
+
 /** The packs a refused install says to install first (`failure.missing_packs`).
  *  ⛔ Read from the typed field, never from the message: the message names only
  *  the first, and its wording is the owner's to read, not a contract. */
@@ -584,6 +614,7 @@ export const missingPacksText = (
 
 /** The id the held Install button points at (`aria-describedby`). */
 const MISSING_PACKS_NOTICE_ID = 'packs-dialog-missing-packs';
+const INSTALL_REFUSAL_NOTICE_ID = 'packs-dialog-install-refusal';
 
 /** The packs to install first, each with a "Get <pack>" link to its own page,
  *  where its own dialog asks what it may do.
@@ -1302,6 +1333,20 @@ export const renderPacksInstallDialog = (
       container.appendChild(line);
     }
   }
+  // D-311 § 5 — what the install would refuse with before writing anything (a
+  // pack it needs a newer Recued for, or one that does not pass its checks):
+  // said before the owner chooses anything, and first, since nothing else here
+  // can get past it. Install is held.
+  const refusal = installRefusalFromPreview(props.installPreview);
+  if (refusal !== null) {
+    const notice = doc.createElement('p');
+    notice.id = INSTALL_REFUSAL_NOTICE_ID;
+    notice.className = 'packs-dialog-warning';
+    notice.setAttribute('role', 'alert');
+    notice.setAttribute(PACKS_DIALOG_INSTALL_REFUSAL_ATTR, refusal.code);
+    notice.textContent = `⚠ ${installRefusalText(refusal)}`;
+    container.appendChild(notice);
+  }
   // The packs this install needs and does not bring in: said before the owner
   // chooses anything, since the install refuses without them. Install is held.
   const missingFirst = missingPacksToInstallFirst(props.installPreview);
@@ -1854,6 +1899,11 @@ export const renderPacksInstallDialog = (
     installBtn.setAttribute('aria-busy', 'true');
   } else if (props.deleting) {
     installBtn.disabled = true;
+  } else if (refusal !== null) {
+    // ⛔ D-311 § 5 — the install would refuse this before writing anything,
+    // whatever the owner chooses here; the notice at the top says why.
+    installBtn.disabled = true;
+    installBtn.setAttribute('aria-describedby', INSTALL_REFUSAL_NOTICE_ID);
   } else if (missingFirst.length > 0) {
     // ⛔ The install refuses while a pack it needs is missing, whatever else the
     // owner chooses here; the notice at the top says which, with a link to each.

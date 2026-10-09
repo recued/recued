@@ -24,6 +24,7 @@
 
 import {
   getVendorProvider,
+  localhostOriginForNumberedLoopback,
   vendorHasEngagement,
   CONNECTION_INBOUND_SECRET_FIELDS,
   OAUTH_CLOUD_CALLBACK_URL,
@@ -56,6 +57,7 @@ import {
   isCompleteMatchPatternRow,
   isHalfFilledMatchPatternRow,
   resolveConnectionSchema,
+  resolveVendorSchema,
   type ConnectionField,
   type ConnectionFormValues,
   type ConnectionSchema,
@@ -2269,6 +2271,54 @@ const renderConnectionFormValidation = (
   `;
 };
 
+/** A BUILT-IN provider's form open at a numbered loopback address (`127.0.0.1`
+ *  or `[::1]`, which the server's start-up log prints): say to connect from
+ *  `localhost`, or from app.recued.com. The printed callback follows the page,
+ *  and HubSpot and Microsoft will not register an `http` one at a number.
+ *  app.recued.com needs the server's own HTTPS address, because a vendor's code
+ *  finishes at `<server>/oauth/complete` from there.
+ *
+ *  Empty for every other page, and for a custom OAuth app: its owner registered
+ *  whatever this page prints, and their provider may take it.
+ *
+ *  A provider whose form has a way in with no redirect URL at all (HubSpot's
+ *  Service Key) gets that named too, as its option reads in the form. */
+const renderLoopbackNameSwitch = (dialog: ConnectionsDialogState): string => {
+  if (dialog.vendor === null || getVendorProvider(dialog.vendor) === null) return '';
+  if (dialog.oauthCallbackUrl === undefined) return '';
+  let page: URL;
+  try {
+    page = new URL(dialog.oauthCallbackUrl);
+  } catch {
+    return '';
+  }
+  const localhost = localhostOriginForNumberedLoopback(page.origin);
+  if (localhost === null) return '';
+  const noRedirect = noRedirectAlternative(dialog.vendor);
+  return `<p class="connections-oauth-callback-switch" data-oauth-callback-switch>
+    <strong>Connect from <code>${e(localhost)}/webclient</code> instead.</strong>
+    Providers such as HubSpot and Microsoft will not take a redirect URL at a number like
+    <code>${e(page.hostname)}</code>. <code>localhost</code> is this same server under another name.
+    Is that address new to this browser? Then pair it once, like a new device.
+    Or connect from app.recued.com, if your server has its own HTTPS address, such as a Pro address.
+    ${noRedirect === null
+      ? ''
+      : `Or choose <strong data-oauth-no-redirect-option>${e(noRedirect.option)}</strong> under ${e(noRedirect.field)}: it needs no redirect URL.`}
+    You connect once. After that, the connection works from any address.
+  </p>`;
+};
+
+/** The vendor form's own way in WITHOUT a redirect URL, named as its option
+ *  and its field read on screen: any `auth.type` option other than the OAuth
+ *  sign-in. HubSpot's Service Key today; null where sign-in is the only way. */
+const noRedirectAlternative = (vendor: string): { option: string; field: string } | null => {
+  const field = resolveVendorSchema(vendor)
+    ?.fields.find((candidate) => candidate.key === 'auth.type');
+  const value = field?.options?.find((option) => option !== 'oauth2_refresh');
+  if (field === undefined || value === undefined) return null;
+  return { option: field.optionLabels?.[value] ?? value, field: field.label };
+};
+
 /** D-129 P1.3 — render the OAuth dance affordance for vendor flows.
  *  Surfaces three states inline above the Save button:
  *   - idle (no refresh_token yet): primary "Authorize with <Vendor>"
@@ -2414,6 +2464,7 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
           <strong>Add this redirect URL to your provider app</strong>
           <span>Copy it exactly ${'—'} character for character ${'—'} into the app's redirect / callback URI list, then come back here and Authorize.</span>
         </div>
+        ${renderLoopbackNameSwitch(dialog)}
         ${dialog.oauthCallbackAlternateUrl !== undefined
           ? `<p class="connections-oauth-callback-alt">⚠ This URL belongs to the address you are on right now (<code>${e(new URL(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL).origin)}</code>). If you also open Recued at <code>${e(new URL(dialog.oauthCallbackAlternateUrl).origin)}</code>, add <code>${e(dialog.oauthCallbackAlternateUrl)}</code> too ${'—'} <strong>you cannot get one from the other by swapping the domain</strong>, because the paths are different as well. Providers accept several redirect URLs, so adding both is the safe move.</p>`
           : ''}
@@ -2579,6 +2630,7 @@ const renderConnectionSetupGuideHandoff = (
       <li>
         <strong>Register Recued's exact callback URL</strong>
         <p>Paste this as an allowed redirect or callback URI, exactly as shown ${'—'} do not add a trailing slash.</p>
+        ${renderLoopbackNameSwitch(dialog)}
         <div class="connections-setup-guide-copy-value">
           <code id="connection-setup-guide-callback">${e(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL)}</code>
           ${button({

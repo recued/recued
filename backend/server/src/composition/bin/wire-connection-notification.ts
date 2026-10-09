@@ -71,15 +71,15 @@ export const composeConnectionNotification = (
     };
   }
 
-  // D-125 P3.2 — the connection sub-DEK provider is wired only when
-  // the encryption substrate has actually initialized. Locked / fresh
-  // installs leave it undefined; the connection adapter's
-  // `decodeAuthFromStorage` then falls through to the plaintext branch
-  // for the lifetime of the locked window. Auth re-encrypts on first
-  // upsert after unlock.
-  const keyProvider = (keys && keys.state() !== 'uninitialized')
-    ? keys.keyProvider('connection')
-    : undefined;
+  // The connection sub-DEK provider, whenever a key manager exists. ⛔ It
+  // was wired only once the substrate had initialized (D-125 P3.2's
+  // plaintext window, "re-encrypts on first upsert after unlock"), but the
+  // check ran at COMPOSE time: a new server's first pairing unlocks the
+  // vault in-process, so the whole first session stayed in plaintext mode,
+  // and a row only ever read was never re-encrypted — it failed AEAD after
+  // the next restart (driven live 2026-10-08). The closure re-reads state
+  // per call; until unlock, decode/encode throw `locked`.
+  const keyProvider = keys ? keys.keyProvider('connection') : undefined;
 
   const notificationDeps: ConnectionNotificationHandlerDeps = {
     decodeAuth: (row) =>

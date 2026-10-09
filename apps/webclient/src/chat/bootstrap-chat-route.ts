@@ -4,6 +4,7 @@ import { createConversationFilesView, type ConversationFilesCaller } from './con
 import { CHAT_DELIVERY_STYLES, createChatDeliveryView, type ChatDeliveryClient } from './delivery-view.js';
 import { createMessengerSessionList, CHAT_MESSENGER_LIST_STYLES } from './messenger-session-list.js';
 import { createHistoryFilters, HISTORY_FILTER_ATTR, CHAT_HISTORY_FILTER_STYLES } from './history-filters.js';
+import { readMailWorkChatPrompt } from '../mail/mail-work-investigation.js';
 import {
   DAY_MS,
   allDayEventDays,
@@ -171,6 +172,7 @@ export const CHAT_ROUTE_STYLES_MARKER = 'data-recued-chat-route-styles';
 export const CHAT_ROUTE_HOST_ATTR = 'data-recued-chat-route';
 export const CHAT_ROUTE_HEADING_ATTR = 'data-recued-chat-route-heading';
 export const CHAT_ROUTE_SESSION_LIST_ATTR = 'data-recued-chat-route-session-list';
+export const CHAT_ROUTE_HISTORY_TOGGLE_ATTR = 'data-recued-chat-route-history-toggle';
 export const CHAT_ROUTE_SESSION_ROW_ATTR = 'data-recued-chat-route-session-row';
 /** Per-row status: `opening` | `working` | `answered`. A chat that is running
  *  a turn without you, or that answered while you were elsewhere. */
@@ -633,6 +635,17 @@ export const CHAT_ROUTE_CHROME_STYLES = `
   grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
   gap: 14px;
 }
+[${CHAT_ROUTE_HOST_ATTR}] .chat-route-header button[${CHAT_ROUTE_HISTORY_TOGGLE_ATTR}] { display: none; }
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-filter-panel > summary {
+  cursor: pointer;
+  min-height: var(--wc-control-h, 38px);
+  align-content: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-chat-mail-work-handoff] { display: grid; gap: 8px; white-space: normal; }
+[data-chat-mail-work-handoff] p { margin: 0; }
+[data-chat-mail-work-handoff] > details > summary { cursor: pointer; min-height: var(--wc-control-h, 38px); align-content: center; }
 [${CHAT_ROUTE_SESSION_LIST_ATTR}],
 [${CHAT_ROUTE_THREAD_ATTR}] {
   border: 1px solid var(--border);
@@ -2591,13 +2604,24 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
 }
 @media (max-width: 820px) {
   [${CHAT_ROUTE_HOST_ATTR}] .chat-route-header {
-    display: grid;
+    display: flex;
+    justify-content: space-between;
   }
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-route-header button[${CHAT_ROUTE_HISTORY_TOGGLE_ATTR}] { display: inline-flex; }
   [${CHAT_ROUTE_HOST_ATTR}] .chat-route-shell {
     grid-template-columns: 1fr;
   }
   [${CHAT_ROUTE_SESSION_LIST_ATTR}] {
-    max-height: min(420px, 52vh);
+    display: none;
+    max-height: none;
+  }
+  [${CHAT_ROUTE_SESSION_LIST_ATTR}], [${CHAT_ROUTE_THREAD_ATTR}] {
+    height: min(720px, calc(100dvh - 140px - var(--wc-connection-banner-h, 0px)));
+  }
+  [${CHAT_ROUTE_HOST_ATTR}][data-history-open="true"] [${CHAT_ROUTE_SESSION_LIST_ATTR}] { display: flex; }
+  [${CHAT_ROUTE_HOST_ATTR}][data-history-open="true"] [${CHAT_ROUTE_THREAD_ATTR}] { display: none; }
+  [${CHAT_ROUTE_THREAD_ATTR}][data-empty="true"] {
+    overflow-y: auto;
   }
   [${CHAT_ROUTE_HISTORY_LANDING_ATTR}] {
     min-height: 300px;
@@ -2607,12 +2631,12 @@ button.chat-composer-attachment-name, .chat-message-file-preview {
     /* ⛔ ONE COLUMN UNTIL IT DOES NOT FIT. Four cards stacked on a 390x844
        phone made the hero 964px tall and pushed the composer 8px past the
        fold — a first-run screen whose message box you cannot see. Three or
-       fewer keep the shipped single column; four wrap to 2x2 here too. */
+       four cards use two columns; one or two stay in one column. */
     grid-template-columns: repeat(var(--activation-cols-narrow, 1), minmax(0, 1fr));
   }
   [${CHAT_ROUTE_HOST_ATTR}] .chat-thread-hero {
     align-content: start;
-    padding: 18px 14px;
+    padding: 14px;
   }
   [${CHAT_ROUTE_SOURCE_HANDOFF_ATTR}] {
     padding: 17px 15px 16px 18px;
@@ -3632,6 +3656,9 @@ export const bootstrapChatRoute = (
   // soon as the owner opens a conversation or explicitly starts a draft;
   // ordinary re-renders must not bounce an in-progress draft back into it.
   let historyLandingActive = opts.initialLanding === 'history';
+  let mobileHistoryOpen = false;
+  let historyFiltersOpen = !(doc.defaultView?.matchMedia?.('(max-width: 820px)').matches ?? false);
+  const historyPanelId = `recued-chat-history-${crypto.randomUUID()}`;
   let pendingRecoveryDraft =
     opts.initialRecoveryDraft !== undefined
     && (opts.initialRecoveryDraft.text.trim().length > 0 || opts.initialRecoveryDraft.replyTo !== undefined || (opts.initialRecoveryDraft.attachments?.length ?? 0) > 0)
@@ -4951,6 +4978,7 @@ export const bootstrapChatRoute = (
   // after the swap — a collapse during streaming re-expands on the
   // authoritative row), survives re-renders, dies with the tab.
   const collapsedActivity = new Set<string>();
+  const expandedMailWorkContexts = new Set<string>();
 
   const renderActivity = (
     host: HTMLElement,
@@ -5086,7 +5114,32 @@ export const bootstrapChatRoute = (
       // Record citations become in-app links; everything else stays text.
       renderAnswerText(doc, content, message.content);
     } else {
-      content.textContent = message.content;
+      const handoff = message.role === 'user' ? readMailWorkChatPrompt(message.content) : null;
+      if (handoff === null) content.textContent = message.content;
+      else {
+        content.setAttribute('data-chat-mail-work-handoff', '');
+        const purpose = doc.createElement('p');
+        purpose.textContent = handoff.purpose;
+        content.appendChild(purpose);
+        const link = doc.createElement('a');
+        link.href = handoff.href;
+        link.textContent = 'Open followed work';
+        content.appendChild(link);
+        const context = doc.createElement('details');
+        if (expandedMailWorkContexts.has(message.id)) context.setAttribute('open', '');
+        context.addEventListener('toggle', () => {
+          if (!context.isConnected) return;
+          if (context.open) expandedMailWorkContexts.add(message.id);
+          else expandedMailWorkContexts.delete(message.id);
+        });
+        const summary = doc.createElement('summary');
+        summary.textContent = 'Context supplied to Recued';
+        context.appendChild(summary);
+        const raw = doc.createElement('pre');
+        raw.textContent = message.content;
+        context.appendChild(raw);
+        content.appendChild(context);
+      }
     }
     row.appendChild(content);
     if (message.attachments?.length) {
@@ -6661,7 +6714,10 @@ export const bootstrapChatRoute = (
     button.setAttribute('aria-label', action.accessibleLabel);
     button.setAttribute('title', action.title);
     button.textContent = action.label;
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      // WebKit does not focus a pointer-activated button. Modal recovery
+      // still belongs to the command that opened it.
+      if (event.isTrusted) button.focus?.({ preventScroll: true });
       beforeRun?.();
       action.run();
     });
@@ -7242,7 +7298,10 @@ export const bootstrapChatRoute = (
     button.type = 'button';
     button.setAttribute(CHAT_ROUTE_ACTIVATION_ACTION_ATTR, intent);
     button.textContent = label;
-    button.addEventListener('click', onClick);
+    button.addEventListener('click', (event) => {
+      if (event.isTrusted) button.focus?.({ preventScroll: true });
+      onClick();
+    });
     return button;
   };
 
@@ -7363,11 +7422,11 @@ export const bootstrapChatRoute = (
       '--activation-cols',
       String(cardCount >= 4 ? 2 : Math.max(cardCount, 1)),
     );
-    // The narrow breakpoint stacks; four cards do not fit stacked, so they wrap
+    // The narrow breakpoint stacks; three or four cards do not fit stacked, so they wrap
     // there as well rather than pushing the composer off the screen.
     grid.style?.setProperty?.(
       '--activation-cols-narrow',
-      String(cardCount >= 4 ? 2 : 1),
+      String(cardCount >= 3 ? 2 : 1),
     );
     activation.appendChild(grid);
     return activation;
@@ -8286,6 +8345,7 @@ export const bootstrapChatRoute = (
 
   const render = (): void => {
     if (disposed) return;
+    historyFiltersOpen = routeRoot.querySelector?.<HTMLDetailsElement>('.chat-history-filter-panel')?.open ?? historyFiltersOpen;
     const sessionId = state.thread.session?.id ?? null;
     const previousScroller = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_MESSAGES_ATTR}]`,
@@ -8310,6 +8370,8 @@ export const bootstrapChatRoute = (
     openHistoryActions = null;
     openComposerActions = null;
     clearChildren(routeRoot);
+    const showHistory = mobileHistoryOpen || pendingDraftGuard !== null;
+    routeRoot.setAttribute('data-history-open', showHistory ? 'true' : 'false');
 
     const header = doc.createElement('header');
     header.className = 'chat-route-header';
@@ -8318,6 +8380,27 @@ export const bootstrapChatRoute = (
     heading.setAttribute(CHAT_ROUTE_HEADING_ATTR, '');
     heading.textContent = 'Chat';
     header.appendChild(heading);
+    const historyToggle = doc.createElement('button');
+    historyToggle.type = 'button';
+    historyToggle.className = 'wc-button';
+    historyToggle.setAttribute(CHAT_ROUTE_HISTORY_TOGGLE_ATTR, '');
+    historyToggle.setAttribute('aria-controls', historyPanelId);
+    historyToggle.setAttribute('aria-expanded', showHistory ? 'true' : 'false');
+    historyToggle.textContent = showHistory ? 'Back to chat' : 'Chats';
+    historyToggle.addEventListener('click', () => {
+      if (pendingDraftGuard !== null) { focusDraftGuard(); return; }
+      if (historyActionInFlight()) { focusHistoryActionOwner(); return; }
+      mobileHistoryOpen = !showHistory;
+      render();
+      if (mobileHistoryOpen) {
+        const target = routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`)
+          ?? routeRoot.querySelector<HTMLElement>(`[${CHAT_ROUTE_NEW_SESSION_ATTR}]`);
+        target?.focus({ preventScroll: true });
+      } else {
+        focusOpenThread();
+      }
+    });
+    header.appendChild(historyToggle);
     routeRoot.appendChild(header);
     // ⛔ Built here, placed in the conversation's pane below — just above its
     // composer. It sat between this header and both panes, whose height is
@@ -8377,6 +8460,7 @@ export const bootstrapChatRoute = (
     const sessions = doc.createElement('aside');
     messengerList.beginRender();
     sessions.setAttribute(CHAT_ROUTE_SESSION_LIST_ATTR, '');
+    sessions.id = historyPanelId;
     sessions.setAttribute('aria-label', 'Chat history');
     const historyHead = doc.createElement('div');
     historyHead.className = 'chat-history-head';
@@ -8421,6 +8505,7 @@ export const bootstrapChatRoute = (
       actions.className = 'chat-history-guard-actions';
       const keepWriting = (): void => {
         pendingDraftGuard = null;
+        mobileHistoryOpen = false;
         render();
         focusComposer(true);
       };
@@ -8495,9 +8580,16 @@ export const bootstrapChatRoute = (
       const browse = doc.createElement('div');
       browse.className = 'chat-history-browse';
       sessions.appendChild(browse);
+      const filterPanel = doc.createElement('details');
+      filterPanel.className = 'chat-history-filter-panel';
+      if (historyFiltersOpen) filterPanel.setAttribute('open', '');
+      const filterSummary = doc.createElement('summary');
+      filterSummary.textContent = 'Filters';
+      filterPanel.appendChild(filterSummary);
       const filterControls = doc.createElement('div');
       historyFilters.mount(filterControls);
-      browse.appendChild(filterControls);
+      filterPanel.appendChild(filterControls);
+      browse.appendChild(filterPanel);
 
       const results = doc.createElement('div');
       results.className = 'chat-history-results';
@@ -8807,6 +8899,7 @@ export const bootstrapChatRoute = (
       const sessionId = state.thread.session?.id;
       if (!conversationFiles || !sessionId) return null;
       const button = doc.createElement('button'); button.type = 'button'; button.textContent = 'Files';
+      button.className = 'wc-button';
       button.disabled = openingSessionId !== null;
       button.setAttribute('data-chat-conversation-files-open', '');
       button.setAttribute('aria-haspopup', 'dialog');
@@ -10403,10 +10496,12 @@ export const bootstrapChatRoute = (
       loadingNewer = false;
       historyLandingActive = false;
       if (messageId === undefined) {
+        mobileHistoryOpen = false;
         render();
         if (delivery) void focusMessengerDelivery(sessionId); else focusOpenThread();
       }
       else {
+        mobileHistoryOpen = false;
         requestedMessageId = messageId;
         requestedPlanId = null;
         landingTargetReady = true;
@@ -10453,6 +10548,7 @@ export const bootstrapChatRoute = (
         openingSessionId = null;
         openingHistoryMessageId = null;
         if (!disposed) {
+          if (opened) mobileHistoryOpen = false;
           render();
           if (opened) {
             if (messageId !== undefined && highlightedMessageId !== null) focusChatMessage(messageId);
@@ -10778,6 +10874,8 @@ export const bootstrapChatRoute = (
       && composerAttachments.rows().length === 0
       && composerReply === null
     ) {
+      mobileHistoryOpen = false;
+      render();
       focusComposer(true, 'start');
       return;
     }
@@ -10794,6 +10892,7 @@ export const bootstrapChatRoute = (
     loadingOlder = false;
     loadingNewer = false;
     historyLandingActive = false;
+    mobileHistoryOpen = false;
     pendingDraftGuard = null;
     sessionAction = null;
     retireConnectedSourceHandoff(true);

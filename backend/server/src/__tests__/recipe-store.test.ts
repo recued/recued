@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { RecipeDefinition } from '@recued/contracts';
 import { RecipePackOwnershipError, createRecipeStore } from '../recipe-store.js';
@@ -78,6 +78,53 @@ describe('createRecipeStore — bundled directory loading', () => {
     const store = createRecipeStore(bundleDir);
     expect(store.get('bundled-a')).not.toBeNull();
     expect(store.getStored('bundled-a')).toBeNull();
+  });
+
+  // A bundled recipe is read when first asked for, one file per lookup
+  // (`bundledRecipes`), and a listing scans them all. These pin what that must
+  // not change: which recipe an id resolves to, and that it stays one object.
+  it('the file named for an id wins over others claiming it, looked up before or after a listing', () => {
+    writeFileSync(join(bundleDir, 'twin.json'), JSON.stringify(mkRecipe('twin', 2)));
+    writeFileSync(join(bundleDir, 'aaa-copy.json'), JSON.stringify(mkRecipe('twin', 1)));
+    writeFileSync(join(bundleDir, 'zzz-copy.json'), JSON.stringify(mkRecipe('twin', 3)));
+    expect(createRecipeStore(bundleDir).get('twin')?.version).toBe(2);
+    const listedFirst = createRecipeStore(bundleDir);
+    expect(listedFirst.ids()).toEqual(['twin']);
+    expect(listedFirst.get('twin')?.version).toBe(2);
+  });
+
+  it('a recipe handed out before the directory is listed is the same object after', () => {
+    writeFileSync(join(bundleDir, 'kept.json'), JSON.stringify(mkRecipe('kept')));
+    writeFileSync(join(bundleDir, 'other.json'), JSON.stringify(mkRecipe('other')));
+    const store = createRecipeStore(bundleDir);
+    const first = store.get('kept');
+    expect(store.get('KEPT')).toBeNull();
+    expect(store.size()).toBe(2);
+    expect(store.get('kept')).toBe(first);
+    expect(store.getBundled('kept')).toBe(first);
+  });
+
+  it('an id whose own file is malformed, or holds another recipe, is still answered by the scan', () => {
+    writeFileSync(join(bundleDir, 'found.json'), '{ not valid json');
+    writeFileSync(join(bundleDir, 'elsewhere.json'), JSON.stringify(mkRecipe('found', 4)));
+    writeFileSync(join(bundleDir, 'liar.json'), JSON.stringify(mkRecipe('truth', 5)));
+    const store = createRecipeStore(bundleDir);
+    expect(store.get('found')?.version).toBe(4);
+    expect(store.get('liar')).toBeNull();
+    expect(store.get('truth')?.version).toBe(5);
+  });
+
+  it('⛔ an id that could leave the directory is never read as a path', () => {
+    // A file beside the directory whose recipe_id IS the escaping id: read by name,
+    // it would match its own id and be served as a bundled recipe.
+    const name = `${basename(bundleDir)}-outside`;
+    const outside = join(bundleDir, '..', `${name}.json`);
+    writeFileSync(outside, JSON.stringify(mkRecipe(`../${name}`)));
+    try {
+      expect(createRecipeStore(bundleDir).get(`../${name}`)).toBeNull();
+    } finally {
+      rmSync(outside, { force: true });
+    }
   });
 });
 

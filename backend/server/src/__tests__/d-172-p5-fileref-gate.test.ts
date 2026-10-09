@@ -259,6 +259,35 @@ describe('D-172 P5 — ai-* file_ref read is policy-gated for data-file-read', (
     expect(passedInput['llm.data']).toBe('[image: receipt.png]');
   });
 
+  it('⛔ a TEXT file reaches the model as a text part, through the same gated read', async () => {
+    // A `document` part demands a model that declares document input, which
+    // nothing in the product sets: every shipped text file_ref (OCR, docling,
+    // markitdown, whisper output) failed with AI_MODALITY_UNSUPPORTED before.
+    llmMocks.executeLLM.mockClear();
+    const recipe = buildRecipe(FILE_REF);
+    const { deps, dataFileReadSpy } = makeHarness(recipe, buildSnapshot(['ai-summarize', 'data-file-read']));
+    dataFileReadSpy.mockResolvedValueOnce({
+      record_id: FILE_REF.file_ref,
+      bytes_b64: Buffer.from('# Lease\nRent: 1,200 a month', 'utf8').toString('base64'),
+      mime_type: 'text/markdown',
+      filename: 'lease.md',
+      size_bytes: 27,
+      blob_hash: 'deadbeef',
+    });
+
+    await handleExecute(deps, {
+      recipe_id: recipe.recipe_id,
+      trigger_source: 'mcp',
+      execution_source: mcpSource,
+      contract_snapshot: buildSnapshot(['ai-summarize', 'data-file-read']),
+    });
+
+    expect(dataFileReadSpy).toHaveBeenCalledTimes(1);
+    const passedInput = (llmMocks.executeLLM.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(passedInput['llm.content_parts']).toEqual([{ type: 'text', text: '# Lease\nRent: 1,200 a month' }]);
+    expect(passedInput['llm.data']).toBe('[text: lease.md]');
+  });
+
   it('DENY (dynamic ref) — refuses a `{{config.*}}`-resolved file ref when data-file-read is DENIED; proves the probe resolves before the file-ref test', async () => {
     // The gateway sees RAW input, so a dynamic `llm.data: '{{context.thefile}}'`
     // is a template STRING at the probe. The probe must resolve it against the

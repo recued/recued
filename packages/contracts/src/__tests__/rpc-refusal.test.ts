@@ -1,11 +1,23 @@
 /** D-313 — how a server handler's refusal is named: the table, then the status. */
 
 import { describe, expect, it } from 'vitest';
-import { ERR, recipeCodeForRpcRefusal, recipeCodeForRpcStatus, RPC_REFUSAL_RECIPE_CODES } from '../index.js';
+import {
+  ERR, recipeCodeForRpcRefusal, recipeCodeForRpcStatus, RECORDS_REFUSAL_RECIPE_CODES, RPC_REFUSAL_RECIPE_CODES,
+} from '../index.js';
 
 describe('recipeCodeForRpcRefusal', () => {
   it('every table entry is a recipe code', () => {
     expect(Object.values(RPC_REFUSAL_RECIPE_CODES).filter((code) => !Object.hasOwn(ERR, code))).toEqual([]);
+    expect(Object.values(RECORDS_REFUSAL_RECIPE_CODES).filter((code) => !Object.hasOwn(ERR, code))).toEqual([]);
+  });
+
+  it('⛔ names every Records store refusal, which used to fall through to NETWORK_ERROR', () => {
+    expect(recipeCodeForRpcRefusal('records_conflict', undefined)).toBe('CONFLICT');
+    expect(recipeCodeForRpcRefusal('records_not_found', undefined)).toBe('NOT_FOUND');
+    expect(recipeCodeForRpcRefusal('records_invalid', undefined)).toBe('BAD_INPUT');
+    expect(recipeCodeForRpcRefusal('records_unauthorized', undefined)).toBe('NOT_AUTHORIZED');
+    // Thirteen codes, one per member of the closed `RecordsErrorCode` union.
+    expect(Object.keys(RECORDS_REFUSAL_RECIPE_CODES)).toHaveLength(13);
   });
 
   it('reads the table before the status', () => {

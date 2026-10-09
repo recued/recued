@@ -16,6 +16,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import { createConnection } from 'node:net';
 import { delimiter as pathDelimiter, join } from 'node:path';
+import { envForOthers } from '../../../supervision/env-for-others.js';
 
 import type {
   CheckerContext,
@@ -47,6 +48,8 @@ export const defaultSpawnWithTimeout: CheckerSpawnFn = (argv, timeoutMs) =>
       child = nodeSpawn(cmd, rest, {
         shell: false,
         stdio: ['ignore', 'ignore', 'ignore'],
+        // Never the server's environment whole: see `supervision/env-for-others.ts`.
+        env: envForOthers(),
       });
     } catch {
       resolve({ exit_code: -1 });

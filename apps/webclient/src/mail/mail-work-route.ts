@@ -51,8 +51,8 @@ const STYLES = `
 .mail-work textarea { min-height:84px; resize:vertical; }
 .mail-work a { color:var(--rx-accent, var(--accent, #0e7490)); }
 .mail-work button { padding:8px 14px; cursor:pointer; border:1px solid var(--border); border-radius:6px; background:var(--surface, white); color:inherit; font:inherit; }
-.mail-work button[data-work-action=explore], .mail-work button[data-work-action=create] { color:white; background:var(--rx-accent, var(--accent, #0e7490)); border-color:transparent; }
-.mail-work button[data-work-action=confirm-delete] { color:white; background:var(--danger, #b84138); border-color:transparent; }
+.mail-work button[data-work-action=explore], .mail-work button[data-work-action=create] { color:var(--on-accent); background:var(--accent, #0e7490); border-color:transparent; }
+.mail-work button[data-work-action=confirm-delete] { color:var(--on-danger); background:var(--danger, #b84138); border-color:transparent; }
 .mail-work button:hover:not(:disabled) { filter:brightness(.96); } .mail-work button:disabled { cursor:wait; opacity:.6; }
 .mail-work .work-card { border:1px solid var(--border); border-radius:8px; padding:16px; margin:10px 0; overflow-wrap:anywhere; }
 .mail-work .work-card a { text-decoration:underline; } .mail-work .work-meta { display:block; margin-top:5px; }

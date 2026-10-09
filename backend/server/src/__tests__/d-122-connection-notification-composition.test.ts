@@ -294,13 +294,19 @@ describe('composeConnectionNotification', () => {
     );
   });
 
-  it('does not request the connection key when keys are uninitialized, but decodeAuth remains callable', async () => {
+  it('hands decodeAuth the connection key provider even while keys are uninitialized', async () => {
+    // ⛔ This used to assert NO provider while uninitialized (D-125 P3.2's
+    // plaintext window). The check ran at COMPOSE time, and a new server's
+    // first pairing unlocks the vault in-process, so the whole first session
+    // read and wrote base64 JSON — rows that then failed AEAD after a restart
+    // (driven live 2026-10-08). The provider's closure re-reads state per call.
     const {
       compose,
       decodedAuth,
       decodeAuthFromStorageMock,
     } = await importComposerWithHelperMocks();
-    const keys = keyManager('uninitialized');
+    const provider = vi.fn(() => null);
+    const keys = keyManager('uninitialized', provider);
 
     const bundle = compose(buildDeps({ keys }));
     const out = await bundle.notificationDeps?.decodeAuth(buildRow({
@@ -308,12 +314,11 @@ describe('composeConnectionNotification', () => {
     }));
 
     expect(out).toBe(decodedAuth);
-    expect(keys.state).toHaveBeenCalledTimes(1);
-    expect(keys.keyProvider).not.toHaveBeenCalled();
+    expect(keys.keyProvider).toHaveBeenCalledWith('connection');
     expect(decodeAuthFromStorageMock.mock.calls[0]).toEqual([
       'stored-auth',
       { kind: 'notification', name: 'alerts' },
-      undefined,
+      provider,
     ]);
   });
 
@@ -323,7 +328,6 @@ describe('composeConnectionNotification', () => {
 
     composeConnectionNotification(buildDeps({ keys }));
 
-    expect(keys.state).toHaveBeenCalledTimes(1);
     expect(keys.keyProvider).toHaveBeenCalledTimes(1);
     expect(keys.keyProvider).toHaveBeenCalledWith('connection');
   });

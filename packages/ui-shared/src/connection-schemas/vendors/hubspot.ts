@@ -4,12 +4,16 @@
  *  `config.vendor` discriminator locked to `'hubspot'`. Two auth modes,
  *  picked by `auth.type` (the `showWhen` predicates reveal only the chosen
  *  mode's fields + drop the other's from the payload):
- *    - `bearer` (DEFAULT, recommended) — a HubSpot **Service Key** (Settings
- *      → Integrations → Service Keys), HubSpot's recommended credential for
- *      data-only integrations: paste one field, no OAuth app. Static Bearer.
- *    - `oauth2_refresh` — a BYO OAuth app (client_id + client_secret from the
- *      HubSpot Developer Portal). The OAuth code-exchange flow (P1.2) fills
- *      `auth.refresh_token`; until then paste a refresh token out-of-band.
+ *    - `bearer` (DEFAULT, recommended) — a HubSpot **Service Key**
+ *      (Development → Keys → Service keys), HubSpot's recommended credential
+ *      for data-only integrations: paste one field, no OAuth app, no redirect
+ *      URL, so it works from any page address. Static Bearer.
+ *    - `oauth2_refresh` — a BYO OAuth app. HubSpot's developer platform makes
+ *      one only through its CLI (`hs project create`), which is why it is the
+ *      advanced path. The in-app Authorize flow fills `auth.refresh_token`.
+ *
+ *  `auth.type` is the onboarding selector: each mode gets its own setup
+ *  guide (`HUBSPOT_ONBOARDING`), as the messenger forms do for theirs.
  *
  *  Fields with `readonly: true` aren't editable in the form but are
  *  still projected into the rpc payload — this lets the schema lock
@@ -21,10 +25,16 @@
 
 import {
   HUBSPOT_API_BASE,
+  HUBSPOT_OAUTH_SCOPES,
   HUBSPOT_OAUTH_TOKEN_URL,
 } from '@recued/contracts';
 
-import type { ConnectionField, ConnectionFormValues, ConnectionSchema } from '../types.js';
+import type {
+  ConnectionField,
+  ConnectionFormValues,
+  ConnectionOnboarding,
+  ConnectionSchema,
+} from '../types.js';
 
 /** `showWhen` predicate keyed on the selected `auth.type` (mirrors the base
  *  `api.ts` schema). A field hidden by this is excluded from the rpc payload
@@ -89,14 +99,19 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
   // recommended credential for data-only integrations, sent as
   // `Authorization: Bearer`); `oauth2_refresh` = a BYO OAuth app. The `ifAuth`
   // predicates below show only the picked mode's fields (+ drop the other's
-  // from the payload).
+  // from the payload). The option labels are what a non-technical owner
+  // chooses between — never the raw auth-type names.
   {
     key: 'auth.type',
-    label: 'Auth Type',
+    label: 'How to connect',
     type: 'select',
     // `bearer` (Service Key) first → the default + recommended path.
     options: ['bearer', 'oauth2_refresh'],
-    help: 'Service Key (recommended for data integrations) or your own OAuth app.',
+    optionLabels: {
+      bearer: 'Service Key (recommended)',
+      oauth2_refresh: 'Your own HubSpot app (advanced)',
+    },
+    help: 'A Service Key is the easy way. Making your own app takes HubSpot’s command-line tool.',
   },
   // Service Key (bearer) — the recommended path.
   {
@@ -104,24 +119,21 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     label: 'Service Key',
     type: 'secret',
     showWhen: ifAuth('bearer'),
-    help:
-      'A HubSpot Service Key — Settings → Integrations → Service Keys (Super Admin / '
-      + 'Developer tools). The recommended credential for data-only integrations; '
-      + 'sent as `Authorization: Bearer` and static (rotate manually, no OAuth refresh).',
+    help: 'Paste the key from Development → Keys → Service keys in HubSpot.',
   },
   {
     key: 'auth.client_id',
     label: 'OAuth Client ID',
     type: 'text',
     showWhen: ifAuth('oauth2_refresh'),
-    help: 'From your HubSpot Developer Portal app — Auth → Client ID.',
+    help: 'From your app’s Auth tab in HubSpot (run hs project open to get there).',
   },
   {
     key: 'auth.client_secret',
     label: 'OAuth Client Secret',
     type: 'secret',
     showWhen: ifAuth('oauth2_refresh'),
-    help: 'From your HubSpot Developer Portal app — Auth → Client secret.',
+    help: 'From the same Auth tab, under Client credentials.',
   },
   // Fork 1 B — editable, pre-filled OAuth scopes. The panel seeds this on
   // dialog-open with HubSpot's vendor defaults UNIONed with the scopes your
@@ -155,12 +167,100 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
     autofilled: true,
     showWhen: ifAuth('oauth2_refresh'),
-    help:
-      'Long-lived refresh token from the HubSpot OAuth flow. ' +
-      'P1.2 will populate this automatically via the in-app OAuth dance; ' +
-      'until then paste a token obtained from the HubSpot Developer Portal.',
+    help: 'Filled in when you click Authorize and approve in HubSpot.',
   },
 ];
+
+/** The scopes a Service Key needs for what Recued reads by default. `oauth` is
+ *  an OAuth-app scope with nothing to tick on a key, so it is left out. A
+ *  pack's write scopes are added by the owner when a pack needs them. */
+const SERVICE_KEY_SCOPES = HUBSPOT_OAUTH_SCOPES.filter((scope) => scope !== 'oauth');
+
+/** One setup guide per way to connect, swapped by `auth.type`. The steps
+ *  follow HubSpot's own docs as of 2026-10-08: Service keys under
+ *  Development → Keys, and apps made only with the HubSpot CLI. */
+const HUBSPOT_ONBOARDING: ConnectionOnboarding = {
+  selectorKey: 'auth.type',
+  guides: [
+    {
+      key: 'hubspot-service-key',
+      tone: 'recommended',
+      badge: 'Recommended · easiest',
+      title: 'Connect HubSpot with a Service Key',
+      description:
+        'You make a key in your HubSpot account and paste it here. There is no app to build '
+        + 'and no sign-in step, so it works from any address.',
+      portal: {
+        label: 'HubSpot’s Service Key guide',
+        url: 'https://developers.hubspot.com/docs/apps/developer-platform/build-apps/authentication/account-service-keys',
+      },
+      steps: [
+        {
+          title: 'Open Service keys in HubSpot',
+          detail: 'Development → Keys → Service keys. You need to be a Super Admin, '
+            + 'or have the Developer tools permission.',
+        },
+        {
+          title: 'Create the key',
+          detail: 'Click Create service key and give it a name, such as Recued.',
+        },
+        {
+          title: 'Tick its scopes',
+          detail: `Click Add new scope and tick ${SERVICE_KEY_SCOPES.join(', ')}. `
+            + 'If a Pack will change HubSpot records, tick the write scopes it names too.',
+        },
+        {
+          title: 'Paste it below',
+          detail: 'Copy the key into Service Key, then Save.',
+        },
+      ],
+      verification:
+        'Reads your HubSpot account details with the key, so a wrong or revoked key shows '
+        + 'at once. It cannot see which scopes the key has: a missing one shows when a Pack first needs it.',
+      note:
+        'HubSpot suggests replacing a Service Key every six months. When you do, paste the new '
+        + 'key into this same connection.',
+      showWhen: (values) => (values['auth.type'] ?? 'bearer') === 'bearer',
+    },
+    {
+      key: 'hubspot-app',
+      tone: 'advanced',
+      badge: 'Advanced · needs HubSpot’s command-line tool',
+      title: 'Connect HubSpot with your own app',
+      description:
+        'You build a small app in HubSpot and sign in through it. In return, Recued sees '
+        + 'which scopes HubSpot granted.',
+      portal: {
+        label: 'HubSpot’s guide to creating an app',
+        url: 'https://developers.hubspot.com/docs/apps/developer-platform/build-apps/create-an-app',
+      },
+      steps: [
+        {
+          title: 'Create the app with the HubSpot CLI',
+          detail: 'Install the HubSpot CLI and run hs account auth. Then run hs project create, '
+            + 'choose App, and pick OAuth.',
+        },
+        {
+          title: 'Add the redirect URL and scopes',
+          detail: 'In the app’s app-hsmeta.json, put the redirect URL shown below into '
+            + 'redirectUrls, and the Scopes below into requiredScopes. Then run hs project upload.',
+        },
+        {
+          title: 'Copy the client ID and secret',
+          detail: 'Run hs project open, open your app, then its Auth tab. Paste both values below.',
+        },
+        {
+          title: 'Authorize, then Save',
+          detail: 'Click Authorize and approve in HubSpot. Recued fills in the rest.',
+        },
+      ],
+      verification:
+        'Authorize swaps HubSpot’s sign-in for a token and records the scopes it granted. '
+        + 'Save then reads your HubSpot account details with that token.',
+      showWhen: (values) => values['auth.type'] === 'oauth2_refresh',
+    },
+  ],
+};
 
 /** Initial form values keyed by their dotted-path schema key. The
  *  Settings → Connections dialog seeds the `values` state with this
@@ -181,9 +281,10 @@ export const hubspotSchema: VendorConnectionSchema = {
   kind: 'api',
   label: 'HubSpot',
   description:
-    'CRM platform — deals, contacts, companies. OAuth + webhook acceleration via the user\'s own HubSpot Developer Portal app.',
+    'CRM platform — deals, contacts, companies. Connect with a Service Key, or with your own HubSpot app.',
   fields: HUBSPOT_FIELDS,
   initialValues: HUBSPOT_SCHEMA_INITIAL_VALUES,
+  onboarding: HUBSPOT_ONBOARDING,
   // Probe lands once P1.2 ships the OAuth code-exchange rpc — the
   // probe will exercise an authenticated GET against /crm/v3/objects/
   // deals?limit=1 to verify the token + scopes round-trip end-to-end.

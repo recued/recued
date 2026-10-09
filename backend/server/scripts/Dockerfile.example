@@ -1,9 +1,0 @@
-# recued-server — Dockerfile.example (retired in Phase E / D-107).
-#
-# The reference Dockerfile moved to `backend/server/Dockerfile`
-# (multi-stage production build) and `backend/server/docker-compose.yml`
-# (copy-paste-ready compose file). Both live one directory up from
-# this file.
-#
-# This stub stays behind for one release so links in older docs
-# still resolve. Remove in Phase F.

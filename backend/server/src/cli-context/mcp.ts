@@ -52,10 +52,8 @@ import { createServerBundleStore } from '../server-bundle-store.js';
 import { createKeyManager } from '../key-manager.js';
 import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
 import { createFileServerKeyStore } from '../keys/file-store.js';
-import {
-  IDENTITY_PASSPHRASE_ENV_VAR,
-  resolveIdentityKeysPath,
-} from '../identity/boot.js';
+import { resolveIdentityKeysPath } from '../identity/boot.js';
+import { readIdentityPassphrase } from '../identity/passphrase-env.js';
 import { resolveLLMConfigFromEnv } from '../llm-env.js';
 import { resolveVaultFromEnv, mergeVault } from '../vault-env.js';
 import {
@@ -214,7 +212,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     saveServerBundle: (bundle) => serverBundleStore.save(bundle),
   });
   if (initialServerBundle) {
-    const passphrase = env[IDENTITY_PASSPHRASE_ENV_VAR];
+    const passphrase = readIdentityPassphrase(env);
     const keyStore = await createFileServerKeyStore({
       filePath: resolveIdentityKeysPath(dbPath),
       ...(passphrase ? { passphrase } : {}),

@@ -67,6 +67,8 @@ import {
   CLI_DETACHED_CANCEL_KINDS,
   CLI_PROGRESS_ADAPTERS,
   CLI_PROGRESS_ANSWER_ADAPTERS,
+  CLI_BINDING_ENV_NAMES,
+  CLI_BINDING_ENV_VALUE_MAX,
   SERVICE_CHECK_KINDS,
   SERVICE_RESTART_POLICIES,
   CATALOG_CONNECTOR_INVOKE_TIMEOUT_CAP_MS,
@@ -118,7 +120,7 @@ import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, SOFT_TIMEOUT_CEILING_MS } from './timeo
 // uses (no drift): the command token (`argv[0]`) must be a literal pinned to the
 // declared binary, and no interpreter code/eval hole turns a call-time arg into code.
 // `tokenContainsTemplateHole` also backs the (literal-only) service argv[0] pin.
-import { cliCommandViolation, cliInterpreterViolations, tokenContainsTemplateHole } from './cli-argv-safety.js';
+import { cliCommandViolation, cliEnvViolations, cliInterpreterViolations, tokenContainsTemplateHole } from './cli-argv-safety.js';
 // D-192 P1 — fail-closed shape validation for `work_entity_sources`
 // declarations (manifest-internal; the doc-dependent op proof stays in
 // `crossCheckCatalogOpenApi` below).
@@ -1448,6 +1450,22 @@ const validateCliProgressSpec = (
       add('error', 'CATALOG_BINDING_INVALID', `${path}.stall_ms`,
         `cli_invocation binding for '${opKey}' progress.stall_ms must be less than its positive timeout_ms`);
     }
+    // The window counts any output on the adapter's stream, so it means
+    // something only where an adapter reads that stream; and a window as long
+    // as the stall threshold would never be the one to fire.
+    const firstOutput = progress.first_output_ms;
+    if (firstOutput !== undefined) {
+      if (contract !== 'heartbeat') {
+        add('error', 'CATALOG_BINDING_INVALID', `${path}.first_output_ms`,
+          `cli_invocation binding for '${opKey}' progress.first_output_ms is only valid with contract 'heartbeat'`);
+      } else if (typeof firstOutput !== 'number' || !Number.isInteger(firstOutput) || firstOutput <= 0) {
+        add('error', 'CATALOG_BINDING_INVALID', `${path}.first_output_ms`,
+          `cli_invocation binding for '${opKey}' progress.first_output_ms must be a positive integer`);
+      } else if (typeof progress.stall_ms === 'number' && firstOutput >= progress.stall_ms) {
+        add('error', 'CATALOG_BINDING_INVALID', `${path}.first_output_ms`,
+          `cli_invocation binding for '${opKey}' progress.first_output_ms must be less than its stall_ms`);
+      }
+    }
   } else {
     // D-259 § 0.1.1 — a progress declaration without `stall_ms` was the
     // IMPLICIT spelling of "do not cap me". `timeout_ms: 0` is the honest one,
@@ -2702,6 +2720,27 @@ const validateConnectorSurface = (
           }
         }
         validateCliCwdSpec(rawBinding, operations[opKey], opKey, `${bPath}.cwd`, add);
+        // Pinned environment variables — the installed-catalog mirror of the
+        // authoring `validateCliEnv`, through the same shared invariant: a
+        // closed list of names that only narrow their tool, literal bounded
+        // values, foreground-only.
+        if (rawBinding.env !== undefined) {
+          for (const v of cliEnvViolations(rawBinding.env, rawBinding.detached)) {
+            if (v.kind === 'shape') {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.env`,
+                `cli_invocation binding for '${opKey}' env must be an object pinning at least one variable when present`);
+            } else if (v.kind === 'name') {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.env.${v.name}`,
+                `cli_invocation binding for '${opKey}' env may pin only ${CLI_BINDING_ENV_NAMES.join('|')} — a variable that could load other code or find another binary never joins the list`);
+            } else if (v.kind === 'value') {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.env.${v.name}`,
+                `cli_invocation binding for '${opKey}' env value for ${v.name} must be a literal string of at most ${CLI_BINDING_ENV_VALUE_MAX} characters with no NUL`);
+            } else {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.env`,
+                `cli_invocation binding for '${opKey}' env is foreground-only and cannot combine with a detached job spec`);
+            }
+          }
+        }
         // D-185 Slice 3 — `shape` (optional) replaces `stdout_handling`. When
         // present it must be a valid output shape; omitted ⇒ exit-code-only.
         const shapeOk = rawBinding.shape === undefined

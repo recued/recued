@@ -35,7 +35,7 @@ import {
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_TOKEN_URL,
 } from './foundational-oauth.js';
-import { isValidOAuthEndpointUrl } from './connection.js';
+import { isValidOAuthEndpointUrl, type ConnectionAuthType } from './connection.js';
 
 // ────────────────────────────────────────────────────────────────
 // Cross-vendor sandbox-flag literal (D-130 — used as the
@@ -929,6 +929,63 @@ export const resolveVendorOAuthEndpoints = (
   };
 };
 
+/** The scopes a registered vendor's sign-in asks for: the vendor's own
+ *  `oauth.scopes` verbatim first — the floor that carries its essentials
+ *  (`oauth` / `refresh_token` / `offline_access`), so trimming one from the
+ *  form changes nothing — then the pack scopes beyond it, deduped, in the
+ *  order given. No pack scopes ⇒ exactly the vendor's list.
+ *
+ *  Shared by the server's start (`startVendorOAuth`) and the loopback dance the
+ *  browser drives itself, so the two ask for the same set. */
+export const vendorOAuthRequestedScopes = (
+  provider: ConnectionVendorProvider,
+  packScopes: ReadonlyArray<string>,
+): string[] => [...new Set([...provider.oauth.scopes, ...packScopes])];
+
+/** Build the vendor authorize URL the user's browser is sent to.
+ *  `URLSearchParams` percent-encodes every value. `client_secret` is NEVER
+ *  placed here — it is used only at token exchange. Sandbox selects the
+ *  sandbox authorize URL when the provider declares one (Salesforce).
+ *
+ *  Pure, and shared: the server's start embeds its signed `state`; the loopback
+ *  dance (a PWA on `localhost`, which has no public address for that start)
+ *  embeds the `frelay_` state it minted. One builder, so a registered vendor's
+ *  address, extra params and PKCE cannot differ between the two. */
+export const buildVendorAuthorizeUrl = (opts: {
+  provider: ConnectionVendorProvider;
+  client_id: string;
+  redirect_uri: string;
+  sandbox: boolean;
+  state: string;
+  /** PKCE S256 challenge — present only for `supports_pkce` providers. When
+   *  set, the builder adds `code_challenge` + `code_challenge_method=S256`
+   *  (reserved keys a vendor's authorize_params can't override). */
+  code_challenge?: string;
+}): string => {
+  const { authorize_url } = resolveVendorOAuthEndpoints(opts.provider, {
+    sandbox: opts.sandbox,
+  });
+  const params = new URLSearchParams();
+  // Vendor extra params first (Google's `access_type=offline` +
+  // `prompt=consent` to mint a refresh token); the standard keys are set
+  // after so they win — a vendor can never override `state`/`scope`/etc.
+  // (the provider validator already rejects reserved keys, this is the
+  // defense-in-depth ordering).
+  for (const [k, v] of Object.entries(opts.provider.oauth.authorize_params ?? {})) {
+    params.set(k, v);
+  }
+  params.set('response_type', 'code');
+  params.set('client_id', opts.client_id);
+  params.set('redirect_uri', opts.redirect_uri);
+  params.set('scope', opts.provider.oauth.scopes.join(' '));
+  params.set('state', opts.state);
+  if (opts.code_challenge !== undefined) {
+    params.set('code_challenge', opts.code_challenge);
+    params.set('code_challenge_method', 'S256');
+  }
+  return `${authorize_url}?${params.toString()}`;
+};
+
 const hasOwn = (value: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -1002,6 +1059,13 @@ export interface ConnectionVendorProvider {
    *  form. User can override (e.g. EU instances). */
   default_base_url: string;
   oauth: VendorOAuthConfig;
+  /** Auth types a connection may hold INSTEAD of this vendor's OAuth app and
+   *  still serve its API, because the vendor takes them exactly as it takes an
+   *  OAuth access token. HubSpot's Service Key is a `bearer` sent as
+   *  `Authorization: Bearer`, so a pack that requires HubSpot is offered a
+   *  Service Key connection at install (`findEndpointCandidates`), not only one
+   *  made through an app. Absent ⇒ only the requirement's own auth type serves. */
+  also_accepts_auth?: readonly ConnectionAuthType[];
   /** Webhook HMAC signature header name. Per-vendor — HubSpot uses
    *  `X-HubSpot-Signature-v3`. The webhook funnel (D-128 P3) reads
    *  this from the per-vendor `WebhookProcessor.signature_header` at
@@ -1089,8 +1153,12 @@ const VENDOR_REGEX = /^[a-z][a-z0-9_]*$/;
 const HUBSPOT_PROVIDER: ConnectionVendorProvider = {
   vendor: 'hubspot',
   display_name: 'HubSpot',
-  description: 'CRM platform — deals, contacts, companies. OAuth + webhook acceleration.',
+  description: 'CRM platform — deals, contacts, companies. A Service Key, or your own OAuth app.',
   default_base_url: HUBSPOT_API_BASE,
+  // A Service Key (the form's default) authenticates exactly like an OAuth
+  // access token; the reconcilers and catalog read either
+  // (`resolveBearerAccessToken`).
+  also_accepts_auth: ['bearer'],
   oauth: {
     authorize_url: HUBSPOT_OAUTH_AUTHORIZE_URL,
     token_endpoint: HUBSPOT_OAUTH_TOKEN_URL,

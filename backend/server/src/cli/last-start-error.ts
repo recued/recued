@@ -9,6 +9,9 @@
  *  thing an owner sees is `recued status` answering "stopped" (raised by the
  *  owner, 2026-10-07). Any failure before the server listens is covered — a
  *  locked keychain, a busy port, a corrupt database — not only that one.
+ *  (Since 2026-10-08 the server also keeps that discarded output in
+ *  `recued-server.log` — `cli/server-log.ts` — but this record is still what
+ *  lets `status` say why without anyone opening a log.)
  *
  *  - **Cleared at the start of EVERY attempt** (`clearLastStartError`, `bin.ts`),
  *    so it only ever describes the latest one. A start that dies without an

@@ -7,6 +7,110 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.9 — 2026-10-09
+
+Pi and OpenCode join Codex and Claude Code. Each has a pack, and the Issue
+Pipeline can now work your GitHub issues with any of the four. Programs Recued
+runs for a pack no longer see your server's secrets, and a new server's first
+connections are encrypted from the start. Signing in to a built-in provider
+such as HubSpot, Google or Salesforce works from a localhost address. Workflows
+that hand a text file to AI, such as receipt capture and transcription, work on
+a normal setup.
+
+⚠ A connection saved in a new server's first session, before its first
+restart, stopped working after that restart. Updating does not repair it: save
+it again.
+
+⚠ Workflows that hand a text file to AI now send that text to the AI you set
+up, which can be a free provider. That was always their design; until this
+release they failed before sending anything.
+
+⚠ The Pi and OpenCode packs, the Issue Pipeline pack, and the new versions of
+Codex Issue Pipeline and Solo Developer Workbench need this release. A server on
+26.10.8 or older refuses them before installing anything, so update the server
+first.
+
+### Added
+
+- **Pi and OpenCode packs.** Each runs its tool on a local repository: it shows
+  the tool's status, runs a task, continues the last or a chosen session, writes
+  a commit message and reviews your changes. Neither tool has a sandbox, so
+  every run asks you first, and its description says the agent can reach
+  whatever your account can. A repository's own settings stay out unless you
+  turn on the actions that let them in. Recent OpenCode versions run plugin
+  code included in a repository even so, and the pack says so.
+- **The Issue Pipeline works your GitHub issues with Codex, Claude Code, Pi or
+  OpenCode.** Each keeps its own branch, worktree and sessions, and picks up an
+  issue's session where it left off. A Pi or OpenCode session continues only in
+  the folder it worked in: if you moved the worktree, the issue says so and
+  nothing runs.
+
+### Changed
+
+- **Installing a pack checks every pack it brings before installing any.** If
+  one would be refused, the install dialog says why before you press Install,
+  and nothing is installed. A pack that needs a newer Recued says so.
+- **HubSpot's connection form** asks how you want to connect: a Service Key
+  (recommended) or your own HubSpot app (advanced), with a guide for each. A
+  pack that needs HubSpot accepts a Service Key connection.
+- **Server logs.** The server's own log file is capped at about 10 MB, whether
+  it started at login or with `recued start`, each line carries its time, and
+  `recued logs -f` follows it on Windows too.
+- **The web app.** Chat and Data are easier to move around on a phone,
+  contrast and control sizes are fixed, toolbar labels are no longer cut off,
+  Saved views show their state while the list is folded, and a Mail
+  investigation's context opens as an expandable message.
+
+### Fixed
+
+- **Programs Recued runs for a pack no longer see your server's secrets.**
+  Command-line tools, coding agents included, and the services a pack installs
+  inherited the server's whole environment: the passphrase that unseals its key
+  file, and your AI providers' API keys. They now inherit none of Recued's own
+  environment variables.
+- **A new server's first connections are encrypted.** A connection saved before
+  the server's first restart was stored without its own encryption, though
+  inside the encrypted database, and failed after the restart.
+- **Signing in to a built-in provider from a localhost address.** HubSpot,
+  Salesforce, Pipedrive, QuickBooks, Google, Dropbox, OneDrive, Box and
+  SharePoint all ended "Authorization did not finish". A Salesforce sandbox
+  sign-in now stays in the sandbox. At 127.0.0.1, the form tells you to connect
+  from localhost instead, which providers accept.
+- **A mistyped HubSpot Service Key is caught when you save it,** and replacing
+  a key with a new one works. Any key passed the old check, and every
+  replacement was refused.
+- **Opening the HubSpot pack** runs its view with the connection the pack is
+  bound to, instead of showing an error.
+- **Workflows that hand a text file to AI work.** Receipt capture, invoice
+  intake, transcription and meeting workflows sent the text as a document,
+  which a normal AI setup refuses, and failed every time.
+- **Invoice Book** marks hours as billed when it pulls them into an invoice, so
+  they cannot be billed twice, and deletes an invoice item that came from hours.
+  Both had been broken since 26.9.25.
+- **Client Document Intake** sends a new chase whenever the list of missing
+  documents changes. A chase for a different list of the same length was never
+  sent.
+- **Fundamentals Watch** stores each period's figure. It stored nothing, and
+  now keeps a quarter's own figure rather than the year to date; a year-to-date
+  figure already stored as a quarter is corrected.
+- **The company news brief** shows the stories it finds. It showed none.
+- **Google Calendar focus blocks and Reschedule** check that the time is free.
+  They looked up free/busy and booked anyway. Now a booked time stops the change
+  unless you allow overlaps, and the card names the times that clash.
+- **Entrust Identity Verification** describes each kind of report and which
+  watchlist category matched, and the watchlist-monitor brief drops a column
+  that was always empty.
+- **A refusal from a pack's own data** is reported as what it is, not as "check
+  your connection", and automation no longer retries it as if the network had
+  failed.
+- **A Mac server started at login keeps its log.** It kept none, and `recued
+  logs` found nothing.
+- **A tool that stops making progress is flagged** even while the system trims
+  its memory, and one that starts a new process as the last one ends is not
+  flagged while it works.
+- **A server run from a source checkout** starts under a system-wide Node, and
+  two such servers on one Node no longer block each other.
+
 ## 26.10.8 — 2026-10-08
 
 Recued now acts on the email it already reads. Bills, parcels, subscriptions,

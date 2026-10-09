@@ -1,5 +1,6 @@
 import type { PrefetchOpStep, PrefetchStep, StepMeta } from '@recued/contracts';
 import {
+  ERR,
   isCatalogForm,
   isPrefetchOpStep,
   isRef,
@@ -14,7 +15,7 @@ import type { ExecutionContext, StepLog } from './types.js';
 import { requireRecipe } from './require-recipe.js';
 import { evaluateCondition } from './condition.js';
 import { fireProgress } from './execute.js';
-import { mergeArgOverrides, resolveCatalogConnection, trackContextSize } from './step-runner.js';
+import { adapterErrorCode, mergeArgOverrides, resolveCatalogConnection, trackContextSize } from './step-runner.js';
 import { runCatalogOperation } from './catalog-gateway.js';
 import { setNamespaceValue } from './store-safety.js';
 import { invokeGoverned } from './lane.js';
@@ -284,13 +285,17 @@ const makeErrorLog = (
   // D-181 §7c — preserve the `slot_cancelled` marker for a non-optional prefetch
   // whose gated slot was cancelled (mirrors the step-runner sequential path), so
   // the host labels the run `cancelled_before_dispatch` rather than a generic
-  // failure. Only this carrier survives the code → NETWORK_ERROR normalization.
+  // failure. It is the only carrier kept; `details` stay dropped, as there.
   const slotCancelled =
     reason !== null && typeof reason === 'object'
     && (reason as { code?: unknown }).code === SLOT_CANCELLED_ERROR_CODE;
+  // ⛔ The code is read as the step runner reads it (`adapterErrorCode`).
+  // This used to be `NETWORK_ERROR` whatever was thrown, so a Records refusal in
+  // a prefetch op read "check your connection".
+  const code = adapterErrorCode(reason) ?? 'NETWORK_ERROR';
   return {
     id: ps.id, type: 'prefetch', skipped: false, result: null, duration_ms: 0,
-    error: { error_id: '', code: 'NETWORK_ERROR', message: String(reason), severity: 'error',
+    error: { error_id: '', code, message: String(reason), severity: ERR[code],
       source: { recipe_id: requireRecipe(ctx).recipe_id, step_id: ps.id, ingredient_slug: null },
       details: slotCancelled ? { slot_cancelled: true } : {},
       timestamp: new Date().toISOString(), retryable: false },

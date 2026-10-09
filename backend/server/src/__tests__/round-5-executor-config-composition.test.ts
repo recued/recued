@@ -757,44 +757,13 @@ describe('composeExecutorConfig connection handler block', () => {
     expect(keys.keyProvider).not.toHaveBeenCalled();
   });
 
-  it('passes no keyProvider to api and mcp auth helpers while keys are uninitialized', async () => {
-    const {
-      compose,
-      decodedAuth,
-      decodeAuthFromStorageMock,
-      encodeAuthForStorageMock,
-    } = await importComposerWithConnectionMocks();
-    const keys = keyManager('uninitialized');
-    const store = connectionStore();
-    const config = await compose(buildDeps({ connectionStore: store, keys }));
-    const row = connectionRow({ auth_ciphertext: 'ciphertext' });
-
-    await expect(config.connectionApi?.decodeAuth(row)).resolves.toBe(decodedAuth);
-    await expect(config.connectionMcp?.decodeAuth(row)).resolves.toBe(decodedAuth);
-    await config.connectionApi?.persistAuth(row, { type: 'none' });
-
-    expect(keys.state).toHaveBeenCalledTimes(2);
-    expect(keys.keyProvider).not.toHaveBeenCalled();
-    expect(decodeAuthFromStorageMock).toHaveBeenNthCalledWith(
-      1,
-      'ciphertext',
-      { kind: 'api', name: 'crm' },
-      undefined,
-    );
-    expect(decodeAuthFromStorageMock).toHaveBeenNthCalledWith(
-      2,
-      'ciphertext',
-      { kind: 'api', name: 'crm' },
-      undefined,
-    );
-    expect(encodeAuthForStorageMock).toHaveBeenCalledWith(
-      { type: 'none' },
-      { kind: 'api', name: 'crm' },
-      undefined,
-    );
-  });
-
+  // ⛔ 'uninitialized' used to get NO provider (the plaintext branch). The
+  // check ran at COMPOSE time and a new server's first pairing unlocks the
+  // vault in-process, so its whole first session wrote base64 JSON — rows
+  // that failed AEAD after a restart (driven live 2026-10-08). Every state
+  // now gets the provider; its closure re-reads the state per call.
   it.each([
+    'uninitialized',
     'locked',
     'unlocked',
   ] as const)('uses the connection keyProvider for %s keys in api and mcp handlers', async (stateValue) => {
@@ -815,7 +784,6 @@ describe('composeExecutorConfig connection handler block', () => {
     await config.connectionMcp?.decodeAuth(row);
     await config.connectionApi?.persistAuth(row, { type: 'bearer', token: 'new' });
 
-    expect(keys.state).toHaveBeenCalledTimes(2);
     expect(keys.keyProvider).toHaveBeenCalledTimes(2);
     expect(keys.keyProvider).toHaveBeenNthCalledWith(1, 'connection');
     expect(keys.keyProvider).toHaveBeenNthCalledWith(2, 'connection');

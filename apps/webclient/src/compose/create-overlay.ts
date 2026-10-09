@@ -79,7 +79,7 @@ const CREATE_OVERLAY_STYLES = `
 [${CREATE_OVERLAY_CLOSE_ATTR}] {
   margin-left: auto;
   appearance: none;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 5px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -113,7 +113,7 @@ const CREATE_OVERLAY_STYLES = `
   gap: 8px;
 }
 [${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -181,6 +181,7 @@ export const openCreateOverlay = (
 
   const overlay = doc.createElement('div');
   overlay.setAttribute(CREATE_OVERLAY_ATTR, '');
+  overlay.setAttribute('data-recued-webclient-overlay', '');
   const panel = doc.createElement('div');
   panel.className = 'recued-create-panel';
   panel.setAttribute('role', 'dialog');

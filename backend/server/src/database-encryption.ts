@@ -26,10 +26,9 @@ import {
   type ServerBundle,
 } from '@recued/crypto';
 import { fsyncDir } from './durable-fs.js';
-import {
-  IDENTITY_PASSPHRASE_ENV_VAR,
-  resolveIdentityKeysPath,
-} from './identity/boot.js';
+import { resolveIdentityKeysPath } from './identity/boot.js';
+import { CONTAINER_UNSEALED_REFUSAL, readIdentityPassphrase } from './identity/passphrase-env.js';
+import { runningInContainer } from './lifecycle/supervisor.js';
 import { createFileServerKeyStore } from './keys/file-store.js';
 import { createServerBundleStore } from './server-bundle-store.js';
 
@@ -130,10 +129,13 @@ export const rebindServerBundleForLocalBoot = async (
   options: { env?: Record<string, string | undefined>; now?: () => number } = {},
 ): Promise<ServerBundle> => {
   const env = options.env ?? process.env;
-  const passphrase = env[IDENTITY_PASSPHRASE_ENV_VAR];
+  const passphrase = readIdentityPassphrase(env);
   const keyStore = await createFileServerKeyStore({
     filePath: resolveIdentityKeysPath(dbPath),
     ...(passphrase ? { passphrase } : {}),
+    // This one WRITES a new keyfile when there is none (an offline restore into an
+    // empty folder), so inside a container it refuses an unsealed one as boot does.
+    ...(runningInContainer(env) ? { refuseUnsealed: CONTAINER_UNSEALED_REFUSAL } : {}),
   });
 
   let serverKey = keyStore.loadServerVaultKey();
@@ -176,7 +178,7 @@ export const resolveDatabaseKeyFromServerFiles = async (
   if (!bundle) return null;
 
   const env = options.env ?? process.env;
-  const passphrase = env[IDENTITY_PASSPHRASE_ENV_VAR];
+  const passphrase = readIdentityPassphrase(env);
   const keyStore = await createFileServerKeyStore({
     filePath: resolveIdentityKeysPath(dbPath),
     ...(passphrase ? { passphrase } : {}),

@@ -123,9 +123,7 @@ export const composeVendorSubstrate = async (
   const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
   const { refreshOAuth2WithMetadata } = await import('@recued/ingredients');
 
-  const keyProvider = (deps.keys && deps.keys.state() !== 'uninitialized')
-    ? deps.keys.keyProvider('connection')
-    : undefined;
+  const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
   const runtimeBaseIssueSink = deps.auditLog
     ? makeConnectionRuntimeBaseIssueSink(deps.auditLog)
     : undefined;

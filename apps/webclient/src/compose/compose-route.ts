@@ -332,7 +332,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
 [${COMPOSE_ROUTE_HOST_ATTR}] select {
   width: 100%;
   box-sizing: border-box;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 8px 10px;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
@@ -350,7 +350,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
   gap: 8px;
 }
 [${COMPOSE_ROUTE_TARGET_CHIP_ATTR}] {
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 6px 12px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -400,7 +400,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
+  min-height: var(--wc-control-h, 38px);
   padding: 6px 12px;
   border: 1px solid var(--accent);
   border-radius: 4px;

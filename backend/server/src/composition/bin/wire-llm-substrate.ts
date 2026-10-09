@@ -126,14 +126,14 @@ export const composeLlmSubstrate = (deps: ComposeLlmSubstrateDeps): LlmSubstrate
   let llmConfig: LLMConfig | undefined = envLlmConfig;
 
   // With `keys` in scope, build the LLM config manager wired to the same
-  // 'server-data' sub-DEK other storage surfaces use. When encryption is
-  // uninitialized (fresh install, no bundle), getEncryptionKey returns
-  // null and the manager falls back to plaintext — preserves existing
-  // behavior.
+  // 'server-data' sub-DEK other storage surfaces use — whenever a key
+  // manager exists. ⛔ Never gated on its state here: a new server composes
+  // 'uninitialized' and its first pairing unlocks the vault in-process, so
+  // a gate wrote that session's API keys as plaintext. Until the vault is
+  // unlocked the closure returns null and a secret write throws; a plaintext
+  // value already stored still reads.
   if (db) {
-    const getKey = keys && keys.state() !== 'uninitialized'
-      ? keys.keyProvider('server-data')
-      : undefined;
+    const getKey = keys ? keys.keyProvider('server-data') : undefined;
     llmManager = createLLMConfigManager(db, { envConfig: envLlmConfig, getEncryptionKey: getKey });
     // D-262 § B5 — the one-time upgrade step, before the first config read so
     // this boot already sees a derived slot. ⚠ Best-effort: a locked or

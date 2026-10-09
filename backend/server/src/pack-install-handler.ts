@@ -120,6 +120,7 @@ import {
   recordsPackCurrentAccess,
 } from './pack-operation-update-diff.js';
 import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
+import { newerServerMessage, unknownHostCapabilities } from './pack-host-capabilities.js';
 import { planPackWebhookBindings } from './pack-webhook-plan.js';
 import { triggersSwitchedOff } from './pack-trigger-preview.js';
 import { carryReceptionPairsAfterInstall, receptionPairsAtRisk } from './reception-pair-carry.js';
@@ -1062,6 +1063,142 @@ const packsBoundFor = (
   has: (packRef) => resolution.has(packRef) || installing.has(packRef),
 });
 
+/** Whether installing this pack provisions — and so first validates — its
+ *  composition: the generic substrate is wired, and a Records composition also
+ *  has its store. ONE predicate for `installSinglePack` and for the preflight
+ *  that checks every pack before the first installs, so the two cannot disagree
+ *  about which packs are checked. */
+const compositionProvisionable = (
+  deps: PackInstallRpcDeps,
+  compositionRefs: ReadonlyArray<Extract<PackContentRef, { type: 'composition' }>>,
+): boolean =>
+  compositionRefs.length > 0
+  && deps.contractStore !== undefined
+  && deps.localManifestStore !== undefined
+  && deps.registry !== undefined
+  && (!compositionRefs.some((ref) => isRecordsComposition(ref.composition)) || deps.recordsStore !== undefined);
+
+const compositionRefsOf = (
+  manifest: BulkPackManifest,
+): Array<Extract<PackContentRef, { type: 'composition' }>> =>
+  normalizeBulkPackInstallPlan(manifest).contents.filter(
+    (c): c is Extract<PackContentRef, { type: 'composition' }> => c.type === 'composition',
+  );
+
+/** The Records guards `installSinglePack` runs first, before any content check:
+ *  its storage, verified publisher provenance, and no sidecars. ONE definition
+ *  for it and for the preflight, which runs them for every pack first. */
+const recordsGuardRefusal = (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+  compositionRefs: ReadonlyArray<Extract<PackContentRef, { type: 'composition' }>>,
+  webhookBindings: PacksInstallArgs['webhook_bindings'],
+  verifiedPublisher: string | undefined,
+): BulkPackInstallResultLike | null => {
+  if (!compositionRefs.some((ref) => isRecordsComposition(ref.composition))) return null;
+  if (!compositionProvisionable(deps, compositionRefs)) {
+    return dependencyPreflightFailure('validator_rejected', 'packs.install: Records runtime/storage is unavailable; Records compositions are never deferred');
+  }
+  if (verifiedPublisher !== manifest.publisher) {
+    return dependencyPreflightFailure('validator_rejected', 'packs.install: Records requires marketplace or bundled verified publisher provenance; by-value publisher strings are not authority');
+  }
+  // ⛔ Count only the selections that name THIS pack. A dependency install is
+  // handed the parent's whole `webhook_bindings` list (the dependency recursion
+  // in `handlePacksInstallInternal`), so a non-Records pack that listens on a webhook and
+  // depends on a Records pack used to be refused here for ITS OWN binding —
+  // the Records dependency could only be installed first, by hand. The rule is
+  // about this pack's sidecars, and a binding addressed to another pack is not
+  // one: that pack's own install step owns it.
+  const ownWebhookBindings = (webhookBindings ?? [])
+    .filter((selection) => selection.pack_slug === manifest.slug);
+  if (
+    (manifest.webhook_requirements?.length ?? 0) > 0
+    || (manifest.mcp_body_visibility_grants?.length ?? 0) > 0
+    || ownWebhookBindings.length > 0
+  ) {
+    return dependencyPreflightFailure('validator_rejected', 'packs.install: Records v1 refuses webhook/body-visibility sidecars because they cannot join its atomic promotion');
+  }
+  return null;
+};
+
+/** The pure checks a provisionable composition must pass before anything of its
+ *  pack is written: at most one composition, and the D-170 pack validator, over
+ *  the manifest as submitted (`installSinglePack` hands it the raw body). */
+const compositionContentRefusal = (
+  manifest: unknown,
+  compositionCount: number,
+): BulkPackInstallResultLike | null => {
+  if (compositionCount > 1) {
+    return dependencyPreflightFailure('validator_rejected', 'packs.install: an app_pack carries at most one composition content');
+  }
+  const validated = validatePack(manifest, { recipeValidator: validateRecipe });
+  if (validated.valid) return null;
+  const firstError = validated.issues.find((i) => i.severity === 'error') ?? validated.issues[0];
+  const detail = firstError
+    ? firstError.path
+      ? `${firstError.path}: ${firstError.message}`
+      : firstError.message
+    : 'composition failed validation';
+  return dependencyPreflightFailure('validator_rejected', `packs.install: composition failed validation — ${detail}`);
+};
+
+/** ⛔⛔ EVERY PACK AN INSTALL WRITES IS CHECKED BEFORE THE FIRST ONE IS WRITTEN.
+ *
+ *  The recursion installs a pack's dependencies one at a time, in declared
+ *  order, and keeps each one it installed when a later one is refused. Measured
+ *  2026-10-08 against v26.10.8: an owner's update of Codex Issue Pipeline v6 →
+ *  v11 was refused at the Pi pack after it had already upgraded codex-pack and
+ *  installed claude-code-pack — the owner's pack stayed old and the others had
+ *  moved. So every pack the install will write (the walk the recursion takes,
+ *  with its already-installed skip) runs here the checks its own install would
+ *  run, dependencies before the pack that brings them in, as they install.
+ *  First what this server's code cannot run, because the owner's remedy is to
+ *  update Recued and the message should say so; then the composition checks.
+ *  A pack whose composition its install would not validate is not checked here
+ *  either (`compositionProvisionable`). */
+const preflightInstallContent = (
+  deps: PackInstallRpcDeps,
+  root: BulkPackManifest,
+  /** What the install hands each pack's own install: the install's webhook
+   *  choices, and the root's verified publisher (a dependency's is its own, as
+   *  the recursion passes it). Absent in a preview, which knows neither, so the
+   *  Records guards that read them are left to the install. */
+  install?: { webhookBindings: PacksInstallArgs['webhook_bindings']; rootVerifiedPublisher: string | undefined },
+): BulkPackInstallResultLike | null => {
+  const touched = installTouchedManifests(deps, root) ?? [root];
+  const ordered = [...touched.filter((m) => m.slug !== root.slug), root]
+    .map((manifest) => ({ manifest, compositions: compositionRefsOf(manifest) }));
+  // Present tense: the preview shows this same answer before anything is tried.
+  const named = (slug: string, refusal: BulkPackInstallResultLike): BulkPackInstallResultLike =>
+    slug === root.slug ? refusal : dependencyPreflightFailure(
+      refusal.failure!.code,
+      `dependency pack ${JSON.stringify(slug)} does not pass its checks: ${refusal.failure!.message}`,
+    );
+  // ⛔ First what each pack's own install refuses FIRST: its Records guards. A
+  // content check ahead of them answered a forged Records pack that ships two
+  // compositions "at most one composition" instead of its missing provenance —
+  // still refused, but the guard it exists to prove never spoke.
+  if (install !== undefined) {
+    for (const { manifest, compositions } of ordered) {
+      const refusal = recordsGuardRefusal(
+        deps, manifest, compositions, install.webhookBindings,
+        manifest.slug === root.slug ? install.rootVerifiedPublisher : manifest.publisher,
+      );
+      if (refusal !== null) return named(manifest.slug, refusal);
+    }
+  }
+  const checked = ordered.filter(({ compositions }) => compositionProvisionable(deps, compositions));
+  const needs = checked
+    .map(({ manifest }) => ({ manifest, uses: unknownHostCapabilities(manifest) }))
+    .filter(({ uses }) => uses.length > 0);
+  if (needs.length > 0) return dependencyPreflightFailure('version_mismatch', newerServerMessage(root, needs));
+  for (const { manifest, compositions } of checked) {
+    const refusal = compositionContentRefusal(manifest, compositions.length);
+    if (refusal !== null) return named(manifest.slug, refusal);
+  }
+  return null;
+};
+
 const installSinglePack = async (
   deps: PackInstallRpcDeps,
   requestArgs: PacksInstallArgs,
@@ -1107,103 +1244,14 @@ const installSinglePack = async (
   const recordsComposition = compositionRefs.some(
     (ref) => isRecordsComposition(ref.composition),
   );
-  const genericCompositionSubstrate =
-    compositionRefs.length > 0
-    && deps.contractStore !== undefined
-    && deps.localManifestStore !== undefined
-    && deps.registry !== undefined;
-  const canProvisionComposition = genericCompositionSubstrate
-    && (!recordsComposition || deps.recordsStore !== undefined);
-  if (recordsComposition && !canProvisionComposition) {
-    return {
-      result: {
-        ok: false,
-        installed: [],
-        rolled_back: [],
-        failure: {
-          code: 'validator_rejected',
-          message: 'packs.install: Records runtime/storage is unavailable; Records compositions are never deferred',
-        },
-      },
-    };
-  }
-  if (recordsComposition && options.verifiedPublisher !== manifest.publisher) {
-    return {
-      result: {
-        ok: false,
-        installed: [],
-        rolled_back: [],
-        failure: {
-          code: 'validator_rejected',
-          message: 'packs.install: Records requires marketplace or bundled verified publisher provenance; by-value publisher strings are not authority',
-        },
-      },
-    };
-  }
-  // ⛔ Count only the selections that name THIS pack. A dependency install is
-  // handed the parent's whole `webhook_bindings` list (the dependency recursion
-  // in `handlePacksInstallInternal`), so a non-Records pack that listens on a webhook and
-  // depends on a Records pack used to be refused here for ITS OWN binding —
-  // the Records dependency could only be installed first, by hand. The rule is
-  // about this pack's sidecars, and a binding addressed to another pack is not
-  // one: that pack's own install step owns it.
-  const ownWebhookBindings = (args.webhook_bindings ?? [])
-    .filter((selection) => selection.pack_slug === manifest.slug);
-  if (
-    recordsComposition
-    && (
-      (manifest.webhook_requirements?.length ?? 0) > 0
-      || (manifest.mcp_body_visibility_grants?.length ?? 0) > 0
-      || ownWebhookBindings.length > 0
-    )
-  ) {
-    return {
-      result: {
-        ok: false,
-        installed: [],
-        rolled_back: [],
-        failure: {
-          code: 'validator_rejected',
-          message: 'packs.install: Records v1 refuses webhook/body-visibility sidecars because they cannot join its atomic promotion',
-        },
-      },
-    };
-  }
+  const canProvisionComposition = compositionProvisionable(deps, compositionRefs);
+  const recordsRefusal = recordsGuardRefusal(
+    deps, manifest, compositionRefs, args.webhook_bindings, options.verifiedPublisher,
+  );
+  if (recordsRefusal !== null) return { result: recordsRefusal };
   if (canProvisionComposition) {
-    if (compositionRefs.length > 1) {
-      return {
-        result: {
-          ok: false,
-          installed: [],
-          rolled_back: [],
-          failure: {
-            code: 'validator_rejected',
-            message: 'packs.install: an app_pack carries at most one composition content',
-          },
-        },
-      };
-    }
-    const validated = validatePack(args.manifest, { recipeValidator: validateRecipe });
-    if (!validated.valid) {
-      const firstError =
-        validated.issues.find((i) => i.severity === 'error') ?? validated.issues[0];
-      const detail = firstError
-        ? firstError.path
-          ? `${firstError.path}: ${firstError.message}`
-          : firstError.message
-        : 'composition failed validation';
-      return {
-        result: {
-          ok: false,
-          installed: [],
-          rolled_back: [],
-          failure: {
-            code: 'validator_rejected',
-            message: `packs.install: composition failed validation — ${detail}`,
-          },
-        },
-      };
-    }
+    const refusal = compositionContentRefusal(args.manifest, compositionRefs.length);
+    if (refusal !== null) return { result: refusal };
   }
 
   const now = deps.now?.() ?? Date.now();
@@ -2569,6 +2617,14 @@ export const handlePacksInstall = async (
   }
   const preflight = preflightTransitivePermissions(deps, args, manifest);
   if (preflight !== null) return { result: preflight };
+  // Every pack this install writes, checked before the first is written — and
+  // before the warm-up below, which reads only recipe bodies these checks do not
+  // need, so a pack refused here counts no recipe installs either.
+  const contentRefusal = preflightInstallContent(deps, manifest, {
+    webhookBindings: args.webhook_bindings,
+    rootVerifiedPublisher: effectiveVerifiedPublisher,
+  });
+  if (contentRefusal !== null) return { result: contentRefusal };
   // D-311 — on the marketplace path, fetch every recipe the install writes, many at
   // once, now that it is going ahead: a refused install counts no recipe installs.
   await deps.warmMarketplaceRecipes?.(installTouchedManifests(deps, manifest) ?? [manifest]);
@@ -3726,6 +3782,20 @@ export const makePackInstallHandlers = (
           missing,
           fromMarketplace ? (deps.marketplaceFetch ?? defaultMarketplaceFetch) : undefined,
         );
+        // D-311 § 5 — what the install would refuse before writing anything (a pack
+        // this server's code cannot run, or one that fails its checks), named here
+        // so the dialog says it and holds Install instead of failing after it. The
+        // install's own check on the same walk; a check that throws says nothing,
+        // as the preview's other parts do.
+        let installRefusal: { code: 'version_mismatch' | 'validator_rejected'; message: string } | undefined;
+        try {
+          const failure = preflightInstallContent(previewDeps, manifest)?.failure;
+          if (failure !== undefined && (failure.code === 'version_mismatch' || failure.code === 'validator_rejected')) {
+            installRefusal = { code: failure.code, message: failure.message };
+          }
+        } catch {
+          installRefusal = undefined;
+        }
         // D-296 — an armed automation this update switches off, named before
         // the owner presses Update.
         const triggerPreview = deps.getTriggerPreview?.();
@@ -3774,6 +3844,7 @@ export const makePackInstallHandlers = (
           ...(dependencyPacks !== undefined ? { dependency_packs: dependencyPacks } : {}),
           ...(accessNeeds?.own_needs !== undefined ? { own_needs: accessNeeds.own_needs } : {}),
           ...(missingPacks !== undefined ? { missing_packs: missingPacks } : {}),
+          ...(installRefusal !== undefined ? { install_refusal: installRefusal } : {}),
           ...(switchedOff.length > 0 ? { triggers_switched_off: switchedOff } : {}),
           ...(receptionsOff.length > 0 ? { receptions_switched_off: receptionsOff } : {}),
           ...(settingsDropped.length > 0 ? { settings_no_longer_used: settingsDropped } : {}),

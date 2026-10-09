@@ -24,9 +24,44 @@
  *  ⚠ Only a code written as an rpc code is read this way (lower-case words
  *  with underscores). A system error (`ECONNRESET`, `SQLITE_BUSY`) is not a
  *  handler's refusal, and a status on one would be read as something it is
- *  not. */
+ *  not.
+ *
+ *  ⛔ A RECORDS STORE REFUSAL ARRIVES IN THE SAME SHAPE, and is read first, from
+ *  `RECORDS_REFUSAL_RECIPE_CODES`. The store throws `RecordsContractError` with a
+ *  `records_*` code and no status, nothing between it and the step runner
+ *  catches it, and until 2026-10-08 all thirteen codes fell through to
+ *  `NETWORK_ERROR`: `invoice-book`'s refused `billable-hours` writes read
+ *  "check your connection", and an automation would have retried a refusal that
+ *  can never succeed until its circuit breaker opened. */
 
 import type { RecipeErrorCode } from './errors.js';
+import type { RecordsErrorCode } from './records.js';
+
+/** The recipe code each Records store refusal means. Keyed on the closed
+ *  `RecordsErrorCode` union, so a new store code does not compile until someone
+ *  decides what a recipe step should call it. Each line says why, where the
+ *  store's own message does not. */
+export const RECORDS_REFUSAL_RECIPE_CODES: Readonly<Record<RecordsErrorCode, RecipeErrorCode>> = {
+  records_invalid: 'BAD_INPUT',
+  records_not_found: 'NOT_FOUND',
+  // A row or namespace version that moved since the step read it, or a version
+  // literal written for another one; either way the store will not write blind.
+  records_conflict: 'CONFLICT',
+  records_noop: 'BAD_INPUT', // "update has no effective change": the step asked for nothing
+  // A namespace mid-migration (retryable at the store). An orphaned one shares the
+  // code; it retries until the breaker opens, as every refusal did before this.
+  records_not_ready: 'NOT_READY',
+  // The op no longer matches the pack's ready activation (it was updated underneath):
+  // a re-run reads the new binding, which is what CONFLICT tells the owner.
+  records_stale_operation: 'CONFLICT',
+  records_incoherent: 'SERVER_ERROR', // the store found its own state inconsistent
+  records_quota_exceeded: 'QUOTA_EXCEEDED',
+  records_backpressure: 'STORAGE_PRESSURE', // the outbox or fan-out budget is full; it drains
+  records_relationship_restrict: 'BAD_INPUT', // a delete other rows still point at
+  records_query_budget: 'BAD_INPUT', // a query asking for more rows than the store will work through
+  records_cursor_invalid: 'BAD_INPUT',
+  records_unauthorized: 'NOT_AUTHORIZED',
+};
 
 /** A code whose meaning the status cannot carry. Each line says which. */
 export const RPC_REFUSAL_RECIPE_CODES: Readonly<Record<string, RecipeErrorCode>> = {
@@ -113,10 +148,13 @@ export const recipeCodeForRpcStatus = (status: number): RecipeErrorCode | undefi
 
 const RPC_CODE = /^[a-z][a-z0-9_]*$/u;
 
-/** The recipe code for a server handler's refusal, or `undefined` when it is
- *  none this can name (the caller's fallback stands). */
+/** The recipe code for a server handler's refusal, or a Records store's, or
+ *  `undefined` when it is none this can name (the caller's fallback stands). */
 export const recipeCodeForRpcRefusal = (code: string, status: unknown): RecipeErrorCode | undefined => {
   if (!RPC_CODE.test(code)) return undefined;
+  if (Object.hasOwn(RECORDS_REFUSAL_RECIPE_CODES, code)) {
+    return RECORDS_REFUSAL_RECIPE_CODES[code as RecordsErrorCode];
+  }
   if (Object.hasOwn(RPC_REFUSAL_RECIPE_CODES, code)) return RPC_REFUSAL_RECIPE_CODES[code];
   if (Object.hasOwn(RPC_CODES_LEFT_UNNAMED, code)) return undefined;
   return typeof status === 'number' ? recipeCodeForRpcStatus(status) : undefined;

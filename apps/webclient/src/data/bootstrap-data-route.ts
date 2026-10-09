@@ -361,6 +361,7 @@ export const DATA_ROUTE_VERIFICATION_NEXT_ATTR =
   'data-recued-data-route-verification-next';
 export const DATA_ROUTE_TAB_ATTR = 'data-recued-data-route-tab';
 export const DATA_ROUTE_TABLIST_ATTR = 'data-recued-data-route-tablist';
+export const DATA_ROUTE_COLLECTION_PICKER_ATTR = 'data-recued-data-collection-picker';
 export const DATA_ROUTE_TAB_PANEL_ATTR = 'data-recued-data-route-tab-panel';
 export const DATA_ROUTE_CONTACT_ROW_ATTR = 'data-recued-data-contact-row';
 /** D-226 — a per-pack rollup chip on a contact LIST row. Value is the pack's
@@ -1388,6 +1389,17 @@ const DATA_ROUTE_STYLES = `
   flex-wrap: wrap;
   gap: 10px 22px;
   margin: 0 0 14px;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-collection-picker { display: none; }
+@media (max-width: 640px) {
+  [${DATA_ROUTE_HOST_ATTR}] .data-tab-groups { display: none; }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 16px;
+    font-size: 13px; font-weight: 600;
+  }
+  [${DATA_ROUTE_HOST_ATTR}] .data-collection-picker select {
+    flex: 1; min-height: var(--wc-control-h, 38px); font-size: 16px;
+  }
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-tab-group {
   display: grid;
@@ -2836,16 +2848,25 @@ const renderTabGroup = (
 `;
 };
 
+const DATA_TAB_GROUPS: readonly { label: string; tabs: readonly DataTabId[] }[] = [
+  { label: 'Owned', tabs: DATA_OWN_IT_TABS },
+  { label: 'Received', tabs: DATA_RECEIVED_CLUSTER },
+  { label: 'Connected', tabs: DATA_MIRROR_TABS },
+  { label: 'Provenance', tabs: DATA_PROVENANCE_TABS },
+  { label: 'Storage', tabs: DATA_SHARED_TABS },
+  { label: 'Records', tabs: DATA_RECORDS_TABS },
+  { label: 'Find', tabs: DATA_SEARCH_TABS },
+];
 const renderTabs = (active: DataTabId, locked = false): string => `
+  <label class="data-collection-picker">Collection
+    <select ${DATA_ROUTE_COLLECTION_PICKER_ATTR} aria-controls="${DATA_ROUTE_TAB_PANEL_ID}" ${locked ? 'disabled' : ''}>
+      ${DATA_TAB_GROUPS.map(group => `<optgroup label="${e(group.label)}">${group.tabs.map(tab =>
+        `<option value="${e(tab)}" ${tab === active ? 'selected' : ''}>${e(tabLabel(tab))}</option>`).join('')}</optgroup>`).join('')}
+    </select>
+  </label>
   <div class="data-tab-groups" ${DATA_ROUTE_TABLIST_ATTR}
     role="tablist" aria-label="Data collections" aria-orientation="horizontal">
-    ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active, locked)}
-    ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active, locked)}
-    ${renderTabGroup('Connected', DATA_MIRROR_TABS, active, locked)}
-    ${renderTabGroup('Provenance', DATA_PROVENANCE_TABS, active, locked)}
-    ${renderTabGroup('Storage', DATA_SHARED_TABS, active, locked)}
-    ${renderTabGroup('Records', DATA_RECORDS_TABS, active, locked)}
-    ${renderTabGroup('Find', DATA_SEARCH_TABS, active, locked)}
+    ${DATA_TAB_GROUPS.map(group => renderTabGroup(group.label, group.tabs, active, locked)).join('')}
   </div>
 `;
 
@@ -5035,6 +5056,12 @@ export const bootstrapDataRoute = (
 
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(DATA_ROUTE_HOST_ATTR, '');
+  // A focus fallback must address the navigation that is actually visible:
+  // collection tabs on a wide screen, the same collections in a picker on a
+  // phone. This also preserves the existing editor/discard-guard ownership.
+  const collectionNavigationTarget = (tab: DataTabId): HTMLElement | null =>
+    routeRoot.querySelector?.<HTMLElement>(doc.defaultView?.matchMedia?.('(max-width: 640px)').matches
+      ? `[${DATA_ROUTE_COLLECTION_PICKER_ATTR}]` : `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`) ?? null;
   opts.root.appendChild(routeRoot);
 
   let disposed = false;
@@ -5757,12 +5784,7 @@ export const bootstrapDataRoute = (
     return input !== null;
   };
   const focusRecordsTab = (): boolean => {
-    const queryable = routeRoot as unknown as {
-      querySelector?: (selector: string) => HTMLElement | null;
-    };
-    const tab = queryable.querySelector?.(
-      `[${DATA_ROUTE_TAB_ATTR}="records"]`,
-    ) ?? null;
+    const tab = collectionNavigationTarget('records');
     tab?.focus?.({ preventScroll: true });
     tab?.scrollIntoView?.({ block: 'nearest' });
     return tab !== null;
@@ -6629,6 +6651,7 @@ export const bootstrapDataRoute = (
                 }
             : null;
     const focusedTabRaw = activeElement?.getAttribute?.(DATA_ROUTE_TAB_ATTR);
+    const focusedCollectionPicker = activeElement?.hasAttribute?.(DATA_ROUTE_COLLECTION_PICKER_ATTR) === true;
     const focusedTab = focusedTabRaw !== null
       && focusedTabRaw !== undefined
       && isDataTab(focusedTabRaw)
@@ -7031,15 +7054,11 @@ export const bootstrapDataRoute = (
       && activeLens === 'data'
       && activeTab === pendingCollectionTabFocus
     ) {
-      const replacement = routeRoot.querySelector(
-        `[${DATA_ROUTE_TAB_ATTR}="${pendingCollectionTabFocus}"]`,
-      ) as HTMLElement | null;
+      const replacement = collectionNavigationTarget(pendingCollectionTabFocus);
       replacement?.focus?.({ preventScroll: true });
       if (replacement !== null) pendingCollectionTabFocus = null;
-    } else if (focusedTab !== null && activeLens === 'data') {
-      const replacement = routeRoot.querySelector(
-        `[${DATA_ROUTE_TAB_ATTR}="${focusedTab}"]`,
-      ) as HTMLElement | null;
+    } else if ((focusedTab !== null || focusedCollectionPicker) && activeLens === 'data') {
+      const replacement = collectionNavigationTarget(focusedTab ?? activeTab);
       replacement?.focus?.({ preventScroll: true });
     }
     if (focusedTaskFilter !== null && activeLens === 'data' && activeTab === 'task') {
@@ -7422,9 +7441,7 @@ export const bootstrapDataRoute = (
                 COLLECTION_INSTANCE_SLUG_ATTR,
               ) === explorerSelectedSlug,
             ) ?? null;
-        const tab = routeRoot.querySelector(
-          `[${DATA_ROUTE_TAB_ATTR}="${activeTab}"]`,
-        ) as HTMLElement | null;
+        const tab = collectionNavigationTarget(activeTab);
         (retry ?? selectedSource ?? tab)?.focus?.({ preventScroll: true });
         pendingExplorerRetryFocus = null;
       }
@@ -7494,9 +7511,7 @@ export const bootstrapDataRoute = (
                 candidate.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
                 === pendingLoadedContactEmail,
             ) ?? null;
-        const fallback = routeRoot.querySelector?.(
-          `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
-        ) as HTMLElement | null | undefined;
+        const fallback = collectionNavigationTarget('contact');
         (loadMore ?? appendedContact ?? fallback)?.focus?.({ preventScroll: true });
         pendingContactLoadMoreFocus = false;
         pendingLoadedContactEmail = null;
@@ -7527,9 +7542,7 @@ export const bootstrapDataRoute = (
           `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
           + `[data-kind="${pendingWorkEntityLoadMoreFocusKind}"]`,
         ) as HTMLElement | null | undefined;
-        const fallback = routeRoot.querySelector?.(
-          `[${DATA_ROUTE_TAB_ATTR}="${pendingWorkEntityLoadMoreFocusKind}"]`,
-        ) as HTMLElement | null | undefined;
+        const fallback = collectionNavigationTarget(pendingWorkEntityLoadMoreFocusKind);
         (loadMore ?? appendedEntity ?? search ?? fallback)?.focus?.({
           preventScroll: true,
         });
@@ -7555,9 +7568,7 @@ export const bootstrapDataRoute = (
         ).find((candidate) => pendingLoadedFormResponseIds.includes(
           candidate.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) ?? '',
         )) ?? null;
-        const fallback = routeRoot.querySelector?.(
-          `[${DATA_ROUTE_TAB_ATTR}="form_response"]`,
-        ) as HTMLElement | null | undefined;
+        const fallback = collectionNavigationTarget('form_response');
         (loadMore ?? appendedResponse ?? fallback)?.focus?.({
           preventScroll: true,
         });
@@ -8575,9 +8586,7 @@ export const bootstrapDataRoute = (
               candidate.getAttribute(COLLECTION_INSTANCE_SLUG_ATTR)
                 === explorerSelectedSlug,
           ) ?? null;
-      const tab = routeRoot.querySelector(
-        `[${DATA_ROUTE_TAB_ATTR}="${activeTab}"]`,
-      ) as HTMLElement | null;
+      const tab = collectionNavigationTarget(activeTab);
       (row ?? source ?? tab)?.focus?.({ preventScroll: true });
     }
     syncDataHash(); // back to the list → `#data/<tab>`
@@ -9995,10 +10004,9 @@ export const bootstrapDataRoute = (
       workEntityState = selectKindTransition(workEntityState, tab);
     }
     // ⛔ NOT WHEN THE CALLER IS CLAIMING THE TAB ITSELF. `focusActivatedTab` is
-    // the ARIA tablist's roving-focus path (arrow keys / Home / End), which
-    // must leave focus ON the tab so the owner can keep arrowing. Claiming the
-    // box there ejected a keyboard user out of the tablist at this one tab and
-    // stranded them — caught only by the e2e that drives real arrow keys.
+    // collection navigation path (the tablist or mobile picker), which must
+    // leave focus on that control so the owner can keep changing collections.
+    // Claiming the search box there ejected a keyboard user from navigation.
     if (tab === 'search' && !focusActivatedTab) pendingUniversalSearchFocus = true;
     syncDataHash();
     pendingLoadPromise = refreshActive();
@@ -10958,9 +10966,7 @@ export const bootstrapDataRoute = (
       `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
       + `[data-kind="${origin.kind}"]`,
     ) ?? null;
-    const tab = queryable.querySelector?.(
-      `[${DATA_ROUTE_TAB_ATTR}="${origin.kind}"]`,
-    ) ?? null;
+    const tab = collectionNavigationTarget(origin.kind);
     const target = exact ?? search ?? tab;
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
@@ -11612,9 +11618,7 @@ export const bootstrapDataRoute = (
       : queryable.querySelector?.(
           `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
         ) ?? null;
-    const tab = queryable.querySelector?.(
-      `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
-    ) ?? null;
+    const tab = collectionNavigationTarget('contact');
     (trigger ?? fallback ?? tab)?.focus?.({ preventScroll: true });
   };
 
@@ -12091,12 +12095,7 @@ export const bootstrapDataRoute = (
   };
 
   const focusDataTab = (tab: DataTabId): void => {
-    const queryable = routeRoot as unknown as {
-      querySelector?: (selector: string) => HTMLElement | null;
-    };
-    const target = queryable.querySelector?.(
-      `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`,
-    ) ?? null;
+    const target = collectionNavigationTarget(tab);
     target?.focus?.({ preventScroll: true });
     target?.scrollIntoView?.({ block: 'nearest' });
   };
@@ -12275,9 +12274,7 @@ export const bootstrapDataRoute = (
         (candidate) =>
           candidate.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) === returnId,
       );
-      const tab = queryable.querySelector?.(
-        `[${DATA_ROUTE_TAB_ATTR}="form_response"]`,
-      ) ?? null;
+      const tab = collectionNavigationTarget('form_response');
       (row ?? tab)?.focus?.({ preventScroll: true });
     }
   };
@@ -12884,9 +12881,7 @@ export const bootstrapDataRoute = (
       const search = routeRoot.querySelector(
         `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
       ) as HTMLElement | null;
-      const tab = routeRoot.querySelector(
-        `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
-      ) as HTMLElement | null;
+      const tab = collectionNavigationTarget('contact');
       (row ?? search ?? tab)?.focus?.({ preventScroll: true });
     }
   };
@@ -14502,6 +14497,14 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (target.getAttribute(DATA_ROUTE_COLLECTION_PICKER_ATTR) !== null) {
+      const next = target.value;
+      // A protected edit may refuse the switch. Keep the current collection
+      // selected until the existing navigation guard accepts it.
+      target.value = activeTab;
+      if (isDataTab(next)) void selectTab(next, true);
+      return;
+    }
     if (activeTab === 'mail_fact'
       && (target.getAttribute(MAIL_FACTS_FILTER_ATTR) !== null || target.getAttribute(MAIL_FACTS_FIELD_ATTR) !== null)
       && mailFacts.handleChange(target)) return;

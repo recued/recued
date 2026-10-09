@@ -259,14 +259,20 @@ describe('composeLlmSubstrate db-with-keys path', () => {
     expect(keyProvider).toHaveBeenCalledWith('server-data');
   });
 
-  it('does not ask uninitialized keys for a provider and passes undefined getEncryptionKey', () => {
-    const { keys, keyProvider } = makeKeys('uninitialized');
+  it("asks uninitialized keys for the 'server-data' provider too, never plaintext", () => {
+    // ⛔ This used to pass NO getEncryptionKey while uninitialized, so the
+    // manager wrote API keys in plaintext. The check ran at COMPOSE time and a
+    // new server's first pairing unlocks the vault in-process, so its whole
+    // first session did (2026-10-08). The provider's closure re-reads the
+    // state per call; until unlock, a secret write throws.
+    const { keys, keyProvider, getKey } = makeKeys('uninitialized');
 
     composeWithDb({ keys });
 
-    expect(keyProvider).not.toHaveBeenCalled();
+    expect(keyProvider).toHaveBeenCalledTimes(1);
+    expect(keyProvider).toHaveBeenCalledWith('server-data');
     const options = llmConfigMocks.createLLMConfigManager.mock.calls[0]?.[1];
-    expect(options?.getEncryptionKey).toBeUndefined();
+    expect(options?.getEncryptionKey).toBe(getKey);
   });
 
   it('passes undefined getEncryptionKey when keys are absent', () => {

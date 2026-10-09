@@ -91,6 +91,8 @@ import {
   emitApprovalResolved,
 } from '../events/emit-sites.js';
 import { bootServerIdentity, type BootedServerIdentity } from '../identity/boot.js';
+import { CONTAINER_UNSEALED_REFUSAL } from '../identity/passphrase-env.js';
+import { runningInContainer } from '../lifecycle/supervisor.js';
 import {
   createAccountBindingManager,
   type AccountBindingManager,
@@ -707,7 +709,14 @@ export const composeStorageContext = async (
     // D-212 slice 5 — the server's own boot is where binding this realm to
     // this machine is a decision someone made, so this is the one caller that
     // opts into sealing the keyfile against a platform secret store.
-    const booted = await bootServerIdentity({ dbPath, machineSealing: true });
+    const booted = await bootServerIdentity({
+      dbPath,
+      machineSealing: true,
+      // ⛔ Inside a container the only alternative to a passphrase is an unsealed
+      // key file in the data volume, so a container's first boot without one is
+      // refused rather than warned about. An existing key file is never refused.
+      ...(runningInContainer() ? { refuseUnsealed: CONTAINER_UNSEALED_REFUSAL } : {}),
+    });
     signingIdentityRef = booted;
     if (booted.created) {
       console.error(

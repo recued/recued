@@ -31,6 +31,8 @@ import {
   CLI_OUTPUT_SHAPES,
   CLI_OUTPUT_STORAGES,
   CLI_PROGRESS_ANSWER_ADAPTERS,
+  CLI_BINDING_ENV_NAMES,
+  CLI_BINDING_ENV_VALUE_MAX,
   SERVICE_RESTART_POLICIES,
   isClosedRequestSchema,
   HTTP_UPLOAD_MAX_BYTES_CEILING,
@@ -58,7 +60,7 @@ import {
 // invariant can never drift between the authoring table and a directly-published
 // catalog ingredient. The interpreter code/eval-hole guard + the argv[0]
 // command-pin both live here.
-import { cliInterpreterViolations, cliCommandViolation } from '@recued/ingredients/cli-argv-safety';
+import { cliEnvViolations, cliInterpreterViolations, cliCommandViolation } from '@recued/ingredients/cli-argv-safety';
 import type { CliArgvTemplateEntryLike } from '@recued/ingredients/cli-argv-safety';
 import {
   CANONICAL_WORKFLOW_TEMPLATE_REGISTRY,
@@ -320,6 +322,34 @@ const validateCliCwd = (
       `${cwdPath}.arg`,
       `cwd arg ${JSON.stringify(ref)} must be declared in editable_args with affects_target: true`,
     );
+  }
+};
+
+/** Pinned environment variables — the shared `cliEnvViolations` invariant: a
+ *  closed list of names that only narrow their tool, literal bounded values,
+ *  foreground-only. */
+const validateCliEnv = (
+  row: Record<string, unknown>,
+  path: string,
+  add: AddIssue,
+): void => {
+  if (!isPlainObject(row.bind) || row.bind.kind !== 'cli_invocation') return;
+  if (row.bind.env === undefined) return;
+  const envPath = `${path}.bind.env`;
+  for (const v of cliEnvViolations(row.bind.env, row.bind.detached)) {
+    if (v.kind === 'shape') {
+      add('error', 'composition_cli_env_shape', envPath,
+        'env must be an object pinning at least one variable when present');
+    } else if (v.kind === 'name') {
+      add('error', 'composition_cli_env_name', `${envPath}.${v.name}`,
+        `env may pin only ${CLI_BINDING_ENV_NAMES.join(' | ')} — each only narrows its tool; a variable that could load other code or find another binary never joins the list`);
+    } else if (v.kind === 'value') {
+      add('error', 'composition_cli_env_value', `${envPath}.${v.name}`,
+        `env value for ${v.name} must be a literal string of at most ${CLI_BINDING_ENV_VALUE_MAX} characters with no NUL`);
+    } else {
+      add('error', 'composition_cli_env_detached', envPath,
+        'env is foreground-only and cannot combine with a detached job spec');
+    }
   }
 };
 
@@ -1909,6 +1939,7 @@ const validateOperations = (
       }
       if (bindKind === 'cli_invocation') {
         validateCliCwd(row, path, add);
+        validateCliEnv(row, path, add);
         validateCliOutputCapture(row, path, add);
         validateCliInputMaterialize(row, path, add);
         validateCliOutputShape(row, path, add);

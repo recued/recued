@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { SavedDataView, SavedDataViewDefinition } from '@recued/contracts';
+import { openSavedViewList } from './helpers/saved-data-views.js';
 
 const BASE = 'http://127.0.0.1:4319/full-app-harness.html';
 const ID = 'view_00000000-0000-4000-8000-000000000002';
@@ -100,7 +101,7 @@ test('Saved view updates offer Save as new without changing the original setting
   expect(views[1]!.id).not.toBe(ID);
   await expect(query(page)).toHaveValue('Copy settings');
   await expect(tools(page).locator('[data-view-modified]')).toBeVisible();
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).locator('details').getByRole('link', { name: 'A separate view', exact: true }).click();
   await expect(query(page)).toHaveValue('Copy settings');
   await expect(page).toHaveURL(new RegExp(`#views/${views[1]!.id}$`));
@@ -136,7 +137,7 @@ test('Saved view updates do not silently adopt a newer revision after list refre
   await boot(page);
   await query(page).fill('My settings');
   await peerUpdate(page, 'Their settings');
-  await tools(page).locator('summary').click();
+  await openSavedViewList(page);
   await tools(page).getByRole('button', { name: 'Refresh saved views' }).click();
   const review = tools(page).getByRole('group', { name: 'Review saved view changes' });
   await expect(review).toContainText('Their settings');

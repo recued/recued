@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { createMessengerListFixture as CreateFixture } from './harness/chat-messenger-list-backend.js';
 import type { MessengerSessionListReply } from '../src/chat/messenger-session-list.js';
+import { openChatHistory } from './helpers/chat-history.js';
 
 let createFixture: typeof CreateFixture;
 test.beforeAll(async () => {
@@ -23,6 +24,7 @@ const menu = (page: Page, session: string) => page.locator(`[data-recued-chat-ro
 const boot = async (page: Page) => {
   await page.goto('/chat-queue-harness.html');
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await openChatHistory(page);
   await expect(row(page, 'slack-chat').locator('[data-chat-messenger-receive]')).toContainText('Receiving');
 };
 

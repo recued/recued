@@ -28,7 +28,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { randomBytes, base64ToBytes, bytesToBase64 } from '@recued/crypto';
 import {
-  resolveVendorOAuthEndpoints,
+  buildVendorAuthorizeUrl,
   OAUTH_STATE_TOKEN_REPLAY_WINDOW_MS,
   type ConnectionVendorProvider,
   type OauthStateTokenPayload,
@@ -406,48 +406,10 @@ export const decodeOauthStateToken = (state: string): DecodedOauthStateToken | n
 };
 
 // ────────────────────────────────────────────────────────────────
-// Authorize-URL builder + start orchestrator
+// Start orchestrator (the authorize-URL builder is `@recued/contracts`'
+// `buildVendorAuthorizeUrl`, shared with the loopback dance the browser
+// drives itself)
 // ────────────────────────────────────────────────────────────────
-
-/** Build the vendor authorize URL the user's browser is sent to. The
- *  signed `state` is embedded; `URLSearchParams` percent-encodes every
- *  value. `client_secret` is NEVER placed here — it is used only at
- *  token exchange (slice 2). Sandbox selects the sandbox authorize URL
- *  when the provider declares one (Salesforce). */
-export const buildVendorAuthorizeUrl = (opts: {
-  provider: ConnectionVendorProvider;
-  client_id: string;
-  redirect_uri: string;
-  sandbox: boolean;
-  state: string;
-  /** PKCE S256 challenge — present only for `supports_pkce` providers. When
-   *  set, the builder adds `code_challenge` + `code_challenge_method=S256`
-   *  (reserved keys a vendor's authorize_params can't override). */
-  code_challenge?: string;
-}): string => {
-  const { authorize_url } = resolveVendorOAuthEndpoints(opts.provider, {
-    sandbox: opts.sandbox,
-  });
-  const params = new URLSearchParams();
-  // Vendor extra params first (Google's `access_type=offline` +
-  // `prompt=consent` to mint a refresh token); the standard keys are set
-  // after so they win — a vendor can never override `state`/`scope`/etc.
-  // (the provider validator already rejects reserved keys, this is the
-  // defense-in-depth ordering).
-  for (const [k, v] of Object.entries(opts.provider.oauth.authorize_params ?? {})) {
-    params.set(k, v);
-  }
-  params.set('response_type', 'code');
-  params.set('client_id', opts.client_id);
-  params.set('redirect_uri', opts.redirect_uri);
-  params.set('scope', opts.provider.oauth.scopes.join(' '));
-  params.set('state', opts.state);
-  if (opts.code_challenge !== undefined) {
-    params.set('code_challenge', opts.code_challenge);
-    params.set('code_challenge_method', 'S256');
-  }
-  return `${authorize_url}?${params.toString()}`;
-};
 
 export interface StartVendorOAuthOptions {
   provider: ConnectionVendorProvider;

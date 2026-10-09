@@ -27,6 +27,7 @@ import {
   createExecutionLateBoundRefs,
 } from '../serve/compose-execution-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
+import { unlockServerVault } from './helpers/unlocked-vault.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -60,7 +61,7 @@ const composeServer = async () => {
     chatLateBound: lateBound,
   });
   // D-212 — the AI adapter's response cache is sealed; the server needs an unlocked vault.
-  await app.keys!.init({ password: 'd-316-test-passphrase' });
+  await unlockServerVault(app.keys!);
   const collection = composeCollectionContext({
     db: storage.db,
     dbPath,

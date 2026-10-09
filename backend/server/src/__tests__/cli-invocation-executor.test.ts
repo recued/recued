@@ -84,6 +84,39 @@ describe('cli_invocation executor', () => {
     }
   });
 
+  /** ⛔ opencode takes its working folder from `PWD` over its real one: started
+   *  in a repository with the server's `PWD`, it ran its commands in the
+   *  server's folder (measured). A child started in a folder sees that folder. */
+  it('sets PWD to the folder the child starts in, not the server\'s', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'recued-cli-pwd-'));
+    const saved = process.env.PWD;
+    process.env.PWD = '/the/server/folder';
+    try {
+      const exec = createCliInvocationExecutor();
+      const call = (cwd: boolean) => exec({
+        slug: 'opencode',
+        operation_key: 'opencode.task',
+        operation_id: 'recued-core/opencode.task',
+        args: { repo_dir: root },
+        timeout_ms: 5_000,
+        binding: {
+          kind: 'cli_invocation',
+          ...(cwd ? { cwd: { arg: '{repo_dir}' } } : {}),
+          argv_template: [process.execPath, '-e', 'process.stdout.write(process.env.PWD ?? "")'],
+          shape: 'text',
+          exit_code_handling: 'zero_is_success',
+        },
+      }) as Promise<{ stdout: string }>;
+
+      expect((await call(true)).stdout).toBe(realpathSync(root));
+      // No folder named: the child runs where the server does, PWD and all.
+      expect((await call(false)).stdout).toBe('/the/server/folder');
+    } finally {
+      if (saved === undefined) delete process.env.PWD; else process.env.PWD = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects cwd args that do not resolve to an existing directory before spawn', async () => {
     const exec = createCliInvocationExecutor();
 
@@ -239,6 +272,62 @@ describe('cli_invocation executor', () => {
     });
 
     expect(result).toMatchObject({ stdout: JSON.stringify({ task: 'review', depth: 2 }) });
+  });
+
+  /** `env` pins variables from `CLI_BINDING_ENV_NAMES` for the op's process,
+   *  over the server's own environment — opencode reads its project-config
+   *  switch from one. */
+  const envProbe = (env: unknown, args: Record<string, unknown> = {}) => ({
+    slug: 'opencode',
+    operation_key: 'opencode.status',
+    operation_id: 'recued-core/opencode.status',
+    args,
+    timeout_ms: 5_000,
+    binding: {
+      kind: 'cli_invocation' as const,
+      argv_template: [
+        process.execPath,
+        '-e',
+        'process.stdout.write(JSON.stringify({ off: process.env.OPENCODE_DISABLE_PROJECT_CONFIG ?? null, path: typeof process.env.PATH }))',
+      ],
+      shape: 'json' as const,
+      exit_code_handling: 'zero_is_success' as const,
+      env,
+    },
+  }) as unknown as Parameters<ReturnType<typeof createCliInvocationExecutor>>[0];
+
+  it('sets a binding\'s pinned environment variables over the server\'s own', async () => {
+    const exec = createCliInvocationExecutor();
+
+    const pinned = await exec(envProbe({ OPENCODE_DISABLE_PROJECT_CONFIG: '1' }));
+    // The rest of the environment is still the server's.
+    expect(pinned).toMatchObject({ stdout: { off: '1', path: 'string' } });
+
+    const inherited = await exec(envProbe(undefined));
+    expect(inherited).toMatchObject({ stdout: { off: process.env.OPENCODE_DISABLE_PROJECT_CONFIG ?? null } });
+  });
+
+  it('⛔ refuses before spawn a binding that pins a variable outside the closed list', async () => {
+    const exec = createCliInvocationExecutor();
+
+    for (const env of [{ NODE_OPTIONS: '--require /tmp/x.js' }, { PATH: '/tmp' }, { OPENCODE_PERMISSION: 7 }]) {
+      await expect(exec(envProbe(env)), JSON.stringify(env)).rejects.toMatchObject({
+        message: expect.stringMatching(/env may pin only OPENCODE_DISABLE_PROJECT_CONFIG, OPENCODE_PERMISSION to string values$/),
+        cli_failure: { reason: 'spawn_error' },
+      });
+    }
+  });
+
+  it('refuses a detached job that pins environment variables — the supervised path would drop them', async () => {
+    const exec = createCliInvocationExecutor();
+    const call = envProbe({ OPENCODE_DISABLE_PROJECT_CONFIG: '1' }, { result_dir: '/tmp', key: 'job_1' });
+    (call.binding as unknown as Record<string, unknown>).shape = 'text';
+    (call.binding as unknown as Record<string, unknown>).detached = {
+      mode: 'runtime_managed',
+      completion: { kind: 'marker_file', exit_pattern: '{result_dir}/{key}.exit.{code}' },
+    };
+
+    await expect(exec(call)).rejects.toThrow(/env is foreground-only and cannot combine with a detached job spec/);
   });
 
   it('rejects missing and non-scalar template args before spawning', async () => {
@@ -760,6 +849,54 @@ describe('cli_invocation D-259 finite semantics', () => {
       }
     },
   );
+});
+
+// opencode 1.18.35 continuing another folder's session — and any opencode
+// retrying a model host it cannot reach — prints NOTHING and never exits
+// (measured), which the 45-minute stall alone would let run for 45 minutes.
+describe('cli_invocation first-output window', () => {
+  const run = (script: string, progress: Record<string, unknown>, timeout_ms = 0): Promise<unknown> =>
+    createCliInvocationExecutor({ stallTuning: { pollMs: 10 } })({
+      slug: 'opencode',
+      operation_key: 'opencode.resume_session',
+      operation_id: 'recued-core/opencode.resume_session',
+      args: {},
+      timeout_ms,
+      stepMeta: { step_id: 'resume', trigger_source: 'chat' },
+      binding: {
+        kind: 'cli_invocation',
+        argv_template: [process.execPath, '-e', script],
+        shape: 'text',
+        exit_code_handling: 'zero_is_success',
+        progress: { contract: 'heartbeat', adapter: 'opencode-json', stall_ms: 30_000, ...progress } as never,
+      },
+    });
+  const SILENT = 'setTimeout(() => {}, 60000)';
+
+  it('stops a tool that prints nothing in its first_output_ms, as a timeout naming why', async () => {
+    const started = Date.now();
+    await expect(run(SILENT, { first_output_ms: 300 })).rejects.toMatchObject({
+      message: expect.stringMatching(/printed nothing in its first 300ms: opencode printed no events; it does that when the session belongs to another folder, or while it cannot reach its model host$/),
+      cli_failure: { reason: 'timeout', exit_code: -9 },
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('without the window, the same silent tool runs on to its wall deadline', async () => {
+    await expect(run(SILENT, {}, 600)).rejects.toThrow(/timed out after 600ms/);
+  });
+
+  // opencode prints `step_start` at once but a tool only once it is done, so
+  // a long first command is output without progress — and must not be stopped.
+  it('ends the window at the first output, even output that is not progress', async () => {
+    const script = [
+      'process.stdout.write(JSON.stringify({type:"step_start",sessionID:"ses_abcdefghijklmnopqrstuvwxyz",part:{id:"p1"}})+"\\n");',
+      'setTimeout(() => process.exit(0), 700);',
+    ].join('');
+    const result = await run(script, { first_output_ms: 200 }) as { exit_code: number; progress_signal_count: number };
+    expect(result.exit_code).toBe(0);
+    expect(result.progress_signal_count).toBe(0);
+  });
 });
 
 describe('cli_invocation executor — D-185 output shape', () => {

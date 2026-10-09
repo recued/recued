@@ -70,7 +70,10 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
     const style = doc?.createElement?.('style');
     if (style) {
       style.setAttribute(TODAY_ROUTE_STYLES_MARKER, '');
-      style.textContent = TODAY_VIEW_STYLES;
+      style.textContent = `${TODAY_VIEW_STYLES}
+        [${TODAY_ROUTE_HOST_ATTR}] { max-width: var(--wc-content-max, 1080px); margin: 0 auto; padding: 16px; }
+        [${TODAY_ROUTE_HOST_ATTR}] .today-view { max-width: none; margin-top: 0; }
+      `;
       doc?.head?.appendChild?.(style);
     }
   }
@@ -181,6 +184,11 @@ export const bootstrapTodayRoute = (opts: BootstrapTodayRouteOptions): TodayRout
       ?.closest?.(`[${TODAY_ROUTE_ACTION_ATTR}]`) as HTMLElement | null;
     const action = target?.getAttribute(TODAY_ROUTE_ACTION_ATTR);
     if (!action) return;
+    // Carry the owner's activated control through the repaint in WebKit too.
+    // A programmatic refresh must retain the field the owner is editing.
+    if (ev.isTrusted && target?.tagName === 'BUTTON') {
+      target.focus?.({ preventScroll: true });
+    }
     if (action === 'refresh-today') {
       if (!controller.refreshing()) pending = load();
       return;

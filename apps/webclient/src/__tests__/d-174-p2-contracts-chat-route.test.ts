@@ -194,6 +194,12 @@ interface FakeEl {
 interface FakeDomEvent {
   readonly key?: string;
   readonly target?: FakeEl | null;
+  readonly isTrusted?: boolean;
+  readonly button?: number;
+  readonly altKey?: boolean;
+  readonly ctrlKey?: boolean;
+  readonly metaKey?: boolean;
+  readonly shiftKey?: boolean;
   preventDefault?(): void;
   stopPropagation?(): void;
 }
@@ -277,7 +283,19 @@ const makeFakeEl = (
     },
     click() {
       if (el.disabled) return;
-      for (const fn of el.listeners.get('click') ?? []) fn();
+      // HTMLElement.click() dispatches an untrusted event to each listener.
+      const event: FakeDomEvent = {
+        target: el,
+        isTrusted: false,
+        button: 0,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        preventDefault() {},
+        stopPropagation() {},
+      };
+      for (const fn of el.listeners.get('click') ?? []) fn(event);
       if (el.tagName === 'SUMMARY' && el.parent?.tagName === 'DETAILS') {
         el.parent.open = !el.parent.open;
         for (const fn of el.parent.listeners.get('toggle') ?? []) {

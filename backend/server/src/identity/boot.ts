@@ -39,15 +39,17 @@ import {
 } from '../keys/file-store.js';
 import type { ServerKeyStore } from '../keys/index.js';
 import { createServerIdentity, type ServerIdentity } from './index.js';
+import { IDENTITY_PASSPHRASE_ENV_VAR, readIdentityPassphrase } from './passphrase-env.js';
 
 /** Filename used for the server-identity keys file. Resolved
  *  relative to `dirname(dbPath)` so backups that capture the db
  *  directory also capture the identity. */
 export const IDENTITY_KEYS_FILENAME = 'recued-server-identity.json';
 
-/** Env-var name the boot path reads for the optional file passphrase.
- *  Closed-string constant so tests + docs reference one source. */
-export const IDENTITY_PASSPHRASE_ENV_VAR = 'RECUED_IDENTITY_PASSPHRASE';
+/** Env-var name the boot path reads for the optional file passphrase. It lives
+ *  in a leaf (`passphrase-env.ts`) so code keeping it away from child processes
+ *  can name it without loading the key store; re-exported here unchanged. */
+export { IDENTITY_PASSPHRASE_ENV_VAR };
 
 /** Resolve the absolute identity-keys file path from a server db
  *  path. Pulled out as a named helper so the wiring test can assert
@@ -64,6 +66,9 @@ export interface BootServerIdentityOptions {
    *  which tooling and tests must not do on their behalf. The server's
    *  composition root turns it on. */
   machineSealing?: boolean;
+  /** With `machineSealing`: refuse, with this message, to create a NEW keyfile
+   *  unsealed. The server sets it inside a container. */
+  refuseUnsealed?: string;
   /** Override the passphrase. Tests pass `null` to force cleartext
    *  regardless of the live process env. Default: read from `env`. */
   passphrase?: string | null;
@@ -106,11 +111,12 @@ export const bootServerIdentity = async (
   const passphrase =
     options.passphrase === null
       ? undefined
-      : options.passphrase ?? env[IDENTITY_PASSPHRASE_ENV_VAR] ?? undefined;
+      : options.passphrase ?? readIdentityPassphrase(env);
   const keyStore = await createFileServerKeyStore({
     filePath,
     ...(passphrase ? { passphrase } : {}),
     ...(options.argon2_params ? { argon2_params: options.argon2_params } : {}),
+    ...(options.refuseUnsealed !== undefined ? { refuseUnsealed: options.refuseUnsealed } : {}),
     // D-212 slice 5 — off unless the caller asks. `bootServerIdentity` is
     // reached by tooling and by 15 test call sites as well as by the server, and
     // provisioning writes to the operator's OS keychain; that is a decision for

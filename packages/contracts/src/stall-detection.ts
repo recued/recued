@@ -79,7 +79,7 @@ export const DEFAULT_EXPECTED_INTERVAL_MS: Record<ProgressContract, number> = {
   'provider-event': 15_000,
   silent: 0,
   // D-274 — one no-movement sample window. k=6 ⇒ flag after ~3 min during which
-  // the process tree consumed no CPU and its RSS did not move.
+  // the process tree consumed no CPU and its RSS did not grow (a shrink is the OS's).
   resource: 30_000,
 };
 

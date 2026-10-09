@@ -149,6 +149,27 @@ const VALID_MODES: ReadonlySet<string> = new Set([
 /** Resolve the concrete supervisor mode given the running environment.
  *  The `'auto'` sentinel is allowed as an input and triggers detection;
  *  every other input is treated as an explicit override (validated). */
+/** Is this process inside a container? Our images say so
+ *  (`RECUED_SUPERVISOR_MODE`), and any container says so to whoever looks:
+ *  Docker's `/.dockerenv`, Podman's `/run/.containerenv`, or the `container`
+ *  variable that systemd-nspawn and Podman set.
+ *
+ *  Not `resolveSupervisorMode`: an operator may supervise a containerised
+ *  server some other way, and this answers a property of the machine. Inside a
+ *  container there is no platform secret store to seal the key file with
+ *  (`keys/file-store.ts`). Not the update channel either: tests set
+ *  `RECUED_DISTRIBUTION_CHANNEL=docker-thin` on the host, to give a boot its own
+ *  update lease. */
+export const runningInContainer = (
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): boolean =>
+  env.RECUED_SUPERVISOR_MODE === 'docker'
+  || env.RECUED_SUPERVISOR_MODE === 'docker-thin'
+  || (env.container !== undefined && env.container !== '')
+  || exists('/.dockerenv')
+  || exists('/run/.containerenv');
+
 export const resolveSupervisorMode = (
   configured: SupervisorMode,
   deps: DetectSupervisorDeps = {},

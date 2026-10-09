@@ -49,6 +49,7 @@ import { bootEventKeep, createBootEventRecorder } from '../triggers/boot-events.
 import { createEventTriggerDispatcher } from '../triggers/dispatcher.js';
 import { handleTriggersUpdate } from '../triggers/handler.js';
 import { createEventTriggersStore } from '../triggers/store.js';
+import { unlockServerVault } from './helpers/unlocked-vault.js';
 
 const flush = (): Promise<void> => new Promise((r) => { setImmediate(r); });
 
@@ -511,7 +512,7 @@ const bootToAdapters = async () => {
     workEntityStore: storage.workEntityStoreRef, chatLateBound: lateBound,
   });
   // The vault unlocks at boot, as a keyfile does: the mailboxes sync at once.
-  await app.keys!.init({ password: 'd-124-boot-scan-passphrase' });
+  await unlockServerVault(app.keys!);
   const collection = composeCollectionContext({
     db: storage.db, dbPath, runtimeConfig, manifests: storage.manifests, baseVault: storage.baseVault,
     auditLog: storage.auditLog, cacheBlobs: app.cacheBlobs, warehouseBus: app.warehouseBus,

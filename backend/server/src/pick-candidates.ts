@@ -157,6 +157,94 @@ export const derivePickCandidates = (
   return { candidates, operations };
 };
 
+/** A pure `{{config.<var>}}` connection ref — the only shape a slot binds through. */
+const PURE_CONFIG_REF = /^\{\{\s*config\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
+
+const isSupplied = (value: unknown): boolean =>
+  typeof value === 'string' ? value.trim().length > 0 : value !== undefined && value !== null;
+
+/** One CONCRETE step slot the run left unbound: a catalog fetch whose
+ *  `connection` is a pure `{{config.<var>}}` ref to a declared
+ *  `type:'connection'` variable with no value — run config (dish overlays
+ *  included) and default both empty. An install-resolved canonical op
+ *  (`<id>__raw`) carries exactly this, and so does every vendor catalog recipe:
+ *  3,744 steps across the shipped corpus (2026-10-08).
+ *
+ *  ⛔ Before this, only CANONICAL op-steps reached the pick layer. A recipe
+ *  resolved at install no longer has one, so its empty slot went straight to the
+ *  gateway: a pack's view auto-ran and showed "operation … on connection ''
+ *  denied (no_connection_profile)" (driven live 2026-10-08, the HubSpot pack). */
+export interface ConcreteConnectionSlot {
+  variable: string;
+  /** The catalogs its steps fetch from (`ingredient`), in step order. */
+  catalogs: string[];
+  /** Their `input.operation` ids — the ask shows them; a candidate must allow them. */
+  operations: string[];
+}
+
+/** The concrete slots a run leaves unbound, in step order (prefetch, steps,
+ *  trigger steps). A step whose `skip_when` reads the variable treats "empty" as
+ *  "leave me out" — an OPTIONAL connection — so that variable is never a slot:
+ *  binding it would run a step the owner chose to skip. (None of the 3,744
+ *  shipped steps does this; a hand-written recipe may.) */
+export const unboundConcreteConnectionSlots = (
+  recipe: RecipeDefinition,
+  config: Readonly<Record<string, unknown>>,
+): ConcreteConnectionSlot[] => {
+  const declared = (recipe.variables ?? {}) as Readonly<
+    Record<string, { type?: unknown; default?: unknown } | undefined>
+  >;
+  const slots = new Map<string, ConcreteConnectionSlot>();
+  const optional = new Set<string>();
+  const steps = [
+    ...(recipe.prefetch_steps ?? []),
+    ...recipe.steps,
+    ...(recipe.trigger_steps ?? []),
+  ] as ReadonlyArray<Readonly<Record<string, unknown>>>;
+  for (const step of steps) {
+    if (typeof step.connection !== 'string' || typeof step.ingredient !== 'string') continue;
+    const variable = PURE_CONFIG_REF.exec(step.connection.trim())?.[1];
+    if (variable === undefined) continue;
+    const declaration = declared[variable];
+    if (declaration?.type !== 'connection') continue;
+    if (isSupplied(config[variable]) || isSupplied(declaration.default)) continue;
+    if (step.skip_when !== undefined && JSON.stringify(step.skip_when).includes(`config.${variable}`)) {
+      optional.add(variable);
+      continue;
+    }
+    const slot = slots.get(variable) ?? { variable, catalogs: [], operations: [] };
+    if (!slot.catalogs.includes(step.ingredient)) slot.catalogs.push(step.ingredient);
+    const operation = (step.input as Readonly<Record<string, unknown>> | undefined)?.operation;
+    if (typeof operation === 'string' && !slot.operations.includes(operation)) {
+      slot.operations.push(operation);
+    }
+    slots.set(variable, slot);
+  }
+  return [...slots.values()].filter((slot) => !optional.has(slot.variable));
+};
+
+/** The enrolled connections that can serve a concrete slot: a profile stamped
+ *  with the ONE catalog the slot's steps fetch from, granting every operation
+ *  they call. A slot spanning two catalogs has none (a connection is bound to
+ *  one catalog), and an unstamped legacy profile is never matched to a catalog.
+ *  Sorted by connection name. */
+export const concreteSlotCandidates = (
+  slot: ConcreteConnectionSlot,
+  profiles: Pick<ConnectionOperationProfileStore, 'list'>,
+): PickCandidate[] => {
+  if (slot.catalogs.length !== 1) return [];
+  const catalog = slot.catalogs[0]!;
+  const vendor = VENDOR_BY_CATALOG.get(catalog);
+  const candidates: PickCandidate[] = [];
+  for (const [name, profile] of profiles.list()) {
+    if (profile.catalog_slug !== catalog) continue;
+    if (!slot.operations.every((op) => profile.allowed_operations.includes(op))) continue;
+    candidates.push({ connection_name: name, catalog_slug: catalog, ...(vendor !== undefined ? { vendor } : {}) });
+  }
+  candidates.sort((a, b) => a.connection_name.localeCompare(b.connection_name));
+  return candidates;
+};
+
 /** Assemble the gateway leaf's `PickAskInput` for one unbound slot —
  *  mints the pick id (the deterministic re-run key) and snapshots the
  *  run identity. `recipe_id` re-runs by id iff the request named one;

@@ -424,3 +424,94 @@ describe('D-130 P1.2 — handleConnectionCompleteVendorOAuth rpc forwards sandbo
     }
   });
 });
+
+/** A loopback dance (a page on `localhost`) has no flow record to hold a PKCE
+ *  verifier, so the browser mints one, sends only its challenge, and proves it
+ *  here. It must reach the token endpoint for a vendor whose authorize URL
+ *  carried the challenge, and only for one. */
+describe('handleConnectionCompleteVendorOAuth — a loopback dance proves its PKCE verifier', () => {
+  // RFC 7636 Appendix B's verifier.
+  const VERIFIER = 'dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk';
+  const LOOPBACK_REDIRECT = 'http://127.0.0.1:7841/webclient/oauth-callback.html';
+
+  it('sends it to a vendor that uses PKCE (Salesforce)', async () => {
+    const { store, cleanup } = makeStore();
+    try {
+      const { fetcher, calls } = makeFetcher([
+        {
+          status: 200,
+          body: {
+            access_token: 'A',
+            refresh_token: 'R',
+            scope: 'api refresh_token',
+            instance_url: 'https://acme.my.salesforce.com',
+          },
+        },
+      ]);
+      await handleConnectionCompleteVendorOAuth(
+        { store, fetcher },
+        {
+          vendor: 'salesforce',
+          code: 'CODE',
+          redirect_uri: LOOPBACK_REDIRECT,
+          client_id: 'CID',
+          client_secret: 'SEC',
+          code_verifier: VERIFIER,
+        },
+      );
+      expect(new URLSearchParams(calls[0]!.init?.body).get('code_verifier')).toBe(VERIFIER);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('drops it for a vendor that never got a challenge (HubSpot)', async () => {
+    const { store, cleanup } = makeStore();
+    try {
+      const { fetcher, calls } = makeFetcher([
+        { status: 200, body: { access_token: 'A', refresh_token: 'R', scope: 'oauth' } },
+      ]);
+      const result = await handleConnectionCompleteVendorOAuth(
+        { store, fetcher },
+        {
+          vendor: 'hubspot',
+          code: 'CODE',
+          redirect_uri: LOOPBACK_REDIRECT,
+          client_id: 'CID',
+          client_secret: 'SEC',
+          code_verifier: VERIFIER,
+        },
+      );
+      expect(result.refresh_token).toBe('R');
+      expect(getVendorProvider('hubspot')!.oauth.supports_pkce).not.toBe(true);
+      expect(new URLSearchParams(calls[0]!.init?.body).has('code_verifier')).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('refuses a malformed verifier before anything is sent', async () => {
+    const { store, cleanup } = makeStore();
+    try {
+      const { fetcher, calls } = makeFetcher([]);
+      for (const code_verifier of ['too-short', `${VERIFIER}+`, 'x'.repeat(129)]) {
+        await expect(
+          handleConnectionCompleteVendorOAuth(
+            { store, fetcher },
+            {
+              vendor: 'salesforce',
+              code: 'CODE',
+              redirect_uri: LOOPBACK_REDIRECT,
+              client_id: 'CID',
+              client_secret: 'SEC',
+              code_verifier,
+            },
+          ),
+        ).rejects.toThrow(/code_verifier must be 43 to 128 characters/);
+      }
+      expect(calls).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+});

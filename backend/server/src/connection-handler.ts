@@ -50,6 +50,7 @@ import {
   connectionRowKey,
   getVendorProvider,
   buildGenericVendorProvider,
+  vendorOAuthRequestedScopes,
   vendorOAuthRedirectChoices,
   canonicalizeSubresourcePath,
   SUBRESOURCE_PATH_MAX_LEN,
@@ -2039,6 +2040,25 @@ const resolveVendorFromConnection = (
   existing: { config_json: string; subtype?: string | null } | null,
 ): string | undefined => (existing ? resolveConnectionVendor(existing) : undefined);
 
+/** ⛔ An API ROOT that answers without checking the credential proves nothing
+ *  about it. HubSpot's answers 302 to a good key, a wrong key and no key alike
+ *  (measured 2026-10-08), so the HEAD-root probe stamped `ok` on ANY Service
+ *  Key — a mistyped one passed Save — and credential rotation refused every
+ *  replacement, because its invalid control key passed too
+ *  (`credential_check_did_not_require_auth`). A vendor like that names an
+ *  authenticated read here, and the probe GETs it instead of the root.
+ *  HubSpot's `/account-info/v3/details` answered 200 to the working key and
+ *  401 to a wrong one and to none; HubSpot lists only the `oauth` scope for
+ *  it, which every HubSpot OAuth app is granted. */
+const VENDOR_PROBE_PATHS: Readonly<Record<string, string>> = {
+  hubspot: '/account-info/v3/details',
+};
+
+const vendorProbePath = (vendor: string | undefined): string | undefined =>
+  vendor !== undefined && Object.hasOwn(VENDOR_PROBE_PATHS, vendor)
+    ? VENDOR_PROBE_PATHS[vendor]
+    : undefined;
+
 /** D-192 slice 4 — the messenger vendor of a notification connection
  *  (slack / telegram), declaration-driven per the kinds-taxonomy §0 rule (a
  *  subtype that carries a `MessengerVendorDeclaration`). `undefined` for a
@@ -2649,16 +2669,18 @@ export const handleConnectionProbe = async (
     if (auth.type === 'body_field') {
       return healthOf('unknown', 'body_field_auth_not_probeable');
     }
-    const url = authenticatedPath === undefined
+    const probePath = authenticatedPath
+      ?? vendorProbePath(resolveVendorFromConnection(existing));
+    const url = probePath === undefined
       ? new URL(base)
-      : composeApiUrl(base, authenticatedPath);
+      : composeApiUrl(base, probePath);
     const headers: Record<string, string> = {};
     applyAuth(auth, headers, url);
     try {
       // A vendor-specific path names an authenticated query, so call it as
       // GET directly. The generic endpoint probe retains its cheap HEAD → GET
       // fallback for APIs without a declared health resource.
-      if (authenticatedPath !== undefined) {
+      if (probePath !== undefined) {
         const get = await fetchTimed(url.toString(), { method: 'GET', headers });
         return classifyHttpReachability(get.status);
       }
@@ -4746,6 +4768,9 @@ export const handleConnectionAcknowledgeCredentialRotationSafeStop = async (
   };
 };
 
+/** RFC 7636 § 4.1 — a `code_verifier` is 43 to 128 unreserved characters. */
+const PKCE_CODE_VERIFIER = /^[A-Za-z0-9\-._~]{43,128}$/;
+
 /** D-129 P1.2 — vendor OAuth code-exchange. The enrollment dialog
  *  drives the user through the vendor's authorize URL (P1.3 wires the
  *  in-app dance via `chrome.identity.launchWebAuthFlow` / popup
@@ -4771,6 +4796,10 @@ export const handleConnectionCompleteVendorOAuth = async (
      *  exchange POSTs to the sandbox token endpoint. Vendors
      *  without a sandbox split (HubSpot) ignore the flag. */
     sandbox?: boolean;
+    /** PKCE `code_verifier` (RFC 7636) from a loopback dance the browser
+     *  drove itself — there is no flow record to hold one. Forwarded only to
+     *  a registered vendor that uses PKCE; any other never got a challenge. */
+    code_verifier?: string;
   },
 ): Promise<{ refresh_token: string; granted_scopes: string[]; instance_url?: string }> => {
   const a = ensureRecordArgs('collection.connection.completeVendorOAuth', args);
@@ -4811,6 +4840,15 @@ export const handleConnectionCompleteVendorOAuth = async (
     throw new RpcError(
       'bad_request',
       'collection.connection.completeVendorOAuth: sandbox must be boolean when present',
+    );
+  }
+  if (
+    a.code_verifier !== undefined &&
+    (typeof a.code_verifier !== 'string' || !PKCE_CODE_VERIFIER.test(a.code_verifier))
+  ) {
+    throw new RpcError(
+      'bad_request',
+      'collection.connection.completeVendorOAuth: code_verifier must be 43 to 128 characters of A-Z, a-z, 0-9, "-", ".", "_" or "~" when present',
     );
   }
 
@@ -4879,6 +4917,10 @@ export const handleConnectionCompleteVendorOAuth = async (
       client_id: a.client_id,
       ...(a.client_secret !== undefined ? { client_secret: a.client_secret } : {}),
       ...(a.sandbox !== undefined ? { sandbox: a.sandbox } : {}),
+      // Only the vendor whose authorize URL carried a challenge proves it.
+      ...(a.code_verifier !== undefined && provider.oauth.supports_pkce === true
+        ? { code_verifier: a.code_verifier }
+        : {}),
       ...(deps.fetcher !== undefined ? { fetcher: deps.fetcher } : {}),
     });
   } catch (e) {
@@ -5023,8 +5065,9 @@ const handleConnectionStartVendorOAuth = async (
     const packScopes =
       requestedScopesArg ?? wiring.installedPackScopeUnion?.(a.vendor) ?? [];
     // Set insertion order: the const verbatim first (so a no-pack enroll is
-    // byte-identical to today), then the deduped pack additions. No sort.
-    const requested = [...new Set([...registered.oauth.scopes, ...packScopes])];
+    // byte-identical to today), then the deduped pack additions. No sort. The
+    // loopback dance asks for the same set through the same rule.
+    const requested = vendorOAuthRequestedScopes(registered, packScopes);
     provider = {
       ...registered,
       oauth: { ...registered.oauth, scopes: requested },

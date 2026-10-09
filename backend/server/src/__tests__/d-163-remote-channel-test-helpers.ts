@@ -90,6 +90,21 @@ export const stubKeyManager = (initial: KeyManagerState): StubKeyManager => {
   } as unknown as StubKeyManager;
 };
 
+/** A key manager whose provider behaves like the real one
+ *  (`key-manager.ts` `keyProvider`): the closure re-reads state on EVERY call
+ *  and yields the key only while unlocked. `stubKeyManager`'s provider is
+ *  always null, so it cannot show an unlock landing on a live channel. */
+export const liveKeyManager = (initial: KeyManagerState, key: Uint8Array): StubKeyManager => {
+  let state = initial;
+  return {
+    state: () => state,
+    keyProvider: vi.fn(() => () => (state === 'unlocked' ? key : null)),
+    setState(next: KeyManagerState) {
+      state = next;
+    },
+  } as unknown as StubKeyManager;
+};
+
 export interface FetchStub {
   (input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
   calls: Array<{ url: string; init: RequestInit }>;

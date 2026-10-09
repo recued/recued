@@ -13,9 +13,10 @@ import { createLifecycle, type Lifecycle
 } from '../lifecycle/index.js';
 import { LockHeldError } from '../lifecycle/instance-lock.js';
 import { EXIT_LOCK_HELD } from '../launcher/managed-launcher.js';
-import { inspectUpdateLease, updateLeasePathFor } from '../update/update-lease.js';
+import { inspectUpdateLease } from '../update/update-lease.js';
 import { releaseEarlyBootUpdateLease } from '../update/early-boot-update-lease.js';
-import { resolveUpdateBinaryPath } from '../update/release-config.js';
+import { updateLeasePathForInstall } from '../update/install-paths.js';
+import { runningAsPackagedBinary } from '../packaged-binary.js';
 import type { CollectionContext } from './compose-collection-context.js';
 import type { StorageContext } from './compose-storage-context.js';
 import type { BaseContext } from './compose-base-context.js';
@@ -241,9 +242,14 @@ export const composeServeLifecycle = async (
     // the function the CLI uses off the environment the CLI reads — not off
     // `base.distribution`, which is this composition's own view and could differ.
     // Two participants computing one path by two routes is a lock neither holds.
-    const updateHolder = inspectUpdateLease(
-      updateLeasePathFor(resolveUpdateBinaryPath(process.env)),
-    );
+    // `updateLeasePathForInstall` is that derivation, and the one `bin.ts` claims by.
+    //
+    // ⛔ NULL ON `binary` RUN UNPACKAGED, AND THEN THERE IS NOTHING TO READ. The path
+    // would sit beside the owner's Node, where only ANOTHER install's lease can be —
+    // the CLI refuses this install's update before it claims — and another install's
+    // update is not this server's to wait for.
+    const updateLeasePath = updateLeasePathForInstall(process.env, runningAsPackagedBinary);
+    const updateHolder = updateLeasePath === null ? null : inspectUpdateLease(updateLeasePath);
     if (updateHolder !== null && updateHolder.pid !== process.pid) {
       lifecycle.lock.release();
       console.error(

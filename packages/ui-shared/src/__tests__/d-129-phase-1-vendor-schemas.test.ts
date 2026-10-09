@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HUBSPOT_API_BASE,
+  HUBSPOT_OAUTH_SCOPES,
   HUBSPOT_OAUTH_TOKEN_URL,
 } from '@recued/contracts';
 
@@ -29,6 +30,11 @@ import {
   resolveVendorSchema,
 } from '../connection-schemas/index.js';
 import { projectConnectionPayload } from '../connections/payload.js';
+import {
+  initialConnectionsDialogState,
+  initialConnectionsPageState,
+  renderConnectionsPage,
+} from '../index.js';
 
 describe('D-129 P1 — hubspotSchema fields', () => {
   it('declares vendor segment + kind=api', () => {
@@ -49,6 +55,20 @@ describe('D-129 P1 — hubspotSchema fields', () => {
     expect(authTypeField!.options).toEqual(['bearer', 'oauth2_refresh']);
     // User-selectable now (not a hidden lock).
     expect(authTypeField!.hidden).toBeFalsy();
+    // A non-technical owner chooses between these words, never the raw
+    // auth-type names.
+    expect(authTypeField!.label).toBe('How to connect');
+    expect(authTypeField!.optionLabels).toEqual({
+      bearer: 'Service Key (recommended)',
+      oauth2_refresh: 'Your own HubSpot app (advanced)',
+    });
+  });
+
+  it("sends the owner to HubSpot's current Service keys menu", () => {
+    const svcKey = hubspotSchema.fields.find((f) => f.key === 'auth.token')!;
+    expect(svcKey.help).toContain('Development → Keys → Service keys');
+    // The menu HubSpot moved away from.
+    expect(svcKey.help).not.toContain('Integrations');
   });
 
   it('offers a Service Key (bearer) field shown only in the bearer mode', () => {
@@ -262,5 +282,92 @@ describe('D-192 S5 — VENDOR_CONNECTION_CHOICES + initialValues are registry-de
     }
     // hubspot's is the exact exported const, not a copy.
     expect(initialVendorSchemaValues('hubspot')).toBe(HUBSPOT_SCHEMA_INITIAL_VALUES);
+  });
+});
+
+/** Both ways in stay open — a Service Key for most owners, their own app for
+ *  the rest — and each gets its own setup guide, swapped by `auth.type`, the
+ *  way the messenger forms swap theirs. */
+describe('HubSpot setup guides — one per way to connect', () => {
+  const guideFor = (values: Record<string, string>) =>
+    hubspotSchema.onboarding!.guides.find((g) => g.showWhen?.(values) ?? true)?.key;
+
+  it('swaps the guide on the How to connect choice, Service Key by default', () => {
+    expect(hubspotSchema.onboarding?.selectorKey).toBe('auth.type');
+    expect(hubspotSchema.onboarding?.guides.map((g) => g.key))
+      .toEqual(['hubspot-service-key', 'hubspot-app']);
+    expect(guideFor({})).toBe('hubspot-service-key');
+    expect(guideFor(HUBSPOT_SCHEMA_INITIAL_VALUES)).toBe('hubspot-service-key');
+    expect(guideFor({ 'auth.type': 'bearer' })).toBe('hubspot-service-key');
+    expect(guideFor({ 'auth.type': 'oauth2_refresh' })).toBe('hubspot-app');
+  });
+
+  it("asks the key for HubSpot's default read scopes, without the OAuth-only one", () => {
+    const guide = hubspotSchema.onboarding!.guides.find((g) => g.key === 'hubspot-service-key')!;
+    const scopesStep = guide.steps.find((s) => s.title === 'Tick its scopes')!;
+    for (const scope of HUBSPOT_OAUTH_SCOPES.filter((s) => s !== 'oauth')) {
+      expect(scopesStep.detail).toContain(scope);
+    }
+    expect(scopesStep.detail).not.toMatch(/\boauth\b/);
+    expect(guide.tone).toBe('recommended');
+    expect(guide.steps[0]!.detail).toContain('Development → Keys → Service keys');
+  });
+
+  it('says the app path needs the HubSpot CLI, and where its redirect URL goes', () => {
+    const guide = hubspotSchema.onboarding!.guides.find((g) => g.key === 'hubspot-app')!;
+    expect(guide.tone).toBe('advanced');
+    expect(guide.badge).toContain('command-line tool');
+    const text = guide.steps.map((s) => s.detail).join(' ');
+    expect(text).toContain('hs project create');
+    expect(text).toContain('redirectUrls');
+    expect(text).toContain('requiredScopes');
+  });
+
+  it('links only to https pages on HubSpot’s developer docs', () => {
+    for (const guide of hubspotSchema.onboarding!.guides) {
+      const url = new URL(guide.portal!.url);
+      expect(url.protocol).toBe('https:');
+      expect(url.hostname).toBe('developers.hubspot.com');
+    }
+  });
+});
+
+describe('the HubSpot form renders the choice, then its guide, then the fields', () => {
+  const hubspotForm = (values: Record<string, string>) => renderConnectionsPage({
+    ...initialConnectionsPageState(),
+    dialog: {
+      ...initialConnectionsDialogState(),
+      stage: 'form',
+      mode: 'create',
+      kind: 'api',
+      vendor: 'hubspot',
+      values: { ...HUBSPOT_SCHEMA_INITIAL_VALUES, name: 'hubspot', ...values },
+    },
+  });
+
+  it('opens on the Service Key, in plain words, ahead of the fields', () => {
+    const html = hubspotForm({});
+    expect(html).toContain('<option value="bearer" selected>Service Key (recommended)</option>');
+    expect(html).toContain('<option value="oauth2_refresh">Your own HubSpot app (advanced)</option>');
+    expect(html).toContain('data-connection-onboarding="hubspot-service-key"');
+    expect(html).not.toContain('data-connection-onboarding="hubspot-app"');
+    expect(html).toContain('data-field-key="auth.token"');
+    // No sign-in, so no redirect URL to register.
+    expect(html).not.toContain('connections-oauth-callback');
+
+    const selectorAt = html.indexOf('data-connection-onboarding-selector');
+    const guideAt = html.indexOf('data-connection-onboarding="hubspot-service-key"');
+    const fieldsAt = html.indexOf('data-field-key="display_name"');
+    expect(selectorAt).toBeGreaterThan(-1);
+    expect(guideAt).toBeGreaterThan(selectorAt);
+    expect(fieldsAt).toBeGreaterThan(guideAt);
+  });
+
+  it('swaps to the app guide and its sign-in fields on the other choice', () => {
+    const html = hubspotForm({ 'auth.type': 'oauth2_refresh' });
+    expect(html).toContain('data-connection-onboarding="hubspot-app"');
+    expect(html).not.toContain('data-connection-onboarding="hubspot-service-key"');
+    expect(html).toContain('data-field-key="auth.client_id"');
+    expect(html).not.toContain('data-field-key="auth.token"');
   });
 });

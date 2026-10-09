@@ -319,7 +319,8 @@ const decodeInner = async (
       // here, and nothing can unlock a server that is not running.
       throw new Error(
         `createFileServerKeyStore: ${keyfilePath} is sealed with a passphrase, and RECUED_IDENTITY_PASSPHRASE is not set. `
-        + 'Start with that variable set to the passphrase. A service started at boot or login needs it in '
+        + 'Start with that variable set to the passphrase, or with RECUED_IDENTITY_PASSPHRASE_FILE naming a '
+        + 'file that holds it (a container secret). A service started at boot or login needs it in '
         + "the service's own environment (a systemd EnvironmentFile, a launchd EnvironmentVariables entry); "
         + "it does not see your shell's.",
       );
@@ -457,6 +458,12 @@ export interface CreateFileServerKeyStoreOptions {
    *  Only ever consulted for a keyfile that does not exist yet: an existing one
    *  keeps whatever sealed it, recorded in its own header. */
   machineSealing?: boolean;
+  /** Where a NEW keyfile would be stored unsealed (no passphrase, no platform
+   *  store), throw this message instead of warning and writing it. The server
+   *  sets it inside a container, where nothing can seal the file but a
+   *  passphrase. Consulted only with `machineSealing`, at the same first-boot
+   *  decision; an existing keyfile is never refused by it. */
+  refuseUnsealed?: string;
   /** Override Argon2id parameters for KEK derivation. Tests pass
    *  weaker params for speed; production callers should leave this
    *  unset to use `KEK_ARGON2_PARAMS` (OWASP 2024 baseline). The
@@ -526,7 +533,8 @@ export const createFileServerKeyStore = async (
     throw new Error(
       `createFileServerKeyStore: ${filePath} is unsealed but already holds this realm's server vault key, `
       + 'so a passphrase cannot be applied to it now — sealing is fixed once a realm is encrypted. '
-      + 'Re-create the keyfile from your 24-word recovery key to change it.',
+      + 'Re-create the keyfile from your 24-word recovery key to change it, or start without the '
+      + 'passphrase to keep this realm as it is.',
     );
   }
 
@@ -607,23 +615,35 @@ export const createFileServerKeyStore = async (
       // compose file or plist beside it does not. The choice stays theirs; the
       // silence is what we are fixing.
       warn(
-        '[keys] RECUED_IDENTITY_PASSPHRASE is set — sealing with the passphrase'
+        '[keys] a passphrase is set (RECUED_IDENTITY_PASSPHRASE or RECUED_IDENTITY_PASSPHRASE_FILE) — '
+        + 'sealing with the passphrase'
         + (capable.length
           ? `, which outranks ${capable.join(', ')}. ⚠ A passphrase stored beside the data directory is `
             + 'weaker than a platform store, which keeps its secret outside it. Unset it to use the platform store instead.'
           : '.'),
       );
+    } else if (options.refuseUnsealed !== undefined) {
+      // Before anything is written: the decision is made here and the keys are
+      // minted only after this store exists, so refusing leaves no file behind.
+      throw new Error(options.refuseUnsealed);
     } else {
       warn(
         `[keys] ${filePath} will be stored UNSEALED — no platform secret store is available here. `
         + 'Anyone who copies this directory gets the keys to the realm along with it. '
-        + 'Set RECUED_IDENTITY_PASSPHRASE to seal it.',
+        + 'Set RECUED_IDENTITY_PASSPHRASE, or RECUED_IDENTITY_PASSPHRASE_FILE, to seal it.',
       );
     }
     warn(
       '[keys] this choice is PERMANENT for this realm. To change it before pairing, stop the server, '
       + `delete ${filePath}, set or unset the passphrase, and start again. After pairing, use 'recued recover-keyfile'.`,
     );
+  }
+
+  // ⛔ The same refusal for a caller that skips the machine-sealing decision —
+  // `recover-keyfile`, an offline archive restore — but still writes a NEW file
+  // with nothing to seal it. Construction, before anything is persisted.
+  if (!initialDoc && !passphrase && !sealer && options.refuseUnsealed !== undefined) {
+    throw new Error(options.refuseUnsealed);
   }
 
   const posture = (): import('./index.js').KeyfileSealingPosture => {

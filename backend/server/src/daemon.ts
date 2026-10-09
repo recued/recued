@@ -5,10 +5,15 @@
  *
  *  File layout (next to the database):
  *    recued-server.pid   — PID of the running server
- *    recued-server.log   — stdout + stderr
+ *    recued-server.log   — stdout + stderr. The server recognises this file as
+ *                          its stdout and writes it through `cli/server-log.ts`,
+ *                          which caps it at 5 MB plus one older copy. A server
+ *                          started under the macOS LaunchAgent, whose output is
+ *                          /dev/null, writes the same file the same way.
  */
 
 import { lastStartErrorLines, readLastStartError } from './cli/last-start-error.js';
+import { SERVER_LOG_FILE } from './cli/server-log.js';
 import { spawn } from 'node:child_process';
 import { createServer as netCreateServer } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
@@ -36,7 +41,7 @@ const resolvePaths = (dbPath: string) => {
   const dir = dirname(resolve(dbPath));
   return {
     pidFile: join(dir, 'recued-server.pid'),
-    logFile: join(dir, 'recued-server.log'),
+    logFile: join(dir, SERVER_LOG_FILE),
   };
 };
 

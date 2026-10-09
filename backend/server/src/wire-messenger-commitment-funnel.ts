@@ -115,10 +115,7 @@ export const wireMessengerCommitmentFunnel = (
     if (store === undefined) return null;
     const row = store.get('notification', vendor);
     if (row === null) return null;
-    const keyProvider =
-      deps.keys && deps.keys.state() !== 'uninitialized'
-        ? deps.keys.keyProvider('connection')
-        : undefined;
+    const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
     try {
       const auth = await decodeAuthFromStorage(
         row.auth_ciphertext,

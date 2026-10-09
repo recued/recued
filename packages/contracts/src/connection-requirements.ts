@@ -21,7 +21,11 @@
  *  live on `BulkPackManifest` (`bulk-pack.ts`).
  */
 
-import { AUTHORIZE_PARAM_RESERVED_KEYS, MICROSOFT_GRAPH_API_BASE } from './connection-vendor-providers.js';
+import {
+  AUTHORIZE_PARAM_RESERVED_KEYS,
+  MICROSOFT_GRAPH_API_BASE,
+  getVendorProvider,
+} from './connection-vendor-providers.js';
 import {
   CONNECTION_SIGNING_SCHEMES,
   isConnectionSigningScheme,
@@ -458,6 +462,21 @@ export interface EndpointCandidate {
   granted_scopes: readonly string[];
 }
 
+/** Does a connection holding `authType` serve this requirement? Its own auth
+ *  type always does; another only when the vendor registry vouches for it
+ *  (`also_accepts_auth`). Missing metadata never does. ⛔ Before this, the
+ *  HubSpot pack (an `oauth2_refresh` requirement) never offered a Service Key
+ *  connection: its install dialog said "No hubspot account is connected yet"
+ *  with a working key saved (driven live 2026-10-08). */
+const requirementAcceptsAuthType = (
+  requirement: ConnectionRequirement,
+  authType: ConnectionAuthType | undefined,
+): boolean =>
+  authType !== undefined && (
+    authType === requirement.auth.type
+    || (getVendorProvider(requirement.vendor)?.also_accepts_auth ?? []).includes(authType)
+  );
+
 /** Find the existing `api` connections a pack's requirement could adopt: those
  *  whose endpoint HOST matches the descriptor's `api_base` (§3). Endpoint-keyed,
  *  NOT `config.vendor` — so a cross-slug candidate surfaces (a Microsoft app pack
@@ -483,7 +502,9 @@ export const findEndpointCandidates = (
     // Endpoint identity alone cannot make two credential protocols
     // interchangeable. Missing legacy metadata fails closed and asks for
     // enrollment instead of auto-binding a row the operation cannot use.
-    if (c.auth_type !== requirement.auth.type) continue;
+    // The vendor registry names the exceptions it vouches for — HubSpot's
+    // Service Key, a `bearer` sent exactly like an OAuth access token.
+    if (!requirementAcceptsAuthType(requirement, c.auth_type)) continue;
     const isMatch = requirement.per_org
       ? c.vendor === requirement.vendor
       : endpointHost(c.base_url) === target;

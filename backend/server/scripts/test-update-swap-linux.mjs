@@ -143,6 +143,11 @@ try {
   say(`image ${IMAGE} — install, apply, swap, revert (a couple of minutes)`);
   const r = await run('docker', [
     'run', '--rm',
+    // ⛔ Every server boot in the payload is inside this container, where nothing
+    // but a passphrase can seal the key file, so a first boot without one is
+    // refused (`CONTAINER_UNSEALED_REFUSAL`) and `restored-binary-serves` would
+    // never see a banner. One throwaway value, inherited by every step.
+    '-e', 'RECUED_IDENTITY_PASSPHRASE=update-swap-harness-throwaway',
     '-v', `${resolve(binDir)}:/bin-src:ro`,
     '-v', `${dirname(INSTALL_SH)}:/src:ro`,
     '-v', `${work}:/keys:ro`,

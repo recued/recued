@@ -956,6 +956,7 @@ export type { ListChoice, ListChoices, ListReading } from './list-setting.js';
 export {
   recipeCodeForRpcRefusal,
   recipeCodeForRpcStatus,
+  RECORDS_REFUSAL_RECIPE_CODES,
   RPC_CODES_LEFT_UNNAMED,
   RPC_REFUSAL_RECIPE_CODES,
 } from './rpc-refusal.js';
@@ -1021,7 +1022,7 @@ export type {
   ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec,
   CliProgressSpec, D259CliProgressSpec,
   CliHeartbeatProgressSpec, CliFileGrowthProgressSpec,
-  CliProgressAdapter,
+  CliProgressAdapter, CliBindingEnvName,
   CliOutputCaptureSpec, CliDetachedMarkerCompletion,
   // The four `CliOutputCaptureSpec` arms. `dir_arg` is the historical
   // engine-owned output dir; `from_input_arg` captures the file the tool edited
@@ -1069,6 +1070,7 @@ export {
   isInPlaceCapture, isStdoutCapture, isProgressAnswerCapture, isD259CliProgressSpec,
   isReadyCliDetachedSupervisionSpec,
   CLI_PROGRESS_ADAPTERS, CLI_PROGRESS_ANSWER_ADAPTERS,
+  CLI_BINDING_ENV_NAMES, CLI_BINDING_ENV_VALUE_MAX,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -2882,6 +2884,8 @@ export {
   getVendorProvider,
   listVendorProviders,
   resolveVendorOAuthEndpoints,
+  vendorOAuthRequestedScopes,
+  buildVendorAuthorizeUrl,
   resolveVendorOAuthRuntimeBase,
   composeRealmBaseUrl,
   buildGenericVendorProvider,
@@ -5077,6 +5081,7 @@ export {
   OAUTH_CLOUD_CALLBACK_ORIGIN,
   WEBCLIENT_OAUTH_CALLBACK_PATH,
   isLoopbackOrigin,
+  localhostOriginForNumberedLoopback,
   selfServesOAuthCallback,
   vendorOAuthCallbackUrlForPwa,
   vendorOAuthAlternateCallbackUrl,

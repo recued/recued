@@ -23,6 +23,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import {
+  CLI_BINDING_ENV_NAMES,
   cliSpawnErrorReason,
   isD259CliProgressSpec,
   isReadyCliDetachedSupervisionSpec,
@@ -47,6 +48,7 @@ import {
 import { ResourceProgressSource } from './execution/resource-progress-source.js';
 import type { ProgressContract } from '@recued/contracts';
 import { allocateRunScratchDir } from './execution/run-scratch.js';
+import { envForOthers } from './supervision/env-for-others.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
@@ -322,12 +324,50 @@ const resolveCwd = (call: CliInvocationCall): string | undefined => {
   }
 };
 
+/** The environment for the op's process: `envForOthers()` (the server's own,
+ *  minus what is the server's alone), with two changes.
+ *
+ *  ⛔ `PWD` names the folder the child starts in. Started in another folder,
+ *  the child would otherwise inherit a `PWD` naming the SERVER's — and opencode
+ *  takes its working folder from `PWD` over the real one, so it ran its commands
+ *  in the server's folder and refused the repository as outside it (measured).
+ *  A shell sets `PWD` on every `cd`; a spawn with a `cwd` must too.
+ *
+ *  Then the binding's pinned variables. The validators admit only
+ *  `CLI_BINDING_ENV_NAMES`; this re-checks, so a binding that reached the
+ *  executor any other way still cannot set another variable (`PWD` included).
+ *
+ *  ⛔ NEVER `undefined`. It used to be when there was neither, and an omitted
+ *  `env` hands the child the server's environment WHOLE, the identity
+ *  passphrase included (`supervision/env-for-others.ts`). */
+const resolveChildEnv = (call: CliInvocationCall, cwd: string | undefined): NodeJS.ProcessEnv => {
+  const pinned = call.binding.env;
+  const env = envForOthers();
+  if (cwd !== undefined) env.PWD = cwd;
+  if (pinned === undefined) return env;
+  const allowed: ReadonlySet<string> = new Set(CLI_BINDING_ENV_NAMES);
+  for (const [name, value] of Object.entries(pinned as Record<string, unknown>)) {
+    if (!allowed.has(name) || typeof value !== 'string') {
+      throw makeCliFailureError(
+        `cli_invocation '${call.operation_id}' env may pin only ${CLI_BINDING_ENV_NAMES.join(', ')} to string values`,
+        { reason: 'spawn_error', ...cliFailureIdentity(call, commandLabel(call)) },
+      );
+    }
+    env[name] = value;
+  }
+  return env;
+};
+
 /** The live argv, working scope, stdin and timeout builders, without launching
- * a program or materializing any caller file. */
+ * a program or materializing any caller file. Pinned environment variables
+ * change what the program does, so they are part of the description — but only
+ * when the binding pins some, so an op that pins none keeps the identity it
+ * always had. */
 export const describeCliInvocation = (call: CliInvocationCall) => ({
   argv: resolveArgv(call), cwd: resolveCwd(call) ?? process.cwd(),
   stdin: stdinPayload(call.binding.stdin_handling, call.args) ?? null,
   timeout_ms: resolveTimeoutMs(call.timeout_ms),
+  ...(call.binding.env !== undefined ? { env: { ...call.binding.env } } : {}),
 });
 
 const isWithinDir = (root: string, path: string): boolean => {
@@ -656,6 +696,7 @@ const runForeground = async (
     const stdin = stdinPayload(call.binding.stdin_handling, call.args);
     const [cmd, ...rest] = argv;
     const cwd = resolveCwd(call);
+    const env = resolveChildEnv(call, cwd);
     if (call.signal?.aborted) {
       reject(new Error(`cli_invocation '${call.operation_id}' cancelled before spawn`));
       return;
@@ -671,6 +712,7 @@ const runForeground = async (
         detached: true,
         stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         ...(cwd ? { cwd } : {}),
+        env,
       });
     } catch (err) {
       reject(spawnFailureError(call, cmd, err));
@@ -767,6 +809,27 @@ const runForeground = async (
         },
       );
     }
+    // A tool that prints NOTHING after it starts is not slow but stuck: opencode
+    // continuing another folder's session, or retrying a model host it cannot
+    // reach, prints nothing and never exits (measured, 1.18.35). ANY output on
+    // the adapter's stream ends this window, not only progress — a tool whose
+    // progress comes when a step finishes is silent through a long first step.
+    const firstOutputMs = d259Heartbeat?.first_output_ms;
+    let silentStart = false;
+    let firstOutputTimer: ReturnType<typeof setTimeout> | undefined = firstOutputMs === undefined
+      ? undefined
+      : setTimeout(() => {
+        firstOutputTimer = undefined;
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        silentStart = true;
+        if (registry && killRunId !== undefined) registry.markStalled(killRunId);
+        killTree();
+      }, firstOutputMs);
+    const endFirstOutputWindow = (): void => {
+      if (firstOutputTimer === undefined) return;
+      clearTimeout(firstOutputTimer);
+      firstOutputTimer = undefined;
+    };
 
     child.stdout?.on('data', (chunk: Buffer) => {
       // D-185 Slice 3 — capture stdout only for a VALUE shape (and never for an
@@ -785,6 +848,7 @@ const runForeground = async (
         }
       }
       if (semanticHeartbeatStream === 'stdout' || semanticHeartbeatStream === 'both') {
+        if (chunk.length > 0) endFirstOutputWindow();
         const count = semanticHeartbeat?.push(chunk, 'stdout') ?? 0;
         for (let idx = 0; idx < count; idx += 1) monitor?.signal();
       }
@@ -793,6 +857,7 @@ const runForeground = async (
       appendCapture(stderr, chunk);
       appendStderrTail(stderrTail, chunk);
       if (semanticHeartbeatStream === 'stderr' || semanticHeartbeatStream === 'both') {
+        if (chunk.length > 0) endFirstOutputWindow();
         const count = semanticHeartbeat?.push(chunk, 'stderr') ?? 0;
         for (let idx = 0; idx < count; idx += 1) monitor?.signal();
       }
@@ -827,6 +892,7 @@ const runForeground = async (
 
     child.once('error', (err) => {
       if (timer !== undefined) clearTimeout(timer);
+      endFirstOutputWindow();
       monitor?.stop();
       detachAbort();
       detachKill();
@@ -834,6 +900,7 @@ const runForeground = async (
     });
     child.once('close', (rawCode, signal) => {
       if (timer !== undefined) clearTimeout(timer);
+      endFirstOutputWindow();
       const finalSignals = semanticHeartbeat?.end() ?? 0;
       for (let idx = 0; idx < finalSignals; idx += 1) monitor?.signal();
       monitor?.stop();
@@ -859,7 +926,7 @@ const runForeground = async (
         reject(sinkFailure);
         return;
       }
-      const exitCode = (timedOut || stalled || aborted) ? -9 : normalizeExitCode(rawCode, signal);
+      const exitCode = (timedOut || stalled || aborted || silentStart) ? -9 : normalizeExitCode(rawCode, signal);
       const durationMs = now() - started;
       const result: Record<string, unknown> = {
         mode: 'foreground',
@@ -902,6 +969,20 @@ const runForeground = async (
       }
       if (aborted) {
         reject(new Error(`cli_invocation '${call.operation_id}' cancelled`));
+        return;
+      }
+      if (silentStart) {
+        // The adapter knows its tool's likely reasons for saying nothing.
+        const toolFailure = semanticHeartbeat?.failure?.();
+        reject(makeCliFailureError(
+          `cli tool '${cmd}' printed nothing in its first ${String(firstOutputMs)}ms${toolFailure ? `: ${toolFailure}` : ''}`,
+          {
+            reason: 'timeout',
+            ...cliFailureIdentity(call, cmd),
+            exit_code: exitCode,
+            ...cliFailureStderr(call, stderrTail),
+          },
+        ));
         return;
       }
       if (timedOut) {
@@ -1128,11 +1209,13 @@ const runDetached = async (
   const cwd = resolveCwd(call);
   let child: ChildProcess;
   try {
+    const env = resolveChildEnv(call, cwd);
     const options: SpawnOptions = {
       shell: false,
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
       ...(cwd ? { cwd } : {}),
+      env,
     };
     assertPreapprovalOrdinaryRun();
     child = spawn(cmd, rest, options);
@@ -1502,6 +1585,14 @@ export const createCliInvocationExecutor = (
       if (call.binding.input_materialize) {
         throw new Error(
           `cli_invocation '${call.operation_id}': input_materialize is foreground-only and cannot combine with a detached job spec`,
+        );
+      }
+      // Pinned variables are foreground-only: a supervised daemon starts on
+      // another path that would drop them, and a binding that pinned them must
+      // not run without them.
+      if (call.binding.env !== undefined) {
+        throw new Error(
+          `cli_invocation '${call.operation_id}': env is foreground-only and cannot combine with a detached job spec`,
         );
       }
       if (call.binding.detached.supervision && startSupervisedDaemon) {

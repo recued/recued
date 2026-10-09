@@ -108,9 +108,7 @@ export const composeTelegramCallbackAck = (
     if (row === null) return;
 
     // Re-read sub-DEK state per call — see ComposeTelegramCallbackAckDeps.keys.
-    const keyProvider = deps.keys && deps.keys.state() !== 'uninitialized'
-      ? deps.keys.keyProvider('connection')
-      : undefined;
+    const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
 
     const auth = await decodeAuthFromStorage(
       row.auth_ciphertext,

@@ -1,25 +1,33 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "d1d0e1e9e20ed0ff7f91dfb348c16db5507196a4",
-    "tree": "2208726f21cb5c815c3d20624ee89f574be671ed",
-    "committed_at": "2026-10-08T00:41:40-07:00"
+    "commit": "ded31ef348cd48a5de64ea5b4b3575b6296352a7",
+    "tree": "2ddc152aef46ace04f24cd06b704ebc4af797f45",
+    "committed_at": "2026-10-09T12:14:08-07:00"
   },
-  "export_manifest_sha256": "051e21a880a69fa6726b171f7b13b2cad526f44ed6879fec6026a577d88e2fe6",
-  "version": "26.10.8",
+  "export_manifest_sha256": "8ee471a10894515a5fdb1f68cdb8cd3768c478784e40cc91775e757dfdb50d8e",
+  "version": "26.10.9",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
     "apps/webclient"
   ],
   "omitted_paths": [
+    "apps/webclient/e2e/paired",
     "apps/webclient/e2e/harness/kitchen-harness.ts",
     "apps/webclient/e2e/kitchen-render.spec.ts",
     "apps/webclient/e2e/staging-smoke.spec.ts",
     "apps/webclient/src/__tests__/d-282-list-detail-guide.test.ts",
     "apps/webclient/wrangler.toml",
+    "backend/server/Dockerfile",
+    "backend/server/Dockerfile.managed",
+    "backend/server/docker-compose.yml",
+    "backend/server/scripts/Dockerfile.example",
+    "backend/server/scripts/docker-entrypoint.sh",
     "backend/server/scripts/enroll-bench-recovery-key.ts",
     "backend/server/scripts/release-build.mjs",
+    "backend/server/scripts/release-docker-attestation.d.mts",
+    "backend/server/scripts/release-docker-attestation.mjs",
     "backend/server/scripts/release-keygen.mjs",
     "backend/server/scripts/release-publish.mjs",
     "backend/server/scripts/seed-bench-warehouse.ts",
@@ -31,8 +39,10 @@
     "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
     "backend/server/src/__tests__/d-260-expiry-horizon-guard.test.ts",
+    "backend/server/src/__tests__/phase-e-docker-runtime.test.ts",
     "backend/server/src/__tests__/phase-e-package.test.ts",
     "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
+    "backend/server/src/__tests__/release-docker-attestation.test.ts",
     "backend/server/src/__tests__/release-native-attestation.test.ts",
     "backend/server/src/dev",
     "packages/contracts/src/__tests__/connection-signing.test.ts",
@@ -74,6 +84,7 @@
       "backend/server/src/__tests__/calendar-reminder-recipes.test.ts",
       "backend/server/src/__tests__/chat-installed-pack-actions-composition.test.ts",
       "backend/server/src/__tests__/claude-code-pack-live-drive.test.ts",
+      "backend/server/src/__tests__/client-document-intake-chase-drive.test.ts",
       "backend/server/src/__tests__/codex-pack-live-drive.test.ts",
       "backend/server/src/__tests__/commitment-writes-reach-the-store.test.ts",
       "backend/server/src/__tests__/d-125-in-app-notification-delivery.test.ts",
@@ -196,6 +207,7 @@
       "backend/server/src/__tests__/follow-up-rows-patch.test.ts",
       "backend/server/src/__tests__/foundation-pack-op-step-pre-install.test.ts",
       "backend/server/src/__tests__/foundation-pack-visibility.test.ts",
+      "backend/server/src/__tests__/fundamentals-watch-drive.test.ts",
       "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
       "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
       "backend/server/src/__tests__/helpers/mail-facts-live-server.ts",
@@ -210,6 +222,10 @@
       "backend/server/src/__tests__/installer-macos-guard-and-webclient-unpack.test.ts",
       "backend/server/src/__tests__/installer-safety-guards.test.ts",
       "backend/server/src/__tests__/installer-shell-functions.test.ts",
+      "backend/server/src/__tests__/invoice-book-billable-hours-drive.test.ts",
+      "backend/server/src/__tests__/issue-pipeline-agents-live-drive.test.ts",
+      "backend/server/src/__tests__/issue-pipeline-install.test.ts",
+      "backend/server/src/__tests__/issue-pipeline.test.ts",
       "backend/server/src/__tests__/kernel-manifests.test.ts",
       "backend/server/src/__tests__/keyed-work-entity-creates.test.ts",
       "backend/server/src/__tests__/ledger-book-business-workflow.test.ts",
@@ -231,13 +247,16 @@
       "backend/server/src/__tests__/notify-file-arrived.test.ts",
       "backend/server/src/__tests__/notify-new-inquiry-from-existing-customer-live.test.ts",
       "backend/server/src/__tests__/officecli-template-live-drive.test.ts",
+      "backend/server/src/__tests__/opencode-pack-live-drive.test.ts",
       "backend/server/src/__tests__/pack-cross-pack-tier-p-install.test.ts",
+      "backend/server/src/__tests__/pack-install-checks-every-pack-first.test.ts",
       "backend/server/src/__tests__/pack-install-first-party-op-steps.test.ts",
       "backend/server/src/__tests__/pack-resolve-bundled-records.test.ts",
       "backend/server/src/__tests__/parcels-pack-live.test.ts",
       "backend/server/src/__tests__/peer-appointment-semi-live.test.ts",
       "backend/server/src/__tests__/photo-attribution-drive.test.ts",
       "backend/server/src/__tests__/photo-attribution-live-drive.test.ts",
+      "backend/server/src/__tests__/pi-agent-pack-live-drive.test.ts",
       "backend/server/src/__tests__/pick-resolution-seal.test.ts",
       "backend/server/src/__tests__/pii-trace-classifier.test.ts",
       "backend/server/src/__tests__/pii-trace-corpus.test.ts",
@@ -363,6 +382,7 @@
       "packages/engine/src/__tests__/d-255-forecast-probability-scale.test.ts",
       "packages/engine/src/__tests__/deeptutor-daily-mastery-execution.test.ts",
       "packages/engine/src/__tests__/expected-quotation-email-watcher-execution.test.ts",
+      "packages/engine/src/__tests__/google-calendar-busy-check-execution.test.ts",
       "packages/engine/src/__tests__/job-status-board-execution.test.ts",
       "packages/engine/src/__tests__/mail-action-required-pack-execution.test.ts",
       "packages/engine/src/__tests__/mail-attention-summary-execution.test.ts",
@@ -682,7 +702,7 @@
       "packages/ui-shared/src/__tests__/calendar-reminder-switch-on.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "9df1b69c63b3757394a3096e717d60b807964366094dc7cb56a4bf6118383407",
+    "sha256": "c7b4e8b687c467bc45b40292305f72113f5164992f09338d54a4eb4ee3c83789",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -699,7 +719,7 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1104,
+    "files_changed": 1103,
     "rules": [
       {
         "id": "internal-spec-reference",
@@ -707,7 +727,7 @@
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 133
+        "comments_rewritten": 131
       },
       {
         "id": "internal-handover-note",
@@ -796,7 +816,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6476,
-    "sha256": "22e0fc348ff3b11a4f9adae9b3ad59f41e2d38cfc1c3cc81b77cfdf0df347a4d"
+    "file_count": 6489,
+    "sha256": "aff7c0c32dbf96fbddd55359fe83090c1a875d569f22604b8c8c46ecb284ae3c"
   }
 }

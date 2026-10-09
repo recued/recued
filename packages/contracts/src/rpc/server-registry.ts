@@ -4441,6 +4441,11 @@ export type ServerRpcRegistry = {
        *  sandbox split (HubSpot) ignore the flag. Defaults to
        *  `false` (production). */
       sandbox?: boolean;
+      /** PKCE `code_verifier` (RFC 7636, 43-128 unreserved characters) for
+       *  a loopback dance: the browser minted it, sent only its S256
+       *  challenge in the authorize URL, and proves it here. Forwarded only
+       *  to a registered vendor that uses PKCE; ignored for any other. */
+      code_verifier?: string;
     },
     {
       refresh_token: string;
@@ -5372,6 +5377,14 @@ export type ServerRpcRegistry = {
          *  otherwise, and the dialog shows the slug. */
         name?: string;
       }>;
+      /** D-311 § 5 — what the install would refuse with before writing anything:
+       *  a pack it writes uses what this server's code lacks (`version_mismatch`,
+       *  "… needs a newer version of Recued …"), or does not pass its checks
+       *  (`validator_rejected`). The same check, on the same walk, as the install's
+       *  own, so the dialog can say it and hold Install rather than fail after it.
+       *  Absent when nothing would be refused, when it cannot be told, and from an
+       *  older server. */
+      install_refusal?: { code: 'version_mismatch' | 'validator_rejected'; message: string };
       /** D-296 — automations the owner has ON that this update will switch
        *  off (a changed trigger that cannot be carried over). Absent when none. */
       triggers_switched_off?: Array<{ recipe_id: string; name: string; reason: 'changed' | 'removed' }>;

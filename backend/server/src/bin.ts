@@ -137,6 +137,29 @@ const dispatch = async (): Promise<void> => {
       await showHelp();
       return;
     case 'serve': {
+      // 🔑 FIRST, so even the update recovery below is on the record. Under the
+      // macOS LaunchAgent this process's stdout and stderr are /dev/null, and
+      // under `recued start` (Windows autostart) they are the log file itself;
+      // either way they go through the capped `recued-server.log` beside the
+      // database (`cli/server-log.ts`). Both modules are Node built-ins only,
+      // so this loads nothing of the graph the next comment protects.
+      const serveArgs = stripServeSubcommand(args);
+      bootTrace.markImport('./cli/server-log.js');
+      const [{ resolveRealmDbPath }, { keepServerLog }] = await Promise.all([
+        import('./realm-db-path.js'),
+        import('./cli/server-log.js'),
+      ]);
+      const dbPath = resolveRealmDbPath(
+        getArg(serveArgs, 'db') ?? process.env.DB_PATH,
+        // Resolution only: normal composition creates/announces a new realm.
+        // Recovery must not mutate the filesystem before it knows whether a
+        // retained journal forbids the boot.
+        { mkdir: () => {}, note: () => {} },
+      );
+      // The one write before recovery: the log file, and the realm's directory
+      // when there is none yet — which holds no journal to protect.
+      keepServerLog(dbPath);
+
       // ⛔⛔⛔ BEFORE THE MODULE GRAPH THAT LOADS THE NATIVE ADDON. Both the
       // apply and rollback pair-swaps span several atomic renames; their in-memory
       // compensation disappears on SIGKILL or power loss. The recovery reads the
@@ -153,7 +176,12 @@ const dispatch = async (): Promise<void> => {
       // rollback left its asides behind.
       bootTrace.markImport('./update/install-paths.js');
       const [
-        { resolveUpdateBinaryPath, resolveDistributionChannel, SELF_APPLY_CHANNELS },
+        {
+          resolveUpdateBinaryPath,
+          resolveDistributionChannel,
+          SELF_APPLY_CHANNELS,
+          updateLeasePathForInstall,
+        },
         {
           reconcileInterruptedPairSwap,
           restoreSnapshot,
@@ -162,8 +190,9 @@ const dispatch = async (): Promise<void> => {
           sidecarPathsFor,
         },
         { clearWebclientApplyJournal },
-        { acquireUpdateLease, updateLeasePathFor, UpdateLeaseHeldError },
+        { acquireUpdateLease, UpdateLeaseHeldError },
         { installEarlyBootUpdateLease, releaseEarlyBootUpdateLease },
+        { runningAsPackagedBinary },
       ] =
         await Promise.all([
           import('./update/install-paths.js'),
@@ -171,6 +200,7 @@ const dispatch = async (): Promise<void> => {
           import('./update/webclient-sync.js'),
           import('./update/update-lease.js'),
           import('./update/early-boot-update-lease.js'),
+          import('./packaged-binary.js'),
         ]);
       const binaryPath = resolveUpdateBinaryPath(process.env);
 
@@ -195,14 +225,21 @@ const dispatch = async (): Promise<void> => {
       // asides on an immutable image, and the DATABASE recovery after it is not
       // about the binary at all. `releaseEarlyBootUpdateLease` is idempotent and
       // answers false when nothing was installed, so the release site is a no-op.
+      //
+      // ⛔ AND `binary` RUN UNPACKAGED HAS NO EXECUTABLE EITHER. `binary` is the
+      // default channel, so a source checkout, an npm install or the Homebrew
+      // formula claimed its lease beside the owner's NODE: EACCES under a system
+      // Node, the crash above in another place, and one file for every unpackaged
+      // install on that Node. `updateLeasePathForInstall` answers null there.
       const selfApplies = SELF_APPLY_CHANNELS.has(
         resolveDistributionChannel(process.env),
       );
-      if (selfApplies) {
+      const leasePath = updateLeasePathForInstall(process.env, runningAsPackagedBinary);
+      if (selfApplies && leasePath !== null) {
         let earlyBootLease;
         try {
           earlyBootLease = acquireUpdateLease({
-            leasePath: updateLeasePathFor(binaryPath),
+            leasePath,
             operation: 'boot-reconcile',
           });
         } catch (err) {
@@ -240,9 +277,7 @@ const dispatch = async (): Promise<void> => {
         // the transaction direction. Both recoveries share the host lease, and
         // this process exits when the previous pair won so it never continues
         // executing current in-memory bytes over an older on-disk install.
-        const serveArgs = stripServeSubcommand(args);
         const [
-          { resolveRealmDbPath },
           { realmSnapshotPath },
           { manualRollbackJournalTarget },
           { recoverManualRollbackBeforeOpen },
@@ -250,7 +285,6 @@ const dispatch = async (): Promise<void> => {
           { createUpdateLedger, UPDATE_LEDGER_FILE },
           { webclientBundleDirForDataDir },
         ] = await Promise.all([
-          import('./realm-db-path.js'),
           import('./update/realm-generation-snapshot.js'),
           import('./update/manual-rollback-journal.js'),
           import('./update/manual-rollback-recovery.js'),
@@ -258,13 +292,6 @@ const dispatch = async (): Promise<void> => {
           import('./update/update-ledger.js'),
           import('./webclient-bundle-loader.js'),
         ]);
-        const dbPath = resolveRealmDbPath(
-          getArg(serveArgs, 'db') ?? process.env.DB_PATH,
-          // Resolution only: normal composition creates/announces a new realm.
-          // Recovery must not mutate the filesystem before it knows whether a
-          // retained journal forbids the boot.
-          { mkdir: () => {}, note: () => {} },
-        );
         const dataDir = dirname(resolve(dbPath));
         // Each attempt starts clean, so `recued status` shows only THIS attempt's
         // failure — never an older one after a start that died without throwing

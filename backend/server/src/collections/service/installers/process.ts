@@ -19,6 +19,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 
 import { SERVICE_INVOKE_STDOUT_CAP_BYTES } from '@recued/contracts';
 
+import { envForOthers } from '../../../supervision/env-for-others.js';
 import type { SpawnFn, SpawnOptions, SpawnResult } from './types.js';
 
 const TRUNCATION_MARKER =
@@ -38,7 +39,8 @@ export const defaultSpawn: SpawnFn = (
       return;
     }
     const [cmd, ...rest] = argv;
-    const env = opts.env ? { ...process.env, ...opts.env } : process.env;
+    // Never the server's environment whole: see `supervision/env-for-others.ts`.
+    const env = envForOthers(opts.env);
     let child;
     try {
       child = nodeSpawn(cmd, rest, {

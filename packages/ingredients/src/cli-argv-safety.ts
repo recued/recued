@@ -24,6 +24,8 @@
  *  code (`CATALOG_BINDING_INVALID` / `composition_cli_code_hole` + the new
  *  `composition_cli_command_hole`) and path convention. */
 
+import { CLI_BINDING_ENV_NAMES, CLI_BINDING_ENV_VALUE_MAX } from '@recued/contracts';
+
 /** Interpreters whose listed flags execute an INLINE program string (code/eval
  *  holes). A bare `-` reads the program from stdin — equally a code channel. */
 export const CLI_CODE_EVAL_FLAGS_BY_INTERPRETER: ReadonlyMap<string, ReadonlySet<string>> = new Map([
@@ -208,5 +210,39 @@ export const cliInterpreterViolations = (
     if (interpreter === null) return;
     collectInterpreterViolation(argv, interpreter, idx, out);
   });
+  return out;
+};
+
+/** Pinned-environment SAFETY (`CliMethodBinding.env`) — the third invariant,
+ *  shared by both validators for the same reason as the two above. An
+ *  environment variable can make the pinned binary load other code
+ *  (`NODE_OPTIONS=--require …`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`) or find
+ *  another binary (`PATH`), reopening invariant 1 from outside argv. So the
+ *  names are a closed list (`CLI_BINDING_ENV_NAMES`) whose every member only
+ *  narrows its tool, and the values are literal, bounded strings without NUL.
+ *  Foreground-only: a supervised daemon starts on a path that does not apply
+ *  them, and an op that pinned them must not run without them. */
+export type CliEnvViolation =
+  | { kind: 'shape' }
+  | { kind: 'name'; name: string }
+  | { kind: 'value'; name: string }
+  | { kind: 'detached' };
+
+export const cliEnvViolations = (env: unknown, detached: unknown): CliEnvViolation[] => {
+  if (env === null || typeof env !== 'object' || Array.isArray(env) || Object.keys(env).length === 0) {
+    return [{ kind: 'shape' }];
+  }
+  const allowed: ReadonlySet<string> = new Set(CLI_BINDING_ENV_NAMES);
+  const out: CliEnvViolation[] = [];
+  for (const [name, value] of Object.entries(env as Record<string, unknown>)) {
+    if (!allowed.has(name)) {
+      out.push({ kind: 'name', name });
+      continue;
+    }
+    if (typeof value !== 'string' || value.length > CLI_BINDING_ENV_VALUE_MAX || value.includes('\0')) {
+      out.push({ kind: 'value', name });
+    }
+  }
+  if (detached !== undefined) out.push({ kind: 'detached' });
   return out;
 };

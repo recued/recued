@@ -58,6 +58,7 @@ import {
   type PreflightAskContext,
   type PreflightNotifier,
   type SagaNotifier,
+  type PickCandidate,
   type PickNotifier,
   type SessionGrantGateCall,
   type SessionGrantMintGateCall,
@@ -263,7 +264,12 @@ import type { ConnectionOperationProfileStore } from './connection-operation-pro
 import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
 import { mergeRecipeConfigLayers } from './recipe-effective-config.js';
 import { assertRunTargets } from './targeting-guard.js';
-import { buildPickAskInputForSlot, derivePickCandidates } from './pick-candidates.js';
+import {
+  buildPickAskInputForSlot,
+  concreteSlotCandidates,
+  derivePickCandidates,
+  unboundConcreteConnectionSlots,
+} from './pick-candidates.js';
 import {
   raiseContainerPickAsk,
   type ContainerPickAskInput,
@@ -2754,18 +2760,16 @@ const handleExecuteInner = async (
       config: effectiveConfig,
       packs: packOpResolution,
     });
-    while (
-      !dispatchResolve.ok
-      && dispatchResolve.unbound_slot !== undefined
-      && profiles !== undefined
-    ) {
-      const { variable } = dispatchResolve.unbound_slot;
-      if (boundVars.has(variable)) break; // defensive: never loop on one slot
-      const { candidates, operations } = derivePickCandidates(recipe, variable, {
-        profiles,
-        manifests: deps.executorConfig.manifests,
-        packs: packOpResolution,
-      });
+    /** One unbound connection slot → bind it, ask, or refuse (doc §4 close-out).
+     *  Shared by canonical op-steps and concrete catalog steps, so both follow
+     *  one rule. Returns the connection to bind, or null when no enrolled
+     *  connection can serve the slot (the caller keeps its own failure). */
+    const settleUnboundSlot = async (
+      forRecipe: RecipeDefinition,
+      variable: string,
+      candidates: readonly PickCandidate[],
+      operations: readonly string[],
+    ): Promise<string | null> => {
       const src = request.execution_source;
       const ownerRun = src !== undefined && src.actor === 'user_self';
       const contractedRun = src !== undefined && src.actor === 'contracted_user';
@@ -2777,7 +2781,7 @@ const handleExecuteInner = async (
         const channel = src !== undefined ? `'${src.channel}' channel` : 'unattributed';
         throw new RpcError(
           'connection_target_unpinned',
-          `Recipe '${recipe.recipe_id}' needs a connection for '${variable}' but the run is headless (${channel}) — a pick ask cannot be answered, so the target must be pinned: set config.${variable} to an enrolled connection (Settings → Connections).`,
+          `Recipe '${forRecipe.recipe_id}' needs a connection for '${variable}' but the run is headless (${channel}) — a pick ask cannot be answered, so the target must be pinned: set config.${variable} to an enrolled connection (Settings → Connections).`,
           400,
           undefined,
           { variable },
@@ -2788,19 +2792,7 @@ const handleExecuteInner = async (
         // execution_source (+ contract snapshot), so the policy/contract
         // gates run exactly as if the caller had supplied the binding —
         // which it always could (config is caller-writable).
-        boundVars.add(variable);
-        autoBound = true;
-        effectiveConfig = {
-          ...effectiveConfig,
-          [variable]: candidates[0].connection_name,
-        };
-        dispatchResolve = resolveCanonicalRecipeForDispatch(recipe, {
-          profiles,
-          manifests: deps.executorConfig.manifests,
-          config: effectiveConfig,
-          packs: packOpResolution,
-        });
-        continue;
+        return candidates[0]!.connection_name;
       }
       if (contractedRun && candidates.length > 1) {
         // Codex HIGH fold — no ask, no candidate names for a contracted
@@ -2811,7 +2803,7 @@ const handleExecuteInner = async (
         // principal in-channel and re-runs with the binding.
         throw new RpcError(
           'connection_pick_required',
-          `Recipe '${recipe.recipe_id}' needs a connection for '${variable}' and more than one enrolled connection can serve it. Ask the user which connection to use, then re-run with config.${variable} set to its name.`,
+          `Recipe '${forRecipe.recipe_id}' needs a connection for '${variable}' and more than one enrolled connection can serve it. Ask the user which connection to use, then re-run with config.${variable} set to its name.`,
           400,
           undefined,
           { variable },
@@ -2827,7 +2819,7 @@ const handleExecuteInner = async (
         ) {
           try {
             const askInput = buildPickAskInputForSlot({
-              recipe,
+              recipe: forRecipe,
               byId: request.recipe === undefined,
               variable,
               config: effectiveConfig,
@@ -2846,7 +2838,7 @@ const handleExecuteInner = async (
         }
         throw new RpcError(
           'connection_pick_required',
-          `Recipe '${recipe.recipe_id}' needs a connection for '${variable}' and ${candidates.length} can serve it: ${candidateNames.join(', ')}. Re-run with config.${variable} set to one of them${askId !== undefined ? ', or answer the pick request that was just raised' : ''}.`,
+          `Recipe '${forRecipe.recipe_id}' needs a connection for '${variable}' and ${candidates.length} can serve it: ${candidateNames.join(', ')}. Re-run with config.${variable} set to one of them${askId !== undefined ? ', or answer the pick request that was just raised' : ''}.`,
           400,
           undefined,
           {
@@ -2856,7 +2848,31 @@ const handleExecuteInner = async (
           },
         );
       }
-      break; // 0 candidates — the generic resolve failure below owns the message
+      return null;
+    };
+    while (
+      !dispatchResolve.ok
+      && dispatchResolve.unbound_slot !== undefined
+      && profiles !== undefined
+    ) {
+      const { variable } = dispatchResolve.unbound_slot;
+      if (boundVars.has(variable)) break; // defensive: never loop on one slot
+      const { candidates, operations } = derivePickCandidates(recipe, variable, {
+        profiles,
+        manifests: deps.executorConfig.manifests,
+        packs: packOpResolution,
+      });
+      const bound = await settleUnboundSlot(recipe, variable, candidates, operations);
+      if (bound === null) break; // 0 candidates — the generic resolve failure below owns the message
+      boundVars.add(variable);
+      autoBound = true;
+      effectiveConfig = { ...effectiveConfig, [variable]: bound };
+      dispatchResolve = resolveCanonicalRecipeForDispatch(recipe, {
+        profiles,
+        manifests: deps.executorConfig.manifests,
+        config: effectiveConfig,
+        packs: packOpResolution,
+      });
     }
     if (!dispatchResolve.ok) {
       // A recipe naming a pack that is not installed is the COMMON reason this
@@ -2894,6 +2910,25 @@ const handleExecuteInner = async (
       );
     }
     recipe = dispatchResolve.recipe;
+    // The same rule for CONCRETE steps: a catalog fetch whose connection is
+    // `{{config.<var>}}` with that setting empty (an install-resolved canonical
+    // op, or any vendor catalog recipe). With no capable connection enrolled,
+    // nothing changes and the gateway reports it as before.
+    if (profiles !== undefined) {
+      for (const slot of unboundConcreteConnectionSlots(recipe, effectiveConfig)) {
+        if (boundVars.has(slot.variable)) continue;
+        const bound = await settleUnboundSlot(
+          recipe,
+          slot.variable,
+          concreteSlotCandidates(slot, profiles),
+          slot.operations,
+        );
+        if (bound === null) continue;
+        boundVars.add(slot.variable);
+        autoBound = true;
+        effectiveConfig = { ...effectiveConfig, [slot.variable]: bound };
+      }
+    }
     if (autoBound) {
       // The engine re-resolves each op-step's `{{config.<var>}}` at execute,
       // and the held-action identity + audit snapshots read `request.config`

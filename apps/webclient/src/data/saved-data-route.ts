@@ -194,7 +194,7 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
   let pendingAlertId: string | null = null;
   let edit: { kind: 'create' | 'rename'; view: SavedDataView | null; name: string } | null = null;
   let deleting: SavedDataView | null = null;
-  let listOpen = false;
+  let listOpen = opts.savedViewId === undefined;
   let listSeq = 0;
   let loadSeq = 0;
   let loadError: string | null = null;
@@ -240,7 +240,12 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
     tools.innerHTML = `
       <header class="saved-data-header"><h1 class="data-title" data-recued-data-route-heading>${chrome === 'views' ? 'Saved views' : 'Data'}</h1>
         ${child === null ? '' : `<button type="button" data-view-action="new" ${canSave ? '' : 'disabled'}>${selectedView === null ? 'Save current view' : 'Save as new'}</button>`}
+        ${chrome === 'views' ? `<button type="button" data-view-action="refresh" ${listing || busy ? 'disabled' : ''}>Refresh saved views</button>` : ''}
         ${chrome === 'data' ? `<a class="saved-data-views-link" href="${e(serializeShellRoute('views'))}">Saved views</a>` : ''}</header>
+      ${chrome !== 'views' ? '' : `${listing ? '<p role="status">Loading saved views…</p>' : ''}
+        ${listError === null ? '' : `<p role="alert">${e(listError)}</p>`}
+        ${views.length === 0 && !listing && listError === null ? `<p>No saved views yet. Open Data, choose your records and filters, then select “Save current view”.</p>
+          <a href="${e(serializeShellRoute('data'))}">Browse Data to save a view</a>` : ''}`}
       ${chrome === 'views' && retired.length > 0 && opts.savedViews.resolveRetired !== undefined
         ? `<section class="saved-data-retired" data-view-retired-list aria-label="Views a pack update replaced">
         ${retired.map((view) => `<div class="saved-data-retired-item" data-view-retired="${e(view.id)}" role="alert">
@@ -253,10 +258,6 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
       ${chrome === 'data' ? '' : `<details ${listOpen ? 'open' : ''}><summary>Saved views${views.length ? ` (${views.length})` : ''}</summary>
         <p>Open a view to reload its current records on this server.</p>
         ${views.some(view => savedDataViewSupportsAlerts(view.definition)) ? '<p>Alerts notify you when additional tasks or records match the saved filters. Checks run every minute while this server runs. Enabling or resuming starts from the current matches.</p>' : ''}
-        ${listing ? '<p role="status">Loading saved views…</p>' : ''}
-        ${listError === null ? '' : `<p role="alert">${e(listError)}</p>`}
-        <button type="button" data-view-action="refresh" ${listing || busy ? 'disabled' : ''}>Refresh saved views</button>
-        ${views.length === 0 && !listing && listError === null ? '<p>No saved views yet.</p>' : ''}
         <ul>${ownViews.map((view) => `<li>
           <a href="${e(savedDataViewHref(view.id))}" data-view-action="open" data-view-id="${e(view.id)}">${e(view.name)}</a>
           <button type="button" data-view-action="rename" data-view-id="${e(view.id)}" aria-label="Rename ${e(view.name)}" ${busy ? 'disabled' : ''}>Rename</button>

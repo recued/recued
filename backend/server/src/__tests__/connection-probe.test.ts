@@ -3322,3 +3322,96 @@ describe('D-192 seam 8 — registry-driven messenger health probes', () => {
     ).rejects.toThrow(/subtype/i);
   });
 });
+
+/** HubSpot as measured 2026-10-08: its API ROOT answers 302 whatever the
+ *  credential — a working key, a wrong key, no key — while
+ *  `/account-info/v3/details` answers 200 to a working key and 401 otherwise.
+ *  The generic HEAD-root probe therefore passed every Service Key, and
+ *  rotation refused every replacement (its invalid control key passed too).
+ *  This double answers by URL AND credential, so it can refuse. */
+const hubspotLike = (workingKeys: readonly string[]) => vi.fn<HttpFetcher>(async (url, init) => {
+  const authorization = init?.headers?.Authorization;
+  if (url === 'https://api.hubapi.com/') return jsonResponse(302);
+  if (url === 'https://api.hubapi.com/account-info/v3/details') {
+    return workingKeys.some((key) => authorization === `Bearer ${key}`)
+      ? jsonResponse(200, { portalId: 245836902 })
+      : jsonResponse(401);
+  }
+  return jsonResponse(404);
+});
+
+const HUBSPOT_CONFIG = { base_url: 'https://api.hubapi.com', vendor: 'hubspot' };
+
+describe('a HubSpot connection is checked with a read that needs the key', () => {
+  it('passes a working Service Key and fails a wrong one, which the root passes alike', async () => {
+    const fetcher = hubspotLike(['pat-working']);
+    const working = await enroll('api', {
+      name: 'hubspot-working',
+      config: HUBSPOT_CONFIG,
+      auth: { type: 'bearer', token: 'pat-working' },
+    });
+    const mistyped = await enroll('api', {
+      name: 'hubspot-mistyped',
+      config: HUBSPOT_CONFIG,
+      auth: { type: 'bearer', token: 'pat-mistyped' },
+    });
+
+    expect(await probe('api', working, fetcher)).toMatchObject({ status: 'ok' });
+    const health = await probe('api', mistyped, fetcher);
+    expect(health.status).toBe('auth_failed');
+    expect(health.last_error).toBe('http_status_401');
+    expect(storedHealth('api', mistyped).status).toBe('auth_failed');
+    // Both checks were the authenticated read, as a GET — never the root.
+    expect(fetcher.mock.calls.map(([url, init]) => `${String(init?.method)} ${url}`)).toEqual([
+      'GET https://api.hubapi.com/account-info/v3/details',
+      'GET https://api.hubapi.com/account-info/v3/details',
+    ]);
+  });
+
+  it('an api connection that names no such vendor still probes its root', async () => {
+    const fetcher = hubspotLike([]);
+    const name = await enroll('api', {
+      name: 'hubspot-by-hand',
+      config: { base_url: 'https://api.hubapi.com' },
+      auth: { type: 'bearer', token: 'pat-anything' },
+    });
+
+    // The root's 302 reads as healthy: this is the vacuous check the vendor
+    // entry replaces, kept for an api form that does not say it is HubSpot.
+    expect(await probe('api', name, fetcher)).toMatchObject({ status: 'ok' });
+    expect(fetcher.mock.calls.map(([url, init]) => `${String(init?.method)} ${url}`)).toEqual([
+      'HEAD https://api.hubapi.com/',
+    ]);
+  });
+
+  it('lets the owner replace a HubSpot Service Key, as HubSpot asks every six months', async () => {
+    const name = await enroll('api', {
+      name: 'hubspot-rotate',
+      config: HUBSPOT_CONFIG,
+      auth: { type: 'bearer', token: 'pat-old' },
+    });
+    const before = store.get('api', name)!;
+    const fetcher = hubspotLike(['pat-old', 'pat-new']);
+
+    const result = await handleConnectionRotateCredentials(
+      { store, now: () => NOW + 2_000, getEncryptionKey, fetcher },
+      {
+        attempt_id: 'rotation-attempt-hubspot-0001',
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: { auth: { type: 'bearer', token: 'pat-new' } },
+      },
+    );
+
+    expect(result.verification).toMatchObject({ status: 'verified', auth_type: 'bearer' });
+    // The invalid control key was asked too, and refused.
+    expect(fetcher.mock.calls.some(([, init]) =>
+      init?.headers?.Authorization === 'Bearer recued-intentionally-invalid-credential')).toBe(true);
+    expect(await decodeAuthFromStorage(
+      store.get('api', name)!.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toEqual({ type: 'bearer', token: 'pat-new' });
+  });
+});

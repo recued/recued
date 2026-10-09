@@ -19,6 +19,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   createClientTokenStore,
   CLIENT_KINDS,
+  dummyRecordFor,
   isClientKind,
   type ClientTokenStore,
 } from '../pairing/client-tokens.js';
@@ -217,5 +218,25 @@ describe('D-148 P2 — client_tokens constant-time verify discipline', () => {
     // the stack.
     const ratio = Math.max(t_known, t_unknown) / Math.min(t_known, t_unknown);
     expect(ratio).toBeLessThan(5);
+  });
+});
+
+describe('D-148 P2 — the dummy record behind constant-time verify is derived once per process', () => {
+  it('stores with the same Argon2id parameters share one derivation; other parameters get their own', async () => {
+    const shared = dummyRecordFor(FAST_ARGON2);
+    expect(dummyRecordFor({ ...FAST_ARGON2 })).toBe(shared);
+    const other = dummyRecordFor({ ...FAST_ARGON2, t: 2 });
+    expect(other).not.toBe(shared);
+    expect((await shared).params).toEqual(FAST_ARGON2);
+    expect((await other).params).toEqual({ ...FAST_ARGON2, t: 2 });
+  });
+
+  it('a failed derivation is forgotten, so the next store tries again', async () => {
+    const bad = { t: 0, m: 8, p: 1 };
+    const first = dummyRecordFor(bad);
+    await expect(first).rejects.toThrow();
+    const second = dummyRecordFor(bad);
+    expect(second).not.toBe(first);
+    await expect(second).rejects.toThrow();
   });
 });

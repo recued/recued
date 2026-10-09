@@ -2403,6 +2403,31 @@ describe('composeListeners — D-165 vendor OAuth wiring (slice 2b Piece W)', ()
     return calls[0]![0];
   };
 
+  it('hands the connection rpc deps the key provider even while keys are uninitialized', async () => {
+    // ⛔ A new server composes with keys 'uninitialized' and its first pairing
+    // unlocks the vault IN-PROCESS. Gating `getEncryptionKey` on the compose-time
+    // state left that whole first session key-less: connections were stored as
+    // base64 JSON, probes said `unknown` with no reason, and after a restart the
+    // rows failed AEAD (driven live against HubSpot 2026-10-08). The provider's
+    // closure re-reads the state per call, so it is always safe to hand over.
+    const provider = vi.fn(() => null);
+    const keyProvider = vi.fn(() => provider);
+    await composeListeners(
+      makeOptions({
+        app: appWith({
+          connectionStoreRef: { tag: 'connection-store' },
+          keys: { state: vi.fn(() => 'uninitialized'), keyProvider },
+        }),
+      }),
+    );
+
+    const connectionDeps = configFromCall().connectionDeps as
+      | { getEncryptionKey?: () => Uint8Array | null }
+      | undefined;
+    expect(keyProvider).toHaveBeenCalledWith('connection');
+    expect(connectionDeps?.getEncryptionKey).toBe(provider);
+  });
+
   it('wires both the start rpc deps + the /oauth/complete port deps off ONE shared flow + result store when signing identity + connection store are present', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     try {

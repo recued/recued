@@ -344,22 +344,15 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
     // from 41 throw sites, so admitting it wholesale would push unreviewed PII
     // into audit rows and onto model-bound cards. A code is a closed vocabulary
     // and safe to render; its details are not.
-    const adapterCodeRaw = type !== 'transform'
-      && e !== null && typeof e === 'object'
-      ? (e as { code?: unknown }).code
-      : undefined;
+    //
+    // A server handler behind a kernel op refuses with an rpc code and, most
+    // often, an HTTP-like status, and a Records store refuses with a `records_*`
+    // code and none: each is the same refusal an adapter names with a recipe
+    // code, never a network error (D-313; `rpc-refusal.ts` says in what order
+    // they are read). `adapterErrorCode` is the one rule, so the prefetch path
+    // cannot drift from this one again.
     const adapterCode: RecipeErrorCode | undefined =
-      typeof adapterCodeRaw === 'string'
-      && adapterCodeRaw !== 'AI_MODEL_REFUSED'
-      && Object.hasOwn(ERR, adapterCodeRaw)
-        ? adapterCodeRaw as RecipeErrorCode
-        // A server handler behind a kernel op refuses with an rpc code and,
-        // most often, an HTTP-like status: the same refusal an adapter names
-        // with a recipe code, never a network error (D-313; `rpc-refusal.ts`
-        // says in what order the code and the status are read).
-        : typeof adapterCodeRaw === 'string'
-          ? recipeCodeForRpcRefusal(adapterCodeRaw, (e as { status?: unknown }).status)
-          : undefined;
+      type !== 'transform' ? adapterErrorCode(e) : undefined;
     const code: RecipeErrorCode = cliFailure
       ? cliFailureErrorCode(cliFailure.reason)
       : containerPick
@@ -1274,6 +1267,32 @@ export const trackContextSize = (ctx: ExecutionContext, result: unknown): void =
       { code: 'CONTEXT_SIZE_EXCEEDED' },
     );
   }
+};
+
+/** The recipe code a thrown ingredient or op error names, or `undefined` when it
+ *  names none and the caller's fallback stands.
+ *
+ *  ⛔ ONE RULE FOR EVERY STEP THAT DISPATCHES, sequential and prefetch alike
+ *  (`prefetch.ts` imports it). The prefetch path hardcoded `NETWORK_ERROR` and
+ *  never read the error's code, so a Records refusal in a non-optional
+ *  `prefetch_steps` op (four shipped recipes read `job-status-board` rows that way)
+ *  still said "check your connection" after the sequential path learned to name it.
+ *  It lives here rather than in a file of its own: the engine is a fixed keep-list
+ *  (D-159 N.3), and this is the step runner's own rule.
+ *
+ *  - A code the recipe vocabulary has (`ERR`) is kept, except `AI_MODEL_REFUSED`:
+ *    `runStep` honours that one only with its bounded diagnostic attached, and a
+ *    bare passthrough would promote a code that failed that check.
+ *  - A lower-case rpc or Records code is read by `recipeCodeForRpcRefusal`.
+ *  - Anything else is `undefined`.
+ *
+ *  Only the code crosses. An adapter's `details` carry values (real addresses
+ *  among them), so the callers keep dropping them. */
+export const adapterErrorCode = (e: unknown): RecipeErrorCode | undefined => {
+  const raw = e !== null && typeof e === 'object' ? (e as { code?: unknown }).code : undefined;
+  if (typeof raw !== 'string') return undefined;
+  if (raw !== 'AI_MODEL_REFUSED' && Object.hasOwn(ERR, raw)) return raw as RecipeErrorCode;
+  return recipeCodeForRpcRefusal(raw, (e as { status?: unknown }).status);
 };
 
 const makeError = (

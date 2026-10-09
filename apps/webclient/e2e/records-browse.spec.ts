@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { RecordsOwnerSearchRequest, SavedDataViewDefinition } from '@recued/contracts';
+import { openSavedViewList } from './helpers/saved-data-views.js';
 const URL = 'http://127.0.0.1:4319/full-app-harness.html?data=records-navigation&records_browse=1';
 const KEY = 'recued-test-saved-data-views';
 const ID = 'view_00000000-0000-4000-8000-000000000001';
@@ -62,7 +63,8 @@ test('Records applies filters and sorting before paging and saves settings witho
   expect(Object.keys(saved.definition).sort()).toEqual(['entity', 'filters', 'owner', 'sort', 'tab']);
   // D-291 — the saved-view list is its own route; `#data` only saves and links.
   await page.evaluate(() => window.__app.setHash('#views'));
-  await toolbar(page).locator('summary').click();
+  // The list starts open there, so a click on its summary would fold it.
+  await openSavedViewList(page);
   await toolbar(page).locator('details').getByRole('link', { name: 'Open jobs', exact: true }).click();
   await expect(rows(page).first()).toContainText('Open 238');
   expect((await requests(page)).at(-1)).not.toHaveProperty('cursor');

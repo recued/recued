@@ -110,18 +110,22 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 12px;
   margin-bottom: 10px;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-title {
   margin: 0;
+  flex-shrink: 0;
   font-size: 20px;
   font-weight: 650;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh {
   box-sizing: border-box;
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);

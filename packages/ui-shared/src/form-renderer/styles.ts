@@ -68,6 +68,11 @@ export const FORM_RENDERER_STYLES = `
   box-sizing: border-box;
 }
 
+.form-renderer-input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+}
+
 .form-renderer-input[aria-invalid="true"],
 .form-renderer-textarea[aria-invalid="true"],
 .form-renderer-select[aria-invalid="true"] {

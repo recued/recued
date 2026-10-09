@@ -44,6 +44,8 @@ import {
 } from '@recued/crypto';
 import { deriveDatabaseKeyFromRecoveryEntropy } from './database-encryption.js';
 import { bootServerIdentity, resolveIdentityKeysPath } from './identity/boot.js';
+import { CONTAINER_UNSEALED_REFUSAL, readIdentityPassphrase } from './identity/passphrase-env.js';
+import { runningInContainer } from './lifecycle/supervisor.js';
 import { createFileServerKeyStore } from './keys/file-store.js';
 import { recordKeyfileEvent } from './keys/keyfile-event-ledger.js';
 import type { KeyfileSealingPosture } from './keys/index.js';
@@ -122,7 +124,7 @@ const keyfileServesRealm = async (
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> => {
   if (!existsSync(path)) return false;
-  const passphrase = env.RECUED_IDENTITY_PASSPHRASE;
+  const passphrase = readIdentityPassphrase(env);
   let keyStore: Awaited<ReturnType<typeof createFileServerKeyStore>>;
   try {
     keyStore = await createFileServerKeyStore({
@@ -260,6 +262,9 @@ export const regenerateKeyfileFromRecoveryKey = async (args: {
     const booted = await bootServerIdentity({
       dbPath,
       machineSealing: args.machineSealing ?? false,
+      // Inside a container a regenerated keyfile is as unsealable as a first
+      // boot's, and refused the same way; the catch below puts the old one back.
+      ...(runningInContainer(env) ? { refuseUnsealed: CONTAINER_UNSEALED_REFUSAL } : {}),
       env,
       ...(args.argon2_params ? { argon2_params: args.argon2_params } : {}),
     });

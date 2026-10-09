@@ -1406,7 +1406,8 @@ export const INGREDIENT_BUILDER_STYLES = `
     justify-content: stretch;
   }
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-draft-actions button {
-    flex: 1 1 0;
+    flex: 1 0 auto;
+    white-space: nowrap;
   }
 }
 /* ── Polish pass (mirrors the recipe editor) ─────────────────────── */

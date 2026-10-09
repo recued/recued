@@ -48,6 +48,7 @@ import {
 } from '../serve/compose-execution-context.js';
 import { composeStorageContext } from '../serve/compose-storage-context.js';
 import { handleTriggersCreate, handleTriggersUpdate } from '../triggers/handler.js';
+import { unlockServerVault } from './helpers/unlocked-vault.js';
 
 const OWNER = 'me@owner.example';
 const TRACKING = '1Z0000000000000001';
@@ -172,7 +173,7 @@ const bootLive = async (
     chatLateBound: lateBound,
   });
   // D-212 — the server's secrets and the CAS need an unlocked vault.
-  await app.keys!.init({ password: 'd-315-live-passphrase' });
+  await unlockServerVault(app.keys!);
   const collection = composeCollectionContext({
     db: storage.db,
     dbPath,

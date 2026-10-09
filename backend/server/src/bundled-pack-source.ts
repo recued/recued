@@ -176,8 +176,9 @@ export const isCoreFeaturePack = (manifest: BulkPackManifest): boolean =>
  *  ⚠ SIZE **AND** MTIME, NOT EITHER. An edit that preserves length (flipping a
  *  digit, a boolean) moves only mtime; a write inside the same millisecond as
  *  the last one moves only size. Together they miss only a same-millisecond
- *  same-length rewrite, which no release path produces. */
-const packTreeFingerprint = (dir: string): string => {
+ *  same-length rewrite, which no release path produces. The boot's foundation
+ *  scan (`foundation-pack-pre-install.ts`) validates its own cache with it too. */
+export const packTreeFingerprint = (dir: string): string => {
   const parts: string[] = [];
   for (const file of walkJsonFiles(dir)) {
     try {

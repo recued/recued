@@ -659,20 +659,19 @@ export const composeExecutorConfig = async (
     // the same connection sub-DEK keyProvider used by enrollment so
     // decode + OAuth2-refresh re-encode round-trip through the same
     // AEAD pipeline. `persistAuth` writes via the store directly (we're
-    // already in the same process as the rpc handlers). When the
-    // FileVault is uninitialized we still wire the handler — the
-    // base64-JSON fallback in `decodeAuthFromStorage` /
-    // `encodeAuthForStorage` keeps fresh-install runtime functional;
-    // the AEAD swap activates as soon as the bundle is unlocked.
+    // already in the same process as the rpc handlers). The keyProvider
+    // is wired whenever a key manager exists: until the vault is
+    // unlocked, decode/encode throw `locked`. ⛔ It used to be gated on
+    // the COMPOSE-time state, which kept a new server's whole first
+    // session in the base64-JSON fallback even after pairing unlocked
+    // the vault (driven live 2026-10-08).
     // Absent connectionStore → handler stays unwired (api dispatch
     // surfaces P3.1's `INGREDIENT_ADAPTER_ALL_FAILED` placeholder).
     ...(deps.connectionStore
       ? {
           connectionApi: await (async (): Promise<ConnectionApiHandlerDeps> => {
             const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
-            const keyProvider = (deps.keys && deps.keys.state() !== 'uninitialized')
-              ? deps.keys.keyProvider('connection')
-              : undefined;
+            const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
             return {
               decodeAuth: (row) =>
                 decodeAuthFromStorage(
@@ -711,9 +710,7 @@ export const composeExecutorConfig = async (
             const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
             const { createWsConnect } = await import('../../mcp-ws-connector.js');
             const { createStdioSpawn } = await import('../../mcp-stdio-spawner.js');
-            const keyProvider = (deps.keys && deps.keys.state() !== 'uninitialized')
-              ? deps.keys.keyProvider('connection')
-              : undefined;
+            const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
             return {
               decodeAuth: (row) =>
                 decodeAuthFromStorage(

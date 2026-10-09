@@ -247,10 +247,10 @@ describe('Shell-frame Step 5 — shared Create overlay opener', () => {
     ).toBeGreaterThanOrEqual(4);
     const styles = doc.styles.map((style) => style.textContent).join('\n');
     expect(styles).toContain(
-      `[${CREATE_OVERLAY_CLOSE_ATTR}] {\n  margin-left: auto;\n  appearance: none;\n  min-height: 36px;`,
+      `[${CREATE_OVERLAY_CLOSE_ATTR}] {\n  margin-left: auto;\n  appearance: none;\n  min-height: var(--wc-control-h, 38px);`,
     );
     expect(styles).toContain(
-      `[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {\n  min-height: 36px;`,
+      `[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {\n  min-height: var(--wc-control-h, 38px);`,
     );
     expect(styles).toContain(
       `[${CREATE_OVERLAY_ATTR}] [${COMPOSE_ROUTE_HOST_ATTR}] .compose-header {\n  display: none;`,

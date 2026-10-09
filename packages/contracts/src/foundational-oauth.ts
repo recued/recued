@@ -340,6 +340,22 @@ export const isLoopbackOrigin = (origin: string): boolean => {
   }
 };
 
+/** The same loopback page under the NAME `localhost` (same scheme and port),
+ *  for a page open at a NUMBERED loopback address — `127.0.0.1` or `[::1]` —
+ *  else `null` (already `localhost`, or not loopback at all).
+ *
+ *  ⛔ Exists because the server's start-up log prints `http://127.0.0.1:<port>`,
+ *  so that is where owners are, and a provider that allows an `http` callback
+ *  only for loopback may allow it only by name: HubSpot will not register a
+ *  `127.0.0.1` redirect URL, and the Azure portal refuses an `http` one at a
+ *  number. The callback follows the page, so the page must move. */
+export const localhostOriginForNumberedLoopback = (origin: string): string | null => {
+  if (!isLoopbackOrigin(origin)) return null;
+  const u = new URL(origin);
+  if (u.hostname === 'localhost') return null;
+  return `${u.protocol}//localhost${u.port === '' ? '' : `:${u.port}`}`;
+};
+
 /** The webclient origins Recued itself hosts. They serve the callback page at
  *  `/oauth-callback`, not under `/webclient/`, so they never self-serve.
  *  `app.recued2.com` is staging: it keeps bouncing through the production

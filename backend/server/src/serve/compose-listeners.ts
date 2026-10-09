@@ -879,9 +879,7 @@ export const composeListeners = async (
         stateStore: createMessengerIngressStateStore(storage.db),
         dispatchers: messengerDispatchers,
         decodeAuth: (row) => {
-          const keyProvider = app.keys && app.keys.state() !== 'uninitialized'
-            ? app.keys.keyProvider('connection')
-            : undefined;
+          const keyProvider = app.keys ? app.keys.keyProvider('connection') : undefined;
           return decodeAuthFromStorage(
             row.auth_ciphertext,
             { kind: row.kind, name: row.name },
@@ -2290,9 +2288,12 @@ export const composeListeners = async (
    *  mint and the owner's manual Save must be the SAME probe, or a connection
    *  behaves one way when the owner looks and another when nobody does. */
   const connectionGeneratedPackDeps = {
-    ...(app.keys && app.keys.state() !== 'uninitialized'
-      ? { getEncryptionKey: app.keys.keyProvider('connection') }
-      : {}),
+    // ⛔ Whenever a key manager exists — never gated on its state at COMPOSE
+    // time. A new server composes 'uninitialized' and its first pairing
+    // unlocks the vault in-process; a gate here stored that whole first
+    // session's connections as base64 JSON, which fail AEAD after the next
+    // restart (driven live 2026-10-08). The closure re-reads state per call.
+    ...(app.keys ? { getEncryptionKey: app.keys.keyProvider('connection') } : {}),
     // Manual MCP probes use the exact Node transport capabilities already
     // composed for live recipe execution. Reusing these seams keeps websocket
     // auth/redirect handling and stdio shell/env hardening identical between

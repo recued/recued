@@ -6,14 +6,17 @@ The server reuses the same packages the clients use (`@recued/engine`, `@recued/
 
 ## Install
 
-Pick the install path that matches your setup. All four deliver the same `recued` binary + `config.sample.toml`.
+| Where | How |
+|---|---|
+| **Linux, macOS** | `curl -fsSL https://recued.com/install.sh \| sh` |
+| **Windows** (PowerShell) | `irm https://recued.com/install.ps1 \| iex` |
+| **From source** | [Quick start (from source)](#quick-start-from-source) below |
 
-| Distribution | Best for | Command |
-|---|---|---|
-| **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server@sha256:<signed-digest>` |
-| **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
-| **cloud-init** | Advanced unattended provisioning on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
+The installers download the signed `recued` binary for this machine, check it against Recued's pinned release key, install it, and set it to start at login (on Linux, as root, at boot). That binary updates itself; see **Update + migrate**.
+
+[`config.sample.toml`](./config.sample.toml), beside this README, documents the common settings a `config.toml` can hold and where the server looks for that file.
+
+`@recued/server` is not published to npm. Install it with an installer above, or from source.
 
 After install, pair the webclient:
 
@@ -22,34 +25,28 @@ recued pair            # prints a pairing code + an app.recued.com/pair link
 # Open that link to complete pairing.
 ```
 
-See [`distribution/homebrew/README.md`](../../distribution/homebrew/README.md) for Homebrew service management and [`distribution/vps/README.md`](../../distribution/vps/README.md) for provider-specific cloud-init details.
-
-**Docker — two compose files, two different acts.** The repo-root [`docker-compose.yml`](../../docker-compose.yml) **builds from source**: `docker compose up` from a fresh clone, with no config file to author and no variable to set. The one beside this README, [`backend/server/docker-compose.yml`](./docker-compose.yml), **deploys a published image** and requires `RECUED_IMAGE_REF` pinned to a verified `@sha256` digest — a prebuilt binary from a registry is a supply-chain input and D-178 admits it by signature or not at all. Neither is a relaxed version of the other; pick by whether you are running your own build or someone's release.
-
-**Verifying an image change:** `npm run test:docker-smoke` builds the production image, starts it, and asserts the container actually serves — `running` plus a green HEALTHCHECK, with container logs attached to any failure. It runs automatically in `npm run ci` wherever a Docker daemon is live (adding ~4–5 min); `RECUED_SKIP_DOCKER_SMOKE=1` declines a single run. It is the only check that catches a break visible solely when you *start* the thing: compiling, bundling and packing all stayed green through four separate defects that each left the image unusable.
-
 ### `RECUED_IDENTITY_PASSPHRASE` — sealing the key file (D-212)
 
 The server unwraps its vault key from a key file in the data directory at every boot. On first boot it seals that file with the first factor available: **`RECUED_IDENTITY_PASSPHRASE`** if set, otherwise a platform secret store (macOS login keychain / Windows DPAPI / systemd-creds) whose secret lives outside the data directory, otherwise **nothing**.
-
-⚠ **Containers land in the unsealed case.** A host credential key is either on the ephemeral layer (`--force-recreate` destroys the realm's only key) or inside the data volume (it travels with a copy), so the platform rung declines by design. Unsealed still encrypts the realm — what it stops defending is capture of the whole data directory, which then carries the key too.
 
 ```sh
 export RECUED_IDENTITY_PASSPHRASE='a long, random passphrase'
 recued serve --db ./recued-data/recued.db
 ```
 
+Or set **`RECUED_IDENTITY_PASSPHRASE_FILE`** to a file that holds it, such as a container secret under `/run/secrets/` or a systemd credential. The value then stays out of the environment. Set one or the other, not both. A named file that is missing, unreadable or empty stops the server instead of counting as "no passphrase". Inside a container no platform secret store exists, so a server there refuses its first boot without a passphrase rather than store the key file unsealed.
+
 **Changing the passphrase later is cheap** — stop the server and run `recued rotate-passphrase`. It re-seals the same keyfile under a new passphrase: same realm, same data, same server identity, nothing re-pairs. Set the new value in the service environment before starting again.
 
 **Changing the FACTOR is not.** Which factor seals the keyfile is recorded when the file is created and is permanent for that realm: before pairing the keyfile is disposable (stop, delete it, set or unset the variable, start again — costs a fresh identity, never data); after pairing it means `recued recover-keyfile` with the 24-word recovery key, which mints a new server identity, re-pairs every device, changes the publisher identity, and drops the account binding. Once sealed with a passphrase it is required at **every** start — the server fails loudly rather than opening the file without it.
 
-Keep it in the service manager's secret mechanism (systemd `EnvironmentFile=`, compose `env_file`, a secret manager), not in `config.toml` — that file lives in the directory the passphrase protects. `recued auth-status` prints the current posture.
+Keep it in the service manager's secret mechanism (systemd `EnvironmentFile=`, a secret manager), not in `config.toml` — that file lives in the directory the passphrase protects. The webclient shows how the key file is protected under **Settings → Server → Key Health**. (`recued auth-status` was retired in 26.10.8.)
 
-The packaged systemd, launchd, Docker, Homebrew, and VPS service
-surfaces all preserve the Phase C exit-code contract so clean shutdowns
-stay down, restart/crash exits respawn, and lock-held exits stop retry loops.
+The packaged systemd and launchd services both preserve the Phase C
+exit-code contract so clean shutdowns stay down, restart/crash exits
+respawn, and lock-held exits stop retry loops.
 
-For inbound webhooks (`data.webhook.*`), you'll need a public hostname or tunnel. D-096 is load-bearing: Recued Cloud never relays webhooks. The [`distribution/vps/cloud-init-with-caddy.yml`](../../distribution/vps/cloud-init-with-caddy.yml) template wires Caddy + Let's Encrypt for the self-host path.
+For inbound webhooks (`data.webhook.*`), you'll need a public hostname or tunnel. D-096 is load-bearing: Recued Cloud never relays webhooks. [Reachability](https://recued.com/docs/setup/reachability/) in the docs covers how to give the server a public name.
 
 ## Update + migrate (D-178)
 
@@ -61,17 +58,16 @@ recued update check    # explicit form of the default
 ```
 
 `recued update` fetches the signed release manifest, verifies it, and
-resolves it against this install locally — it works on every install
-(binary, Docker, Homebrew, source) because the *check* is universal.
-It prints the available version (if any) plus how to apply it for your
-channel. Applying is channel-specific:
-Docker users copy the exact `recued/server@sha256:…` reference printed by
-`recued update` from the verified signed manifest, pull it, and recreate the
-container; Homebrew
-users via `brew upgrade recued-server`; on the self-updating binary channel the
-running server stages + restarts from the webclient (Settings →
-Updates). A stopped binary/docker-thin server can also run
-`recued update apply`; docker-baked remains pull-and-recreate by digest.
+resolves it against this install locally — it works on every install,
+because the *check* is universal. It prints the available version (if any)
+plus how to apply it for your channel:
+
+- **Installed with `install.sh` or `install.ps1`** (the binary channel): the
+  running server stages the update and restarts from the webclient
+  (Settings → Server → Updates). A stopped server can run
+  `recued update apply` instead.
+- **Built from source:** `recued update` tells you a newer release exists. It
+  never replaces your build.
 
 ### `recued archive`
 
@@ -94,7 +90,7 @@ CLI restore flow remains verify-first: stop the server, decrypt + extract the ar
 
 ### Prerequisites
 
-Node.js 20+ and npm. The server uses SQLite via `better-sqlite3` -- no external database.
+Node.js 24 and npm. The server uses SQLite via `better-sqlite3` -- no external database.
 
 ### Install
 
@@ -111,7 +107,7 @@ cd backend/server
 npm start
 ```
 
-The server starts on port 7717 with a SQLite database at `./recued-server.db`. A pairing code is printed on first start.
+The server starts on port 7717. Its database lives in your platform's standard place — `~/.local/share/recued/recued-server.db` on Linux, `~/Library/Application Support/recued/recued-server.db` on macOS — unless `--db` names another. A pairing code is printed on first start.
 
 ### Pair the webclient
 
@@ -132,6 +128,9 @@ npx tsx src/bin.ts stop           # stop the daemon
 ```
 
 The daemon writes `recued-server.pid` and `recued-server.log` alongside the database file.
+The log holds up to 5 MB, plus the previous 5 MB in `recued-server.log.1`. A server
+started at login on macOS or Windows keeps its output there too. Under systemd it goes
+to the journal instead (`journalctl -u recued`, or `journalctl --user -u recued`).
 
 ## CLI reference
 
@@ -190,12 +189,12 @@ Audit:
   audit activities                    List recent activities
   audit export                        Export full log (JSON)
   audit clear                         Clear all entries
-  logs                                Show recent daemon log
-  logs -f                             Follow daemon log (tail -f)
+  logs                                Show recent server log
+  logs -f                             Follow the server log
 
 Flags:
   --port <n>                          HTTP port (default: 7717)
-  --db <path>                         SQLite path (default: ./recued-server.db)
+  --db <path>                         SQLite path (default: the platform's standard place)
   --context '{"entity_id":"123"}'     Context for run
   --config '{"key":"value"}'          Config overrides for run
   --publisher <id>                    Publisher id for import/install
@@ -256,7 +255,7 @@ Runs four checks without saving: schema validation, ingredient availability, var
 | Variable | Default | Description |
 |:---|:---|:---|
 | `PORT` | `7717` | HTTP listen port |
-| `DB_PATH` | `./recued-server.db` | SQLite database path |
+| `DB_PATH` | the platform's standard place (see **Start**) | SQLite database path |
 | `RECUED_WEBHOOK_URL` | -- | POST scheduled execution results to this URL |
 | `RECUED_WEBHOOK_CLOCK_AUTHORITY_URL` | -- | Boot-pinned independent HTTPS time endpoint. It must return a fresh `Date` and exactly echo the request's `X-Recued-Clock-Nonce`; bounded cache-busting HEAD probes gate timestamped webhook profiles. Unset keeps them disabled. |
 | `RECUED_VAULT_*` | -- | Vault entries (see below) |

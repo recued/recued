@@ -9,6 +9,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  buildVendorAuthorizeUrl,
   getVendorProvider,
   OAUTH_CLOUD_CALLBACK_URL,
   type ConnectionVendorProvider,
@@ -18,7 +19,6 @@ import { makeConnectionHandlers, type ConnectionRpcDeps } from '../connection-ha
 import {
   b64UrlDecode,
   b64UrlEncode,
-  buildVendorAuthorizeUrl,
   createVendorOAuthFlowStore,
   createVendorOAuthResultStore,
   decodeOauthStateToken,
