@@ -81,7 +81,7 @@ export interface ServerPassportPathEntry {
 export interface ServerPassportNetworkBlock {
   /** Detected LAN bind addresses. Redacted in `support_redacted`. */
   lan_urls: string[];
-  /** `<handle>.recued.cloud` — present only when Pro subscription
+  /** `<handle>.recued.net` — present only when Pro subscription
    *  active. */
   ddns_handle?: string;
   ddns_provider?: string;

@@ -2093,11 +2093,11 @@ function pairView(
 const describeDoorRefusal = (refusal: ReceptionDoorRefusal): string => {
   switch (refusal.reason) {
     case 'dispatch_unresolvable':
-      return `this recipe cannot be lowered to the exact operations and account bindings the public form would run: ${refusal.detail}`;
+      return `this recipe cannot be lowered to the exact operations and connections the public form would run: ${refusal.detail}`;
     case 'dynamic_dispatch':
       return `step '${refusal.step_id}' chooses what to run at runtime (${refusal.field}), so what this form could do is not knowable in advance. A public form must be statically analyzable.`;
     case 'dynamic_connection':
-      return `step '${refusal.step_id}' resolves its connection at runtime (${refusal.ref}), so which account it would use is not knowable in advance.`;
+      return `step '${refusal.step_id}' resolves its connection at runtime (${refusal.ref}), so which connection it would use is not knowable in advance.`;
     case 'literal_connection':
       return `step '${refusal.step_id}' names a connection directly ('${refusal.ref}'). A connection is a slot filled by the pack's enrollment, never hard-coded in a recipe.`;
     case 'cost_step_limit':

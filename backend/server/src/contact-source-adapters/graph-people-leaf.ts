@@ -68,6 +68,7 @@ import {
   type ContactAliasKind,
   type ContactAttributeKind,
   type RecipeDefinition,
+  profileCatalogSlugs,
 } from '@recued/contracts';
 
 import {
@@ -309,7 +310,12 @@ export const createGraphPeopleLeaf = (deps: GraphPeopleLeafDeps): ContactSourceL
         reason: `connection '${connection_name}' has no operation profile (not enrolled?)`,
       };
     }
-    const catalogSlug = profile.catalog_slug;
+    // D-320 ruling 10 — a connection serves several catalogs (one Microsoft sign-in
+    // serves this pack's and its siblings'): take the one declaring the list
+    // operation, else the first, whose checks below say what is missing.
+    const catalogSlug = profileCatalogSlugs(profile).find((slug) =>
+      deps.fetchDeps.executorConfig.manifests.get(slug)?.operations?.[LIST_OP] !== undefined)
+      ?? profile.catalog_slug;
     if (catalogSlug === undefined || catalogSlug.length === 0) {
       return {
         ok: false,

@@ -142,7 +142,7 @@ export interface ArchiveRuntime {
 export interface ArchiveRpcDeps {
   runtime: ArchiveRuntime;
   auditLog?: AuditLogStore;
-  /** Server `data_path` — used purely for resolving relative
+  /** The data folder (`dirname(dbPath)`) — used purely for resolving relative
    *  user-supplied paths in `server.archive.import`. */
   dataPath: string;
   now?: () => number;
@@ -393,7 +393,7 @@ export const makeArchiveHandlers = (
     // owner-only (a paired-client WS rpc; it does not reach MCP / doors), so a
     // self-hosting owner naming a backup file anywhere on their own box is
     // by-design. Relative paths are the normal upload flow (archives land under
-    // `{data_path}/exports/`) and MUST stay confined there.
+    // `<dataPath>/exports/`) and MUST stay confined there.
     //
     // ⛔ `isAbsolute`, not `startsWith('/')`. D-212 ships Windows keyfile
     // support, so the server runs on Windows — where an absolute backup path is

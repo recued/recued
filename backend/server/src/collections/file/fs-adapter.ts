@@ -13,6 +13,20 @@
  *  match paths relative to `root` using POSIX separators, so
  *  cross-platform.
  *
+ *   3. Settle walk — one more walk `settleMs` after the watcher attaches,
+ *      turning whatever changed in between into ordinary events.
+ *
+ *  ⛔ WHY THE SETTLE WALK. A watcher that has attached is not yet a watcher
+ *  that delivers. On macOS a recursive `fs.watch` rides an FSEvents stream
+ *  that starts asynchronously, and while the disk is busy a file written in
+ *  its first milliseconds is never reported: measured 2026-10-09, a write at
+ *  0 ms after attaching was lost in 19 of 20 trials under filesystem churn
+ *  (0 of 20 at 20 ms or later, 0 of 20 on a quiet disk). The initial walk
+ *  runs BEFORE the watcher attaches, so that gap was a file the collection
+ *  never indexed until a restart or its next change — the "flaky"
+ *  `file-collection` live test under every sweep's load was this, lost, not
+ *  late.
+ *
  *  Debounce: editor autosaves / chunked writes / macOS FSEvents
  *  redundancy all fire multiple events per change. We coalesce
  *  within a per-path window so each logical change becomes one
@@ -50,6 +64,10 @@ export interface FsWatcherOptions {
   /** Coalesce successive events on the same path within this window.
    *  Defaults to 500 ms — matches the Phase C config watcher. */
   debounceMs?: number;
+  /** How long after the watcher attaches to walk the tree once more and turn
+   *  what changed meanwhile into events (see the header). Defaults to
+   *  `DEFAULT_SETTLE_MS`; a negative value skips the walk (tests). */
+  settleMs?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** `realtime` attaches recursive `fs.watch` after the initial scan.
    *  `none` performs only the initial scan; it never starts a polling loop.
@@ -153,6 +171,10 @@ export const matchesAnyIgnore = (
 
 const DEFAULT_DEBOUNCE_MS = 500;
 
+/** About 50x the longest measured window in which a just-attached watcher
+ *  missed a write (under 20 ms, on a churned disk). */
+export const DEFAULT_SETTLE_MS = 1_000;
+
 const DEFAULT_WATCH_FACTORY: NonNullable<FsWatcherOptions['watchFactory']> = (
   root,
   listener,
@@ -165,6 +187,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
   const root = resolve(opts.root);
   const ignoreRegexes = opts.ignore.map(globToRegExp);
   const debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+  const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS;
   const watchMode = opts.watchMode ?? 'realtime';
   const log = opts.log ?? (() => {});
   const watchFactory = opts.watchFactory ?? DEFAULT_WATCH_FACTORY;
@@ -179,6 +202,11 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
   let attachmentError: unknown;
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
   const inFlight = new Set<Promise<void>>();
+  /** What the initial walk saw, kept current by every event processed until
+   *  the settle walk compares against it; released after. */
+  const known = new Map<string, { mtimeMs: number; size: number }>();
+  let settled = false;
+  let settleTimer: ReturnType<typeof setTimeout> | undefined;
 
   const track = (work: Promise<void>, label: string): void => {
     let tracked: Promise<void>;
@@ -252,6 +280,10 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       if (entry.isDirectory()) {
         await scanDir(abs);
       } else if (entry.isFile()) {
+        try {
+          const st = await stat(abs);
+          known.set(abs, { mtimeMs: st.mtimeMs, size: st.size });
+        } catch { /* gone already: the settle walk or an event decides */ }
         await safeFire({ type: 'present', path: abs });
       }
     }
@@ -266,10 +298,12 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       pending.delete(absPath);
       track((async (): Promise<void> => {
         try {
-          await stat(absPath);
+          const st = await stat(absPath);
+          if (!settled) known.set(absPath, { mtimeMs: st.mtimeMs, size: st.size });
           await safeFire({ type: 'change', path: absPath });
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            if (!settled) known.delete(absPath);
             await safeFire({ type: 'remove', path: absPath });
           } else {
             log('warn', `stat failed for ${absPath}`, { err });
@@ -280,12 +314,55 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     pending.set(absPath, timer);
   };
 
+  /** Walk again once the watcher is surely live; anything new, changed or gone
+   *  since the initial walk (and not already handled by an event) goes through
+   *  `scheduleEvent` like a live event. */
+  const settleWalk = async (): Promise<void> => {
+    const seen = new Map<string, { mtimeMs: number; size: number }>();
+    const walk = async (dir: string): Promise<void> => {
+      let entries: import('node:fs').Dirent[];
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;   // its files are candidates below, and each is stat'ed before a removal
+      }
+      for (const entry of entries) {
+        if (stopped) return;
+        const abs = join(dir, entry.name);
+        if (isIgnored(abs)) continue;
+        if (entry.isDirectory()) {
+          await walk(abs);
+        } else if (entry.isFile()) {
+          try {
+            const st = await stat(abs);
+            seen.set(abs, { mtimeMs: st.mtimeMs, size: st.size });
+          } catch { /* gone mid-walk: an event or the next start decides */ }
+        }
+      }
+    };
+    await walk(root);
+    if (stopped) return;
+    for (const [abs, now] of seen) {
+      const was = known.get(abs);
+      if (!was || was.mtimeMs !== now.mtimeMs || was.size !== now.size) scheduleEvent(abs);
+    }
+    // Not seen is only a CANDIDATE: `scheduleEvent` stats it and reports a
+    // removal only on ENOENT. So a folder this walk could not read takes
+    // nothing out (its files stat EACCES, or fine) — unlike the collection's
+    // restart walk, which removes without a stat and so needs a clean walk.
+    for (const abs of known.keys()) if (!seen.has(abs)) scheduleEvent(abs);
+    settled = true;
+    known.clear();
+  };
+
   return {
     async start() {
       if (started || stopped) return;
       started = true;
       await scanDir(root);
       if (watchMode === 'none') {
+        settled = true;
+        known.clear();
         log('info', `fs watcher for ${root} is one-shot; realtime unavailable`);
         return;
       }
@@ -305,8 +382,19 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
         if (attachmentFailed) {
           throw new FsWatchUnavailableError(root, attachmentError);
         }
+        if (settleMs >= 0) {
+          settleTimer = setTimeout(() => {
+            settleTimer = undefined;
+            if (!stopped) track(settleWalk(), 'settle walk');
+          }, settleMs);
+        } else {
+          settled = true;
+          known.clear();
+        }
       } catch (err) {
         attaching = false;
+        settled = true;
+        known.clear();
         closeWatchHandle();
         log('error', `fs.watch failed to attach for ${root}`, { err });
         if (err instanceof FsWatchUnavailableError) throw err;
@@ -317,6 +405,9 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     async stop() {
       if (stopped) return;
       stopped = true;
+      if (settleTimer) clearTimeout(settleTimer);
+      settled = true;
+      known.clear();
       for (const timer of pending.values()) clearTimeout(timer);
       pending.clear();
       closeWatchHandle();

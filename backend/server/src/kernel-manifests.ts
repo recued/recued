@@ -4528,51 +4528,6 @@ const MANIFESTS = [
       "entries": "entries",
       "next_cursor": "next_cursor"
     }
-  },
-  {
-    "slug": "webhook-get",
-    "name": "Fetch a single webhook delivery",
-    "description": "Return one record from `data.webhook.{slug}.*` by record_id. `record_id` comes from `webhook-list` output (`webhook:{ULID}` — lexicographic by arrival time). `record.body_inline` holds text bodies up to 64 KB; larger payloads are reachable via `record.blob_hash`. `hot_fields.headers_subset` keeps the provider-relevant signature + event headers (github, slack, stripe) the listener captured at receive time.",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "webhook",
-      "warehouse",
-      "get"
-    ],
-    "input": {
-      "slug": null,
-      "record_id": null
-    },
-    "output": {
-      "record": "record"
-    }
-  },
-  {
-    "slug": "webhook-list",
-    "name": "List webhook deliveries",
-    "description": "Return inbound-webhook deliveries from `data.webhook.{slug}.*` filtered by hot-field equality, `received_at` range, and limit. Deliveries carry `hot_fields = { method, headers_subset, remote_ip, query, content_type }`. Bodies ≤ 64 KB live inline (utf8 for text / json, base64 otherwise); larger payloads move to the CAS blob store. Requires a paired `[webhook.{slug}]` configured on the server with `public_reachable=true` + `webhook_port>0` (D-096: no cloud relay).",
-    "author": "recued",
-    "kind": "storage",
-    "version": 1,
-    "category": "data",
-    "risk_tier": "read",
-    "tags": [
-      "kernel",
-      "webhook",
-      "warehouse",
-      "list"
-    ],
-    "input": {
-      "slug": null
-    },
-    "output": {
-      "records": "records"
-    }
   }
 ];
 

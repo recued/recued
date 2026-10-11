@@ -69,7 +69,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // ════════════════════════════════════════════════════════════════
 
 /** Deployment mode drives which trust-footer copy renders. `pro_cloud`
- *  (auto-managed `<handle>.recued.cloud` + ACME-DNS-01) names the cloud
+ *  (auto-managed `<handle>.recued.net` + ACME-DNS-01) names the cloud
  *  DNS relay; `byo_ddns` (BYO DDNS + own certbot) omits the relay
  *  reference entirely — there genuinely is no third party. */
 export type TrustFooterDeploymentMode = 'byo_ddns' | 'pro_cloud';

@@ -452,7 +452,6 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     connectionNotificationDeps: undefined,
     fileStack: undefined,
     calendarStack: undefined,
-    serviceStack: undefined,
     sharedStore,
     formResponseStore,
     mailFactStore,
@@ -622,13 +621,13 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   if (bearer !== undefined && bearer.length > 0 && tokenRecord === null) {
     console.error(
       '[recued mcp] the supplied token was not recognised — no tools will be offered. '
-      + 'Check it against Settings → MCP Tokens.',
+      + 'Check it on the Contracts page of the web app.',
     );
   } else if (tokenRecord === null) {
     console.error(
       '[recued mcp] no token supplied, so no tools will be offered. '
       + 'This surface derives its catalog from the contract its caller carries. '
-      + 'Pass --token <bearer> or set RECUED_MCP_TOKEN; create one in Settings → MCP Tokens.',
+      + 'Pass --token <bearer> or set RECUED_MCP_TOKEN; create one on the Contracts page of the web app.',
     );
   }
   const initialBoundContractId = tokenRecord?.contract_id ?? null;

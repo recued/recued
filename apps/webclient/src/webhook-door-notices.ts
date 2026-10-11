@@ -63,10 +63,10 @@ const changesOf = (result: unknown): DishWebhookDoorChange[] => {
   return changes;
 };
 
-/** One entry of a door's diff, in words: an account by name, a tool or an
+/** One entry of a door's diff, in words: a connection by name, a tool or an
  *  action by the id the Kitchen shows beside a webhook's switch. */
 const entryLabel = (entry: string): string => {
-  if (entry.startsWith('connection:')) return `the ${entry.slice('connection:'.length)} account`;
+  if (entry.startsWith('connection:')) return `the ${entry.slice('connection:'.length)} connection`;
   if (entry.startsWith('ingredient:')) return entry.slice('ingredient:'.length);
   return entry;
 };
@@ -82,7 +82,7 @@ const sentence = (text: string): string => {
 const closedText = (change: DishWebhookDoorChange): string => {
   switch (change.reason_code) {
     case 'no_account':
-      return 'Messages coming in are refused until its settings choose an account.';
+      return 'Messages coming in are refused until its settings choose a connection.';
     case 'refused':
       return change.reason !== undefined && change.reason.trim() !== ''
         ? sentence(`Messages coming in are refused: ${change.reason}`)

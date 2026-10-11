@@ -27,13 +27,12 @@ export const TIMELINE_MAX_LIMIT = 1000;
  *  is fixed at the contract layer so consumers can switch on it
  *  exhaustively. New collections widen the union as they ship. */
 export const TIMELINE_SOURCES = [
-  // Raw warehouse collections (D-106/D-117/D-118 — emit per-record
+  // Raw warehouse collections (D-106/D-117 — emit per-record
   // create/update events; payload carries `hot_fields` + size).
   'mail',
   'calendar',
   'file',
   'webhook',
-  'service',
   // Sidecar collections (D-119 Phase 13 — recipe-authored facts +
   // typed cross-collection links).
   'annotation',
@@ -186,6 +185,13 @@ export interface TimelineRollup {
   publisher: string;
   pack_slug: string;
   label?: string;
+  /** The projection's declared `name`, which a pack with several rollups gives
+   *  each one so recipes can read them apart. `label` is what people read. */
+  name?: string;
+  /** A grouped projection's rollup: the field and this rollup's value of it
+   *  (`RecordsRootProjectionResult.group`). One pack can then answer with
+   *  several rollups, one per group, each labelled with its group. */
+  group?: { by: string; key: unknown };
   value: Record<string, unknown>;
   /** False when the pack's walk hit a bound. A rollup that under-reports
    *  without saying so is the failure this whole path is built to avoid. */

@@ -71,7 +71,6 @@ export interface AdapterRegistryDeps {
   ai?: Adapter;
   chat?: Adapter;
   mcp?: Adapter;
-  service?: Adapter;
   storage?: Adapter;
   /** D-125 P3 `createConnectionAdapter` (api / mcp / notification
    *  subtypes). Both server boot sites wire it when `connectionStore` is
@@ -92,8 +91,8 @@ export interface AdapterRegistryDeps {
  *  the missing-adapter problem with a kind-named diagnostic instead of
  *  a silent undefined-slot crash.
  *
- *  Per-device defaults are NOT applied here (no "server implies
- *  service" assumption); boot sites pass exactly the set of adapters
+ *  Per-device defaults are NOT applied here (no "the server has every
+ *  adapter" assumption); boot sites pass exactly the set of adapters
  *  they wired. The registry is purely a transport layer. */
 export const createAdapterRegistry = (
   deps: AdapterRegistryDeps,
@@ -103,7 +102,6 @@ export const createAdapterRegistry = (
   ai: deps.ai ?? unsupported('ai', 'no AI adapter is configured (BYOK slot or free pool)'),
   chat: deps.chat ?? unsupported('chat', 'this device does not have a web-chat tab adapter'),
   mcp: deps.mcp ?? unsupported('mcp', 'no MCP adapter is registered on this device'),
-  service: deps.service ?? unsupported('service', 'this device does not host long-running services'),
   storage: deps.storage ?? unsupported('storage', 'no storage adapter is registered on this device'),
   // ⛔ NOT a `KIND_NOT_YET_IMPLEMENTED` placeholder. It was one until D-125
   // P3, and the message ("connection adapter ships in D-125 P3") outlived the

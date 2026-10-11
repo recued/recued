@@ -121,7 +121,7 @@ export const EXPOSURE_PATH_COPY: Record<
 export const EXPOSURE_ERROR_COPY: Record<NetworkErrorCode, string> = {
   preset_unknown: 'Unknown preset. Refresh the page + try again.',
   preset_unachievable_no_ddns:
-    'This choice needs an address people outside can use. Set up DDNS in Settings, then Server, then DDNS, or stay on your own network only.',
+    'This choice needs an address people outside can use. Add one in Settings, then Server, then Hostnames, or stay on your own network only.',
   public_mcp_not_acknowledged:
     'Public MCP requires an explicit acknowledgement. Click "Enable public MCP" and type the confirmation phrase first.',
   public_mcp_phrase_mismatch:
@@ -253,7 +253,7 @@ export interface ExposurePageModel {
    *  `any_public_note` on the Exposure panel, which since the tab went says
    *  "have a look at the reachability check" rather than naming a page. */
   any_public: boolean;
-  /** True iff DDNS is configured (Pro recued.cloud OR user-supplied
+  /** True iff DDNS is configured (Pro recued.net OR user-supplied
    *  DDNS adapter). When false, public presets render disabled +
    *  every per-row `requires_ddns_for_public` flag surfaces. */
   has_ddns: boolean;

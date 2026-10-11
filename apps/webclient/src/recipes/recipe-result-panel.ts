@@ -1119,7 +1119,8 @@ const isJsonCompatible = (
 };
 
 const RESULT_ACTION_VARIANTS = new Set(['primary', 'secondary', 'danger']);
-const RESULT_ACTION_RESERVED_CONTEXT_KEYS = new Set(['event', 'server', 'recipe', 'tabs', 'caller']);
+// The validator's list (`ACTION_CONTEXT_RESERVED_KEYS`); D-320 phase 3 adds `connections`.
+const RESULT_ACTION_RESERVED_CONTEXT_KEYS = new Set(['event', 'server', 'recipe', 'tabs', 'caller', 'connections']);
 
 export const createResultActionRegistry = (
   installed: ReadonlyArray<ServerRecipeListEntry>,

@@ -56,7 +56,7 @@ const BOOTSTRAP_AT_TEST_START = 1_700_000_000_000;
 
 const makeBootstrap = (): ExposureState =>
   deriveBootstrapDerivedExposureState({
-    webhook_port: 0,
+    webhooks_enabled: false,
     public_reachable: false,
   });
 
@@ -329,9 +329,9 @@ describe('W3.10 — bootstrap discipline', () => {
     expect(DEFAULT_EXPOSURE_STATE.resolution.ws.lan).toBe(true);
   });
 
-  it('deriveBootstrapDerivedExposureState({webhook_port:0,public_reachable:false}) also has /ws.lan true', () => {
+  it('deriveBootstrapDerivedExposureState({webhooks_enabled:false,public_reachable:false}) also has /ws.lan true', () => {
     const b = deriveBootstrapDerivedExposureState({
-      webhook_port: 0,
+      webhooks_enabled: false,
       public_reachable: false,
     });
     expect(b.resolution.ws.lan).toBe(true);

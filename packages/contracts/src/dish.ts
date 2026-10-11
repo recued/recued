@@ -104,6 +104,13 @@ export interface Dish {
    *  shared `config_overlay` merges UNDER this dish's own overlay. Absent ⇒
    *  free dish. */
   group_id?: string;
+  /** D-320 §3.4 — the dish's choice of connection, by slot (the connection
+   *  name a pack's catalog declares): `{ "hubspot": "<connection name>" }`.
+   *  Stored beside the settings, not among them: the recipe cannot read it.
+   *  Only a connection on the pack's list for that slot is accepted. A run's
+   *  own choice wins over it, and it wins over the pack's default. Absent ⇒
+   *  the dish takes the default. */
+  connections?: Record<string, string>;
   created_at: number; // epoch ms
 }
 
@@ -119,6 +126,14 @@ export const DISH_WEBHOOK_DOOR_RPCS = [
   'schedules.create',
   'triggers.create',
   'auto_run.update',
+  // D-320 phase 3 (3b) — a door also follows its pack's list of connections and
+  // its default, so a change to them can move it too.
+  'packs.connections.add',
+  'packs.connections.remove',
+  'packs.connections.set_default',
+  'packs.connections.add_many',
+  // …and deleting a connection takes it off every list.
+  'collection.connection.delete',
 ] as const;
 
 /** D-209 — what a change to a recipe's MAIN dish did to the webhook door its

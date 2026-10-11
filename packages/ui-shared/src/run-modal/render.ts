@@ -40,8 +40,13 @@ import {
   mailFactWhereOptions,
 } from './mail-fact-trigger.js';
 import { eventTriggerInWords } from '../dish-lead.js';
-import { configTextAsDish, parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
+import { configTextAsDish, parseRunConfig, plural, recipeDisplayName, runConnectionLines, runTargetGate } from './model.js';
+import { connectionSettings } from '../connection-lines.js';
 import type { RunModalState, RunModalTab } from './types.js';
+
+/** The dialog surface: the stylesheet's hook, and the wiring's for putting focus
+ *  back on the surface a repaint replaced. */
+export const RUN_MODAL_PANEL_CLASS = 'run-modal-panel';
 
 // ── Attribute namespace (own, NOT the recipes-route `RECIPES_ROUTE_*`) ──
 export const RUN_MODAL_OVERLAY_ATTR = 'data-recued-run-modal';
@@ -50,6 +55,8 @@ export const RUN_MODAL_TAB_ATTR = 'data-recued-run-modal-tab';
 /** D-319 — the "Run as" / "Add to" dish choice. */
 export const RUN_MODAL_DISH_ATTR = 'data-recued-run-modal-dish';
 export const RUN_MODAL_CONFIG_ATTR = 'data-recued-run-modal-config';
+/** D-320 §4 — a Connection line's select; the value is its slot. */
+export const RUN_MODAL_CONNECTION_ATTR = 'data-recued-run-modal-connection';
 export const RUN_MODAL_TARGET_ATTR = 'data-recued-run-modal-target';
 export const RUN_MODAL_TARGET_WARNING_ATTR = 'data-recued-run-modal-target-warning';
 export const RUN_MODAL_CONTEXT_ATTR = 'data-recued-run-modal-context';
@@ -103,9 +110,12 @@ const renderVariableRows = (
   recipe: ServerRecipeListEntry,
   config_text: string,
   caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
+  /** D-320 — the settings a Connection line stands in for: not asked here. */
+  hidden: ReadonlySet<string> = new Set(),
 ): string => {
   const variables = recipe.recipe.variables ?? {};
-  const varKeys = Object.keys(variables).filter((key) => isInvocationVariable(variables[key]!));
+  const varKeys = Object.keys(variables)
+    .filter((key) => !hidden.has(key) && isInvocationVariable(variables[key]!));
   if (varKeys.length === 0) return '';
   let overrides: Record<string, unknown> = {};
   try {
@@ -172,7 +182,16 @@ const renderRunTab = (
     state.config_text,
     dishes.find((dish) => dish.dish_id === state.dish_id)?.config_overlay,
   );
-  const widgetRows = renderVariableRows(recipe, shownConfig, caps);
+  // D-320 — the Connection lines, preselected from the dish it runs as; the
+  // settings they stand in for are not asked.
+  const lines = runConnectionLines(state, dishes);
+  const widgetRows = renderVariableRows(recipe, shownConfig, caps, connectionSettings(state.connection_slots ?? []));
+  const connectionRows = lines.map((line) => `
+      <label class="run-modal-copy" for="run-modal-connection-${e(line.slot)}">${e(line.label)}</label>
+      <select id="run-modal-connection-${e(line.slot)}" class="run-modal-select" ${RUN_MODAL_CONNECTION_ATTR}="${e(line.slot)}">${line.options.map((option) => {
+        const selected = (state.connection_choice[line.slot] ?? line.selected) === option.value;
+        return `<option value="${e(option.value)}"${selected ? ' selected' : ''}>${e(option.label)}</option>`;
+      }).join('')}</select>`).join('');
   let hasConfigValues = false;
   try {
     hasConfigValues = Object.keys(parseRunConfig(state.config_text)).length > 0;
@@ -300,6 +319,7 @@ const renderRunTab = (
 
   return `
       ${renderDishChoice(state, dishes, 'Run as')}
+      ${connectionRows}
       ${targetBody}
       ${configBody}
       ${contextReview}
@@ -710,7 +730,7 @@ export const renderRunModal = (
       : renderRunTab(state, recipe, caps, dishes);
   return `
     <div ${RUN_MODAL_OVERLAY_ATTR}="${e(recipe.recipe_id)}">
-      <section class="run-modal-panel" role="dialog" aria-modal="true" aria-label="Run a Recipe" tabindex="-1">
+      <section class="${RUN_MODAL_PANEL_CLASS}" role="dialog" aria-modal="true" aria-label="Run a Recipe" tabindex="-1">
         <header class="run-modal-header">
           <h2 class="run-modal-title">${e(title)}</h2>
           <div class="run-modal-recipe-id" ${RUN_MODAL_IDENTITY_ATTR}

@@ -10,7 +10,7 @@ import type {
   SourceRegistration,
   WorkEntitySourceFreshness,
 } from '@recued/contracts';
-import { qualifyWorkEntityId, RECUED_BUILTIN_SOURCE_ID } from '@recued/contracts';
+import { D165_CONTRACT_SCHEMA, qualifyWorkEntityId, RECUED_BUILTIN_SOURCE_ID } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -41,6 +41,9 @@ import {
   type WorkEntityToolItem,
 } from '../work-entity-read-tools.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
+import { createContractOverlayResolver } from '../policy-contract-overlay.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { createContractStore } from '../storage/contract-store.js';
 import type { KernelWorkEntitySourceDeclaration } from '../work-entity-source-boot.js';
 import {
   prepareWorkEntitySourceTargetedRead,
@@ -301,6 +304,7 @@ const readToolsDeps = (
     targeted?: WorkEntityTargetedReadDeps;
     withSyncState?: boolean;
     gate?: ReturnType<typeof admissionGate>;
+    overlay?: ReturnType<typeof createContractOverlayResolver>;
   } = {},
 ): WorkEntityReadToolsDeps => ({
   // D-205 #3 — these tests exercise the READ path, not the read FENCE (the fence has its
@@ -320,8 +324,23 @@ const readToolsDeps = (
     ),
   getTargetedReadDeps: () => opts.targeted,
   ...(opts.gate !== undefined ? { getOpAdmissionGate: () => opts.gate } : {}),
+  ...(opts.overlay !== undefined ? { getContractOverlay: () => opts.overlay } : {}),
   now: () => NOW,
 });
+
+/** D-320 audit — a door's standing contract minted with `connection_names`, and the
+ *  overlay production wires over it (`wire-execute-deps.ts`). */
+const doorContract = (connection_names: string[]) => {
+  const contractStore = createContractStore(db, { now: () => NOW });
+  contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+  const definitionStore = createContractDefinitionStore(contractStore, { now: () => NOW });
+  const { contract_id } = definitionStore.mint({
+    minted_by: 'owner-1',
+    display_name: 'Task agent',
+    scope: { channels: ['mcp'], actors: ['contracted_user'], connection_names },
+  });
+  return { contract_id, overlay: createContractOverlayResolver({ definitionStore, now: () => NOW }) };
+};
 
 const workEntityPolicy = (
   remote_when: NonNullable<KernelWorkEntitySourceDeclaration['read_resolution']['remote_when']>,
@@ -1140,6 +1159,75 @@ describe('work.search', () => {
     // (the raw-op dispatch parity), never the short key alone when a
     // declared id exists.
     expect(judgedOps).toEqual(['task.read']);
+  });
+
+  // D-320 audit — the contract's connections bound the escalation as they bound a raw op:
+  // the Source reads through `acme`, and a door scoped to another connection never
+  // reaches the vendor. An empty list is a wildcard, as on every contract axis.
+  it.each([
+    ['refuses a door whose contract lists another connection', ['acme-other'], false],
+    ['admits a door whose contract lists the connection', [CONNECTION], true],
+    ['admits a door whose contract lists no connection', [], true],
+  ] as const)('%s (connection scope)', async (_label, connections, admitted) => {
+    const source = 'hubspot.search-external-connection.task';
+    registerSource(source, 'task', 'connection');
+    seedSyncState(source, { last_success_at: NOW - 2_000, stale_after_ms: 1_000 });
+    seedTask({
+      id: 'search-external-connection-row',
+      source_id: source,
+      source_record_id: 'remote-external-connection',
+      title: 'local connection title',
+    });
+    const door = doorContract([...connections]);
+    const ctx: ChatDispatchContext = {
+      channel: 'mcp_wire',
+      mcp_token_id: 't1',
+      execution_source: {
+        channel: 'mcp',
+        actor: 'contracted_user',
+        agent_id: 'agent-1',
+        tool_call_id: 'call-conn',
+        mcp_token_id: 't1',
+        contract_id: door.contract_id,
+      },
+      contract_snapshot: {
+        contract_id: door.contract_id,
+        contract_version: 'v1',
+        allowed_tools: [CATALOG],
+        approval_required: [],
+        scope_restrictions: [],
+        resolved_at: NOW,
+      },
+    };
+    const targeted = targetedHarness(
+      { [source]: taskDeclaration() },
+      opOk(vendorTask('remote-external-connection', { title: 'vendor connection title', state: 'V', body: 'vb' })),
+    );
+
+    const out = okResult<SearchResult>(
+      await runWorkEntitySearchTool(
+        readToolsDeps({ targeted: targeted.deps, gate: admissionGate(), overlay: door.overlay }),
+        { kind: 'task', current: true, limit: 10 },
+        ctx,
+      ),
+    );
+
+    if (admitted) {
+      expect(out.escalation_errors ?? []).toHaveLength(0);
+      expect(targeted.invocations).toHaveLength(1);
+      expect(entityById(out, 'search-external-connection-row').title).toBe('vendor connection title');
+      return;
+    }
+    expect(targeted.invocations).toHaveLength(0);
+    expect(entityById(out, 'search-external-connection-row').title).toBe('local connection title');
+    expect(out.escalation_errors).toHaveLength(1);
+    expect(out.escalation_errors?.[0]?.kind).toBe('policy');
+    const reason = out.escalation_errors?.[0]?.reason ?? '';
+    expect(reason).toContain('connection_not_in_scope');
+    expect(reason).toContain("add that connection to this door's contract");
+    expect(reason).toContain('do not retry');
+    // Ruling 12: a door is told no connection's name.
+    expect(reason).not.toContain(CONNECTION);
   });
 
   it('DENIES an mcp_wire escalation whose contract lacks the catalog tool (no aliasing at this seam)', async () => {

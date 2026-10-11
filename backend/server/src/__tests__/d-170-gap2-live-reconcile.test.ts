@@ -480,6 +480,19 @@ describe('D-170 gap #2 live-reconcile — ingredient.install invokes reconcile',
   });
 
   it('reinstall that MOVES auth.connection drops the old connection’s profile (no stale grant)', async () => {
+    // Both connections are set up: an HTTP catalog's profile needs its connection's
+    // row (D-320 audit — a name with no row counted as set up in every run).
+    for (const name of ['conn-old', 'conn-new']) {
+      env.connectionStore.upsert({
+        kind: 'api',
+        name,
+        display_name: name,
+        config_json: JSON.stringify({ vendor: 'custom' }),
+        auth_ciphertext: 'CIPHER',
+        enrolled_at: NOW,
+        updated_at: NOW,
+      });
+    }
     // First install (Read scope) binds connection 'conn-old' → catalog 'acme' and seeds
     // its read profile.
     await env.install(appPack(wideComposition('acme', 'conn-old'), 'acme-crm'), { access: 'read' });
@@ -540,6 +553,16 @@ describe('D-170 gap #2 live-reconcile — ingredient.uninstall invokes reconcile
   });
 
   it('end-to-end: uninstall drops the local connection’s now-orphan profile', async () => {
+    // Set up, as an HTTP catalog's profile needs (D-320 audit).
+    env.connectionStore.upsert({
+      kind: 'api',
+      name: 'acme',
+      display_name: 'Acme custom',
+      config_json: JSON.stringify({ vendor: 'custom' }),
+      auth_ciphertext: 'CIPHER',
+      enrolled_at: NOW,
+      updated_at: NOW,
+    });
     await env.install(appPack(wideComposition('acme', 'acme')), { access: 'read' });
     expect(env.profileStore.get('acme')?.catalog_slug).toBe('acme'); // seeded by install (Read scope)
 

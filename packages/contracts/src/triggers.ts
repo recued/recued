@@ -10,7 +10,6 @@
  *  wildcards. Examples:
  *    `data.email.work.**.created`  — any new email on the `work` slug
  *    `data.file.*.created`          — new files on any file slug
- *    `data.webhook.github.*`        — any webhook-kind event
  *
  *  Persistence lives in `event_triggers` SQLite table (server-side).
  *  Schema_version bumps 1 → 2 when the table lands; the archive format

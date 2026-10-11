@@ -141,9 +141,8 @@ export type PublisherIdResolver = () => string | null;
 export type AcmeRequestSigner = (payload: Uint8Array) => string;
 
 export interface RecuedAcmeClientFactoryOptions {
-  /** Cloud helper base URL — production `https://api.recued.cloud`.
-   *  Future slice plumbs this through the same env / config knob that
-   *  the DDNS adapter consumes. */
+  /** Cloud helper base URL — production `https://api.recued.com`. The
+   *  cert stack passes `cloud.base_url`, the knob the DDNS client reads. */
   cloud_base_url: string;
   /** Pro auth state resolver (lazy, per-call). */
   proAuth: ProAuthResolver;

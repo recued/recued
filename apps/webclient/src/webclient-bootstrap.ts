@@ -159,7 +159,8 @@ import type {
   WebclientTokenRecord,
 } from '@recued/contracts';
 import {
-  encodeBearerSubprotocol, canBindHostname, MAIL_TEMPLATE_DRAFT_RPC_TIMEOUT_MS } from '@recued/contracts';
+  encodeBearerSubprotocol, canBindHostname, hostnameForHandle, MAIL_TEMPLATE_DRAFT_RPC_TIMEOUT_MS,
+  subscribeToKnownKinds } from '@recued/contracts';
 import {
   bindRecordRefSearchToRecipe,
   createRecordRefSearchCaller,
@@ -205,6 +206,7 @@ import {
 import { decideAddressChangeConvergence } from './shell/address-change-convergence.js';
 import {
   createServerSwitchWorkTracker,
+  type ServerSwitchWorkTracker,
   type ServerSwitchActiveWork,
   type ServerSwitchWorkDetails,
   type ServerSwitchWorkLease,
@@ -360,10 +362,13 @@ import {
   serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
 import { parseConnectionsAddress } from './connections/connections-navigation.js';
+import type { SignInGridCallers } from './connections/sign-in-grid-controls.js';
 import {
   bootstrapPacksRoute,
   resolvePackInput,
 } from './packs/bootstrap-packs-route.js';
+import type { PackConnectionsCallers } from './settings/pack-connections-controls.js';
+import type { PackProgramsCallers } from './settings/pack-programs-controls.js';
 import { parsePacksAddress } from './packs/pack-app-navigation.js';
 import type {
   OwnerOperationDeleteCaller,
@@ -718,6 +723,7 @@ import type {
   ConnectionsUpdateCaller,
   ConnectionsDeleteCaller,
   ConnectionsPreviewPurgeCaller,
+  ConnectionsRemovalEffectsCaller,
   ConnectionsProbeCaller,
   ConnectionsMcpPackPreviewCaller,
   ConnectionsMcpPackCommitCaller,
@@ -2153,6 +2159,10 @@ export interface BootstrapWebclientOptions {
    *  the socket remains connected and also retry on reconnect.
    *  Defaults to silent. */
   onSubscribeError?: (err: Error) => void;
+  /** The event kinds this webclient asked for that its server does not send
+   *  (a server at another version), left out of the subscription; every
+   *  kind both know still arrives. Defaults to one console warning per set. */
+  onSubscribeKindsLeftOut?: (kinds: readonly string[]) => void;
   /** Retry `events.subscribe` while the same socket remains connected. A
    * transient rpc failure otherwise has no reconnect edge to re-arm live
    * invalidations. Tests may inject a deterministic one-shot timer. */
@@ -2487,8 +2497,8 @@ export interface BootstrapWebclientOptions {
    *  identifier in the webclient store. */
   diagnosticsAccountId?: string;
   /** Optional hostname override for `/v1/diagnostics/probe`. When omitted, the
-   *  paired handle becomes `<handle>.recued.cloud` unless it already contains a
-   *  dot. */
+   *  paired handle becomes `<handle>.recued.net` (the default DDNS zone) unless
+   *  it already contains a dot — see `hostnameFromHandle`. */
   diagnosticsHostname?: string;
   /** D-174 — when not explicitly `false` (the default is ON), the
    *  top-level Approvals route mounts the pending-decisions queue:
@@ -2858,11 +2868,39 @@ const realEventsSubscribeRetryTimer = (
   return { cancel: () => clearTimeout(id) };
 };
 
-const hostnameFromHandle = (handle: string): string | null => {
+/** The hostname the Reachability Doctor's external probe asks about for the
+ *  paired handle.
+ *
+ *  ⛔ This appended `.recued.cloud`, a zone that serves no handles (it is only a
+ *  commented-out future entry in `DDNS_ZONES`). The cloud probe's authorizer
+ *  accepts enabled-zone hostnames only (`isProDdnsHost`), so every check for a
+ *  bare handle was refused with `diagnostic_target_unauthorized` (2026-10-09).
+ *  The mapping is the registry's own, `hostnameForHandle`: the default zone.
+ *  ⚠ Pair metadata does not record which zone a handle is bound to. That is
+ *  exact while only the default zone is enabled; a second zone needs the
+ *  handle's zone label here. */
+export const hostnameFromHandle = (handle: string): string | null => {
   const normalized = handle.trim().toLowerCase();
   if (normalized.length === 0) return null;
-  return normalized.includes('.') ? normalized : `${normalized}.recued.cloud`;
+  return normalized.includes('.') ? normalized : hostnameForHandle(normalized);
 };
+
+/** D-320 — the packs route's copy of the Access tab's connection callers: every
+ *  call passed through, the writes tracked as switch work.
+ *
+ *  ⛔ IT SPREADS, IT DOES NOT NAME. It used to list the four writes by name, so
+ *  slice 2g's read (`removal`, where a pack's runs go if one is removed) never
+ *  reached the Access tab: Remove asked without saying, while every unit test
+ *  built its callers directly (found by a visual pass, 2026-10-10). */
+export const packRouteConnectionCallers = (
+  callers: PackConnectionsCallers,
+  tracker: Pick<ServerSwitchWorkTracker, 'track'>,
+): PackConnectionsCallers => ({
+  ...callers,
+  add: tracker.track(callers.add),
+  remove: tracker.track(callers.remove),
+  setDefault: tracker.track(callers.setDefault),
+});
 
 /** Build the `execute` rpc args for a route-initiated recipe run.
  *
@@ -2903,6 +2941,18 @@ export const buildRecipeExecuteArgs = (
   // run modal never authors it.
   if (args.invocation !== undefined) {
     executeArgs.invocation = args.invocation;
+  }
+  // D-319 — the dish the run dialog runs as. Dropped here, the server ran the
+  // MAIN dish's settings with only the owner's changes on top (the dialog sends
+  // changes, not the dish's settings): "Run as" another dish quietly ran as the
+  // main one, and the run was filed under no dish.
+  if (args.dish_id !== undefined) {
+    executeArgs.dish_id = args.dish_id;
+  }
+  // D-320 §3.5 — the Connection lines the run dialog moved. Dropped here, the run
+  // would go to the dish's connection or the default while the dialog showed another.
+  if (args.connections !== undefined) {
+    executeArgs.connections = args.connections;
   }
   return executeArgs;
 };
@@ -6463,6 +6513,8 @@ export const bootstrapWebclient = async (
   // `collection.hostname.list` (any row with `ddns_managed`) independent of
   // the Hostnames panel gate; an older server's unknown-method error degrades
   // to `has_ddns: false` panel-side (`runHasDdns` is `.catch`-guarded there).
+  // ⚠ Only a fallback since 2026-10-10: a server that answers `exposure.get`
+  // with `has_public_address` is believed instead, being its gate's own answer.
   const exposurePanelOff = options.enableExposurePanel === false;
   const exposureGetCaller: ExposureGetCaller | undefined = exposurePanelOff
     ? undefined
@@ -7574,6 +7626,8 @@ export const bootstrapWebclient = async (
       serverTimeZone: getServerTimeZone,
       recipeList: recipesListCaller,
       execute: trackGlobalRunWrite('Running a recipe', recipeExecuteCaller),
+      // D-320 — the Run tab's Connection lines.
+      recipeConnections: (args) => rpcConn.call('packs.connections.recipe', args),
       schedulesList: automationSchedulesListCaller,
       schedulesCreate: trackGlobalRunWrite(
         'Scheduling a recipe',
@@ -7598,6 +7652,10 @@ export const bootstrapWebclient = async (
         const { dishes } = await automationDishesListCaller();
         if (dishes.some((dish) => dish.recipe_id === entry.recipe_id)) return null;
         const { config_overlay } = await rpcConn.call('dishes.defaults', { recipe_id: entry.recipe_id });
+        // D-320 — the switch-on form's Connection lines; a server without the
+        // read opens it without them, as before.
+        const connectionSlots = await rpcConn.call('packs.connections.recipe', { recipe_id: entry.recipe_id })
+          .then((view) => view.slots, () => undefined);
         let notice: string | null = null;
         const recordRefSearch = bindRecordRefSearchToRecipe(recordRefSearchCaller, entry.recipe);
         return openDishForm({
@@ -7613,6 +7671,7 @@ export const bootstrapWebclient = async (
           fileRefSearch: fileRefSearchCaller,
           ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
           mailTemplates: mailTemplateVariableCallers,
+          ...(connectionSlots !== undefined ? { connectionSlots } : {}),
           onCreated: (_dish, scheduleError) => {
             if (scheduleError !== null) {
               notice = `Switched on, but Recued could not add the schedule: ${humanizeRpcError(scheduleError)}`;
@@ -8544,6 +8603,24 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.connection.previewPurge', args);
+  // D-320 slice 2h — the Connections page's grid per sign-in: which connections each
+  // pack may use, and its default.
+  const signInGridCallers: SignInGridCallers | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : {
+          signins: () => rpcConn.call('packs.connections.signins', {}),
+          add: (args) => rpcConn.call('packs.connections.add', args),
+          remove: (args) => rpcConn.call('packs.connections.remove', args),
+          setDefault: (args) => rpcConn.call('packs.connections.set_default', args),
+          addMany: (args) => rpcConn.call('packs.connections.add_many', args),
+          removal: (args) => rpcConn.call('packs.connections.removal', args),
+        };
+  // D-320 slice 2g — the delete-confirm's "what changes for your packs".
+  const connectionsRemovalEffectsCaller: ConnectionsRemovalEffectsCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('packs.connections.removal', { connection_name: args.connection_name, delete_kind: args.kind });
   const connectionsProbeCaller: ConnectionsProbeCaller | undefined =
     options.enableConnectionsEnrollPanel === false
       ? undefined
@@ -8835,6 +8912,22 @@ export const bootstrapWebclient = async (
     options.enableContractsPanel === false
       ? undefined
       : () => rpcConn.call('collection.contract.listContracts', undefined);
+  // D-320 — the Access tab's Connections block (`packs.connections.*`): which of
+  // the owner's connections a pack signs in with, and its default.
+  const packConnectionsCallers: PackConnectionsCallers = {
+    list: (args) => rpcConn.call('packs.connections.list', args),
+    add: (args) => rpcConn.call('packs.connections.add', args),
+    remove: (args) => rpcConn.call('packs.connections.remove', args),
+    setDefault: (args) => rpcConn.call('packs.connections.set_default', args),
+    removal: (args) => rpcConn.call('packs.connections.removal', args),
+  };
+  // D-321 — the pack list's program badge and the DETAIL tab's Programs block:
+  // whether each pack's programs are ready, and the owner's Refuse / Warn.
+  const packProgramsCallers: Required<PackProgramsCallers> = {
+    status: (args) => rpcConn.call('packs.tool_status', args),
+    setOutside: (args) => rpcConn.call('collection.operation.upsertOwnerToolVersion', args),
+    clearOutside: (args) => rpcConn.call('collection.operation.deleteOwnerToolVersion', args),
+  };
   const grantCatalogOperationsCaller: GrantCatalogOperationsCaller | undefined =
     options.enableContractsPanel === false
       ? undefined
@@ -10145,6 +10238,10 @@ export const bootstrapWebclient = async (
               ...(connectionsPreviewPurgeCaller !== undefined
                 ? { connectionsPreviewPurgeCaller }
                 : {}),
+              ...(connectionsRemovalEffectsCaller !== undefined
+                ? { connectionsRemovalEffectsCaller }
+                : {}),
+              ...(signInGridCallers !== undefined ? { signInGridCallers } : {}),
             }
           : {}),
         ...(connectionsEngagementHealthCaller !== undefined
@@ -10404,6 +10501,9 @@ export const bootstrapWebclient = async (
             ...(options.document !== undefined ? { document: options.document } : {}),
             initialTab: 'run',
             execute: switchWorkTracker.track(recipeExecuteCaller),
+            // D-320 — the Run tab's Connection lines (found missing here by a
+            // visual pass: only the recipes and automation routes had them).
+            connectionSlots: () => rpcConn.call('packs.connections.recipe', { recipe_id: entry.recipe_id }),
             fileRefSearch: fileRefSearchCaller,
             ...(runRecordRefSearch !== undefined
               ? { recordRefSearch: runRecordRefSearch }
@@ -10511,6 +10611,12 @@ export const bootstrapWebclient = async (
         ...(grantListContractsCaller !== undefined
           ? { accessContractsCaller: grantListContractsCaller }
           : {}),
+        packConnectionsCallers: packRouteConnectionCallers(packConnectionsCallers, switchWorkTracker),
+        packProgramsCallers: {
+          status: packProgramsCallers.status,
+          setOutside: switchWorkTracker.track(packProgramsCallers.setOutside),
+          clearOutside: switchWorkTracker.track(packProgramsCallers.clearOutside),
+        },
         // D-282 slice C — the drawer pins, read and written from the pack's own
         // detail. The route holds no pin state; it forwards.
         pinnedApps: () => pinnedAppSlugs,
@@ -10622,6 +10728,8 @@ export const bootstrapWebclient = async (
           dishesUpdateCaller: switchWorkTracker.track(automationDishesUpdateCaller),
           dishesDeleteCaller: switchWorkTracker.track(automationDishesDeleteCaller),
           dishesDefaultsCaller: (args) => rpcConn.call('dishes.defaults', args),
+          // D-320 §4 — the recipe's slots, for the Connection lines.
+          recipeConnectionsCaller: (args) => rpcConn.call('packs.connections.recipe', args),
           // D-315 §5.2 — a `mail_template` setting: the owner's templates.
           mailTemplateCallers: mailTemplateVariableCallers,
           fileRefSearchCaller,
@@ -10954,6 +11062,8 @@ export const bootstrapWebclient = async (
         // D-319 §5.4 — "Not switched on" → Switch on reads what a first dish
         // starts from; the Add dialog's Run tab runs.
         dishesDefaultsCaller: (args) => rpcConn.call('dishes.defaults', args),
+        // D-320 §4 — the recipe's slots, for the Connection lines.
+        recipeConnectionsCaller: (args) => rpcConn.call('packs.connections.recipe', args),
         // D-319 — the settings form's pickers, as on the recipe page.
         mailTemplateCallers: mailTemplateVariableCallers,
         recordRefSearchCaller,
@@ -14131,6 +14241,18 @@ export const bootstrapWebclient = async (
     }
   };
 
+  let lastLeftOut = '';
+  const reportLeftOutKinds = (kinds: readonly string[]): void => {
+    if (options.onSubscribeKindsLeftOut) {
+      try { options.onSubscribeKindsLeftOut(kinds); } catch { /* a report sink must not re-enter */ }
+      return;
+    }
+    const key = kinds.join(',');
+    if (key === lastLeftOut) return;
+    lastLeftOut = key;
+    console.warn(`webclient: this server does not send ${kinds.join(', ')}; every other live update still arrives`);
+  };
+
   const reconcileActionReceiptsAfterSubscribe = (generation: number): void => {
     if (
       generation !== eventsSubscribeGeneration
@@ -14144,9 +14266,13 @@ export const bootstrapWebclient = async (
 
   const fireEventsSubscribe = async (generation: number): Promise<void> => {
     try {
-      await rpcConn.call('events.subscribe', {
-        kinds: [...WEBCLIENT_DEFAULT_SUBSCRIPTIONS],
-      });
+      // A server at another version refuses (older) or leaves out (newer) a
+      // kind it does not send; either way the rest still subscribe.
+      const { left_out } = await subscribeToKnownKinds(
+        (req) => rpcConn.call('events.subscribe', req),
+        { kinds: [...WEBCLIENT_DEFAULT_SUBSCRIPTIONS] },
+      );
+      if (left_out.length > 0) reportLeftOutKinds(left_out);
       if (generation === eventsSubscribeGeneration) {
         eventsSubscribeRetryDelayMs = eventsSubscribeRetryInitialMs;
       }

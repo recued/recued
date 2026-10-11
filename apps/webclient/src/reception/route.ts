@@ -208,6 +208,8 @@ export type ReceptionRouteConn = Conn<
     | 'form_response.list'
     | 'form_response.get'
     | 'execute'
+    // D-320 — the Responses lens's Run dialog reads the recipe's Connection lines.
+    | 'packs.connections.recipe'
     // D-174 ref-picker — the inbox's "Destination" combobox reads the
     // work-entity Source registry for its options.
     | 'work_entity.source.list'

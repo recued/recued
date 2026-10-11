@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { getArg, getFlag, parsePositionals } from '../cli/parse.js';
+import {
+  RETIRED_FLAGS,
+  findRetiredFlags,
+  getArg,
+  getFlag,
+  parsePositionals,
+} from '../cli/parse.js';
 
 describe('CLI parsePositionals', () => {
   it('skips --config and its value before a subcommand', () => {
@@ -41,11 +47,30 @@ describe('CLI parsePositionals', () => {
     ]);
   });
 
-  it('skips sibling bootstrap valued flags after an initial positional', () => {
+  it('still skips the values of the flags removed on 2026-10-09', () => {
+    // So `--host 0.0.0.0 serve` routes to `serve`, where bin.ts refuses the
+    // flag, instead of to help for a subcommand called "0.0.0.0".
     expect(parsePositionals(['pair', '--mcp-port', '7718', 'generate'])).toEqual([
       'pair',
       'generate',
     ]);
+    expect(parsePositionals(['--host', '0.0.0.0', 'serve'])).toEqual(['serve']);
+  });
+});
+
+describe('CLI findRetiredFlags', () => {
+  it('finds each removed flag once, in either spelling, and nothing else', () => {
+    expect(findRetiredFlags([
+      '--host', '0.0.0.0', '--host=1.2.3.4', '--db', 'x.db', '--data-path=/d', '--port', '1',
+    ])).toEqual(['--host', '--data-path']);
+    expect(findRetiredFlags(['--db', '/x/recued-server.db', '--port', '7717', 'serve'])).toEqual([]);
+  });
+
+  it('names what replaced every removed flag', () => {
+    expect([...RETIRED_FLAGS.keys()].sort()).toEqual([
+      '--bind-host', '--data-path', '--db-path', '--host', '--mcp-port',
+    ]);
+    for (const replacement of RETIRED_FLAGS.values()) expect(replacement.length).toBeGreaterThan(0);
   });
 });
 

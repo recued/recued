@@ -29,7 +29,7 @@
  *  base64url's alphabet carries no `:` / `/`, so the split is unambiguous, and
  *  `file:remote:` can never collide with the hex CAS pattern. */
 
-import type { TimelineEntry } from '@recued/contracts';
+import { getFileVendorDeclaration, type CollectionSearchMatch, type TimelineEntry } from '@recued/contracts';
 
 import {
   isInboundFileRecordId,
@@ -40,12 +40,23 @@ import {
   type FileStorageRef,
 } from './collections/file/inbound-file-collection.js';
 import type { CollectionRegistry } from './collections/registry.js';
+import {
+  isWatchedFolderCollection,
+  parseWatchedFileRecordId,
+} from './collections/file/watched-folder-collection.js';
 import type { FileMetaRow, FileMetaStore } from './storage/file-meta-store.js';
 import {
   deriveFileSourceFreshness,
   type FileSourceFreshness,
   type FileSourceSyncStateStore,
 } from './storage/file-source-sync-state.js';
+
+/** Where a view's bytes are. A watched folder's file stays on the owner's disk,
+ *  at `path` inside the enrolled folder `folder`; it is neither in the CAS nor
+ *  behind a vendor, so it is not a `FileStorageRef`. */
+export type DataFileViewStorageRef =
+  | FileStorageRef
+  | { kind: 'local'; folder: string; path: string };
 
 /** The unified read row. `posture` = `storage_ref.kind`; remote-only fields
  *  (`path`/`mtime`/`owner`/`revision`) and cas-only fields (`content_hash`/
@@ -54,8 +65,8 @@ import {
  *  cas: `received_at`) — the timeline `ts` + the picker's recency sort key. */
 export interface DataFileView {
   record_id: string;
-  posture: 'cas' | 'remote';
-  storage_ref: FileStorageRef;
+  posture: 'cas' | 'remote' | 'local';
+  storage_ref: DataFileViewStorageRef;
   filename: string;
   mime_type?: string;
   size?: number;
@@ -75,6 +86,8 @@ export interface DataFileView {
    *  (from its sync-state row). Absent on a CAS row (bytes-in, not a sync
    *  mirror) and when the resolver has no sync-state store wired. */
   freshness?: FileSourceFreshness;
+  /** local-only: the enrolled folder (its slug) the file is in. */
+  folder?: string;
 }
 
 const REMOTE_ID_PREFIX = 'file:remote:';
@@ -159,6 +172,26 @@ const projectRemote = (row: FileMetaRow, freshness?: FileSourceFreshness): DataF
   };
 };
 
+/** A watched folder's record (`watched-folder-collection.ts`): its bytes stay on
+ *  disk, so the view points there. */
+const projectLocal = (rec: Pick<CollectionSearchMatch, 'record_id' | 'hot_fields'>): DataFileView | null => {
+  const parsed = parseWatchedFileRecordId(rec.record_id);
+  if (parsed === null) return null;
+  const h = rec.hot_fields;
+  const mtime = typeof h.mtime === 'number' ? h.mtime : undefined;
+  return {
+    record_id: rec.record_id,
+    posture: 'local',
+    storage_ref: { kind: 'local', folder: parsed.slug, path: parsed.path },
+    filename: typeof h.filename === 'string' ? h.filename : parsed.path.split('/').pop() ?? parsed.path,
+    ...(typeof h.mime_type === 'string' ? { mime_type: h.mime_type } : {}),
+    ...(typeof h.size === 'number' ? { size: h.size } : {}),
+    path: parsed.path,
+    ...(mtime !== undefined ? { mtime, event_at: mtime } : {}),
+    folder: parsed.slug,
+  };
+};
+
 /** The window the resolver scans across the CAS collection before filtering by
  *  needle in memory (the collection has no filename FTS) — mirrors the
  *  mirror-search `MIRROR_FILE_SCAN_CAP`. Remote rows filter in SQL, so they
@@ -181,6 +214,14 @@ export interface FileViewResolverDeps {
   syncState?: FileSourceSyncStateStore;
   /** Clock for the freshness staleness comparison. Defaults to `Date.now`. */
   now?: () => number;
+  /** D-106 follow-up — one watched folder's file by its `file:local:*` id. */
+  localGet?: (record_id: string) => Pick<CollectionSearchMatch, 'record_id' | 'hot_fields'> | null;
+  /** Candidates from the watched folders' full-text index (name, path and a
+   *  small text file's text), across every file rather than a recent window.
+   *  The resolver keeps those whose NAME or PATH matches, as for every other
+   *  file: a hit on text the caller cannot see is one it will describe
+   *  wrongly. */
+  localSearch?: (needle: string, limit: number) => Array<Pick<CollectionSearchMatch, 'record_id' | 'hot_fields'>>;
 }
 
 /** How well a file's name + path answers a needle. ⛔ ONE DEFINITION, BECAUSE
@@ -238,8 +279,10 @@ export interface FileViewResolver {
    *  from the meta-store, a `file:<hex>` id from the CAS collection. `null`
    *  when the id is neither shape or the row is gone. */
   getFileView(record_id: string): DataFileView | null;
-  /** Merge the CAS + remote file space into one needle-matched, recency-sorted
-   *  list (the mirror-search picker feed). A blank needle → `[]`. */
+  /** Merge the CAS, remote and watched-folder file spaces into one
+   *  needle-matched list, ranked by `scoreFileNeedle` (a verbatim hit before an
+   *  every-term one), then newest first — the mirror-search picker's feed and
+   *  `file.search`'s. A blank needle → `[]`. */
   searchFileViews(needle: string, limit: number): DataFileView[];
 }
 
@@ -264,6 +307,10 @@ export const createFileViewResolver = (deps: FileViewResolverDeps): FileViewReso
       const rec = deps.casGet(record_id);
       return rec ? projectCas(rec) : null;
     }
+    if (parseWatchedFileRecordId(record_id) !== null) {
+      const rec = deps.localGet?.(record_id) ?? null;
+      return rec ? projectLocal(rec) : null;
+    }
     return null;
   },
 
@@ -272,11 +319,11 @@ export const createFileViewResolver = (deps: FileViewResolverDeps): FileViewReso
     if (trimmed.length === 0) return [];
     const cap = Math.max(1, Number.isFinite(limit) ? Math.trunc(limit) : 1);
     const needleLower = trimmed.toLowerCase();
-    const seen = new Set<string>();
+    const score = new Map<string, number>();
     const merged: DataFileView[] = [];
     const add = (v: DataFileView): void => {
-      if (!seen.has(v.record_id)) {
-        seen.add(v.record_id);
+      if (!score.has(v.record_id)) {
+        score.set(v.record_id, scoreFileNeedle(v.filename, v.path ?? '', trimmed));
         merged.push(v);
       }
     };
@@ -294,8 +341,21 @@ export const createFileViewResolver = (deps: FileViewResolverDeps): FileViewReso
     if (deps.fileMetaStore) {
       for (const row of deps.fileMetaStore.searchAll(trimmed, cap)) add(projectRemoteFresh(row));
     }
-    // Fair merge: recency-sorted (both postures carry `event_at`), then capped.
-    merged.sort((a, b) => (b.event_at ?? 0) - (a.event_at ?? 0));
+    // Local — the watched folders' own index for candidates, then the same
+    // name/path rule as the rest. Over-fetched because the index also matches
+    // text, which this filter drops.
+    for (const match of deps.localSearch?.(trimmed, Math.max(cap * 5, 100)) ?? []) {
+      const view = projectLocal(match);
+      if (view && scoreFileNeedle(view.filename, view.path ?? '', trimmed) > 0) add(view);
+    }
+    // ⛔ RANKED BEFORE THE CAP, NOT ONLY BY RECENCY. `file.search` hands this
+    // list on as already ranked, and sorting it by date alone put any newer
+    // every-term hit above a verbatim one — the tier `scoreFileNeedle` draws
+    // was lost on the path production takes, while the handler's own fallback
+    // (no resolver) kept it and its tests stayed green. Then newest first
+    // (every posture carries `event_at`), then capped.
+    merged.sort((a, b) => (score.get(b.record_id) ?? 0) - (score.get(a.record_id) ?? 0)
+      || (b.event_at ?? 0) - (a.event_at ?? 0));
     return merged.slice(0, cap);
   },
   };
@@ -311,8 +371,10 @@ export const createFileViewResolverFromRegistry = (
   syncState?: FileSourceSyncStateStore,
   now?: () => number,
 ): FileViewResolver => {
+  // The received files only: a watched folder's records are not CAS records.
   const fileCollections = (): ReturnType<CollectionRegistry['list']> =>
-    registry.list().filter((c) => c.platform === 'file');
+    registry.list().filter((c) => c.platform === 'file' && !isWatchedFolderCollection(c));
+  const watchedFolders = () => registry.list().filter(isWatchedFolderCollection);
   return createFileViewResolver({
     ...(fileMetaStore ? { fileMetaStore } : {}),
     ...(syncState ? { syncState } : {}),
@@ -328,8 +390,47 @@ export const createFileViewResolverFromRegistry = (
       fileCollections().flatMap(
         (c) => c.list({ platform: 'file', slug: c.slug, limit: scan_limit }) as DataFileRecord[],
       ),
+    localGet: (record_id) => {
+      const parsed = parseWatchedFileRecordId(record_id);
+      if (parsed === null) return null;
+      const collection = registry.get('file', parsed.slug);
+      return collection && isWatchedFolderCollection(collection) ? collection.get(record_id) : null;
+    },
+    localSearch: (needle, limit) => watchedFolders().flatMap((c) => {
+      try {
+        return c.search({ platform: 'file', slug: c.slug, query: needle, limit });
+      } catch {
+        // One folder's index must not sink the search.
+        return [];
+      }
+    }),
   });
 };
+
+/** A file as an owner reads it on an approval: its name, and where it lives —
+ *  "kickoff-notes.md (clients folder: Sandhurst/kickoff-notes.md)", "brief.pdf
+ *  (Saved files)", "invoice.pdf (Dropbox: Clients/invoice.pdf)". An id such as
+ *  `file:local:Y2xp…` is not something a person can check before it leaves. */
+export const describeFileView = (view: DataFileView): string => {
+  const at = (place: string): string =>
+    view.path !== undefined && view.path.length > 0 && view.path !== view.filename ? `${place}: ${view.path}` : place;
+  if (view.posture === 'local') return `${view.filename} (${at(`${view.folder ?? 'watched'} folder`)})`;
+  if (view.posture === 'remote') {
+    const provider = view.provider ?? (view.storage_ref.kind === 'remote' ? view.storage_ref.provider : undefined);
+    const source = (provider !== undefined ? getFileVendorDeclaration(provider)?.display_name : undefined)
+      ?? provider ?? 'connected source';
+    return `${view.filename} (${at(source)})`;
+  }
+  return `${view.filename} (Saved files)`;
+};
+
+/** A file id → `describeFileView` of its file, or undefined when no file has
+ *  that id. */
+export const createFileRefDescriber = (views: Pick<FileViewResolver, 'getFileView'>) =>
+  (record_id: string): string | undefined => {
+    const view = views.getFileView(record_id);
+    return view === null ? undefined : describeFileView(view);
+  };
 
 /** Project a unified {@link DataFileView} into the `file`-source
  *  `TimelineEntry`. The payload follows the D-120 raw-record shape
@@ -341,17 +442,17 @@ export const createFileViewResolverFromRegistry = (
 const fileViewToTimelineEntry = (view: DataFileView): TimelineEntry => {
   const hot_fields: Record<string, unknown> = { filename: view.filename, posture: view.posture };
   const carry = (
-    k: 'mime_type' | 'size' | 'path' | 'mtime' | 'owner' | 'revision' | 'provider' | 'content_hash' | 'origin' | 'scan_status' | 'media_class',
+    k: 'mime_type' | 'size' | 'path' | 'mtime' | 'owner' | 'revision' | 'provider' | 'content_hash' | 'origin' | 'scan_status' | 'media_class' | 'folder',
   ): void => {
     if (view[k] !== undefined) hot_fields[k] = view[k];
   };
-  for (const k of ['mime_type', 'size', 'path', 'mtime', 'owner', 'revision', 'provider', 'content_hash', 'origin', 'scan_status', 'media_class'] as const) {
+  for (const k of ['mime_type', 'size', 'path', 'mtime', 'owner', 'revision', 'provider', 'content_hash', 'origin', 'scan_status', 'media_class', 'folder'] as const) {
     carry(k);
   }
   return {
     ts: view.event_at ?? 0,
     source: 'file',
-    kind: view.posture === 'remote' ? 'mirrored' : 'received',
+    kind: view.posture === 'remote' ? 'mirrored' : view.posture === 'local' ? 'watched' : 'received',
     payload: {
       record_id: view.record_id,
       storage_ref: view.storage_ref,

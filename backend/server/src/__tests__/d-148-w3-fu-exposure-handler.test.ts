@@ -209,6 +209,23 @@ describe('handleExposureGet', () => {
     expect(result.apex_mode).toBe('not_found');
   });
 
+  // ⛔ The panel used to guess from the hostname list, and offered Public while
+  // the server's gate refused every Public choice. It reads the gate's own
+  // answer here now, so the two cannot disagree.
+  it("reports the gate's own answer as has_public_address", async () => {
+    await expect(handleExposureGet(makeDeps(makeMachine({ ddns: true })), pairedCaller))
+      .resolves.toMatchObject({ has_public_address: true });
+    await expect(handleExposureGet(makeDeps(makeMachine({ ddns: false })), pairedCaller))
+      .resolves.toMatchObject({ has_public_address: false });
+  });
+
+  it('omits has_public_address when the machine cannot say', async () => {
+    const machine = makeMachine();
+    const partial = { current: () => machine.current() } as unknown as ExposureStateMachine;
+    const result = await handleExposureGet(makeDeps(partial), pairedCaller);
+    expect(result).not.toHaveProperty('has_public_address');
+  });
+
   it('rejects unregistered callers (no instance_id)', async () => {
     await expect(
       handleExposureGet(makeDeps(makeMachine()), unregisteredCaller),

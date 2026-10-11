@@ -121,6 +121,19 @@ export const composeBaseContext = (
         (loadedConfig.source ? ` (${loadedConfig.source})` : ''),
     );
   }
+  // Removed settings never did anything: the four bootstrap ones (2026-10-09)
+  // and 26 runtime ones (2026-10-10). A config written by an older install
+  // still sets some of them (the VPS templates wrote three bootstrap ones, the
+  // sample config offered runtime ones). Say so, with what does the job, rather
+  // than let them keep reading as applied.
+  for (const { name, replacement } of loadedConfig.retiredSettings) {
+    console.warn(`[config] IGNORED — ${name} was removed: ${replacement}`);
+  }
+  // `webhook_port` became `webhooks_enabled` (2026-10-10). The old name still
+  // works, so this is a notice, not a refusal: it says how the value was read.
+  for (const { name, replacement } of loadedConfig.renamedSettings) {
+    console.warn(`[config] RENAMED — ${name} was ${replacement}`);
+  }
 
   // Wire the auto-PII seam to the owner's setting, at the EARLIEST point the
   // store exists — housekeeping and reactive fires can dispatch recipes well

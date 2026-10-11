@@ -54,6 +54,8 @@ import {
   rankSearchable,
 } from '@recued/contracts';
 
+import { mailSenderSettings } from './mail-sender-settings.js';
+
 /** Spec § A.1.1, amended 2026-07-02 (the 300-pack-wave default flip) —
  *  chat exposure default is SOURCE-DEPENDENT:
  *
@@ -250,7 +252,54 @@ export interface Tier2RecipeEntry {
    *  EXPOSED. Absent/false = pack-bundled/distributed content: an absent
    *  flag defaults HIDDEN. Explicit `chat_exposed` always wins. */
   user_authored?: boolean;
+  /** D-320 §3.5 — the slots the recipe signs in through where the owner has a
+   *  choice: two or more connections on the pack's list. The tool then takes a
+   *  `connections` argument for them. Absent or empty: no choice to make. */
+  connection_slots?: ReadonlyArray<Tier2ConnectionSlot>;
 }
+
+/** D-320 §3.5 — one slot a recipe signs in through (the connection name a pack's
+ *  catalog declares), with the connections on the pack's list for it. */
+export interface Tier2ConnectionSlot {
+  slot: string;
+  connections: ReadonlyArray<{
+    connection_name: string;
+    /** The owner's alias for it; the name when it has none. */
+    display_name: string;
+    /** The one a run uses when it names none. */
+    is_default: boolean;
+  }>;
+}
+
+/** D-320 §3.5 / ruling 12 — the `connections` argument: which connection a run
+ *  uses, per slot. The owner's own chat is shown the names and aliases, so it can
+ *  match "the other connection" (or "the other account") to one; anyone else (an MCP door, a peer) is shown
+ *  the slots only, and may pass a name the owner gave it. */
+const connectionsArgSchema = (
+  slots: ReadonlyArray<Tier2ConnectionSlot>,
+  showNames: boolean,
+): Record<string, unknown> => {
+  const properties: Record<string, Record<string, unknown>> = {};
+  for (const slot of [...slots].sort((a, b) => a.slot.localeCompare(b.slot))) {
+    properties[slot.slot] = showNames
+      ? {
+          type: 'string',
+          enum: slot.connections.map((c) => c.connection_name),
+          description: slot.connections
+            .map((c) => `${c.connection_name}: ${c.display_name}${c.is_default ? ' (default)' : ''}`)
+            .join('; '),
+        }
+      : { type: 'string' };
+  }
+  return {
+    type: 'object',
+    description: showNames
+      ? 'Which of the owner\'s connections this run uses, per sign-in. Leave it out to use the default; set it when the user names another connection (they may call it an account). This run only.'
+      : 'Which connection this run uses, per sign-in, by its name on the owner\'s server. Leave it out to use the owner\'s default.',
+    properties,
+    additionalProperties: false,
+  };
+};
 
 /** Spec § A.1.1 — the chat-facing Tier 2 entry name format. `<publisher>
  *  /<slug>` — slash separator matches the contracts-level docstring on
@@ -331,6 +380,12 @@ const variableToArgProp = (
     // `type:"string"` with an ARRAY default — a wrong shape the model
     // would imitate (it can't know whether to emit a string or a list).
     schema.type = 'array';
+  } else if (hintType === 'file_ref[]') {
+    // The array branch's trap again: a list of files, as `send-composed-mail`'s
+    // `attachments` declares it, fell to the string branch below and was
+    // advertised as one string with a `[]` default. A caller passes file ids.
+    schema.type = 'array';
+    schema.items = { type: 'string' };
   } else if (hintType === 'datetime') {
     // D-193 — a stable, unambiguous date input. Advertise JSON-Schema
     // `date-time` (ISO 8601 / RFC 3339) so the model emits a parseable
@@ -416,6 +471,20 @@ const variableToArgProp = (
   // A hint with a `default` is filled by preflight, so it is not required even
   // when `.optional` is unset (preflight treats a present default as supplied).
   return { schema, required: hint.optional !== true && hint.default === undefined };
+};
+
+/** What the owner's chat is told about a "Send from" setting its run fills. */
+const SENDER_FILL_HINT =
+  'Leave it out to send from the only mailbox on this server that can send; '
+  + 'if several can, the reply names them, so ask the owner which.';
+
+const withSenderFill = (schema: Record<string, unknown>): Record<string, unknown> => {
+  const said = typeof schema.description === 'string' ? schema.description.trim() : '';
+  return {
+    ...schema,
+    description: said === '' ? SENDER_FILL_HINT
+      : `${said}${/[.!?]$/.test(said) ? '' : '.'} ${SENDER_FILL_HINT}`,
+  };
 };
 
 /** D-137 — derive a Tier 2 recipe tool's `arg_schema` from its manifest
@@ -505,6 +574,11 @@ export const guardRequiredVariables = (
 
 export const deriveTier2ArgSchema = (
   recipe: RecipeDefinition,
+  /** D-320 §3.5 — the slots where the owner has a choice of connection. */
+  connectionSlots: ReadonlyArray<Tier2ConnectionSlot> = [],
+  /** The owner's own catalog: it names each slot's connections, and a "Send
+   *  from" setting is optional, since the owner's run fills it. */
+  ownerCatalog = false,
 ): Record<string, unknown> => {
   const properties: Record<string, Record<string, unknown>> = {};
   const required: string[] = [];
@@ -515,11 +589,32 @@ export const deriveTier2ArgSchema = (
   // author wrote `default: ''` is how the schema came to invite calls the recipe
   // then rejected.
   const guardRequired = guardRequiredVariables(recipe);
+  // ⛔ THE MODEL ASKED FOR A MAILBOX IT DID NOT NEED. With one mailbox that can
+  // send, the owner's chat still asked "Which mail account should I send it
+  // from?" (live drive, 2026-10-10): nothing said the field could be left out,
+  // and eight of the nine Chat-exposed mail recipes required it (a guard, or no
+  // default). An owner's run now fills an empty "Send from" itself, or refuses
+  // it naming the mailboxes that can send (`execute-handler.ts`), so the
+  // owner's catalog says so. A door's run fills nothing, so its catalog is
+  // unchanged.
+  const filledByRun = ownerCatalog ? mailSenderSettings(recipe) : new Set<string>();
   for (const key of Object.keys(vars).sort()) {
     const prop = variableToArgProp(vars[key]);
     if (!prop) continue; // credential → not an AI-settable arg
+    if (filledByRun.has(key)) {
+      properties[key] = withSenderFill(prop.schema);
+      continue;
+    }
     properties[key] = prop.schema;
     if (prop.required || guardRequired.has(key)) required.push(key);
+  }
+  // D-320 §3.5 — the run's own choice of connection, offered only where there is
+  // one to make (two or more connections on a slot's list), so a recipe whose
+  // packs sign in once costs the catalog nothing. A recipe declaring a setting
+  // named `connections` keeps it: one key cannot mean two things (none of the
+  // 2,413 shipped recipes does, measured 2026-10-10).
+  if (connectionSlots.length > 0 && !Object.prototype.hasOwnProperty.call(vars, 'connections')) {
+    properties.connections = connectionsArgSchema(connectionSlots, ownerCatalog);
   }
   // D-196 R4 — Tier-2 recipe tools have a complete variable-derived argument
   // surface. Close the schema so a model cannot smuggle server-owned execution
@@ -580,6 +675,12 @@ export const buildTier2ToolEntry = (
    *  including hidden recipes there would widen `tools/list` with nothing left to
    *  narrow it. */
   includeHidden = false,
+  /** The owner's own catalog. D-320 ruling 12: the `connections` argument names
+   *  each slot's connections and aliases. And a "Send from" setting is optional,
+   *  because only an owner's run fills it (`mailSenderSettings`). Every other
+   *  caller must leave it false: connection names are owner-surface
+   *  information, and a door's run fills no mailbox. */
+  ownerCatalog = false,
 ): ToolEntry | null => {
   if (
     !includeHidden
@@ -601,7 +702,7 @@ export const buildTier2ToolEntry = (
     name: formatTier2ToolName(entry.publisher_id, entry.recipe_id),
     tier: 2,
     description,
-    arg_schema: deriveTier2ArgSchema(entry.recipe),
+    arg_schema: deriveTier2ArgSchema(entry.recipe, entry.connection_slots ?? [], ownerCatalog),
     topic_tags: tags,
     classification: 'unknown',
     // D-164 § 6 — Tier 2 catalog entries are sealed sequential today.
@@ -635,10 +736,12 @@ export const buildTier2Catalog = (
   /** D-247 D8 — see {@link buildTier2ToolEntry}. Owner-governed callers pass
    *  `true` and let the `recipe.*` grant decide; every other caller must not. */
   includeHidden = false,
+  /** See {@link buildTier2ToolEntry}. The owner's own catalog only. */
+  ownerCatalog = false,
 ): ReadonlyArray<ToolEntry> => {
   const projected: ToolEntry[] = [];
   for (const e of entries) {
-    const entry = buildTier2ToolEntry(e, lookup, opKindLookup, includeHidden);
+    const entry = buildTier2ToolEntry(e, lookup, opKindLookup, includeHidden, ownerCatalog);
     if (entry) projected.push(entry);
   }
   projected.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));

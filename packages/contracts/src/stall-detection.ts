@@ -104,9 +104,8 @@ export const DEFAULT_EXPECTED_INTERVAL_MS: Record<ProgressContract, number> = {
  *      response chunks).
  *    - `dom` / `chat` / `storage` → `silent` (no observable cadence). */
 const DEFAULT_PROGRESS_CONTRACT_BY_KIND: Record<IngredientKind, ProgressContract> = {
-  service: 'silent',
   // D-182 — a cli subprocess (whisper / docling) typically writes its output
-  // only at the end; mirror `service` → silent, opt into file-growth per op.
+  // only at the end: silent, opt into file-growth per op.
   cli: 'silent',
   http: 'provider-event',
   mcp: 'provider-event',

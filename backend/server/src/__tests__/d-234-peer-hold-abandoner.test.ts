@@ -124,6 +124,31 @@ describe('§ 234.4n — what abandoning does', () => {
     expect(entry?.recipe_hash).toBe('h'.repeat(8));
   });
 
+  it('keeps what the run did before it held, and its sessions and contract', async () => {
+    const note = { tool: 'opencode', version: '2.0.1', tested: { from: '1.18.35', before: '2.0.0' }, state: 'untested' as const };
+    const before = {
+      run_yield: { steps_run: 2, steps_skipped: 0, items_total: 3, items_failed: 0 },
+      total_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120, provider_calls: 2 },
+      connections_used: [{ slot: 'hubspot', connection_name: 'hubspot-key' }],
+      untested_tools: [note],
+      channel_session_id: 'chs_1',
+      cognition_session_id: 'cgs_1',
+      contract_snapshot: {
+        contract_id: 'ctr_1',
+        contract_version: 'v1',
+        allowed_tools: ['peer-ask'],
+        approval_required: [],
+        scope_restrictions: [],
+        resolved_at: 1_000,
+      },
+    };
+    const h = harness({ anchors: { run_1: anchorOf(before) } });
+    await abandonOrphanedPeerHolds({ ...h, log: () => {} });
+    const [entry] = h.appended;
+    expect(entry?.commit_status).toBe('failed');
+    expect(entry).toMatchObject(before);
+  });
+
   it('⛔⛔ LEAVES A LIVE DISH\'S HOLD ENTIRELY ALONE', async () => {
     const h = harness({ liveDishes: ['dish_gone'] });
     const r = await abandonOrphanedPeerHolds({ ...h, log: () => {} });

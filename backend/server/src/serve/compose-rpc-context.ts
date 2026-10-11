@@ -6,6 +6,7 @@ import type {
   CircuitBreakerStore,
   ServerAutoRunHandle,
 } from '../auto-run-scheduler.js';
+import { isConnectionSetUpIn } from '../pack-connections-handler.js';
 import type { AutoRunRpcDeps } from '../auto-run-handler.js';
 import type { SavedDataViewStore } from '../saved-data-view-store.js';
 import {
@@ -394,6 +395,9 @@ export const composeRpcContext = (
     // join reads the `installed_pack` rows install writes (the canonical
     // signal for empty-`recipes[]` composition / CLI / workflow packs).
     contractStore: app.contractStoreRef,
+    // D-320 audit — an update's Connect starts at the connection the pack's runs
+    // use, so a deleted connection's dormant binding must not count.
+    ...(app.connectionStoreRef ? { isConnectionSetUp: isConnectionSetUpIn(app.connectionStoreRef) } : {}),
   });
 
   // D-145 PA10 follow-on Slice B — `packs.uninstall` rpc. Reverses the

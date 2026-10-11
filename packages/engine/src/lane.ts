@@ -17,6 +17,7 @@
 import {
   callClassForKind,
   FAST_LANE_MAX_DURATION_MS,
+  INGREDIENT_KINDS,
   isGatedCallClass,
   NO_OP_LANE_GOVERNOR,
   type CallClass,
@@ -40,7 +41,12 @@ import { requireRecipe } from './require-recipe.js';
 export const resolveCallClass = (ctx: ExecutionContext, slug: string): CallClass => {
   const manifest = ctx.manifestGetter?.(slug);
   if (manifest?.fast_path === true) return 'fast-path';
-  const kindClass = manifest?.kind ? callClassForKind(manifest.kind) : 'external-io';
+  // A kind this server does not know (the retired `service`, D-321 § 5.5, or a
+  // typo) classifies like an unresolvable one. `callClassForKind` covers only
+  // known kinds, so an unknown one would otherwise get no class and skip the lanes.
+  const kindClass = manifest?.kind && INGREDIENT_KINDS.has(manifest.kind)
+    ? callClassForKind(manifest.kind)
+    : 'external-io';
   // D-181 §10 — duration-threshold demotion (default-gated). A GATED-kind op that
   // has only ever completed quickly (worst successful run < the threshold) skips
   // the lane. An unknown op (no record) or a once-slow op keeps its gated kind

@@ -63,8 +63,6 @@ const gmail = (): AccountProvider =>
   findAccountProvider(findAccountLane('mail')!, 'gmail')!;
 const fs = (): AccountProvider =>
   findAccountProvider(findAccountLane('file')!, 'fs')!;
-const s3 = (): AccountProvider =>
-  findAccountProvider(findAccountLane('file')!, 's3')!;
 
 const withSeed = (
   p: AccountProvider,
@@ -89,7 +87,9 @@ describe('ACCOUNT_LANES structure', () => {
       'caldav',
     ]);
     expect(findAccountLane('calendar')!.pending).toBeUndefined();
-    expect(findAccountLane('file')!.providers.map((p) => p.id)).toEqual(['fs', 's3']);
+    // S3 is connected from Data → Files, which indexes it; this lane's bucket
+    // never did (2026-10-10).
+    expect(findAccountLane('file')!.providers.map((p) => p.id)).toEqual(['fs']);
   });
 
   it('isOAuthAccountTransport flags only the OAuth transports', () => {
@@ -105,7 +105,6 @@ describe('ACCOUNT_LANES structure', () => {
     expect(seeded['folders']).toBe('INBOX');
     // No default for an un-seeded text field.
     expect(seeded['host']).toBeUndefined();
-    expect(seedAccountFormValues(s3())['use_path_style']).toBe('true');
   });
 });
 
@@ -200,18 +199,9 @@ describe('validateAccountForm', () => {
     ).toBeNull();
   });
 
-  it('passes fs + s3 with required config', () => {
+  it('passes fs with required config', () => {
     expect(
       validateAccountForm(fs(), { slug: 'docs', path: '/srv/docs' }),
-    ).toBeNull();
-    expect(
-      validateAccountForm(s3(), {
-        slug: 'arc',
-        bucket: 'b',
-        region: 'us-east-1',
-        access_key: 'AK',
-        secret_key: 'SK',
-      }),
     ).toBeNull();
   });
 });
@@ -292,34 +282,6 @@ describe('project()', () => {
     });
   });
 
-  it('s3 projects required keys + only the supplied optionals', () => {
-    const minimal = s3().project({
-      slug: 'arc',
-      bucket: 'b',
-      region: 'us-east-1',
-      access_key: 'AK',
-      secret_key: 'SK',
-    });
-    expect(minimal).toEqual({
-      slug: 'arc',
-      adapter_type: 's3',
-      config: { access_key: 'AK', secret_key: 'SK', region: 'us-east-1', bucket: 'b' },
-    });
-    const full = s3().project(
-      withSeed(s3(), {
-        slug: 'arc',
-        bucket: 'b',
-        region: 'auto',
-        access_key: 'AK',
-        secret_key: 'SK',
-        endpoint: 'https://x.r2.cloudflarestorage.com',
-      }),
-    );
-    expect((full['config'] as Record<string, unknown>)['endpoint']).toBe(
-      'https://x.r2.cloudflarestorage.com',
-    );
-    expect((full['config'] as Record<string, unknown>)['use_path_style']).toBe(true);
-  });
 });
 
 describe('renderAccountsPanel', () => {
@@ -369,7 +331,7 @@ describe('renderAccountsPanel', () => {
 
   it('renders a lane pending note when one is set (file)', () => {
     const html = renderAccountsPanel({ state: base({ rows: [], lane: 'file' }) });
-    expect(html).toContain('Using Dropbox, Google Drive, Box, or OneDrive?');
+    expect(html).toContain('Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive?');
     expect(html).toContain('Data → Files');
     expect(html).toContain('more provider actions');
   });
@@ -662,14 +624,15 @@ describe('renderAccountsPanel', () => {
     expect(gone).toContain('Account not found');
   });
 
-  it('the Files lane shows two providers in the picker stage', () => {
+  it('the Files lane offers a local folder, and sends a bucket to Data → Files', () => {
     const html = renderAccountsPanel({
       state: base({ lane: 'file', stage: 'provider-picker' }),
     });
     expect(html).toContain('data-provider="fs"');
-    expect(html).toContain('data-provider="s3"');
+    expect(html).not.toContain('data-provider="s3"');
     expect(html).toContain('Local folder');
-    expect(html).toContain('S3 bucket');
+    expect(renderAccountsPanel({ state: base({ lane: 'file', stage: 'list' }) }))
+      .toContain('Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files.');
     expect(html).toContain(
       '<h2 class="accounts-picker-title" data-accounts-picker-heading tabindex="-1">Choose a file source</h2>',
     );

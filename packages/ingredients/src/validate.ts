@@ -2,10 +2,10 @@ import type { IngredientKind, IngredientManifest, IngredientCategory, RiskTier, 
 import {
   INGREDIENT_KINDS,
   KIND_ALLOWED_TIERS,
+  callClassForKind,
   TARGET_SCOPE,
   isLocalIngredient,
   isKernelManifest,
-  isServiceManifest,
   isCatalogForm,
   closedRequestSchemaDefinitionIssues,
   closedRequestSchemaBacktrackingIssues,
@@ -121,6 +121,7 @@ import { MIN_TIMEOUT_MS, MAX_TIMEOUT_MS, SOFT_TIMEOUT_CEILING_MS } from './timeo
 // declared binary, and no interpreter code/eval hole turns a call-time arg into code.
 // `tokenContainsTemplateHole` also backs the (literal-only) service argv[0] pin.
 import { cliCommandViolation, cliEnvViolations, cliInterpreterViolations, tokenContainsTemplateHole } from './cli-argv-safety.js';
+import { cliInstallProblems, cliProbeProblems, cliVersionProblems, type CliToolPolicyProblem } from './cli-tool-policy.js';
 // D-192 P1 — fail-closed shape validation for `work_entity_sources`
 // declarations (manifest-internal; the doc-dependent op proof stays in
 // `crossCheckCatalogOpenApi` below).
@@ -337,13 +338,9 @@ const validateMetadata = (m: Record<string, unknown>, add: AddFn): void => {
   }
 
   // Versions. Manifest schema version is always a positive integer
-  // (drives breaking-change detection + recipe step pinning). For
-  // service manifests, the underlying binary's release semver is
-  // declared separately at `input.service.binary_version` —
-  // informational, never enforced.
+  // (drives breaking-change detection + recipe step pinning).
   const ver = m.version;
   const minVer = m.min_version;
-  const isService = isServiceManifest(m);
   if (ver !== undefined) {
     const okInt = typeof ver === 'number' && Number.isInteger(ver) && ver >= 1;
     if (!okInt) {
@@ -414,29 +411,19 @@ const validateInput = (m: Record<string, unknown>, add: AddFn): void => {
   }
 
   // Recipe-namespace leak check: ingredient input values can only
-  // reference vault.*. Service manifests (kind = 'service') are
-  // exempt — `{{config.*}}` inside `input.service.*` refers to the
-  // service's own config (declared in `service.config_schema`),
-  // resolved by the service dispatcher at start / invoke time, not
-  // recipe-level config. `{{input.*}}` (per-invoke args inside
-  // `lifecycle.invoke.<name>.argv`) is already not in
-  // `RECIPE_NAMESPACES`. Service manifests do not use
-  // `{{step.*}}` / `{{meta.*}}` / `{{context.*}}` / `{{vault.*}}`
-  // by spec — verified by lint over `community/ingredients/*`.
+  // reference vault.*.
   // D-125 P5.1 — `kind: 'connection'` wrapper manifests bind
   // `input.connection` to a `{{config.<X>}}` picker by design (the
   // wrapper's config var is auto-derived from this interpolation at
   // install time). Skip the leak check on the connection field
   // specifically; everything else still gates.
-  if (!isServiceManifest(m)) {
-    const isConnection = m.kind === 'connection';
-    walkRefs(input, 'input', (ns, refPath) => {
-      if (!RECIPE_NAMESPACES.has(ns)) return;
-      if (isConnection && refPath === 'input.connection' && ns === 'config') return;
-      add('error', 'recipe_namespace_ref', refPath,
-        `ingredient cannot reference {{${ns}.*}} — recipe-level namespaces are supplied by the engine, not the manifest`);
-    });
-  }
+  const isConnection = m.kind === 'connection';
+  walkRefs(input, 'input', (ns, refPath) => {
+    if (!RECIPE_NAMESPACES.has(ns)) return;
+    if (isConnection && refPath === 'input.connection' && ns === 'config') return;
+    add('error', 'recipe_namespace_ref', refPath,
+      `ingredient cannot reference {{${ns}.*}} — recipe-level namespaces are supplied by the engine, not the manifest`);
+  });
 
   // Vault scope: {{vault.X.Y}} — X must match the ingredient's own publisher
   if (author && slug) {
@@ -454,75 +441,6 @@ const validateInput = (m: Record<string, unknown>, add: AddFn): void => {
   // default should be sane so users aren't silently corrected.
   validateTimeoutField(input, 'timeout_ms', add);
   validateTimeoutField(input, 'mcp.timeout_ms', add);
-
-  // Service manifests' optional `input.service.binary_version` —
-  // publisher-declared assertion of the binary release the manifest
-  // was authored against. Informational only; the runtime never
-  // checks it. Must be a non-empty string when present.
-  if (isServiceManifest(m)) {
-    const service = own(input, 'service');
-    if (service && typeof service === 'object' && !Array.isArray(service)) {
-      const svc = service as Record<string, unknown>;
-      if (hasOwn(svc, 'binary_version')) {
-        const bv = own(svc, 'binary_version');
-        if (typeof bv !== 'string' || bv.length === 0) {
-          add('error', 'binary_version_invalid', 'input.service.binary_version',
-            'binary_version must be a non-empty string (semver or other publisher-defined release identifier)');
-        }
-      }
-      validateServiceCommandPin(svc, add);
-    }
-  }
-};
-
-/** Service lifecycle `argv[0]` is the COMMAND — it must be a non-templated
- *  literal. A `{{config.*}}`/`{{input.*}}` hole in the command position would let
- *  the service instance's config or a per-invoke input choose which binary runs
- *  (the dispatcher runs argv with `shell:false` but inherits `PATH`). This is the
- *  service-side mirror of the cli `argv[0]` pin (finding 5) — but LITERAL-ONLY:
- *  there is deliberately NO `== install_check.binary` check and NO interpreter
- *  code-hole guard, because a service legitimately runs a wrapper
- *  (`bash <fixed-script>`, data passed via env) whose `argv[0]` differs from the
- *  probed binary and whose `-c` carries a fixed literal script. Only the command
- *  token is pinned; data args stay templated (`allow_flag_like`-gated). */
-const validateServiceCommandPin = (service: Record<string, unknown>, add: AddFn): void => {
-  const checkArgv0 = (argv: unknown, path: string): void => {
-    if (!Array.isArray(argv) || argv.length === 0) return;
-    const cmd = argv[0];
-    if (typeof cmd === 'string' && tokenContainsTemplateHole(cmd)) {
-      add('error', 'service_command_hole', path,
-        'service argv[0] (the command) must be a non-templated literal, not a call-time hole — a templated command lets config/input choose which binary runs; lock the binary and pass typed data args');
-    }
-  };
-  const lifecycle = service.lifecycle;
-  if (isObjectRecord(lifecycle)) {
-    for (const key of ['start', 'stop'] as const) {
-      const spec = lifecycle[key];
-      if (isObjectRecord(spec)) checkArgv0(spec.argv, `input.service.lifecycle.${key}.argv`);
-    }
-    const invoke = lifecycle.invoke;
-    if (isObjectRecord(invoke)) {
-      for (const [op, spec] of Object.entries(invoke)) {
-        if (isObjectRecord(spec)) checkArgv0(spec.argv, `input.service.lifecycle.invoke.${op}.argv`);
-      }
-    }
-  }
-  // Service CHECK specs are ALSO spawn surfaces (Codex review-of-fix): an
-  // `exec_ok` check (install_check / health_check / each startup_check[] entry)
-  // runs its own `argv` with shell:false, and `runCheck` resolves `{{config.*}}`
-  // across it before dispatch — the SAME dynamic-command hole as a lifecycle
-  // argv. Pin the command token of any argv-bearing check (present + future
-  // kinds; a `binary_in_path` / `install_check`-alias check carries no argv and
-  // is a no-op).
-  const checkArgvSpec = (spec: unknown, path: string): void => {
-    if (isObjectRecord(spec)) checkArgv0(spec.argv, `${path}.argv`);
-  };
-  checkArgvSpec(service.install_check, 'input.service.install_check');
-  checkArgvSpec(service.health_check, 'input.service.health_check');
-  const startup = service.startup_check;
-  if (Array.isArray(startup)) {
-    startup.forEach((spec, idx) => checkArgvSpec(spec, `input.service.startup_check[${idx}]`));
-  }
 };
 
 /** Validate a single timeout field. Does nothing if the field is absent or null
@@ -563,14 +481,8 @@ const validateOutput = (m: Record<string, unknown>, add: AddFn): void => {
   if (!m.output || typeof m.output !== 'object' || Array.isArray(m.output)) return;
   const output = m.output as Record<string, unknown>;
 
-  // Service manifests have no top-level output mapping — per-invoke
-  // outputs live on `input.service.lifecycle.invoke.<name>.output`,
-  // routed by the service dispatcher. Empty `output: {}` is the
-  // canonical shape.
   if (Object.keys(output).length === 0) {
-    if (!isServiceManifest(m)) {
-      add('error', 'output_empty', 'output', 'output mapping must have at least one entry');
-    }
+    add('error', 'output_empty', 'output', 'output mapping must have at least one entry');
     return;
   }
 
@@ -709,7 +621,6 @@ export const PER_KIND_REQUIRED_INPUT: Record<IngredientKind, readonly string[]> 
   ai:         [],
   chat:       ['chat.prompt'],
   mcp:        ['mcp.tool'],
-  service:    [],
   storage:    [],
   connection: [],
   // D-182 — cli toolkit ops are addressed as Tier-P pack ops and carry their
@@ -747,7 +658,6 @@ export const PER_KIND_FORBIDDEN_PATTERNS: Record<IngredientKind, readonly RegExp
   ai:         [/^url$/, /^method$/, /^chat\.tab$/, /^mcp\./, /^service\./],
   chat:       [/^url$/, /^method$/, /^mcp\./, /^service\./],
   mcp:        [/^chat\./, /^url$/, /^method$/, /^service\./],
-  service:    [/^url$/, /^method$/, /^chat\./, /^llm\./, /^mcp\./],
   storage:    [/^url$/, /^method$/, /^chat\./, /^llm\./, /^mcp\./, /^service\./],
   connection: [/^url$/, /^chat\./, /^llm\./, /^service\./],
   // D-182 — a cli op carries no HTTP / chat / llm / mcp / service input keys
@@ -1368,9 +1278,14 @@ const validateLongOpFields = (m: Record<string, unknown>, add: AddFn): void => {
   if (m.fast_path !== undefined && typeof m.fast_path !== 'boolean') {
     add('error', 'FAST_PATH_INVALID', 'fast_path', 'fast_path must be a boolean when present');
   }
-  if (m.fast_path === true && m.kind === 'service') {
+  // A kind the lane governor gates as local-heavy (a RAM-sized subprocess) may
+  // not opt out of it: `fast_path: true` skips the semaphore (`lane.ts`). Derived
+  // from `callClassForKind`, so it follows that classification. It was keyed on
+  // `service` until that kind was retired (D-321 § 5.5), which left `cli` open.
+  if (m.fast_path === true && typeof m.kind === 'string' && INGREDIENT_KINDS.has(m.kind as IngredientKind)
+    && callClassForKind(m.kind as IngredientKind) === 'local-heavy') {
     add('error', 'FAST_PATH_FORBIDDEN_KIND', 'fast_path',
-      "fast_path is not allowed on kind 'service' — a local-heavy (RAM-gated) subprocess op cannot bypass the lane governor");
+      `fast_path is not allowed on kind '${m.kind}' — a local-heavy (RAM-gated) subprocess op cannot bypass the lane governor`);
   }
 };
 
@@ -2574,6 +2489,43 @@ const validateConnectorSurface = (
       || !Number.isInteger(runtime.expected_protocol_version) || runtime.expected_protocol_version < 0) {
       add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.connector.runtime.expected_protocol_version',
         'connector runtime.expected_protocol_version must be a non-negative integer');
+    }
+    // D-321 — the pack's probe, tested range and install hints, carried off its
+    // `cli` cell. Checked here too, because a directly-published catalog meets
+    // only this validator. The probe here is always one the server runs, outside
+    // any grant, so it may only ask for the version.
+    const cliKeys = ['cli_probe', 'cli_version', 'cli_install'] as const;
+    if (wireProtocol !== undefined && wireProtocol !== 'cli_invocation') {
+      for (const key of cliKeys) {
+        if (runtime[key] !== undefined) {
+          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.connector.runtime.${key}`,
+            `connector runtime.${key} belongs to a cli_invocation runtime only`);
+        }
+      }
+    } else if (wireProtocol === 'cli_invocation') {
+      const at = (key: string, problem: CliToolPolicyProblem): string =>
+        problem.path === '' ? `surfaces.connector.runtime.${key}`
+          : `surfaces.connector.runtime.${key}${problem.path.startsWith('[') ? '' : '.'}${problem.path}`;
+      if (runtime.cli_version !== undefined && runtime.cli_probe === undefined) {
+        add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.connector.runtime.cli_probe',
+          'connector runtime.cli_version needs cli_probe: the installed version is read by running it');
+      }
+      if (runtime.cli_probe !== undefined) {
+        const launched = cliToolFromConnectorRuntime(runtime as unknown as ConnectorRuntimeSpec);
+        for (const problem of cliProbeProblems(runtime.cli_probe, launched, true)) {
+          add('error', 'CATALOG_SURFACE_INVALID', at('cli_probe', problem), problem.message);
+        }
+      }
+      if (runtime.cli_version !== undefined) {
+        for (const problem of cliVersionProblems(runtime.cli_version)) {
+          add('error', 'CATALOG_SURFACE_INVALID', at('cli_version', problem), problem.message);
+        }
+      }
+      if (runtime.cli_install !== undefined) {
+        for (const problem of cliInstallProblems(runtime.cli_install)) {
+          add('error', 'CATALOG_SURFACE_INVALID', at('cli_install', problem), problem.message);
+        }
+      }
     }
   }
 
@@ -3878,15 +3830,12 @@ const validateCategoryConsistency = (m: Record<string, unknown>, add: AddFn): vo
   // (they route via pickAdapter's default fallback) OR by dom.* input keys.
   // Kernel ingredients (author = `recued`, the reserved kernel namespace)
   // route through a dedicated dispatcher (server rpc, shared-store
-  // helpers) and skip this check. Service manifests (kind = 'service')
-  // route through the server's service dispatcher and use
-  // `input.service.*` instead of an HTTP/DOM/MCP/Chat executor.
+  // helpers) and skip this check.
   // D-125 P5.1 — `kind: 'connection'` wrappers (kind itself names the
   // adapter; `validateConnectionWrapper` enforces the per-kind shape).
   const hasTriggerInOutput = output != null && typeof output === 'object'
     && Object.values(output).some((v) => v === 'trigger');
   const isKernel = isKernelManifest(m);
-  const isService = isServiceManifest(m);
   const isConnection = m.kind === 'connection';
   const surfaces = own(m, 'surfaces');
   const isRecordsCatalog = isCatalogForm(m)
@@ -3894,7 +3843,7 @@ const validateCategoryConsistency = (m: Record<string, unknown>, add: AddFn): vo
     && typeof surfaces === 'object'
     && !Array.isArray(surfaces)
     && Object.prototype.hasOwnProperty.call(surfaces, 'records');
-  if (!isKernel && !isService && !isConnection && !isRecordsCatalog && (category === 'data' || category === 'action') && !hasHttp && !hasDom && !hasMcp && !hasChat && !hasTriggerInOutput) {
+  if (!isKernel && !isConnection && !isRecordsCatalog && (category === 'data' || category === 'action') && !hasHttp && !hasDom && !hasMcp && !hasChat && !hasTriggerInOutput) {
     add('error', 'executor_ambiguous', 'input',
       'cannot determine executor — input must contain url (HTTP), dom.* (DOM), mcp.* (MCP), or chat.* (Chat) keys, or output must contain trigger patterns (DOM)');
   }
@@ -4088,8 +4037,8 @@ const AI_COOPERATIVE_RISK_TIERS = new Set<RiskTier>(['write', 'admin', 'destruct
 
 /** Adapter kinds that talk to external state — typical sources of
  *  conflict / ambiguity (CRM writes, calendar bookings, MCP tool
- *  calls, named connections, long-running services, durable
- *  storage). `dom` / `chat` are excluded — DOM clicks + web-chat
+ *  calls, named connections, durable storage). `dom` / `chat` are
+ *  excluded — DOM clicks + web-chat
  *  prompts don't return alternatives in the kernel-ingredient sense
  *  (web-chat is friendly-gesture only per § B.9 / D-145 PB9). `ai`
  *  ingredients are read-only inference per kind contract. */
@@ -4098,7 +4047,6 @@ const AI_COOPERATIVE_KINDS = new Set<IngredientKind>([
   'mcp',
   'connection',
   'storage',
-  'service',
 ]);
 
 /** § B.6.11 — flag the manifest as action-with-conflict-potential

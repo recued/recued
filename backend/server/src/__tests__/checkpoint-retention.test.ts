@@ -229,6 +229,25 @@ describe('checkpoint-retention — staleness guard', () => {
     expect(acts[0]?.detail).toContain('expired=1');
   });
 
+  // The expiry record replaces the paused one: what the run did before it paused
+  // is known only there (`execution/paused-run-carry.ts`).
+  it('an expired run keeps its dish and what it did before it paused', async () => {
+    const h = harness();
+    const note = { tool: 'opencode', version: '2.0.1', tested: { from: '1.18.35', before: '2.0.0' }, state: 'untested' as const };
+    const before = {
+      dish_id: 'dsh_1',
+      run_yield: { steps_run: 2, steps_skipped: 0, items_total: 3, items_failed: 0 },
+      total_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120, provider_calls: 2 },
+      connections_used: [{ slot: 'hubspot', connection_name: 'hubspot-key' }],
+      untested_tools: [note],
+    };
+    await seed(h, [checkpoint()], [anchor(before)]);
+    await h.retention.run();
+    const retired = await h.auditLog.get('run-1');
+    expect(retired?.commit_status).toBe('failed');
+    expect(retired).toMatchObject(before);
+  });
+
   it('terminalizes the exact owner receipt before deleting a stale recipe checkpoint', async () => {
     const actions = createGatedActionStore(
       createInMemoryCollection<GatedActionRecord>(),

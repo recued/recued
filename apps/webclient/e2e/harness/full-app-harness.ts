@@ -1757,9 +1757,11 @@ const buildFakeTransport = (
     source_id: 'provider-mail-1',
     body_inline: 'Please review the quarterly plan before Friday.',
   };
-  const longCollectionMethod = `POST${'Method'.repeat(30)}`;
-  const longCollectionRemoteIp = `Remote${'Address'.repeat(30)}`;
-  const longCollectionRecordId = `Webhook${'Identifier'.repeat(24)}`;
+  // Mail since 2026-10-10: this demo drove the "Webhook deliveries" tab until
+  // that tab was removed with the collection it browsed.
+  const longCollectionSubject = `Subject${'Heading'.repeat(30)}`;
+  const longCollectionFrom = `Sender${'Address'.repeat(30)}`;
+  const longCollectionRecordId = `Message${'Identifier'.repeat(24)}`;
   const longCollectionSourceId = `Source${'Identifier'.repeat(24)}`;
   const longCollectionBody = `Payload${'Value'.repeat(40)}`;
   const longCollectionRecord = {
@@ -1767,8 +1769,8 @@ const buildFakeTransport = (
     received_at: FIXED_NOW - 20_000,
     modified_at: FIXED_NOW - 10_000,
     hot_fields: {
-      method: longCollectionMethod,
-      remote_ip: longCollectionRemoteIp,
+      subject: longCollectionSubject,
+      from: longCollectionFrom,
       [`Header${'Identifier'.repeat(20)}`]: `Header${'Value'.repeat(40)}`,
     },
     size_bytes: longCollectionBody.length,
@@ -1777,7 +1779,7 @@ const buildFakeTransport = (
   };
   const longCollectionInstances = [0, 1].map((index) => ({
     slug: `Instance${'Identifier'.repeat(20)}${index}`,
-    platform: 'webhook' as const,
+    platform: 'mail' as const,
     adapter_type: `Adapter${'Provider'.repeat(20)}${index}`,
     caps: {},
     auth_state: 'healthy',
@@ -3752,6 +3754,30 @@ const buildFakeTransport = (
             result = { config_overlay: {} };
           }
         }
+        // D-320 §4 — Save settings and a dish form wait for the recipe's slots
+        // (`packs.connections.recipe`) before the form opens, and every run
+        // dialog reads them after it opens; a method left unanswered here is
+        // pending forever. Answered in every demo, because a recipe can be run
+        // from many places (Recipes, Automation, a pack's page, the Run palette,
+        // Reception). A recipe that signs in through no connection is a real
+        // answer: no Connection line. `recipe_connections=choice` gives the
+        // recipe one slot with two accounts, so the line is drawn.
+        if (rpc.method === 'packs.connections.recipe') {
+          const choice = new URLSearchParams(location.search).get('recipe_connections') === 'choice';
+          result = {
+            recipe_id: (rpc.args as { recipe_id: string }).recipe_id,
+            slots: choice
+              ? [{
+                  slot: 'hubspot',
+                  variables: ['hubspot'],
+                  connections: [
+                    { connection_name: 'hubspot-app', display_name: 'Sales app', is_default: false },
+                    { connection_name: 'hubspot-key', display_name: 'Service Key', is_default: true },
+                  ],
+                }]
+              : [],
+          };
+        }
         if (recipesDemo && rpc.method === 'dishes.create') {
           if (dishesCreateFailuresRemaining > 0) {
             dishesCreateFailuresRemaining -= 1;
@@ -4259,6 +4285,12 @@ const buildFakeTransport = (
               ...(installConnectionRequirements === undefined
                 ? {}
                 : { connection_requirements: installConnectionRequirements }),
+              // ⛔ Lifted the same way: a connection's "Used by packs" reads the
+              // scopes per connection from the row. Read through `manifest`, it
+              // rendered nothing on a real server from b06752cc9 to 2026-10-09.
+              ...(longConnectionTextDemo
+                ? { required_scopes_by_connection: { hubspot: ['crm.objects.deals.write'] } }
+                : {}),
               installed_any_version: packsInstalled,
               pre_install: false,
               name: packDemoName,
@@ -5193,7 +5225,7 @@ const buildFakeTransport = (
           const args = rpc.args as { platform?: unknown; slug?: unknown };
           result = {
             records:
-              args.platform === 'webhook'
+              args.platform === 'mail'
               && args.slug === longCollectionInstances[0]!.slug
                 ? [longCollectionRecord]
                 : [],
@@ -5207,7 +5239,7 @@ const buildFakeTransport = (
           };
           result = {
             record:
-              args.platform === 'webhook'
+              args.platform === 'mail'
               && args.slug === longCollectionInstances[0]!.slug
               && args.record_id === longCollectionRecord.record_id
                 ? longCollectionRecord
@@ -6142,6 +6174,9 @@ const buildFakeTransport = (
             'contract.grant.read': { grants: [] },
             'collection.contract.listCatalogOperations': { ingredients: [] },
             'collection.connection.list': { connections: [] },
+            // D-320 — the Access tab's Connections block: a pack that signs in to
+            // nothing shows no block.
+            'packs.connections.list': { pack_slug: '', slots: [] },
             'supervision.list': { daemons: [] },
             'cli.reachability.list': { rows: [] },
             'cli.reachability.universe': { tools: [] },

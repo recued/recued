@@ -27,6 +27,7 @@ import type {
   RunDegradation,
   ScanFn,
   CliMethodBinding,
+  CliToolVersionPolicy,
   LaneGovernor,
   ExecutionLane,
   OpDurationClassifier,
@@ -76,6 +77,19 @@ export interface CliInvocationCall {
    * second, false "unsupervised detach" compatibility event after the
    * supervisor removes its declaration to reach the low-level launcher. */
   supervisor_managed_launch?: true;
+  /** D-321 — the versions of its tool the catalog's pack was tested with, and
+   * the probe that reads the installed one (`probe[0]` is the launched binary).
+   * The gateway copies them from the catalog's connector runtime (`cli_version`,
+   * `cli_probe`); absent for a catalog that declares no range, whose tool is not
+   * probed (R5). The executor checks them before anything starts. Not part of
+   * the action's identity: `describeCliInvocation` never reads it. */
+  tool_version?: { probe: string[]; version: CliToolVersionPolicy };
+  /** D-321 — where the owner gets the catalog's tool (its `cli_install`), so a
+   * tool that is not found can be refused with the command that installs it.
+   * Shown, never run (D-170). Absent when the pack gives none. Each entry is
+   * checked where it is rendered (`renderInstallHints`): a stored catalog may
+   * carry entries no validator saw. */
+  tool_install?: readonly unknown[];
   stepMeta?: StepMeta;
 }
 
@@ -641,6 +655,12 @@ export interface ExecutionContext {
   connectionSubresourcePathResolver?: (
     connection_name: string,
   ) => string | undefined | Promise<string | undefined>;
+  /** D-320 audit — whether the run's governing contract admits a call on this
+   *  connection (`PolicyContractOverlay.admitsConnection`). Checked before the
+   *  approval ask, as the path scope is, so a call on a connection the contract
+   *  does not list is refused without asking the owner to approve it first.
+   *  Absent: every connection (an owner's run, a contract that lists none). */
+  admitsConnection?: (connection_name: string) => boolean;
   /** Resolve the enrolled API connection's concrete base URL for REST
    *  continuation safety checks. Used by operation-local `link_header`
    *  pagination so GitHub Enterprise / Salesforce instance URLs compare

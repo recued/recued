@@ -64,8 +64,11 @@ import {
   type CliReachabilitySetResponse,
   type CliReachabilityUniverseResponse,
   type CliToolOpEntry,
+  type PackToolStatus,
+  type PacksToolStatusResult,
 } from '@recued/contracts';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
+import { programConsequence, programStateText, programStopsRuns } from './pack-programs-controls.js';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams
@@ -94,6 +97,10 @@ export interface MountCliGrantDialogOptions {
   runUniverse: CliGrantUniverseCaller;
   /** `cli.reachability.set` caller. */
   runSet: CliGrantSetCaller;
+  /** D-321 — `packs.tool_status` caller. When given, each tool shows whether
+   *  its program is installed, and at a tested version, as the pack's Programs
+   *  block does. Absent, or a failed read ⇒ the dialog shows the grants alone. */
+  runToolStatus?: () => Promise<PacksToolStatusResult>;
 }
 
 export interface CliGrantDialogMount {
@@ -144,6 +151,9 @@ export const CLI_GRANT_DIALOG_OP_ATTR = 'data-recued-cli-grant-op';
 export const CLI_GRANT_DIALOG_CONFIRM_BTN_ATTR = 'data-recued-cli-grant-confirm';
 export const CLI_GRANT_DIALOG_SKIP_BTN_ATTR = 'data-recued-cli-grant-skip';
 export const CLI_GRANT_DIALOG_ERROR_ATTR = 'data-recued-cli-grant-error';
+/** D-321 — a tool's program state line. Carries the state (`ready`, `missing`,
+ *  `broken`, `untested`, `unreadable`). */
+export const CLI_GRANT_DIALOG_TOOL_STATE_ATTR = 'data-recued-cli-grant-tool-state';
 
 // ════════════════════════════════════════════════════════════════
 // Helpers
@@ -195,6 +205,8 @@ const COPY = {
   confirm_label: 'Say yes',
   confirming_label: 'Granting…',
   skip_label: 'Skip for now',
+  install_label: 'Install it with:',
+  docs: 'Install instructions',
 } as const;
 
 // ════════════════════════════════════════════════════════════════
@@ -226,6 +238,8 @@ export const mountCliGrantDialog = (
   const selected = new Map<string, boolean>();
   /** Resolver for the in-flight `openForNewTools` promise — fired on close. */
   let closeResolve: (() => void) | null = null;
+  /** D-321 — each catalog's program state, once `runToolStatus` answers. */
+  const programs = new Map<string, PackToolStatus>();
 
   // The overlay node lives detached until `open`; it's appended to the host on
   // open and removed on close so the host DOM stays clean between installs.
@@ -249,6 +263,53 @@ export const mountCliGrantDialog = (
   };
 
   // ── render ──────────────────────────────────────────────────────────
+  /** D-321 — whether the tool's program is installed, and at a tested version,
+   *  for the catalog this install added; with the install command when it is
+   *  not installed. The commands come from the server and are set as text. */
+  const renderProgramState = (block: HTMLElement, t: DialogTool): void => {
+    const program = t.newOps.map((op) => programs.get(op.catalog_slug)).find((p) => p !== undefined);
+    if (program === undefined) return;
+    const state = doc.createElement('p');
+    state.className = 'cg-tool-state';
+    state.setAttribute(CLI_GRANT_DIALOG_TOOL_STATE_ATTR, program.state);
+    // Red only when the pack's actions will not run; Warn lets them.
+    if (programStopsRuns(program)) state.setAttribute('data-tone', 'danger');
+    const consequence = programConsequence(program);
+    state.textContent = consequence === null
+      ? programStateText(program)
+      : `${programStateText(program)}. ${consequence}`;
+    block.appendChild(state);
+    if (program.state === 'ready') return;
+    if (program.install.length > 0) {
+      // One line, the commands joined by "or", as the not-found error words it.
+      const row = doc.createElement('p');
+      row.className = 'cg-tool-install';
+      const label = doc.createElement('span');
+      label.textContent = `${COPY.install_label} `;
+      row.appendChild(label);
+      program.install.forEach((command, i) => {
+        if (i > 0) {
+          const or = doc.createElement('span');
+          or.textContent = ' or ';
+          row.appendChild(or);
+        }
+        const code = doc.createElement('code');
+        code.textContent = command;
+        row.appendChild(code);
+      });
+      block.appendChild(row);
+    }
+    for (const docs of program.docs) {
+      const link = doc.createElement('a');
+      link.className = 'cg-tool-docs';
+      link.setAttribute('href', docs);
+      link.setAttribute('target', '_blank');
+      link.setAttribute('rel', 'noopener noreferrer');
+      link.textContent = COPY.docs;
+      block.appendChild(link);
+    }
+  };
+
   const renderToolBlock = (parent: HTMLElement, t: DialogTool): void => {
     const block = doc.createElement('div');
     block.setAttribute(CLI_GRANT_DIALOG_TOOL_ATTR, '');
@@ -262,6 +323,7 @@ export const mountCliGrantDialog = (
     name.textContent = t.tool;
     heading.appendChild(name);
     block.appendChild(heading);
+    renderProgramState(block, t);
 
     for (const op of t.newOps) {
       const labelEl = doc.createElement('label');
@@ -364,6 +426,7 @@ export const mountCliGrantDialog = (
     error = null;
     tools = [];
     selected.clear();
+    programs.clear();
     if (overlay !== null) {
       try {
         opts.host.removeChild(overlay);
@@ -380,6 +443,7 @@ export const mountCliGrantDialog = (
   const openDialog = (dialogTools: DialogTool[]): void => {
     tools = dialogTools;
     selected.clear();
+    programs.clear();
     for (const t of dialogTools) {
       for (const op of t.newOps) {
         // Pre-select `read` (safe, idempotent); write/admin/destructive opt-in.
@@ -499,7 +563,32 @@ export const mountCliGrantDialog = (
     return new Promise<void>((resolve) => {
       closeResolve = resolve;
       openDialog(dialogTools);
+      loadProgramStates();
     });
+  };
+
+  /** D-321 — read the program states for the open dialog, and show them. A
+   *  read that fails, or answers after the dialog closed or was replaced, is
+   *  dropped: the grants never wait on it. */
+  const loadProgramStates = (): void => {
+    if (opts.runToolStatus === undefined) return;
+    const mySession = dialogSession;
+    let pending: Promise<PacksToolStatusResult>;
+    try {
+      pending = opts.runToolStatus();
+    } catch {
+      return;
+    }
+    void pending.then(
+      (result) => {
+        if (disposed || !open || dialogSession !== mySession) return;
+        for (const pack of result.packs) {
+          for (const tool of pack.tools) programs.set(tool.catalog, tool);
+        }
+        render();
+      },
+      () => undefined,
+    );
   };
 
   return {
@@ -662,6 +751,33 @@ export const CLI_GRANT_DIALOG_STYLES = `
   font-size: 11px;
   line-height: 1.45;
   color: var(--fg-muted);
+}
+[data-recued-cli-grant-dialog] .cg-tool-state {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+[data-recued-cli-grant-dialog] .cg-tool-state[data-tone="danger"] {
+  color: var(--danger);
+}
+[data-recued-cli-grant-dialog] .cg-tool-install {
+  margin: 0 0 4px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+[data-recued-cli-grant-dialog] .cg-tool-install code {
+  /* A command moves to the next line whole; only one wider than the dialog wraps. */
+  display: inline-block;
+  max-width: 100%;
+  font-family: var(--mono, ui-monospace, monospace);
+  user-select: all;
+}
+[data-recued-cli-grant-dialog] .cg-tool-docs {
+  display: inline-block;
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--accent);
 }
 [data-recued-cli-grant-dialog] .cg-error {
   font-size: 13px;

@@ -81,6 +81,10 @@ export interface SourceEscalationBinding {
   /** The SHORT `operations`-map key (`task.read`, `deal.search`) —
    *  resolved to the DECLARED `operation_id` inside the core. */
   operation: string;
+  /** The connection the escalated read signs in through. A contract that lists
+   *  connections bounds it, as it bounds a raw op's (D-320 audit): without it, a
+   *  door scoped to one connection reached the vendor through another. */
+  connectionName?: string;
 }
 
 export type SourceEscalationRefusal =
@@ -113,6 +117,10 @@ export const admitSourceCatalogEscalation = (
   gate: Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted'> | undefined,
   ctx: ChatDispatchContext,
   binding: SourceEscalationBinding,
+  /** The governing contract's connection axis (`ContractOverlayResolver.admitsConnection`).
+   *  Absent (dbless / unit) ⇒ the binding's connection is not fenced, as at raw-op
+   *  dispatch. */
+  admitsConnection?: (source: ExecutionSource, connection_name: string) => boolean,
 ): SourceEscalationAdmission => {
   const external = ctx.channel === 'mcp_wire';
   const source = ctx.execution_source;
@@ -134,6 +142,8 @@ export const admitSourceCatalogEscalation = (
     operation: binding.operation,
     executionSource: source,
     ...(snapshot !== undefined ? { contractSnapshot: snapshot } : {}),
+    ...(binding.connectionName !== undefined ? { connectionName: binding.connectionName } : {}),
+    ...(admitsConnection !== undefined ? { admitsConnection } : {}),
   });
   if (decision.verdict === 'admit') return { admitted: true };
   if (decision.verdict === 'deny' && decision.code === 'server_paused') {

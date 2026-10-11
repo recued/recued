@@ -14,12 +14,8 @@ import {
 } from '../bootstrap-handler.js';
 
 const baseBootstrap: BootstrapConfig = {
-  data_path: '/var/lib/recued',
-  bind_host: '127.0.0.1',
   bind_port: 3001,
-  mcp_port: 0,
-  webhook_port: 0,
-  log_path: '/var/log/recued',
+  webhooks_enabled: false,
 };
 
 const mkDeps = (overrides: Partial<BootstrapHandlerDeps> = {}): BootstrapHandlerDeps => {
@@ -45,11 +41,23 @@ describe('handleGetBootstrap', () => {
 
   it('merges staged fields and flags pending_restart', () => {
     const deps = mkDeps();
-    deps.state.setStagedBootstrap({ bind_port: 9000, log_path: '/tmp/alt' });
+    deps.state.setStagedBootstrap({ bind_port: 9000, webhooks_enabled: true });
     const view = handleGetBootstrap(deps).config;
     expect(view.bind_port).toBe(9000);
-    expect(view.log_path).toBe('/tmp/alt');
+    expect(view.webhooks_enabled).toBe(true);
     expect(view.pending_restart).toBe(true);
+  });
+
+  it('a row staged with only removed keys is not a pending restart', () => {
+    // Staged before 2026-10-09, when `log_path` / `bind_host` were stageable.
+    // A restart would apply nothing for them, so nothing is pending.
+    const db = new Database(':memory:');
+    const state = createServerStateStore(db);
+    state.setStagedBootstrap(
+      JSON.parse('{"log_path":"/tmp/alt","bind_host":"0.0.0.0"}') as Partial<BootstrapConfig>,
+    );
+    const view = handleGetBootstrap(mkDeps({ state })).config;
+    expect(view).toEqual({ ...baseBootstrap, pending_restart: false });
   });
 });
 
@@ -63,10 +71,14 @@ describe('handleStageBootstrap', () => {
     expect(deps.state.getStagedBootstrap()).toEqual({ bind_port: 9090 });
   });
 
-  it('rejects fields outside the stageable whitelist', () => {
-    const res = handleStageBootstrap(deps, { patch: { data_path: '/elsewhere' } });
-    expect(res.valid).toBe(false);
-    expect(res.errors?.data_path).toMatch(/not stageable/);
+  it('rejects fields outside the stageable whitelist — the removed keys included', () => {
+    // `webhook_port` too: the old name works in config files, but this rpc
+    // only ever takes the current one.
+    for (const key of ['data_path', 'bind_host', 'mcp_port', 'log_path', 'webhook_port', 'made_up']) {
+      const res = handleStageBootstrap(deps, { patch: { [key]: key === 'mcp_port' ? 7718 : '/elsewhere' } });
+      expect(res.valid).toBe(false);
+      expect(res.errors?.[key]).toMatch(/not stageable/);
+    }
     expect(deps.state.getStagedBootstrap()).toBeNull();
   });
 
@@ -86,10 +98,10 @@ describe('handleStageBootstrap', () => {
     expect(res.errors?.bind_port).toMatch(/\[0, 65535\]/);
   });
 
-  it('rejects empty strings on host/log_path', () => {
-    const res = handleStageBootstrap(deps, { patch: { bind_host: '' } });
+  it('rejects a webhooks switch that is not true or false', () => {
+    const res = handleStageBootstrap(deps, { patch: { webhooks_enabled: 1 } });
     expect(res.valid).toBe(false);
-    expect(res.errors?.bind_host).toMatch(/non-empty/);
+    expect(res.errors?.webhooks_enabled).toMatch(/true or false/);
   });
 
   it('rejects non-object patches', () => {

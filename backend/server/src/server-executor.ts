@@ -686,7 +686,7 @@ const createLLMAdapter = (
       const hint = (resolved.input['llm.model_hint'] as string) ?? 'quality';
       const expected = hint === 'fast' ? 4000 : 8000;
       if (checkBudget(expected)) {
-        throw new Error('AI_TOKEN_BUDGET_EXCEEDED: Daily token budget exhausted. Increase budget via `recued llm budget <tokens>` or wait until tomorrow.');
+        throw new Error('AI_TOKEN_BUDGET_EXCEEDED: Daily token budget exhausted. Increase budget via `recued llm set-budget <tokens>` or wait until tomorrow.');
       }
     }
     const manifest = manifests.get(resolved.slug);

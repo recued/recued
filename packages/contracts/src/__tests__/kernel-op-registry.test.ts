@@ -74,7 +74,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
    *  id — the two are different stores and an id saying `memory` would re-conflate
    *  them. One op: the grant handle that finally makes `recall.search` revocable. */
   recall: 1,
-  data: 18, // D-210 closeout — + form-response-list
+  // D-210 closeout — + form-response-list. 18 → 16 on 2026-10-10:
+  // core.data.webhook.get / .list went with the Phase D webhook collection.
+  data: 16,
   webhook: 1,
   // D-232 § 23 — +1 for `core.storage.exchange.status`, the asker's own
   // "what happened to my letter" read.
@@ -230,8 +232,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-210 A.8 slice 2 — the lifecycle write. `write`, not `read`: it moves
       // a visitor's state and must sit behind the same approval a write gets.
       'core.data.form-response.set-state|data|form-response-set-state|write',
-      'core.data.webhook.get|data|webhook-get|read',
-      'core.data.webhook.list|data|webhook-list|read',
+      // `core.data.webhook.get` / `.list` went 2026-10-10 with the Phase D
+      // webhook collection they read.
       'core.dom.read|dom|dom-read|read',
       'core.dom.write|dom|dom-write|write',
       'core.mail.body-read|mail|mail-body-read|read',

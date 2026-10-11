@@ -542,3 +542,73 @@ describe('pack-discovery — union corpus (catalog ∪ roster)', () => {
     dispose();
   });
 });
+
+// ═══ D-321 audit — the program badges do not hold the list up ═══
+
+describe('D-321 — the pack list and its program badges', () => {
+  const allText = (node: { textContent?: string; children?: unknown[] }): string =>
+    [node.textContent ?? '', ...((node.children ?? []) as Array<typeof node>).map(allText)].join(' ');
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => { resolve = r; });
+    return { promise, resolve };
+  };
+  const answer = (state: 'ready' | 'missing') => ({
+    system: 'macos' as const,
+    packs: [{
+      slug: 'opencode-pack',
+      tools: [{ catalog: 'recued-core/opencode', binary: 'opencode', state, install: [], docs: [] }],
+    }],
+  });
+  const mountWith = (listToolStatus: () => Promise<ReturnType<typeof answer>>) => {
+    const host = makeEl('div');
+    const mounted = mountPackDiscovery({
+      host: host as unknown as HTMLElement,
+      document: fakeDoc(),
+      onSelect: vi.fn(),
+      listInstalled: vi.fn(async () => ({ packs: [{ slug: 'opencode-pack', version: 1, installed: true }] })),
+      listToolStatus,
+      fetchCatalog: async () => ({ status: 'ok', rows: [pr({ slug: 'opencode-pack', version: 1 })] }),
+    });
+    return { host, ...mounted };
+  };
+
+  it('the list does not wait for the programs: a read that never answers leaves it loaded', async () => {
+    // The webclient e2e caught the list on "Loading packs…" against a server whose
+    // `packs.tool_status` never answered: the roster load awaited it.
+    const { panel, dispose } = mountWith(() => new Promise(() => undefined));
+    await panel.whenLoaded();
+    expect(panel.getState()).toBe('ready');
+    expect(panel.getRenderedIdentities()).toEqual(['opencode-pack']);
+    dispose();
+  });
+
+  it('the badge appears when the answer lands', async () => {
+    const read = deferred<ReturnType<typeof answer>>();
+    const { host, panel, dispose } = mountWith(() => read.promise);
+    await panel.whenLoaded();
+    expect(allText(host)).not.toContain('Needs opencode');
+    read.resolve(answer('missing'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(allText(host)).toContain('Needs opencode');
+    dispose();
+  });
+
+  it('reads the programs again on request, and an older read that lands later is dropped', async () => {
+    const reads = [deferred<ReturnType<typeof answer>>(), deferred<ReturnType<typeof answer>>()];
+    let n = 0;
+    const { host, panel, refreshPrograms, dispose } = mountWith(() => reads[n++]!.promise);
+    await panel.whenLoaded();
+    refreshPrograms();
+    expect(n).toBe(2);
+    reads[1]!.resolve(answer('ready'));
+    await Promise.resolve();
+    reads[0]!.resolve(answer('missing'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(allText(host)).not.toContain('Needs opencode');
+    dispose();
+  });
+});
+

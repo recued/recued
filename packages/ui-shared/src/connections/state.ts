@@ -7,8 +7,9 @@
  *  internally to list / kind-picker / subtype-picker / form views. */
 
 import type { McpPackReviewView, McpPackStatusView } from './mcp-pack.js';
+import type { InstalledPackScopes } from './pack-usage.js';
+import type { ConnectionRemovalEffect, ConnectionRemovalRecipeEffect } from '../connection-removal.js';
 import type {
-  BulkPackManifest,
   ConnectionAuthType,
   ConnectionCredentialCorrectionFieldKey,
   ConnectionCredentialRejectionCorrection,
@@ -266,7 +267,24 @@ export interface ConnectionsDeleteConfirmState {
   /** True while the delete rpc is in flight (Remove pressed) — disables the
    *  confirm buttons. */
   deleting: boolean;
+  /** D-320 slice 2g (ruling 16) — what deleting it does to the packs whose
+   *  lists hold it (`packs.connections.removal`): their runs may move to another
+   *  connection, be left with no default, or stop. Absent when the host cannot ask
+   *  (an older server or host): the dialog then says nothing of it. */
+  effects?: ConnectionsDeleteEffects;
 }
+
+/** D-320 slice 2g — the Delete dialog's pack effects, as they load. */
+export type ConnectionsDeleteEffects =
+  | { status: 'loading' }
+  | { status: 'failed' }
+  | {
+    status: 'ready';
+    packs: ConnectionRemovalEffect[];
+    /** D-320 audit — the recipes reading two or more of those packs' lists, whose own
+     *  answer is not their packs'. Empty from a server before it. */
+    recipes?: ConnectionRemovalRecipeEffect[];
+  };
 
 /** Memory-only presentation of a paired server's authoritative receipt read.
  * The opaque receipt and every raw transport/server error remain inside the
@@ -418,11 +436,12 @@ export interface ConnectionsPageState {
    * the one visible receipt so a completed item can hand off to the next one
    * without replaying its success state. */
   postSafeStopRecoveries: ConnectionsPostSafeStopRecoveryState[];
-  /** Connection-detail "Used by packs" — the INSTALLED packs' manifests, so the
-   *  renderer can compute the inverse pivot (per api connection → the packs that
-   *  use its vendor + scope coverage). Optional + best-effort: the host hydrates
-   *  it from `packs.list`; absent → no "Used by packs" section. */
-  installedPackManifests?: readonly BulkPackManifest[];
+  /** Connection-detail "Used by packs" — the INSTALLED packs' `packs.list`
+   *  rows (their `required_scopes_by_connection`), so the renderer can compute
+   *  the inverse pivot (per api connection → the packs that use its vendor +
+   *  scope coverage). Optional + best-effort: the host hydrates it from
+   *  `packs.list`; absent → no "Used by packs" section. */
+  installedPacks?: readonly InstalledPackScopes[];
   /** A wired pack-context read failed or is being retried. Connections remain
    *  usable, but the missing roster makes "Used by packs" and pack-authored
    *  enrollment suggestions incomplete, so absence must not look authoritative. */

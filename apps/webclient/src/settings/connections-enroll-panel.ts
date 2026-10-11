@@ -80,8 +80,11 @@ import {
   type FoundationalOAuthEnv,
 } from '../connections/foundational-oauth-popup.js';
 import { mintPkceVerifier, pkceS256Challenge } from '../connections/pkce.js';
+import {
+  createSignInGridController,
+  type SignInGridCallers,
+} from '../connections/sign-in-grid-controls.js';
 import type {
-  BulkPackManifest,
   ConnectionAuth,
   ConnectionCredentialPostSafeStopVerificationSummary,
   ConnectionCredentialCorrectionFieldKey,
@@ -107,6 +110,8 @@ import type {
   MessageMatchPattern,
   PackListEntry,
   ReprobeEngagementCapabilitiesResponse,
+  RpcResponse,
+  ServerRpcRegistry,
 } from '@recued/contracts';
 import {
   OAUTH_CLOUD_CALLBACK_URL,
@@ -123,8 +128,6 @@ import {
   buildVendorAuthorizeUrl,
   getVendorProvider,
   vendorOAuthRequestedScopes,
-  unionRequiredScopesForConnection,
-  requiredScopesByConnection,
   MAX_HEADER_AUTH_ENTRIES,
   MESSAGE_MATCH_MAX_PATTERNS,
 } from '@recued/contracts';
@@ -167,6 +170,7 @@ import {
   initialConnectionsSetupGuideState,
   MAIL_SEND_CAPABLE_INSTANCES_SOURCE,
   MCP_PACK_INSTALL_SCOPE_HOST_ATTR,
+  SIGNIN_GRIDS_HOST_ATTR,
   type ConnectionsPageState,
   type ConnectionsPostSafeStopProfileHandoff,
   type ConnectionsDialogCredentialCorrectionState,
@@ -307,6 +311,14 @@ export type ConnectionsPreviewPurgeCaller = (args: {
   name: string;
   kind: ConnectionKind;
 }) => Promise<{ count: number }>;
+
+/** D-320 slice 2g (ruling 16) — `packs.connections.removal` caller. The Delete
+ *  dialog fetches it on open to say, per pack whose list holds the connection,
+ *  where that pack's runs go once it is deleted. */
+export type ConnectionsRemovalEffectsCaller = (args: {
+  connection_name: string;
+  kind: ConnectionKind;
+}) => Promise<RpcResponse<ServerRpcRegistry, 'packs.connections.removal'>>;
 
 /** D-192 M4c-UI — `collection.connection.getMatchPatterns` caller. Reads a
  *  messenger connection's stored triggers (stripped from `ConnectionView`, so
@@ -597,6 +609,15 @@ export interface MountConnectionsEnrollPanelOptions {
    *  plain confirm with no checkbox (the delete still works, mirror data kept —
    *  the ratified default). */
   runPreviewPurge?: ConnectionsPreviewPurgeCaller;
+  /** D-320 slice 2g — OPTIONAL. Present → the Delete dialog says where each
+   *  pack's runs go once the connection is gone; absent, or a server without the
+   *  rpc → it says nothing of it, as before. */
+  runRemovalEffects?: ConnectionsRemovalEffectsCaller;
+  /** D-320 slice 2h — OPTIONAL. Present → the API group opens with one grid per
+   *  sign-in with two or more connections: which connections each pack may use, and its
+   *  default (`packs.connections.signins` and the `packs.connections.*` writes).
+   *  Absent, or a server without the rpcs → no grid. */
+  signInGridCallers?: SignInGridCallers;
   runProbe: ConnectionsProbeCaller;
   /** D-225 Slice 2 — the generated-pack review + install. Both OPTIONAL and
    *  supplied together in practice; absent → the review action is not offered
@@ -1498,6 +1519,13 @@ export const mountConnectionsEnrollPanel = (
    *  latter contains only reviewed tool disclosure, while this is the consent
    *  that becomes `install_scope`. Reset on every review open/close. */
   let mcpPackGrantModel: InstallGrantPickerModel | null = null;
+  /** D-320 slice 2h — the per-sign-in grids, mounted after each render. Its
+   *  onChange re-renders the page (it owns its own state). */
+  const signInGrid = createSignInGridController({
+    document: doc,
+    ...(opts.signInGridCallers !== undefined ? { callers: opts.signInGridCallers } : {}),
+    onChange: () => render(),
+  });
   let mcpPackGrantAccess: InstallAccessTier = 'read';
   let mcpPackGrantAudience: InstallAudienceSelection =
     resolveInstallAudienceSelection(undefined);
@@ -1820,6 +1848,13 @@ export const mountConnectionsEnrollPanel = (
     }));
   };
 
+  const mountSignInGrids = (): void => {
+    if (!signInGrid.enabled || typeof host.querySelector !== 'function') return;
+    const slot = host.querySelector<HTMLElement>(`[${SIGNIN_GRIDS_HOST_ATTR}]`);
+    const grids = slot === null ? null : signInGrid.render();
+    if (slot !== null && grids !== null) slot.appendChild(grids);
+  };
+
   const render = (): void => {
     if (disposed) return;
     let serverUpdateProgress: ServerUpdateTabProgress | null = null;
@@ -1848,8 +1883,10 @@ export const mountConnectionsEnrollPanel = (
       ...(postSafeStopProfileHandoff !== null
         ? { postSafeStopProfileHandoff }
         : {}),
+      ...(signInGrid.enabled ? { signInGrids: true } : {}),
     });
     mountMcpPackInstallScopePicker();
+    mountSignInGrids();
     if (
       serverUpdateProgress !== null
       && typeof host.querySelector === 'function'
@@ -4567,12 +4604,14 @@ export const mountConnectionsEnrollPanel = (
     }
   };
 
-  // ── installed-pack manifests — drives BOTH the Fork-1 B vendor-scope
-  // pre-fill AND the connection-detail "Used by packs" inverse pivot. The
+  // ── installed packs' list rows — drive the Fork-1 B vendor-scope pre-fill,
+  // the D-223 connection hints AND the connection-detail "Used by packs"
+  // inverse pivot, from each row's own connection fields. The list has carried
+  // no manifest since `b06752cc9`; reading it here left all three empty. The
   // first read stays parallel with the connection list. A wired failure is a
   // visible degraded projection with an explicit retry: `null` is not proof
   // that no packs use these connections.
-  let installedManifests: BulkPackManifest[] | null = null;
+  let installedPacks: PackListEntry[] | null = null;
   let packsFetchAttempted = false;
   let packsFetchInFlight: Promise<void> | null = null;
   let packsFetchGeneration = 0;
@@ -4592,7 +4631,7 @@ export const mountConnectionsEnrollPanel = (
     force?: boolean;
     reclaimFocus?: boolean;
   } = {}): Promise<void> => {
-    if (opts.runPacksList === undefined || installedManifests !== null) {
+    if (opts.runPacksList === undefined || installedPacks !== null) {
       return Promise.resolve();
     }
     if (packsFetchInFlight !== null) return packsFetchInFlight;
@@ -4615,17 +4654,11 @@ export const mountConnectionsEnrollPanel = (
       .then(() => opts.runPacksList!())
       .then((r) => {
         if (!disposed && generationAtDispatch === packsFetchGeneration) {
-          // `manifest` is present only for installed packs, and this already
-          // wanted exactly those — the filter below narrows the type rather
-          // than changing what is collected.
-          installedManifests = r.packs
-            .filter((p) => p.installed)
-            .map((p) => p.manifest)
-            .filter((m): m is BulkPackManifest => m !== undefined);
+          installedPacks = r.packs.filter((p) => p.installed);
           // Surface to the renderer so each api connection row can show its
           // "Used by packs" coverage, and re-render — the connection list
           // typically painted before this best-effort fetch resolved.
-          state.installedPackManifests = installedManifests;
+          state.installedPacks = installedPacks;
           const reclaimFocus = packRetryOwnsFocus();
           delete state.packInventoryRecovery;
           if (reclaimFocus) {
@@ -4672,7 +4705,7 @@ export const mountConnectionsEnrollPanel = (
   const refreshPacksAfterBroadcast = (): void => {
     if (disposed || opts.runPacksList === undefined) return;
     packsFetchGeneration += 1;
-    installedManifests = null;
+    installedPacks = null;
     packsFetchAttempted = false;
     if (packsFetchInFlight !== null) {
       packsRefreshPending = true;
@@ -4710,19 +4743,19 @@ export const mountConnectionsEnrollPanel = (
    *  worked before can stop working. */
   const scopeSlotsForVendor = (vendor: string): string[] => {
     const slots = new Set<string>([vendor]);
-    for (const manifest of installedManifests ?? []) {
-      const declares = (manifest.connection_requirements ?? [])
+    for (const pack of installedPacks ?? []) {
+      const declares = (pack.connection_requirements ?? [])
         .some((r) => (r as { vendor?: string }).vendor === vendor);
       if (!declares) continue;
-      for (const slot of Object.keys(requiredScopesByConnection(manifest))) slots.add(slot);
+      for (const slot of Object.keys(pack.required_scopes_by_connection ?? {})) slots.add(slot);
     }
     return [...slots];
   };
   const prefillVendorScopes = (vendor: string): string => {
-    if (installedManifests === null) return '';
+    if (installedPacks === null) return '';
     const seed = getVendorProvider(vendor)?.oauth.scopes ?? [];
-    const union = scopeSlotsForVendor(vendor)
-      .flatMap((slot) => unionRequiredScopesForConnection(installedManifests ?? [], slot));
+    const union = scopeSlotsForVendor(vendor).flatMap((slot) =>
+      (installedPacks ?? []).flatMap((pack) => pack.required_scopes_by_connection?.[slot] ?? []));
     return [...new Set([...seed, ...union])].sort().join(' ');
   };
 
@@ -4733,10 +4766,10 @@ export const mountConnectionsEnrollPanel = (
    *  hidden or readonly — so a pre-fill can never set something the owner cannot
    *  see and change. */
   const hintSourcesFor = (): ConnectionHintSource[] => {
-    if (installedManifests === null) return [];
-    return installedManifests
-      .filter((m) => Array.isArray(m.connection_hints) && m.connection_hints.length > 0)
-      .map((m) => ({ publisher: m.publisher, hints: m.connection_hints ?? [] }));
+    if (installedPacks === null) return [];
+    return installedPacks
+      .filter((p) => Array.isArray(p.connection_hints) && p.connection_hints.length > 0)
+      .map((p) => ({ publisher: p.publisher, hints: p.connection_hints ?? [] }));
   };
 
   /** Open the enroll form pre-selected for a vendor — the shared body behind
@@ -6494,6 +6527,9 @@ export const mountConnectionsEnrollPanel = (
     // `whenLoaded()` covers it (the vendor dialog opens after load, so the
     // pre-fill data is ready by the time a vendor is picked).
     const packsP = ensurePacksLoaded();
+    // D-320 slice 2h — a relist follows a write (an enroll, a delete): the
+    // grids read their sign-ins again.
+    signInGrid.refresh();
     const gen = ++loadGeneration;
     state.loading = true;
     // Paint the loading state synchronously (the initial mount render ran
@@ -6982,6 +7018,11 @@ export const mountConnectionsEnrollPanel = (
       }
       // Re-list so the new / patched row appears with its server view.
       await doRefresh();
+      // D-320 slice 2i — a newly set-up API connection asks which packs of its
+      // sign-in may use it (when any could), every one ticked.
+      if (!disposed && dialogGen === postSaveDialogGen && !isEdit && payload.kind === 'api') {
+        signInGrid.offerNewConnection(savedName);
+      }
       // A newly enrolled MCP server is not finished until the owner reviews
       // its live tool list and chooses the generated pack's install scope.
       // Open that consent step directly: this host does not hydrate the
@@ -7271,6 +7312,29 @@ export const mountConnectionsEnrollPanel = (
     render();
   };
 
+  /** A check is a durable row write. It restamps the row's health and, for a
+   *  key that reports its own scopes (a HubSpot Service Key), the scopes the
+   *  row's "Used by packs" is measured against. Re-read the rows quietly, with
+   *  no loading state, so the row shows what the check found, not the last
+   *  load. The same read as after a post-safe-stop check. */
+  const relistAfterCheck = async (): Promise<void> => {
+    const listGeneration = ++loadGeneration;
+    try {
+      const response = await opts.runList();
+      if (disposed || listGeneration !== loadGeneration) return;
+      state.connections = [...response.connections];
+      state.loading = false;
+      state.error = null;
+      clearCredentialSafeStopForMissingConnection(response.connections);
+      applyCredentialSafeStopDiscovery(response, response.connections);
+      applyPostSafeStopVerificationDiscovery(response, response.connections);
+      render();
+    } catch {
+      // The check's own outcome is already shown; the rows catch up on the
+      // next load.
+    }
+  };
+
   const probeRow = async (kind: ConnectionKind, name: string): Promise<void> => {
     const key = connectionRowKey(kind, name);
     if (state.probeInFlight.has(key)) return;
@@ -7292,6 +7356,7 @@ export const mountConnectionsEnrollPanel = (
         render();
       }
     }
+    if (!disposed) await relistAfterCheck();
   };
 
   // ── Per-row delete (D-192 slice 5 — confirm dialog) ────────────
@@ -7306,8 +7371,32 @@ export const mountConnectionsEnrollPanel = (
     // but a keyboard user could reach a background button; this fails safe).
     if (state.dialog.stage !== 'closed') return;
     const seq = ++deletePreviewSeq;
-    state.deleteConfirm = { kind, name, count: null, removeMirror: false, deleting: false };
+    state.deleteConfirm = {
+      kind,
+      name,
+      count: null,
+      removeMirror: false,
+      deleting: false,
+      ...(opts.runRemovalEffects !== undefined ? { effects: { status: 'loading' as const } } : {}),
+    };
     render();
+    // D-320 slice 2g — where each pack's runs go once it is deleted. Same seq
+    // guard as the count below; a server without the rpc drops the section.
+    const removalEffects = opts.runRemovalEffects;
+    if (removalEffects !== undefined) {
+      void (async () => {
+        try {
+          const view = await removalEffects({ connection_name: name, kind });
+          if (disposed || deletePreviewSeq !== seq || state.deleteConfirm === null) return;
+          state.deleteConfirm.effects = { status: 'ready', packs: view.packs, recipes: view.recipes ?? [] };
+        } catch (err) {
+          if (disposed || deletePreviewSeq !== seq || state.deleteConfirm === null) return;
+          if (classifyRpcError(err).code === 'unknown_method') delete state.deleteConfirm.effects;
+          else state.deleteConfirm.effects = { status: 'failed' };
+        }
+        render();
+      })();
+    }
     const preview = opts.runPreviewPurge;
     if (preview === undefined) return; // no count → plain confirm (no checkbox)
     void (async () => {
@@ -9644,6 +9733,7 @@ export const mountConnectionsEnrollPanel = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      signInGrid.dispose();
       invalidateCredentialRotationSafeStopCheck();
       invalidateCredentialSafeStopAcknowledgement();
       if (

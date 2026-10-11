@@ -32,7 +32,7 @@ import {
   renderInstallGrantPicker,
 } from '../settings/install-grant-picker.js';
 import type { InstallAudienceSelection, InstallScopeWho } from '@recued/contracts';
-import { INSTALL_CONNECT_SUMMARY_ATTR } from '../settings/install-connect-picker.js';
+import { INSTALL_CONNECT_ALSO_ATTR, INSTALL_CONNECT_SUMMARY_ATTR } from '../settings/install-connect-picker.js';
 import {
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_PANEL_STYLES,
@@ -1035,6 +1035,68 @@ describe('an update keeps the account the pack uses (D-294)', () => {
     expect(collectText(findByAttr(host, INSTALL_CONNECT_SUMMARY_ATTR)!)).toBe('Keeps using: work@contoso');
     await mount.clickConfirmInstall();
     expect((installCalls[0] as { chosen_connection?: string }).chosen_connection).toBe('work-od');
+  });
+});
+
+describe('D-320 slice 2j — a first install sends the shared connections left ticked', () => {
+  const originalDoc = (globalThis as { document?: unknown }).document;
+  afterEach(() => {
+    (globalThis as { document?: unknown }).document = originalDoc;
+  });
+
+  const requirement = {
+    authority: 'login.microsoftonline.com',
+    api_base: 'https://graph.microsoft.com/v1.0',
+    vendor: 'onedrive',
+    auth: {
+      type: 'oauth2_refresh',
+      authorize_url: 'https://login.microsoftonline.com/authorize',
+      token_endpoint: 'https://login.microsoftonline.com/token',
+    },
+  };
+  const account = (name: string, display: string) => ({
+    kind: 'api', name, display_name: display, base_url: 'https://graph.microsoft.com/v1.0', auth_type: 'oauth2_refresh',
+  });
+  const mountShared = (entry: Partial<PackListEntry>) => setup(
+    compositionPack('http', [op('invoice.search', 'read')]),
+    { connection_requirements: [requirement], ...entry } as Partial<PackListEntry>,
+    {
+      runConnectionList: async () => ({
+        connections: [account('home-od', 'home@live'), account('team-od', 'team@contoso'), account('work-od', 'work@contoso')],
+      }) as never,
+      runInstallPreview: async () => ({
+        resolved: true,
+        will_enable: [],
+        hidden_count: 0,
+        shared_connections: [
+          { connection_name: 'team-od', display_name: 'team@contoso' },
+          { connection_name: 'work-od', display_name: 'work@contoso' },
+        ],
+      }) as never,
+    },
+  );
+
+  it('sends every one still ticked beside the pick, and leaves out one the owner unticked', async () => {
+    const { host, mount, installCalls } = mountShared({ installed: false });
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    await mount.whenLoaded();
+    const boxes = findAllByAttr(host, INSTALL_CONNECT_ALSO_ATTR);
+    expect(boxes.map((b) => b.getAttribute(INSTALL_CONNECT_ALSO_ATTR))).toEqual(['team-od', 'work-od']);
+    const team = boxes[0]!;
+    team.checked = false;
+    team.dispatch('change');
+    await mount.clickConfirmInstall();
+    expect(installCalls[0]).toMatchObject({ chosen_connection: 'home-od', also_connections: ['work-od'] });
+  });
+
+  it('an update sends none: it keeps its list', async () => {
+    const { mount, installCalls } = mountShared({ installed: false, installed_any_version: true, current_connection: 'home-od' });
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    await mount.whenLoaded();
+    await mount.clickConfirmInstall();
+    expect(installCalls[0]).not.toHaveProperty('also_connections');
   });
 });
 

@@ -4495,6 +4495,12 @@ describe('R24 — Recipes route: run + schedule modal', () => {
               },
               {
                 kind: 'recipe.run',
+                label: 'Forged connections',
+                recipe_id: 'reply-action',
+                context: { connections: { hubspot: 'hubspot-other' } },
+              },
+              {
+                kind: 'recipe.run',
                 label: 'Author context',
                 recipe_id: 'reply-action',
                 context: { entity_id: 'deal-42', review_mode: 'owner' },
@@ -4549,10 +4555,11 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     const html = shellHtml(rig.root);
     expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;event&quot;.');
     expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;caller&quot;.');
+    expect(html).toContain('You cannot use the name Recued keeps for itself: &quot;connections&quot;.');
     expect(html).toContain('That Recipe cannot run. It needs a provider you do not have.');
     expect(html).toContain('That Recipe needs a Pack you have not installed.');
     // ⚠ D-282 B1 — the ONE runnable action in this group is a button with its label,
-    // and the four refusals above still show their own reasons. A group that is partly
+    // and the five refusals above still show their own reasons. A group that is partly
     // invalid must say which half and why, not render the runnable remainder silently.
     expect(html).toContain('>Author context</button>');
     expect(html).toContain(`${RECIPES_ROUTE_RESULT_ACTION_ATTR}="result-action-0"`);

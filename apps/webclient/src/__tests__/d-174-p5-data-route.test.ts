@@ -613,6 +613,7 @@ const mountRoute = (overrides: {
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
   fileChatCallers?: BootstrapDataRouteOptions['fileChatCallers'];
+  onUseFileInChat?: BootstrapDataRouteOptions['onUseFileInChat'];
   annotationListCaller?: BootstrapDataRouteOptions['annotationListCaller'];
   linkListCaller?: BootstrapDataRouteOptions['linkListCaller'];
   sharedListCaller?: BootstrapDataRouteOptions['sharedListCaller'];
@@ -862,6 +863,7 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.fileReadCaller !== undefined ? { fileReadCaller: overrides.fileReadCaller } : {}),
     ...(overrides.fileChatCallers !== undefined ? { fileChatCallers: overrides.fileChatCallers } : {}),
+    ...(overrides.onUseFileInChat !== undefined ? { onUseFileInChat: overrides.onUseFileInChat } : {}),
     // ⚠ D-267 moved the ROUTE's bare-mount default from Contacts to Today. This
     // rig keeps pinning Contacts because ~44 cases below are about contacts,
     // import, and dialogs — not about which tab a tabless mount lands on. The
@@ -4785,58 +4787,17 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
-  // ── D-198 Slice 5 — webhook explorer tab (Received cluster) ──────────
-  it('mounts the "Webhook deliveries" tab inside the Received cluster (not Connected)', async () => {
+  // ── D-198 Slice 5's webhook explorer tab, removed 2026-10-10 ─────────
+  // It browsed the Phase D webhook collection, which nothing in production
+  // ever created, so it was always empty. D-201 deliveries are on
+  // Connections → Webhooks.
+  it('the Received cluster has no "Webhook deliveries" tab', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
     const html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
-    expect(html).toContain('Webhook deliveries');
-    // Grouped under the "Received" cluster label, before "Connected".
-    const tablist = html.slice(html.indexOf('role="tablist"'));
-    const received = tablist.indexOf('Received');
-    const webhook = tablist.indexOf(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
-    const connected = tablist.indexOf('Connected');
-    expect(received).toBeGreaterThanOrEqual(0);
-    expect(received).toBeLessThan(webhook);
-    expect(webhook).toBeLessThan(connected);
-    rig.route.dispose();
-  });
-
-  it('webhook tab browses via the explorer, not the form-response surface', async () => {
-    const rig = mountRoute();
-    await rig.route.whenLoaded();
-    await rig.route.selectTab('webhook');
-    const html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('data-recued-collection-explorer');
-    // `isReceivedTab` stays form_response-only, so the form-response detail
-    // surface must NOT render for webhook.
-    expect(html).not.toContain(DATA_ROUTE_FORM_RESPONSE_ROW_ATTR);
-    rig.route.dispose();
-  });
-
-  it('the webhook explorer lists deliveries with the method as the title', async () => {
-    const listInstances = vi.fn(async () => ({
-      instances: [
-        { slug: 'intake', platform: 'webhook', adapter_type: 'webhook', caps: {}, auth_state: 'ok', last_synced_at: null },
-      ],
-    }));
-    const list = vi.fn(async () => ({
-      records: [
-        { record_id: 'wh-1', received_at: 1, modified_at: 1, hot_fields: { method: 'POST', remote_ip: '203.0.113.4' }, size_bytes: 0, source_id: 'wh-1' },
-      ],
-    }));
-    const rig = mountRoute({
-      collectionListInstancesCaller: listInstances as never,
-      collectionListCaller: list as never,
-    });
-    await rig.route.whenLoaded();
-    await rig.route.selectTab('webhook');
-    // The webhook tab id IS the canonical platform name — no `files`-style remap.
-    expect(list).toHaveBeenCalledWith({ platform: 'webhook', slug: 'intake', limit: expect.any(Number) });
-    const html = rig.root.children[0]?.innerHTML ?? '';
-    expect(html).toContain('POST'); // primary_field (method) title
-    expect(html).toContain('203.0.113.4'); // summary field (remote_ip)
+    expect(html).toContain(`${DATA_ROUTE_TAB_ATTR}="mail_fact"`);
+    expect(html).not.toContain(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
+    expect(html).not.toContain('Webhook deliveries');
     rig.route.dispose();
   });
 
@@ -7865,16 +7826,16 @@ describe('D-315 — Data → Received → Mail facts', () => {
   });
   const templates = async () => ({ templates: [] });
 
-  it('sits in the Received cluster, after Form responses and before Webhook deliveries', async () => {
+  it('sits in the Received cluster, after Form responses and before the Connected cluster', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
     const html = rig.root.children[0]?.innerHTML ?? '';
     const form = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="form_response"`);
     const facts = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="mail_fact"`);
-    const webhook = html.indexOf(`${DATA_ROUTE_TAB_ATTR}="webhook"`);
+    const connected = html.indexOf('Connected', html.indexOf('role="tablist"'));
     expect(form).toBeGreaterThan(-1);
     expect(form).toBeLessThan(facts);
-    expect(facts).toBeLessThan(webhook);
+    expect(facts).toBeLessThan(connected);
     expect(html).toMatch(/data-data-tab="mail_fact"[\s\S]*?>Mail facts<\/button>/);
     rig.route.dispose();
   });
@@ -8135,6 +8096,54 @@ describe('D-315 — an email’s mail-fact actions in Data → Mail (§6)', () =
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).not.toContain('Make a template from this email');
     expect(html).not.toContain('Facts from this email');
+    rig.route.dispose();
+  });
+});
+
+/** D-106 follow-up — a file in a folder Recued watches (`file:local:*`). */
+describe('Data → Files — a folder Recued watches', () => {
+  const folder = { slug: 'clients', platform: 'file', adapter_type: 'fs', caps: {}, auth_state: 'healthy', last_synced_at: 1 };
+  const LOCAL_ID = 'file:local:Y2xpZW50cw:bm90ZXMubWQ';
+  const watched = { record_id: LOCAL_ID, source_id: 'notes.md', received_at: 1, modified_at: 1, size_bytes: 5,
+    hot_fields: { filename: 'notes.md', path: 'notes.md', size: 5, mime_type: 'text/markdown', mtime: 1 } };
+  const unused = async (): Promise<never> => { throw new Error('not used by these tests'); };
+
+  it('names a folder in Connections’ words, not by its adapter id', async () => {
+    const rig = mountRoute({
+      initialTab: 'files',
+      collectionListInstancesCaller: (async () => ({
+        instances: [folder, { ...folder, slug: 'archive', adapter_type: 's3' }],
+      })) as never,
+      collectionListCaller: (async () => ({ records: [] })) as never,
+    });
+    await rig.route.whenLoaded();
+    const html = rig.root.children[0]!.innerHTML;
+    expect(html).toContain('Local folder · clients');
+    expect(html).not.toContain('fs · clients');
+    // A bucket enrolled before the lane stopped offering S3 keeps the plain form.
+    expect(html).toContain('s3 · archive');
+    expect(html).toContain('Saved files');
+    rig.route.dispose();
+  });
+
+  it('offers to import its file into Chat, as a connected source’s file', async () => {
+    // Chat attaches retained files only, so a watched file goes in as a copy.
+    const rig = mountRoute({
+      initialTab: 'files',
+      collectionListInstancesCaller: (async () => ({ instances: [folder] })) as never,
+      collectionListCaller: (async () => ({ records: [watched] })) as never,
+      collectionGetCaller: (async () => ({ record: watched })) as never,
+      fileChatCallers: {
+        get: unused,
+        sessions: async () => ({ sessions: [] }),
+        cloud: { sources: async () => ({ sources: [] }), list: unused, get: unused, importFile: unused },
+      } as never,
+      onUseFileInChat: () => {},
+    });
+    await rig.route.whenLoaded();
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, { [COLLECTION_RECORD_ID_ATTR]: LOCAL_ID });
+    await vi.waitFor(() => expect(rig.root.children[0]!.innerHTML)
+      .toContain('data-recued-data-action="file-use-in-chat">Import and use in Chat</button>'));
     rig.route.dispose();
   });
 });

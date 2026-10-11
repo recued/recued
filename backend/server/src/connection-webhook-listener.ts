@@ -20,19 +20,17 @@ import type { WebhookFunnelHandler } from './housekeeping/reconciliation/webhook
 
 export interface ConnectionWebhookListenerOptions {
   funnel: WebhookFunnelHandler;
-  /** Public-reachable gate. Wired the same way the Phase D webhook
-   *  listener gates: operators flip `public_reachable` via
-   *  `server.setConfigField` and the change takes effect on next
-   *  request without a restart. */
+  /** Public-reachable gate (`createWebhookPublicReachable`): operators
+   *  flip `collection.webhook.public_reachable` via `server.setConfigField`
+   *  or a reload, and the change takes effect on the next request without
+   *  a restart. */
   publicReachable: () => boolean;
   /** D-188 — master "Pause server" flag. When true, this connection
    *  webhook receiver is CLOSED: requests are rejected (503 SERVER_PAUSED)
    *  without funnelling, until the owner resumes. Read per-request (like
    *  `publicReachable`). Absent ⇒ never paused. */
   isPaused?: () => boolean;
-  /** Body cap. Vendor webhooks are typically small (< 32 KB); the
-   *  default 1 MB matches the Phase D webhook listener so a single
-   *  ceiling carries across both inbound surfaces. */
+  /** Body cap. Vendor webhooks are typically small (< 32 KB); default 1 MB. */
   maxBodyBytes?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
 }

@@ -27,7 +27,8 @@ import { AI_FUNCTION_REQUIRED_INPUTS, KERNEL_REQUIRED_INPUTS } from './constants
 import { REF_PATTERN, validateConditionField, type AddFn } from './helpers.js';
 
 const ACTION_VARIANTS = new Set(['primary', 'secondary', 'danger']);
-const ACTION_CONTEXT_RESERVED_KEYS = new Set(['event', 'server', 'recipe', 'tabs', 'caller']);
+// D-320 phase 3 — `connections` too: the server sets it, and deletes a caller's.
+const ACTION_CONTEXT_RESERVED_KEYS = new Set(['event', 'server', 'recipe', 'tabs', 'caller', 'connections']);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);

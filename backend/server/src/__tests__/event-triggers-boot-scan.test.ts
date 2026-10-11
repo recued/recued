@@ -29,7 +29,7 @@ import { createBootTrace } from '../cli/boot-trace.js';
 import type { AnnotationRpcDeps } from '../annotation-handler.js';
 import { createCalendarCollection } from '../collections/calendar/calendar-collection.js';
 import { attachFile } from '../collections/file/attach-file.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { composeFileStack } from '../collections/file/compose.js';
 import { createInboundFileCollection } from '../collections/file/inbound-file-collection.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import type { CanonicalMessage, InboundMailAttachmentPart, MailProvider } from '../collections/mail/provider.js';
@@ -284,32 +284,46 @@ describe('D-124 — a folder a boot walk reads, in the boot order', () => {
     const root = join(dir, 'watched');
     mkdirSync(root, { recursive: true });
     const db = new Database(join(dir, 'server.db'));
-    const instances = createInstanceStore({ db });
-    instances.upsert({
-      platform: 'file', slug: 'work', adapter_type: 'local', config: {}, caps: {}, auth_state: 'healthy', last_synced_at: null,
-    } as never);
     const bus = createWarehouseEventBus();
-    const folder = () => createFileCollection({
-      db, blobs: createBlobStore(join(dir, 'blobs')), bus, slug: 'work', instances,
-      gate: createStorageGate({ quota: 1 << 30, reservePct: 10, surface: 'collection:file:work' }),
-      config: () => ({ path: root, ignore: [], max_body_bytes: 10 * 1024 * 1024, retention_days: 0, quota_bytes: 1 << 30 }),
-    });
+    /** One server run's file stack, with its own registry; the folder's row
+     *  stays in the database between runs. */
+    const boot = () => {
+      const stack = composeFileStack(db);
+      const registry = createCollectionRegistry();
+      stack.attachWatchedFolders({
+        registry,
+        bus,
+        gates: {
+          get: (slug) => createStorageGate({ quota: 1 << 30, reservePct: 10, surface: `collection:file:${slug}` }),
+          release: () => {},
+        },
+      });
+      stack.instances.upsert({
+        platform: 'file', slug: 'work', adapter_type: 'fs', config: { path: root },
+        caps: { read: 'yes', write: 'yes', delete: 'yes', watch: 'none', mirror: 'optional', auth: 'none', path_style: 'posix' },
+        auth_state: 'healthy', last_synced_at: null,
+      });
+      return { stack, registry };
+    };
     writeFileSync(join(root, 'kept.txt'), 'kept');
     writeFileSync(join(root, 'removed.txt'), 'removed');
     if (firstWalkDone) {
-      const first = folder();
-      await first.sync.start();
-      await first.close();
+      const first = boot();
+      await first.stack.startAll();
+      await first.stack.disposeAll();
     }
     // While the server was down: one file came, one went.
     writeFileSync(join(root, 'added.txt'), 'added');
     unlinkSync(join(root, 'removed.txt'));
-    const recorder = createBootEventRecorder({ bus, pattern: '**', keep: bootEventKeep(createBackfillStateLookup({ instances })) });
-    const collection = folder();
-    await collection.sync.start();
+    const restart = boot();
+    const recorder = createBootEventRecorder({
+      bus, pattern: '**', keep: bootEventKeep(createBackfillStateLookup({ instances: restart.stack.instances })),
+    });
+    await restart.stack.startAll();
     const runs = await replayAtBoot(db, bus, recorder, 'data.file.**');
-    const pathOf = new Map(collection.list({ platform: 'file', slug: 'work' }).map((r) => [r.record_id, r.hot_fields.path]));
-    await collection.close();
+    const records = restart.registry.get('file', 'work')?.list({ platform: 'file', slug: 'work' }) ?? [];
+    const pathOf = new Map(records.map((r) => [r.record_id, r.hot_fields.path]));
+    await restart.stack.disposeAll();
     db.close();
     rmSync(dir, { recursive: true, force: true });
     return { runs, pathOf };

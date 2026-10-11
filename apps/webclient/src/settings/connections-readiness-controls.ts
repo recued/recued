@@ -78,7 +78,13 @@ type SlotStatus =
   | { status: 'not_set_up' }
   | { status: 'unknown_enrollment' }
   | { status: 'covered'; label: string }
-  | { status: 'under_scoped'; label: string; missing: string[] }
+  | {
+      status: 'under_scoped';
+      label: string;
+      missing: string[];
+      /** The connection is a pasted key (`bearer`), not an app sign-in. */
+      key?: true;
+    }
   | { status: 'unverified'; label: string };
 
 /** The connection list is keyed by name; the readiness layer keys by VENDOR.
@@ -109,7 +115,7 @@ const reduceStatus = (
   // no OAuth `required_scopes`): an enrolled connection is fully ready — there is
   // nothing to verify, so don't fall through to the "scopes not verified" hint.
   if (needed.length === 0) return { status: 'covered', label: viewLabel(backing[0]) };
-  let bestUnderScoped: { label: string; missing: string[] } | null = null;
+  let bestUnderScoped: { label: string; missing: string[]; key?: true } | null = null;
   let firstUnverified: string | null = null;
   for (const conn of backing) {
     const cov = scopeCoverage(needed, conn.granted_scopes);
@@ -120,7 +126,11 @@ const reduceStatus = (
         bestUnderScoped === null
         || cov.missing.length < bestUnderScoped.missing.length
       ) {
-        bestUnderScoped = { label, missing: cov.missing };
+        bestUnderScoped = {
+          label,
+          missing: cov.missing,
+          ...(conn.auth_type === 'bearer' ? { key: true as const } : {}),
+        };
       }
     } else if (firstUnverified === null) {
       firstUnverified = label;
@@ -286,14 +296,24 @@ export const createConnectionsReadinessController = (
         const cta = doc.createElement('a');
         cta.className = 'packs-connection-cta rx-link';
         cta.setAttribute(CONNECTIONS_READINESS_CTA_ATTR, status.status);
-        // Deep link into the Others enroll form pre-selected for this vendor
-        // (Set up AND Re-authorize — the pre-filled scope union is exactly
-        // the re-authorize flow; granted scopes re-persist via enroll).
+        // A pasted key has no sign-in to redo. Its scopes change in the
+        // vendor's own settings (a HubSpot Service Key keeps its value), and
+        // Probe on the connection reads them again. So it links to the
+        // connections list, where Probe is, not to a new enroll form.
+        const keyFix = status.status === 'under_scoped' && status.key === true;
+        // Otherwise, deep link into the Others enroll form pre-selected for
+        // this vendor (Set up AND Re-authorize — the pre-filled scope union
+        // is exactly the re-authorize flow; granted scopes re-persist via
+        // enroll).
         cta.setAttribute(
           'href',
-          serializeShellRoute('connections', 'others', 'enroll', slot),
+          keyFix
+            ? serializeShellRoute('connections', 'others')
+            : serializeShellRoute('connections', 'others', 'enroll', slot),
         );
-        cta.textContent = `${copy.cta} →`;
+        cta.textContent = keyFix
+          ? `Add ${status.missing.length === 1 ? 'it' : 'them'} to the key, then Probe →`
+          : `${copy.cta} →`;
         row.appendChild(cta);
       }
 

@@ -44,7 +44,7 @@ export interface ComposeServeLifecycleOptions {
   readonly storage: Pick<StorageContext, 'fileStack' | 'drainAuditWrites'>;
   readonly collection: Pick<
     CollectionContext,
-    'collectionRegistry' | 'calendarStack' | 'mailStack' | 'serviceStack' | 'supervisionStack'
+    'collectionRegistry' | 'calendarStack' | 'mailStack' | 'supervisionStack'
   >;
   readonly backgroundServices: BackgroundServiceRegistry;
   readonly cascade: EvictionCascade | undefined;
@@ -136,9 +136,6 @@ export const composeServeLifecycle = async (
               : []),
             ...(collection.mailStack
               ? [begin(() => collection.mailStack!.disposeAll())]
-              : []),
-            ...(collection.serviceStack
-              ? [begin(() => collection.serviceStack!.disposeAll())]
               : []),
             // Cancel daemon supervisor poll/restart timers. Detached daemons
             // survive and are re-adopted on the next boot.

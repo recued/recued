@@ -108,6 +108,10 @@ import {
   type ConnectionCatalogBindingStore,
 } from '../storage/connection-catalog-binding-store.js';
 import {
+  createPackConnectionDefaultStore,
+  wirePackConnectionDefaultCleanup,
+} from '../storage/pack-connection-default-store.js';
+import {
   createContractStore,
   type ContractStore,
 } from '../storage/contract-store.js';
@@ -1126,6 +1130,8 @@ export const composeAppContext = (
     // (deny-until-granted holds; re-consent required, exactly like reinstall).
     contractGrantStoreRef = createContractGrantStore(contractStoreRef);
     wireConnectionGrantCleanup(connectionStoreRef, contractGrantStoreRef);
+    // D-320 — a deleted connection is no pack's default any more.
+    wirePackConnectionDefaultCleanup(connectionStoreRef, createPackConnectionDefaultStore(contractStoreRef));
     // D-170 gap #2 — the connection→local-catalog binding store (stateless wrapper
     // over the same contract store). The binding SURVIVES a connection delete (it is
     // install-state, written by the install planner from the composition's

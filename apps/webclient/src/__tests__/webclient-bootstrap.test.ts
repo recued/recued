@@ -127,6 +127,7 @@ import {
   SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
 } from '../shell/server-switcher.js';
 import { THEME_TOGGLE_ATTR } from '../shell/theme-controller.js';
+import { WEBCLIENT_DEFAULT_SUBSCRIPTIONS } from '../realtime/subscriber.js';
 import {
   GLOBAL_RUN_PALETTE_SHORTCUT,
   GLOBAL_RUN_PALETTE_TRIGGER_ATTR,
@@ -174,11 +175,13 @@ import {
   WebclientUnpairedError,
   bootstrapWebclient,
   buildRecipeExecuteArgs,
+  packRouteConnectionCallers,
   deriveComposeReceptionStatusFromHostnames,
   parseRouteFromHash,
   type WebclientHashSource,
 } from '../webclient-bootstrap.js';
 import { PACKS_DETAIL_PIN_ATTR } from '../settings/packs-panel.js';
+import type { PackConnectionsCallers } from '../settings/pack-connections-controls.js';
 import { WEBCLIENT_POLISH_STYLES } from '../shell/webclient-polish-styles.js';
 import {
   RECOVERY_INTENT_ANNOUNCER_ATTR,
@@ -4164,6 +4167,51 @@ describe('D-148 § A.4 DD#8 — bootstrapWebclient: events.subscribe wiring', ()
       result: { cursor: 11, replay_count: 0, fell_off_ring: false },
     });
     await flush();
+    await handle.dispose();
+  });
+
+  // ⛔ A server from before 2026-10-10 refuses the WHOLE call for one kind it
+  // does not send, and the webclient used to retry that same list forever:
+  // no live updates at all on a server older than the webclient.
+  it('an older server refuses one kind it does not send: the webclient asks again without it, at once', async () => {
+    expect(WEBCLIENT_DEFAULT_SUBSCRIPTIONS).toContain('mail_fact'); // added 2026-09-26
+    const fixture = buildOpts();
+    const errors: Error[] = [];
+    const leftOut: (readonly string[])[] = [];
+    let retries = 0;
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      onSubscribeError: (error) => { errors.push(error); },
+      onSubscribeKindsLeftOut: (kinds) => { leftOut.push(kinds); },
+      setEventsSubscribeRetryTimer: () => { retries += 1; return { cancel: () => {} }; },
+    });
+    await flush();
+    const subscribes = (): Array<{ request_id: string; args: { kinds: string[] } }> =>
+      fixture.transportControls.sendCalls().filter(
+        (call) => (call as { method?: unknown })?.method === 'events.subscribe',
+      ) as Array<{ request_id: string; args: { kinds: string[] } }>;
+    expect(subscribes()).toHaveLength(1);
+    // The frame such a server sends, as captured on the wire.
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: subscribes()[0]!.request_id,
+      error: { code: 'bad_request', message: "events.subscribe: unknown kind 'mail_fact' (not in BROADCAST_EVENT_KIND_SET)" },
+    });
+    await flush();
+
+    expect(subscribes()).toHaveLength(2);
+    expect(subscribes()[1]!.args.kinds).toEqual(
+      WEBCLIENT_DEFAULT_SUBSCRIPTIONS.filter((k) => k !== 'mail_fact'),
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: subscribes()[1]!.request_id,
+      result: { cursor: 4, replay_count: 0, fell_off_ring: false },
+    });
+    await flush();
+    expect(errors).toEqual([]);
+    expect(retries).toBe(0);
+    expect(leftOut).toEqual([['mail_fact']]);
     await handle.dispose();
   });
 
@@ -14468,6 +14516,32 @@ describe('bootstrapWebclient: adding a server', () => {
  *  ⚠ THE TYPE CANNOT CARRY THIS. The registry's `execute` request has an
  *  `[k: string]: unknown` index signature, so a shape with members missing
  *  typechecks. These are the guard. */
+describe('D-320 — the packs route gets every Access-tab connection call', () => {
+  it('passes each call through, the writes tracked as switch work', () => {
+    const tracked: unknown[] = [];
+    const tracker = {
+      track: <A extends unknown[], R>(work: (...args: A) => Promise<R>) => {
+        const wrapped = (...args: A) => work(...args);
+        tracked.push(wrapped);
+        return wrapped;
+      },
+    };
+    const callers: PackConnectionsCallers = {
+      list: async () => ({ pack_slug: 'p', slots: [] }),
+      add: async () => ({ pack_slug: 'p', slots: [] }),
+      remove: async () => ({ pack_slug: 'p', slots: [] }),
+      setDefault: async () => ({ pack_slug: 'p', slots: [] }),
+      removal: async () => ({ connection_name: 'c', packs: [] }),
+    };
+    const out = packRouteConnectionCallers(callers, tracker);
+    // ⛔ Every one, so a call added later is not left out as `removal` was.
+    expect(Object.keys(out).sort()).toEqual(Object.keys(callers).sort());
+    expect(out.removal).toBe(callers.removal);
+    expect(out.list).toBe(callers.list);
+    expect(tracked).toEqual([out.add, out.remove, out.setDefault]);
+  });
+});
+
 describe('D-222 — buildRecipeExecuteArgs (the execute wire)', () => {
   it('forwards a filter invocation — the member D-222 dropped', () => {
     // The positive case: the input that would DO THE THING if the forwarding
@@ -14487,6 +14561,37 @@ describe('D-222 — buildRecipeExecuteArgs (the execute wire)', () => {
       trigger_source: 'manual',
       config: { status: 'open', cursor: '' },
       invocation,
+    });
+  });
+
+  it('forwards the dish a run is run as — the member D-319 dropped', () => {
+    // The run dialog sends only the owner's changes as `config`; the dish's own
+    // settings come from the server, by `dish_id`. Without it, "Run as" another
+    // dish ran the main dish's settings.
+    expect(buildRecipeExecuteArgs({
+      recipe_id: 'daily-brief',
+      config: { tone: 'short' },
+      dish_id: 'dish-weekly',
+    })).toEqual({
+      recipe_id: 'daily-brief',
+      trigger_source: 'manual',
+      config: { tone: 'short' },
+      dish_id: 'dish-weekly',
+    });
+  });
+
+  it('forwards the connection a run chose — D-320', () => {
+    // The run dialog's Connection line. Dropped here, the run would act in the
+    // dish's account or the default while the dialog showed another.
+    expect(buildRecipeExecuteArgs({
+      recipe_id: 'read-the-deal',
+      dish_id: 'dish-main',
+      connections: { hubspot: 'hubspot-app' },
+    })).toEqual({
+      recipe_id: 'read-the-deal',
+      trigger_source: 'manual',
+      dish_id: 'dish-main',
+      connections: { hubspot: 'hubspot-app' },
     });
   });
 
@@ -14700,7 +14805,7 @@ describe('D-209 — a dish save that moved a webhook door is told, whichever scr
     for (let i = 0; i < 6; i += 1) await flush();
 
     expect(subtreeText(findChildByAttr(fixture.root, NOTIFY_TOASTS_HOST_ATTR)!)).toContain(
-      'Webhook off: Acme order paidMessages coming in are refused until its settings choose an account.',
+      'Webhook off: Acme order paidMessages coming in are refused until its settings choose a connection.',
     );
     await handle.dispose();
   });
@@ -14734,7 +14839,7 @@ describe('D-209 — a dish save that moved a webhook door is told, whichever scr
     await expect(scheduled).resolves.toMatchObject({ schedule: { schedule_id: 'sch_1' } });
     await flush();
     expect(toastText()).toContain(
-      'Webhook on: Acme order paidMessages coming in now run with these settings. They may use: the acme-prod account.',
+      'Webhook on: Acme order paidMessages coming in now run with these settings. They may use: the acme-prod connection.',
     );
 
     const listed = call('schedules.list');

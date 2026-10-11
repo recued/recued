@@ -74,7 +74,7 @@ describe('collection data-table discovery', () => {
     createCollectionTable({ db, platform: 'file', slug: 'docs' });
     expect(listCollectionDataTables(db, 'mail')).toHaveLength(1);
     expect(listCollectionDataTables(db, 'file')).toHaveLength(1);
-    expect(listCollectionDataTables(db, 'webhook')).toHaveLength(0);
+    expect(listCollectionDataTables(db, 'calendar')).toHaveLength(0);
     db.close();
   });
 

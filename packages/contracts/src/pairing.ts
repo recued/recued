@@ -158,7 +158,6 @@ export const DEFAULT_SUBSCRIPTIONS: BroadcastEventKind[] = [
   'records',
   'remerge_prompt',
   'schedule',
-  'service',
   // D-153 P7 — session lifecycle transition. Paired clients refresh
   // their session UI (spinner / done badge) from the bus without
   // polling the session rpc.

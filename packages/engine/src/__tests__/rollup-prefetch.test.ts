@@ -23,6 +23,22 @@ describe('parseAnnotationLinkRef — the rollups grammar', () => {
       });
   });
 
+  it("parses a grouped projection's tail — pack, group, output — off a dotted id", () => {
+    expect(parseAnnotationLinkRef('contact.bob@acme.test.rollups.invoice-book.GBP.outstanding'))
+      .toEqual({
+        kind: 'rollup', collection: 'contact', id: 'bob@acme.test',
+        rest: ['invoice-book', 'GBP', 'outstanding'],
+      });
+  });
+
+  it("parses a named, grouped projection's tail — pack, name, group, output", () => {
+    expect(parseAnnotationLinkRef('contact.bob@acme.test.rollups.invoice-book.owed.GBP.outstanding'))
+      .toEqual({
+        kind: 'rollup', collection: 'contact', id: 'bob@acme.test',
+        rest: ['invoice-book', 'owed', 'GBP', 'outstanding'],
+      });
+  });
+
   it('parses the pack-level and group-level reads too', () => {
     expect(parseAnnotationLinkRef('contact.bob@acme.test.rollups.billable-hours'))
       .toMatchObject({ kind: 'rollup', id: 'bob@acme.test', rest: ['billable-hours'] });
@@ -145,6 +161,92 @@ describe('prefetchSharedRefs — seeding a rollup group', () => {
     expect(entry.publishers).toEqual(['recued-core', 'someone-else']);
     // and above all: neither publisher's number is presented as the answer
     expect(entry.total).toBeUndefined();
+  });
+
+  /** A grouped projection's answer: one rollup per currency, one publisher. */
+  const grouped = (key: string | null, outstanding: string, complete = true): RootRollup => ({
+    publisher: 'recued-core', pack_slug: 'invoice-book',
+    label: `Owes you · ${key ?? 'no currency'}`, group: { by: 'currency', key },
+    value: { outstanding }, complete,
+  });
+
+  it('⛔ a grouped projection folds one level deeper, rollups.<pack>.<group>.<output>', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.USD.outstanding}}' },
+      rollupResolver([grouped('GBP', '1000.0000'), grouped('USD', '500.0000', false), grouped(null, '7.0000')]));
+    const book = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(walk(book, 'GBP.outstanding')).toBe('1000.0000');
+    expect(walk(book, 'USD.outstanding')).toBe('500.0000');
+    expect(walk(book, 'USD._label')).toBe('Owes you · USD');
+    expect(walk(book, '_none.outstanding')).toBe('7.0000');
+    expect(book._group_by).toBe('currency');
+    // One group did not finish, so the pack's answer as a whole is not complete.
+    expect(book._complete).toBe(false);
+    expect(book.error).toBeUndefined();
+  });
+
+  it('⛔ grouped answers from TWO publishers under one slug are still a collision', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.GBP.outstanding}}' },
+      rollupResolver([grouped('GBP', '1'), { ...grouped('GBP', '999'), publisher: 'someone-else' }]));
+    const entry = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(entry.error).toBe('ambiguous_pack_slug');
+    expect(walk(entry, 'GBP.outstanding')).toBeUndefined();
+  });
+
+  it('a grouped and an ungrouped answer under one slug are a collision, not a merge', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.outstanding}}' },
+      rollupResolver([grouped('GBP', '1'), {
+        publisher: 'recued-core', pack_slug: 'invoice-book', value: { outstanding: '2' }, complete: true,
+      }]));
+    const entry = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(entry.error).toBe('ambiguous_pack_slug');
+    expect(entry.outstanding).toBeUndefined();
+  });
+
+  /** A pack with several projections names each one. */
+  const named = (name: string, rollup: RootRollup): RootRollup => ({ ...rollup, name });
+  const pays: RootRollup = {
+    publisher: 'recued-core', pack_slug: 'invoice-book', label: 'Pays',
+    value: { settled: 4, worst_days_late: 12 }, complete: true,
+  };
+
+  it('⛔ several named projections fold under their names, rollups.<pack>.<name>[.<group>].<output>', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.pays.worst_days_late}}' },
+      rollupResolver([
+        named('owed', grouped('GBP', '1000.0000')), named('owed', grouped('USD', '500.0000')),
+        named('pays', pays),
+      ]));
+    const book = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(book.error).toBeUndefined();
+    expect(Object.keys(book).sort()).toEqual(['owed', 'pays']);
+    expect(walk(book, 'owed.GBP.outstanding')).toBe('1000.0000');
+    expect(walk(book, 'owed.USD._label')).toBe('Owes you · USD');
+    expect(walk(book, 'owed._group_by')).toBe('currency');
+    expect(walk(book, 'pays.worst_days_late')).toBe(12);
+    expect(walk(book, 'pays._label')).toBe('Pays');
+    expect(walk(book, 'pays._complete')).toBe(true);
+  });
+
+  it('a lone named projection still reads under its name, so naming never moves with a sibling', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.pays.settled}}' },
+      rollupResolver([named('pays', pays)]));
+    expect(walk(s.data, 'contact.bob@acme.test.rollups.invoice-book.pays.settled')).toBe(4);
+    expect(walk(s.data, 'contact.bob@acme.test.rollups.invoice-book.settled')).toBeUndefined();
+  });
+
+  it('⛔ a named and an unnamed answer under one slug are a collision, not a guess', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.pays.settled}}' },
+      rollupResolver([named('pays', pays), { ...pays, label: 'Other' }]));
+    const entry = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(entry.error).toBe('ambiguous_pack_slug');
+    expect(entry.pays).toBeUndefined();
+  });
+
+  it('two ungrouped answers under one name are a collision too', async () => {
+    const s = await run({ template: '{{data.contact.bob@acme.test.rollups.invoice-book.pays.settled}}' },
+      rollupResolver([named('pays', pays), named('pays', { ...pays, value: { settled: 99 } })]));
+    const entry = walk(s.data, 'contact.bob@acme.test.rollups.invoice-book') as Record<string, unknown>;
+    expect(entry.error).toBe('ambiguous_pack_slug');
+    expect(walk(entry, 'pays.settled')).toBeUndefined();
   });
 
   it('does not fetch when the recipe references no rollup', async () => {

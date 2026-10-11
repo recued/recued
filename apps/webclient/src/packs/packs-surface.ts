@@ -19,7 +19,7 @@
  *  layer — `bootstrap-packs-route.ts` wires the real callers.
  */
 
-import { resolvePackInput } from './bootstrap-packs-route.js';
+import { resolvePackInput } from './resolve-pack-input.js';
 import {
   DISCOVER_PANEL_ACTION_ATTR,
   DISCOVER_PANEL_CARD_ATTR,
@@ -85,6 +85,9 @@ export interface MountPacksSurfaceOptions {
      *  would filter while the control claimed it wasn't, and the first press
      *  would appear to do nothing. */
     onInstalledOnlyChange?: (cb: (on: boolean) => void) => void;
+    /** D-321 — read the programs' state again; called on the way back from a
+     *  pack's page, where the owner may have changed it (Warn, Check again). */
+    refreshPrograms?: () => void;
   };
   /** Mount the detail panel into `host`. `onSelectSlug` fires on the panel's own
    *  selection changes (a detail action / Back → null) — the single funnel the
@@ -422,6 +425,8 @@ export const mountPacksSurface = (
     paint();
     const generation = ++focusGeneration;
     if (slug === null) {
+      // D-321 — back on the list: its program badges may be out of date.
+      listMount.refreshPrograms?.();
       const exactTarget = containsNode(listView, listReturnTarget)
         ? listReturnTarget
         : null;

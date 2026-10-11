@@ -70,7 +70,6 @@ const makeOptions = (
       collectionRegistry: { dispose: vi.fn(async () => undefined) },
       calendarStack: { disposeAll: vi.fn(async () => undefined) },
       mailStack: { disposeAll: vi.fn(async () => undefined) },
-      serviceStack: { disposeAll: vi.fn(async () => undefined) },
     },
     backgroundServices: {
       register: vi.fn(),
@@ -191,7 +190,6 @@ describe('composeServeLifecycle', () => {
         collectionRegistry: { dispose: vi.fn(async () => { order.push('collection'); }) },
         calendarStack: { disposeAll: vi.fn(async () => { order.push('calendar'); }) },
         mailStack: { disposeAll: vi.fn(async () => { order.push('mail'); }) },
-        serviceStack: { disposeAll: vi.fn(async () => { order.push('service'); }) },
       },
       backgroundServices: {
         register: vi.fn(),
@@ -210,7 +208,7 @@ describe('composeServeLifecycle', () => {
     const createOptions = lifecycleMocks.createLifecycle.mock.calls[0]![0];
     const drainSteps = createOptions.drainSteps;
     await drainSteps.pause_collections();
-    expect(order).toEqual(['collection', 'file', 'calendar', 'mail', 'service']);
+    expect(order).toEqual(['collection', 'file', 'calendar', 'mail']);
 
     currentSchedulerBundle = {
       cron: { getHandle: vi.fn(() => ({ pause, inFlight })) },
@@ -226,7 +224,7 @@ describe('composeServeLifecycle', () => {
     await drainSteps.stop_timers();
     await drainSteps.close_cascade();
     await drainSteps.close_db();
-    expect(order.slice(5)).toEqual([
+    expect(order.slice(4)).toEqual([
       'stop:scheduler',
       'http',
       'stop:timer',
@@ -305,7 +303,6 @@ describe('composeServeLifecycle', () => {
         collectionRegistry: { dispose: vi.fn(async () => { calls.push('registry'); }) },
         calendarStack: { disposeAll: vi.fn(async () => { calls.push('calendar'); }) },
         mailStack: { disposeAll: vi.fn(async () => { calls.push('mail'); }) },
-        serviceStack: { disposeAll: vi.fn(async () => { calls.push('service'); }) },
         supervisionStack: { disposeAll: vi.fn(async () => { calls.push('supervision'); }) },
       },
     }));
@@ -314,7 +311,7 @@ describe('composeServeLifecycle', () => {
 
     await expect(pauseCollections()).rejects.toThrow(/collection stacks failed to stop/);
     expect(calls).toEqual([
-      'registry', 'file', 'calendar', 'mail', 'service', 'supervision',
+      'registry', 'file', 'calendar', 'mail', 'supervision',
     ]);
   });
 

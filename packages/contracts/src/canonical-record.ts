@@ -1,7 +1,7 @@
 /** D-119 Phase 12 — Canonical record system fields.
  *
  *  Every record returned from a `data.*` adapter (mail / calendar /
- *  file / service / shared) carries two underscore-prefixed system
+ *  file / shared) carries two underscore-prefixed system
  *  fields that identify the record across collection boundaries:
  *
  *    - `_id`         — collection-specific stable identifier (msg-id,
@@ -9,7 +9,7 @@
  *                      across re-syncs so dedupe + annotation refs
  *                      work without per-collection routing.
  *    - `_collection` — the collection name (`'mail'`, `'calendar'`,
- *                      `'file'`, `'webhook'`, `'service'`, `'shared'`).
+ *                      `'file'`, `'webhook'`, `'shared'`).
  *
  *  Mongo / CouchDB convention: underscore-prefixed names mark system
  *  fields that transforms preserve by default. Authors who want to
@@ -47,7 +47,6 @@ export type CanonicalCollectionName =
   | 'calendar'
   | 'file'
   | 'webhook'
-  | 'service'
   | 'shared'
   | 'annotation'
   | 'link'

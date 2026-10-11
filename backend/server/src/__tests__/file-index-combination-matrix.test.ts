@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 import {
@@ -11,12 +12,13 @@ import {
 } from '../chat-index-context.js';
 import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
 import { createCollectionRegistry } from '../collections/registry.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { createInboundFileCollection } from '../collections/file/inbound-file-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import {
   createFileMetaStore, buildFileMetaSnapshot, ensureFileMetaSchema,
 } from '../storage/file-meta-store.js';
 import { createFileViewResolverFromRegistry } from '../file-view-resolver.js';
+import { startWatchedFolder } from './helpers/watched-folder.js';
 
 /** ⛔ THE COMBINATION SPACE IS CHEAP AND THE LIVE MODEL IS NOT, so this exhausts
  *  it here and spends no run on what a seed can already answer. Owner's framing,
@@ -29,26 +31,28 @@ import { createFileViewResolverFromRegistry } from '../file-view-resolver.js';
  *    L2  local   renewal-notice-83-days.pdf        (root — no folder)
  *    R1  remote  Sandhurst/invoice-10823.pdf       (D-192 dropbox mirror)
  *    R2  remote  Northwind/invoice-99001.pdf       (the cross-folder decoy)
+ *
+ *  The local files are in a folder Recued watches. Until 2026-10-10 they were
+ *  rows put by hand into a stand-in collection nothing in production created.
  */
-const world = () => {
+const world = async () => {
   const db = new Database(':memory:');
   const dir = mkdtempSync(join(tmpdir(), 'fmx-'));
   ensureFileMetaSchema(db);
-  const files = createFileCollection({
-    db, blobs: createBlobStore(dir),
-    gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-    bus: createWarehouseEventBus(), slug: 'received',
-    config: () => ({ path: dir, quota_bytes: 1 << 26 }),
-  } as never);
-  const put = (id: string, filename: string, path: string): void => {
-    files.upsert({
-      record_id: id, hot_fields: { filename, path, size: 10 },
-      received_at: 5, modified_at: 5, body_inline: '', size_bytes: 10,
-      source_id: 'received',
-    } as never);
-  };
-  put('file:L1', 'kickoff-notes.md', 'Sandhurst/kickoff-notes.md');
-  put('file:L2', 'renewal-notice-83-days.pdf', 'renewal-notice-83-days.pdf');
+  // Contents that hold none of the words searched below: a match is by name
+  // or folder, as `file.search` promises.
+  const root = join(dir, 'watched');
+  mkdirSync(join(root, 'Sandhurst'), { recursive: true });
+  writeFileSync(join(root, 'Sandhurst', 'kickoff-notes.md'), 'agenda');
+  writeFileSync(join(root, 'renewal-notice-83-days.pdf'), '%PDF-1.4');
+  const bus = createWarehouseEventBus();
+  const registry = createCollectionRegistry();
+  // The received files' store, empty here; every server has one.
+  registry.register(createInboundFileCollection({
+    db, blobs: createBlobStore(join(dir, 'cas')), bus, slug: 'received',
+    gate: createStorageGate({ quota: 1 << 26, reservePct: 10, surface: 'collection:file:received' }),
+  }));
+  const folder = await startWatchedFolder({ db, bus, registry, slug: 'work', root });
 
   const meta = createFileMetaStore(db);
   const mirror = (tid: string, filename: string, path: string): void => {
@@ -64,8 +68,6 @@ const world = () => {
   mirror('id:R1', 'invoice-10823.pdf', 'Sandhurst/invoice-10823.pdf');
   mirror('id:R2', 'invoice-99001.pdf', 'Northwind/invoice-99001.pdf');
 
-  const registry = createCollectionRegistry();
-  registry.register(files as never);
   const resolver = createFileViewResolverFromRegistry(registry, meta);
   const handlers = buildChatTier1Handlers({
     getContactStore: () => undefined,
@@ -102,12 +104,17 @@ const world = () => {
     };
     return String(await buildChatIndexContext(message, ctx, probe as never) ?? '');
   };
-  return { db, hits, line, raw };
+  const close = async (): Promise<void> => {
+    await folder.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { close, hits, line, raw };
 };
 
 describe('the file combination matrix, exhausted without a live model', () => {
   it('finds a term wherever it lives — folder, leaf name, either posture', async () => {
-    const { db, hits } = world();
+    const { close, hits } = await world();
     try {
       expect(await hits('kickoff'), 'local leaf name').toEqual(['LOCAL']);
       expect(await hits('10823'), 'remote leaf name').toEqual(['REMOTE']);
@@ -115,11 +122,11 @@ describe('the file combination matrix, exhausted without a live model', () => {
       // merge across both spaces in a single answer.
       expect((await hits('sandhurst')).sort()).toEqual(['LOCAL', 'REMOTE']);
       expect(await hits('nothinghere')).toEqual([]);
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 
   it('ANDs across folder and leaf, and across the posture boundary', async () => {
-    const { db, hits } = world();
+    const { close, hits } = await world();
     try {
       // folder(remote) + leaf(remote) — the owner's filing pattern.
       expect(await hits('sandhurst invoice')).toEqual(['REMOTE']);
@@ -130,7 +137,7 @@ describe('the file combination matrix, exhausted without a live model', () => {
       expect(await hits('sandhurst renewal'), 'L1 folder + L2 leaf').toEqual([]);
       expect(await hits('northwind kickoff'), 'R2 folder + L1 leaf').toEqual([]);
       expect(await hits('sandhurst 99001'), 'L1/R1 folder + R2 leaf').toEqual([]);
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 
   it('COLLAPSES the index line only when one file holds every term', async () => {
@@ -138,7 +145,7 @@ describe('the file combination matrix, exhausted without a live model', () => {
     // was `'none'` it was never asked the co-occurrence question, so the line
     // could only ever render the separate form — and a reader could not tell
     // "one file has both" from "two files each have one".
-    const { db, line } = world();
+    const { close, line } = await world();
     try {
       // Co-occurring ⇒ ONE entry naming the phrase.
       for (const q of ['sandhurst invoice', 'kickoff notes', 'renewal notice']) {
@@ -153,14 +160,14 @@ describe('the file combination matrix, exhausted without a live model', () => {
         expect(rendered, `${q} still names the store per term`).toContain('file.search');
         expect(rendered.split(';').length, `${q} renders as separate entries`).toBeGreaterThan(1);
       }
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 
   it('says nothing when the store holds nothing — no fail-open line', async () => {
-    const { db, line } = world();
+    const { close, line } = await world();
     try {
       expect(await line('nothinghere at all'), 'no hit anywhere ⇒ no line').toBe('');
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 });
 
@@ -179,7 +186,7 @@ describe('an empty file page NAMES ITS CAUSE', () => {
     // was measured on the FTS stores to have a structural ceiling and ships OFF.
     // A partial row presented as a hit is worse than a stated absence; a stated
     // absence WITH its cause is better than either.
-    const { db, raw } = world();
+    const { close, raw } = await world();
     try {
       const r = await raw('Sandhurst renewal');
       expect(r.result?.files ?? [], 'no single file is both — that stays true').toHaveLength(0);
@@ -193,13 +200,13 @@ describe('an empty file page NAMES ITS CAUSE', () => {
         r.result?.no_match_reason ?? '',
         'and it must steer, not just describe',
       ).toContain('do not report');
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 
   it('stays SILENT when the absence is genuine — no misleading hint', async () => {
     // The control. A disclosure that fires on every empty page teaches the model
     // to doubt every absence, which is the opposite of the point.
-    const { db, raw } = world();
+    const { close, raw } = await world();
     try {
       const none = await raw('totally unrelated words');
       expect(none.result?.files ?? []).toHaveLength(0);
@@ -209,6 +216,6 @@ describe('an empty file page NAMES ITS CAUSE', () => {
       const hit = await raw('sandhurst');
       expect((hit.result?.files ?? []).length).toBeGreaterThan(0);
       expect(hit.result?.no_match_reason).toBeUndefined();
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 });

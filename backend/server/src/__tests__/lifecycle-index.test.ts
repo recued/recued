@@ -51,12 +51,8 @@ const newHarness = (opts: {
     configPath: null,
     distribution: 'server',
     initialBootstrap: {
-      data_path: dataPath,
-      bind_host: '127.0.0.1',
       bind_port: 7717,
-      mcp_port: 0,
-      webhook_port: 0,
-      log_path: `${dataPath}/logs`,
+      webhooks_enabled: false,
     },
     initialRuntime: {},
     runtimeStore,
@@ -296,7 +292,7 @@ describe('createLifecycle — lock', () => {
   beforeEach(() => { h = newHarness(); });
   afterEach(() => { h.close(); });
 
-  it('exposes the instance lock rooted at data_path', () => {
+  it('exposes the instance lock rooted at the data folder', () => {
     expect(h.lifecycle.lock.path).toContain(h.dataPath);
     expect(h.lifecycle.lock.path).toContain('recued-server.lock');
   });
@@ -363,7 +359,7 @@ describe('\u26d4 lifecycle.lock_file comes from the runtime store too', () => {
 
   it('\u26a0 an EMPTY string means "use the data path", not a lock at ""', async () => {
     // The schema's default IS the empty string and its description says empty
-    // uses `{data_path}/recued-server.lock`. A naive `?? store.get()` would
+    // uses recued-server.lock in the data folder. A naive `?? store.get()` would
     // bind a lock file named '' \u2014 the one value that must fall through.
     const h = newHarness({ runtime: { 'lifecycle.lock_file': '' } });
     try {

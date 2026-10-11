@@ -142,7 +142,7 @@ import type { HousekeepingStateStore } from './housekeeping/state-store.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ManifestRegistry } from './manifest-loader.js';
 import type { RecipeStore } from './recipe-store.js';
-import { readRootProjections } from './records/root-projection.js';
+import { readRootProjections, toTimelineRollup } from './records/root-projection.js';
 import {
   DIRECT_MCP_TOOL_CALL_BASE_RESERVATION_KEY,
   type CustomerSurfaceUsageAdmission,
@@ -1016,7 +1016,7 @@ const TOOLS = [
   },
   {
     name: 'recued_dataTimeline',
-    description: 'Get a chronological feed for one entity, merging raw collection records, annotations (recipe-derived facts), typed cross-collection links, and memory entries (recipe runs that touched the entity). entity_id format is `<collection>:<id>` (e.g. `mail:msg-abc123`). Sorted newest-first; supports since/until window + cursor pagination. Use this to answer "what happened with this entity?" without juggling per-collection tools. For a contact, the response may also carry `rollups`: one standing summary per installed pack that declares onto that person (e.g. unbilled time, open jobs), computed live from the pack\'s own records. Rollups are NOT feed entries and carry no timestamp — they answer "where do things stand?" rather than "what happened?". Each carries `complete`; when it is false the pack\'s walk hit a bound and the numbers are a floor, not a total.',
+    description: 'Get a chronological feed for one entity, merging raw collection records, annotations (recipe-derived facts), typed cross-collection links, and memory entries (recipe runs that touched the entity). entity_id format is `<collection>:<id>` (e.g. `mail:msg-abc123`). Sorted newest-first; supports since/until window + cursor pagination. Use this to answer "what happened with this entity?" without juggling per-collection tools. For a contact, the response may also carry `rollups`: standing summaries from each installed pack that declares onto that person (e.g. unbilled time, what a client owes, how they pay), each named by its `label` and computed live from the pack\'s own records. A grouped summary answers once per group, each labelled with it and carrying `group` (e.g. what a client owes, once per currency); never add them together. Rollups are NOT feed entries and carry no timestamp — they answer "where do things stand?" rather than "what happened?". Each carries `complete`; when it is false the pack\'s walk hit a bound and the numbers are a floor, not a total.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2499,7 +2499,7 @@ const preflightMcpCustomerUsage = (
       return {
         ok: false,
         result: err(
-          `Tool '${params.name}' is not granted by this token's per-tool checklist (Settings → MCP Tokens).`,
+          `Tool '${params.name}' is not granted by this token's per-tool checklist (the Contracts page of the web app).`,
         ),
       };
     }
@@ -2682,8 +2682,8 @@ const handleToolCall = async (
         deps.inboundTokenAuthorize === undefined
           ? `Tool '${params.name}' is not available: this connection presented no MCP token, `
             + 'so it carries no per-tool checklist. Pass --token <bearer> or set '
-            + 'RECUED_MCP_TOKEN; create one in Settings → MCP Tokens.'
-          : `Tool '${params.name}' is not granted by this token's per-tool checklist (Settings → MCP Tokens).`,
+            + 'RECUED_MCP_TOKEN; create one on the Contracts page of the web app.'
+          : `Tool '${params.name}' is not granted by this token's per-tool checklist (the Contracts page of the web app).`,
       );
     }
   }
@@ -3672,16 +3672,7 @@ const handleToolCall = async (
         ...(deps.recordsStore
           ? { rollupsForEntity: (collection: string, id: string) =>
               collection === 'contact'
-                ? readRootProjections(deps.recordsStore!, 'contact', id).map((projection) => ({
-                    publisher: projection.publisher,
-                    pack_slug: projection.pack_slug,
-                    ...(projection.label === undefined ? {} : { label: projection.label }),
-                    value: projection.value,
-                    complete: projection.complete,
-                    ...(projection.incomplete_reason === undefined
-                      ? {}
-                      : { incomplete_reason: projection.incomplete_reason }),
-                  }))
+                ? readRootProjections(deps.recordsStore!, 'contact', id).map(toTimelineRollup)
                 : [] }
           : {}),
       };

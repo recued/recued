@@ -173,7 +173,7 @@ describe('GateRegistry — dynamic gates', () => {
     registry.register('collection:mail:work', { quota: 100, reservePct: 1, initialUsage: 0 });
     registry.register('collection:file:downloads', { quota: 100, reservePct: 1, initialUsage: 0 });
     unsub();
-    registry.register('collection:webhook:github', { quota: 100, reservePct: 1, initialUsage: 0 });
+    registry.register('collection:mail:archive', { quota: 100, reservePct: 1, initialUsage: 0 });
     expect(seen).toEqual(['collection:mail:work', 'collection:file:downloads']);
   });
 });
@@ -194,7 +194,7 @@ describe('EvictionCascade — collection:file:*', () => {
   });
 });
 
-describe('EvictionCascade — collection:mail:* / collection:webhook:*', () => {
+describe('EvictionCascade — collection:mail:*', () => {
   it('runs runRetention on a mail collection surface', async () => {
     const gate = registry.register('collection:mail:work', {
       quota: 1000, reservePct: 1, initialUsage: 800,
@@ -243,10 +243,10 @@ describe('EvictionCascade — collection:mail:* / collection:webhook:*', () => {
       config: () => DEFAULT_CASCADE_CONFIG,
     });
     try {
-      registry.register('collection:webhook:github', {
+      registry.register('collection:mail:archive', {
         quota: 1000, reservePct: 1, initialUsage: 500,
       });
-      collectionRegistry.register(stubCollection('webhook', 'github', {
+      collectionRegistry.register(stubCollection('mail', 'archive', {
         runRetention: async () => ({
           pruned_count: 2,
           bytes_freed: 200,
@@ -254,7 +254,7 @@ describe('EvictionCascade — collection:mail:* / collection:webhook:*', () => {
           duration_ms: 3,
         }),
       }));
-      const res = await localCascade.reclaim('collection:webhook:github');
+      const res = await localCascade.reclaim('collection:mail:archive');
       expect(res.steps_run).toContain('collection_retention');
       expect(res.steps_run).toContain('collection_cas_delete');
       expect(deleted).toEqual(['h1', 'h2']);
@@ -341,15 +341,15 @@ describe('EvictionCascade — late-registered gates', () => {
     // Sanity complement to the state-change path — the direct rpc
     // call (`server.runPressureReclaim` → `cascade.reclaim`) must
     // also resolve the newly-registered surface without a restart.
-    registry.register('collection:webhook:github', {
+    registry.register('collection:mail:late', {
       quota: BIG_QUOTA, reservePct: 10, initialUsage: 0,
     });
-    collectionRegistry.register(stubCollection('webhook', 'github', {
+    collectionRegistry.register(stubCollection('mail', 'late', {
       runRetention: async () => ({
         pruned_count: 1, bytes_freed: 100, blob_hashes_freed: [], duration_ms: 1,
       }),
     }));
-    const result = await cascade.reclaim('collection:webhook:github');
+    const result = await cascade.reclaim('collection:mail:late');
     expect(result.ran).toBe(true);
     expect(result.steps_run).toContain('collection_retention');
   });

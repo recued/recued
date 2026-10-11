@@ -21,9 +21,11 @@ import type {
   OperationRiskTier,
   OperationSpec,
   ProviderSurfaces,
+  RecipeDefinition,
 } from '@recued/contracts';
 import type { CliInvocationCall, ExecutionContext } from '../types.js';
 import { runCatalogOperation } from '../catalog-gateway.js';
+import { executeRecipe } from '../execute.js';
 
 const SLUG = 'pub/cat';
 const CLI_RESULT = { mode: 'foreground', exit_code: 0, stdout: 'ok', duration_ms: 1 };
@@ -321,5 +323,115 @@ describe('D-182 §7.2 gateway — cli reachability is ENFORCED (the authoritativ
     expect(auditCalls).toHaveLength(1);
     expect(auditCalls[0]).toMatchObject({ outcome: 'success' });
     expect(reachCalls).toEqual([]);
+  });
+});
+
+describe('a refused cli op says in words what happened, and reads as a refusal', () => {
+  // The step error's message is what an owner reads in a run's output (a
+  // `foreach` keeps only an item's message, so in a recipe's rows it is all
+  // they see) and what an agent reads in a tool result. It used to read
+  // "D-165 gateway: operation 'pub/cat.x' on connection 'undefined' denied
+  // (cli_reachability_disabled)." — a cli op has no connection — and the plain
+  // Error it rode on became the step runner's catch-all NETWORK_ERROR, which
+  // tells an agent to check its connection and try again.
+  const refusal = async (ctx: ExecutionContext, operation = 'x'): Promise<Error & { code?: unknown }> => {
+    const outcome: unknown = await runCatalogOperation(
+      ctx, cliManifest(), SLUG, { operation, args: { task: 'go' } },
+      '', undefined, undefined, undefined,
+    ).then(() => 'dispatched', (e: unknown) => e);
+    expect(outcome).toBeInstanceOf(Error);
+    return outcome as Error & { code?: unknown };
+  };
+
+  const OWNER_SWITCH = "'pub/cat.x' is switched off, so it did not run. To use it, open its pack "
+    + 'in Packs and turn it on under Self (you) on the Access tab. (cli_reachability_disabled)';
+
+  it('tells the owner which switch, with no connection named, coded NOT_AUTHORIZED', async () => {
+    const { ctx } = makeCtx({ reachability: () => false, actor: 'user_self' });
+    const err = await refusal(ctx);
+    expect(err.message).toBe(OWNER_SWITCH);
+    expect(err.code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('tells an owner schedule the same: it reads the owner’s switch', async () => {
+    const { ctx } = makeCtx({
+      execution_source: { channel: 'schedule', actor: 'system', cron: '0 9 * * *', source_recipe: 'r1' },
+      reachability: () => false,
+    });
+    expect((await refusal(ctx)).message).toBe(OWNER_SWITCH);
+  });
+
+  it('names the contract’s switch for a run under a contract, even the owner’s own', async () => {
+    const { ctx, reachCalls } = makeCtx({
+      reachability: () => false, actor: 'user_self', contract_id: 'contract_self',
+    });
+    const err = await refusal(ctx);
+    expect(reachCalls[0]?.principal).toBe('contract_self');
+    expect(err.message).toBe(
+      "'pub/cat.x' is switched off for the contract this run is under, so it did not run. "
+      + 'The owner can turn it on for that contract on its pack’s Access tab, in Packs. '
+      + '(cli_reachability_disabled)',
+    );
+    expect(err.code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('points a run that can never reach a program at who can, not at a switch', async () => {
+    // A reactive fire resolves no principal, and the server's resolver admits no
+    // null principal, so no switch would let it through.
+    const { ctx, reachCalls } = makeCtx({
+      execution_source: {
+        channel: 'reactive', actor: 'system', event_kind: 'auto_run_tick', source_recipe: 'r1',
+      },
+      reachability: (principal) => principal !== null,
+    });
+    const err = await refusal(ctx);
+    expect(err.message).toBe(
+      "'pub/cat.x' runs a program on your server, which only your own runs, your schedules and "
+      + 'contracts you allow can do, so it did not run. (cli_reachability_disabled)',
+    );
+    expect(reachCalls[0]?.principal).toBeNull();
+    expect(err.code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('says so when the pack has no such action', async () => {
+    const { ctx } = makeCtx({ reachability: () => true, actor: 'user_self' });
+    const err = await refusal(ctx, 'nope');
+    expect(err.message).toBe("Its pack has no action named 'nope', so nothing ran. (operation_not_declared)");
+    expect(err.code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('a recipe step it refuses fails NOT_AUTHORIZED with that sentence, not NETWORK_ERROR', async () => {
+    const recipe = {
+      recipe_id: 'r1',
+      version: 1,
+      metadata: { name: 'r1', description: 'one cli step', author: 'pub', supported_platforms: [] },
+      variables: {},
+      prefetch_steps: [],
+      steps: [{ id: 'go', ingredient: SLUG, input: { operation: 'x', args: { task: 'go' } } }],
+      output: { sidebar: [] },
+    } as unknown as RecipeDefinition;
+    const { ctx } = makeCtx({ reachability: () => false, actor: 'user_self' });
+    const run = await executeRecipe({
+      ...ctx,
+      recipe,
+      stores: { vault: {}, config: {}, context: {}, meta: {}, step: {} },
+      manifestGetter: (slug: string) => (slug === SLUG ? cliManifest() : null),
+    });
+    expect(run.success).toBe(false);
+    expect(run.errors).toHaveLength(1);
+    expect(run.errors[0]).toMatchObject({ code: 'NOT_AUTHORIZED', message: OWNER_SWITCH });
+  });
+
+  it('a connection op names its connection', async () => {
+    const { ctx } = makeCtx({ profileAdmits: false, reachability: () => true, actor: 'user_self' });
+    const outcome: unknown = await runCatalogOperation(
+      ctx, apiManifest(), SLUG, { operation: 'x' }, 'primary-connection',
+      undefined, undefined, undefined,
+    ).then(() => 'dispatched', (e: unknown) => e);
+    expect((outcome as Error).message).toBe(
+      "There is no connection 'primary-connection' set up for 'pub/cat.x', so it did not run. "
+      + '(no_connection_profile)',
+    );
+    expect((outcome as { code?: unknown }).code).toBe('NOT_AUTHORIZED');
   });
 });

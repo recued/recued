@@ -66,7 +66,7 @@ import type { ContractDefinitionStore } from './storage/contract-definition-stor
 import type { ReceptionIntakeRecipePairStore } from './storage/reception-intake-recipe-pair-store.js';
 import type { SellerStore } from './storage/seller-store.js';
 import type { SellerOrderStore } from './storage/seller-order-store.js';
-import type { ExecuteResponse } from './types.js';
+import type { ExecuteResponse, InternalExecuteOverrides } from './types.js';
 import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
 import {
   analyzeReceptionRecipeCost,
@@ -125,6 +125,9 @@ export interface ReceptionRecipeRunnerDeps {
    *  owner the list they are consenting to. If the run then resolved a DIFFERENT config, the
    *  consent list would describe a run that cannot happen. One derivation, two consumers. */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  /** D-320 phase 3 (3b) — the main dish's choice of connection, passed to the run for
+   *  the same reason as `resolveConfig` (`composeInstallConnectionsResolver`). */
+  readonly resolveDishConnections?: (recipeId: string) => InternalExecuteOverrides['dish_connections'];
   /** Current stored recipe snapshot. Runtime re-checks the same cost profile bind accepted,
    *  closing legacy contracts and any recipe drift before an order or external call exists. */
   readonly resolveRecipe: (recipeId: string) => RecipeDefinition | null;
@@ -334,6 +337,7 @@ export const createReceptionRecipeRunner = (
       };
     }
     const config = deps.resolveConfig(pair.binding.recipe_id);
+    const dishConnections = deps.resolveDishConnections?.(pair.binding.recipe_id);
     const dispatchRecipe = deps.resolveDoorRecipe?.(recipe, config ?? {})
       ?? { ok: true as const, recipe };
     if (!dispatchRecipe.ok) {
@@ -363,8 +367,13 @@ export const createReceptionRecipeRunner = (
     }
     if (deps.resolveDoorRecipe !== undefined) {
       const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+      // D-320 phase 3 (3b) — the config the run will resolve connections against,
+      // each slot's empty setting filled as the run fills it (`settleDoorConnections`).
+      const doorConfig = 'config' in dispatchRecipe && dispatchRecipe.config !== undefined
+        ? dispatchRecipe.config
+        : config;
       const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
-        ...(config === undefined ? {} : { config }),
+        ...(doorConfig === undefined ? {} : { config: doorConfig }),
         ...(resolveOp === undefined ? {} : { resolveOp }),
       });
       if (!derived.ok || doorCapabilityChanged(storedDoor, derived.capability).changed) {
@@ -453,7 +462,10 @@ export const createReceptionRecipeRunner = (
         // The submission id is the idempotency anchor: a re-drive of the SAME submission
         // (a drain retry, a reconciliation sweep) collapses onto one run rather than
         // re-firing its side effects.
-        { run_id: `reception:${input.submission_id}` },
+        {
+          run_id: `reception:${input.submission_id}`,
+          ...(dishConnections === undefined ? {} : { dish_connections: dishConnections }),
+        },
       );
 
       if (!result.success) {

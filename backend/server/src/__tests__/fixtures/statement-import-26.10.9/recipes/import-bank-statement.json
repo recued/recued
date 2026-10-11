@@ -1,0 +1,611 @@
+{
+  "recipe_id": "import-bank-statement",
+  "chat_exposed": false,
+  "version": 6,
+  "ttl": 0,
+  "metadata": {
+    "name": "Import a bank statement (CSV)",
+    "description": "Use “Import a bank statement (CSV)” in Recued. Reads a statement CSV you exported from your bank, lets you match its columns from the file’s own header, and records every line in your own warehouse. Re-importing an overlapping export adds only what is new.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/statement-import",
+    "tags": [
+      "pack:statement-import",
+      "banking",
+      "csv",
+      "import",
+      "reconciliation"
+    ],
+    "budget_ms": 120000,
+    "readme": "## Why a file, not a bank login\n\nEvery open-banking aggregator gates real account data behind an approved business account, and talking to a bank directly needs PSD2 authorisation. A statement export needs neither, works for banks no aggregator covers, and no third party ever sees the transactions.\n\n## Setting it up once\n\nOpen it from the pack and Recued guides you through it: choose the file, then match each field to one of the columns your bank actually exported. The choices are read from the file’s own header row, so a column name cannot be misspelled, and each column’s first values sit beside it. Check the first rows it shows you, then import. Tick **Remember these columns** and next month’s export arrives already matched.\n\nTwo layouts are supported:\n\n- **One signed amount column** (common in the UK/US): match the signed amount, and mark money out / money in as *not in my file*.\n- **A debit + credit pair** (common in Europe and India): mark the signed amount as *not in my file* and match both halves of the pair. Recued stores each column as its own figure and does not fold them together — which column means money out is a fact about your bank, and a stored line you can check against the paper is worth more than a tidier table. Listing recipes add them up when they show you a total.\n\nSet exactly one of the two layouts.\n\nFrom the plain run form instead, type the exact column names from your header row into the settings. The summary lists any it could not find in the file — a name it cannot find imports as an empty value on every line.\n\n## Re-running is safe\n\nBank exports overlap by design — the last 90 days, every time. Each line's id is derived from its own content plus your account label, so importing the same export twice reproduces the same ids and adds nothing. The summary says how many you already had.\n\n**Give each account its own label.** The id is scoped to it, so the same amount on the same day in two accounts stays two lines.\n\nA line records its own content, never which upload carried it — the run's history keeps that. So next month's export, which repeats the last few weeks, lands the repeated lines as *already had*. ⚠ Lines imported by the first version of this importer were stamped with the file they came from, so a later export that repeats one counts it as kept, not already had — it is already recorded, and nothing is lost or doubled.\n\n## When a line you already have looks different\n\nSometimes a line in the file is one you already have, but with different details — this export has a running balance your earlier one did not, you changed the line's category since, or you picked a different currency this time. **Keep what I already have** starts ticked: those lines stay exactly as you have them and are counted as kept. Untick it and the file wins instead: its running balance replaces yours, and the line is counted as updated. That is the only thing the file can change on a line you already have — the date, description and amount are what make it the same line, and the category, currency and account label come from you, not the file. The check shows you which it would be before you import.\n\n## Check first\n\nThe guided import always checks before it records. From the plain form, turn on **Check first**: Recued reads the whole file, puts every line through exactly the checks a real import would, then throws the result away and tells you what would have happened — including the first rows exactly as they would be recorded, and what would happen to each. Nothing is recorded.\n\nDo this the first time you map a bank. A column pointed at the wrong field imports perfectly — every line lands, nothing is refused — and the only sign is that the numbers are wrong. Reading the first few lines back before you commit is the only thing that catches it.\n\n## When a number or a date will not read\n\nA number that cannot be read is stored EMPTY, never as zero, and the line still lands. A zero would look like a real transaction for nothing and would quietly move your balance. A date that does not read in the format you typed is kept exactly as written. Either way the summary counts them and shows the first few with their line numbers, so you can open the file at that line.\n\n## Decimal marks and date formats\n\nBoth are under **More options**, and are remembered with your columns.\n\n- **Decimal mark.** Pick **Comma** if your bank writes amounts like `1.234,56` or `1 234,56`. The thousands mark (a comma, dot, space or apostrophe) is recognised on its own, but only in groups of three digits, or India's `12,34,567`. So the wrong choice leaves amounts unreadable rather than wrong: `12.50` read with Comma is not 1250.\n- **Date format.** Empty keeps dates exactly as your bank writes them. Type the format instead, like `dd/mm/yyyy`, `mm/dd/yyyy`, `yyyy-mm-dd` or `dd-mmm-yyyy` for `20-Aug-2020`, and they are stored as `2025-12-31`, so they sort and filter as dates. If a date only reads in another order (`12/31/2025` when you typed `dd/mm/yyyy`), nothing is imported, and Recued names the line and the format it reads in.\n\n⚠ Set the date format before your first import from an account. The date is part of what makes a line the same line, so lines you imported with their dates as written would come in again as new. The check shows them as new before anything is recorded.",
+    "spreadsheet_import": {
+      "file": "file",
+      "preview": "check_first",
+      "delimiter": "delimiter",
+      "columns": [
+        "column_date",
+        "column_description",
+        "column_amount",
+        "column_debit",
+        "column_credit",
+        "column_balance"
+      ],
+      "conflicts": "keep_mine",
+      "formats": [
+        "decimal_mark",
+        "date_format"
+      ]
+    },
+    "retired_variables": [
+      "thousands_separator"
+    ],
+    "retired_carries": [
+      {
+        "variable": "thousands_separator",
+        "when": ".",
+        "set": {
+          "decimal_mark": "Comma: 1.234,56"
+        }
+      }
+    ]
+  },
+  "depends_on": [
+    "recued-core.statement-import"
+  ],
+  "variables": {
+    "file": {
+      "label": "Statement CSV exported from your bank",
+      "type": "file_ref"
+    },
+    "account_label": {
+      "label": "Which account is this? (e.g. “barclays-current”)",
+      "type": "string",
+      "default": ""
+    },
+    "currency": {
+      "label": "Currency",
+      "type": "string",
+      "default": "GBP"
+    },
+    "delimiter": {
+      "label": "CSV delimiter",
+      "type": "string",
+      "default": ","
+    },
+    "column_date": {
+      "label": "Column holding the date",
+      "type": "string",
+      "default": "Date"
+    },
+    "column_description": {
+      "label": "Column holding the description",
+      "type": "string",
+      "default": "Description"
+    },
+    "column_amount": {
+      "label": "Column holding one signed amount — only when your bank uses a single amount column",
+      "type": "string",
+      "optional": true,
+      "default": "Amount"
+    },
+    "column_debit": {
+      "label": "Column holding money out — only when your bank splits money in and out",
+      "type": "string",
+      "optional": true,
+      "default": ""
+    },
+    "column_credit": {
+      "label": "Column holding money in — only when your bank splits money in and out",
+      "type": "string",
+      "optional": true,
+      "default": ""
+    },
+    "column_balance": {
+      "label": "Column holding the running balance",
+      "type": "string",
+      "optional": true,
+      "default": ""
+    },
+    "decimal_mark": {
+      "label": "Decimal mark used in the amounts",
+      "type": "enum",
+      "options": [
+        "Point: 1,234.56",
+        "Comma: 1.234,56"
+      ],
+      "default": "Point: 1,234.56",
+      "help": "Point if the cents follow a point: 1,234.56, 1 234.56 or 1'234.56. Comma if they follow a comma: 1.234,56 or 1 234,56. The thousands mark is recognised on its own."
+    },
+    "date_format": {
+      "label": "Date format in your file",
+      "type": "string",
+      "optional": true,
+      "default": "",
+      "help": "Leave empty to keep dates exactly as written. Or type how your file writes them, like dd/mm/yyyy, mm/dd/yyyy, yyyy-mm-dd, dd.mm.yyyy, dd-mmm-yyyy (for 20-Aug-2020) or yyyymmdd, and they are stored as 2025-12-31, so they sort. Set it before your first import from an account: lines already imported keep their dates as written, so the same lines would come in again as new."
+    },
+    "keep_mine": {
+      "label": "When a line is already recorded with different details, keep what I already have",
+      "type": "boolean",
+      "help": "Ticked: they stay exactly as you have them and are counted as kept. Unticked: the file's running balance replaces yours and they are counted as updated.",
+      "default": true
+    },
+    "check_first": {
+      "label": "Check first, record nothing (recommended the first time you map a bank)",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "requires": [],
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "file_id",
+      "transform": "trim",
+      "input": "{{config.file}}"
+    },
+    {
+      "id": "has_file",
+      "transform": "compare",
+      "left": "{{step.file_id}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "file_guard",
+      "guard": "{{step.has_file}} equal false"
+    },
+    {
+      "id": "acct",
+      "transform": "trim",
+      "input": "{{config.account_label}}"
+    },
+    {
+      "id": "has_account",
+      "transform": "compare",
+      "left": "{{step.acct}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "account_guard",
+      "guard": "{{step.has_account}} equal false"
+    },
+    {
+      "id": "file_read",
+      "op": "core.storage.data-file-read",
+      "args": {
+        "record_id": "{{step.file_id}}"
+      }
+    },
+    {
+      "id": "csv_text",
+      "transform": "decode_base64",
+      "input": "{{step.file_read.bytes_b64}}"
+    },
+    {
+      "id": "columns_all",
+      "transform": "default",
+      "value": [
+        {
+          "column": "{{config.column_date}}",
+          "field": "posted_on"
+        },
+        {
+          "column": "{{config.column_description}}",
+          "field": "description"
+        },
+        {
+          "column": "{{config.column_balance}}",
+          "field": "balance_after"
+        },
+        {
+          "column": "{{config.column_amount}}",
+          "field": "amount"
+        },
+        {
+          "column": "{{config.column_credit}}",
+          "field": "money_in"
+        },
+        {
+          "column": "{{config.column_debit}}",
+          "field": "money_out"
+        }
+      ]
+    },
+    {
+      "id": "columns",
+      "transform": "filter",
+      "array": "{{step.columns_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "money_all",
+      "transform": "default",
+      "value": [
+        {
+          "field": "amount",
+          "column": "{{config.column_amount}}"
+        },
+        {
+          "field": "money_in",
+          "column": "{{config.column_credit}}"
+        },
+        {
+          "field": "money_out",
+          "column": "{{config.column_debit}}"
+        }
+      ]
+    },
+    {
+      "id": "money_present",
+      "transform": "filter",
+      "array": "{{step.money_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "money_fields",
+      "transform": "pluck",
+      "array": "{{step.money_present}}",
+      "field": "field"
+    },
+    {
+      "id": "numeric_all",
+      "transform": "default",
+      "value": [
+        {
+          "field": "balance_after",
+          "column": "{{config.column_balance}}"
+        }
+      ]
+    },
+    {
+      "id": "numeric_present",
+      "transform": "filter",
+      "array": "{{step.numeric_all}}",
+      "field": "column",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "balance_fields",
+      "transform": "pluck",
+      "array": "{{step.numeric_present}}",
+      "field": "field"
+    },
+    {
+      "id": "numeric_fields",
+      "transform": "flatten",
+      "array": [
+        "{{step.money_fields}}",
+        "{{step.balance_fields}}"
+      ]
+    },
+    {
+      "id": "dedup_on",
+      "transform": "flatten",
+      "array": [
+        [
+          "posted_on",
+          "description"
+        ],
+        "{{step.money_fields}}"
+      ]
+    },
+    {
+      "id": "clash_mode",
+      "transform": "switch",
+      "input": "{{config.keep_mine}}",
+      "cases": {
+        "false": "overwrite"
+      },
+      "default": "skip"
+    },
+    {
+      "id": "decimal_mode",
+      "transform": "switch",
+      "input": "{{config.decimal_mark}}",
+      "cases": {
+        "Comma: 1.234,56": ","
+      },
+      "default": "."
+    },
+    {
+      "id": "imported",
+      "op": "recued-core.statement-import.line.import",
+      "args": {
+        "csv": "{{step.csv_text}}",
+        "dry_run": "{{config.check_first}}",
+        "spec": {
+          "columns": "{{step.columns}}",
+          "numeric_fields": "{{step.numeric_fields}}",
+          "dedup_on": "{{step.dedup_on}}",
+          "scope": "{{step.acct}}",
+          "delimiter": "{{config.delimiter}}",
+          "decimal_separator": "{{step.decimal_mode}}",
+          "date_fields": [
+            "posted_on"
+          ],
+          "date_format": "{{config.date_format}}",
+          "defaults": {
+            "account_label": "{{step.acct}}",
+            "currency": "{{config.currency}}",
+            "source_file": "",
+            "counterparty": "",
+            "category": ""
+          },
+          "on_conflict": "{{step.clash_mode}}"
+        }
+      }
+    },
+    {
+      "id": "any_unreadable",
+      "transform": "compare",
+      "left": "{{step.imported.unparsed}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "any_refused",
+      "transform": "compare",
+      "left": "{{step.imported.failed}}",
+      "operator": "greater",
+      "right": 0
+    },
+    {
+      "id": "stopped",
+      "transform": "default",
+      "value": "{{step.imported.halted_reason}}",
+      "fallback": "no — the whole file was processed"
+    },
+    {
+      "id": "was_check",
+      "transform": "compare",
+      "left": "{{step.imported.dry_run}}",
+      "operator": "equal",
+      "value": true
+    },
+    {
+      "id": "mode",
+      "transform": "ternary",
+      "if": "{{step.was_check}}",
+      "then": "Checked only — nothing was recorded",
+      "else": "Recorded in your warehouse"
+    },
+    {
+      "id": "unreadable",
+      "transform": "to_table",
+      "skip_when": "{{step.any_unreadable}} equal false",
+      "array": "{{step.imported.unparsed_sample}}",
+      "columns": [
+        {
+          "field": "line",
+          "label": "Line in your file"
+        },
+        {
+          "field": "column",
+          "label": "Column"
+        },
+        {
+          "field": "value",
+          "label": "Value we could not read"
+        }
+      ]
+    },
+    {
+      "id": "refused",
+      "transform": "to_table",
+      "skip_when": "{{step.any_refused}} equal false",
+      "array": "{{step.imported.failures_sample}}",
+      "columns": [
+        {
+          "field": "line",
+          "label": "Line in your file"
+        },
+        {
+          "field": "code",
+          "label": "Why"
+        },
+        {
+          "field": "reason",
+          "label": "Detail"
+        }
+      ]
+    },
+    {
+      "id": "missing_known",
+      "transform": "compare",
+      "left": "{{step.imported.columns_missing}}",
+      "operator": "is_not_null"
+    },
+    {
+      "id": "missing_list",
+      "transform": "join",
+      "array": "{{step.imported.columns_missing}}",
+      "separator": ", "
+    },
+    {
+      "id": "missing_named",
+      "transform": "default",
+      "value": "{{step.missing_list}}",
+      "fallback": "none — every column was found"
+    },
+    {
+      "id": "missing_text",
+      "transform": "ternary",
+      "if": "{{step.missing_known}}",
+      "then": "{{step.missing_named}}",
+      "else": "not checked by this server version"
+    },
+    {
+      "id": "preview_marked",
+      "transform": "map",
+      "skip_when": "{{step.was_check}} equal false",
+      "array": "{{step.imported.preview_sample}}",
+      "apply": "switch",
+      "field": "outcome",
+      "cases": {
+        "written": "new — would be recorded",
+        "replayed": "already recorded",
+        "updated": "would be updated from the file",
+        "skipped": "kept as you have it",
+        "failed": "would be refused — see below",
+        "not_attempted": "not reached — the check stopped early"
+      },
+      "default": "",
+      "output_field": "result"
+    },
+    {
+      "id": "preview_rows",
+      "transform": "map",
+      "skip_when": "{{step.was_check}} equal false",
+      "array": "{{step.preview_marked}}",
+      "expression": {
+        "line": "{{item.line}}",
+        "posted_on": "{{item.values.posted_on}}",
+        "description": "{{item.values.description}}",
+        "amount": "{{item.values.amount}}",
+        "money_out": "{{item.values.money_out}}",
+        "money_in": "{{item.values.money_in}}",
+        "balance_after": "{{item.values.balance_after}}",
+        "result": "{{item.result}}"
+      }
+    },
+    {
+      "id": "preview",
+      "transform": "to_table",
+      "skip_when": "{{step.was_check}} equal false",
+      "array": "{{step.preview_rows}}",
+      "columns": [
+        {
+          "field": "line",
+          "label": "Line in your file"
+        },
+        {
+          "field": "posted_on",
+          "label": "Date"
+        },
+        {
+          "field": "description",
+          "label": "Description"
+        },
+        {
+          "field": "amount",
+          "label": "Amount"
+        },
+        {
+          "field": "money_out",
+          "label": "Money out"
+        },
+        {
+          "field": "money_in",
+          "label": "Money in"
+        },
+        {
+          "field": "balance_after",
+          "label": "Balance"
+        },
+        {
+          "field": "result",
+          "label": "What would happen"
+        }
+      ]
+    },
+    {
+      "id": "words",
+      "transform": "switch",
+      "input": "{{step.was_check}}",
+      "cases": {
+        "true": {
+          "recorded": "Would be recorded",
+          "refused": "Would be refused",
+          "empty": "Cells that could not be read (check your columns and formats)",
+          "kept": "Would be kept as you have them",
+          "updated": "Would be updated from the file"
+        }
+      },
+      "default": {
+        "recorded": "Newly recorded",
+        "refused": "Refused",
+        "empty": "Cells that could not be read (check your columns and formats)",
+        "kept": "Kept as you had them",
+        "updated": "Updated from the file"
+      }
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "What happened",
+          "value": "{{step.mode}}"
+        },
+        {
+          "label": "Lines in this file",
+          "value": "{{step.imported.rows_read}}"
+        },
+        {
+          "label": "{{step.words.recorded}}",
+          "value": "{{step.imported.written}}"
+        },
+        {
+          "label": "Already had",
+          "value": "{{step.imported.replayed}}"
+        },
+        {
+          "label": "{{step.words.kept}}",
+          "value": "{{step.imported.skipped}}"
+        },
+        {
+          "label": "{{step.words.updated}}",
+          "value": "{{step.imported.updated}}"
+        },
+        {
+          "label": "{{step.words.refused}}",
+          "value": "{{step.imported.failed}}"
+        },
+        {
+          "label": "Not attempted",
+          "value": "{{step.imported.not_attempted}}"
+        },
+        {
+          "label": "{{step.words.empty}}",
+          "value": "{{step.imported.unparsed}}"
+        },
+        {
+          "label": "Columns not found in your file",
+          "value": "{{step.missing_text}}"
+        },
+        {
+          "label": "Account",
+          "value": "{{step.acct}}"
+        },
+        {
+          "label": "Stopped early",
+          "value": "{{step.stopped}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      },
+      {
+        "type": "table",
+        "label": "What would be recorded — first rows",
+        "source": "step.preview"
+      },
+      {
+        "type": "table",
+        "source": "step.unreadable",
+        "label": "Cells that could not be read"
+      },
+      {
+        "type": "table",
+        "source": "step.refused",
+        "label": "Lines refused, and why"
+      }
+    ]
+  }
+}

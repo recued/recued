@@ -40,7 +40,11 @@ import { extractVariableDefault } from '@recued/engine';
 
 /** The authority surface of a recipe — exactly the axes `ContractScope` stores. */
 export interface RecipeCapability {
-  /** Canonical op ids the recipe dispatches (`op` steps + resolved ingredient ops). */
+  /** The op ids the recipe dispatches, spelled as the op-admission gate checks them
+   *  (`single-operation-admission.ts`): `op` steps, catalog ingredient steps through the
+   *  `OpResolver`, and — for a door (`kernelStepOps`) — a kernel ingredient step's
+   *  `core.*` op. The mint writes one grant row per id, so an id the gate never checks
+   *  grants nothing. */
   readonly operation_ids: readonly string[];
   /** Catalog / kernel ingredient slugs the recipe dispatches. */
   readonly ingredient_ids: readonly string[];
@@ -85,9 +89,10 @@ export type RecipeCapabilityDerivation =
   | { readonly ok: true; readonly capability: RecipeCapability }
   | { readonly ok: false; readonly refusal: RecipeCapabilityRefusal };
 
-/** Maps an ingredient catalog slug + its `input.operation` back to the canonical op
- *  id(s) it covers. Supplied by the caller (`buildPackOpResolution`); when absent, an
- *  ingredient step contributes its slug but no op id. */
+/** Maps an ingredient catalog slug + its `input.operation` back to the op id(s) it
+ *  covers, spelled as the gate checks them: the catalog's DECLARED `operation_id`
+ *  (`recipe-capability-wiring.ts`). Supplied by the caller (`buildPackOpResolution`);
+ *  when absent, a catalog ingredient step contributes its slug but no op id. */
 export type OpResolver = (
   ingredientSlug: string,
   operation: string,
@@ -182,6 +187,15 @@ export const deriveRecipeCapability = (
      *  credential it would reach for is not yet decided. */
     readonly config?: Record<string, unknown>;
     readonly resolveOp?: OpResolver;
+    /** Also record a kernel ingredient step's `core.*` op (`kernelOpForBackingSlug`), the
+     *  id the op-admission gate checks for it. A DOOR's derivation sets it
+     *  ({@link deriveResolvedRecipeCapability}): a door grants exactly these ids.
+     *
+     *  ⛔ OFF FOR A RISK PRICE WITH NO CATALOG RESOLVER (`recipeTopRisk`, D-247's install
+     *  seed). There a lowered recipe's catalog steps contribute no op, so its kernel steps
+     *  alone would price "read the mail, then unlock the door" at `read`, and "Read only"
+     *  would enable it. A closure with no op prices `null`, which closes it. */
+    readonly kernelStepOps?: boolean;
   },
 ): RecipeCapabilityDerivation => {
   const resolveOp = opts?.resolveOp;
@@ -226,6 +240,18 @@ export const deriveRecipeCapability = (
           operations.add(opId);
           noteOp(opId, stepId);
         }
+      }
+      // ⛔⛔ A KERNEL STEP'S OP, AS THE GATE NAMES IT (doors only — `kernelStepOps`). A
+      // pack install stores its recipes LOWERED (`lowerTwoTierOpSteps`), so
+      // `op: core.webhook.event.get` arrives here as `ingredient: webhook-event-get`, and
+      // the gate checks that dispatch as `kernelOpForBackingSlug(slug)`
+      // (`single-operation-admission.ts`). Recording only the slug minted doors with no
+      // row for it: every shipped webhook delivery was refused `op_not_granted` at its
+      // first step (2026-10-10).
+      const kernelOp = opts?.kernelStepOps === true ? kernelOpForBackingSlug(step.ingredient) : undefined;
+      if (kernelOp !== undefined) {
+        operations.add(kernelOp);
+        noteOp(kernelOp, stepId);
       }
     }
 
@@ -305,7 +331,8 @@ export const deriveResolvedRecipeCapability = (
   // rebuild a recipe, and the dispatch form must resolve the same connection the
   // authored one does, or a door would derive from two different configs.
   const config = effectiveConfig(authoredRecipe, asRecord(opts?.config));
-  const resolvedOpts = { ...opts, ...(config === undefined ? {} : { config }) };
+  // A door grants what the gate checks, kernel steps included (`kernelStepOps`).
+  const resolvedOpts = { ...opts, ...(config === undefined ? {} : { config }), kernelStepOps: true };
   const authored = deriveRecipeCapability(authoredRecipe, resolvedOpts);
   if (!authored.ok) return authored;
   const dispatch = dispatchRecipe === authoredRecipe

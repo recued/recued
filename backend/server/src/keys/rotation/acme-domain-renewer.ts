@@ -89,9 +89,7 @@ export interface AcmeDomainRenewerOptions {
    *  `upload` persists the new cert under the same `pro_acme` source. */
   store: Pick<SqliteTlsDomainStore, 'lookup' | 'upload'>;
   /** PKCS#10 CSR generator. Caller-supplied to keep the Node-side
-   *  ASN.1 / forge / native-binding choice out of the renewer module.
-   *  The legacy `tls/cert-renewal.ts` carries the same seam shape;
-   *  whichever production implementation lands wires both consumers. */
+   *  ASN.1 / forge / native-binding choice out of the renewer module. */
   generateCsr(args: { domain: string; private_key_pem: string }): string;
   /** Generate a fresh per-domain TLS private key for first issuance.
    *  Production defaults to an Ed25519 PKCS#8 PEM key; tests can stub

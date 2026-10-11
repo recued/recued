@@ -27,6 +27,14 @@ export { parseCliOverrides } from './cli.js';
 export type { CliOverrides } from './cli.js';
 
 export {
+  BOOTSTRAP_KEYS,
+  LEGACY_WEBHOOK_PORT_KEY,
+  RETIRED_BOOTSTRAP_SETTINGS,
+  isBootstrapKey,
+} from './bootstrap-keys.js';
+export type { BootstrapKey, RetiredSetting } from './bootstrap-keys.js';
+
+export {
   RUNTIME_SCHEMA,
   RUNTIME_SCHEMA_MAP,
 } from './schema.js';
@@ -34,11 +42,8 @@ export type { RuntimeKey } from './schema.js';
 
 export {
   defaultConfigPath,
-  defaultDataPath,
   detectOs,
-  expandDataPath,
   expandHome,
-  resolveBootstrapPath,
 } from './paths.js';
 export type { Os, PathEnv } from './paths.js';
 

@@ -27,13 +27,23 @@ import type { RecipeErrorCode } from './errors.js';
  *    - `bad_output`   — the tool exited successfully but its output was unusable:
  *                       an `output_capture` op produced no file / too many files /
  *                       an oversized file, or a `shape: 'json'|'jsonl'` op's stdout
- *                       didn't parse / overran the realize cap. */
+ *                       didn't parse / overran the realize cap.
+ *    - `untested_version` — D-321: the installed version is outside the range the
+ *                       pack was tested with, or its version could not be read,
+ *                       and the tool's setting is `refuse`. Nothing was started
+ *                       for the action.
+ *    - `broken`       — D-321: the tool is installed but its version probe could
+ *                       not start, was killed by a signal, or timed out (an ffmpeg
+ *                       whose library is missing). Nothing was started for the
+ *                       action. */
 export type CliFailureReason =
   | 'not_found'
   | 'spawn_error'
   | 'nonzero_exit'
   | 'timeout'
-  | 'bad_output';
+  | 'bad_output'
+  | 'untested_version'
+  | 'broken';
 
 /** Closed set of every `CliFailureReason`, in canonical order. */
 export const CLI_FAILURE_REASONS: readonly CliFailureReason[] = [
@@ -42,6 +52,8 @@ export const CLI_FAILURE_REASONS: readonly CliFailureReason[] = [
   'nonzero_exit',
   'timeout',
   'bad_output',
+  'untested_version',
+  'broken',
 ] as const;
 
 /** Structured cli-failure carrier the executor attaches to the rejected error
@@ -69,6 +81,15 @@ export interface CliFailureDetail {
   stderr?: string;
   /** True when more stderr existed than the carried tail (or the capture cap hit). */
   stderr_truncated?: boolean;
+  /** D-321 `untested_version` — the version the probe read, when it read one. */
+  version?: string;
+  /** D-321 `untested_version` — the range the pack was tested with. */
+  tested?: { from: string; before?: string };
+  /** D-321 `not_found` — the install commands the pack gives for this server's
+   *  system (`renderInstallHints`), shown and never run. */
+  install?: string[];
+  /** D-321 `not_found` — links to the tool's own install instructions. */
+  install_docs?: string[];
 }
 
 /** Map a Node spawn-error `code` to a cli failure reason. `ENOENT` ⇒ the binary
@@ -79,11 +100,17 @@ export const cliSpawnErrorReason = (code: unknown): CliFailureReason =>
 
 /** The `RecipeErrorCode` a cli failure reason carries. A missing binary gets its
  *  own `CLI_TOOL_NOT_FOUND` (the actionable case, and the run-time twin of the
- *  proactive readiness state); every other cli fault is `CLI_TOOL_FAILED`. Both
- *  REPLACE the historical `NETWORK_ERROR` mislabel — an agent reading the code in
- *  chat now sees a tool problem, not a network one. */
+ *  proactive readiness state), and a version the pack was not tested with its own
+ *  `CLI_TOOL_VERSION_UNTESTED` (D-321: the owner acts, by installing a tested
+ *  version or choosing Warn); every other cli fault, `broken` included, is
+ *  `CLI_TOOL_FAILED`. All REPLACE the historical `NETWORK_ERROR` mislabel — an
+ *  agent reading the code in chat now sees a tool problem, not a network one. */
 export const cliFailureErrorCode = (reason: CliFailureReason): RecipeErrorCode =>
-  reason === 'not_found' ? 'CLI_TOOL_NOT_FOUND' : 'CLI_TOOL_FAILED';
+  reason === 'not_found'
+    ? 'CLI_TOOL_NOT_FOUND'
+    : reason === 'untested_version'
+      ? 'CLI_TOOL_VERSION_UNTESTED'
+      : 'CLI_TOOL_FAILED';
 
 /** Narrow an unknown value (a thrown error's `cli_failure`, or a
  *  `RecipeError.details.cli_failure`) to the carrier — structural, so the

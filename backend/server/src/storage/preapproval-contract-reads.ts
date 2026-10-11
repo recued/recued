@@ -151,5 +151,25 @@ export const refreshPreapprovalContractQueries = (db: Database.Database, scope: 
   const rows = db.prepare('SELECT * FROM preapproval_contract_queries WHERE scope=? OR scope=?').all(scope, projected) as QueryRow[];
   for (const row of rows) refresh(db, row);
 };
+/** SQLite's own count of the rows this connection has inserted, updated or deleted. */
+const changeCounters = new WeakMap<Database.Database, Database.Statement>();
+const rowsChanged = (db: Database.Database): number => {
+  let counter = changeCounters.get(db);
+  if (!counter) { counter = db.prepare('SELECT total_changes()').pluck(); changeCounters.set(db, counter); }
+  return counter.get() as number;
+};
+
+/** ⛔ ONLY A WRITE THAT CHANGED A ROW REFRESHES (2026-10-09). A refresh re-reads
+ * every row of the scope for every recorded query, and on unchanged rows it is a
+ * no-op (`synchronizePreapprovalIdentity` writes only on a new hash). Run after
+ * every write, it made each boot re-hash the whole grant scope once per recipe
+ * grant that `setIfAbsent` re-seeds and finds present: 18 s of CPU on an idle
+ * machine for a realm holding ONE pre-approval recorded through a contract, a
+ * cost that grows with the square of the grant count. */
 export const mutatePreapprovalContractQueries = <T>(db: Database.Database, scope: string, write: () => T): T =>
-  db.transaction(() => { const result = write(); refreshPreapprovalContractQueries(db, scope); return result; }).immediate();
+  db.transaction(() => {
+    const before = rowsChanged(db);
+    const result = write();
+    if (rowsChanged(db) !== before) refreshPreapprovalContractQueries(db, scope);
+    return result;
+  }).immediate();

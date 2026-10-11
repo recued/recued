@@ -28,6 +28,7 @@ import {
 } from '../instance-store.js';
 import {
   createAdapterRegistry,
+  isMutationCapable,
   type FileAdapterEvent,
   type FileAdapterInstance,
   type FileAdapterRegistry,
@@ -49,6 +50,11 @@ import {
   type FileDispatcherDeps,
 } from './dispatcher.js';
 import type { EnrollDeps } from './enroll.js';
+import {
+  createWatchedFolders,
+  type WatchedFolders,
+  type WatchedFoldersAttachment,
+} from './watched-folders.js';
 
 export type FileKernelDispatchers = Required<
   Pick<
@@ -67,11 +73,9 @@ export interface ComposeFileStackOptions {
   /** Forwarded to every adapter context via `ctx.log`. Defaults to a
    *  no-op so tests that don't care stay quiet. */
   log?: FileStackLogger;
-  /** Event sink for adapter-emitted events (present / change / remove).
-   *  The Phase 7 v1 composition treats events as advisory — the
-   *  mutation dispatcher reads the live adapter directly, so a no-op
-   *  is acceptable. Wired up when Phase D file collections are
-   *  re-attached to this surface. */
+  /** Event sink for adapter-emitted events (present / change / remove),
+   *  beside the watched folders' collections (`attachWatchedFolders`), which
+   *  get an `fs` folder's events whether or not this is set. */
   onEvent?: (slug: string, event: FileAdapterEvent) => Promise<void> | void;
   /** D-124 Phase 2.4 — when supplied, every adapter drain emits a
    *  single `collection_backfill` activity row at completion. Carrying
@@ -106,6 +110,13 @@ export interface FileStack {
   /** Stop every live adapter and clear the map. Called from the
    *  lifecycle drain's `pause_collections` step. Idempotent. */
   disposeAll(): Promise<void>;
+  /** D-106 follow-up — give every `fs` folder a collection of its records
+   *  (`watched-folders.ts`). Call once, before `startAll`, when the registry
+   *  and the warehouse bus exist: a folder started before it gets its
+   *  collection at its next start. */
+  attachWatchedFolders(attachment: WatchedFoldersAttachment): void;
+  /** The attached folders, for tests and diagnostics. */
+  watchedFolders(): WatchedFolders | undefined;
 }
 
 export const composeFileStack = (
@@ -124,6 +135,7 @@ export const composeFileStack = (
   adapters.register(createExtDownloadsAdapterFactory({ registry: extDownloads }));
 
   const liveAdapters = new Map<string, FileAdapterInstance>();
+  let watched: WatchedFolders | undefined;
   const lifecycleTails = new Map<string, Promise<void>>();
   let closed = false;
   let disposePromise: Promise<void> | null = null;
@@ -198,6 +210,21 @@ export const composeFileStack = (
       throw err;
     }
 
+    // D-106 follow-up — an `fs` folder's events become its records. Opened
+    // before the adapter starts, so the walk's `present` events land.
+    const folder = stored.adapter_type === 'fs' ? watched?.open(row.slug) : undefined;
+    let backfillRecorder: ReturnType<typeof createBackfillAuditRecorder> | undefined;
+    const deliver = async (event: FileAdapterEvent): Promise<void> => {
+      if (closed) return;
+      if (folder) {
+        const result = await folder.ingest(event);
+        // Counts the walk's files; the recorder ignores anything after it.
+        if (result.outcome === 'stored') backfillRecorder?.recordImport(result.mtime);
+        else if (result.outcome === 'failed') backfillRecorder?.recordFailure();
+      }
+      await onEvent(row.slug, event);
+    };
+
     let instance: FileAdapterInstance;
     try {
       instance = factory.create({
@@ -211,7 +238,7 @@ export const composeFileStack = (
           });
           markStartDegraded();
         },
-        onEvent: (event) => closed ? undefined : onEvent(row.slug, event),
+        onEvent: deliver,
         log,
       });
     } catch (err) {
@@ -222,24 +249,23 @@ export const composeFileStack = (
       throw err;
     }
 
-    // D-124 Phase 2.4 — sync-level audit row at drain completion.
-    // The compose stack doesn't observe per-record events here (those
-    // flow via `options.onEvent` which production wires to a noop
-    // logger), so the row carries `records_imported: 0` /
-    // `records_failed: 0` / `event_at: null`. Still informative —
-    // operators see "the s3 backfill drain for slug='photos'
-    // completed in 4 minutes." If a future task threads a recording
-    // adapter through `options.onEvent`, the per-record counts can
-    // be wired without changing the audit shape.
-    const backfillRecorder = createBackfillAuditRecorder({
+    // D-124 Phase 2.4 — sync-level audit row at drain completion. An `fs`
+    // folder with a collection counts its walk's files through `deliver`;
+    // any other adapter's row carries `records_imported: 0` /
+    // `records_failed: 0` / `event_at: null`, which still says "the s3
+    // backfill drain for slug='photos' completed in 4 minutes."
+    const recorder = createBackfillAuditRecorder({
       auditLog: options.auditLog,
       platform: 'file',
       slug: row.slug,
       log: (level, msg, data) => log(level, msg, data),
     });
+    backfillRecorder = recorder;
+    folder?.beginWalk();
     try {
       await instance.start();
     } catch (err) {
+      await folder?.endWalk({ complete: false });
       if (closed) {
         try { await instance.stop(); } catch { /* shutdown containment */ }
         return;
@@ -248,9 +274,12 @@ export const composeFileStack = (
         err: err instanceof Error ? err.message : String(err),
       });
       markStartDegraded();
-      await backfillRecorder.finish('failed');
+      await recorder.finish('failed');
       throw err;
     }
+    // `start()` resolved after the adapter's walk: a stored file it did not
+    // see is gone, unless the walk could not read part of the folder.
+    await folder?.endWalk({ complete: instance.walkErrors?.() === 0 });
 
     if (closed) {
       // disposeAll may have closed admission while an initial scan was in
@@ -271,7 +300,20 @@ export const composeFileStack = (
         err: err instanceof Error ? err.message : String(err),
       });
     }
-    await backfillRecorder.finish();
+    // A watched folder's walk is its sync, as a resync already records
+    // (`handleFileResync`). Unstamped, Connections showed every folder as
+    // "First sync pending" for good while its files were already in the Files
+    // tab (live drive, 2026-10-10). Only a folder with records: an s3 or
+    // ext-downloads source keeps none, so "Ready for Chat" would be untrue.
+    if (folder) {
+      try { instances.updateAuthState('file', row.slug, { auth_state: 'healthy', last_synced_at: Date.now() }); }
+      catch (err) {
+        log('warn', `file-stack: recording the sync time failed for '${row.slug}'`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    await recorder.finish();
 
     liveAdapters.set(row.slug, instance);
   };
@@ -310,9 +352,13 @@ export const composeFileStack = (
     () => startLiveAdapterUnlocked(row),
   );
 
-  const stopLiveAdapter = (slug: string): Promise<void> => serializeLifecycle(
+  /** The enrollment was deleted: stop the adapter, then its records go. */
+  const deleteLiveAdapter = (slug: string): Promise<void> => serializeLifecycle(
     slug,
-    () => stopLiveAdapterUnlocked(slug),
+    async () => {
+      await stopLiveAdapterUnlocked(slug);
+      watched?.drop(slug);
+    },
   );
 
   /** A user-requested resync is deliberately a one-shot restart, not a new
@@ -346,7 +392,7 @@ export const composeFileStack = (
     instances,
     adapters,
     onEnrolled: (row) => closed ? Promise.resolve() : startLiveAdapter(row),
-    onDeleted: (slug) => closed ? Promise.resolve() : stopLiveAdapter(slug),
+    onDeleted: (slug) => closed ? Promise.resolve() : deleteLiveAdapter(slug),
     onResync: (row) => closed ? Promise.resolve() : resyncLiveAdapter(row),
   };
 
@@ -393,5 +439,31 @@ export const composeFileStack = (
     enrollDeps,
     startAll,
     disposeAll,
+    attachWatchedFolders(attachment) {
+      if (watched) return;
+      watched = createWatchedFolders({
+        ...attachment,
+        db,
+        rootOf: (slug) => {
+          const path = instances.get('file', slug)?.config.path;
+          return typeof path === 'string' && path.length > 0 ? path : undefined;
+        },
+        status: (slug) => {
+          const row = instances.get('file', slug);
+          return {
+            running: liveAdapters.has(slug),
+            watching: liveAdapters.has(slug)
+              && (row?.caps as FileCollectionCaps | undefined)?.watch === 'realtime',
+            auth_state: row?.auth_state ?? 'degraded',
+          };
+        },
+        adapter: (slug) => {
+          const live = liveAdapters.get(slug);
+          return live && isMutationCapable(live) ? live : undefined;
+        },
+        log,
+      });
+    },
+    watchedFolders: () => watched,
   };
 };

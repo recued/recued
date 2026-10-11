@@ -86,9 +86,9 @@ const signSlack = (body: string, ts: number, secret: string): string => {
 };
 
 describe('composeVendorWebhookPort — gates', () => {
-  it('returns undefined when webhookPort <= 0', () => {
+  it('returns undefined when webhooks are switched off', () => {
     const handler = composeVendorWebhookPort({
-      webhookPort: 0,
+      webhooksEnabled: false,
       connectionStore: stubConnectionStore([]),
     });
     expect(handler).toBeUndefined();
@@ -96,14 +96,14 @@ describe('composeVendorWebhookPort — gates', () => {
 
   it('returns undefined when connectionStore is absent', () => {
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
     });
     expect(handler).toBeUndefined();
   });
 
   it('returns a handler when port > 0 AND connectionStore is wired', () => {
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([]),
     });
     expect(typeof handler).toBe('function');
@@ -120,7 +120,7 @@ describe('composeVendorWebhookPort — D-188 master pause', () => {
   const sendSignedSlack = async (isPaused: boolean) => {
     const dispatchSlackEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([slackRow]),
       messengerDispatchers: { slack: dispatchSlackEvent },
       isPaused: () => isPaused,
@@ -164,7 +164,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
   it('verifies a signed Slack event_callback and dispatches it', async () => {
     const dispatchSlackEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([slackRow]),
       messengerDispatchers: { slack: dispatchSlackEvent },
       now: () => NOW_MS,
@@ -195,7 +195,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
   it('rejects an invalid Slack signature with 401', async () => {
     const dispatchSlackEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([slackRow]),
       messengerDispatchers: { slack: dispatchSlackEvent },
       now: () => NOW_MS,
@@ -221,7 +221,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
 
   it('returns 404 (vendor-agnostic) when Slack connection row is missing', async () => {
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([]),
       now: () => NOW_MS,
     })!;
@@ -250,7 +250,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
       config: { channel_id: 'C123' }, // signing_secret missing
     });
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([malformedRow]),
       now: () => NOW_MS,
     })!;
@@ -280,7 +280,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
     });
     const dispatch = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([wrongVendorRow]),
       messengerDispatchers: { slack: dispatch },
       now: () => NOW_MS,
@@ -315,7 +315,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
     });
     const dispatch = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([localRow]),
       messengerDispatchers: { slack: dispatch },
       now: () => NOW_MS,
@@ -340,7 +340,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
   it('default dispatchSlackEvent stub log+drops (no override)', async () => {
     const log = vi.fn();
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([slackRow]),
       log,
       now: () => NOW_MS,
@@ -381,7 +381,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
   it('verifies a signed Telegram update and dispatches it', async () => {
     const dispatchTelegramEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([tgRow]),
       messengerDispatchers: { telegram: dispatchTelegramEvent },
       now: () => NOW_MS,
@@ -410,7 +410,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
   it('rejects an invalid Telegram secret token with 401', async () => {
     const dispatchTelegramEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([tgRow]),
       messengerDispatchers: { telegram: dispatchTelegramEvent },
       now: () => NOW_MS,
@@ -440,7 +440,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
       config: { chat_id: '@my_channel' }, // webhook_secret missing
     });
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([malformedRow]),
       now: () => NOW_MS,
     })!;
@@ -464,7 +464,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
   it('default dispatchTelegramEvent stub log+drops (no override)', async () => {
     const log = vi.fn();
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([tgRow]),
       log,
       now: () => NOW_MS,
@@ -495,7 +495,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
 describe('composeVendorWebhookPort — vendor-agnostic 404', () => {
   it('returns 404 for an unconfigured vendor prefix', async () => {
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([]),
       now: () => NOW_MS,
     })!;
@@ -520,7 +520,7 @@ describe('composeVendorWebhookPort — vendor-agnostic 404', () => {
     });
     (row as { config_json: string }).config_json = '{ not valid json';
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([row]),
       now: () => NOW_MS,
     })!;

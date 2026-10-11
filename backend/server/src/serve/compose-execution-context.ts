@@ -53,6 +53,7 @@ import {
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
+import type { CliToolStatus } from '../cli-tool-status.js';
 import type { ScheduleHandlerDeps } from '../schedule-handler.js';
 import type { ConnectionLookup } from '../housekeeping/reconciliation/vendor-reconciler.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
@@ -250,7 +251,6 @@ export interface ComposeExecutionContextOptions {
     | 'collectionRegistry'
     | 'notificationDeps'
     | 'calendarStack'
-    | 'serviceStack'
     | 'channelDispatchers'
     | 'workEntityDispatchers'
     | 'inboundFileCollection'
@@ -303,6 +303,9 @@ export interface ExecutionContext {
    *  the same table would let the mint write grants the gate cannot see. */
   contractDefinitionStore: ContractDefinitionStore | undefined;
   grantEntryStore: ContractGrantEntryStore | undefined;
+  /** D-321 — the tool readiness service the executor checks with, surfaced for
+   *  `packs.tool_status` — see `ExecuteDepsBundle.cliToolStatus`. */
+  cliToolStatus: CliToolStatus;
   /** D-192 CORE #6 seam 7 (Group D) — the `vendor → RemoteChannel` messenger
    *  registry (slack / telegram / …), built ONCE and surfaced for
    *  `composeInboundAnswerDispatcher`'s `parseInboundReply` seam. These are the
@@ -442,7 +445,6 @@ export const composeExecutionContext = async (
     connectionNotificationDeps: collection.notificationDeps,
     fileStack: storage.fileStack,
     calendarStack: collection.calendarStack,
-    serviceStack: collection.serviceStack,
     sharedStore: app.sharedStoreRef,
     formResponseStore: storage.formResponseStoreRef,
     mailFactStore: storage.mailFactStoreRef,
@@ -758,6 +760,8 @@ export const composeExecutionContext = async (
     // materialized to a temp file and converted. Same bundle the `data-file-read`
     // ingredient already uses above — one remote reader, four channels.
     getRemoteFileReadDeps: app.getRemoteFileReadDeps,
+    // D-106 follow-up — and a watched folder's file, read from the owner's disk.
+    collectionRegistry: collection.collectionRegistry,
     // D-217 slice 2b-ii — the engine half of chunked-upload staging: stage a
     // file's plaintext once before the walk, dispose it after. The adapter half
     // (`readUploadChunk`, wired into the executor config above) reads the same
@@ -844,6 +848,8 @@ export const composeExecutionContext = async (
     // D-196 — seller-customer admission is re-checked for held raw MCP ops at
     // approval resume time, after expiry/grace/status may have changed.
     ...(app.sellerStoreRef ? { sellerCustomerAdmissionStore: app.sellerStoreRef } : {}),
+    // D-320 audit — a waiting webhook run resumes under its door's successor.
+    ...(app.webhookConsumerStoreRef ? { webhookConsumerStore: app.webhookConsumerStoreRef } : {}),
     // D-177 N.11 rule 5 (slice D) — the forwarded-sender candidate lookup,
     // closed over the chat bundle's per-session index (`chat:<session_id>`
     // mapped by `scopedCandidatesForChannelSession`; non-chat sessions
@@ -1010,6 +1016,7 @@ export const composeExecutionContext = async (
     // rows and the gate's reads are the same instances (see `ExecuteDepsBundle`).
     contractDefinitionStore: executeDepsBundle.contractDefinitionStore,
     grantEntryStore: executeDepsBundle.grantEntryStore,
+    cliToolStatus: executeDepsBundle.cliToolStatus,
     messengerChannels,
     emailChannel,
     serverDisplayName,

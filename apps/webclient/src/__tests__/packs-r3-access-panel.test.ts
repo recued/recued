@@ -20,6 +20,7 @@ import {
   PACK_ACCESS_CONTRACT_TOGGLE_ATTR,
   PACK_ACCESS_SUMMARY_ATTR,
 } from '../settings/pack-access-controls.js';
+import { PACK_CONNECTIONS_ATTR } from '../settings/pack-connections-controls.js';
 import {
   PACKS_DETAIL_SECTION_ATTR,
   PACKS_DETAIL_TAB_ATTR,
@@ -836,6 +837,49 @@ describe('packs detail ACCESS section integration', () => {
     const text = collectTextContent(access);
     expect(text).toContain('Self (you)');
     expect(text).not.toContain('Open Contracts');
+  });
+
+  it('D-320 — shows the Connections block above the Access panel when its calls are wired', async () => {
+    const doc = makeFakeDocument();
+    const host = makeFakeElement('div');
+    const h = makeCallers({ contracts: [door('door-a')] });
+    const view = {
+      pack_slug: 'stripe-pack',
+      slots: [{
+        slot: 'stripe',
+        catalogs: ['stripe-pack-comp'],
+        connections: [{ connection_name: 'stripe', display_name: 'Stripe live', enrolled: true, is_default: true }],
+        candidates: [],
+      }],
+    };
+    const mount = mountPacksPanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runList: async () => ({ packs: [packEntry('stripe-pack')] }),
+      runListContracts: h.runListContracts,
+      runContractGrantRead: h.runGrantRead,
+      runCatalogOperations: h.runCatalogOperations,
+      runPackConnections: {
+        list: async () => view,
+        add: async () => view,
+        remove: async () => view,
+        setDefault: async () => view,
+      },
+    });
+    await mount.whenLoaded();
+    mount.clickSelectPack('stripe-pack');
+    findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!.click();
+    await flush();
+
+    const access = findByAttrValue(host, PACKS_DETAIL_SECTION_ATTR, 'access')!;
+    const block = findByAttr(access, PACK_CONNECTIONS_ATTR);
+    expect(block).not.toBeNull();
+    expect(collectTextContent(block!)).toContain('Stripe live');
+    // First in the section: the accounts the pack acts in, before who may call it.
+    const order = access.children.map((c) =>
+      c.hasAttribute(PACK_CONNECTIONS_ATTR) ? 'connections' : c.hasAttribute(PACK_ACCESS_ATTR) ? 'access' : 'other');
+    expect(order.indexOf('connections')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('connections')).toBeLessThan(order.indexOf('access'));
   });
 
   it('keeps the placeholder when the access callers are absent', async () => {

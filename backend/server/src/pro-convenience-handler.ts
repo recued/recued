@@ -18,7 +18,7 @@
  *
  *  The response is secret-free by construction — the provisioner emits
  *  only coarse states + the already-secret-free `account_id` /
- *  `publisher_handle` / public `<handle>.recued.cloud` hostname. The
+ *  `publisher_handle` / public `<handle>.recued.net` hostname. The
  *  `server_scoped_credential` + entitlement claim never reach this layer.
  *
  *  Composer-side absence (no `deps`) returns `undefined` and the slice

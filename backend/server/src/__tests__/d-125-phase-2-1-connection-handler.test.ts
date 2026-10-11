@@ -563,6 +563,53 @@ describe('handleConnectionList', () => {
     expect(unwired.connections[0].bound_pack_slugs).toBeUndefined();
   });
 
+  it('D-320 — stamps default_for_pack_slugs on api rows beside the bound set, and a config key cannot spoof it', async () => {
+    await handleConnectionEnroll(
+      { store, now: () => 1_700_000_040_000 },
+      {
+        name: 'spoofer', kind: 'api', display_name: 'Spoofer',
+        config: { base_url: 'https://api.spoof.com', default_for_pack_slugs: ['evil-pack'] },
+        auth: bearer('t4'),
+      },
+    );
+    const unwired = await handleConnectionList({ store }, { kind: 'api' });
+    expect(unwired.connections.find((c) => c.name === 'spoofer')?.default_for_pack_slugs).toBeUndefined();
+    const wired = await handleConnectionList(
+      {
+        store,
+        boundPackSlugsForConnection: (name) => (name === 'hubspot' ? ['sales-pack', 'service-pack'] : []),
+        defaultPackSlugsForConnection: (name) => (name === 'hubspot' ? ['sales-pack'] : []),
+      },
+      undefined,
+    );
+    expect(wired.connections.find((c) => c.name === 'hubspot')?.default_for_pack_slugs).toEqual(['sales-pack']);
+    expect(wired.connections.find((c) => c.name === 'spoofer')?.default_for_pack_slugs).toEqual([]);
+    expect(wired.connections.find((c) => c.name === 'gh-mcp')?.default_for_pack_slugs).toBeUndefined();
+  });
+
+  it('D-320 slice 2h — stamps pack_holders on api rows, and a config key cannot spoof it', async () => {
+    await handleConnectionEnroll(
+      { store, now: () => 1_700_000_050_000 },
+      {
+        name: 'family-spoofer', kind: 'api', display_name: 'Family spoofer',
+        config: { base_url: 'https://api.spoof.com', pack_holders: { 'evil-pack': 'stripe-v2-core' } },
+        auth: bearer('t5'),
+      },
+    );
+    const unwired = await handleConnectionList({ store }, { kind: 'api' });
+    expect(unwired.connections.find((c) => c.name === 'family-spoofer')?.pack_holders).toBeUndefined();
+    const wired = await handleConnectionList(
+      {
+        store,
+        packHoldersForConnection: (name): Record<string, string> => (name === 'hubspot' ? { 'hubspot-deals': 'hubspot-core' } : {}),
+      },
+      undefined,
+    );
+    expect(wired.connections.find((c) => c.name === 'hubspot')?.pack_holders).toEqual({ 'hubspot-deals': 'hubspot-core' });
+    expect(wired.connections.find((c) => c.name === 'family-spoofer')?.pack_holders).toEqual({});
+    expect(wired.connections.find((c) => c.name === 'gh-mcp')?.pack_holders).toBeUndefined();
+  });
+
   it('D-194 #6 — a config key named bound_pack_slugs cannot spoof the stamp (reserved-field strip)', async () => {
     // A stored config key of the reserved name — must never shadow the code-set field.
     await handleConnectionEnroll(

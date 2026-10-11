@@ -200,6 +200,13 @@ export interface ConnectionRequirement {
   identity_endpoint?: string;
   /** Credential method — §5. */
   auth: ConnectionAuthDescriptor;
+  /** D-320 ruling 9 / 11 — this pack signs in through ANOTHER pack's connections:
+   *  the holder's slug, which the manifest also lists in `dependencies`. The
+   *  holder keeps the list of connections and the default; this pack's operations
+   *  follow its list. The rest of the requirement stays whole, so the install
+   *  dialog and the readiness checks read it as before. Validated against the
+   *  manifest's `dependencies` by `validateBulkPackManifest`. */
+  from_pack?: string;
 }
 
 /** Cap on `connection_requirements[]` length. A pack needing many DISTINCT
@@ -423,6 +430,12 @@ export const validateConnectionRequirementShape = (entry: unknown): string[] => 
   }
   // auth — required discriminated union.
   issues.push(...validateAuthDescriptor(r.auth));
+  // from_pack — optional; the holder pack's slug (D-320 ruling 11). That it names
+  // one of the manifest's dependencies is the manifest validator's check.
+  if (r.from_pack !== undefined
+    && (typeof r.from_pack !== 'string' || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(r.from_pack))) {
+    issues.push(`from_pack must be a pack slug when present; got ${JSON.stringify(r.from_pack)}`);
+  }
   return issues;
 };
 

@@ -42,9 +42,8 @@
  *  Bounded yield: each batch processes `CONTACT_MATERIALIZE_BATCH_SIZE`
  *  rows, optionally awaits a microtask in async callers (`yield_each`),
  *  then loops. Reports progress through the optional `onBatch`
- *  callback so the future broadcast bus (D-121 Phase 6) can surface
- *  `kind: 'service', op: 'lifecycle'` events for the webapp's
- *  "Building your contact graph..." indicator. */
+ *  callback, which a broadcast (D-121 Phase 6) could carry to the
+ *  webapp's "Building your contact graph..." indicator. */
 
 import type Database from 'better-sqlite3';
 import { CONTACT_MATERIALIZE_BATCH_SIZE, type CanonicalEvent } from '@recued/contracts';

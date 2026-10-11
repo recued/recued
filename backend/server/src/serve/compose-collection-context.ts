@@ -29,7 +29,6 @@ import {
   createUploadStagingRegistry,
   type UploadStagingRegistry,
 } from '../collections/file/upload-staging.js';
-import type { ServiceStack } from '../collections/service/compose.js';
 import { composeCalendarBoot } from '../composition/bin/wire-calendar-stack.js';
 import {
   composeConnectionNotification,
@@ -51,7 +50,6 @@ import {
 } from '../mail-facts/ai-pass.js';
 import type { ExecuteChatAiCall } from '../chat-orchestrator.js';
 import { isAiPaused, isByokAllowedForBackground } from '../housekeeping/trust-store.js';
-import { composeServiceBoot } from '../composition/bin/wire-service-stack.js';
 import {
   composeSupervisionStack,
   type SupervisionStack,
@@ -153,9 +151,9 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   // dir; present on any db boot (independent of the CAS / file collection).
   archiveUploadService: ArchiveUploadService | undefined;
   /** D-217 slice 2b-ii — staged plaintext for chunked EGRESS, addressed by
-   *  token. Read by two seams that must never hold the handle themselves: the
-   *  engine (`ExecutionContext.uploadStaging`, which stages + disposes) and the
-   *  `connection.api` adapter (`readUploadChunk`, one range per APPEND).
+   *  token. Read through two `connection.api` adapter deps that never hold the
+   *  handle themselves: `uploadStaging` (stages + disposes) and
+   *  `readUploadChunk` (one range per APPEND).
    *  Present iff the CAS file collection is; absent ⇒ a chunked upload fails
    *  closed. */
   uploadStagingRegistry: UploadStagingRegistry | undefined;
@@ -181,7 +179,6 @@ export interface CollectionContext extends ConnectionNotificationBundle {
    *  of (`BOOT_EVENT_KINDS`), recorded for it. Sealed and replayed by the
    *  listeners' composition. */
   bootEvents: BootEventRecorder;
-  serviceStack: ServiceStack | undefined;
   /** Supervision feature — cli-daemon keep-alive stack. Undefined on a db-less
    *  boot. Its cli executor is late-bound at the collection/execution
    *  convergence point. */
@@ -508,26 +505,8 @@ export const composeCollectionContext = (
     });
   }
 
-  const serviceStack = composeServiceBoot({
-    db,
-    dataPath: dirname(dbPath),
-    manifests,
-    runtime: {
-      defaultQuotaBytes: runtimeConfig.get('collection.service.default.quota_bytes') as number,
-      minDiskFreeBytes: runtimeConfig.get('collection.service.min_disk_free_bytes') as number,
-      invokeSlackBytes: runtimeConfig.get('collection.service.invoke_slack_bytes') as number,
-      duSampleIntervalS: runtimeConfig.get('collection.service.du_sample_interval_s') as number,
-      // D-179 P5 — invoke guard knobs.
-      invokeTimeoutCeilingMs: runtimeConfig.get('collection.service.invoke_timeout_ceiling_ms') as number,
-      maxConcurrentInvokes: runtimeConfig.get('collection.service.max_concurrent_invokes') as number,
-      maxConcurrentInvokesPerInstance: runtimeConfig.get('collection.service.max_concurrent_invokes_per_instance') as number,
-    },
-    baseVault,
-    ...(auditLog ? { auditLog } : {}),
-  });
-
-  // Supervision feature — cli-daemon keep-alive. Rides the serviceStack
-  // lifecycle (boot startAll / shutdown disposeAll / ws-server rpc). The cli
+  // Supervision feature — cli-daemon keep-alive: started at boot (startAll),
+  // disposed at shutdown, read by the ws-server rpc. The cli
   // executor it launches through is built later in `compose-execution-context`,
   // so it's bound post-compose via `bindExecutor` (see the convergence point in
   // `start-post-app-collection-execution-runtime`). Absent on a db-less boot.
@@ -654,10 +633,6 @@ export const composeCollectionContext = (
       });
     }
 
-    if (serviceStack) {
-      await serviceStack.startAll();
-    }
-
     if (supervisionStack) {
       // Boot reconcile — adopt surviving daemons / relaunch the enabled,
       // boot-persistent ones. The cli executor is already bound by now (compose
@@ -679,7 +654,6 @@ export const composeCollectionContext = (
     mailFactAiSettled: (email: MailFactEmailRef) => mailFactAi?.untilSettled(email) ?? Promise.resolve(0),
     mailFactEvents,
     bootEvents,
-    serviceStack,
     supervisionStack,
     collectionRegistry,
     watcherDispatcher,

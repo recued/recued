@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ConnectionHealth, ConnectionView, PackListEntry } from '@recued/contracts';
+import {
+  requiredScopesByConnection,
+  type BulkPackManifest,
+  type ConnectionHealth,
+  type ConnectionView,
+  type PackListEntry,
+} from '@recued/contracts';
 import {
   buildConnectionEditDialogPatch,
   projectConnectionPayload,
@@ -231,11 +237,27 @@ const op = (
   ...(required_scopes !== undefined ? { required_scopes } : {}),
 });
 
+/** An installed pack as `packs.list` sends it: no manifest (`b06752cc9`), and
+ *  the scopes per connection slot the server lifts from it with this helper. */
 const installedPackWith = (
   ingredients: unknown[],
   operations: unknown[],
-): PackListEntry =>
-  ({
+): PackListEntry => {
+  const manifest = {
+    contents: [
+      {
+        type: 'composition',
+        composition: {
+          schema_version: 1,
+          slug: 'c',
+          ingredients,
+          operations,
+        },
+      },
+    ],
+  } as unknown as BulkPackManifest;
+  const scopes = requiredScopesByConnection(manifest);
+  return ({
     slug: 'p',
     publisher: 'recued-core',
     name: 'P',
@@ -246,20 +268,9 @@ const installedPackWith = (
     requires: [],
     recipe_count: 0,
     body_visibility_grant_count: 0,
-    manifest: {
-      contents: [
-        {
-          type: 'composition',
-          composition: {
-            schema_version: 1,
-            slug: 'c',
-            ingredients,
-            operations,
-          },
-        },
-      ],
-    },
+    ...(Object.keys(scopes).length > 0 ? { required_scopes_by_connection: scopes } : {}),
   }) as unknown as PackListEntry;
+};
 
 interface MountOpts {
   connections?: ReadonlyArray<ConnectionView>;

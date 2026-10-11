@@ -253,7 +253,7 @@ export const NETWORK_ERROR_CODES: ReadonlyArray<NetworkErrorCode> = [
  *  change takes effect without a restart.
  *
  *  - `redirect` (default) — bare 302 to `ROOT_REDIRECT_TARGET`
- *    (`app.recued.com`) for `<handle>.recued.cloud` Hosts; 404 for any
+ *    (`app.recued.com`) for `<handle>.recued.net` Hosts; 404 for any
  *    other Host (the handle never leaks into the redirect chain, per
  *    `feedback_no_handle_in_redirect_chain`). Safe for public + always
  *    the newest webclient.
@@ -750,7 +750,7 @@ export const DEFAULT_PATH_RESOLUTION: Record<PathRole, PathResolution> = {
 
 /** D-148 § A.6.3 — closed list of cert sources backing a domain entry.
  *
- *  - `pro_acme` — Pro DDNS hostname (`<handle>.recued.cloud`); auto-
+ *  - `pro_acme` — Pro DDNS hostname (`<handle>.recued.net`); auto-
  *    managed via the existing ACME-DNS-01 helper (P7 substrate);
  *    auto-renewed; one entry per Pro subscription.
  *  - `pro_acme_custom` — D-235: a hostname the USER owns, issued and
@@ -1023,7 +1023,7 @@ export interface PinnedDomainCertState {
 // D-148 follow-up #7 — bare-302 root redirect substrate
 // ────────────────────────────────────────────────────────────────
 //
-// When a visitor hits `https://<handle>.recued.cloud/` (bare root, GET
+// When a visitor hits `https://<handle>.recued.net/` (bare root, GET
 // or HEAD), the public listener responds with HTTP 302 + `Location: https://app.recued.com/`.
 // The redirect target is a hardcoded constant — the handle from the
 // inbound Host header is never echoed into the Location URL, query

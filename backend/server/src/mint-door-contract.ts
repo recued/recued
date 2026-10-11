@@ -260,3 +260,28 @@ export const retireDoorContract = (
 ): void => {
   deps.definitionStore.revoke(contractId, reason);
 };
+
+/** Carry the owner's revokes from the doors a re-mint replaces onto the new door.
+ *
+ *  The mint writes a `granted: true` row per derived op, so a replacement door would
+ *  otherwise grant back every op the owner switched off on its Ops or Entities tab: the
+ *  rows live on the contract, and the contract is replaced. A `granted: false` row is
+ *  only ever narrowing, so it is copied as it is, whatever its key; one the new door no
+ *  longer needs is inert. Returns how many rows were copied. */
+export const carryOwnerRevokes = (
+  fromContractIds: readonly string[],
+  toContractId: string,
+  deps: Pick<MintDoorDeps, 'grantEntryStore' | 'now'>,
+): number => {
+  const at = deps.now();
+  let carried = 0;
+  for (const from of fromContractIds) {
+    if (from === toContractId) continue;
+    for (const row of deps.grantEntryStore.listForContract(from)) {
+      if (row.granted !== false) continue;
+      deps.grantEntryStore.set(toContractId, row.entry_key, false, at);
+      carried += 1;
+    }
+  }
+  return carried;
+};

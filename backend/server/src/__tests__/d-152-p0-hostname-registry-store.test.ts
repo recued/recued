@@ -134,7 +134,7 @@ describe('D-152 P0 hostname registry store', () => {
     expect(store.list()).toHaveLength(1);
   });
 
-  it('restricts recued_acme and ddns_managed rows to single-label recued.cloud hostnames', () => {
+  it('restricts recued_acme and ddns_managed rows to single-label DDNS-zone hostnames', () => {
     const store = makeStore();
 
     expect(() =>

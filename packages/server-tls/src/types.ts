@@ -41,13 +41,14 @@ export type PortUpgradeHandler = (
  *  parsing + validation lives in the `cert-chain.ts` helpers and the
  *  Reachability Doctor's TLS block.
  *
- *  Three TLS modes per `resolveTlsIntegration` from
- *  `@recued/server-network`:
- *    - `recued-acme`: the server holds the keypair locally; this
- *      shape is what the listener wraps in https.createServer.
- *    - `certbot` / `caddy`: TLS terminated upstream — `private_key`
- *      is empty + the listener binds plaintext. The `cert_pem` slot
- *      may still be populated for diagnostics. */
+ *  Either the server holds the keypair locally (a certificate Recued
+ *  issued, or one the owner uploaded) and this is what the listener
+ *  wraps in https.createServer, or TLS is terminated upstream (a proxy
+ *  in front): `private_key` is empty and the listener binds plaintext.
+ *  The `cert_pem` slot may still be populated for diagnostics. This
+ *  named three modes from `@recued/server-network`'s
+ *  `resolveTlsIntegration` until 2026-10-10; nothing called it, and it
+ *  was deleted. */
 export interface CertChain {
   cert_pem: string;
   private_key_pem: string;

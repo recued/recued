@@ -1,10 +1,10 @@
-/** D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud` unbind
+/** D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net` unbind
  *  substrate.
  *
  *  Tears down two coupled effects in one operator-initiated transaction:
  *
  *    1. Releases the Pro DDNS subdomain at the cloud helper (POST /v1/ddns/...
- *       — see § A.5.2). The cloud side stops resolving `<handle>.recued.cloud`
+ *       — see § A.5.2). The cloud side stops resolving `<handle>.recued.net`
  *       to the user's server's IP.
  *    2. Removes the auto-managed cert row from `SqliteTlsDomainStore` (W3.6).
  *       The local TLS termination drops the Pro hostname from its SNI table.
@@ -69,7 +69,7 @@ export interface ProAcmeAuditSink {
      *  under. Mirrors `tls_domain.remove`'s W3.6 P2 canonicalisation. */
     domain: string;
     /** Handle stem the cloud DDNS release fired against —
-     *  `alice.recued.cloud` → `alice`. Carried in the audit row so the
+     *  `alice.recued.net` → `alice`. Carried in the audit row so the
      *  cloud-side correlation is recoverable. */
     handle: string;
     /** Paired-client instance_id that issued the rpc. The state-machine
@@ -139,7 +139,7 @@ export const deriveProAcmeHandle = (canonicalDomain: string): string | null => {
 
 /** Canonicalise a domain identifier the same way `SqliteTlsDomainStore`
  *  does at the upload boundary (W3.6 P2 fold). Lowercase + trim so that
- *  `'  Alice.Recued.Cloud '` matches the stored `'alice.recued.cloud'`
+ *  `'  Alice.Recued.Net '` matches the stored `'alice.recued.net'`
  *  row. */
 export const canonicaliseProAcmeDomain = (raw: string): string =>
   raw.trim().toLowerCase();

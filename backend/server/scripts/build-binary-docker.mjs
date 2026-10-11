@@ -333,7 +333,7 @@ const wsUpgradeSmoke = async (triple, outDir, port) => {
     // where the process re-launches ITSELF.
     //
     // ⛔ ITS OWN DIRECTORY, not just its own db file. The realm lock is
-    // `{data_path}/recued-server.lock`, keyed on the DIRECTORY — and this
+    // `recued-server.lock` in the db's folder, keyed on the DIRECTORY — and this
     // container's own server runs with `-w /tmp` and the default db, so `/tmp`
     // is already locked. A sibling db there would be refused and the gate would
     // report a defect that is not there.

@@ -2,7 +2,13 @@
 
 import toml from '@iarna/toml';
 import {
+  isBootstrapKey,
+  LEGACY_WEBHOOK_PORT_KEY,
+  RETIRED_BOOTSTRAP_SETTINGS,
+} from './bootstrap-keys.js';
+import {
   getRuntimeSchemaEntry,
+  RETIRED_RUNTIME_SETTINGS,
   runtimeDefaults,
 } from './schema.js';
 import type {
@@ -23,12 +29,6 @@ export class ConfigValidationError extends Error {
     this.name = 'ConfigValidationError';
   }
 }
-
-/** Bootstrap field names, for misplaced-key detection. Mirrors the closed set
- *  `assignBootstrap` accepts (and `env.ts`'s `BOOTSTRAP_KEYS`). */
-const BOOTSTRAP_FIELDS: ReadonlySet<string> = new Set([
-  'data_path', 'bind_host', 'bind_port', 'mcp_port', 'webhook_port', 'log_path',
-]);
 
 /** Parse a TOML string into the narrower `{ bootstrap, runtime }` shape.
  *
@@ -51,10 +51,27 @@ const BOOTSTRAP_FIELDS: ReadonlySet<string> = new Set([
  *
  *  Deliberately NARROW: only entries that resolve to a key the schema actually
  *  knows are reported. A genuinely unrecognised top-level section is still
- *  tolerated in silence, which is the plugin/forward-compat behaviour above. */
+ *  tolerated in silence, which is the plugin/forward-compat behaviour above.
+ *
+ *  `retired` names the removed `[bootstrap]` keys the file still sets
+ *  (`bootstrap-keys.ts`), and `retiredRuntime` the removed runtime keys
+ *  (`RETIRED_RUNTIME_SETTINGS`), wherever in the file they sit. They are
+ *  ignored and never throw — not even for a value of the wrong type — because
+ *  a file written by an older install must still boot.
+ *
+ *  `renamed` reports `webhook_port`, the old name of `webhooks_enabled`. It is
+ *  still validated as the port number it always claimed to be and still read
+ *  (non-zero = on), unless the file also sets `webhooks_enabled`, which wins. */
 export const parseToml = (
   src: string,
-): { parsed: ParsedToml; unknown: string[]; misplaced: string[] } => {
+): {
+  parsed: ParsedToml;
+  unknown: string[];
+  misplaced: string[];
+  retired: string[];
+  retiredRuntime: string[];
+  renamed: RenamedBootstrapKey[];
+} => {
   let raw: Record<string, unknown>;
   try {
     raw = toml.parse(src) as Record<string, unknown>;
@@ -66,10 +83,27 @@ export const parseToml = (
   const bootstrap: Partial<BootstrapConfig> = {};
   const runtime: Partial<RuntimeConfig> = {};
   const unknown: string[] = [];
+  const retired = new Set<string>();
+  const retiredRuntime = new Set<string>();
 
   const bootRaw = isObject(raw.bootstrap) ? (raw.bootstrap as Record<string, unknown>) : {};
+  let legacyWebhookPort: number | undefined;
   for (const [key, value] of Object.entries(bootRaw)) {
+    if (RETIRED_BOOTSTRAP_SETTINGS.has(key)) {
+      retired.add(key);
+      continue;
+    }
+    if (key === LEGACY_WEBHOOK_PORT_KEY) {
+      legacyWebhookPort = assertPort(value, `bootstrap.${key}`);
+      continue;
+    }
     assignBootstrap(bootstrap, key, value);
+  }
+  const renamed: RenamedBootstrapKey[] = [];
+  if (legacyWebhookPort !== undefined) {
+    const overridden = bootstrap.webhooks_enabled !== undefined;
+    if (!overridden) bootstrap.webhooks_enabled = legacyWebhookPort > 0;
+    renamed.push({ key: LEGACY_WEBHOOK_PORT_KEY, port: legacyWebhookPort, overridden });
   }
 
   const runRaw = isObject(raw.runtime) ? (raw.runtime as Record<string, unknown>) : {};
@@ -78,7 +112,8 @@ export const parseToml = (
     for (const [flatKey, flatVal] of flat) {
       const entry = getRuntimeSchemaEntry(flatKey);
       if (!entry) {
-        unknown.push(`runtime.${flatKey}`);
+        if (RETIRED_RUNTIME_SETTINGS.has(flatKey)) retiredRuntime.add(flatKey);
+        else unknown.push(`runtime.${flatKey}`);
         continue;
       }
       runtime[flatKey] = coerceAndValidate(entry, flatVal);
@@ -94,14 +129,36 @@ export const parseToml = (
     for (const [flatKey] of flattenDotted(key, value)) {
       if (getRuntimeSchemaEntry(flatKey)) {
         misplaced.push(`${flatKey} → move under [runtime]`);
-      } else if (BOOTSTRAP_FIELDS.has(flatKey)) {
+      } else if (isBootstrapKey(flatKey)) {
         misplaced.push(`${flatKey} → move under [bootstrap]`);
+      } else if (flatKey === LEGACY_WEBHOOK_PORT_KEY) {
+        misplaced.push(`${flatKey} → write webhooks_enabled under [bootstrap]`);
+      } else if (RETIRED_BOOTSTRAP_SETTINGS.has(flatKey)) {
+        retired.add(flatKey);
+      } else if (RETIRED_RUNTIME_SETTINGS.has(flatKey)) {
+        retiredRuntime.add(flatKey);
       }
     }
   }
 
-  return { parsed: { bootstrap, runtime }, unknown, misplaced };
+  return {
+    parsed: { bootstrap, runtime },
+    unknown,
+    misplaced,
+    retired: [...retired],
+    retiredRuntime: [...retiredRuntime],
+    renamed,
+  };
 };
+
+/** A `[bootstrap]` key written under its old name — today only `webhook_port`. */
+export interface RenamedBootstrapKey {
+  key: string;
+  /** The value as written. */
+  port: number;
+  /** True when the file also sets the new name, which won. */
+  overridden: boolean;
+}
 
 /** Given a possibly-nested TOML key (native TOML dotted keys flatten
  *  into nested objects), re-expand into dotted flat keys so
@@ -129,20 +186,12 @@ const assignBootstrap = (
   value: unknown,
 ): void => {
   switch (key) {
-    case 'data_path':
-    case 'bind_host':
-    case 'log_path': {
-      const s = assertString(value, `bootstrap.${key}`);
-      (bootstrap as Record<string, unknown>)[key] = s;
-      return;
-    }
     case 'bind_port':
-    case 'mcp_port':
-    case 'webhook_port': {
-      const n = assertPort(value, `bootstrap.${key}`);
-      (bootstrap as Record<string, unknown>)[key] = n;
+      bootstrap.bind_port = assertPort(value, `bootstrap.${key}`);
       return;
-    }
+    case 'webhooks_enabled':
+      bootstrap.webhooks_enabled = assertBoolean(value, `bootstrap.${key}`);
+      return;
     default:
       // Silently ignore unknown bootstrap keys — we treat the bootstrap
       // section as a closed set but don't want to break on future-minor
@@ -215,10 +264,10 @@ const coerceAndValidate = (
 const isObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
 
-const assertString = (value: unknown, field: string): string => {
-  if (typeof value !== 'string') {
+const assertBoolean = (value: unknown, field: string): boolean => {
+  if (typeof value !== 'boolean') {
     throw new ConfigValidationError(
-      `${field} expects string, got ${describeType(value)}`,
+      `${field} expects true or false, got ${describeType(value)}`,
       field,
     );
   }

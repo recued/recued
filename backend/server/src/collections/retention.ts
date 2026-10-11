@@ -8,8 +8,8 @@
  *
  *  Three entry points in the broader system:
  *  1. Per-collection cron tick — default 1 h interval, wired inside
- *     each concrete adapter (Commit 10 for webhook, Commit 12 for
- *     mail). File adapter leaves this unwired because files default
+ *     each concrete adapter (Commit 12 for mail; Commit 10 wired the
+ *     webhook collection's, removed 2026-10-10). File adapter leaves this unwired because files default
  *     to `retention_days: 0` (the user owns the filesystem; we'd
  *     rather stop syncing than delete their records).
  *     ⚠ NOT TRUE FOR MAIL (verified 2026-09-26, D-315): the mail
@@ -18,7 +18,7 @@
  *  2. Pressure-driven reclaim — the Phase B cascade orchestrator
  *     calls `run()` inline on a collection whose gate flips to
  *     `pressure_managed`. Same pruner, no separate size-based pass:
- *     age-based is enough for realistic mail / webhook loads, and
+ *     age-based is enough for realistic mail loads, and
  *     the cascade falls through to the orphan-CAS sweep + the
  *     user-content block if age-based doesn't free enough.
  *  3. Manual admin rpc `collection.runRetention` (Commit 5's
@@ -51,7 +51,7 @@ export interface CollectionRetentionConfig {
 }
 
 /** Narrow surface the retention runner needs — every collection table
- *  (mail / file / webhook via the generic `CollectionTable`, calendar
+ *  (mail / file via the generic `CollectionTable`, calendar
  *  via `CalendarCollectionTable`) exposes a structurally identical
  *  `pruneOlderThan`. Typing it here keeps retention reusable across
  *  table shapes. */

@@ -6,7 +6,7 @@
  *
  *  Both helpers were added in the Codex W3.5b fold:
  *  - `deriveBootstrapDerivedExposureState` (P1): seeds the initial
- *    resolution from explicit operator gestures (`bootstrap.webhook_port`
+ *    resolution from explicit operator gestures (`bootstrap.webhooks_enabled`
  *    + `RECUED_PUBLIC_REACHABLE`) so configured webhook listeners stay
  *    reachable after the path-routed migration.
  *  - `assertLanListenerBoundOrExit` (P2): fails boot when the LAN
@@ -23,9 +23,9 @@ import type {
 
 /** Boot-time inputs that influence the initial exposure state. */
 export interface BootstrapDerivedExposureStateInput {
-  /** `loadedConfig.bootstrap.webhook_port`. `> 0` enables webhooks LAN
-   *  (and webhooks public when paired with public_reachable). */
-  webhook_port: number;
+  /** `loadedConfig.bootstrap.webhooks_enabled`: enables webhooks LAN (and
+   *  webhooks public when paired with public_reachable). */
+  webhooks_enabled: boolean;
   /** `RECUED_PUBLIC_REACHABLE` env var (parsed to boolean). When true,
    *  the legacy single-listener flow served every path on the public
    *  port — mirror by widening health + ws + llm_gateway + webhooks'
@@ -52,7 +52,7 @@ export interface BootstrapDerivedExposureStateInput {
  *  | ws          | ✓                    | ✓ iff public_reachable                    |
  *  | mcp         | ✓                    | — (ack-gated; user toggles via Settings)  |
  *  | llm_gateway | ✓                    | ✓ iff public_reachable                    |
- *  | webhooks    | ✓ iff webhook_port>0 | ✓ iff webhook_port>0 AND public_reachable |
+ *  | webhooks    | ✓ iff webhooks_enabled | ✓ iff webhooks_enabled AND public_reachable |
  *  | reception   | —                    | — (D-149 opt-in)                          |
  *  | oauth       | —                    | — (D-165 opt-in)                          |
  *  | ask         | —                    | — (D-158 opt-in)                          |
@@ -79,8 +79,8 @@ export interface BootstrapDerivedExposureStateInput {
 export const deriveBootstrapDerivedExposureState = (
   input: BootstrapDerivedExposureStateInput,
 ): ExposureState => {
-  const { webhook_port, public_reachable } = input;
-  const webhooksLan = webhook_port > 0;
+  const { webhooks_enabled, public_reachable } = input;
+  const webhooksLan = webhooks_enabled;
   const webhooksPublic = webhooksLan && public_reachable;
   return {
     resolution: {
@@ -109,7 +109,7 @@ export const deriveBootstrapDerivedExposureState = (
     public_mcp_acknowledgement: { acknowledged: false },
     last_changed_at: Date.now(),
     changed_by_client_id: 'system:bootstrap_derive',
-    reason: `webhook_port=${webhook_port}, public_reachable=${public_reachable}`,
+    reason: `webhooks_enabled=${webhooks_enabled}, public_reachable=${public_reachable}`,
   };
 };
 

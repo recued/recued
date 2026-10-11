@@ -47,8 +47,7 @@ describe('D-126 Phase 1.2 — kindToScope', () => {
     expect(kindToScope('chat')).toEqual(['ext']);
   });
 
-  it('returns server-only for service (D-118 long-running kind) and cli (D-182 local binary)', () => {
-    expect(kindToScope('service')).toEqual(['server']);
+  it('returns server-only for cli (D-182 local binary)', () => {
     expect(kindToScope('cli')).toEqual(['server']);
   });
 
@@ -70,8 +69,8 @@ describe('D-126 Phase 1.2 — kindToScope', () => {
 });
 
 describe('D-126 Phase 1.2 — deriveIngredientScope (table-driven via kindToScope)', () => {
-  it('preserves service semantics — ["server"] (regression sentinel for D-119 P15)', () => {
-    expect(deriveIngredientScope(baseManifest('service'))).toEqual(['server']);
+  it('a server-only kind derives ["server"] (regression sentinel for D-119 P15)', () => {
+    expect(deriveIngredientScope(baseManifest('cli'))).toEqual(['server']);
   });
 
   it('returns ["device"] for kind:dom (replaces isDomShaped inference)', () => {

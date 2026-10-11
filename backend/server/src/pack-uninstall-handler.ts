@@ -92,6 +92,8 @@ import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { createContractGrantStore } from './storage/contract-grant-store.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
+import { createPackConnectionDefaultStore } from './storage/pack-connection-default-store.js';
+import { createPackConnectionHolderStore } from './storage/pack-connection-holder-store.js';
 import type { WsClient } from './ws-server.js';
 import {
   uninstallRecordsPackAtomic,
@@ -298,6 +300,26 @@ export const handlePacksUninstall = async (
       'forbidden',
       `packs.uninstall: ${JSON.stringify(pack_slug)} is a core feature installed and maintained by the server, not a pack you manage`,
     );
+  }
+  // ⛔ D-320 ruling 9 — A PACK OTHERS SIGN IN THROUGH IS NOT REMOVED FROM UNDER
+  // THEM. It holds their list and their default (`from_pack`, slice 2c). Removed,
+  // its list went and they kept bindings nothing held: an empty Access tab, a
+  // Remove refused naming a pack no longer installed, every scheduled run
+  // refused. They are uninstalled first (owner, 2026-10-10). Before anything is
+  // touched, so a refusal leaves the pack as it was.
+  if (deps.contractStore) {
+    const borrowers = createPackConnectionHolderStore(deps.contractStore).borrowersOf(pack_slug)
+      .filter((borrower) => borrower !== pack_slug && getInstalledPack(deps.contractStore!, borrower) !== null);
+    if (borrowers.length > 0) {
+      const nameOf = (slug: string): string => resolveBundledPackManifest(deps.packDir, slug)?.name ?? slug;
+      throw new RpcError(
+        'conflict',
+        `packs.uninstall: ${nameOf(pack_slug)} cannot be removed while ${borrowers.length === 1 ? 'a pack signs' : `${String(borrowers.length)} packs sign`} in through its connections: ${borrowers.map(nameOf).join(', ')}. Remove ${borrowers.length === 1 ? 'it' : 'them'} first.`,
+        409,
+        'packs.uninstall',
+        { borrowers },
+      );
+    }
   }
   // D-221 — Records inventory/capability identity is full-ref-derived rather
   // than public-slug keyed. Resolve it before the legacy slug existence proof,
@@ -702,6 +724,8 @@ export const handlePacksUninstall = async (
       // D-170 gap #2 — drop this pack's connection→catalog bindings alongside its
       // grants + inventory (a recipe-only pack has none, so it's a no-op there).
       const bindingStore = createConnectionCatalogBindingStore(deps.contractStore);
+      const defaultStore = createPackConnectionDefaultStore(deps.contractStore);
+      const holderStore = createPackConnectionHolderStore(deps.contractStore);
       // Reconcile targets = this pack's BOUND connections ∪ its GRANT-target
       // connections (§1.6 follow-on): `removePackGroups` below shrinks what a
       // surviving connection's profile derives from, so it must be re-derived
@@ -748,6 +772,9 @@ export const handlePacksUninstall = async (
             undefined,
           );
           bindingStore.removeForPack(pack_slug);
+          // D-320 — the pack's stored defaults go with its bindings.
+          defaultStore.removeForPack(pack_slug);
+          holderStore.remove(pack_slug);
         });
         for (const id of localDroppable) deps.registry.unregister(id);
       } else {
@@ -774,6 +801,9 @@ export const handlePacksUninstall = async (
             undefined,
           );
           bindingStore.removeForPack(pack_slug);
+          // D-320 — the pack's stored defaults go with its bindings.
+          defaultStore.removeForPack(pack_slug);
+          holderStore.remove(pack_slug);
         });
       }
     } catch (e) {

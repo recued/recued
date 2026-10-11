@@ -2300,8 +2300,9 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
 // dispatch path (resolveCanonicalRecipeForDispatch) lowers + runs an inline,
 // never-installed op-step recipe, so persisting one is no longer storing "an
 // unrunnable recipe". A runnable op-step recipe SAVES; only a definitively-
-// unrunnable op-step (here a canonical op with no type:'connection' variable)
-// is rejected — via the shared checkInlineOpSteps both seams call.
+// unrunnable op-step (an unregistered kernel op) is rejected — via the shared
+// checkInlineOpSteps both seams call. D-320 phase 3 (3d): a canonical op with no
+// connection setting is runnable now (a run gives it its slot's), so it saves.
 // ────────────────────────────────────────────────────────────────
 
 describe('MCP tool: recued_saveRecipe — op-step acceptance (D-182)', () => {
@@ -2348,8 +2349,8 @@ describe('MCP tool: recued_saveRecipe — op-step acceptance (D-182)', () => {
     output: { sidebar: [] },
   };
 
-  // The SAME op-step but with NO connection variable — definitively unrunnable
-  // (opStepConnectionSlots fails closed at dispatch), so the save tool rejects it.
+  // The SAME op-step but with NO connection variable — refused until D-320 phase 3,
+  // whose runs give the step its slot's setting (3a); it saves now (3d).
   const slotlessOpStepRecipe = {
     ...runnableOpStepRecipe,
     recipe_id: 'mcp-slotless-op-step',
@@ -2375,15 +2376,30 @@ describe('MCP tool: recued_saveRecipe — op-step acceptance (D-182)', () => {
     expect(deps.recipeStore.get('mcp-op-step-recipe')).toBeTruthy();
   });
 
-  it('rejects a slotless op-step recipe (no type:connection variable) and does NOT persist it', async () => {
+  it('saves a slotless op-step recipe (D-320 3d: new recipes name no connection)', async () => {
     const deps = dbDeps();
     const res = await _testing.handleToolCall(
       { name: 'recued_saveRecipe', arguments: { recipe: slotlessOpStepRecipe } },
       deps,
     );
+    expect(errored(res)).toBe(false);
+    expect(deps.recipeStore.get('mcp-slotless-op-step')).toBeTruthy();
+  });
+
+  it('still rejects an unrunnable op-step (an unregistered kernel op) and does NOT persist it', async () => {
+    const deps = dbDeps();
+    const res = await _testing.handleToolCall(
+      { name: 'recued_saveRecipe', arguments: { recipe: {
+        ...slotlessOpStepRecipe,
+        recipe_id: 'mcp-unregistered-op',
+        steps: [{ id: 'deals', op: 'core.ai.bogus_op', args: {} }],
+        dependencies: undefined,
+      } } },
+      deps,
+    );
     expect(errored(res)).toBe(true);
-    expect(errText(res)).toMatch(/type:'connection' variable/);
-    expect(deps.recipeStore.get('mcp-slotless-op-step')).toBeFalsy();
+    expect(errText(res)).toMatch(/not a registered kernel operation/);
+    expect(deps.recipeStore.get('mcp-unregistered-op')).toBeFalsy();
   });
 
   it('still saves a concrete (non-op-step) recipe', async () => {

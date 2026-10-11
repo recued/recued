@@ -31,12 +31,8 @@ import type {
 } from '../collections/types.js';
 
 const BOOTSTRAP = {
-  data_path: '',
-  bind_host: '127.0.0.1',
   bind_port: 7720,
-  mcp_port: 0,
-  webhook_port: 0,
-  log_path: '',
+  webhooks_enabled: false,
   public_reachable: false,
   cert_path: null,
 };
@@ -98,7 +94,7 @@ const newHarness = (): Harness => {
     version: '0.0.0-drain',
     configPath: null,
     distribution: 'source',
-    initialBootstrap: { ...BOOTSTRAP, data_path: dataPath, log_path: dataPath },
+    initialBootstrap: { ...BOOTSTRAP },
     initialRuntime: runtimeDefaults(),
     runtimeStore,
     serverState,
@@ -152,7 +148,7 @@ describe('pause_collections drain step — with collections', () => {
     const closed: string[] = [];
     h.registry.register(stubCollection('mail', 'work', () => closed.push('mail:work')));
     h.registry.register(stubCollection('file', 'downloads', () => closed.push('file:downloads')));
-    h.registry.register(stubCollection('webhook', 'github', () => closed.push('webhook:github')));
+    h.registry.register(stubCollection('calendar', 'personal', () => closed.push('calendar:personal')));
 
     h.lifecycle.markBooted();
     const result = await h.lifecycle.requestDrain({
@@ -161,7 +157,7 @@ describe('pause_collections drain step — with collections', () => {
     });
 
     expect(result.completed).toContain('pause_collections');
-    expect(closed).toEqual(['mail:work', 'file:downloads', 'webhook:github']);
+    expect(closed).toEqual(['mail:work', 'file:downloads', 'calendar:personal']);
   });
 
   it('orders pause_collections before pause_scheduler in the completed sequence', async () => {

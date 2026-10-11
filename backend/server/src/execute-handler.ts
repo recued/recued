@@ -68,6 +68,7 @@ import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type {
   AdmissionDecision,
   ChunkedUploadAuditInfo,
+  ContextConnections,
   GatedActionSettlementMode,
   LaneGovernor,
   OpDurationClassifier,
@@ -93,6 +94,7 @@ import type {
   RecipeStep,
   RecordsExecutionBinding,
   RunDegradation,
+  RunUntestedTool,
   ScanFn,
   ScopedSenderCandidate,
 } from '@recued/contracts';
@@ -139,6 +141,7 @@ import {
   undeclaredConfigArgumentMessage,
   undeclaredConfigArguments,
   retiredVariablesOf,
+  retiredConnectionsOf,
   withoutRetiredConfig,
   carriedFromRetired,
   readTypedListSettings,
@@ -168,7 +171,7 @@ import { raisePeerAdmissionAsk } from './peer-admission-ask.js';
 import type { PeerAdmissionStore } from './storage/peer-admission-store.js';
 import type { RecordsStore } from './records/index.js';
 import { composeRecordsOperationExecutor } from './records/import-csv-ref.js';
-import { readRootProjections } from './records/root-projection.js';
+import { readRootProjections, toTimelineRollup } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
 import { deriveSagaPlans } from './saga-plans.js';
 import type { DishStore } from './dish-store.js';
@@ -176,15 +179,22 @@ import type { DishContextStore } from './dish-context-store.js';
 import { httpWatcherRunOutcome, settleHttpWatcherRun } from './watchers/http-watcher-memory.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { reclaimRunScratchUnlessResumable } from './execution/run-scratch.js';
+import { readPausedRecord, resumedRunUsage } from './execution/paused-run-carry.js';
+import { mergeRunUntestedTools, untestedToolsOf } from './execution/run-untested-tools.js';
 import { mergeManifestStepInput } from '@recued/ingredients';
 import { actionIdentityBasis } from './action-identity-basis.js';
 import {
   applyKernelOpRunnability,
+  CanonicalOpResolutionError,
   canonicalRecipeDefinition,
   flattenRecipe,
   hashRecipe,
+  lowerOpStepRecipe,
+  mailSenderSettings,
   serializeFlattenedInsight,
+  type PackOpResolution,
 } from '@recued/recipes';
+import { settleMailSenders } from './mail-senders.js';
 import {
   buildAuditEntry,
   newRunId,
@@ -262,14 +272,40 @@ import { createStepEffect } from './step-effect.js';
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
 import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
+import type { WebhookResumeDoorResolver } from './webhook-resume-door.js';
 import { mergeRecipeConfigLayers } from './recipe-effective-config.js';
 import { assertRunTargets } from './targeting-guard.js';
 import {
   buildPickAskInputForSlot,
+  canonicalSlotVariables,
   concreteSlotCandidates,
   derivePickCandidates,
   unboundConcreteConnectionSlots,
+  type ConcreteConnectionSlot,
 } from './pick-candidates.js';
+import { bindingsForCatalogs } from './storage/connection-catalog-binding-store.js';
+import { effectiveSlotDefault } from './pack-connection-outcomes.js';
+import { bundledPackManifestOf, catalogSlotsFrom, type PackManifestOf } from './pack-connection-slots.js';
+import {
+  applyConnectionChoices,
+  assertChoicesHeld,
+  assertChoicesPlaced,
+  assertListedConnectionsSetUp,
+  chooseForVendorNeutral,
+  connectionSteps,
+  inheritableConnections,
+  readConnectionChoices,
+  runConnectionSlots,
+  settledConnections,
+  type ConnectionUsed,
+} from './run-connection-choice.js';
+import {
+  carryRetiredConnections,
+  catalogSignInReader,
+  contextConnectionsOf,
+  vendorNeutralSettings,
+  withSlotSettings,
+} from './slot-settings.js';
 import {
   raiseContainerPickAsk,
   type ContainerPickAskInput,
@@ -1025,6 +1061,11 @@ export interface ExecuteHandlerDeps {
    *  handle), it replaces the module-default executor. Omitted (tests) ⇒ the
    *  registry-unaware module singleton — no external kill handle. */
   cliInvocationExecutor?: CliInvocationExecutor;
+  /** D-321 — the programs this run started under Warn at a version their pack
+   *  was not tested with, as the executor reported them; taken (and forgotten)
+   *  when the run's record is written, so its Logs detail can say so. Omitted ⇒
+   *  the record carries none. */
+  takeUntestedTools?: (runId: string) => RunUntestedTool[];
   /** SMB-finance slice 3 — server-side CAS-ingest sink for a `response_capture`
    *  REST download (storage-gdrive `file.download`). Threaded onto the engine
    *  ctx so the catalog gateway can land the captured body and return a
@@ -1169,6 +1210,10 @@ export interface ExecuteHandlerDeps {
    *  only — deny / escalate approval). Absent ⇒ no override layer; the
    *  connection-keyed profile floor stands unchanged (dbless / unit paths). */
   contractScan?: ScanFn;
+  /** D-320 — a pack's manifest, read for the slot a catalog signs in to when its
+   *  bindings recorded none (a pack installed before slice 2b;
+   *  `pack-connection-slots.ts`). Absent ⇒ the shipped packs' manifests. */
+  packManifestOf?: PackManifestOf;
   /** D-166 contract_definition — the contract-overlay use-resolution resolver
    *  (`createContractOverlayResolver`, built from the same local-only contract
    *  store as `contractScan`). The static `gateRecipeAgainstPolicy` pre-run walk +
@@ -1195,6 +1240,10 @@ export interface ExecuteHandlerDeps {
    * grants, route, and read fence. Production composition wires it whenever a
    * bearer store exists; a bearer-backed resume with no resolver fails closed. */
   approvalResumeAuthority?: ApprovalResumeAuthorityResolver;
+  /** D-320 audit — the door a webhook run waiting for approval resumes under when a
+   *  re-derive replaced the one it started under (`webhook-resume-door.ts`). Absent ⇒
+   *  it resumes under its own, and is refused if that door was revoked. */
+  webhookResumeDoor?: WebhookResumeDoorResolver;
   /** D-187 AMENDMENT 3b — the op-admission gate over the unified grant store. The
    *  per-call admit path queries it AFTER the policy decision: a dispatched op the
    *  governing contract holds an explicit `op` REVOKE for is denied (`op_not_granted`),
@@ -1347,6 +1396,11 @@ export interface ExecuteHandlerDeps {
    *  of a SINGLE capable candidate and the headless pinned-target
    *  block do NOT depend on this seam. */
   pickNotifier?: PickNotifier;
+  /** The mailboxes that can send right now, by name (`sendCapableMailboxes`).
+   *  Read once per owner run that sends mail from a "Send from" setting
+   *  (`mailSenderSettings`), to fill an empty one or refuse it naming these.
+   *  Absent ⇒ no run is filled or refused for it, as before. */
+  listSendCapableMailboxes?: () => readonly string[];
   /** D-192 Slice 6b — the D-158 notification block, threaded as the narrow
    *  `ContainerPickNotifier` seam. When wired AND a work-entity create in the run
    *  failed on an AMBIGUOUS vendor container (Linear `team`, an Asana
@@ -2385,7 +2439,7 @@ const handleExecuteInner = async (
   // An inline recipe supplied by a direct MCP customer is itself caller-owned;
   // a stored recipe's batch multiplicity is caller-owned only where its ref
   // graph reaches one of these caller-supplied config/context/vault roots.
-  const customerUsageCallerRootKeys: CustomerUsageCallerRootKeys = {
+  let customerUsageCallerRootKeys: CustomerUsageCallerRootKeys = {
     config: new Set(Object.keys(request.config ?? {})),
     context: new Set(Object.keys(request.context ?? {})),
     vault: new Set(Object.keys(request.vault ?? {})),
@@ -2581,6 +2635,9 @@ const handleExecuteInner = async (
   // resume — a dish deleted/disabled mid-pause must not wedge an
   // approved resume (the run degrades to ephemeral attribution).
   let boundDish: Dish | null = null;
+  // D-320 §3.4 — the dish's choice of connection and its name, for the run below:
+  // the bound dish's, else (a run that names no dish) the main dish's.
+  let dishConnections: { readonly choices: Record<string, string>; readonly label: string } | undefined;
   if (request.dish_id !== undefined) {
     if (typeof request.dish_id !== 'string' || request.dish_id.length === 0) {
       throw new RpcError('bad_request', 'dish_id must be a non-empty string', 400);
@@ -2613,6 +2670,9 @@ const handleExecuteInner = async (
         throw new RpcError('dish_disabled', `Dish '${dish.dish_id}' is switched off`, 409);
       } else {
         boundDish = dish;
+        if (dish.connections !== undefined) {
+          dishConnections = { choices: dish.connections, label: dish.name !== '' ? dish.name : dish.dish_id };
+        }
         if (!isResume) {
           // D-179 P3 — the group's settings merge under the dish's own.
           const groupOverlay = dish.group_id !== undefined
@@ -2640,11 +2700,40 @@ const handleExecuteInner = async (
     const installDish = deps.dishStore
       .listByRecipe(recipe.recipe_id)
       .find((d) => d.is_default);
+    if (installDish?.connections !== undefined) {
+      dishConnections = {
+        choices: installDish.connections,
+        label: installDish.name !== '' ? installDish.name : installDish.dish_id,
+      };
+    }
     if (installDish && Object.keys(installDish.config_overlay).length > 0) {
       request = {
         ...request,
         config: mergeRecipeConfigLayers({ requested: request.config, install: installDish.config_overlay }),
       };
+    }
+  }
+
+  // The owner's run sends from the only mailbox that can (owner, 2026-10-10:
+  // with one, Chat should not have to ask which). An empty "Send from" is
+  // settled HERE, after the dish's settings and before anything reads the
+  // config: filled when exactly one mailbox can send, refused naming them
+  // otherwise (`mail-senders.ts`). So the approval names the mailbox, the
+  // anchor records it, and a resume sends from it. Like the connection pick
+  // below, the owner's run only: a door's run is unchanged, and an
+  // automation's too, since a headless sender that floated to whichever one
+  // mailbox existed would move when a second connects. A resumed run
+  // (`internal.run_id`) carries its approved config, so it is not settled again.
+  if (
+    internal.run_id === undefined
+    && request.execution_source?.actor === 'user_self'
+    && deps.listSendCapableMailboxes !== undefined
+  ) {
+    const senderSettings = mailSenderSettings(recipe);
+    if (senderSettings.size > 0) {
+      const config = request.config ?? {};
+      const settled = settleMailSenders(recipe, config, senderSettings, deps.listSendCapableMailboxes());
+      if (settled !== config) request = { ...request, config: settled };
     }
   }
 
@@ -2727,6 +2816,39 @@ const handleExecuteInner = async (
     recipe = r1.recipe;
     if (r1.warnings.length > 0) runnabilityWarnings = r1.warnings.map((w) => w.warning);
   }
+  // D-320 §3.5 — the run's own choice of connection, by slot; for a recipe that
+  // another calls, the caller's settled one (`internal.inherited_connections`).
+  // A resumed run carries the values its paused record holds, so nothing is
+  // applied to it again. See `run-connection-choice.ts`.
+  const connectionChoices = internal.run_id !== undefined
+    ? undefined
+    : internal.inherited_connections !== undefined
+      ? { ...internal.inherited_connections }
+      : readConnectionChoices(request.connections);
+  const inheritedChoices = internal.inherited_connections !== undefined;
+  // D-320 §3.4 — the dish's choice, under the run's: a slot the run (or the run
+  // that called it) chooses for is left to that. Not on a resumed run either.
+  // D-320 phase 3 (3b) — a webhook or public-form run carries its main dish's choice
+  // itself (`internal.dish_connections`): its `run_id` skips the main dish above.
+  const dishChoiceSource = internal.resume_from === undefined && internal.dish_connections !== undefined
+    ? internal.dish_connections
+    : internal.run_id !== undefined ? undefined : dishConnections;
+  const dishChoices = ((): Record<string, string> | undefined => {
+    if (dishChoiceSource === undefined) return undefined;
+    const rest = Object.fromEntries(Object.entries(dishChoiceSource.choices)
+      .filter(([slot]) => connectionChoices?.[slot] === undefined));
+    return Object.keys(rest).length > 0 ? rest : undefined;
+  })();
+  const dishChoiceLabel = dishChoiceSource?.label;
+  // A refusal names the list to the owner only (ruling 12).
+  const connectionChoiceOwner = request.execution_source?.actor === 'user_self';
+  const connectionDisplayName = (name: string): string | undefined =>
+    deps.connectionStore?.get('api', name)?.display_name;
+  // D-320 phase 3 (3d) — each vendor-neutral family's setting, for
+  // `context.connections` below (the steps are lowered by then).
+  let vendorNeutralFamilies: Readonly<Record<string, string>> = {};
+  // The installed packs' catalogs, for the slots read once the steps resolve.
+  let runPackOps: PackOpResolution | undefined;
   {
     const profiles = deps.connectionOperationProfiles;
     let effectiveConfig: Record<string, unknown> = request.config ?? {};
@@ -2754,6 +2876,142 @@ const handleExecuteInner = async (
             (slug) => deps.executorConfig.manifests.get(slug),
           )
         : undefined;
+    runPackOps = packOpResolution;
+    // D-320 phase 3 (3a) — a step that names no connection signs in through its
+    // slot: the run's copy of the recipe gives it the setting for that slot
+    // (`slot-settings.ts`), so everything below treats it as a step whose setting
+    // is empty: the choices, the pick layer, the pack's default and the record.
+    const slotSettings = withSlotSettings(recipe, {
+      ...(packOpResolution !== undefined ? { packs: packOpResolution } : {}),
+      signInOf: catalogSignInReader({
+        ...(deps.contractScan !== undefined ? { scan: deps.contractScan } : {}),
+        ...(packOpResolution !== undefined ? { packs: packOpResolution } : {}),
+        packManifestOf: deps.packManifestOf ?? bundledPackManifestOf,
+      }),
+    });
+    recipe = slotSettings.recipe;
+    vendorNeutralFamilies = vendorNeutralSettings(recipe);
+    // D-320 phase 3 (3c, ruling 18) — a value still given under a connection
+    // setting's old name (`metadata.retired_connections`), by a dish saved before or
+    // an AI client holding an old tool list, is its slot's setting's value. One the
+    // caller gave stays the caller's own, so a dish's choice still yields to it.
+    {
+      const carry = carryRetiredConnections(recipe, effectiveConfig, slotSettings.bySlot);
+      if (carry.config !== effectiveConfig) {
+        effectiveConfig = { ...carry.config };
+        request = { ...request, config: effectiveConfig };
+        const fromCaller = Object.entries(carry.carried)
+          .filter(([old]) => customerUsageCallerRootKeys.config.has(old))
+          .map(([, setting]) => setting);
+        if (fromCaller.length > 0) {
+          customerUsageCallerRootKeys = {
+            ...customerUsageCallerRootKeys,
+            config: new Set([...customerUsageCallerRootKeys.config, ...fromCaller]),
+          };
+        }
+      }
+    }
+    // D-320 §3.5 — apply the choice BEFORE dispatch resolves the steps, so every
+    // later reader sees it: the resolve, the pick layer and the ask it raises
+    // (whose answer re-runs with this config), the default fill, the snapshots.
+    // Each chosen connection is written into the settings its slot's steps read,
+    // over the dish's value. Checked once more once the steps are resolved.
+    // D-320 §3.4 — the dish's own choice goes first, under the run's.
+    if (connectionChoices !== undefined || dishChoices !== undefined) {
+      if (deps.contractScan === undefined || profiles === undefined) {
+        throw new RpcError(
+          'not_configured',
+          "Choosing a run's connection needs a server that keeps its packs' connections.",
+          501,
+        );
+      }
+      // A pack-named op-step (`<publisher>.<pack>.<op>`) names its catalog, so it
+      // is lowered here to read it; a vendor-neutral one (`core.crm.*`) names none
+      // until a connection is given, and is bound below by what it can serve.
+      let lowered: RecipeDefinition | undefined;
+      try {
+        lowered = lowerOpStepRecipe(recipe, packOpResolution ?? new Map());
+      } catch (e) {
+        if (!(e instanceof CanonicalOpResolutionError)) throw e;
+        lowered = undefined; // the resolve below reports it
+      }
+      const steps = lowered !== undefined ? connectionSteps(lowered) : [];
+      const catalogs = [...new Set(steps.map((step) => step.catalog))];
+      const bindings = bindingsForCatalogs(deps.contractScan, catalogs);
+      const slots = runConnectionSlots(
+        steps,
+        catalogSlotsFrom(bindings, catalogs, deps.packManifestOf ?? bundledPackManifestOf, packOpResolution),
+      );
+      const enrolled = new Set(profiles.list().map(([name]) => name));
+      const forRecipe = recipe;
+      const vendorNeutral = canonicalSlotVariables(recipe, packOpResolution);
+      const candidatesFor = (variable: string): string[] => derivePickCandidates(forRecipe, variable, {
+        profiles,
+        manifests: deps.executorConfig.manifests,
+        packs: packOpResolution,
+      }).candidates.map((candidate) => candidate.connection_name);
+      const choose = (
+        choices: Readonly<Record<string, string>>,
+        config: Record<string, unknown>,
+        dish: string | undefined,
+      ) => {
+        const bySlot = applyConnectionChoices({
+          recipe_id: forRecipe.recipe_id,
+          slots,
+          choices,
+          inherited: dish === undefined && inheritedChoices,
+          config,
+          callerKeys: customerUsageCallerRootKeys.config,
+          bindings,
+          enrolled,
+          owner: connectionChoiceOwner,
+          displayName: connectionDisplayName,
+          ...(dish !== undefined ? { dish } : {}),
+        });
+        const byVendor = chooseForVendorNeutral({
+          recipe_id: forRecipe.recipe_id,
+          variables: vendorNeutral,
+          choices: Object.fromEntries(
+            Object.entries(choices).filter(([slot]) => !bySlot.applied.includes(slot)),
+          ),
+          config: bySlot.config,
+          callerKeys: customerUsageCallerRootKeys.config,
+          candidatesFor,
+          ...(dish !== undefined ? { yieldToCaller: true } : {}),
+        });
+        return { config: byVendor.config, applied: [...bySlot.applied, ...byVendor.applied] };
+      };
+      let config = effectiveConfig;
+      let applied = false;
+      if (dishChoices !== undefined) {
+        const byDish = choose(dishChoices, config, dishChoiceLabel);
+        config = byDish.config;
+        applied = byDish.applied.length > 0;
+      }
+      if (connectionChoices !== undefined) {
+        const byRun = choose(connectionChoices, config, undefined);
+        // A choice nothing could take is refused here, before the pick layer asks
+        // about it or a dish's value stands in for it.
+        assertChoicesPlaced({
+          recipe_id: recipe.recipe_id,
+          choices: connectionChoices,
+          inherited: inheritedChoices,
+          placed: byRun.applied,
+          slots,
+          ...(vendorNeutral.length > 0
+            ? { vendorNeutralCandidates: [...new Set(vendorNeutral.flatMap(candidatesFor))].sort() }
+            : {}),
+          owner: connectionChoiceOwner,
+          displayName: connectionDisplayName,
+        });
+        config = byRun.config;
+        applied = applied || byRun.applied.length > 0;
+      }
+      if (applied) {
+        effectiveConfig = config;
+        autoBound = true;
+      }
+    }
     let dispatchResolve = resolveCanonicalRecipeForDispatch(recipe, {
       profiles: profiles ?? { get: () => null },
       manifests: deps.executorConfig.manifests,
@@ -2781,7 +3039,7 @@ const handleExecuteInner = async (
         const channel = src !== undefined ? `'${src.channel}' channel` : 'unattributed';
         throw new RpcError(
           'connection_target_unpinned',
-          `Recipe '${forRecipe.recipe_id}' needs a connection for '${variable}' but the run is headless (${channel}) — a pick ask cannot be answered, so the target must be pinned: set config.${variable} to an enrolled connection (Settings → Connections).`,
+          `Recipe '${forRecipe.recipe_id}' needs a connection for '${variable}', and this run has no one to ask which (${channel}). Choose a default connection on its pack's Access tab, or a connection for the dish it runs.`,
           400,
           undefined,
           { variable },
@@ -2910,6 +3168,42 @@ const handleExecuteInner = async (
       );
     }
     recipe = dispatchResolve.recipe;
+    // D-320 phase 1 — a pack holds its connections. An empty setting takes the
+    // one connection the packs owning the step's catalogs are bound to, BEFORE
+    // the pick layer: with the pack's answer in hand, a run neither asks, nor is
+    // refused, nor binds a connection that is merely capable (maybe another
+    // account). A value the dish or the run gives still wins: only an unbound
+    // slot reaches here.
+    // - Every run gets it, headless included (spec §3.3, "background runs always
+    //   get an answer"). The pinned-target rule refused headless runs because a
+    //   floating binding would move when a second connection enrolled; this one
+    //   does not float. Enrolling or user-granting a connection adds none to a
+    //   pack's list; only installing or updating a pack changes it.
+    // - The list is the pack's BINDINGS (`connectionsBoundToCatalogs`), which every
+    //   install with a connection writes. Grants only for packs declaring grant
+    //   defaults, so they left the Wise suite and most families with no list.
+    // - Two or more on the list: the packs' STORED DEFAULT decides (D-320 slice 2b,
+    //   `pack_connection_default`), when every pack holding these catalogs names the
+    //   same connection and it serves every catalog the slot fetches from. Anything
+    //   else is no answer, and the pick layer asks, as before.
+    // - Only an enrolled connection counts (one with an operation profile). A pack
+    //   installed with no chosen connection is bound to the authored literal,
+    //   which may name nothing.
+    // - Authorization-neutral, like the pick layer's own bind: the request keeps
+    //   its execution_source, and the gateway checks the grants as it always does.
+    //   A step the pack is not granted for is refused there, with the reason.
+    // The rule a door follows too (`settleDoorConnections`) and the Access tab's
+    // Default badge shows (`effectiveSlotDefault`). A pack signing in through
+    // another pack's connections reads its HOLDER's default (ruling 9).
+    const packConnectionFor = (slot: ConcreteConnectionSlot): string | undefined => {
+      if (deps.contractScan === undefined || profiles === undefined) return undefined;
+      return effectiveSlotDefault(
+        deps.contractScan,
+        slot.catalogs,
+        bindingsForCatalogs(deps.contractScan, slot.catalogs),
+        new Set(profiles.list().map(([name]) => name)),
+      );
+    };
     // The same rule for CONCRETE steps: a catalog fetch whose connection is
     // `{{config.<var>}}` with that setting empty (an install-resolved canonical
     // op, or any vendor catalog recipe). With no capable connection enrolled,
@@ -2917,7 +3211,7 @@ const handleExecuteInner = async (
     if (profiles !== undefined) {
       for (const slot of unboundConcreteConnectionSlots(recipe, effectiveConfig)) {
         if (boundVars.has(slot.variable)) continue;
-        const bound = await settleUnboundSlot(
+        const bound = packConnectionFor(slot) ?? await settleUnboundSlot(
           recipe,
           slot.variable,
           concreteSlotCandidates(slot, profiles),
@@ -2934,6 +3228,73 @@ const handleExecuteInner = async (
       // and the held-action identity + audit snapshots read `request.config`
       // — every downstream consumer must see the auto-bound binding.
       request = { ...request, config: effectiveConfig };
+    }
+  }
+
+  // D-320 §3.5 — with the steps resolved: every chosen slot must be one the run
+  // signs in through (a vendor-neutral op-step's slot is known only now), and the
+  // connection each slot settled on goes on the run's record and to a recipe this
+  // run calls (`localRecipeInvoker`).
+  let connectionsUsed: ConnectionUsed[] = [];
+  {
+    const steps = connectionSteps(recipe);
+    const catalogs = [...new Set(steps.map((step) => step.catalog))];
+    const bindings = deps.contractScan !== undefined && catalogs.length > 0
+      ? bindingsForCatalogs(deps.contractScan, catalogs)
+      : [];
+    const slots = runConnectionSlots(
+      steps,
+      catalogSlotsFrom(bindings, catalogs, deps.packManifestOf ?? bundledPackManifestOf, runPackOps),
+    );
+    // Read only for a run with a choice to check: a run with none never asks.
+    const enrolled = (): Set<string> =>
+      new Set((deps.connectionOperationProfiles?.list() ?? []).map(([name]) => name));
+    if (connectionChoices !== undefined) {
+      assertChoicesHeld({
+        recipe_id: recipe.recipe_id,
+        slots,
+        choices: connectionChoices,
+        inherited: inheritedChoices,
+        config: request.config ?? {},
+        variables: recipe.variables,
+        bindings,
+        enrolled: enrolled(),
+        owner: connectionChoiceOwner,
+        displayName: connectionDisplayName,
+      });
+    }
+    // D-320 §3.4 — the dish's choice holds too, except where the run's own values
+    // gave the setting (they win) or the run no longer uses its slot.
+    if (dishChoices !== undefined) {
+      const config = request.config ?? {};
+      assertChoicesHeld({
+        recipe_id: recipe.recipe_id,
+        slots,
+        choices: dishChoices,
+        inherited: false,
+        dish: dishChoiceLabel ?? '',
+        exempt: new Set([...customerUsageCallerRootKeys.config].filter((key) => {
+          const value = config[key];
+          return typeof value === 'string' && value.trim() !== '';
+        })),
+        config,
+        variables: recipe.variables,
+        bindings,
+        enrolled: enrolled(),
+        owner: connectionChoiceOwner,
+        displayName: connectionDisplayName,
+      });
+    }
+    if (deps.contractScan !== undefined) {
+      connectionsUsed = settledConnections(slots, request.config ?? {}, recipe.variables);
+      assertListedConnectionsSetUp({
+        recipe_id: recipe.recipe_id,
+        slots,
+        used: connectionsUsed,
+        bindings,
+        enrolled,
+        owner: connectionChoiceOwner,
+      });
     }
   }
 
@@ -2956,7 +3317,13 @@ const handleExecuteInner = async (
   // so (`recipeStore.retiredVariables`). Never a name the recipe declares now: a
   // variable a later version brings back gets its saved value back.
   const declaredNow = recipe.variables ?? {};
-  const retired = [...retiredVariablesOf(recipe), ...(deps.recipeStore.retiredVariables?.(recipe.recipe_id) ?? [])]
+  // D-320 phase 3 — and an old connection setting's name (`retired_connections`),
+  // once its value has gone to its slot's setting above.
+  const retired = [
+    ...retiredVariablesOf(recipe),
+    ...Object.keys(retiredConnectionsOf(recipe)),
+    ...(deps.recipeStore.retiredVariables?.(recipe.recipe_id) ?? []),
+  ]
     .filter((name) => !Object.prototype.hasOwnProperty.call(declaredNow, name));
   if (retired.length > 0 && request.config !== undefined) {
     // A retired value may still say what its replacement must be
@@ -3132,6 +3499,22 @@ const handleExecuteInner = async (
   // forged request value is never preserved as a fallback or replay snapshot.
   const context: Record<string, unknown> = { ...baseContext };
   delete context.caller;
+  // D-320 phase 3 (3a) — `context.connections`: the connection the run settled on
+  // for each slot, for a recipe that reads it as a value (a closure watcher keeps
+  // only the records its own account wrote). The server's fact, as
+  // `context.caller` is: a caller's own `connections` is dropped, never read.
+  delete context.connections;
+  // D-320 phase 3 (3d) — and each vendor-neutral family (`crm`, `acct`) under its
+  // own name: a vendor-neutral recipe cannot know the vendor's slot, so
+  // `{{context.connections.crm}}` gives the connection its `core.crm.*` steps
+  // used. Not inherited by a called recipe: that takes slots only
+  // (`inheritableConnections` below).
+  const settledBySlot: ContextConnections = contextConnectionsOf(
+    inheritableConnections(connectionsUsed),
+    vendorNeutralFamilies,
+    request.config ?? {},
+  );
+  if (Object.keys(settledBySlot).length > 0) context.connections = Object.freeze(settledBySlot);
   // The owner's zone is the SERVER's fact, so it is added to whatever
   // `context.server` the run carries — a caller's snapshot of reachability
   // wins, but it cannot know the zone.
@@ -3344,18 +3727,7 @@ const handleExecuteInner = async (
               // not one this surface serves.
               rollupsForRecord: async (collection: string, id: string) =>
                 collection === 'contact'
-                  ? readRootProjections(deps.recordsStore!, 'contact', id).map(
-                      (projection) => ({
-                        publisher: projection.publisher,
-                        pack_slug: projection.pack_slug,
-                        ...(projection.label === undefined ? {} : { label: projection.label }),
-                        value: projection.value,
-                        complete: projection.complete,
-                        ...(projection.incomplete_reason === undefined
-                          ? {}
-                          : { incomplete_reason: projection.incomplete_reason }),
-                      }),
-                    )
+                  ? readRootProjections(deps.recordsStore!, 'contact', id).map(toTimelineRollup)
                   : [],
             }
           : {}),
@@ -5728,6 +6100,11 @@ const handleExecuteInner = async (
             dispatch_depth: (request.dispatch_depth ?? 0) + 1,
           },
           { held_recipes: call.held_recipes,
+            // D-320 §3.5 — the called run takes this run's connection for each
+            // slot they share, so one run's steps stay on one account.
+            ...((inherited) => (Object.keys(inherited).length > 0 ? { inherited_connections: inherited } : {}))(
+              inheritableConnections(connectionsUsed),
+            ),
             ...(reviewedChild ? { preapproval_run: reviewedChild.handle, run_id: reviewedChild.run_id } : {}),
             ...(internal.entry_tool_name !== undefined ? { entry_tool_name: internal.entry_tool_name } : {}),
           },
@@ -5977,6 +6354,14 @@ const handleExecuteInner = async (
       // `'api'` is the catalog dispatch kind (the gateway dispatches catalog
       // ops over the api surface). Absent store ⇒ resolver unwired ⇒ the gate
       // treats every connection as whole-account (`/`).
+      // D-320 audit — the governing contract's list of connections, so a call on one
+      // it does not list is refused before any approval is asked for it.
+      ...(deps.contractOverlay !== undefined && executionSource !== undefined
+        ? {
+            admitsConnection: (connection_name: string) =>
+              deps.contractOverlay!.admitsConnection(executionSource, connection_name),
+          }
+        : {}),
       ...(deps.connectionStore
         ? {
             connectionSubresourcePathResolver: (connection_name: string) =>
@@ -7469,9 +7854,24 @@ const handleExecuteInner = async (
     // until the cap evicted it. The value is simply unused on those paths —
     // which is correct: a run with no anchor has nowhere to record a cost.
     const runTotalUsage = deps.executorConfig?.runTokenUsage?.take(run_id);
+    // D-321 — the programs this run started under Warn at an untested version,
+    // claimed here for the same reason: `take` frees the hand-off's entry.
+    const runUntestedTools = deps.takeUntestedTools?.(run_id) ?? [];
     let auditAnchorWritten = false;
     if (deps.auditLog && !result.trigger_skipped && !auditExemptRender) {
       try {
+        // A resumed run's record replaces its paused one, which holds what the
+        // run did before it paused: the programs it started (D-321) and what it
+        // spent (D-250). (`internal.run_id` is also set for a run whose id was
+        // minted before it started; that run has no record yet, so the read
+        // finds nothing.)
+        const paused = internal.run_id === undefined
+          ? undefined
+          : await readPausedRecord(deps.auditLog, run_id);
+        const untestedTools = paused === undefined
+          ? runUntestedTools
+          : mergeRunUntestedTools(untestedToolsOf(paused), runUntestedTools);
+        const totalUsage = resumedRunUsage(paused, runTotalUsage);
         let entry = buildAuditEntry({
           recipe_id: result.recipe_id,
           recipe_hash: result.recipe_hash,
@@ -7515,11 +7915,16 @@ const handleExecuteInner = async (
           // D-250 § D — what the run SPENT, folded from the per-call reports the
           // AI adapter produced during THIS run and claimed here, on the anchor
           // already being written. `take` removes the entry, so the sink holds
-          // only runs still in flight.
+          // only runs still in flight. A resumed run adds what its paused record
+          // holds: the sink was emptied when that record was written.
           // ⛔ ABSENT WHEN THE RUN MADE NO PROVIDER CALL, deliberately — the
           // opposite of `run_yield` directly above, whose zero IS its signal.
           // See `AuditEntry.total_usage`; do not "tidy" these two into one rule.
-          ...(runTotalUsage !== undefined ? { total_usage: runTotalUsage } : {}),
+          ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
+          // D-320 §3.5 — the connection each slot settled on.
+          ...(connectionsUsed.length > 0 ? { connections_used: connectionsUsed } : {}),
+          // D-321 — programs this run started under Warn at an untested version.
+          ...(untestedTools.length > 0 ? { untested_tools: untestedTools } : {}),
           // D-157 server-wiring (codex BLOCKER 3 fold) — capture the
           // EFFECTIVE config the engine resolved `{{config.*}}` refs
           // against, not just the recipe's variable defaults. The
@@ -8300,6 +8705,7 @@ const handleExecuteInner = async (
           releaseRunResources();
         } finally {
           deps.executorConfig?.runTokenUsage?.take(run_id);
+          deps.takeUntestedTools?.(run_id);
         }
       }).catch(() => undefined);
     } else {
@@ -8559,6 +8965,9 @@ const buildRpcExecuteRequest = (
   // D-179 P1 — standing-dish dispatch over the rpc wire (overlay merge
   // + audit attribution resolve inside handleExecute).
   dish_id: args.dish_id as string | undefined,
+  // D-320 §3.5 — the run's own choice of connection, by slot; checked inside
+  // `handleExecute` (`readConnectionChoices`).
+  ...(args.connections !== undefined ? { connections: args.connections as Record<string, string> } : {}),
   trigger_source: (args.trigger_source as string | undefined) ?? 'extension_ws',
   instance_id: client.instance_id ?? undefined,
   // D-153 P2.C — channel-shaped `ExecutionSource` resolved at the rpc

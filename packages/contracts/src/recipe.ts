@@ -992,6 +992,15 @@ export interface RecipeMetadata {
    *  replaced it. When `variable` (retired above) was saved as `when`, a run sets
    *  each `set` variable the owner has not saved. See {@link carriedFromRetired}. */
   retired_carries?: RetiredCarry[];
+  /** D-320 phase 3 (ruling 18) — a connection setting an earlier version declared
+   *  and this one dropped, and the slot whose connection it named:
+   *  `{ "crm": "hubspot" }`. A recipe names no connection now (a step reads its
+   *  slot's), so a value still given under the old name (a dish saved before, or an
+   *  AI client holding an old tool list) is read as its slot's, unless that has one.
+   *  Only for a setting not named after its slot: one that is (`hubspot`, or
+   *  `azure_devops` for `azure-devops`) is read under its own name anyway. See
+   *  {@link retiredConnectionsOf}. */
+  retired_connections?: Record<string, string>;
 }
 
 /** One carry from a retired variable's saved value into its replacements. */
@@ -1117,6 +1126,21 @@ export const retiredVariablesOf = (recipe: { readonly metadata?: unknown }): rea
   if (metadata === null || typeof metadata !== 'object') return [];
   const list = (metadata as { retired_variables?: unknown }).retired_variables;
   return Array.isArray(list) ? list.filter((name): name is string => typeof name === 'string' && name !== '') : [];
+};
+
+/** D-320 phase 3 — the recipe's retired connection settings
+ *  (`metadata.retired_connections`), old name → slot, well-formed ones only
+ *  (`validateRecipe` refuses a malformed map at install). */
+export const retiredConnectionsOf = (recipe: { readonly metadata?: unknown }): Readonly<Record<string, string>> => {
+  const metadata = recipe.metadata;
+  if (metadata === null || typeof metadata !== 'object') return {};
+  const map = (metadata as { retired_connections?: unknown }).retired_connections;
+  if (map === null || typeof map !== 'object' || Array.isArray(map)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, slot] of Object.entries(map as Record<string, unknown>)) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof slot === 'string' && slot.trim() !== '') out[name] = slot;
+  }
+  return out;
 };
 
 /** The recipe's retired carries (`metadata.retired_carries`), well-formed ones only

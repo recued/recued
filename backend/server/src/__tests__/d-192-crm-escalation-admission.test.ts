@@ -16,6 +16,7 @@ import type {
   ExecutionSource,
   IngredientManifest,
 } from '@recued/contracts';
+import { D165_CONTRACT_SCHEMA } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -25,6 +26,9 @@ import {
 } from '../chat-tool-handlers.js';
 import type { EscalationOrigin } from '../escalation-admission.js';
 import type { OpAdmissionGate } from '../op-admission-gate.js';
+import { createContractOverlayResolver } from '../policy-contract-overlay.js';
+import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
+import { createContractStore } from '../storage/contract-store.js';
 import {
   createEnrichmentStore,
   type EnrichmentStore,
@@ -82,6 +86,7 @@ interface HarnessOptions {
   binding?: EscalationBinding | null;
   gate?: Gate;
   gateGetter?: 'present' | 'absent' | 'undefined';
+  overlay?: ReturnType<typeof createContractOverlayResolver>;
 }
 
 let dir: string;
@@ -264,6 +269,7 @@ const buildDeps = (opts: HarnessOptions): Harness => {
   } else if (gateGetter === 'undefined') {
     deps.getOpAdmissionGate = () => undefined;
   }
+  if (opts.overlay !== undefined) deps.getContractOverlay = () => opts.overlay;
 
   return { deps, liveCalls, bindingLookups };
 };
@@ -456,6 +462,51 @@ describe('D-192 CRM escalation admission seam', () => {
 
     expect(harness.liveCalls).toHaveLength(0);
     expect(harness.bindingLookups).toHaveLength(0);
+    expect(candidateIds(result)).toEqual([MIRROR_TARGET_ID]);
+    expectFreshnessFilter(result, 'local');
+  });
+});
+
+/** D-320 audit — the contract's connections bound a live CRM escalation as they bound a
+ *  raw op: the deal mirror's connection is `acme-hubspot`, and a door whose contract lists
+ *  another connection keeps the mirror, with no vendor call. An empty list is a wildcard. */
+describe('D-192 CRM escalation admission seam — the contract\'s connections', () => {
+  /** A door's standing contract minted with `connection_names`, the overlay production
+   *  wires over it (`wire-execute-deps.ts`), and the MCP dispatch bound to it. */
+  const scopedDoor = (connection_names: string[]) => {
+    const contractStore = createContractStore(db, { now: () => 1_700_000_000_000 });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const definitionStore = createContractDefinitionStore(contractStore, { now: () => 1_700_000_000_000 });
+    const { contract_id } = definitionStore.mint({
+      minted_by: 'owner-1',
+      display_name: 'CRM agent',
+      scope: { channels: ['mcp'], actors: ['contracted_user'], connection_names },
+    });
+    const source = { ...mcpSource('call-connection'), contract_id };
+    return {
+      overlay: createContractOverlayResolver({ definitionStore, now: () => 1_700_000_000_000 }),
+      ctx: mcpCtx(source, { ...snapshot([CATALOG_SLUG]), contract_id }),
+    };
+  };
+
+  it.each([
+    ['DENIES a door whose contract lists another connection', ['another-hubspot'], false],
+    ['ADMITS a door whose contract lists the connection', [CONNECTION_NAME], true],
+    ['ADMITS a door whose contract lists no connection', [], true],
+  ] as const)('%s', async (_label, connections, admitted) => {
+    seedMirrorDeal();
+    const door = scopedDoor([...connections]);
+    const harness = buildDeps({ syncedAt: null, overlay: door.overlay });
+
+    const result = await runDealSearch(harness.deps, door.ctx);
+
+    if (admitted) {
+      expect(harness.liveCalls).toHaveLength(1);
+      expect(candidateIds(result)).toEqual([LIVE_TARGET_ID]);
+      expectFreshnessFilter(result, 'server');
+      return;
+    }
+    expect(harness.liveCalls).toHaveLength(0);
     expect(candidateIds(result)).toEqual([MIRROR_TARGET_ID]);
     expectFreshnessFilter(result, 'local');
   });

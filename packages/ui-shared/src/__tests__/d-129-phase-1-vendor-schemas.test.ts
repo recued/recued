@@ -313,10 +313,18 @@ describe('HubSpot setup guides — one per way to connect', () => {
     expect(guide.steps[0]!.detail).toContain('Development → Keys → Service keys');
   });
 
-  it('says the app path needs the HubSpot CLI, and where its redirect URL goes', () => {
+  // Whether the key asks for every scope the HubSpot Pack uses lives in
+  // `d-129-phase-1-vendor-schemas-corpus.test.ts`: it reads the Pack file,
+  // which the public tree does not carry.
+
+  it('says the app path needs the HubSpot CLI and a paid plan, and where its redirect URL goes', () => {
     const guide = hubspotSchema.onboarding!.guides.find((g) => g.key === 'hubspot-app')!;
     expect(guide.tone).toBe('advanced');
-    expect(guide.badge).toContain('command-line tool');
+    // A new app needs the CLI, and the CLI needs sandbox access, which only
+    // paid HubSpot plans have (owner, 2026-10-09): a free account uses a key.
+    expect(guide.badge).toContain('paid HubSpot plan');
+    expect(guide.description).toContain('command-line tool');
+    expect(guide.description).toContain('On a free account, use a Service Key.');
     const text = guide.steps.map((s) => s.detail).join(' ');
     expect(text).toContain('hs project create');
     expect(text).toContain('redirectUrls');

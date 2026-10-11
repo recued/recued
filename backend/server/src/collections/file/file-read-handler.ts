@@ -6,7 +6,16 @@ import type { BlobStore } from '../../storage/blob-store.js';
 import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
 import type { CollectionRegistry } from '../registry.js';
 import type { FileStorageRef, InboundFileCollection } from './inbound-file-collection.js';
-import { resolveRemoteFileBytes, type RemoteFileReadDeps } from './remote-file-byte-resolver.js';
+import {
+  REMOTE_FILE_READ_MAX_BYTES,
+  resolveRemoteFileBytes,
+  type RemoteFileReadDeps,
+} from './remote-file-byte-resolver.js';
+import {
+  isWatchedFolderCollection,
+  parseWatchedFileRecordId,
+  WatchedFileReadError,
+} from './watched-folder-collection.js';
 import { resolveReviewedFileAccess } from './file-snapshot.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from '../../preapproval-io-context.js';
 
@@ -20,7 +29,12 @@ export type FileReadErrorCode =
   | 'file_storage_missing'
   | 'file_blob_missing'
   | 'file_blob_hash_mismatch'
-  | 'file_remote_unsupported';
+  | 'file_remote_unsupported'
+  | 'file_local_unavailable';
+
+/** The most a watched folder's file is read for at once: the remote ceiling,
+ *  the other read that does not come from the CAS. */
+export const LOCAL_FILE_READ_MAX_BYTES = REMOTE_FILE_READ_MAX_BYTES;
 
 export interface FileReadRequest {
   record_id: string;
@@ -168,6 +182,55 @@ export const handleFileRead = async (
         size_bytes: remote.size_bytes,
         // Uncached (stream-through, v1) — no CAS blob backs a remote read.
         blob_hash: '',
+      };
+    }
+
+    // D-106 follow-up — a `file:local:*` id is a watched folder's file: its bytes
+    // are on the owner's disk, read through that folder's live adapter. The same
+    // gating as a remote read: refused inside a reviewed run, audited here.
+    const local = parseWatchedFileRecordId(args.record_id);
+    if (local) {
+      const folder = deps.registry.get('file', local.slug);
+      if (!folder || !isWatchedFolderCollection(folder)) {
+        throw new RpcError('file_not_found', `file.read: no watched folder '${local.slug}'`, 404);
+      }
+      assertPreapprovalOrdinaryRun();
+      const maxBytes = Math.min(limits?.maxBytes ?? LOCAL_FILE_READ_MAX_BYTES, LOCAL_FILE_READ_MAX_BYTES);
+      let file: Awaited<ReturnType<typeof folder.readFile>>;
+      try {
+        file = await folder.readFile(local.path, maxBytes);
+      } catch (err) {
+        if (err instanceof WatchedFileReadError) {
+          if (err.reason === 'too_large') {
+            throw new RpcError('file_too_large', `file.read: ${err.message}. Open it from the folder instead.`, 413);
+          }
+          if (err.reason === 'not_found') throw new RpcError('file_not_found', `file.read: ${err.message}`, 404);
+          throw new RpcError('file_local_unavailable', `file.read: ${err.message}`, 503);
+        }
+        throw err;
+      }
+      assertPreapprovalOrdinaryRun();
+      const bytes = Buffer.from(file.bytes);
+      await deps.auditLog?.logActivity({
+        activity_id: '',
+        timestamp: deps.now?.() ?? Date.now(),
+        action: 'file_content_read',
+        target: args.record_id,
+        detail: JSON.stringify({
+          collection: `data.file.${local.slug}`,
+          posture: 'local',
+          mime_type: file.mime_type,
+          size_bytes: bytes.length,
+        }),
+      });
+      return {
+        record_id: args.record_id,
+        bytes_b64: bytes.toString('base64'),
+        mime_type: file.mime_type,
+        filename: file.filename,
+        size_bytes: bytes.length,
+        // Not in the CAS: the hash of what was read, for a caller that pins it.
+        blob_hash: createHash('sha256').update(bytes).digest('hex'),
       };
     }
 

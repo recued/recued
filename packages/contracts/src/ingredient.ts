@@ -78,19 +78,6 @@ export const isKernelManifest = (
  *  becomes a bypass again. */
 export const GENERATED_PACK_PUBLISHER = 'recued-local' as const;
 
-/** True when a manifest is a D-118 `data.service` template. Service
- *  manifests describe local-process workloads (CLI tools + long-
- *  running services) and route through the server's service
- *  dispatcher rather than HTTP / DOM / MCP / Chat. They use semver
- *  `version` strings (matching the underlying binary's release
- *  scheme) and an empty top-level `output` — per-invoke outputs live
- *  on `input.service.lifecycle.invoke.<name>.output`. The validator
- *  branches on this helper to skip executor / output / integer-
- *  version checks that don't apply to service-kind manifests. */
-export const isServiceManifest = (
-  manifest: { kind?: IngredientKind } | null | undefined,
-): boolean => manifest?.kind === 'service';
-
 export type IngredientCategory = 'data' | 'ai' | 'action';
 
 export type IngredientSource = 'marketplace' | 'local' | 'imported';
@@ -166,13 +153,12 @@ export const riskTierLabel = (tier: string): string =>
  *  enum — keeps the kind set stable and the routing surface small.
  *  Adding a kind requires a decisions-log entry.
  *
- *  Nine kinds — assigned at install:
+ *  Eight kinds — assigned at install:
  *    - `http`       — outbound HTTP / REST API (most CRM/messaging readers pre-D-125)
  *    - `dom`        — browser DOM extraction (extension only)
  *    - `ai`         — programmatic AI (BYOK / free pool / openai-compatible)
  *    - `chat`       — web-chat-tab AI (extension only — gemini / deepseek / chatgpt)
  *    - `mcp`        — MCP-client tool calls (pre-D-125 path)
- *    - `service`    — D-118 long-running services (server only)
  *    - `storage`    — local storage read/write (warehouse / shared / enrichment)
  *    - `connection` — D-125 outbound named endpoints (api / mcp / notification)
  *    - `cli`        — D-182 local-binary toolkit ops (whisper / docling / ffmpeg
@@ -180,6 +166,10 @@ export const riskTierLabel = (tier: string): string =>
  *                     binary-on-PATH preflight (§7), not a connection profile.
  *                     Graduated from `OpKind`-only into `IngredientKind` once the
  *                     §7 capability handler landed (D-182 F2 cli gate).
+ *
+ *  `service` (D-118's long-running services) was retired on 2026-10-10 with the
+ *  installer that ran it (D-321 § 5.5). A manifest that still declares it is
+ *  refused at install as an unknown kind.
  */
 export type IngredientKind =
   | 'http'
@@ -187,7 +177,6 @@ export type IngredientKind =
   | 'ai'
   | 'chat'
   | 'mcp'
-  | 'service'
   | 'storage'
   | 'connection'
   | 'cli';
@@ -197,15 +186,14 @@ export type IngredientKind =
  *  matching the type declaration. Frozen — adding a kind requires a
  *  decisions-log entry per the load-bearing rule in D-126.
  *  `cli` is last — it graduated in after the original eight (D-182 F2),
- *  matching the `OP_KINDS` append order so any persisted ordering stays
- *  stable. */
+ *  matching the `OP_KINDS` append order. `service` left the middle on
+ *  2026-10-10 (D-321 § 5.5); nothing reads a kind by its position. */
 export const INGREDIENT_KINDS: ReadonlySet<IngredientKind> = new Set([
   'http',
   'dom',
   'ai',
   'chat',
   'mcp',
-  'service',
   'storage',
   'connection',
   'cli',
@@ -242,8 +230,7 @@ export const INGREDIENT_KINDS: ReadonlySet<IngredientKind> = new Set([
  *                              reserved for `connection` where the
  *                              author declares full intent via
  *                              `connection_kind` + subtype.
- *    - `http` / `service` /  — full range. HTTP can call any verb;
- *      `connection`            services manage local processes;
+ *    - `http` / `connection` — full range. HTTP can call any verb;
  *                              connection records carry author intent.
  *    - `cli`                — read/write. Local-binary toolkit ops
  *                              (whisper transcribe, docling parse,
@@ -263,7 +250,6 @@ export const KIND_ALLOWED_TIERS: Record<IngredientKind, ReadonlySet<RiskTier>> =
   ai: new Set<RiskTier>(['read']),
   chat: new Set<RiskTier>(['read', 'write']),
   mcp: new Set<RiskTier>(['read', 'write', 'admin']),
-  service: new Set<RiskTier>(['read', 'write', 'admin', 'destructive']),
   storage: new Set<RiskTier>(['read', 'write', 'destructive']),
   connection: new Set<RiskTier>(['read', 'write', 'admin', 'destructive']),
   cli: new Set<RiskTier>(['read', 'write']),
@@ -344,26 +330,17 @@ export interface IngredientManifest {
    *  and `risk_tier` gating (`KIND_ALLOWED_TIERS`).
    *
    *  D-118 reserved `'service'` for `data.service` template
-   *  manifests; D-126 widened the field from optional `'service'`
-   *  to required `IngredientKind`. Pre-launch zero installs — no
+   *  manifests (retired 2026-10-10, D-321 § 5.5); D-126 widened the
+   *  field from optional `'service'` to required `IngredientKind`.
+   *  Pre-launch zero installs — no
    *  inference shim, no auto-stamp on load. Manifests without a
    *  declared `kind` post-validator-hardening (D-126 P4) fail at
-   *  install with `INGREDIENT_KIND_MISSING`.
-   *
-   *  Service-specific carve-outs still apply via `isServiceManifest`
-   *  — services have empty top-level `output` and live entirely
-   *  inside `input.service.*` instead of declaring an HTTP / DOM /
-   *  MCP / Chat executor. Binary release version is declared
-   *  separately at `input.service.binary_version` (informational;
-   *  see D-118 spec for the slug-vs-metadata-vs-schema-version
-   *  split). */
+   *  install with `INGREDIENT_KIND_MISSING`. */
   kind: IngredientKind;
   /** Positive integer. The manifest schema version — increments on
    *  breaking changes to the manifest shape (new required fields,
    *  removed fields, changed defaults that affect callers). Drives
-   *  recipe step pinning + the upgrade flow. For service manifests
-   *  the binary release version is *not* tracked here — see
-   *  `input.service.binary_version`. Parallel binary major lines
+   *  recipe step pinning + the upgrade flow. Parallel binary major lines
    *  (e.g. ffmpeg-v3 + ffmpeg-v4) are encoded as separate slugs
    *  collapsed under `variant_group` in marketplace UI. */
   version?: number;
@@ -533,7 +510,7 @@ export interface IngredientManifest {
    *  Optional. Required (warn-then-error) when the ingredient matches
    *  the action-with-conflict-potential pattern (`category: 'action'`
    *  AND `risk_tier ∈ {'write', 'admin', 'destructive'}` AND
-   *  `kind ∈ {'http', 'mcp', 'connection', 'storage', 'service'}`).
+   *  `kind ∈ {'http', 'mcp', 'connection', 'storage'}`).
    *  Either declare `{ declares_alternatives: true, fixed_slots_honored: true }`
    *  for the typical pattern OR explicitly opt out with
    *  `{ declares_alternatives: false, opt_out_rationale: '...' }`.

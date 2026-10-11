@@ -4300,7 +4300,7 @@ const renderForm = (
           type="url"
           data-${e(PAIR_CODE_INPUT_FIELD_NAME)}="server-url"
           value="${e(state.recoveryPaused || (state.replacementServerStage !== null && !replacementServerDetails) ? '' : state.serverUrl)}"
-          placeholder="https://your-server.recued.cloud"
+          placeholder="https://your-server.recued.net"
           autocomplete="off"
           ${reauthRecovery?.recoveryReentry === true
             && state.serverUrl.trim().length === 0

@@ -41,6 +41,7 @@
  *  Instructions). */
 
 import {
+  requiredScopesByConnection,
   type BulkPackManifest,
   type HandlerSlice,
   type PackListEntry,
@@ -68,6 +69,7 @@ import {
   diffRecordsPackForUpdate,
   recordsPackCurrentAccess,
 } from './pack-operation-update-diff.js';
+import { toolVersionReviewForPackUpdate } from './pack-tool-version-update-review.js';
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
 import type { SellerInstallAudienceStore } from './ingredient-authoring/install-composition.js';
 import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
@@ -77,6 +79,13 @@ import type { WsClient } from './ws-server.js';
 import type { RecordsNamespaceSummary, RecordsStore } from './records/store.js';
 
 export interface PackListRpcDeps {
+  /** D-320 audit — whether a connection is set up. Where an update starts is the
+   *  connection the pack's runs use, and a deleted connection's binding stays, dormant
+   *  (slice 2h): counted, a list of it and one other named no connection, and an update
+   *  with none chosen fell back to the pack's authored name and replaced the list with
+   *  it (`currentPackConnection`). Wired from the connection store
+   *  (`composePackListRpcDeps`). */
+  isConnectionSetUp?: (connection_name: string) => boolean;
   /** Per-pair recipe store. Required — the recipe-bearing `installed`
    *  join is the point of the rpc. Absent → composer returns the
    *  undefined-bundle + the rpc returns `not_configured`. */
@@ -225,6 +234,16 @@ const buildPackRosterLookups = (
   };
 };
 
+/** The scopes each connection slot's operations declare, as its own field on
+ *  the row — what the connections page needs, instead of the whole manifest
+ *  (see `PackListEntry.required_scopes_by_connection`). Omitted when empty. */
+const connectionScopesField = (
+  manifest: BulkPackManifest,
+): Pick<PackListEntry, 'required_scopes_by_connection'> => {
+  const scopes = requiredScopesByConnection(manifest);
+  return Object.keys(scopes).length > 0 ? { required_scopes_by_connection: scopes } : {};
+};
+
 const projectManifest = (
   manifest: BulkPackManifest,
   recipeStore: RecipeStore,
@@ -232,6 +251,7 @@ const projectManifest = (
   lookups: PackRosterLookups,
   localManifestStore?: Pick<LocalManifestStore, 'getManifest'>,
   sellerStore?: SellerInstallAudienceStore,
+  isConnectionSetUp?: (connection_name: string) => boolean,
 ): PackListEntry => {
   const recordsNamespace = lookups.namespace(manifest.publisher, manifest.slug);
   if (recordsNamespace !== null) {
@@ -276,6 +296,7 @@ const projectManifest = (
       ...(manifest.connection_hints !== undefined
         ? { connection_hints: manifest.connection_hints }
         : {}),
+      ...connectionScopesField(manifest),
       // ⛔ NO `manifest` — see the twin below and `PackListEntry.manifest`.
     };
   }
@@ -337,6 +358,10 @@ const projectManifest = (
   const operationDiff = offeredUpdate
     ? diffCompositionPackForUpdate(contractStore!, localManifestStore!, manifest)
     : undefined;
+  // D-321 — the programs whose handling outside their tested range it changes.
+  const toolVersionReview = offeredUpdate
+    ? toolVersionReviewForPackUpdate(contractStore!, localManifestStore!, manifest)
+    : [];
   // Where the update's Access choice STARTS: what the pack holds now.
   const currentAccess = offeredUpdate
     ? compositionPackCurrentAccess(contractStore!, localManifestStore!, manifest)
@@ -355,7 +380,7 @@ const projectManifest = (
   // …and Connect at the account it uses now.
   const currentConnection = contractStore !== undefined && installedAnyVersion && !installed
     && !carriesRecords(manifest)
-    ? currentPackConnection(contractStore, manifest.slug)
+    ? currentPackConnection(contractStore, manifest.slug, isConnectionSetUp)
     : undefined;
   return {
     slug: manifest.slug,
@@ -369,6 +394,7 @@ const projectManifest = (
     ...(ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
       : {}),
+    ...(toolVersionReview.length > 0 ? { tool_version_review: toolVersionReview } : {}),
     ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
     ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
     ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
@@ -393,6 +419,7 @@ const projectManifest = (
       ...(manifest.connection_hints !== undefined
         ? { connection_hints: manifest.connection_hints }
         : {}),
+      ...connectionScopesField(manifest),
     // ⛔⛔ NO `manifest` ON A LIST RESPONSE, AT ALL. The previous cut here kept it
     // for installed packs, which took the response from 44.6 MB to 17 MB but left
     // the cost PROPORTIONAL TO THE INSTALL COUNT — and nothing bounds that count.
@@ -460,6 +487,7 @@ export const handlePacksList = async (
       lookups,
       deps.localManifestStore,
       deps.sellerStore,
+      deps.isConnectionSetUp,
     );
     if (deps.recordsStore === undefined) return base;
     // ⛔⛔ A RECORDS PACK READS AS INSTALLED ON ITS VERSION ALONE, and its recipes

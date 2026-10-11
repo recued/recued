@@ -17,8 +17,7 @@ import { INGREDIENT_KINDS, type IngredientKind } from '../ingredient.js';
 
 describe('callClassForKind', () => {
   const expected: Record<IngredientKind, CallClass> = {
-    service: 'local-heavy',
-    cli: 'local-heavy', // D-182 — cli subprocess shares the local-heavy lane
+    cli: 'local-heavy', // D-182 — a cli subprocess takes the local-heavy lane
     ai: 'ai-governor',
     http: 'external-io',
     mcp: 'external-io',
@@ -45,9 +44,9 @@ describe('callClassForKind', () => {
     expect(new Set(Object.keys(expected))).toEqual(new Set(INGREDIENT_KINDS));
   });
 
-  it('routes the heavy local tools (service) to local-heavy', () => {
-    // docling / ffmpeg / whisper / pandoc / imagemagick / codex are kind:service.
-    expect(callClassForKind('service')).toBe('local-heavy');
+  it('routes the heavy local tools (cli) to local-heavy', () => {
+    // docling / ffmpeg / whisper / pandoc / imagemagick run as cli packs.
+    expect(callClassForKind('cli')).toBe('local-heavy');
   });
 
   it('keeps ai off the lanes (its own governor)', () => {

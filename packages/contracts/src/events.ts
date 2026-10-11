@@ -206,14 +206,6 @@ export type ServerEvent =
       cursor: number;
     }
   | {
-      kind: 'service';
-      service_id: string;
-      /** `enrolled` = new instance row; `lifecycle` = status change
-       *  (start / stop / crash); `error` = lifecycle error. */
-      op: 'enrolled' | 'lifecycle' | 'error';
-      cursor: number;
-    }
-  | {
       /** Supervision feature — a supervised cli daemon's runtime state moved
        *  (launched → running / crashed / restarted / stopped /
        *  permanently_crashed). Fired by the server supervisor on the ASYNC
@@ -222,9 +214,9 @@ export type ServerEvent =
        *  controls re-list live on every paired client without a Refresh click.
        *  Payload is intentionally narrow (no runtime blob): subscribers re-list
        *  via `supervision.list` so server-resolved state stays authoritative
-       *  (the `schedule` / `automation_rule_changed` pattern). Distinct from
-       *  `kind: 'service'` — that is the D-118 `data.service.*` collection;
-       *  these are the `(ingredient_slug, op)`-keyed supervision daemons. */
+       *  (the `schedule` / `automation_rule_changed` pattern). Keyed by
+       *  `(ingredient_slug, op)`. D-118's `service` event, for its
+       *  `data.service.*` instances, was retired 2026-10-10 (D-321 § 5.5). */
       kind: 'supervision';
       ingredient_slug: string;
       op: string;
@@ -1344,6 +1336,11 @@ export type ServerEvent =
 // from `server_identity_key` rotation now flows through the natural
 // disconnect → unpaired-state → pair-form remount path (per the D-156
 // spec § Q2 resolution + the webclient's `onReauthRequired` funnel).
+//
+// D-321 § 5.5 retired the `service` variant (2026-10-10). Only D-118's
+// installer would have emitted it, and that was deleted without ever doing so.
+// A client that still names it in `events.subscribe` is refused, as one naming
+// the retired `session` kind is.
 
 /** Discriminator type — derived for filter lists + default-subscription
  *  arrays. Adding a new `ServerEvent` variant here automatically
@@ -1405,7 +1402,6 @@ export const ALL_BROADCAST_EVENT_KINDS = [
   'records',
   'remerge_prompt',
   'schedule',
-  'service',
   'session_lifecycle',
   'supervision',
   'token.rotated',
@@ -1470,6 +1466,11 @@ export interface SubscribeAck {
    *  to a full collection re-sync (warehouse `since` + audit cursor +
    *  approvals snapshot). */
   fell_off_ring: boolean;
+  /** The requested kinds this server does not send (retired, or newer than
+   *  it), left out of the subscription. Absent when every kind is known, and
+   *  from a server older than 2026-10-10, which refused the call instead
+   *  (`events-subscribe.ts`). */
+  unknown_kinds?: string[];
 }
 
 // ────────────────────────────────────────────────────────────────

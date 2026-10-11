@@ -678,10 +678,7 @@ describe('WebSocket server shutdown', () => {
     const startedWaiters: Array<() => void> = [];
     const server = await startServer(0, {
       bootstrapDeps: {
-        bootstrap: {
-          data_path: '/tmp', bind_host: '127.0.0.1', bind_port: 0,
-          mcp_port: 0, webhook_port: 0, log_path: '/tmp/recued-test.log',
-        },
+        bootstrap: { bind_port: 0, webhooks_enabled: false },
         state: createServerStateStore(db),
         version: 'test',
         onPauseChanged: () => new Promise<void>((resolve) => {
@@ -764,10 +761,7 @@ describe('WebSocket server shutdown', () => {
     const sideEffectStarted = new Promise<void>((resolve) => { markStarted = resolve; });
     const server = await startServer(0, {
       bootstrapDeps: {
-        bootstrap: {
-          data_path: '/tmp', bind_host: '127.0.0.1', bind_port: 0,
-          mcp_port: 0, webhook_port: 0, log_path: '/tmp/recued-test.log',
-        },
+        bootstrap: { bind_port: 0, webhooks_enabled: false },
         state: createServerStateStore(db),
         version: 'test',
         onPauseChanged: async () => {

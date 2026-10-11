@@ -458,6 +458,23 @@ import {
   createPackAccessController,
   type PackAccessController,
 } from './pack-access-controls.js';
+// D-320 — the ACCESS tab's Connections block: which of the owner's connections a
+// pack signs in with, its default, Add another / Make default / Remove.
+import {
+  createPackConnectionsController,
+  type PackConnectionsCallers,
+  type PackConnectionsController,
+} from './pack-connections-controls.js';
+// D-321 — the DETAIL tab's Programs block: whether the pack's programs are ready
+// on the server, the tested versions, Refuse / Warn, and how to install one.
+import {
+  createPackProgramsController,
+  packProgramsFocusOf,
+  packProgramsFocusTargets,
+  type PackProgramsCallers,
+  type PackProgramsController,
+  type PackProgramsFocus,
+} from './pack-programs-controls.js';
 import {
   createOwnerOperationController,
   type OwnerOperationController,
@@ -583,6 +600,8 @@ export {
   PACKS_DIALOG_GRANT_OVERLAP_ITEM_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_OPERATION_DIFF_ATTR,
   PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_ATTR,
@@ -705,6 +724,9 @@ export type PacksInstallCaller = (args: {
    *  section; the install re-sources the grant + binding to it. Omitted when the
    *  pack declares no connection requirement OR the owner chose not to connect. */
   chosen_connection?: string;
+  /** D-320 slice 2j — the connections the pack's sign-in shares that the owner left
+   *  ticked; a first install puts them on its list beside `chosen_connection`. */
+  also_connections?: ReadonlyArray<string>;
   /** D-295 — one owner-chosen webhook per binding of every pack the install
    *  touches. Omitted when the preview named none (or could not say). */
   webhook_bindings?: ReadonlyArray<{ pack_slug: string; binding: string; ingress_id: string }>;
@@ -792,6 +814,8 @@ export type PacksInstallBySlugCaller = (args: {
   install_scope?: InstallGrantSelection;
   /** D-194 2b-2 — see {@link PacksInstallCaller}. */
   chosen_connection?: string;
+  /** D-320 slice 2j — see {@link PacksInstallCaller}. */
+  also_connections?: ReadonlyArray<string>;
   /** D-295 — see {@link PacksInstallCaller}. */
   webhook_bindings?: ReadonlyArray<{ pack_slug: string; binding: string; ingress_id: string }>;
   /** D-310 — see {@link PacksInstallCaller}. */
@@ -933,6 +957,12 @@ export interface MountPacksPanelOptions {
   // callers so the two axes of the one grant matrix read the same rpcs. ──
   /** `collection.contract.listContracts` — the door rows (self synthesized). */
   runListContracts?: GrantContractsCaller;
+  /** D-320 — `packs.connections.*`, the ACCESS tab's Connections block. Absent ⇒
+   *  the block is not shown. */
+  runPackConnections?: PackConnectionsCallers;
+  /** D-321 — `packs.tool_status` and the owner's Refuse / Warn writes, the
+   *  DETAIL tab's Programs block. Absent ⇒ the block is not shown. */
+  runPackPrograms?: PackProgramsCallers;
   /** D-196 R6 — Seller tiers used by the install audience's expanded
    *  per-tier checklist. The broad all-customers checkbox remains available
    *  when this optional read is absent. */
@@ -1320,9 +1350,12 @@ export const mountPacksPanel = (
   /** D-310 — the owner's Access pick for each pack the open dialog's install
    *  brings in: pack slug → (brought-in pack slug → tier). Absent ⇒ Read only. */
   const dialogDependencyAccess = new Map<string, Map<string, InstallAccessTier>>();
-  /** D-194 2b-2 — whether the Connect section's "Use a different account" list is
+  /** D-194 2b-2 — whether the Connect section's "Use a different connection" list is
    *  expanded for a slug. Cleared on dialog close alongside the picks. */
   const dialogConnectExpanded = new Set<string>();
+  /** D-320 slice 2j — the shared connections the owner unticked, per slug. Absent ⇒
+   *  every one the preview offers stays ticked. */
+  const dialogAlsoUnticked = new Map<string, Set<string>>();
   /** Clear ALL per-dialog picks for a slug — the single reset point so the
    *  Access + Scope + Connect state share one lifecycle (a slug left in one map
    *  but not another would render a stale pick on a later reopen). */
@@ -1331,6 +1364,7 @@ export const mountPacksPanel = (
     dialogGrantAudience.delete(slug);
     dialogChosenConnection.delete(slug);
     dialogConnectExpanded.delete(slug);
+    dialogAlsoUnticked.delete(slug);
     dialogWebhookPicks.delete(slug);
     dialogMailTemplateKeep.delete(slug);
     dialogDependencyAccess.delete(slug);
@@ -1429,6 +1463,9 @@ export const mountPacksPanel = (
    *  node would leave focus on detached DOM. The descriptor also survives the
    *  loading paint during a successful refresh, then resolves to Install. */
   let pendingDeleteActionFocus: PacksDeleteActionFocus | null = null;
+  /** D-321 — a Programs control that had focus while its action was in flight
+   *  (it was disabled, so the page took focus): restored once it can take it. */
+  let pendingProgramsFocus: PackProgramsFocus | null = null;
   // ── Slice K state ────────────────────────────────────────────────
   /** Post-success runnability disclosure notice. Survives refreshes;
    *  cleared on dismiss / the next submit kickoff / replaced by the
@@ -1676,6 +1713,7 @@ export const mountPacksPanel = (
     currentAccess?: PackListEntry['current_access'],
     currentAudience?: PackListEntry['current_audience'],
     currentConnection?: PackListEntry['current_connection'],
+    toolVersionReview?: PackListEntry['tool_version_review'],
   ): PackListEntry => ({
     slug: manifest.slug,
     publisher: manifest.publisher,
@@ -1694,6 +1732,9 @@ export const mountPacksPanel = (
     manifest,
     ...(ownerOperationReview !== undefined && ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
+      : {}),
+    ...(toolVersionReview !== undefined && toolVersionReview.length > 0
+      ? { tool_version_review: toolVersionReview }
       : {}),
     ...(recordsReview !== undefined ? { records_review: recordsReview } : {}),
     ...(manifestReviewHash !== undefined
@@ -1772,6 +1813,7 @@ export const mountPacksPanel = (
             result.current_access,
             result.current_audience,
             result.current_connection,
+            result.tool_version_review,
           );
           pendingAddManifestHash = result.manifest_review_hash ?? null;
           detailResolveError = null;
@@ -1829,6 +1871,21 @@ export const mountPacksPanel = (
       ? { runCliReachabilitySet: opts.runCliReachabilitySet }
       : {}),
     ...(opts.subscribe ? { subscribe: opts.subscribe } : {}),
+    onChange: () => transitionTo(state, true),
+  });
+  // D-320 — the Connections block above the Access matrix. Loads per pack on first
+  // sight; forgotten (and so reloaded) with every packs.list load.
+  const packConnections: PackConnectionsController = createPackConnectionsController({
+    document: doc,
+    ...(opts.runPackConnections ? { callers: opts.runPackConnections } : {}),
+    onChange: () => transitionTo(state, true),
+  });
+
+  // D-321 — the Programs block on DETAIL. Loads per pack on first sight;
+  // forgotten (and so checked again) with every packs.list load.
+  const packPrograms: PackProgramsController = createPackProgramsController({
+    document: doc,
+    ...(opts.runPackPrograms ? { callers: opts.runPackPrograms } : {}),
     onChange: () => transitionTo(state, true),
   });
 
@@ -2176,6 +2233,8 @@ export const mountPacksPanel = (
           supervision.refresh(),
           connectionsReadiness.refresh(),
           packAccess.refresh(),
+          packConnections.refresh(),
+          packPrograms.refresh(),
           ownerOperations.refresh(),
           refreshInstallAudienceOptions(),
         ]);
@@ -2669,6 +2728,16 @@ export const mountPacksPanel = (
     return pack.current_connection;
   };
 
+  /** D-320 slice 2j — tick or untick one shared connection for the open dialog. */
+  const toggleAlsoInternal = (connection_name: string): void => {
+    if (dialogOpenFor === null || installing) return;
+    const unticked = dialogAlsoUnticked.get(dialogOpenFor) ?? new Set<string>();
+    if (unticked.has(connection_name)) unticked.delete(connection_name);
+    else unticked.add(connection_name);
+    dialogAlsoUnticked.set(dialogOpenFor, unticked);
+    render();
+  };
+
   /** D-194 2b-2 — record the owner's connection pick (a name, or undefined =
    *  "don't connect now") + re-render. */
   const pickConnectionInternal = (name: string | undefined): void => {
@@ -2815,6 +2884,13 @@ export const mountPacksPanel = (
       submittingSlug,
       dialogConnectionCandidates(dialogConnectionRequirement(submittingSlug)),
     );
+    // D-320 slice 2j — the connections its sign-in shares, the ones left ticked: a
+    // first install only, beside a connection picked (they join its list).
+    const alsoConnections = chosenConnection !== undefined && updateStartConnection(submittingSlug) === undefined
+      ? (installPreviewFor(submittingSlug, target.manifest)?.shared_connections ?? [])
+        .map((shared) => shared.connection_name)
+        .filter((name) => name !== chosenConnection && !(dialogAlsoUnticked.get(submittingSlug)?.has(name) ?? false))
+      : [];
     // D-295 — one webhook per binding the preview named. A choice still open
     // holds the install (the server would refuse it anyway).
     const webhookChoices = target.manifest !== undefined
@@ -2866,6 +2942,7 @@ export const mountPacksPanel = (
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
+              ...(alsoConnections.length > 0 ? { also_connections: alsoConnections } : {}),
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
               ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
@@ -2880,6 +2957,7 @@ export const mountPacksPanel = (
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
                 : {}),
+              ...(alsoConnections.length > 0 ? { also_connections: alsoConnections } : {}),
               ...(webhookBindings !== undefined ? { webhook_bindings: webhookBindings } : {}),
               ...(dependencyScopes !== undefined ? { dependency_install_scopes: dependencyScopes } : {}),
               ...(mailTemplateChoices.length > 0 ? { mail_template_choices: mailTemplateChoices } : {}),
@@ -3259,6 +3337,8 @@ export const mountPacksPanel = (
       onPickAudience: (audience) => setGrantAudienceInternal(audience),
       onPickConnection: (name) => pickConnectionInternal(name),
       onToggleConnectExpanded: () => toggleConnectExpandedInternal(),
+      alsoUnticked: dialogAlsoUnticked.get(pack.slug) ?? new Set<string>(),
+      onToggleAlso: (name) => toggleAlsoInternal(name),
       ...((): { webhookChoices?: InstallWebhookChoice[]; webhooksLoading?: boolean } => {
         const choices = webhookChoicesFor(pack);
         return {
@@ -4207,6 +4287,10 @@ export const mountPacksPanel = (
       // axis of the one grant matrix). Falls back when access isn't wired or
       // the pack ships no catalog operations.
       const access = makeDetailSection('access', COPY.detail_access_label);
+      // D-320 — which of the owner's connections the pack signs in with, first:
+      // the accounts it acts in, before who may call it.
+      const connectionsBlock = packConnections.renderForPack(pack);
+      if (connectionsBlock !== null) access.appendChild(connectionsBlock);
       const accessPanel = packAccess.renderForPack(pack);
       if (accessPanel !== null) {
         access.appendChild(accessPanel);
@@ -4270,6 +4354,10 @@ export const mountPacksPanel = (
       // coverage (null when the pack binds no connection).
       const connSection = connectionsReadiness.renderForPack(pack);
       if (connSection) declares.appendChild(connSection);
+      // D-321 — Programs: the programs the pack runs on the server (null when
+      // it runs none, or the server does not offer the read).
+      const programsSection = packPrograms.renderForPack(pack);
+      if (programsSection) declares.appendChild(programsSection);
       // Supervision — the pack's supervised-daemon controls (null when it
       // ships no `detached.supervision` op or no set caller).
       const supSection = supervision.renderForPack(pack);
@@ -4385,6 +4473,7 @@ export const mountPacksPanel = (
     let restoreDetailTab = pendingDetailTabFocus;
     let restoreDeleteAction = pendingDeleteActionFocus;
     let restoreInstallDialog = pendingInstallDialogFocus;
+    let restorePrograms: PackProgramsFocus | null = null;
     pendingDetailTabFocus = null;
     if (activeElement !== null) {
       try {
@@ -4416,7 +4505,14 @@ export const mountPacksPanel = (
       if (activeOwned && restoreInstallDialog === null) {
         restoreInstallDialog = installDialogFocusFrom(activeElement);
       }
+      if (activeOwned) restorePrograms = packProgramsFocusOf(activeElement);
     }
+    // A Programs action still in flight keeps its place, unless focus has since
+    // gone somewhere else on purpose.
+    const focusLost = activeElement === null
+      || activeElement === (doc as unknown as { body?: HTMLElement | null }).body;
+    if (restorePrograms === null && focusLost) restorePrograms = pendingProgramsFocus;
+    pendingProgramsFocus = null;
     clearChildren();
     switch (state) {
       case 'loading':
@@ -4459,6 +4555,14 @@ export const mountPacksPanel = (
       pendingDeleteActionFocus = restoreDeleteActionFocus(restoreDeleteAction)
         ? null
         : restoreDeleteAction;
+    } else if (restorePrograms !== null) {
+      let target: HTMLElement | null = null;
+      for (const matches of packProgramsFocusTargets(restorePrograms)) {
+        target = findPanelElement(matches);
+        if (target !== null) break;
+      }
+      if (target !== null && target.hasAttribute?.('disabled') !== true) focusPanelElement(target);
+      else pendingProgramsFocus = restorePrograms;
     } else if (restoreDetailBack) {
       focusPanelElement(findBtn(PACKS_DETAIL_BACK_ATTR));
     } else if (restoreDetailTab !== null) {
@@ -4614,6 +4718,8 @@ export const mountPacksPanel = (
       supervision.dispose();
       connectionsReadiness.dispose();
       packAccess.dispose();
+      packConnections.dispose();
+      packPrograms.dispose();
       ownerOperations.dispose();
       // The Use tab's app view holds its own listener + in-flight run token;
       // disposing it is what stops a late run painting into a removed tree.
@@ -5471,6 +5577,33 @@ export const PACKS_PANEL_STYLES = `
 }
 [${PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR}][data-change="removed"] {
   color: var(--warn);
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-tool-version-review {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--warn);
+  border-left: 3px solid var(--warn);
+  border-radius: 9px;
+  background: var(--warn-bg);
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-tool-version-review-heading,
+[${PACKS_PANEL_ATTR}] .packs-dialog-tool-version-review-intro {
+  margin: 0;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-tool-version-review-intro {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+[${PACKS_PANEL_ATTR}] .packs-dialog-tool-version-review-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 [${PACKS_PANEL_ATTR}] .packs-dialog-collision {
   display: flex;

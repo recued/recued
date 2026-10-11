@@ -35,16 +35,16 @@ describe('writeConfigField', () => {
     writeFileSync(path, `
 [runtime]
 "llm.budget" = 100
-"log.level" = "info"
+"supervisor.mode" = "auto"
 `);
     writeConfigField({
       path,
       section: 'runtime',
-      key: 'log.level',
-      value: 'warn',
+      key: 'supervisor.mode',
+      value: 'systemd',
     });
     const { parsed } = parseToml(readFileSync(path, 'utf8'));
-    expect(parsed.runtime['log.level']).toBe('warn');
+    expect(parsed.runtime['supervisor.mode']).toBe('systemd');
     expect(parsed.runtime['llm.budget']).toBe(100); // untouched
   });
 

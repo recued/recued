@@ -316,7 +316,7 @@ const setupCalendar = (over: { config?: OAuthClientConfigResult } = {}) => {
 const DELETE_LANES = [
   { lane: 'mail', slug: 'work-mail', adapterType: 'gmail', providerLabel: 'Gmail' },
   { lane: 'calendar', slug: 'work-calendar', adapterType: 'gcal', providerLabel: 'Google' },
-  { lane: 'file', slug: 'work-files', adapterType: 's3', providerLabel: 'S3 bucket' },
+  { lane: 'file', slug: 'clients', adapterType: 'fs', providerLabel: 'Local folder' },
 ] as const;
 
 type DeleteLaneCase = (typeof DELETE_LANES)[number];
@@ -1506,8 +1506,26 @@ for (const laneCase of DELETE_LANES) {
       expect(setupResult.mount.getState().deleteConfirm).toEqual({
         slug: laneCase.slug,
         providerLabel: laneCase.providerLabel,
+        ...(laneCase.adapterType === 'fs' ? { localFolder: true } : {}),
         deleting: false,
       });
+    });
+
+    // ⛔ A folder's records go with it and its files stay; an account's synced
+    // data stays. Each prompt must say its own (live drive, 2026-10-10).
+    it('says what removal does to what was already brought in', async () => {
+      const setupResult = setupDeleteConfirm(laneCase);
+      await openDeleteConfirm(laneCase, setupResult);
+      const html = setupResult.host.innerHTML.replace(/\s+/g, ' ');
+      if (laneCase.adapterType === 'fs') {
+        expect(html).toContain('Recued stops watching this folder and removes what it recorded about its files.');
+        expect(html).toContain('The files stay in the folder, untouched.');
+        expect(html).not.toContain('stays in your warehouse');
+        expect(html).not.toContain('sign-in');
+      } else {
+        expect(html).toContain(`Recued stops syncing this ${laneCase.providerLabel} account and forgets its sign-in.`);
+        expect(html).toContain('Everything already synced stays in your warehouse.');
+      }
     });
 
     it('deletes exactly once with the right slug and reloads after confirmation', async () => {
@@ -1641,10 +1659,14 @@ for (const laneCase of DELETE_LANES) {
       expect(setupResult.mount.getState().deleteConfirm).toEqual({
         slug: laneCase.slug,
         providerLabel: laneCase.providerLabel,
+        ...(laneCase.adapterType === 'fs' ? { localFolder: true } : {}),
         deleting: true,
       });
       expect(setupResult.host.innerHTML).toContain(`Remove ${laneCase.slug}?`);
-      expect(setupResult.host.innerHTML).toContain(`this ${laneCase.providerLabel} account`);
+      // The prompt keeps its own wording though the row is gone.
+      expect(setupResult.host.innerHTML).toContain(laneCase.adapterType === 'fs'
+        ? 'Recued stops watching this folder'
+        : `this ${laneCase.providerLabel} account`);
 
       pending.resolve({ ok: true });
       await tick();

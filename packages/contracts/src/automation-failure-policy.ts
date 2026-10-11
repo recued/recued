@@ -129,17 +129,7 @@ export const ENVIRONMENT_RETRY_POLICY: Readonly<Record<string, 'retry' | 'stop'>
   // does not change between two ticks of the same recipe.
   AI_MODEL_REFUSED: 'stop',
 
-  // ── services: the supervisor may fix a transient, never a broken install ──
-  SERVICE_ALREADY_RUNNING: 'retry',
-  SERVICE_NOT_RUNNING: 'retry',
-  SERVICE_STORAGE_PRESSURE: 'retry',
-  SERVICE_INVOKE_CONCURRENCY: 'retry',
-  SERVICE_HEALTH_TIMEOUT: 'retry',
-  SERVICE_CHECK_FAILED: 'retry',
-  SERVICE_INSTALL_FAILED: 'stop',
-  SERVICE_UPGRADE_FAILED: 'stop',
-  SERVICE_UNINSTALL_FAILED: 'stop',
-  SERVICE_PERMANENTLY_CRASHED: 'stop',
+  // ── a crash loop the supervisor gave up on is not fixed by retrying ──
   CRASH_LOOP_ACTIVE: 'stop',
 
   // ── ⛔ CREDENTIALS — the whole reason this table exists ───────────────────

@@ -86,7 +86,8 @@ export interface CollectionDisplaySchema {
  *    - `file`        → `CollectionRecord.hot_fields.{path,size,mime_type,mtime}`
  *    - `webhook`     → `CollectionRecord.hot_fields.{method,remote_ip,…}`
  *                      + `received_at`
- *    - `service`     → `ServiceInstanceListRow.{template_slug,status,version,…}`
+ *    - `service`     → D-118's service instances; none can exist since its
+ *                      installer was retired (2026-10-10)
  *    - `shared`      → `{ key, value, _id, _collection }`
  *    - `annotation`  → `Annotation.{key,target_collection,target_id,…}`
  *    - `link`        → `Link.{role,from_collection,to_collection,…}`
@@ -119,11 +120,6 @@ export const COLLECTION_DISPLAY_SCHEMAS: Readonly<
   webhook: {
     primary_field: 'method',
     summary_fields: ['remote_ip', 'received_at'],
-    detail_renderer: 'json',
-  },
-  service: {
-    primary_field: 'template_slug',
-    summary_fields: ['status', 'version'],
     detail_renderer: 'json',
   },
   shared: {

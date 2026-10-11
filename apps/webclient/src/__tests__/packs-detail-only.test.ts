@@ -19,6 +19,8 @@ import {
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_OPERATION_DIFF_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR,
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_RESOLVE_ERROR_ATTR,
   PACKS_DETAIL_RESOLVE_RETRY_ATTR,
@@ -583,6 +585,34 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     await tick();
     expect(findByAttr(host, PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR)).not.toBeNull();
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  it('D-321 — a marketplace update carries its program review into the dialog', async () => {
+    // The detail-only path projects the resolve result itself
+    // (`projectAddedManifest`): a field it does not copy never reaches the dialog.
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest({ version: 3 }),
+      tool_version_review: [{
+        ingredient_id: 'opencode',
+        tool: 'opencode',
+        outside_now: 'warn',
+        outside_after: 'refuse',
+        tested: { from: '2.0.0', before: '3.0.0' },
+      }],
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'mkt-pack',
+      roster: () => ({ packs: [], installed_versions: [{ slug: 'mkt-pack', version: 2 }] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+    m.clickInstall('mkt-pack');
+    await tick();
+    const review = findByAttr(host, PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR);
+    expect(review).not.toBeNull();
+    expect(findByAttrValue(review!, PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR, 'opencode')?.textContent)
+      .toContain('An untested version will be refused');
   });
 
   it('a marketplace update carries the whole operation diff and starts at the pack\'s current Access', async () => {

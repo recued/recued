@@ -32,6 +32,7 @@
  *  Spec: D-210 § A.8 slice 3d. */
 
 import { PREFLIGHT_HANDLER_KIND } from '@recued/gateway';
+import { askDetailLabel } from '@recued/contracts';
 import type { ArgEditField, InboxItem, MetaFieldType } from '@recued/contracts';
 import type {
   AskLandingDetail,
@@ -61,6 +62,23 @@ const MAX_VALUE_CHARS = 400;
 const ABSENT_VALUE = '(not set)';
 const EMPTY_VALUE = '(empty)';
 
+/** A value that carries nothing: `absent` (no value, or null) or `empty` (an
+ *  empty text, list or object). An empty list or object read `[]` / `{}`, the
+ *  JSON for "nothing", where an empty text read `(empty)`. A boolean is never
+ *  blank: absent reads "No" (see `formatValue`). */
+type BlankKind = 'absent' | 'empty';
+
+const blankKind = (type: MetaFieldType, value: unknown): BlankKind | null => {
+  if (type === 'boolean') return null;
+  if (value === undefined || value === null) return 'absent';
+  if (typeof value === 'string' || Array.isArray(value)) return value.length === 0 ? 'empty' : null;
+  if (typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value);
+    return (proto === Object.prototype || proto === null) && Object.keys(value).length === 0 ? 'empty' : null;
+  }
+  return null;
+};
+
 /** A datetime STRING already carrying a zone designator (`Z`, `+02:00`,
  *  `-0500`) is an instant and may be re-expressed in the display zone. One
  *  without is a WALL CLOCK, and `Date.parse` would read it in the SERVER's
@@ -76,7 +94,7 @@ const ZONE_BEARING = /(?:Z|[+-]\d{2}:?\d{2})$/i;
  *  dotted key that exists literally IS the value the operation dispatches
  *  with. Only when there is no literal hit does a dotted key walk nested
  *  objects, matching how `resolveSchemaProperty` reads the request schema. */
-const readArgPath = (args: Record<string, unknown>, key: string): unknown => {
+export const readArgPath = (args: Record<string, unknown>, key: string): unknown => {
   if (Object.hasOwn(args, key)) return args[key];
   if (!key.includes('.')) return undefined;
   let cursor: unknown = args;
@@ -91,6 +109,49 @@ const readArgPath = (args: Record<string, unknown>, key: string): unknown => {
 
 const truncate = (value: string): string =>
   value.length <= MAX_VALUE_CHARS ? value : `${value.slice(0, MAX_VALUE_CHARS)}…`;
+
+type PlainValue = string | number | boolean;
+
+const isPlainList = (value: unknown): value is readonly PlainValue[] =>
+  Array.isArray(value)
+  && value.every((v) => typeof v === 'string' || typeof v === 'boolean'
+    || (typeof v === 'number' && Number.isFinite(v)));
+
+/** A list of plain values reads as the values, comma-separated, without the
+ *  JSON around them: the owner needs to know WHO gets the mail, not that `to`
+ *  is an array. Found on a live drive (2026-10-10): a held send read
+ *  `To ["dana@sandhurst.test"]`, `Cc []`.
+ *
+ *  ⛔ A CUT LIST SAYS HOW MANY IT LEFT OUT. With the brackets gone the reader
+ *  has no other sign of how long a list is, and one cut at the display cap
+ *  would read as the few that fit: the ask text learned this on `to: [500
+ *  addresses]`, approved as four (`renderInline`, contracts). So a long list
+ *  is cut between items and ends "and N more". */
+const formatList = (items: readonly PlainValue[]): string => {
+  const texts = items.map((item) => {
+    if (typeof item !== 'string') return String(item);
+    // A newline would break the line the list reads on.
+    const text = item.replace(/\s+/g, ' ').trim();
+    return text.length === 0 ? EMPTY_VALUE : text;
+  });
+  const whole = texts.join(', ');
+  if (whole.length <= MAX_VALUE_CHARS) return whole;
+  const more = (n: number): string => ` and ${n} more`;
+  let kept = 0;
+  let length = 0;
+  for (const text of texts) {
+    const next = length + (kept > 0 ? 2 : 0) + text.length;
+    if (next + more(texts.length - kept - 1).length > MAX_VALUE_CHARS) break;
+    length = next;
+    kept += 1;
+  }
+  if (kept === 0) {
+    // One item longer than the cap: cut it visibly, and still count the rest.
+    const tail = texts.length > 1 ? more(texts.length - 1) : '';
+    return `${texts[0]!.slice(0, MAX_VALUE_CHARS - tail.length - 1)}…${tail}`;
+  }
+  return `${texts.slice(0, kept).join(', ')}${more(texts.length - kept)}`;
+};
 
 /** Format an absolute instant in a NAMED zone. The zone name is not
  *  decoration: this page is read on a phone that may be nowhere near the
@@ -149,8 +210,9 @@ const formatValue = (
   // Absence and emptiness are decided ONCE, before the type dispatch — an
   // empty `datetime` and an empty `string` are the same fact about the held
   // operation and must not read differently because of their declared type.
-  if (value === undefined || value === null) return ABSENT_VALUE;
-  if (typeof value === 'string' && value.length === 0) return EMPTY_VALUE;
+  const blank = blankKind(type, value);
+  if (blank === 'absent') return ABSENT_VALUE;
+  if (blank === 'empty') return EMPTY_VALUE;
 
   // Only a number or a string can name an instant. An unformattable one
   // echoes its raw value rather than falling through, where
@@ -162,6 +224,7 @@ const formatValue = (
 
   if (typeof value === 'string') return truncate(value);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (isPlainList(value)) return formatList(value);
 
   try {
     return truncate(JSON.stringify(value) ?? String(value));
@@ -258,9 +321,19 @@ export const buildAskLandingDetails = (
   // the label fallback can drift. The narrowing is honest rather than
   // permissive: `InboxItem` still satisfies it structurally.
   item: Pick<InboxItem, 'args' | 'arg_schema' | 'proposed_action'>,
-  opts: { readonly timeZone: string; readonly editable?: boolean },
+  opts: {
+    readonly timeZone: string;
+    readonly editable?: boolean;
+    /** Name the fields that carry nothing on one `Not set` row and one `Empty`
+     *  row, instead of a row each (the approval card). Ignored with `editable`:
+     *  there a row is the field's control, and folding it would take that away. */
+    readonly foldBlank?: boolean;
+  },
 ): AskLandingHeldOpDetails => {
   const details: AskLandingDetail[] = [];
+  const fold = opts.foldBlank === true && opts.editable !== true;
+  const absent: string[] = [];
+  const empty: string[] = [];
   for (const field of item.arg_schema.fields) {
     if (typeof field.key !== 'string' || field.key.length === 0) continue;
     const label =
@@ -268,6 +341,11 @@ export const buildAskLandingDetails = (
         ? field.label
         : field.key;
     const raw = readArgPath(item.args, field.key);
+    const blank = fold ? blankKind(field.type, raw) : null;
+    if (blank !== null) {
+      (blank === 'absent' ? absent : empty).push(label);
+      continue;
+    }
     const edit =
       opts.editable === true ? resolveEditControl(field, raw, opts.timeZone) : null;
     details.push({
@@ -279,6 +357,18 @@ export const buildAskLandingDetails = (
       // hiding a contract change behind a cast.
       value: formatValue(field.type, raw, opts.timeZone),
     });
+  }
+  // ⛔ FOLDED, NEVER DROPPED. Each name survives, so the block still accounts
+  // for every field (one left out would read as a field the call does not
+  // carry), and the two rows stay apart as the ask text keeps them: "nothing
+  // filled it" and "deliberately blank" are different facts about what approve
+  // commits. The names are part of the VALUE, which no client rewrites, so they
+  // are named here by the rule the cards use for a row's label.
+  if (absent.length > 0) {
+    details.push({ label: 'Not set', value: formatList(absent.map(askDetailLabel)) });
+  }
+  if (empty.length > 0) {
+    details.push({ label: 'Empty', value: formatList(empty.map(askDetailLabel)) });
   }
   return {
     ...(item.proposed_action.length > 0 ? { heading: item.proposed_action } : {}),

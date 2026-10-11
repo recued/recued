@@ -1,13 +1,20 @@
-/** Phase D (D-106) — webhook listeners composer.
+/** Inbound webhook listeners composer: the D-128 vendor-connection receiver
+ *  and its WatchSource rows. (Phase D's `/webhook/{slug}` listener lived here
+ *  too until it was removed, below.)
  *
- *  HTTP listeners gated on the `bootstrap.webhook_port > 0` knob. D-096
+ *  HTTP listeners gated on the `bootstrap.webhooks_enabled` switch. D-096
  *  keeps the inbound paths self-host-only — the cloud never relays
  *  webhook ingress, so the operator must bring their own public address
- *  (or user-hosted tunnel) and flip `RECUED_PUBLIC_REACHABLE=true` (read
- *  per-request so the toggle doesn't demand a restart).
+ *  (or user-hosted tunnel) and switch on public reachability: the runtime
+ *  key `collection.webhook.public_reachable`, or the older
+ *  `RECUED_PUBLIC_REACHABLE=true` (`webhook-public-reachable.ts`, read per
+ *  request so the key changes without a restart).
  *
- *  - `webhookListener` backs `POST /webhook/{slug}` and dispatches to
- *    the registered webhook collection via `collectionRegistry`.
+ *  - ⛔ The Phase D `webhookListener` (`POST /webhook/{slug}`, into a
+ *    `data.webhook.<slug>` warehouse collection) was REMOVED 2026-10-10.
+ *    Nothing in production ever created a webhook collection, so every
+ *    request answered 404; D-201's `/v1/webhooks/<id>` is the owner's
+ *    inbound webhook (decisions-log, "D-106 follow-up").
  *  - ⛔ The D-115 6C `hookListener` (`POST /hook/{recipe_id}/{slug}`,
  *    feeding the `webhook-watcher`'s in-memory queue) was RETIRED
  *    2026-10-05 with that watcher: it verified nothing — the recipe id in
@@ -15,8 +22,8 @@
  *    public — and what it queued was lost on restart. D-201 webhook
  *    triggers are the verified, durable path.
  *
- *  WatchSource generalization — this composer also owns the inbound
- *  inbound surface, the D-128 P3 vendor-connection webhook receiver
+ *  WatchSource generalization — this composer owns the D-128 P3
+ *  vendor-connection webhook receiver
  *  (`POST /v1/connection/webhook/<vendor>/<connection_name>` →
  *  HMAC-verifying funnel → warehouse-bus emits). The receiver module +
  *  the server.ts route existed since D-128 but nothing composed them —
@@ -31,17 +38,15 @@
  *  vendor × enrolled api connection), active when the delivery path is
  *  live end-to-end (port wired ∧ publicly reachable ∧ secret present —
  *  or the vendor's in-process subscription for OAuth-bound vendors).
- *  Provider registration is NOT gated on `webhookPort` — an inactive
- *  row that says WHY ("inbound webhook port not configured") is the
+ *  Provider registration is NOT gated on `webhooksEnabled` — an inactive
+ *  row that says WHY ("inbound webhooks are off") is the
  *  governance value.
  *
- *  Gate: `webhookPort > 0` → the listeners; otherwise all undefined and
- *  the caller's path-router 404s every inbound webhook request. The
- *  shared `publicReachable` thunk reads
- *  `process.env.RECUED_PUBLIC_REACHABLE` per request — same shape both
- *  pre-existing listeners had; sharing the thunk preserves the
- *  per-request read semantic without coupling the listeners' internal
- *  state (the thunk is stateless). */
+ *  Gate: `webhooksEnabled` → the receiver; otherwise undefined and the
+ *  caller's path-router 404s every request to it. The receiver and the
+ *  governance rows share one `publicReachable` thunk,
+ *  read per request; the composition root passes the same one to D-201's
+ *  intake, so all of them answer to one switch. */
 
 import {
   composeVendorEntityScope,
@@ -49,7 +54,6 @@ import {
   type WatchSourceStatusEntry,
 } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
-import type { CollectionRegistry } from '../../collections/registry.js';
 import type { ConnectionWebhookRequestHandler } from '../../connection-webhook-listener.js';
 import {
   getDefaultReconcilerRegistry,
@@ -66,11 +70,10 @@ import {
   webhookSourceKey,
   type WatchSourceRegistry,
 } from '../../watch/source-registry.js';
-import type { WebhookRequestHandler } from '../../collections/webhook/webhook-listener.js';
+import { createWebhookPublicReachable } from './webhook-public-reachable.js';
 
 export interface ComposeWebhookListenersDeps {
-  readonly webhookPort: number;
-  readonly collectionRegistry: CollectionRegistry;
+  readonly webhooksEnabled: boolean;
   /** Connection store — backs the D-128 receiver's config lookup AND
    *  the webhook push-source provider rows. Absent (daemon-less
    *  harness) ⇒ neither composes. */
@@ -96,19 +99,17 @@ export interface ComposeWebhookListenersDeps {
    *  bypasses the op-admission gate and must be closed here). Read
    *  per-request, so resume is instant. Absent ⇒ never paused. */
   readonly isPaused?: () => boolean;
+  /** The public-reachability switch (`createWebhookPublicReachable`). The
+   *  composition root builds it over its runtime config and passes the same
+   *  thunk to D-201's intake. Absent ⇒ the environment alone. */
+  readonly publicReachable?: () => boolean;
 }
 
 export interface WebhookListenersBundle {
-  readonly webhookListener: WebhookRequestHandler | undefined;
   /** D-128 P3 `POST /v1/connection/webhook/<vendor>/<connection_name>`
    *  receiver. Undefined when the port gate or its stores are absent. */
   readonly connectionWebhookListener: ConnectionWebhookRequestHandler | undefined;
 }
-
-const readPublicReachable = (): boolean => {
-  const v = process.env.RECUED_PUBLIC_REACHABLE;
-  return v === 'true' || v === '1';
-};
 
 /** Register the webhook push-source provider — one row per
  *  (webhook-capable vendor × enrolled api connection). Reads the
@@ -166,9 +167,10 @@ export const registerWebhookSourceProvider = (input: {
 
         let inactive_reason: string | null = null;
         if (!input.receiverLive) {
-          inactive_reason = 'inbound webhook port not configured';
+          inactive_reason = 'inbound webhooks are off (webhooks_enabled)';
         } else if (!input.publicReachable()) {
-          inactive_reason = 'public reachability is off (RECUED_PUBLIC_REACHABLE)';
+          inactive_reason =
+            'public reachability is off (collection.webhook.public_reachable)';
         } else {
           let config: Record<string, unknown> | null = null;
           try {
@@ -206,17 +208,15 @@ export const registerWebhookSourceProvider = (input: {
 export const composeWebhookListeners = async (
   deps: ComposeWebhookListenersDeps,
 ): Promise<WebhookListenersBundle> => {
-  const portLive = deps.webhookPort > 0;
+  const webhooksOn = deps.webhooksEnabled;
   const receiverComposable =
-    portLive &&
+    webhooksOn &&
     deps.connectionStore !== undefined &&
     deps.enrichmentStore !== undefined &&
     deps.warehouseBus !== undefined;
 
-  // Single shared thunk — every listener reads it per-request, the
-  // closure is stateless so sharing one preserves the live-toggle
-  // semantic without affecting any listener's behavior.
-  const publicReachable = readPublicReachable;
+  // One switch for every listener, read per request.
+  const publicReachable = deps.publicReachable ?? createWebhookPublicReachable();
 
   // Governance rows register regardless of the port gate — an inactive
   // webhook row that names its blocker is the surface's whole point.
@@ -230,22 +230,9 @@ export const composeWebhookListeners = async (
     });
   }
 
-  if (!portLive) {
-    return {
-      webhookListener: undefined,
-      connectionWebhookListener: undefined,
-    };
+  if (!webhooksOn) {
+    return { connectionWebhookListener: undefined };
   }
-
-  const { createWebhookListener } = await import(
-    '../../collections/webhook/webhook-listener.js'
-  );
-
-  const webhookListener = createWebhookListener({
-    registry: deps.collectionRegistry,
-    publicReachable,
-    ...(deps.isPaused ? { isPaused: deps.isPaused } : {}),
-  });
 
   let connectionWebhookListener: ConnectionWebhookRequestHandler | undefined;
   if (receiverComposable) {
@@ -304,5 +291,5 @@ export const composeWebhookListeners = async (
     });
   }
 
-  return { webhookListener, connectionWebhookListener };
+  return { connectionWebhookListener };
 };

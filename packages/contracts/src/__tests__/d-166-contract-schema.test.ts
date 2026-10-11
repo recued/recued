@@ -26,6 +26,8 @@ const EXPECTED_DISPATCH_ROLES = [
   // D-170 gap #2 — connection → local-catalog binding inventory role.
   'connection_binding',
   'owner_operation_defaults',
+  // D-321 — the owner's per-tool choice outside a pack's tested versions.
+  'owner_tool_version',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -260,12 +262,18 @@ describe('D-165 contract schema seed', () => {
       // D-220 Slice B — pack-shipped intake templates, persisted at install.
       'installed_reception_template',
       'connection_catalog_binding',
+      // D-320 — a pack's default connection per slot.
+      'pack_connection_default',
+      // D-320 ruling 9 — the pack holding a borrowing pack's sign-in.
+      'pack_connection_holder',
       // D-182 §7.2 — per-(principal × cli-ingredient × operation) reachability.
       'cli_reachability',
       'grant',
       'policy_resolution',
       'override',
       'owner_operation',
+      // D-321 — one owner choice per cli catalog's tool.
+      'owner_tool_version',
       'contract_definition',
       // D-177 N.13 (P6b) — staged-trust suggestion rows, keyed by the
       // canonical N.13 key hash (the learner's UNIQUE-key upsert target).
@@ -293,6 +301,9 @@ describe('D-165 contract schema seed', () => {
       // D-220 Slice B — one persisted pack-shipped intake template.
       'installed_reception_template_info',
       'catalog_binding_info',
+      // D-320 — a pack's default connection for one slot.
+      'pack_connection_default_info',
+      'pack_connection_holder_info',
       // D-182 §7.2 — per-contract cli reachability state (allowlist bit).
       'cli_reachability_state',
       // Grant-foundation slice 3 (D-187 amendment) — one unified grant entry value.
@@ -304,6 +315,8 @@ describe('D-165 contract schema seed', () => {
       'merge_card_resolution',
       'override_policy',
       'owner_operation_policy',
+      // D-321 — `{ outside, version_hash }`.
+      'owner_tool_version_policy',
       'contract_scope',
       'door_execution_policy',
       // D-177 N.3 — session-grant nested shapes (bound recipe identity +
@@ -380,6 +393,21 @@ describe('D-165 contract schema seed', () => {
     expect(owner.merge_rule).toBe('override');
   });
 
+  it('pins D-321 owner tool choices as an exact actorless catalog key', () => {
+    const tool = D165_CONTRACT_SCHEMA.composite_keys.owner_tool_version;
+    expect(tool.segments).toEqual(['ingredient_id']);
+    expect(tool.required).toEqual(['ingredient_id']);
+    expect(tool.optional_tail).toBeUndefined();
+    expect(tool.applies_to).toEqual(['owner_tool_version']);
+    expect(tool.merge_rule).toBe('override');
+    expect(tool.writeable_by).toBe('user');
+    expect(D165_CONTRACT_SCHEMA.value_shapes.owner_tool_version_policy).toEqual({
+      fields: ['outside', 'version_hash'],
+      types: { outside: 'enum:refuse|warn', version_hash: 'string' },
+      required: ['outside', 'version_hash'],
+    });
+  });
+
   it('pins merge precedence by composite key', () => {
     expect(
       Object.fromEntries(
@@ -394,12 +422,16 @@ describe('D-165 contract schema seed', () => {
       // D-220 Slice B — pack-shipped intake templates.
       installed_reception_template: 0,
       connection_catalog_binding: 0,
+      pack_connection_default: 0,
+      pack_connection_holder: 0,
       // D-182 §7.2 — per-contract cli reachability, no composition (override).
       cli_reachability: 0,
       grant: 10,
       policy_resolution: 20,
       override: 30,
       owner_operation: 0,
+      // D-321 — one row per cli catalog, no composition.
+      owner_tool_version: 0,
       contract_definition: 0,
       // D-177 N.13 (P6b) — one row per key hash, no composition.
       delegation_rule_suggestion: 0,

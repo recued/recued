@@ -5,7 +5,9 @@
  *  the two places a chunk walk touches, without either of them holding the
  *  handle itself:
  *
- *    engine  (`ExecutionContext.uploadStaging`) — stages once, disposes once.
+ *    adapter (`ConnectionApiHandlerDeps.uploadStaging`) — stages once before the
+ *            walk, disposes once after it. (The engine staged at first; it
+ *            must not — see `ConnectionApiHandlerDeps.uploadStaging`.)
  *    adapter (`ConnectionApiHandlerDeps.readUploadChunk`) — reads one range per
  *            APPEND.
  *

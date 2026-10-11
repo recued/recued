@@ -618,8 +618,10 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // it cannot touch. The same reason the `booking-*` manifests state what they
   // do not carry (see internal design notes).
   op('core.data.form-response.set-state', 'data', 'form-response-set-state', 'write', 'form_response'),
-  op('core.data.webhook.get', 'data', 'webhook-get', 'read', 'webhook'),
-  op('core.data.webhook.list', 'data', 'webhook-list', 'read', 'webhook'),
+  // `core.data.webhook.get` / `.list` (`webhook-get` / `webhook-list`) went
+  // 2026-10-10 with the Phase D webhook collection they read, which nothing in
+  // production ever created. A realm keeps their owner grant rows; nothing
+  // reads a row whose op is not registered.
 
   // D-201 Slice 4 — run-scoped accepted-event read. The backing ingredient
   // accepts only an opaque event ref; engine-only StepMeta supplies the recipe

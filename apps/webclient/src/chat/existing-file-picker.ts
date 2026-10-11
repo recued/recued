@@ -238,15 +238,20 @@ export const openExistingFilePicker = (
 export const openFileChatPicker = (
   doc: Document, recordId: string, callers: FileChatCallers, signal?: AbortSignal,
 ): Promise<{ file: FileAttachmentSelection; sessionId: string | null } | null> => {
-  const remote = recordId.startsWith('file:remote:');
-  const ui = picker<{ file: FileAttachmentSelection; sessionId: string | null }>(doc, remote ? 'Import and use in Chat' : 'Use in Chat', signal);
+  // A connected source's file and a file in a folder Recued watches are both
+  // imported first: Chat attaches retained files only.
+  const local = recordId.startsWith('file:local:');
+  const imported = recordId.startsWith('file:remote:') || local;
+  const ui = picker<{ file: FileAttachmentSelection; sessionId: string | null }>(doc, imported ? 'Import and use in Chat' : 'Use in Chat', signal);
   const status = doc.createElement('p'); status.setAttribute('role', 'status');
-  const note = doc.createElement('p'); note.hidden = !remote;
-  note.textContent = 'Import saves the current download as a copy in Files and adds it to your draft. Later cloud changes will not update it. Closing this picker leaves any saved copies in Files. You choose when to send it.';
+  const note = doc.createElement('p'); note.hidden = !imported;
+  note.textContent = local
+    ? 'Import saves the file as it is now as a copy in Files and adds it to your draft. Later changes in the folder will not update it. Closing this picker leaves any saved copies in Files. You choose when to send it.'
+    : 'Import saves the current download as a copy in Files and adds it to your draft. Later cloud changes will not update it. Closing this picker leaves any saved copies in Files. You choose when to send it.';
   const query = doc.createElement('input'); query.type = 'search'; query.placeholder = 'Find a conversation'; query.setAttribute('aria-label', 'Find a conversation');
   const options = doc.createElement('div'); options.className = 'file-options';
   const retry = doc.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry'; retry.hidden = true;
-  const use = doc.createElement('button'); use.type = 'button'; use.hidden = !remote; use.disabled = true;
+  const use = doc.createElement('button'); use.type = 'button'; use.hidden = !imported; use.disabled = true;
   const chosen = doc.createElement('p');
   const inspect = doc.createElement('button'); inspect.type = 'button'; inspect.textContent = 'Preview file'; inspect.hidden = !callers.preview;
   let file: FileAttachmentSelection | CloudFileSelection | undefined;
@@ -260,13 +265,13 @@ export const openFileChatPicker = (
     use.textContent = importing ? 'Importing…' : failedImport ? 'Retry import' : 'Import and use in Chat';
     use.disabled = importing || loading || !destination || !file || !('record_id' in file) || !!file.unavailable_reason;
     inspect.disabled = importing || loading || !file;
-    chosen.hidden = !remote || !destination;
+    chosen.hidden = !imported || !destination;
     chosen.textContent = destination ? `Selected conversation: ${destination.title}` : '';
     options.replaceChildren(); if (!file || ('record_id' in file && file.unavailable_reason)) return;
     const target = (title: string, sessionId: string | null): void => {
       const button = doc.createElement('button'); button.type = 'button'; button.textContent = title;
       button.disabled = importing || loading;
-      if (remote) button.setAttribute('aria-pressed', String(destination?.sessionId === sessionId));
+      if (imported) button.setAttribute('aria-pressed', String(destination?.sessionId === sessionId));
       button.addEventListener('click', () => {
         if (!file || importing || loading) return;
         if ('file_id' in file) ui.close({ file, sessionId });
@@ -284,12 +289,12 @@ export const openFileChatPicker = (
     const previous = file; file = undefined; render();
     retry.hidden = true; status.textContent = 'Loading conversations…';
     try {
-      const get = remote ? callers.cloud?.get : callers.get;
+      const get = imported ? callers.cloud?.get : callers.get;
       if (!get) throw new Error('This server cannot bring in files from other places.');
       const [selection, result] = await Promise.all([get({ record_id: recordId }), callers.sessions()]);
       if (!ui.alive()) return;
       if (!selection.selection_revision || !Array.isArray(result.sessions)
-        || (remote ? !('record_id' in selection) || selection.record_id !== recordId : !('file_id' in selection))) {
+        || (imported ? !('record_id' in selection) || selection.record_id !== recordId : !('file_id' in selection))) {
         throw new Error('This server cannot use it in Chat.');
       }
       if (previous?.selection_revision !== selection.selection_revision) { importId = undefined; failedImport = false; }

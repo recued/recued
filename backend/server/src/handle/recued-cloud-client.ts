@@ -65,7 +65,7 @@ interface CloudDataBody<T> {
 }
 
 export interface RecuedCloudHandleClientOptions {
-  /** Cloud helper base URL — production `https://api.recued.cloud`,
+  /** Cloud helper base URL — production `https://api.recued.com`,
    *  staging / dev via the `cloud.base_url` runtime config knob. */
   cloud_base_url: string;
   /** Optional fetch override (tests). Defaults to global `fetch`. */

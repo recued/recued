@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BootTraceEvent } from '../cli/boot-trace.js';
 import { composeBaseContext } from '../serve/compose-base-context.js';
@@ -39,6 +39,73 @@ const parseTraceLines = (lines: string[]): BootTraceEvent[] =>
   lines.map((line) => JSON.parse(line.slice('[recued boot] '.length)) as BootTraceEvent);
 
 describe('composeBaseContext', () => {
+  it('boots on a config an older install wrote, naming each removed setting it sets', () => {
+    // The [bootstrap] block the VPS cloud-init templates wrote until 2026-10-08.
+    // None of these keys was ever read; since 2026-10-09 they are not even
+    // parsed, and boot says so instead of letting them read as applied.
+    const dir = makeTmp();
+    const configPath = join(dir, 'config.toml');
+    writeFileSync(configPath, `
+[bootstrap]
+data_path = "/var/lib/recued"
+bind_host = "0.0.0.0"
+bind_port = 7717
+mcp_port  = 7718
+webhook_port = 0
+`);
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
+      warnings.push(parts.join(' '));
+    });
+    try {
+      const context = composeBaseContext(['--config', configPath, '--db', join(dir, 'server.db')], {
+        env: { HOME: dir, RECUED_BOOTSTRAP_LOG_PATH: '/var/log/recued' },
+      });
+      expect(context.loadedConfig.bootstrap).toEqual({ bind_port: 7717, webhooks_enabled: false });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(warnings.filter((line) => line.startsWith('[config] '))).toEqual([
+      expect.stringMatching(/^\[config\] IGNORED — bootstrap\.data_path was removed: .*--db <file> or DB_PATH$/),
+      expect.stringMatching(/^\[config\] IGNORED — bootstrap\.bind_host was removed: .*"network\.lan_bind_address"/),
+      expect.stringMatching(/^\[config\] IGNORED — bootstrap\.mcp_port was removed: MCP is served at \/mcp/),
+      expect.stringMatching(/^\[config\] IGNORED — RECUED_BOOTSTRAP_LOG_PATH was removed: .*beside its database$/),
+      // `webhook_port`, renamed `webhooks_enabled` 2026-10-10, still works: a notice, not a refusal.
+      expect.stringMatching(/^\[config\] RENAMED — bootstrap\.webhook_port was renamed to webhooks_enabled .*read as webhooks_enabled = false$/),
+    ]);
+  });
+
+  it('boots on a config that sets removed runtime settings, naming each as removed', () => {
+    // The sample config offered `log.level` and the mail quota until 2026-10-10;
+    // `collection.webhook.max_body_bytes` went with the webhook collection.
+    // Nothing read any of them, and boot says so rather than calling them
+    // unrecognised, which would read as a typo.
+    const dir = makeTmp();
+    const configPath = join(dir, 'config.toml');
+    writeFileSync(configPath, `
+[runtime]
+"log.level" = "debug"
+"collection.mail.default.quota_bytes" = 2147483648
+"collection.webhook.max_body_bytes" = 1048576
+`);
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
+      warnings.push(parts.join(' '));
+    });
+    try {
+      composeBaseContext(['--config', configPath, '--db', join(dir, 'server.db')], {
+        env: { HOME: dir },
+      });
+    } finally {
+      warn.mockRestore();
+    }
+    expect(warnings.filter((line) => line.startsWith('[config] '))).toEqual([
+      "[config] IGNORED — runtime.log.level was removed: nothing read it; no setting filters the server's log by level",
+      "[config] IGNORED — runtime.collection.mail.default.quota_bytes was removed: nothing read it; each mail account's own quota_bytes decides, 512 MiB when unset",
+      '[config] IGNORED — runtime.collection.webhook.max_body_bytes was removed: nothing read it; the webhook collection it configured was removed',
+    ]);
+  });
+
   it('parses serve args and loads runtime config before DB setup', () => {
     const dir = makeTmp();
     const configPath = join(dir, 'config.toml');

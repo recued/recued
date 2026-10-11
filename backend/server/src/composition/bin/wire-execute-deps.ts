@@ -44,6 +44,7 @@ import type {
 } from '@recued/contracts';
 import {
   OWNER_OPERATION_SCOPE,
+  OWNER_TOOL_VERSION_SCOPE,
   isCatalogForm,
   operationSpecHash,
 } from '@recued/contracts';
@@ -92,12 +93,21 @@ import {
   createCliInvocationExecutor,
   type ToolOutputFileIngestInput,
 } from '../../cli-invocation-executor.js';
+import { createCliToolStatus, type CliToolStatus } from '../../cli-tool-status.js';
+import { createRunUntestedTools } from '../../execution/run-untested-tools.js';
 import type { InboundFileCollection } from '../../collections/file/inbound-file-collection.js';
 import {
   resolveRemoteFileBytes,
   type RemoteFileReadDeps,
 } from '../../collections/file/remote-file-byte-resolver.js';
 import { parseRemoteFileRecordId } from '../../file-view-resolver.js';
+import type { CollectionRegistry } from '../../collections/registry.js';
+import { sendCapableMailboxes } from '../../mail-senders.js';
+import { LOCAL_FILE_READ_MAX_BYTES } from '../../collections/file/file-read-handler.js';
+import {
+  isWatchedFolderCollection,
+  parseWatchedFileRecordId,
+} from '../../collections/file/watched-folder-collection.js';
 import type { UploadStagingRegistry } from '../../collections/file/upload-staging.js';
 import { composeNotificationBlock } from './wire-notification-block.js';
 import {
@@ -125,6 +135,8 @@ import { createQualityGateResolver } from '../../quality-gate-resolver.js';
 import type { SellerCustomerAccessAdmissionStore } from '../../seller/customer-access-admission.js';
 import type { BatchApprovalCoordinator } from '../../batch-approval.js';
 import { createApprovalResumeAuthorityResolver } from '../../approval-resume-authority.js';
+import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
+import { createWebhookResumeDoorResolver } from '../../webhook-resume-door.js';
 import { upsertOwnerOperationOverride } from '../../contract-handler.js';
 
 /** Inputs to compose the executeDeps surface.
@@ -304,6 +316,10 @@ export interface ComposeExecuteDepsDeps {
   /** D-196 seller-customer admission store. Forwarded onto execute deps so a
    *  held raw-op approval can re-check customer status/grace before dispatch. */
   sellerCustomerAdmissionStore?: SellerCustomerAccessAdmissionStore;
+  /** D-320 audit — the webhook trigger rows, so a webhook run waiting for approval
+   *  resumes under the door that replaced its own (`webhook-resume-door.ts`). Absent
+   *  (no webhooks on this server) ⇒ it resumes under its own. */
+  webhookConsumerStore?: Pick<WebhookConsumerStore, 'currentDoorForRun'>;
   /** D-177 N.11 rule 5 (slice D) — the per-channel-session forwarded-sender
    *  candidate lookup, closed over the chat bundle's
    *  `SessionForwardedSenderIndex` (`scopedCandidatesForChannelSession`).
@@ -320,6 +336,10 @@ export interface ComposeExecuteDepsDeps {
    *  becomes `result.file_ref`. Absent (dbless / no-CAS harness) ⇒ an
    *  output_capture op fails closed in the executor. */
   inboundFileCollection?: InboundFileCollection;
+  /** D-106 follow-up — the collections, so a `file:local:*` input (a watched
+   *  folder's file) materializes from the owner's disk. Absent ⇒ such an input
+   *  fails closed with its reason. */
+  collectionRegistry?: CollectionRegistry;
   /** D-241 P4 — the D-192 remote byte bundle, so the cli executor's
    *  `input_materialize` reader can answer for a `file:remote:*` id (a File
    *  Source mirror row) and not just a CAS blob.
@@ -408,9 +428,18 @@ export interface ExecuteDepsBundle {
    *  just been told to allow. Absent ⇒ no contract store (dbless) ⇒ no doors can be hung. */
   contractDefinitionStore: ContractDefinitionStore | undefined;
   grantEntryStore: ContractGrantEntryStore | undefined;
+  /** D-321 — the server's one tool readiness service, surfaced so the pack
+   *  page's `packs.tool_status` reads the SAME cached version reads the
+   *  executor's check makes: the page and a run cannot disagree about a tool,
+   *  and "Check again" drops the read a run would otherwise reuse. */
+  cliToolStatus: CliToolStatus;
 }
 
 /** Compose the notification block (optional) + executeDeps. */
+/** The live list of mailboxes that can send, as the run reads it. */
+const sendCapableMailboxesOf = (registry: CollectionRegistry) => (): readonly string[] =>
+  sendCapableMailboxes(registry);
+
 export const composeExecuteDeps = (
   deps: ComposeExecuteDepsDeps,
 ): ExecuteDepsBundle => {
@@ -813,6 +842,15 @@ export const composeExecuteDeps = (
   const remoteFileReadDeps = deps.getRemoteFileReadDeps;
   const readFileBytes = inboundFileCollection
     ? async (record_id: string) => {
+        const watched = parseWatchedFileRecordId(record_id);
+        if (watched !== null) {
+          const folder = deps.collectionRegistry?.get('file', watched.slug);
+          if (!folder || !isWatchedFolderCollection(folder)) {
+            throw new Error(`cli input_materialize: '${record_id}' names a watched folder this server does not have`);
+          }
+          const file = await folder.readFile(watched.path, LOCAL_FILE_READ_MAX_BYTES);
+          return { bytes: Buffer.from(file.bytes), mime_type: file.mime_type, filename: file.filename };
+        }
         if (parseRemoteFileRecordId(record_id) === null) {
           return inboundFileCollection.readBytes(record_id);
         }
@@ -826,6 +864,13 @@ export const composeExecuteDeps = (
         return { bytes, mime_type, filename };
       }
     : undefined;
+  // D-321 — one tool readiness service for this server: the executor checks a
+  // declared tested range before an action runs, and reads the owner's choice
+  // for the tool from the same contract store the rpc writes.
+  const cliToolStatus = createCliToolStatus();
+  // …and the hand-off that puts a program run under Warn, at an untested
+  // version, on that run's record (its Logs detail).
+  const runUntestedTools = createRunUntestedTools();
   const cliInvocationExecutor = createCliInvocationExecutor({
     inFlightRegistry,
     ...(deps.startSupervisedDaemon
@@ -833,6 +878,14 @@ export const composeExecuteDeps = (
       : {}),
     ...(ingestToolOutputFile ? { ingestToolOutputFile } : {}),
     ...(readFileBytes ? { readFileBytes } : {}),
+    toolStatus: cliToolStatus,
+    onUntestedToolRan: runUntestedTools.add,
+    ...(deps.contractStore
+      ? {
+          readOwnerToolVersion: (ingredientId: string) =>
+            deps.contractStore!.get(OWNER_TOOL_VERSION_SCOPE, [ingredientId])?.value,
+        }
+      : {}),
   });
   // SMB-finance slice 3 — land a captured REST download body (a
   // `response_capture` op, storage-gdrive `file.download`) into the CAS as a
@@ -892,6 +945,7 @@ export const composeExecuteDeps = (
     opDurationClassifier,
     inFlightRegistry,
     cliInvocationExecutor,
+    takeUntestedTools: runUntestedTools.take,
     ...(ingestFileDownload ? { ingestFileDownload } : {}),
     ...(describeUploadSource ? { describeUploadSource } : {}),
     baseVault: deps.baseVault,
@@ -1000,6 +1054,12 @@ export const composeExecuteDeps = (
     // that several enrolled connections can serve. Absent ⇒ the typed
     // `connection_pick_required` error alone carries the candidates.
     ...(notificationBlock ? { pickNotifier: notificationBlock } : {}),
+    // An owner's run settles an empty "Send from" against the mailboxes that
+    // can send (`mail-senders.ts`), read live per run. Absent registry (dbless)
+    // ⇒ nothing is settled, as before.
+    ...(deps.collectionRegistry !== undefined
+      ? { listSendCapableMailboxes: sendCapableMailboxesOf(deps.collectionRegistry) }
+      : {}),
     // D-192 Slice 6b — the same block, threaded as the container-pick notifier.
     // `execute-handler` raises ONE `work_entity.container_pick` ask when a
     // work-entity create fails on an ambiguous vendor container (Linear `team`,
@@ -1046,6 +1106,15 @@ export const composeExecuteDeps = (
       ? { sellerCustomerAdmissionStore: deps.sellerCustomerAdmissionStore }
       : {}),
     ...(approvalResumeAuthority ? { approvalResumeAuthority } : {}),
+    // D-320 audit — and a waiting webhook run resumes under its door's successor.
+    ...(deps.webhookConsumerStore && contractDefinitionStore
+      ? {
+          webhookResumeDoor: createWebhookResumeDoorResolver({
+            consumerStore: deps.webhookConsumerStore,
+            definitionStore: contractDefinitionStore,
+          }),
+        }
+      : {}),
     ...(opAdmissionGate ? { opAdmissionGate } : {}),
     // D-177 P2 — the session-grant resolver (resolved above). Omitted when no
     // contract store ⇒ the Gateway runs no grant lookup; every `ask` holds.
@@ -1075,5 +1144,6 @@ export const composeExecuteDeps = (
     inFlightRegistry,
     contractDefinitionStore,
     grantEntryStore,
+    cliToolStatus,
   };
 };

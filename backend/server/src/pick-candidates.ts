@@ -26,6 +26,7 @@ import {
   CRM_ALIAS_VALUES,
   getVendorEntityByCrmAlias,
   isCanonicalOpStep,
+  profileForCatalog,
 } from '@recued/contracts';
 import type {
   CrmAlias,
@@ -80,6 +81,26 @@ const slotOperations = (
     if (!ops.includes(step.op)) ops.push(step.op);
   }
   return ops;
+};
+
+/** D-320 §3.5 — the settings a recipe's vendor-neutral op-steps (`core.crm.*`, a
+ *  bare `deal.search`) read their connection from: the ones dispatch resolves by
+ *  the connection's vendor, so they name no slot until a connection is given.
+ *  Empty when the recipe has none, or when its op-steps do not lower or its slot
+ *  walk fails (the dispatch resolve owns that error). */
+export const canonicalSlotVariables = (
+  recipe: RecipeDefinition,
+  packs?: PackOpResolution,
+): string[] => {
+  let lowered: RecipeDefinition;
+  try {
+    lowered = lowerOpStepRecipe(recipe, packs ?? EMPTY_PACK_OP_RESOLUTION);
+  } catch (e) {
+    if (e instanceof CanonicalOpResolutionError) return [];
+    throw e;
+  }
+  const slots = opStepConnectionSlots(lowered);
+  return slots.ok ? [...slots.variables] : [];
 };
 
 /** What `derivePickCandidates` needs — the enrolled profile universe +
@@ -180,6 +201,10 @@ export interface ConcreteConnectionSlot {
   catalogs: string[];
   /** Their `input.operation` ids — the ask shows them; a candidate must allow them. */
   operations: string[];
+  /** D-320 ruling 10 — the same operations grouped by the catalog that declares
+   *  them, so a candidate is checked against each catalog's own grant. Absent on a
+   *  hand-built one-catalog slot, whose `operations` are all that catalog's. */
+  operations_by_catalog?: Readonly<Record<string, readonly string[]>>;
 }
 
 /** The concrete slots a run leaves unbound, in step order (prefetch, steps,
@@ -212,34 +237,48 @@ export const unboundConcreteConnectionSlots = (
       optional.add(variable);
       continue;
     }
-    const slot = slots.get(variable) ?? { variable, catalogs: [], operations: [] };
+    const slot = slots.get(variable) ?? { variable, catalogs: [], operations: [], operations_by_catalog: {} };
     if (!slot.catalogs.includes(step.ingredient)) slot.catalogs.push(step.ingredient);
     const operation = (step.input as Readonly<Record<string, unknown>> | undefined)?.operation;
     if (typeof operation === 'string' && !slot.operations.includes(operation)) {
       slot.operations.push(operation);
+    }
+    if (typeof operation === 'string') {
+      const byCatalog = slot.operations_by_catalog as Record<string, string[]>;
+      const ops = byCatalog[step.ingredient] ?? (byCatalog[step.ingredient] = []);
+      if (!ops.includes(operation)) ops.push(operation);
     }
     slots.set(variable, slot);
   }
   return [...slots.values()].filter((slot) => !optional.has(slot.variable));
 };
 
-/** The enrolled connections that can serve a concrete slot: a profile stamped
- *  with the ONE catalog the slot's steps fetch from, granting every operation
- *  they call. A slot spanning two catalogs has none (a connection is bound to
- *  one catalog), and an unstamped legacy profile is never matched to a catalog.
- *  Sorted by connection name. */
+/** The enrolled connections that can serve a concrete slot: a profile that
+ *  serves EVERY catalog the slot's steps fetch from, each granting the
+ *  operations called from it. An unstamped legacy profile is never matched to a
+ *  catalog. Sorted by connection name.
+ *
+ *  D-320 ruling 10 — a slot may span several catalogs (the Wise suite's
+ *  `create-transfer-draft-wise` fetches from four on one connection). Before, a
+ *  connection served one catalog, so such a slot had no candidate at all. */
 export const concreteSlotCandidates = (
   slot: ConcreteConnectionSlot,
   profiles: Pick<ConnectionOperationProfileStore, 'list'>,
 ): PickCandidate[] => {
-  if (slot.catalogs.length !== 1) return [];
-  const catalog = slot.catalogs[0]!;
-  const vendor = VENDOR_BY_CATALOG.get(catalog);
+  if (slot.catalogs.length === 0) return [];
+  const first = slot.catalogs[0]!;
+  const vendor = VENDOR_BY_CATALOG.get(first);
+  const operationsFor = (catalog: string): readonly string[] =>
+    slot.operations_by_catalog?.[catalog] ?? (slot.catalogs.length === 1 ? slot.operations : []);
   const candidates: PickCandidate[] = [];
   for (const [name, profile] of profiles.list()) {
-    if (profile.catalog_slug !== catalog) continue;
-    if (!slot.operations.every((op) => profile.allowed_operations.includes(op))) continue;
-    candidates.push({ connection_name: name, catalog_slug: catalog, ...(vendor !== undefined ? { vendor } : {}) });
+    const servesEvery = slot.catalogs.every((catalog) => {
+      const grant = profileForCatalog(profile, catalog);
+      return grant?.catalog_slug === catalog
+        && operationsFor(catalog).every((op) => grant.allowed_operations.includes(op));
+    });
+    if (!servesEvery) continue;
+    candidates.push({ connection_name: name, catalog_slug: first, ...(vendor !== undefined ? { vendor } : {}) });
   }
   candidates.sort((a, b) => a.connection_name.localeCompare(b.connection_name));
   return candidates;

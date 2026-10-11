@@ -72,12 +72,11 @@ describe('D-122 follow-on — bridgeEnrichmentCascade (`updated` fan-out)', () =
     expect(cascade.updates).toEqual([['mail', 'msg-u']]);
   });
 
-  it('skips webhook + service platforms (no enrichment topics declare those scopes)', () => {
+  it('skips platforms no enrichment topic declares (service)', () => {
     const cascade = stubCascade();
     const bus = createWarehouseEventBus();
     bridgeEnrichmentCascade(bus, cascade);
 
-    bus.emit({ platform: 'webhook', slug: 'gh', entity_type: 'delivery', event_kind: 'updated', record_id: 'deliv-1', at: 1 });
     bus.emit({ platform: 'service', slug: 'ollama', entity_type: 'service', event_kind: 'updated', record_id: 'svc-1', at: 1 });
     bus.emit({ platform: 'mail',    slug: 'work', entity_type: 'message',  event_kind: 'updated', record_id: 'msg-1', at: 1 });
 

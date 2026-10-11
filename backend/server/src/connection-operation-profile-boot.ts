@@ -69,6 +69,7 @@
  *  Spec: D-165 § "P1 — First OAuth provider pilot". */
 
 import type {
+  ConnectionCatalogGrant,
   ConnectionOperationProfile,
   ConnectionRow,
   IngredientManifest,
@@ -81,6 +82,7 @@ import type {
 // shared source-dependency read admission (D-192 Slice 7) the consent-disclosure
 // UIs also call, so the gate and the disclosure can never drift.
 import { catalogSlugForVendor, deriveDependencyReadAdmissions } from '@recued/contracts';
+import { RECEPTION_LOCAL_BASE_URL } from '@recued/ingredients';
 import { resolveConnectionVendor, type ConnectionStoreSqlite } from './storage/connection-store.js';
 import type { ContractGrantStore } from './storage/contract-grant-store.js';
 import type { ConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
@@ -321,18 +323,53 @@ export const deriveConnectionOperationProfile = (
   deps: Omit<ProfileSeedDeps, 'profileStore'>,
   connectionName: string,
   catalogSlug: string | undefined,
+): ConnectionOperationProfile | null =>
+  deriveConnectionOperationProfileForCatalogs(
+    deps,
+    connectionName,
+    catalogSlug === undefined ? [] : [catalogSlug],
+  );
+
+/** D-320 ruling 10 — the profile of a connection that serves `catalogSlugs` (its
+ *  registered vendor's catalog first, then its bound catalogs, first-bound first).
+ *  Each catalog's allowed set is derived exactly as for one catalog; a catalog that
+ *  derives nothing is left out.
+ *  - One catalog left: the profile is byte-identical to what one catalog always
+ *    produced.
+ *  - Several: the first is the top level (so a reader that knows one catalog per
+ *    connection reads what it did) and `catalogs` carries each one's own set, which
+ *    is what the gateway checks a dispatched catalog against.
+ *  - None: null, and the caller drops the profile (fail-closed). */
+export const deriveConnectionOperationProfileForCatalogs = (
+  deps: Omit<ProfileSeedDeps, 'profileStore'>,
+  connectionName: string,
+  catalogSlugs: readonly string[],
 ): ConnectionOperationProfile | null => {
-  const allowed_operations = catalogSlug
-    ? deriveAllowedOperations(deps.getManifest(catalogSlug), [
-        ...(deps.contractGrantStore?.listUserGroups(catalogSlug, connectionName) ?? []),
-        ...(deps.contractGrantStore?.listPackOwnedGroups(catalogSlug, connectionName) ?? []),
-      ])
-    : [];
-  return !catalogSlug || allowed_operations.length === 0 ? null : { allowed_operations, catalog_slug: catalogSlug };
+  const grants: Array<[string, ConnectionCatalogGrant]> = [];
+  for (const slug of new Set(catalogSlugs)) {
+    const allowed_operations = deriveAllowedOperations(deps.getManifest(slug), [
+      ...(deps.contractGrantStore?.listUserGroups(slug, connectionName) ?? []),
+      ...(deps.contractGrantStore?.listPackOwnedGroups(slug, connectionName) ?? []),
+    ]);
+    if (allowed_operations.length > 0) grants.push([slug, { allowed_operations }]);
+  }
+  if (grants.length === 0) return null;
+  const [firstSlug, first] = grants[0]!;
+  return grants.length === 1
+    ? { allowed_operations: first.allowed_operations, catalog_slug: firstSlug }
+    : {
+        allowed_operations: first.allowed_operations,
+        catalog_slug: firstSlug,
+        catalogs: Object.fromEntries(grants),
+      };
 };
 
-const applyConnectionProfile = (deps: ProfileSeedDeps, connectionName: string, catalogSlug: string | undefined): void => {
-  const profile = deriveConnectionOperationProfile(deps, connectionName, catalogSlug);
+const applyConnectionProfile = (
+  deps: ProfileSeedDeps,
+  connectionName: string,
+  catalogSlugs: readonly string[],
+): void => {
+  const profile = deriveConnectionOperationProfileForCatalogs(deps, connectionName, catalogSlugs);
   if (!profile) {
     deps.profileStore.delete(connectionName);
     return;
@@ -340,16 +377,72 @@ const applyConnectionProfile = (deps: ProfileSeedDeps, connectionName: string, c
   deps.profileStore.set(connectionName, profile);
 };
 
+/** The connection rows set up under one name, by the kinds a catalog can be served
+ *  through: the API row (null when there is none) and whether an MCP row exists. */
+interface ConnectionRowsOf {
+  readonly api: ConnectionRow | null;
+  readonly mcp: boolean;
+}
+
+const rowsOf = (
+  connectionStore: Pick<ConnectionStoreSqlite, 'get'>,
+  connectionName: string,
+): ConnectionRowsOf => ({
+  api: connectionStore.get('api', connectionName),
+  mcp: connectionStore.get('mcp', connectionName) !== null,
+});
+
+/** D-320 ruling 10 — the catalogs a connection serves: its registered vendor's
+ *  catalog (`config.vendor`, api rows only) first, then every local catalog bound to
+ *  it by name, first-bound first. The vendor's catalog is no longer the ONLY one a
+ *  vendor connection serves: a bound catalog sits beside it rather than shadowing it,
+ *  since each is checked against its own set. Read from `list()` so a store that
+ *  offers only `resolveCatalogSlug` + `list` still answers.
+ *
+ *  ⛔ A bound catalog that signs in over its API surface counts only when a row of
+ *  the kind that surface needs is set up under the name: an MCP row for an `mcp`
+ *  transport, an API row for any other (the rule `catalogMatchesConnectionKind` keeps
+ *  for work-entity Sources). Bindings are keyed by name and outlive their rows (D-320
+ *  2h), so without it a name no row bears (an install naming a connection never set
+ *  up) and the MCP half of a same-named pair whose API row was deleted each kept a
+ *  profile for HTTP catalogs, and a run counted a connection it could not sign in
+ *  through (the D-320 audit). A catalog with no API surface, or the reception packs'
+ *  (`reception-<kind>`, whose surface is the local-dispatch sentinel the executor
+ *  routes in process, `RECEPTION_LOCAL_BASE_URL`), runs on its name alone and keeps
+ *  its profile with no row, as it was built to (D-173 cold start). Any other catalog's
+ *  profile seeds once its row is set up (the upsert observer below). */
+const catalogsServedBy = (
+  bindingStore: Pick<ConnectionCatalogBindingStore, 'resolveCatalogSlug' | 'list'> | undefined,
+  connectionName: string,
+  rows: ConnectionRowsOf,
+  getManifest: (slug: string) => IngredientManifest | null | undefined,
+): string[] => {
+  const out: string[] = [];
+  const vendorSlug = rows.api ? catalogSlugForConnection(rows.api) : undefined;
+  if (vendorSlug !== undefined) out.push(vendorSlug);
+  for (const binding of bindingStore?.list() ?? []) {
+    if (binding.connection_name !== connectionName || out.includes(binding.catalog_slug)) continue;
+    const surface = getManifest(binding.catalog_slug)?.surfaces?.api;
+    const needsNoRow = surface === undefined || surface.default_base_url === RECEPTION_LOCAL_BASE_URL;
+    if (needsNoRow || (surface.transport === 'mcp' ? rows.mcp : rows.api !== null)) {
+      out.push(binding.catalog_slug);
+    }
+  }
+  return out;
+};
+
 /** D-261 atomic checks use fresh realm rows, never an observer-populated Map.
  * The derivation itself is shared with the normal boot/reconcile path above. */
 export const readCurrentConnectionOperationProfile = (
   deps: Omit<WireCatalogOperationProfilesInput, 'profileStore'>, connectionName: string,
 ): ConnectionOperationProfile | null => {
-  const api = deps.connectionStore.get('api', connectionName);
-  if (!api && !deps.connectionStore.list({}).some(row => row.name === connectionName)) return null;
-  const slug = (api ? catalogSlugForConnection(api) : undefined)
-    ?? deps.connectionCatalogBindingStore?.resolveCatalogSlug(connectionName);
-  return deriveConnectionOperationProfile(deps, connectionName, slug);
+  const rows = rowsOf(deps.connectionStore, connectionName);
+  if (!rows.api && !deps.connectionStore.list({}).some(row => row.name === connectionName)) return null;
+  return deriveConnectionOperationProfileForCatalogs(
+    deps,
+    connectionName,
+    catalogsServedBy(deps.connectionCatalogBindingStore, connectionName, rows, deps.getManifest),
+  );
 };
 
 // D-170 gap #2 live-reconcile — `applyConnectionProfile` is the shared primitive the
@@ -392,16 +485,23 @@ export const wireCatalogOperationProfiles = (
   input: WireCatalogOperationProfilesInput,
 ): CatalogOperationProfileWiring => {
   // Bind this wire's stores to the shared `applyConnectionProfile` derivation.
-  const seedProfileFor = (connectionName: string, catalogSlug: string | undefined): void =>
-    applyConnectionProfile(input, connectionName, catalogSlug);
+  const seedProfileFor = (connectionName: string, catalogSlugs: readonly string[]): void =>
+    applyConnectionProfile(input, connectionName, catalogSlugs);
 
-  /** Resolve a connection's catalog: a registered vendor (`config.vendor` →
-   *  `CATALOG_VENDOR_SLUGS`) OR a local composition catalog bound to it (D-170 gap #2,
-   *  by connection name). A connection has at most one catalog, so the `??` order is
-   *  unambiguous — registered vendor WINS over a local binding for the same name. */
-  const catalogForConnection = (row: ConnectionRow): string | undefined =>
-    catalogSlugForConnection(row)
-    ?? input.connectionCatalogBindingStore?.resolveCatalogSlug(row.name);
+  /** Resolve a connection's catalogs: its registered vendor's (`config.vendor` →
+   *  `CATALOG_VENDOR_SLUGS`) first, then every local composition catalog bound to it
+   *  (D-170 gap #2, by connection name). D-320 ruling 10: a connection serves several
+   *  catalogs, each checked against its own set, so a bound catalog sits beside the
+   *  vendor's rather than shadowing it. */
+  const catalogsForRow = (row: ConnectionRow): string[] => {
+    const stored = rowsOf(input.connectionStore, row.name);
+    return catalogsServedBy(
+      input.connectionCatalogBindingStore,
+      row.name,
+      { api: row.kind === 'api' ? row : stored.api, mcp: row.kind === 'mcp' || stored.mcp },
+      input.getManifest,
+    );
+  };
 
   // D-170 gap #2 live-reconcile (returned below) — immediate by-NAME reconcile for the
   // install/uninstall deps. Mirrors the observer's resolution but starts from a name
@@ -413,31 +513,44 @@ export const wireCatalogOperationProfiles = (
   // vendor profile). Reads stores live, so the caller MUST run it AFTER the install /
   // uninstall transaction commits the binding + grants.
   const reconcileConnectionProfile = (connectionName: string): void => {
-    const apiRow = input.connectionStore.get('api', connectionName);
-    const slug = apiRow
-      ? catalogForConnection(apiRow)
-      : input.connectionCatalogBindingStore?.resolveCatalogSlug(connectionName);
-    seedProfileFor(connectionName, slug);
+    seedProfileFor(
+      connectionName,
+      catalogsServedBy(
+        input.connectionCatalogBindingStore,
+        connectionName,
+        rowsOf(input.connectionStore, connectionName),
+        input.getManifest,
+      ),
+    );
   };
 
-  // 1. Boot scan — seed every existing REGISTERED-VENDOR api connection.
+  // 1. Boot scan — seed every existing REGISTERED-VENDOR api connection, with any
+  //    local catalogs bound to it beside its vendor's (D-320 ruling 10).
+  const seeded = new Set<string>();
   for (const row of input.connectionStore.list({ kind: 'api' })) {
-    const slug = catalogSlugForConnection(row);
-    if (slug) seedProfileFor(row.name, slug);
+    if (catalogSlugForConnection(row) === undefined) continue;
+    seedProfileFor(row.name, catalogsForRow(row));
+    seeded.add(row.name);
   }
 
   // 1b. Boot — seed every LOCAL-CATALOG-bound connection (D-170 gap #2). Iterated
   //     from the bindings directly so a local-catalog connection is seeded regardless
   //     of its kind / whether it appeared in the api scan above; a binding whose
-  //     catalog no longer resolves seeds nothing (deleted, fail-closed). REGISTERED
-  //     VENDOR WINS: if the bound connection is itself a registered-vendor api
-  //     connection, its vendor catalog takes precedence over the local binding (so a
-  //     composition that bound a hubspot connection by name can't shadow the hubspot
-  //     profile) — mirrors `catalogForConnection`'s `??` order used by the observer.
+  //     catalog no longer resolves seeds nothing (deleted, fail-closed). Once per
+  //     connection, with every catalog it serves: its registered vendor's first, then
+  //     each bound one (D-320 ruling 10 — they sit side by side, never shadowing).
   for (const binding of input.connectionCatalogBindingStore?.list() ?? []) {
-    const apiRow = input.connectionStore.get('api', binding.connection_name);
-    const slug = (apiRow ? catalogSlugForConnection(apiRow) : undefined) ?? binding.catalog_slug;
-    seedProfileFor(binding.connection_name, slug);
+    if (seeded.has(binding.connection_name)) continue;
+    seeded.add(binding.connection_name);
+    seedProfileFor(
+      binding.connection_name,
+      catalogsServedBy(
+        input.connectionCatalogBindingStore,
+        binding.connection_name,
+        rowsOf(input.connectionStore, binding.connection_name),
+        input.getManifest,
+      ),
+    );
   }
 
   // 2. Future enrollments / vendor flips / connect-after-install. RECONCILE on every
@@ -446,9 +559,9 @@ export const wireCatalogOperationProfiles = (
   //    catalog here), else drop any stale profile. The additive `addOnUpsert` hook
   //    coexists with the vendor reconciliation + work-entity-source wires.
   input.connectionStore.addOnUpsert((row) => {
-    const slug = catalogForConnection(row);
-    if (slug) {
-      seedProfileFor(row.name, slug);
+    const slugs = catalogsForRow(row);
+    if (slugs.length > 0) {
+      seedProfileFor(row.name, slugs);
     } else if (row.kind === 'api') {
       // Vendor flipped to a non-catalog vendor (or never was one) and no local
       // binding — drop any stale profile under this name. Deleting absent is a no-op.
@@ -462,17 +575,14 @@ export const wireCatalogOperationProfiles = (
   //    precedence. This covers local catalogs bound to MCP connections without
   //    breaking the supported same-name API+MCP coexistence case.
   input.connectionStore.addOnDelete((_kind, name) => {
-    const apiRow = input.connectionStore.get('api', name);
-    const hasRemainingConnection = apiRow !== null
+    const rows = rowsOf(input.connectionStore, name);
+    const hasRemainingConnection = rows.api !== null
       || input.connectionStore.list().some((row) => row.name === name);
     if (!hasRemainingConnection) {
       input.profileStore.delete(name);
       return;
     }
-    const slug = apiRow
-      ? catalogForConnection(apiRow)
-      : input.connectionCatalogBindingStore?.resolveCatalogSlug(name);
-    seedProfileFor(name, slug);
+    seedProfileFor(name, catalogsServedBy(input.connectionCatalogBindingStore, name, rows, input.getManifest));
   });
 
   return { reconcileConnectionProfile };

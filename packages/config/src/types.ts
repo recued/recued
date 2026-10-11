@@ -3,9 +3,8 @@
  *  The file splits into two sections with distinct semantics:
  *
  *  - `[bootstrap]` — read once at process start. Changing any field here
- *    requires a restart. Fields control where the server lives (data path,
- *    log path), how it listens (host, ports), and which optional surfaces
- *    come online (MCP, webhook).
+ *    requires a restart. Two fields: the listen port and the inbound-webhook
+ *    switch. The renamed and removed ones are listed in `bootstrap-keys.ts`.
  *
  *  - `[runtime]` — live-editable via the ext→server rpc (`server.setConfigField`)
  *    or direct file edit + reload. Keys are dotted strings written as
@@ -16,41 +15,24 @@
 export type Distribution = 'binary' | 'source' | 'server';
 
 export interface BootstrapConfig {
-  data_path: string;
-  bind_host: string;
+  /** The port the server listens on (its LAN listener; the public listener's
+   *  port is set in Settings). `--port` and `PORT` win over it — see
+   *  `backend/server/src/cli/resolve-bind-port.ts`. */
   bind_port: number;
-  /** ⛔ NOT A PORT, AND NOT A SWITCH EITHER — nothing reads this value.
-   *  D-272: production binds sockets in exactly ONE place
-   *  (`packages/server-tls/src/path-listener-set.ts`) and it binds `lan_port`
-   *  + `public_port`. `mcp` is a PATH on those, gated by the exposure grid
-   *  (`mcp: { lan: true, public: false }`, ack-gated per D-148 § A.7.2) and
-   *  toggled in Settings → Server → Exposure.
+  /** Whether the server accepts inbound webhooks at all: Slack, Telegram and
+   *  vendor callbacks. `false` composes no inbound listeners and the path-router
+   *  404s every webhook / hook request; `true` composes all three. It opens no
+   *  port of its own — webhooks are paths on the server's own port, so that is
+   *  the port an operator makes reachable. Public delivery also needs a public
+   *  host + the runtime key `collection.webhook.public_reachable` (or the older
+   *  `RECUED_PUBLIC_REACHABLE`) — self-host only, never relayed via the cloud,
+   *  per D-096.
    *
-   *  ⚠ THIS COMMENT SAID "0 disables the MCP surface" AND THAT WAS FALSE, not
-   *  merely misnamed — verified by call path in both directions: zero
-   *  non-config readers in `backend/` or `packages/`, zero in `apps/`. Setting
-   *  it to 0 disables nothing. Kept on the type because it is a shipped config
-   *  key and a self-hosted install has no deploy order; retiring it is three
-   *  decisions (type, validation, stored row), not a rename. */
-  mcp_port: number;
-  /** ⛔ AN ON/OFF SWITCH WEARING A PORT'S NAME. `0` composes no inbound
-   *  listeners and the path-router 404s every webhook / hook request; ANY
-   *  non-zero value composes all three, and they all behave identically.
-   *
-   *  ⚠ IT DOES NOT BIND, OPEN OR FORWARD THE NUMBER. The webhook paths are
-   *  served on `public_port` like everything else, so that is the port an
-   *  operator has to make reachable — reading this key as "the port to forward
-   *  in my router" is the mistake the name invites, and it is router work that
-   *  is not theirs to do. Non-zero also needs a public host +
-   *  `RECUED_PUBLIC_REACHABLE` (self-host only — never relayed via the cloud,
-   *  per D-096).
-   *
-   *  ⇒ The honest shape is `webhooks_enabled: boolean`; see `mcp_port` for why
-   *  that is a migration rather than a rename. */
-  webhook_port: number;
-  /** Supports the `{data_path}` template token so the default "logs
-   *  next to data" convention survives a user moving data_path. */
-  log_path: string;
+   *  ⛔ RENAMED 2026-10-10 from `webhook_port`, an on/off switch that read as a
+   *  port: 0 was off, any other number on, and the number was never bound
+   *  (D-272) — the name sent operators off to forward it in their router. The old
+   *  name still works and boot names the rename (`bootstrap-keys.ts`). */
+  webhooks_enabled: boolean;
 }
 
 export type RuntimeValue = string | number | boolean;

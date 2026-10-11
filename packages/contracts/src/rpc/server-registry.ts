@@ -282,6 +282,8 @@ import type {
   OwnerOperationPolicyInput,
   OwnerOperationView,
 } from '../owner-operation-override.js';
+import type { CliVersionOutside } from '../cli-tool-version.js';
+import type { OwnerToolVersionView } from '../owner-tool-version.js';
 import type {
   ContractDefinitionView,
   ContractListRequest,
@@ -316,18 +318,6 @@ import type {
   ToolEntry,
 } from '../chat.js';
 import type { CalendarCollectionCaps } from '../calendar.js';
-import type {
-  ServiceCollectionCaps,
-  ServiceEnrollInput,
-  ServiceEnrollOutput,
-  ServiceInstallOutput,
-  ServiceInstanceList,
-  ServiceStatus,
-  ServiceTemplateList,
-  ServiceTemplateListInput,
-  ServiceUninstallOutput,
-  ServiceUpgradeOutput,
-} from '../service.js';
 import type { EventTrigger, EventTriggerPattern } from '../triggers.js';
 import type { AutoRunStatusEntry } from '../reactive.js';
 import type { WatchSourceStatusEntry, WatchStatusEntry } from '../watch.js';
@@ -1051,7 +1041,8 @@ export interface ServerPendingAsk {
    *  block is a lie about completeness: the rows promise "what this approval
    *  commits to", and a reader who sees three of four values has no way to know a
    *  fourth exists. Absent sends them to the link; partial tells them they have
-   *  already read it.
+   *  already read it. (Fields that carry nothing share one `Not set` row and one
+   *  `Empty` row that name each of them, so every field is still accounted for.)
    *
    *  ⚠ Bounded by the operation's pack-declared `editable_args` allowlist (D-170
    *  N.7), NOT by the raw held args — which is what makes it safe to resolve for
@@ -1416,14 +1407,15 @@ export interface SharedSearchMatch {
 
 /** Read-side bootstrap view. Mirrors `[bootstrap]` section of the
  *  server's TOML config file plus a restart-required hint when a
- *  stageBootstrap patch is pending. */
+ *  stageBootstrap patch is pending.
+ *
+ *  `data_path`, `bind_host`, `mcp_port` and `log_path` were dropped with
+ *  their settings on 2026-10-09 (`@recued/config` `bootstrap-keys.ts`); no
+ *  client read this view. */
 export interface ServerBootstrapView {
-  data_path: string;
-  bind_host: string;
   bind_port: number;
-  mcp_port: number;
-  webhook_port: number;
-  log_path: string;
+  /** `webhook_port` until 2026-10-10 — the same switch under an honest name. */
+  webhooks_enabled: boolean;
   /** True if a previously-staged patch is pending a restart. */
   pending_restart: boolean;
 }
@@ -1727,6 +1719,9 @@ export type ServerRpcRegistry = {
       config_overlay?: Record<string, unknown>;
       enabled?: boolean;
       group_id?: string;
+      /** D-320 §3.4 — the dish's choice of connection, by slot; each must be on
+       *  the pack's list for it (`connection_choice_invalid`). */
+      connections?: Record<string, string>;
       [k: string]: unknown;
     },
     /** `webhook_doors` — present when the dish is the recipe's main one and
@@ -1754,6 +1749,9 @@ export type ServerRpcRegistry = {
       main?: unknown;
       /** `null` detaches the dish from its group. */
       group_id?: unknown;
+      /** D-320 §3.4 — the dish's choice of connection, by slot; replaces the
+       *  one it had. `null` or `{}` clears it: the dish takes the default. */
+      connections?: unknown;
     },
     /** `webhook_doors` — present when the change reached the recipe's MAIN
      *  dish settings (or made this dish main) and moved a webhook door. */
@@ -2933,6 +2931,12 @@ export type ServerRpcRegistry = {
       trigger_source?: string;
       /** D-179 P1 — standing dish to run as (overlay + attribution). */
       dish_id?: string;
+      /** D-320 §3.5 — this run's own choice of connection, by slot (the
+       *  connection name a pack's catalog declares): `{ "hubspot": "<name>" }`.
+       *  Wins over the dish's choice and the pack's default, for this run only;
+       *  a slot the run does not use, or a connection not on the pack's list for
+       *  it, refuses the run (`connection_choice_invalid`). */
+      connections?: Record<string, string>;
       [k: string]: unknown;
     },
     ServerExecuteResponse
@@ -3677,7 +3681,8 @@ export type ServerRpcRegistry = {
    *  memory provenance is preserved regardless (spec § 3 "Never" tier). */
   'collection.connection.delete': RpcMethodSpec<
     { name: string; kind: ConnectionKind; remove_mirror_data?: boolean },
-    { deleted: boolean; purged?: ConnectionDataPurgeSummary }
+    // D-320 phase 3 (3b) — and any webhook door the delete moved.
+    { deleted: boolean; purged?: ConnectionDataPurgeSummary; webhook_doors?: DishWebhookDoorChange[] }
   >;
 
   /** D-192 source-data-removal slice 3c — the "[N] records" preview for the
@@ -3939,6 +3944,23 @@ export type ServerRpcRegistry = {
   'collection.operation.listOwnerOverrides': RpcMethodSpec<
     { ingredient_id?: string } | void,
     { overrides: OwnerOperationView[] }
+  >;
+
+  /** D-321 — the owner's choice, for one cli catalog's tool, of what a run does
+   * when the installed version is outside the range the pack was tested with, or
+   * cannot be read: refuse, or warn and run. Replaces the pack's declared
+   * default. The server stamps the pack's current `version` block, so a pack
+   * update that changes the range or the default makes the choice stale and
+   * the pack's default applies again. */
+  'collection.operation.upsertOwnerToolVersion': RpcMethodSpec<
+    { ingredient_id: string; outside: CliVersionOutside },
+    OwnerToolVersionView
+  >;
+
+  /** D-321 — remove the owner's choice for a tool; its pack's default applies. */
+  'collection.operation.deleteOwnerToolVersion': RpcMethodSpec<
+    { ingredient_id: string },
+    { deleted: boolean }
   >;
 
   /** D-166 contract_id lifecycle — mint a `contract.contract_definition.<id>`
@@ -5309,6 +5331,12 @@ export type ServerRpcRegistry = {
       }>;
       /** Refs that resolved but install CLOSED (`chat_exposed` false). */
       hidden_count: number;
+      /** D-320 slice 2j (ruling 16) — the owner's connections every other installed
+       *  pack of this pack's sign-in lists (one such pack at least), set up and
+       *  accepted by its requirement: the install dialog offers them, ticked,
+       *  beside "Will connect" (`packs.install`'s `also_connections`). Absent
+       *  when there are none, and from a server without it. */
+      shared_connections?: Array<{ connection_name: string; display_name: string }>;
       /** D-295 — the webhooks the owner must choose for this install (the pack
        *  and the dependencies it will install). Absent from a server that
        *  cannot say; empty when none are needed. */
@@ -5421,7 +5449,7 @@ export type ServerRpcRegistry = {
        *  packs (no composition) ignore it. */
       install_scope?: import('../bulk-pack.js').InstallGrantSelection;
       /** D-194 2b — the connection the owner picked in the install dialog's
-       *  "Connect account" section (an existing endpoint-match candidate, or a
+       *  connection section (an existing endpoint-match candidate, or a
        *  freshly-enrolled connection's name). Present ⇒ the composition's grant +
        *  catalog binding bind to THIS connection instead of the authored
        *  `auth.connection` literal (`reSourceGrantConnection`, step 3a). ABSENT ⇒
@@ -5429,6 +5457,14 @@ export type ServerRpcRegistry = {
        *  installs unconnected and stays deny-until-granted until the owner
        *  connects later. Recipe-only packs (no composition) ignore it. */
       chosen_connection?: string;
+      /** D-320 slice 2j (ruling 16) — the connections its sign-in shares that the
+       *  owner left ticked (`packs.install_preview` `shared_connections`). A FIRST
+       *  install puts them on the pack's list beside `chosen_connection`, which
+       *  stays the default; an update keeps its list as it is. Only the ones still
+       *  shared when it installs are added. Not forwarded to the packs it brings
+       *  in: only a pack with a catalog of its own is offered any, and each that
+       *  brings packs in signs in through a core pack (ruling 13). */
+      also_connections?: ReadonlyArray<string>;
       /** D-201 Slice 4 — explicit owner ingress choices. `pack_slug` scopes
        * selections for transitive dependency installs; the manifest cannot
        * provide or override this array. */
@@ -5484,6 +5520,8 @@ export type ServerRpcRegistry = {
       /** D-194 2b — forwarded verbatim to `packs.install`. See `packs.install`'s
        *  `chosen_connection` doc. */
       chosen_connection?: string;
+      /** D-320 slice 2j — forwarded to `packs.install`. See its `also_connections`. */
+      also_connections?: ReadonlyArray<string>;
       /** D-201 Slice 4 — forwarded to the trusted by-value install path. */
       webhook_bindings?: ReadonlyArray<{
         pack_slug: string;
@@ -5558,6 +5596,17 @@ export type ServerRpcRegistry = {
     import('../bulk-pack.js').PacksUnrunnableResult
   >;
 
+  /** D-321 slice 3 — whether each installed pack's programs are ready on this
+   *  server: on PATH, starting, and a version the pack was tested with, with the
+   *  owner's Refuse/Warn choice and the install commands for this server's
+   *  system. Re-derived per call (a version read is cached on the server); a
+   *  tool whose pack declares no range is looked up on PATH, never run. One pack
+   *  with `pack_slug`; `recheck` probes again ("Check again"). */
+  'packs.tool_status': RpcMethodSpec<
+    import('../packs-tool-status.js').PacksToolStatusRequest | void,
+    import('../packs-tool-status.js').PacksToolStatusResult
+  >;
+
   /** D-145 PA10 follow-on Slice B — uninstall a bundled pack. Drops every
    *  pack-installed Standing Instruction row whose id starts with
    *  `<pack_slug>:` via `siStore.uninstallPack`, then deletes each
@@ -5607,6 +5656,79 @@ export type ServerRpcRegistry = {
   'packs.uninstall_preview': RpcMethodSpec<
     { pack_slug: string },
     { schedules: number; automations: number; recipes_with_settings: number }
+  >;
+
+  /** D-320 slice 2b — a pack's connections per slot, for the Access page's
+   *  Connections block: its list (the connections its catalog is bound to), which
+   *  one is the default, and the owner's other connections that could join.
+   *  Read-only. */
+  'packs.connections.list': RpcMethodSpec<
+    { pack_slug: string },
+    import('../pack-connections.js').PackConnectionsView
+  >;
+  /** D-320 slice 2b — "Add another": the pack's catalogs for the slot are bound to
+   *  the connection too, so its operations run there. Refused for a connection that
+   *  is not one of the candidates `packs.connections.list` offers. When the slot
+   *  had one connection and no stored default, that one is stored as the default
+   *  first, so runs that used it keep using it. Returns the pack's new view, and
+   *  (D-320 phase 3) any webhook door the change moved, as a dish rpc returns them. */
+  'packs.connections.add': RpcMethodSpec<
+    import('../pack-connections.js').PackConnectionChange,
+    import('../pack-connections.js').PackConnectionsView & { webhook_doors?: DishWebhookDoorChange[] }
+  >;
+  /** D-320 slice 2b — "Remove": the connection leaves the slot's list, its
+   *  binding and the pack's grants on it go. A default removed this way is not
+   *  replaced: one connection left is the default by itself; with two or more the
+   *  slot has none until the owner picks (spec §7). Returns the pack's new view, and
+   *  any webhook door the change moved. */
+  'packs.connections.remove': RpcMethodSpec<
+    import('../pack-connections.js').PackConnectionChange,
+    import('../pack-connections.js').PackConnectionsView & { webhook_doors?: DishWebhookDoorChange[] }
+  >;
+  /** D-320 slice 2b — "Make default": the connection a run uses when neither the
+   *  run nor its dish chooses. Refused for a connection not on the slot's list.
+   *  Returns the pack's new view, and any webhook door the change moved. */
+  'packs.connections.set_default': RpcMethodSpec<
+    import('../pack-connections.js').PackConnectionChange,
+    import('../pack-connections.js').PackConnectionsView & { webhook_doors?: DishWebhookDoorChange[] }
+  >;
+  /** D-320 §3.4 / §4 — the slots a recipe signs in through, each with its list
+   *  of connections and the default: what the dish form's and the run dialog's
+   *  Connection lines offer, and which settings they stand in for. Owner-only by
+   *  the `packs.` prefix: it names the owner's connections. */
+  'packs.connections.recipe': RpcMethodSpec<
+    { recipe_id: string },
+    import('../pack-connections.js').RecipeConnectionsView
+  >;
+  /** D-320 slice 2g (ruling 16) — what taking a connection off packs' lists, or
+   *  deleting it, does to their runs that name no account: for each pack holding
+   *  it (or `pack_slug`'s), whether they move to another account, are left with no
+   *  default, stop, or are unchanged. Worked out by the run's own rule. Read-only.
+   *  `delete_kind`: the question is a Delete of that row, not taking the
+   *  connection off a list (taken off, it stays set up, and a registered vendor's
+   *  connection still serves its packs on no list). A same-name row of another
+   *  kind keeps the name set up, and then nothing changes. */
+  'packs.connections.removal': RpcMethodSpec<
+    { connection_name: string; pack_slug?: string; delete_kind?: import('../connection.js').ConnectionKind },
+    import('../pack-connections.js').ConnectionRemovalView
+  >;
+  /** D-320 slice 2h (ruling 16) — the Connections page's grids: each sign-in the
+   *  installed packs hold a list for, its accounts, and a row per pack holding its
+   *  own list (a family once, by its holder), each cell saying whether the
+   *  account is its default, on its list, could join, or cannot serve it.
+   *  Read-only. */
+  'packs.connections.signins': RpcMethodSpec<
+    Record<string, never> | undefined,
+    import('../pack-connections.js').PackSignInsView
+  >;
+  /** D-320 slice 2h (ruling 16) — "Use with all", and a new account's "Which
+   *  packs may use it?": one connection onto several packs' lists in one
+   *  transaction, all or none (each target refused as `packs.connections.add`
+   *  would refuse it). `make_default` also makes it each target's default.
+   *  Returns the grids as they now are, and any webhook door the change moved. */
+  'packs.connections.add_many': RpcMethodSpec<
+    import('../pack-connections.js').PackConnectionAddMany,
+    import('../pack-connections.js').PackSignInsView & { webhook_doors?: DishWebhookDoorChange[] }
   >;
 
   // ── D-170 — Ingredient-authoring install / uninstall ─────────────
@@ -6082,9 +6204,8 @@ export type ServerRpcRegistry = {
   // ── Warehouse collections (D-106 Phase D) ──────────────────────
   //
   // Kernel ingredients (`email-list`, `email-search`, `email-get`,
-  // `file-list`, `file-get`, `webhook-list`, `webhook-get`)
-  // dispatch to these rpc methods. Writes are NOT exposed —
-  // `data.{email,file,webhook}.*` are read-only namespaces
+  // `file-list`, `file-get`) dispatch to these rpc methods. Writes are
+  // NOT exposed — `data.{email,file}.*` are read-only namespaces
   // populated by the server-side collection adapters. The writable
   // sibling is `data.shared.*` via `shared-write` (D-103 Phase A).
   /** List records from `(platform, slug)` with hot-field filters +
@@ -6529,117 +6650,6 @@ export type ServerRpcRegistry = {
   'collection.calendar.reauth': RpcMethodSpec<
     { slug: string },
     { oauth_url: string } | { ok: true }
-  >;
-
-  // ── collection.service.* — D-118 enroll family ─────────────────
-  //
-  // Service instances (`data.service.<slug>`) are typed process-
-  // execution endpoints — `kind: service` templates from the
-  // marketplace, bound to user-approved configs. Eight handlers
-  // mirror the calendar enrollment shape: list / enroll / install /
-  // upgrade / uninstall / update / delete / clear_crash. All on the
-  // pair transport (ext ↔ server WS rpc), never via cloud — services
-  // are server-local by design (D-097).
-  /** Enumerate every enrolled `data.service.*` instance with its
-   *  current state + caps. Cheap — reads `collection_instances` +
-   *  in-RAM `service_instance_state`. */
-  'collection.service.list': RpcMethodSpec<void, ServiceInstanceList>;
-  /** Enumerate every `kind: service` template the server's manifest
-   *  registry knows about. Powers the enroll-form picker + the
-   *  `service_ref` install-time picker. Filters by OS (defaulting to
-   *  the server's detected OS) and optionally by `variant_group`.
-   *  Returns a self-contained row per template so the picker can
-   *  populate caps + config_schema + install_hint without a second
-   *  rpc. D-118 Phase 10 follow-up. */
-  'collection.service.listTemplates': RpcMethodSpec<
-    ServiceTemplateListInput | void,
-    ServiceTemplateList
-  >;
-  /** Create a new instance row. Runs `install_check` synchronously
-   *  during enroll; result rides on the response so the UI can
-   *  branch directly into install vs ready vs hint paths. Does NOT
-   *  run the installer — that's a separate button-driven rpc. */
-  'collection.service.enroll': RpcMethodSpec<
-    ServiceEnrollInput,
-    ServiceEnrollOutput
-  >;
-  /** Run the template's `install[]` registry entries. Streams stdout
-   *  to the extension during execution (out-of-band via dispatch
-   *  events); the final response carries the installer exit code +
-   *  re-probed `install_check`. Only valid when `caps.install ===
-   *  'yes'` — `'hint_only'` returns SERVICE_INSTALL_UNAVAILABLE. */
-  'collection.service.install': RpcMethodSpec<
-    { slug: string },
-    ServiceInstallOutput
-  >;
-  /** Run the template's `upgrade[]` registry entries. Same streaming
-   *  + response shape as `install`. Failure preserves the previous
-   *  binary (download kind via `.bak`, PMs via their own rollback). */
-  'collection.service.upgrade': RpcMethodSpec<
-    { slug: string },
-    ServiceUpgradeOutput
-  >;
-  /** Remove the instance row. `remove_binary: true` ALSO runs the
-   *  template's `uninstall[]` entries; `false` (default) leaves the
-   *  binary on disk and only drops the row + cleans up the cwd. */
-  'collection.service.uninstall': RpcMethodSpec<
-    { slug: string; remove_binary?: boolean },
-    ServiceUninstallOutput
-  >;
-  /** Patch the instance config. Validated against the template's
-   *  `config_schema`. If the service is running, the supervisor
-   *  restarts it (templates that need different semantics declare
-   *  config-only fields that don't trigger restart). */
-  'collection.service.update': RpcMethodSpec<
-    { slug: string; config_patch: Record<string, unknown> },
-    { slug: string; caps: ServiceCollectionCaps }
-  >;
-  /** Drop the instance + cascade `service_instance_state`. Distinct
-   *  from `uninstall` — `uninstall` keeps the row + clears the
-   *  binary; `delete` clears the row + optionally the binary. UI
-   *  prompts for `uninstall_binary` before sending. */
-  'collection.service.delete': RpcMethodSpec<
-    { slug: string; uninstall_binary?: boolean },
-    { deleted: true }
-  >;
-  /** User clicked `[Clear & retry]` on a `permanently_crashed`
-   *  instance. Resets `consecutive_crashes = 0`, flips `auth_state`
-   *  to `healthy`, and runs `lifecycle.start`. Returns the post-
-   *  reset status snapshot. */
-  'collection.service.clear_crash': RpcMethodSpec<
-    { slug: string },
-    ServiceStatus
-  >;
-  /** User-driven lifecycle start. Thin wrapper over the dispatcher's
-   *  `start` — the same path the `service-start` kernel ingredient
-   *  uses inside recipes. Tool-shape templates respond
-   *  `SERVICE_OP_NOT_SUPPORTED`. Idempotent: re-issue while running
-   *  is a no-op (reconciler dedupes). */
-  'collection.service.start': RpcMethodSpec<
-    { slug: string },
-    {
-      state: 'running' | 'unhealthy' | 'failed';
-      pid: number | null;
-      started_at: number | null;
-    }
-  >;
-  /** User-driven lifecycle stop. Same dispatcher path as
-   *  `service-stop`. Tool-shape templates respond
-   *  `SERVICE_OP_NOT_SUPPORTED`. */
-  'collection.service.stop': RpcMethodSpec<
-    { slug: string },
-    { state: 'stopped' | 'failed' }
-  >;
-  /** User-driven restart — `stop` followed by `start`. Composed in
-   *  the handler so a single click maps to a single rpc round-trip;
-   *  the supervisor's restart-policy stays untouched. */
-  'collection.service.restart': RpcMethodSpec<
-    { slug: string },
-    {
-      state: 'running' | 'unhealthy' | 'failed';
-      pid: number | null;
-      started_at: number | null;
-    }
   >;
 
   // ── server.archive.* — rpc archive flow (closes D-108 #14) ─────
@@ -7376,6 +7386,12 @@ export type ServerRpcRegistry = {
        *  call. The picker gates `serve_reception`/`serve_webclient` against
        *  the grid's per-path public bits + the bundle availability. */
       apex_mode: RootApexMode;
+      /** Whether the server has an address people outside can use (a
+       *  configured `RECUED_PUBLIC_BASE_URL`, or a verified name with a
+       *  certificate on the Hostnames screen): the grid refuses every Public
+       *  choice while this is false. The answer the server's own gate uses.
+       *  Absent from servers before 2026-10-10, whose gate always refused. */
+      has_public_address?: boolean;
     }
   >;
   /** R26.2 Delta 2 — set the apex (`GET /`) serving mode. Cross-validated
@@ -7434,7 +7450,7 @@ export type ServerRpcRegistry = {
     }
   >;
 
-  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud` unbind
+  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net` unbind
   // rpc. Tears down the DDNS subdomain at the cloud helper + removes the
   // auto-managed cert from `SqliteTlsDomainStore` in one transaction.
   // Emits a high-assurance signed `pro_acme_unbound` audit row.
@@ -7460,7 +7476,7 @@ export type ServerRpcRegistry = {
        *  against (mirrors `tls_domain.remove`'s W3.6 P2 fold). */
       domain: string;
       /** Handle stem the cloud DDNS release was issued against —
-       *  `alice.recued.cloud` → `alice`. Carried in the response so the
+       *  `alice.recued.net` → `alice`. Carried in the response so the
        *  renderer can refer to the released handle without re-parsing. */
       handle: string;
     }
@@ -7655,7 +7671,7 @@ export type ServerRpcRegistry = {
   // ── Pro convenience status (D-175 P8) ───────────────────────────
   //
   // Secret-free read of the server's Pro provisioning posture — per
-  // convenience item (`<handle>.recued.cloud` DDNS · ACME cert ·
+  // convenience item (`<handle>.recued.net` DDNS · ACME cert ·
   // reserved handle) the state derived from the account binding + the
   // Pro entitlement resolved OFF the binding credential + a reachability
   // proof. The webclient's Settings → Account "Pro convenience bundle"
@@ -8226,6 +8242,10 @@ export const SERVER_RPC_METHODS = [
   'collection.operation.upsertOwnerOverride',
   'collection.operation.deleteOwnerOverride',
   'collection.operation.listOwnerOverrides',
+  // D-321 the owner's per-tool choice outside a pack's tested versions (same
+  // reserved prefix — local owner only, never MCP).
+  'collection.operation.upsertOwnerToolVersion',
+  'collection.operation.deleteOwnerToolVersion',
   // D-166 contract_id lifecycle — mint / revoke / list contract_definition rows
   // (Settings → Privacy → Contracts; same reserved prefix). D-187 §6 step 7 —
   // setDoorTypes edits the level-1 door types in place (same reserved prefix).
@@ -8395,8 +8415,18 @@ export const SERVER_RPC_METHODS = [
   'packs.resolveBySlug',
   'packs.list',
   'packs.unrunnable',
+  // D-321 slice 3 — whether each installed pack's programs are ready.
+  'packs.tool_status',
   'packs.uninstall',
   'packs.uninstall_preview',
+  'packs.connections.list',
+  'packs.connections.add',
+  'packs.connections.remove',
+  'packs.connections.set_default',
+  'packs.connections.recipe',
+  'packs.connections.removal',
+  'packs.connections.signins',
+  'packs.connections.add_many',
   // D-170 — ingredient-authoring install / uninstall. Per-pair only;
   // `ingredient.` in MCP_RESERVED_RPC_PREFIXES so MCP-channel agents
   // cannot author / install / uninstall their own capability surface.
@@ -8540,19 +8570,6 @@ export const SERVER_RPC_METHODS = [
   'collection.calendar.delete',
   'collection.calendar.resync',
   'collection.calendar.reauth',
-  // D-118 — service enroll family.
-  'collection.service.list',
-  'collection.service.listTemplates',
-  'collection.service.enroll',
-  'collection.service.install',
-  'collection.service.upgrade',
-  'collection.service.uninstall',
-  'collection.service.update',
-  'collection.service.delete',
-  'collection.service.clear_crash',
-  'collection.service.start',
-  'collection.service.stop',
-  'collection.service.restart',
   'server.archive.export',
   'server.archive.status',
   'server.archive.import',
@@ -8655,7 +8672,7 @@ export const SERVER_RPC_METHODS = [
   'tls_domain.upload',
   'tls_domain.remove',
   'tls_domain.list',
-  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud`
+  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net`
   // unbind rpc. Reserved for local-UI only — `pro_acme.` is in
   // `MCP_RESERVED_RPC_PREFIXES`.
   'pro_acme.unbind',

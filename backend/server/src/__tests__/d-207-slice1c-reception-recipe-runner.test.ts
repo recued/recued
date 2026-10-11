@@ -172,6 +172,14 @@ describe('D-207 slice 1c — the runner goes THROUGH the gate, not around it', (
     expect(opts.run_id).toBe('reception:sub_1');
   });
 
+  it("passes its recipe's main dish's choice of connection to the run (D-320 3b)", async () => {
+    const h = harness();
+    const choice = { choices: { hubspot: 'hubspot-app' }, label: 'Main' };
+    await createReceptionRecipeRunner({ ...h, resolveDishConnections: () => choice }).run(runInput('ep1', 'sub_1'));
+    const [, , opts] = h.handleExecute.mock.calls[0] as unknown as [unknown, unknown, Record<string, unknown>];
+    expect(opts).toEqual({ run_id: 'reception:sub_1', dish_connections: choice });
+  });
+
   it('the visitor\'s fields reach the recipe as context.reception_submission', async () => {
     const h = harness();
     await run(h);

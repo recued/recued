@@ -784,8 +784,9 @@ describe('D-165 P3 ingredient.install — pack-owned grant provisioning', () => 
     await env.install(appPack(wideComposition()));
     const rows = env.contractStore.scan('connection_catalog_binding', []);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.segments).toEqual(['acme']); // connection name (auth.connection)
-    expect(rows[0]?.value).toEqual({ catalog_slug: 'acme', installed_pack_id: 'acme-crm' });
+    // connection name (auth.connection) + catalog (D-320 ruling 10)
+    expect(rows[0]?.segments).toEqual(['acme', 'acme']);
+    expect(rows[0]?.value).toEqual({ catalog_slug: 'acme', installed_pack_id: 'acme-crm', slot: 'acme' });
   });
 
   it('uninstall drops the connection→catalog binding', async () => {
@@ -797,19 +798,50 @@ describe('D-165 P3 ingredient.install — pack-owned grant provisioning', () => 
     expect(env.contractStore.scan('connection_catalog_binding', [])).toHaveLength(0);
   });
 
-  it('does NOT clobber a binding another pack owns (one catalog per connection)', async () => {
+  it('D-320 ruling 10 — two packs\' REST catalogs share a connection, neither displacing the other', async () => {
     // Pack A binds connection 'acme' → catalog 'cat-a'.
     const a = await env.install(appPack(wideComposition('cat-a'), 'pack-a'));
     expect(a.ok).toBe(true);
-    // Pack B's composition binds the SAME connection 'acme' (different catalog).
+    // Pack B's composition binds the SAME connection 'acme' (different catalog), as
+    // the seven Wise packs do with one Wise sign-in. It was refused (one catalog per
+    // connection), which left B's operations refused `catalog_mismatch`.
     const b = await env.install(appPack(wideComposition('cat-b'), 'pack-b'));
+    expect(b.ok).toBe(true);
+
+    const rows = env.contractStore.scan('connection_catalog_binding', []);
+    expect(rows.map((r) => [r.segments, r.value])).toEqual([
+      [['acme', 'cat-a'], { catalog_slug: 'cat-a', installed_pack_id: 'pack-a', slot: 'acme' }],
+      [['acme', 'cat-b'], { catalog_slug: 'cat-b', installed_pack_id: 'pack-b', slot: 'acme' }],
+    ]);
+  });
+
+  it('does NOT clobber an MCP catalog another pack owns (one MCP catalog per connection)', async () => {
+    // An MCP catalog IS one peer's served tool list (D-232), so the rule stays there.
+    const mcpComposition = (slug: string): CompositionIngredient => ({
+      schema_version: 1,
+      slug,
+      catalog_kind: 'private_byo',
+      force_catalog_lowering: true,
+      ingredients: [{ slug, kind: 'connection', connection: { connection: 'acme' } }],
+      operations: [{
+        op: 'thing.read',
+        ingredient: slug,
+        risk: 'read',
+        approval: 'never',
+        bind: { kind: 'mcp', tool: 'thing_read' },
+        description: 'Read a thing.',
+      }],
+    } as unknown as CompositionIngredient);
+    const a = await env.install(appPack(mcpComposition('peer-a'), 'pack-a'));
+    expect(a.ok).toBe(true);
+    const b = await env.install(appPack(mcpComposition('peer-b'), 'pack-b'));
     expect(b.ok).toBe(true); // B still installs (catalog provisioned)…
 
     // …but the binding for 'acme' stays A's — B did not hijack it (fail-closed).
     const rows = env.contractStore.scan('connection_catalog_binding', []);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.segments).toEqual(['acme']);
-    expect(rows[0]?.value).toEqual({ catalog_slug: 'cat-a', installed_pack_id: 'pack-a' });
+    expect(rows.map((r) => [r.segments, r.value])).toEqual([
+      [['acme', 'peer-a'], { catalog_slug: 'peer-a', installed_pack_id: 'pack-a', slot: 'acme' }],
+    ]);
   });
 
   it('✅✅ but an AUTHORED pack DOES take the slot from the MACHINE-MINTED mirror', async () => {
@@ -843,6 +875,7 @@ describe('D-165 P3 ingredient.install — pack-owned grant provisioning', () => 
     expect(rows[0]?.value).toEqual({
       catalog_slug: 'cat-authored',
       installed_pack_id: 'pack-authored',
+      slot: 'acme',
     });
   });
 });

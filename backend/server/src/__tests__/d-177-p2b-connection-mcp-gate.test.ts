@@ -225,19 +225,30 @@ describe('D-228 slice 4 createConnectionMcpGateFromDb', () => {
     try {
       const PACK = 'mcp-0123456789abcdef0123456789abcdef';
       const gate = createConnectionMcpGateFromDb(db, {
-        contractStore: {
-          get: (scope: string, segments: readonly string[]) =>
-            (scope === 'connection_catalog_binding' && segments[0] === 'exa'
-              // ⚠ `installed_pack_id` is REQUIRED by `readBinding` — omit it and
-              // the binding resolves to undefined, which reads as "no pack" and
-              // makes this permitting witness silently assert the refusal.
-              ? {
-                  segments: [...segments],
-                  value: { catalog_slug: PACK, installed_pack_id: 'pack_1' },
-                }
-              : null),
-          scan: () => [],
-        } as never,
+        // ⚠ A double of the contract store must answer the way the store does, by
+        // `get` AND by `scan`: since D-320 ruling 10 the binding store reads a
+        // connection's catalogs with a prefix scan (keyed connection + catalog), and
+        // a double whose `scan` returned [] silently stopped binding anything.
+        contractStore: (() => {
+          // ⚠ `installed_pack_id` is REQUIRED by `readBinding` — omit it and
+          // the binding resolves to undefined, which reads as "no pack" and
+          // makes this permitting witness silently assert the refusal.
+          const row = {
+            segments: ['exa', PACK],
+            value: { catalog_slug: PACK, installed_pack_id: 'pack_1' },
+            written_at: 1,
+          };
+          return {
+            get: (scope: string, segments: readonly string[]) =>
+              (scope === 'connection_catalog_binding' && segments[0] === 'exa' && segments[1] === PACK
+                ? row
+                : null),
+            scan: (scope: string, prefix: readonly string[] = []) =>
+              (scope === 'connection_catalog_binding' && (prefix.length === 0 || prefix[0] === 'exa')
+                ? [row]
+                : []),
+          };
+        })() as never,
         getManifest: (slug) => (slug === PACK
           ? ({
               slug: PACK,

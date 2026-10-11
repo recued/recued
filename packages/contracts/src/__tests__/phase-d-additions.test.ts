@@ -107,9 +107,11 @@ describe('CollectionRecord shape', () => {
 });
 
 describe('CollectionPlatform union', () => {
-  it('covers mail / file / webhook', () => {
-    const platforms: CollectionPlatform[] = ['mail', 'file', 'webhook'];
-    expect(platforms.length).toBe(3);
+  // Phase D also had a `webhook` platform, removed 2026-10-10 with its
+  // collection (nothing in production ever created one).
+  it('covers mail / file', () => {
+    const platforms: CollectionPlatform[] = ['mail', 'file'];
+    expect(platforms.length).toBe(2);
   });
 });
 

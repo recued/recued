@@ -11,7 +11,7 @@
  *  current device role.
  *
  *  Derivation rules (per ingredient, via `kindToScope`):
- *    - `kind: 'service'`                                   → ['server']
+ *    - `kind: 'cli'`                                       → ['server']
  *    - `kind: 'dom' | 'chat'`                              → ['device']
  *    - `kind: 'http' | 'ai' | 'mcp' | 'storage'
  *             | 'connection'`                              → ['device', 'server']
@@ -23,7 +23,7 @@
  *  those kinds resolve to `['ext']`, never `['ext','server','webapp']`.
  *
  *  Recipe-level derivation = intersection of every ingredient's
- *  derived scope. A recipe mixing `kind: 'dom'` + `kind: 'service'`
+ *  derived scope. A recipe mixing `kind: 'dom'` + `kind: 'cli'`
  *  ingredients yields the empty set — install fails on every runtime,
  *  surfacing the conflict at validate time.
  *
@@ -97,10 +97,9 @@ export const kindToScope = (kind: IngredientKind): readonly DeviceClass[] => {
     case 'dom':
     case 'chat':
       return ['ext'];
-    case 'service':
     case 'cli':
       // D-182 — cli ops shell out to a local binary the server hosts;
-      // server-only, same as a D-118 service.
+      // server-only.
       return ['server'];
     case 'http':
     case 'ai':
@@ -142,7 +141,7 @@ export const deriveIngredientScope = (manifest: IngredientManifest): ExecutionSc
  *
  *  Returns `['device', 'server']` for a recipe with zero ingredients
  *  (transform-only — both runtimes can host it). Returns `[]` when
- *  the intersection is empty (e.g., a recipe mixing `kind: 'service'`
+ *  the intersection is empty (e.g., a recipe mixing `kind: 'cli'`
  *  + a `kind: 'chat'` ingredient — uninstallable on either runtime). */
 export const deriveExecutionScope = (
   manifests: readonly IngredientManifest[],

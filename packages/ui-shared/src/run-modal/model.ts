@@ -16,6 +16,7 @@ import {
   type ServerSchedule,
 } from '@recued/contracts';
 
+import { connectionLines, type ConnectionLine } from '../connection-lines.js';
 import type { RunModalMailFactDraft, RunModalState, RunModalTab } from './types.js';
 
 /** Display name for a recipe row — its metadata name, else its id. */
@@ -102,6 +103,19 @@ export const runTargetGate = (
   };
 };
 
+/** D-320 §4 — the Run tab's Connection lines, preselected from the dish it runs
+ *  as: its choice, else an old connection setting it holds, else the default. */
+export const runConnectionLines = (
+  state: Pick<RunModalState, 'connection_slots' | 'dish_id'>,
+  dishes: readonly Dish[] | undefined,
+): ConnectionLine[] => {
+  const dish = (dishes ?? []).find((candidate) => candidate.dish_id === state.dish_id);
+  return connectionLines(state.connection_slots ?? [], {
+    chosen: dish?.connections,
+    settings: dish?.config_overlay,
+  });
+};
+
 /** Filter a full schedule list to one recipe's rows. */
 export const recipeSchedules = (
   schedules: readonly ServerSchedule[],
@@ -135,6 +149,8 @@ export const initialRunModalState = (
   config_text: '{}',
   target_values: {},
   context_values: {},
+  connection_slots: null,
+  connection_choice: {},
   executing: false,
   run_error: null,
   result: null,

@@ -55,7 +55,7 @@ const makeCtx = (over: Partial<ExecutionContext> & { executor?: ExecutionContext
     recipe: { recipe_id: 'rcp' },
     ingredientExecutor: over.executor ?? (async () => 'RESULT'),
     manifestGetter: (slug: string) =>
-      ({ kind: slug === 'docling' ? 'service' : 'storage' }) as IngredientManifest,
+      ({ kind: slug === 'docling' ? 'cli' : 'storage' }) as IngredientManifest,
     ...over,
   }) as unknown as ExecutionContext;
 
@@ -71,12 +71,19 @@ describe('resolveCallClass', () => {
     expect(resolveCallClass(ctx, 'unknown')).toBe('external-io');
   });
 
+  it('classifies a kind this server does not know as default-gated, never lane-free (D-321 § 5.5)', () => {
+    // A stored catalog still declaring the retired `service` kind was gated
+    // local-heavy; it must not lose its lane by becoming unknown.
+    const ctx = makeCtx({ manifestGetter: () => ({ kind: 'service' }) as unknown as IngredientManifest });
+    expect(resolveCallClass(ctx, 'old-service')).toBe('external-io');
+  });
+
   it('honors an explicit fast_path:true opt-out regardless of kind (§3d)', () => {
     const ctx = makeCtx({
       manifestGetter: (slug: string) =>
-        ({ kind: 'service', fast_path: slug === 'cheap-cli' }) as IngredientManifest,
+        ({ kind: 'cli', fast_path: slug === 'cheap-cli' }) as IngredientManifest,
     });
-    expect(resolveCallClass(ctx, 'cheap-cli')).toBe('fast-path'); // bypass despite service
+    expect(resolveCallClass(ctx, 'cheap-cli')).toBe('fast-path'); // bypass despite cli
     expect(resolveCallClass(ctx, 'heavy-cli')).toBe('local-heavy'); // no opt-out → gated
   });
 });

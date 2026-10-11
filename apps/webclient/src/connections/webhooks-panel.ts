@@ -212,7 +212,10 @@ const blockerLabel: Record<WebhookIngressReadinessBlocker, string> = {
   paired_connection_rebind_required: 'Show it is still the same account, then link it up again',
   listener_unavailable: 'The part that listens for webhooks is not running',
   public_url_unavailable: 'Your server needs a public https address for webhooks. See Settings → Server → Hostnames',
-  public_reachability_disabled: 'Switch on RECUED_PUBLIC_REACHABLE',
+  // Raised when either half is off (`compose-listeners.ts` runtime readiness),
+  // so the label names both. Until 2026-10-10 it named only the environment
+  // variable, because the server did not read the config key yet.
+  public_reachability_disabled: 'Let it in from the internet: tick Public for /webhooks under Settings → Server → Exposure, and set "collection.webhook.public_reachable" = true in config.toml',
   tls_unavailable: 'You need a trusted public https address',
   clock_unverified: 'Recued has not checked that your clock is right',
   vault_locked: 'Unlock your server’s keys',

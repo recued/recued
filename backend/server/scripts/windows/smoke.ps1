@@ -171,7 +171,7 @@ foreach ($triple in ($Triples -split ',' | ForEach-Object { $_.Trim() } | Where-
   # read as a status bug. Foreground serve cannot see this: the whole defect is
   # in the step where the process re-launches ITSELF.
   # !! ITS OWN DIRECTORY, not just its own db file. The realm lock is
-  # {data_path}\recued-server.lock, keyed on the DIRECTORY -- and the foreground
+  # recued-server.lock in the db's folder, keyed on the DIRECTORY -- and the foreground
   # server above is still running out of $root, so a sibling db there is refused
   # with "already running against this data folder" and this gate would report a
   # defect that is not there.

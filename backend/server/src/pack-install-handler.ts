@@ -50,6 +50,7 @@ import {
   validateRecipeBundlePublisher,
   type BulkPackInstallResultLike,
   type BulkPackManifest,
+  type DishWebhookDoorChange,
   type PackWebhookPlanEntry,
   type RecipeWebhookTrigger,
   type CompositionIngredient,
@@ -119,6 +120,7 @@ import {
   diffRecordsPackForUpdate,
   recordsPackCurrentAccess,
 } from './pack-operation-update-diff.js';
+import { toolVersionReviewForPackUpdate } from './pack-tool-version-update-review.js';
 import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
 import { newerServerMessage, unknownHostCapabilities } from './pack-host-capabilities.js';
 import { planPackWebhookBindings } from './pack-webhook-plan.js';
@@ -132,7 +134,8 @@ import {
   D201_WEBHOOK_RUNTIME_UNAVAILABLE,
   hasNonEmptyWebhookDeclarations,
 } from './webhook-declaration-gate.js';
-import type { ContractStore } from './storage/contract-store.js';
+import { createContractScanFn, type ContractStore } from './storage/contract-store.js';
+import { catalogSignInReader, slotSettingNamesOf } from './slot-settings.js';
 import type { SavedDataViewStore } from './saved-data-view-store.js';
 import type { RecipeMailTemplates } from './mail-facts/recipe-templates.js';
 import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
@@ -178,6 +181,22 @@ export interface PackInstallBroadcastEmitter {
 }
 
 export interface PackInstallRpcDeps {
+  /** D-320 slice 2j (ruling 16) — the connections a pack being installed shares
+   *  with its sign-in (`sharedSignInConnections`), for the preview's
+   *  `shared_connections` and to check an install's `also_connections`. Absent
+   *  ⇒ none offered, and `also_connections` adds nothing. */
+  /** D-320 phase 3 (3b) — re-derive every webhook recipe's door after a pack's
+   *  connections change (`packs.connections.*`), returning what moved. Wired where
+   *  the webhook consumer store is (`compose-listeners.ts`). */
+  packConnectionWebhookDoors?: () => readonly DishWebhookDoorChange[];
+  /** D-320 audit — whether a connection is set up. Where an update starts is the
+   *  connection the pack's runs use, and a deleted connection's binding stays, dormant
+   *  (slice 2h): counted, a list of it and one other named no connection, and an update
+   *  with none chosen fell back to the pack's authored name and replaced the list with
+   *  it (`currentPackConnection`). Wired with the pack connections
+   *  (`withSharedSignInConnections`). */
+  isConnectionSetUp?: (connection_name: string) => boolean;
+  sharedSignInConnections?: (manifest: BulkPackManifest) => Promise<Array<{ connection_name: string; display_name: string }>>;
   /** Per-pair recipe store. Required — the handler resolves every
    *  manifest `recipes[]` entry through it (memory override → SQLite →
    *  bundled). Absent → composer returns the undefined-bundle + the
@@ -364,6 +383,9 @@ type PacksInstallArgs = {
    *  which re-sources the composition's grant + binding to it (step 3a). Absent ⇒
    *  the authored `auth.connection` literal (connect is optional). */
   chosen_connection?: string;
+  /** D-320 slice 2j — the shared connections the owner left ticked. A first install
+   *  adds the ones still shared beside `chosen_connection`. */
+  also_connections?: ReadonlyArray<string>;
   /** D-201 Slice 4 — owner choices for this pack and any transitive pack
    * dependency. The manifest cannot populate this field. */
   webhook_bindings?: ReadonlyArray<{
@@ -426,6 +448,30 @@ const assertDependencyInstallScopes = (method: string, value: unknown): void => 
     }
     seen.add(slug);
   });
+};
+
+/** D-320 slice 2j — a present-but-malformed `also_connections` is a client bug:
+ *  refused, like `chosen_connection`. */
+const assertAlsoConnections = (method: string, value: unknown): void => {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.some((name) => typeof name !== 'string' || name.length === 0)) {
+    throw new RpcError('bad_request', `${method}: also_connections must be an array of connection names`);
+  }
+};
+
+/** D-320 slice 2j (ruling 16) — the shared connections the owner left ticked that
+ *  are still shared now: the preview offered them, and only what still holds is
+ *  added (one removed from another pack since is not). Nothing without a chosen
+ *  connection: they join its list, beside it. */
+const sharedAlsoConnections = async (
+  deps: PackInstallRpcDeps,
+  args: { chosen_connection?: string; also_connections?: ReadonlyArray<string> },
+  manifest: BulkPackManifest,
+): Promise<string[]> => {
+  const asked = args.also_connections ?? [];
+  if (asked.length === 0 || args.chosen_connection === undefined || deps.sharedSignInConnections === undefined) return [];
+  const shared = new Set((await deps.sharedSignInConnections(manifest)).map((c) => c.connection_name));
+  return [...new Set(asked)].filter((name) => name !== args.chosen_connection && shared.has(name));
 };
 
 /** D-315 §5.2 — a present-but-malformed `mail_template_choices` is a client bug:
@@ -857,6 +903,7 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
       'packs.install: chosen_connection must be a string',
     );
   }
+  assertAlsoConnections('packs.install', args.also_connections);
   assertDependencyInstallScopes('packs.install', args.dependency_install_scopes);
   assertMailTemplateChoices('packs.install', args.mail_template_choices);
   if (args.expected_manifest_hash !== undefined
@@ -1027,7 +1074,7 @@ const carryOverUpdateChoices = (
       || (audience.customer_tier_ids?.length ?? 0) > 0 || (audience.contract_ids?.length ?? 0) > 0;
     if (access !== undefined || sharedBeyondOwner) installScope = { access: access ?? 'read', audience };
   }
-  const connection = args.chosen_connection ?? currentPackConnection(deps.contractStore, manifest.slug);
+  const connection = args.chosen_connection ?? currentPackConnection(deps.contractStore, manifest.slug, deps.isConnectionSetUp);
   return {
     ...args,
     ...(installScope !== undefined ? { install_scope: installScope } : {}),
@@ -1052,6 +1099,25 @@ const installPackOpResolution = (
         `${manifest.publisher}.${manifest.slug}`,
       )
     : undefined;
+
+/** D-320 phase 3 (3c) — what an update's recipe still reads a saved value under
+ *  although it declares no such setting (`slotSettingNamesOf`), read against the
+ *  packs installed now. Absent without a contract store (nothing then to tell). */
+const stillReadSettingNames = (
+  deps: Pick<PackInstallRpcDeps, 'contractStore' | 'registry' | 'packDir' | 'resolveDependencyManifest'>,
+): ((after: RecipeDefinition) => ReadonlySet<string>) | undefined => {
+  if (deps.contractStore === undefined) return undefined;
+  const packs = buildPackOpResolution(
+    () => deps.contractStore!.scan('installed_pack'),
+    (slug) => deps.registry?.get(slug) ?? null,
+  );
+  const signInOf = catalogSignInReader({
+    scan: createContractScanFn(deps.contractStore),
+    packs,
+    packManifestOf: dependencyManifestResolver(deps),
+  });
+  return (after) => slotSettingNamesOf(after, { packs, signInOf });
+};
 
 /** The packs an install can count on for a recipe's Tier-P operations: the ones
  *  installed that `resolution` binds, and the ones the install itself writes
@@ -1709,6 +1775,7 @@ const installSinglePack = async (
     // Only by-ref `ingredient` contents become marketplace inventory rows; the
     // composition catalog is recorded by the provisioner with its own kind.
     const byRefContents = plan.contents.filter((c) => c.type === 'ingredient');
+    const alsoConnections = await sharedAlsoConnections(deps, args, manifest);
     const provisioned = provisionPackCompositionForBulkInstall(
       {
         // Non-null by `canProvisionComposition` (all three checked present).
@@ -1722,6 +1789,7 @@ const installSinglePack = async (
           : {}),
         // D-170 gap #2 live-reconcile — seed the composition's bound connection
         // profile post-commit so a connect-before-install dispatch works at once.
+        ...(deps.isConnectionSetUp ? { isConnectionSetUp: deps.isConnectionSetUp } : {}),
         ...(deps.reconcileConnectionProfile
           ? { reconcileConnectionProfile: deps.reconcileConnectionProfile }
           : {}),
@@ -1746,6 +1814,8 @@ const installSinglePack = async (
       // D-194 2b — forward the owner's chosen connection so the grant + binding
       // re-source to it (step 3a). Absent ⇒ the authored `auth.connection` literal.
       args.chosen_connection,
+      // D-320 slice 2j — and the connections its sign-in shares, the ones still shared.
+      alsoConnections.length > 0 ? { alsoConnections } : {},
     );
     if (provisioned.ok) {
       compositionProvisioned = true;
@@ -1912,6 +1982,13 @@ const installSinglePack = async (
   if (result.ok && receptionPairs && (compositionRefs.length === 0 || compositionProvisioned)) {
     carryReceptionPairsAfterInstall(recipesBefore, deps.recipeStore, receptionPairs, manifest.slug);
   }
+  // D-320 audit — provisioning the composition may have replaced the pack's list of
+  // connections (a reinstall on another connection), and other packs' webhook recipes
+  // sign in through it: re-derive every webhook door, as a change on the Access tab does
+  // (`packConnectionWebhookDoors`). This pack's own doors are derived again too, now with
+  // its composition in place. Before, their doors kept the old connection, and every
+  // delivery was refused, retried and dead-lettered.
+  if (result.ok && compositionProvisioned) deps.packConnectionWebhookDoors?.();
 
   // D-145 PA10 follow-on — fan the success outcome out to every
   // paired client subscribed to `pack_installed`. Drives the Settings
@@ -2042,6 +2119,24 @@ const installSinglePack = async (
   return { result: { ...result, ...bornDisclosure } };
 };
 
+/** D-320 ruling 10 — whether two packs talk to the same API: their first connection
+ *  requirements' `api_base` share an origin. That requirement is the one the install
+ *  dialog's "Will connect" line chooses for. Either side without a parseable
+ *  `api_base` is no match. */
+const signsInToSameApi = (a: BulkPackManifest, b: BulkPackManifest): boolean => {
+  const origin = (m: BulkPackManifest): string | undefined => {
+    const base = m.connection_requirements?.[0]?.api_base;
+    if (typeof base !== 'string' || base.length === 0) return undefined;
+    try {
+      return new URL(base).origin;
+    } catch {
+      return undefined;
+    }
+  };
+  const left = origin(a);
+  return left !== undefined && left === origin(b);
+};
+
 const handlePacksInstallInternal = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
@@ -2114,11 +2209,12 @@ const handlePacksInstallInternal = async (
     }
 
     // ⛔⛔⛔ A SATISFIED REQUIREMENT IS NOT RE-INSTALLED — the clobber fix. See
-    // `dependencyAlreadySatisfied`: the recursion below forwards no
-    // `chosen_connection`, and an `install_scope` only for a pack the dialog asked
-    // about (D-310 asks only for one not yet installed), so reinstalling a pack
-    // the owner already has REPLACES the `install_scope` and `chosen_connection`
-    // they picked at its own install with authored defaults.
+    // `dependencyAlreadySatisfied`: the recursion below forwards the parent's
+    // `chosen_connection` only to a pack on the same API (D-320), and an
+    // `install_scope` only for a pack the dialog asked about (D-310 asks only for
+    // one not yet installed), so reinstalling a pack the owner already has would
+    // REPLACE the `install_scope` and `chosen_connection` they picked at its own
+    // install with the parent's or authored defaults.
     //
     // ⚠ THE RECIPE KEYS STILL HAVE TO BE CONTRIBUTED. `omitRecipeKeys` is how the
     // parent avoids re-writing a recipe a dependency owns; dropping the skipped
@@ -2135,12 +2231,23 @@ const handlePacksInstallInternal = async (
     // The whole list travels down, so a dependency's own dependencies find theirs.
     const dependencyScope = args.dependency_install_scopes
       ?.find((entry) => entry.pack_slug === dependency.slug)?.install_scope;
+    // D-320 ruling 10 — the connection the owner picked signs in the packs this
+    // install brings in too, when they talk to the same API. Without it they bound
+    // their authored connection name: installing the Wise suite on "Wise Business"
+    // left all seven Wise packs on a connection named `wise`, which the owner may not
+    // have, and none of them ran. A dependency that is already installed keeps its own
+    // choice (skipped above).
+    const dependencyConnection = args.chosen_connection !== undefined
+      && signsInToSameApi(manifest, dependencyManifest)
+      ? args.chosen_connection
+      : undefined;
     const dependencyOutcome = await handlePacksInstallInternal(
       deps,
       {
         manifest: dependencyManifest,
         granted_permissions: args.granted_permissions,
         ...(dependencyScope !== undefined ? { install_scope: dependencyScope } : {}),
+        ...(dependencyConnection !== undefined ? { chosen_connection: dependencyConnection } : {}),
         ...(args.webhook_bindings !== undefined
           ? { webhook_bindings: args.webhook_bindings }
           : {}),
@@ -2711,6 +2818,8 @@ type PacksInstallBySlugArgs = {
   install_scope?: InstallGrantSelection;
   /** D-194 2b — forwarded verbatim to `packs.install`. See `PacksInstallArgs`. */
   chosen_connection?: string;
+  /** D-320 slice 2j — forwarded verbatim to `packs.install`. */
+  also_connections?: PacksInstallArgs['also_connections'];
   /** D-201 Slice 4 — forwarded verbatim to the by-value install validator. */
   webhook_bindings?: PacksInstallArgs['webhook_bindings'];
   /** D-310 — forwarded verbatim to the by-value install. */
@@ -3076,6 +3185,7 @@ export const installPackBySlug = async (
       'packs.installBySlug: chosen_connection must be a string',
     );
   }
+  assertAlsoConnections('packs.installBySlug', args.also_connections);
   if (args.webhook_bindings !== undefined && !Array.isArray(args.webhook_bindings)) {
     throw new RpcError(
       'bad_request',
@@ -3228,6 +3338,7 @@ export const installPackBySlug = async (
         granted_permissions: args.granted_permissions,
         ...(args.install_scope !== undefined ? { install_scope: args.install_scope } : {}),
         ...(args.chosen_connection !== undefined ? { chosen_connection: args.chosen_connection } : {}),
+        ...(args.also_connections !== undefined ? { also_connections: args.also_connections } : {}),
         ...(args.webhook_bindings !== undefined
           ? { webhook_bindings: args.webhook_bindings }
           : {}),
@@ -3458,6 +3569,11 @@ export const resolvePackBySlug = async (
     : preparedRecords !== null && preparedRecords !== undefined
       ? diffRecordsPackForUpdate(deps.contractStore, deps.localManifestStore, preparedRecords.target.catalog)
       : diffCompositionPackForUpdate(deps.contractStore, deps.localManifestStore, manifest);
+  // D-321 — the programs whose handling outside their tested range it changes
+  // (a Records pack carries none).
+  const toolVersionReview = !isUpdate || deps.contractStore === undefined || deps.localManifestStore === undefined
+    ? []
+    : toolVersionReviewForPackUpdate(deps.contractStore, deps.localManifestStore, manifest);
   // Where the update's Access choice starts: what the pack holds now. A
   // Records pack's grants are keyed by its derived catalog id, not its slug.
   const currentAccess = !isUpdate || deps.contractStore === undefined || deps.localManifestStore === undefined
@@ -3481,7 +3597,7 @@ export const resolvePackBySlug = async (
   // …and Connect at the account it uses now (a Records pack connects nothing).
   const currentConnection = !isUpdate || deps.contractStore === undefined || carriesRecords(manifest)
     ? undefined
-    : currentPackConnection(deps.contractStore, manifest.slug);
+    : currentPackConnection(deps.contractStore, manifest.slug, deps.isConnectionSetUp);
   return {
     manifest,
     manifest_review_hash: preparedRecords?.review_hash
@@ -3489,6 +3605,7 @@ export const resolvePackBySlug = async (
     ...(ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
       : {}),
+    ...(toolVersionReview.length > 0 ? { tool_version_review: toolVersionReview } : {}),
     ...(operationDiff !== undefined ? { operation_diff: operationDiff } : {}),
     ...(currentAccess !== undefined ? { current_access: currentAccess } : {}),
     ...(currentAudience !== undefined ? { current_audience: currentAudience } : {}),
@@ -3758,6 +3875,8 @@ export const makePackInstallHandlers = (
         const previewDeps = fromMarketplace
           ? await marketplacePreviewDeps(deps, manifest)
           : deps;
+        // D-320 slice 2j — the connections its sign-in shares, offered ticked.
+        const sharedConnections = await deps.sharedSignInConnections?.(manifest).catch(() => []) ?? [];
         const preview = await buildPackInstallPreview(manifest, {
           recipeStore: previewDeps.recipeStore,
           ...(previewDeps.resolveMarketplaceRecipe
@@ -3834,11 +3953,13 @@ export const makePackInstallHandlers = (
               after: recipe.definition,
             })),
             savedSettings,
+            stillReadSettingNames(deps),
           ).map(({ recipe_id, recipe, setting }) => ({ recipe_id, recipe, setting }));
         // Widen the readonly view to the rpc's mutable wire shape.
         return {
           resolved: preview.resolved,
           hidden_count: preview.hidden_count,
+          ...(sharedConnections.length > 0 ? { shared_connections: sharedConnections } : {}),
           ...(webhookPlan !== undefined ? { webhook_plan: webhookPlan } : {}),
           ...(dependencyRequires !== undefined ? { dependency_requires: dependencyRequires } : {}),
           ...(dependencyPacks !== undefined ? { dependency_packs: dependencyPacks } : {}),

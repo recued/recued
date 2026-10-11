@@ -10,6 +10,7 @@ import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
 import { createCliBinaryReachabilityProbe } from '../cli-binary-reachability.js';
 import { createSqliteHandleStateStore } from '../handle/sqlite-store.js';
 import { composeWebhookListeners } from '../composition/bin/wire-webhook-listeners.js';
+import { createWebhookPublicReachable } from '../composition/bin/webhook-public-reachable.js';
 import { composeVendorWebhookPort } from '../composition/bin/wire-vendor-webhook-port.js';
 import { composeInboundAnswerDispatcher } from '../composition/bin/wire-inbound-answer-dispatcher.js';
 import { createPreapprovalTelegramIngress } from '../preapproval-telegram-ingress.js';
@@ -70,15 +71,17 @@ import {
 import {
   composeDoorRecipeResolver,
   composeInstallConfigResolver,
+  composeInstallConnectionsResolver,
   composeRecipeOpResolver,
 } from '../recipe-capability-wiring.js';
 import {
   followMainDishWebhookDoors,
+  rederiveWebhookDoorsAtBoot,
   type WebhookDoorEnrollDeps,
 } from '../webhook-door-enroll.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../records/non-owner-exposure.js';
-import { readRootProjections, readRootProjectionsBatch } from '../records/root-projection.js';
-import type { TimelineRollup } from '@recued/contracts';
+import { readRootProjections, readRootProjectionsBatch, toTimelineRollup } from '../records/root-projection.js';
+import type { DishWebhookDoorChange, TimelineRollup } from '@recued/contracts';
 import type { ContactRpcDeps } from '../contact-handler.js';
 import { createReceptionInboxSubviewStore } from '../storage/reception-inbox-subview-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -151,6 +154,7 @@ import {
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import {
   buildLoadFileCollectionRecord,
+  createFileRefDescriber,
   createFileViewResolverFromRegistry,
 } from '../file-view-resolver.js';
 import { createPreviewConnectionExecute } from '../ingredient-authoring/preview-execute.js';
@@ -205,6 +209,7 @@ import {
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
 import { currentGeneratedPackChoices } from '../pack-update-carry-over.js';
+import { connectionPackUsageDeps } from '../pack-connection-borrowing.js';
 import { handlePacksUninstall } from '../pack-uninstall-handler.js';
 import { reconcileInstalledPacksOnBoot } from '../pack-reconciliation.js';
 import {
@@ -298,7 +303,7 @@ export interface ComposeListenersResult {
 
 export interface ComposeListenersOptions {
   port: number;
-  webhookPort: number;
+  webhooksEnabled: boolean;
   storage: Pick<
     StorageContext,
     | 'pairing'
@@ -455,7 +460,6 @@ export interface ComposeListenersOptions {
     | 'mailFactAiSettled'
     | 'mailFactEvents'
     | 'bootEvents'
-    | 'serviceStack'
     | 'supervisionStack'
     | 'channelDispatchers'
     | 'oauthClientConfigDeps'
@@ -495,6 +499,8 @@ export interface ComposeListenersOptions {
     // stores the Gateway reads (threaded, never rebuilt here).
     | 'contractDefinitionStore'
     | 'grantEntryStore'
+    // D-321 — the executor's readiness service, for `packs.tool_status`.
+    | 'cliToolStatus'
   >;
   rpc: Pick<
     RpcContext,
@@ -576,19 +582,6 @@ export interface ComposeListenersOptions {
  *  renders. That already happened once to `rollups` one layer out, which is why
  *  the per-entity reader and the batched list reader now share this rather than
  *  each keeping their own copy. */
-const toWireRollup = (
-  projection: ReturnType<typeof readRootProjections>[number],
-): TimelineRollup => ({
-  publisher: projection.publisher,
-  pack_slug: projection.pack_slug,
-  ...(projection.label === undefined ? {} : { label: projection.label }),
-  value: projection.value,
-  complete: projection.complete,
-  ...(projection.incomplete_reason === undefined
-    ? {}
-    : { incomplete_reason: projection.incomplete_reason }),
-});
-
 /** D-226 — ⛔ ONE definition for THREE call sites. `contactDeps` was built
  *  three times in `composeListeners`; wiring the batched rollup reader into one
  *  of them would have left the other two serving a contact list with no columns
@@ -604,7 +597,7 @@ const buildContactDeps = (
   rollupsForKeys: (emails: readonly string[]) => {
     const out: Record<string, TimelineRollup[]> = {};
     for (const [key, projections] of readRootProjectionsBatch(recordsStore, 'contact', emails)) {
-      out[key] = projections.map(toWireRollup);
+      out[key] = projections.map(toTimelineRollup);
     }
     return out;
   },
@@ -615,7 +608,7 @@ export const composeListeners = async (
 ): Promise<ComposeListenersResult> => {
   const {
     port,
-    webhookPort,
+    webhooksEnabled,
     storage,
     app,
     collection,
@@ -735,10 +728,14 @@ export const composeListeners = async (
     emitAutomationRule(storage.eventBus, 'watch'),
   );
 
-  const { webhookListener, connectionWebhookListener } =
+  // The public-reachability switch for every inbound webhook surface: the
+  // runtime key `collection.webhook.public_reachable` or the older
+  // `RECUED_PUBLIC_REACHABLE`. One thunk, shared with D-201's intake below.
+  const webhookPublicReachable = createWebhookPublicReachable({ runtimeConfig });
+  const { connectionWebhookListener } =
     await composeWebhookListeners({
-      webhookPort,
-      collectionRegistry: collection.collectionRegistry,
+      webhooksEnabled,
+      publicReachable: webhookPublicReachable,
       // D-128 P3 vendor-connection webhook receiver + the webhook
       // push-source provider (WatchSource generalization — this wires
       // the receiver module that existed unwired since D-128).
@@ -765,7 +762,7 @@ export const composeListeners = async (
   const bridgeRegistry = createBridgeRegistry();
 
   // D-148 P9 § A.13 — vendor webhook port (Slack + Telegram bot
-  // callbacks). Shares the same `webhook_port > 0` gate; absent
+  // callbacks). Shares the same `webhooks_enabled` gate; absent
   // connectionStore (daemon-only) ⇒ port stays unwired and the
   // `/webhooks/*` branch in server.ts never engages. The substrate
   // slice (commit 81554dc8) shipped the port handler + per-vendor
@@ -970,7 +967,7 @@ export const composeListeners = async (
   inboundEmailAnswer.start();
 
   const vendorWebhookListener = composeVendorWebhookPort({
-    webhookPort,
+    webhooksEnabled,
     ...(app.connectionStoreRef ? { connectionStore: app.connectionStoreRef } : {}),
     // D-192 seam 11 — vendor → dispatcher, built once over the registry. A new
     // chat transport threads through here with no edit.
@@ -1020,7 +1017,7 @@ export const composeListeners = async (
               ? null
               : status?.detail
                 ?? (status?.state === 'webhook'
-                  ? 'inbound webhook port not configured'
+                  ? 'inbound webhooks are off (webhooks_enabled)'
                   : status === null
                     ? 'messenger ingress is not configured'
                     : `messenger ingress is ${status.state}`),
@@ -1041,9 +1038,6 @@ export const composeListeners = async (
     ...(storage.fileStack ? { fileEnroll: storage.fileStack.enrollDeps } : {}),
     ...(collection.calendarStack
       ? { calendarEnroll: collection.calendarStack.enrollDeps }
-      : {}),
-    ...(collection.serviceStack
-      ? { serviceEnroll: collection.serviceStack.enrollDeps }
       : {}),
     ...(collection.mailStack ? { mailEnroll: collection.mailStack.enrollDeps } : {}),
     ...(app.annotationStoreRef
@@ -1357,6 +1351,13 @@ export const composeListeners = async (
       ...(execution.executeDeps.ownerTimeZone !== undefined
         ? { timeZone: execution.executeDeps.ownerTimeZone }
         : {}),
+      // An attachment reads as its file — name and where it lives — not as its
+      // id, on every surface that shows these rows (the tray and Approvals).
+      describeFileRef: createFileRefDescriber(createFileViewResolverFromRegistry(
+        collection.collectionRegistry,
+        app.fileMetaStoreRef,
+        app.fileSourceSyncStateRef,
+      )),
     })
     : undefined;
 
@@ -2551,6 +2552,32 @@ export const composeListeners = async (
         }
       : undefined;
 
+  // D-320 phase 3 (3b) — a webhook door also follows its pack's list of
+  // connections and its default, as its run does: after the owner changes a
+  // pack's connections (`packs.connections.*`), every webhook recipe's door is
+  // re-derived, and what moved is returned for the rpc to announce. The SAME
+  // door deps the dish hook below reads.
+  const followPackConnectionsWebhookDoors = webhookDoorDeps && app.webhookConsumerStoreRef
+    ? (): DishWebhookDoorChange[] => {
+        const consumerStore = app.webhookConsumerStoreRef!;
+        const changes: DishWebhookDoorChange[] = [];
+        for (const recipe_id of consumerStore.recipesWithTriggers()) {
+          const recipe = execution.executeDeps.recipeStore.get(recipe_id);
+          if (recipe === null) continue;
+          changes.push(...followMainDishWebhookDoors(
+            { recipe_id, recipe },
+            { ...webhookDoorDeps, consumerStore },
+            { mintedBy: 'pack_connections', retireReason: 'pack_connections_changed' },
+          ));
+        }
+        for (const change of changes) {
+          if (change.state === 'unchanged') continue;
+          console.info(`[packs] webhook door for '${change.recipe_id}' ${change.state} after a pack's connections changed`);
+        }
+        return changes;
+      }
+    : undefined;
+
   // D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH. Late-bound onto the
   // dish rpc here because the door substrate composes after the dish stores.
   // Reads the SAME door deps the install and save paths mint with, so a door a
@@ -2580,6 +2607,25 @@ export const composeListeners = async (
     };
   }
 
+  // ⛔ 2026-10-10 — a door minted before this release grants its ops in a spelling the
+  // gate never reads; re-derive each such door now, BEFORE the outbox below starts, so
+  // no delivery is claimed against one (`rederiveWebhookDoorsAtBoot`). Same door deps
+  // the install, save and settings paths mint with. Never throws.
+  if (webhookDoorDeps && app.webhookConsumerStoreRef) {
+    const changes = rederiveWebhookDoorsAtBoot({
+      ...webhookDoorDeps,
+      consumerStore: app.webhookConsumerStoreRef,
+      recipeOf: (recipe_id) => execution.executeDeps.recipeStore.get(recipe_id),
+    });
+    for (const change of changes) {
+      if (change.state === 'unchanged') continue;
+      console.info(
+        `[webhook] door for '${change.recipe_id}' ${change.state} at boot`
+          + (change.reason !== undefined ? ` — ${change.reason}` : ''),
+      );
+    }
+  }
+
   const webhookRuntimeComposable = app.webhookIngressStoreRef !== undefined
     && app.webhookDeliveryStoreRef !== undefined
     && app.webhookConsumerStoreRef !== undefined
@@ -2596,6 +2642,9 @@ export const composeListeners = async (
             // because its idempotency `run_id` suppresses `handleExecute`'s
             // dish merge (see `ExecuteWebhookRecipeRunnerDeps.resolveConfig`).
             resolveConfig: resolveWebhookInstallConfig,
+            // D-320 phase 3 (3b) — and its main dish's choice of connection, which
+            // its door was derived with.
+            resolveDishConnections: composeInstallConnectionsResolver(execution.executeDeps.dishStore),
             resolveDoorRecipe: resolveWebhookDoorRecipe,
             ...(resolveWebhookRecipeOp ? { resolveOp: resolveWebhookRecipeOp } : {}),
             // D-209 #1 W3 — the door snapshot resolves from the SAME store the
@@ -2623,10 +2672,10 @@ export const composeListeners = async (
       )
     : undefined;
 
-  const webhookPublicReachabilityEnabled = (): boolean => {
-    const raw = process.env.RECUED_PUBLIC_REACHABLE;
-    return raw === 'true' || raw === '1';
-  };
+  // The switch the D-128 vendor receiver got above, so a D-201 webhook and a
+  // vendor's never disagree about it. This read the environment
+  // variable alone until 2026-10-10.
+  const webhookPublicReachabilityEnabled = webhookPublicReachable;
   const webhookBaseFrom = (base: string): string | null => {
     try {
       const parsed = new URL(base);
@@ -2702,7 +2751,7 @@ export const composeListeners = async (
         profiles: webhookProfiles,
       })
     : undefined;
-  const webhookProfileListener = webhookPort > 0
+  const webhookProfileListener = webhooksEnabled
     && webhookOutboxRuntime !== undefined
     && app.webhookIngressStoreRef !== undefined
     && app.webhookDeliveryStoreRef !== undefined
@@ -3125,7 +3174,6 @@ export const composeListeners = async (
     lifecycleHandlers: lifecycle?.handlerSlice,
     lifecycleState: lifecycle ? () => lifecycle.machine.state : undefined,
     collectionDeps,
-    webhookListener,
     ...(webhookProfileListener ? { webhookProfileListener } : {}),
     ...(vendorWebhookListener ? { vendorWebhookListener } : {}),
     ...(connectionWebhookListener ? { connectionWebhookListener } : {}),
@@ -3167,6 +3215,11 @@ export const composeListeners = async (
       ? {
           connectionDeps: {
             store: app.connectionStoreRef,
+            // D-320 phase 3 (3b) — a deleted connection moves the webhook doors
+            // that named it, as a change to a pack's connections does.
+            ...(followPackConnectionsWebhookDoors
+              ? { webhookDoorsMoved: followPackConnectionsWebhookDoors }
+              : {}),
             // Owner-triggered "Suggest and guide" uses the live configured AI
             // route and shared quota, but receives only the minimized prompt
             // built by `connection-setup-guide.ts`. It never fetches the URL
@@ -3326,12 +3379,16 @@ export const composeListeners = async (
             // `operationGrants`, but needs no catalog/profile machinery — just the
             // pack ids granted on a connection name. Guarded on the grant store
             // alone so it lights up even where the profile store is absent.
-            ...(app.contractGrantStoreRef
-              ? {
-                  boundPackSlugsForConnection: (name: string) =>
-                    app.contractGrantStoreRef!.listPacksForConnection(name),
-                }
-              : {}),
+            // D-320 §4 — and the packs whose list holds it (most write no grant),
+            // and which of them use it by default.
+            ...connectionPackUsageDeps({
+              ...(app.contractGrantStoreRef ? { grantStore: app.contractGrantStoreRef } : {}),
+              ...(app.contractStoreRef ? { contractStore: app.contractStoreRef } : {}),
+              // D-320 slice 2h — "· its default" by the run's own rule.
+              ...(app.connectionStoreRef
+                ? { isSetUp: (name: string) => app.connectionStoreRef!.list().some((row) => row.name === name) }
+                : {}),
+            }),
             // D-192 S5 — the live merged vendor registry (built-ins + installed
             // packs) so `handleConnectionList` can stamp each api row's
             // `supports_engagement_health`, lighting up the engagement-health
@@ -3632,6 +3689,10 @@ export const composeListeners = async (
             // webhook-declaring recipe (installs default ARMED; the install
             // consent screen is the gesture).
             ...(webhookDoorDeps ? { webhookDoor: webhookDoorDeps } : {}),
+            // D-320 phase 3 (3b) — and a change to a pack's connections moves them.
+            ...(followPackConnectionsWebhookDoors
+              ? { packConnectionWebhookDoors: followPackConnectionsWebhookDoors }
+              : {}),
             // D-170 (packs.install composition branch) — the local manifest
             // store + live registry that let an `app_pack` carrying a
             // `composition` content (N.17) provision it alongside its recipes,
@@ -3695,6 +3756,13 @@ export const composeListeners = async (
           },
         }
       : {}),
+    // D-321 slice 3 — the pack list badge and the Programs block. Over the
+    // executor's OWN readiness service, so a page and a run read one answer.
+    packToolStatusDeps: {
+      getContractStore: () => app.contractStoreRef,
+      getManifest: (slug: string) => execution.executorConfig.manifests.get(slug),
+      toolStatus: execution.cliToolStatus,
+    },
     ...(rpc.packUninstallDeps
       ? {
           packUninstallDeps: {
@@ -4018,7 +4086,7 @@ export const composeListeners = async (
               // own grant fence.
               rollupsForEntity: (collectionName: string, id: string) =>
                 collectionName === 'contact'
-                  ? readRootProjections(storage.recordsStore, 'contact', id).map(toWireRollup)
+                  ? readRootProjections(storage.recordsStore, 'contact', id).map(toTimelineRollup)
                   : [],
             },
           },
@@ -4035,6 +4103,8 @@ export const composeListeners = async (
         cloudAttachments: { db: storage.db, connections: app.connectionStoreRef, sources: storage.workEntityStoreRef,
           ...(app.fileSourceSyncStateRef ? { syncState: app.fileSourceSyncStateRef } : {}) },
       } : {}),
+      // D-106 follow-up — a watched folder's file brought into Chat as a copy.
+      ...(storage.db ? { folderAttachments: { db: storage.db } } : {}),
       getFileReadDeps: () => {
         if (!app.cacheBlobs) return undefined;
         // D-192 remote byte-fetch — when the file-source mirror + its connection

@@ -52,6 +52,7 @@ import {
   type ConnectionsTabId,
 } from './connections-navigation.js';
 import type { ProviderSetupContinuityStore } from './provider-setup-continuity.js';
+import type { SignInGridCallers } from './sign-in-grid-controls.js';
 import type { CredentialRotationContinuityStore } from './credential-rotation-continuity.js';
 import type { CredentialRotationTabConvergence } from './credential-rotation-tab-convergence.js';
 import type { CredentialRotationServerUpdateContinuity } from './credential-rotation-server-update-continuity.js';
@@ -74,6 +75,7 @@ import {
   type ConnectionsEnrollPanelMount,
   type ConnectionsMailListCaller,
   type ConnectionsPreviewPurgeCaller,
+  type ConnectionsRemovalEffectsCaller,
   type ConnectionsProbeCaller,
   type ConnectionsMcpPackPreviewCaller,
   type ConnectionsMcpPackCommitCaller,
@@ -485,6 +487,11 @@ export interface BootstrapConnectionsRouteOptions {
   /** D-192 slice 5 — removal-preview "[N] item(s)" count for the delete-confirm
    *  dialog. Optional (absent → the confirm shows no checkbox). */
   connectionsPreviewPurgeCaller?: ConnectionsPreviewPurgeCaller;
+  /** D-320 slice 2g — where each pack's runs go once a connection is deleted.
+   *  Optional (absent → the confirm says nothing of it). */
+  connectionsRemovalEffectsCaller?: ConnectionsRemovalEffectsCaller;
+  /** D-320 slice 2h — the per-sign-in grids' calls. Optional (absent → no grid). */
+  signInGridCallers?: SignInGridCallers;
   connectionsProbeCaller?: ConnectionsProbeCaller;
   /** D-165 follow-on, restored after R13 — the per-connection operation-group
    *  grant surface. Write ops on a catalog connection are NEVER auto-granted
@@ -886,6 +893,12 @@ export const bootstrapConnectionsRoute = (
           : {}),
         ...(opts.connectionsPreviewPurgeCaller !== undefined
           ? { runPreviewPurge: opts.connectionsPreviewPurgeCaller }
+          : {}),
+        ...(opts.connectionsRemovalEffectsCaller !== undefined
+          ? { runRemovalEffects: opts.connectionsRemovalEffectsCaller }
+          : {}),
+        ...(opts.signInGridCallers !== undefined
+          ? { signInGridCallers: opts.signInGridCallers }
           : {}),
         ...(opts.connectionsGetMatchPatternsCaller !== undefined
           ? { runGetMatchPatterns: opts.connectionsGetMatchPatternsCaller }

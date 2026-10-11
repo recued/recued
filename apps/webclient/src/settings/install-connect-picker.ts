@@ -1,4 +1,4 @@
-/** D-194 2b-2 — the install dialog's "Connect account" section.
+/** D-194 2b-2 — the install dialog's connection section.
  *
  *  A pure model + render sibling of `install-grant-picker.ts` (host owns the
  *  state; this reads props + wires callbacks). Where the grant picker chooses
@@ -16,12 +16,12 @@
  *  Reuse presentation (spec §6 — collapse + Customize): when the pack's
  *  endpoint (`api_base`) matches ≥1 existing connection (`findEndpointCandidates`,
  *  step 2a), the host pre-selects the first candidate and this renders a
- *  COLLAPSED one-liner ("Will connect: <account>") with a "Use a different
- *  account" expander → a radio list of candidates + a "Don't connect now" option
- *  + a deep-link to enroll a NEW account. With NO candidate it renders just the
+ *  COLLAPSED one-liner ("Will connect: <connection>") with a "Use a different
+ *  connection" expander → a radio list of candidates + a "Don't connect now" option
+ *  + a deep-link to enroll a NEW connection. With NO candidate it renders just the
  *  enroll deep-link + "install now, connect later" hint.
  *
- *  "Connect a new account" is a DEEP-LINK to the existing BYO enroll form
+ *  "Set up a new connection" is a DEEP-LINK to the existing BYO enroll form
  *  (`#connections/others/enroll/<vendor>`), identical to the readiness control's
  *  CTA — it navigates away (v1; inline enroll is a later improvement). Because
  *  connect is optional, navigating away never strands an install.
@@ -36,28 +36,32 @@ export const INSTALL_CONNECT_ATTR = 'data-recued-install-connect';
 export const INSTALL_CONNECT_CANDIDATE_ATTR = 'data-recued-install-connect-candidate';
 /** The "Don't connect now" radio (chosen = undefined). */
 export const INSTALL_CONNECT_NONE_ATTR = 'data-recued-install-connect-none';
-/** The "Use a different account" expander toggle (collapsed → expanded). */
+/** The "Use a different connection" expander toggle (collapsed → expanded). */
 export const INSTALL_CONNECT_CUSTOMIZE_ATTR = 'data-recued-install-connect-customize';
 /** The deep-link to the BYO enroll form for this vendor. */
 export const INSTALL_CONNECT_ENROLL_ATTR = 'data-recued-install-connect-enroll';
+/** D-320 slice 2j — one connection the pack's sign-in shares, offered ticked
+ *  beside the pick; its value is the connection's name. */
+export const INSTALL_CONNECT_ALSO_ATTR = 'data-recued-install-connect-also';
 /** The collapsed one-line summary of the pick; `data-carried-over` when an update
- *  keeps the account the pack uses now (D-294). */
+ *  keeps the connection the pack uses now (D-294). */
 export const INSTALL_CONNECT_SUMMARY_ATTR = 'data-recued-install-connect-summary';
 
 const COPY = {
-  heading: (vendor: string): string => `Connect your ${vendor} account`,
-  empty: (vendor: string): string => `No ${vendor} account is connected yet.`,
+  heading: (vendor: string): string => `${vendor} connection`,
+  empty: (vendor: string): string => `No ${vendor} connection is set up yet.`,
   enroll_empty: (vendor: string): string => `Connect ${vendor}`,
-  enroll_more: 'Connect a new account',
-  hint: 'You can install it now and connect the account later.',
+  enroll_more: 'Set up a new connection',
+  hint: 'You can install it now and set up the connection later.',
   summary_prefix: 'Will connect: ',
   carried_prefix: 'Keeps using: ',
   current_gone: (name: string): string =>
-    `This Pack used “${name}”, which is not connected now. Pick the account to use.`,
+    `This Pack used “${name}”, which is no longer set up. Pick the connection to use.`,
   none_label: 'Not now. Just install it',
-  customize: 'Use a different account',
+  customize: 'Use a different connection',
   none_option: 'Do not connect now, just install it',
   arrow: ' →',
+  also_heading: (vendor: string): string => `Also let it use, as your other ${vendor} packs do:`,
 };
 
 /** The connection to pre-select when the dialog opens: the first endpoint
@@ -83,10 +87,10 @@ export const defaultChosenConnection = (
 export const resolveChosenConnection = (
   explicit: { touched: boolean; pick: string | undefined },
   candidates: readonly EndpointCandidate[],
-  /** ⛔ D-294 — an UPDATE: the account the pack is bound to now. Untouched, it
+  /** ⛔ D-294 — an UPDATE: the connection the pack is bound to now. Untouched, it
    *  wins over the name-sorted first candidate, which silently moved an owner
-   *  with two accounts of one vendor to the other one. Only while it is still a
-   *  candidate: a vanished account is never bound. */
+   *  with two connections of one vendor to the other one. Only while it is still a
+   *  candidate: a vanished connection is never bound. */
   current?: string,
 ): string | undefined => {
   if (
@@ -108,9 +112,9 @@ export interface RenderInstallConnectPickerOptions {
   candidates: readonly EndpointCandidate[];
   /** The currently-picked connection name, or undefined = "don't connect now". */
   chosen: string | undefined;
-  /** Whether the "Use a different account" expander is open. */
+  /** Whether the "Use a different connection" expander is open. */
   expanded: boolean;
-  /** D-294 — an UPDATE: the account the pack is bound to now. */
+  /** D-294 — an UPDATE: the connection the pack is bound to now. */
   current?: string;
   /** Disable interaction while an install rpc is in flight. */
   disabled: boolean;
@@ -118,9 +122,17 @@ export interface RenderInstallConnectPickerOptions {
   onPick: (name: string | undefined) => void;
   /** Toggle the collapsed/expanded reuse list. */
   onToggleExpanded: () => void;
+  /** D-320 slice 2j (ruling 16) — the connections every other installed pack of
+   *  this sign-in lists (`packs.install_preview` `shared_connections`). A first
+   *  install offers them beside the pick, ticked: ticked, the pack may use the
+   *  connection too; unticked, it never does. Its default stays the pick. */
+  shared?: ReadonlyArray<{ connection_name: string; display_name: string }>;
+  /** The shared connections the owner unticked. */
+  alsoUnticked?: ReadonlySet<string>;
+  onToggleAlso?: (connection_name: string) => void;
 }
 
-/** Build the Connect-account section. Pure DOM construction over the props; all
+/** Build the connection section. Pure DOM construction over the props; all
  *  state lives on the host, reached via `onPick` / `onToggleExpanded`. The enroll
  *  affordance is a plain `<a>` (navigation, no callback). */
 export const renderInstallConnectPicker = (
@@ -129,6 +141,36 @@ export const renderInstallConnectPicker = (
   const { document: doc, requirement, candidates, chosen, expanded, disabled } = opts;
   const vendor = requirement.vendor;
   const enrollHref = serializeShellRoute('connections', 'others', 'enroll', vendor);
+
+  /** D-320 slice 2j — the shared connections beside the pick, ticked unless the
+   *  owner unticked one. A first install only (an update keeps its list), and
+   *  only with a connection picked: they join its list. */
+  const appendAlso = (section: HTMLElement): void => {
+    const also = (opts.shared ?? []).filter((c) => c.connection_name !== chosen);
+    if (opts.current !== undefined || chosen === undefined || also.length === 0) return;
+    const block = doc.createElement('div');
+    block.className = 'packs-dialog-connect-also';
+    const heading = doc.createElement('p');
+    heading.className = 'packs-dialog-connect-hint';
+    heading.textContent = COPY.also_heading(vendor);
+    block.appendChild(heading);
+    for (const shared of also) {
+      const label = doc.createElement('label');
+      label.className = 'packs-dialog-connect-also-row';
+      const box = doc.createElement('input');
+      box.type = 'checkbox';
+      box.setAttribute(INSTALL_CONNECT_ALSO_ATTR, shared.connection_name);
+      box.checked = !(opts.alsoUnticked?.has(shared.connection_name) ?? false);
+      if (disabled) box.disabled = true;
+      else box.addEventListener('change', () => opts.onToggleAlso?.(shared.connection_name));
+      const text = doc.createElement('span');
+      text.textContent = shared.display_name;
+      label.appendChild(box);
+      label.appendChild(text);
+      block.appendChild(label);
+    }
+    section.appendChild(block);
+  };
 
   const section = doc.createElement('section');
   section.setAttribute(INSTALL_CONNECT_ATTR, '');
@@ -177,7 +219,7 @@ export const renderInstallConnectPicker = (
       + (chosenCandidate ? chosenCandidate.display_name : COPY.none_label);
     section.appendChild(summary);
     if (opts.current !== undefined && !candidates.some((c) => c.name === opts.current)) {
-      // Say so rather than quietly proposing another account.
+      // Say so rather than quietly proposing another connection.
       const gone = doc.createElement('p');
       gone.className = 'packs-dialog-connect-hint';
       gone.textContent = COPY.current_gone(opts.current);
@@ -192,6 +234,7 @@ export const renderInstallConnectPicker = (
     if (disabled) customize.disabled = true;
     else customize.addEventListener('click', () => opts.onToggleExpanded());
     section.appendChild(customize);
+    appendAlso(section);
     return section;
   }
 
@@ -235,13 +278,27 @@ export const renderInstallConnectPicker = (
     radioRow(INSTALL_CONNECT_NONE_ATTR, undefined, COPY.none_option, chosen === undefined),
   );
   section.appendChild(list);
+  appendAlso(section);
   section.appendChild(enrollLink(COPY.enroll_more));
   return section;
 };
 
-/** Self-scoped presentation for the optional account-binding step. The pack
+/** Self-scoped presentation for the optional connection step. The pack
  *  route joins this beside the Access × Scope picker styles. */
 export const INSTALL_CONNECT_PICKER_STYLES = `
+[data-recued-install-connect] .packs-dialog-connect-also {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 6px;
+}
+[data-recued-install-connect] .packs-dialog-connect-also-row {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 [data-recued-install-connect] {
   display: grid;
   gap: 10px;

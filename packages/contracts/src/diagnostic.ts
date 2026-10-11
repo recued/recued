@@ -83,7 +83,7 @@ export interface DiagnosticRequest {
    *  so widening the allowlist adds at most ONE probe per request rather than
    *  turning `ports` into a sweep. Combined with the existing limits (100/hour
    *  per source IP, 10/minute per target, and a production authorizer that
-   *  accepts only `<handle>.recued.cloud`) the reachable scan rate rises from
+   *  accepts only `<handle>.recued.net`) the reachable scan rate rises from
    *  ~500 to ~600 port-probes/hour against a host the caller has proven a
    *  claim to. That is the whole of the security cost, stated so it can be
    *  disagreed with.

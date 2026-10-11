@@ -67,7 +67,7 @@ const makeOptions = (
     args: ['--reset-exposure'],
     dbPath: '/tmp/recued.db',
     port: 1234,
-    webhookPort: 9876,
+    webhooksEnabled: true,
     runtimeConfig: {
       get: vi.fn((key: string) =>
         key === 'cloud.base_url' ? 'https://cloud.example' : undefined,
@@ -238,7 +238,7 @@ describe('startPreListenerRuntime', () => {
     expect(preListenerMocks.startListenerExposureRuntime).toHaveBeenCalledWith({
       listener: expect.objectContaining({
         port: options.port,
-        webhookPort: options.webhookPort,
+        webhooksEnabled: options.webhooksEnabled,
         rpc,
         clientTokens: clientSecurity.clientTokens,
         exposureDeps: ingress.exposureRpcDeps,
@@ -255,7 +255,7 @@ describe('startPreListenerRuntime', () => {
         args: options.args,
         db: options.storage.db,
         auditLog: options.storage.auditLog,
-        webhookPort: options.webhookPort,
+        webhooksEnabled: options.webhooksEnabled,
         publishExposureMachine: options.publishExposureMachine,
       }),
       runtime: expect.objectContaining({

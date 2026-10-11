@@ -50,7 +50,7 @@ export interface StartPreListenerRuntimeOptions {
   readonly args: string[];
   readonly dbPath: string;
   readonly port: number;
-  readonly webhookPort: number;
+  readonly webhooksEnabled: boolean;
   readonly runtimeConfig: RuntimeConfigStore;
   readonly backgroundServices: ComposeIngressRpcContextOptions['backgroundServices'];
   readonly storage: PreListenerStorageContext;
@@ -199,7 +199,7 @@ export const startPreListenerRuntime = async (
   return startListenerExposureRuntime({
     listener: {
       port: options.port,
-      webhookPort: options.webhookPort,
+      webhooksEnabled: options.webhooksEnabled,
       storage: options.storage,
       app: options.app,
       collection: options.collection,
@@ -250,7 +250,7 @@ export const startPreListenerRuntime = async (
       args: options.args,
       db: options.storage.db,
       auditLog: options.storage.auditLog,
-      webhookPort: options.webhookPort,
+      webhooksEnabled: options.webhooksEnabled,
       publishExposureMachine: options.publishExposureMachine,
       // M-XSURF-1 — thread the shared D-121 bus so an exposure transition
       // fans `exposure_changed` to paired clients (the webclient's

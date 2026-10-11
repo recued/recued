@@ -283,7 +283,7 @@ export const handleCalendarList = async (
   const { collection } = requireRead(deps, input.slug);
   const records = listOnOwnerClock(collection.table, query, deps.ownerTimeZone?.());
   // D-236 — calendar has its OWN kernel ingredients and its own dispatcher, so
-  // it does NOT ride the `collection.list` path the mail/file/webhook verdict
+  // it does NOT ride the `collection.list` path the mail/file verdict
   // travels. Its `health()` supplies the same fields (`last_indexed_at` is the
   // max of the local index and the provider's last successful sync;
   // `pending_queue_size` includes pending series expansions), so the verdict is

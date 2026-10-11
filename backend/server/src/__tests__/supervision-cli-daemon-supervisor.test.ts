@@ -175,6 +175,32 @@ describe('cli-daemon-supervisor — launch + liveness + restart', () => {
     expect(h.supervisor.isTracked(ING, OP)).toBe(true);
   });
 
+  it('D-321 — every start it makes carries the range and install hints its pack declares', async () => {
+    const ranged = manifest();
+    (ranged.surfaces!.connector as unknown as { runtime: Record<string, unknown> }).runtime = {
+      cli_probe: ['cloudflared', '--version'],
+      cli_version: { tested: { from: '2025.1.0', before: '2026.0.0' }, outside: 'refuse' },
+      cli_install: [{ manager: 'brew', package: 'cloudflared' }],
+    };
+    const h = harness({ manifest: ranged });
+    await h.supervisor.start(config());
+    expect(h.executor).toHaveBeenCalledTimes(1);
+    expect((h.executor.mock.calls[0] as unknown[])[0]).toMatchObject({
+      supervisor_managed_launch: true,
+      tool_version: {
+        probe: ['cloudflared', '--version'],
+        version: { tested: { from: '2025.1.0', before: '2026.0.0' }, outside: 'refuse' },
+      },
+      tool_install: [{ manager: 'brew', package: 'cloudflared' }],
+    });
+    // A pack that declares no range is launched as before.
+    const plain = harness();
+    await plain.supervisor.start(config());
+    const call = (plain.executor.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('tool_version');
+    expect(call).not.toHaveProperty('tool_install');
+  });
+
   it('refuses to rewrite a running singleton with different configuration', async () => {
     const h = harness();
     await h.supervisor.start(config());

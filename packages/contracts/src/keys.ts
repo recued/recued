@@ -189,7 +189,7 @@ export const HIGH_ASSURANCE_AUDIT_KINDS: ReadonlySet<string> = new Set([
   // `recorded_at_boot` field in the row's detail is what keeps the two apart.
   'keyfile_sealing_changed',
   // D-148 follow-up #5 — `pro_acme.unbind` rpc tears down a Pro
-  // `<handle>.recued.cloud` DDNS subdomain + removes the auto-managed
+  // `<handle>.recued.net` DDNS subdomain + removes the auto-managed
   // cert in one transaction. The audit row is the non-repudiable
   // record that the operator (Mary at a paired client) elected to
   // release the handle — signed with `server_identity_key` so the

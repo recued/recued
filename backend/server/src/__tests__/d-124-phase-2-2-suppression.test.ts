@@ -11,7 +11,7 @@
  *    1. Suppressed during drain — runRecipe NOT called, `last_fired_at`
  *       NOT updated, error counter NOT touched.
  *    2. Fires after `markBackfillComplete` — at once, with no restart.
- *    3. Fires immediately for vacuous platforms (webhook / service).
+ *    3. Fires immediately for a vacuous platform (service).
  *    4. Fires for unknown rows (suppression is opt-in by row presence).
  *    5. Fires for `data.contact.*` only when both mail + calendar
  *       feeders have completed.
@@ -241,21 +241,22 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
     expect(h.store.get('t-mail')?.last_fired_at).toBe(10_000);
   });
 
-  it('fires immediately for webhook (vacuous-true platform)', async () => {
+  // A row of a platform this server no longer knows (the retired D-118 `service`).
+  it('fires immediately for a platform it does not drain (vacuous-true)', async () => {
     h.instances.upsert({
-      platform: 'webhook',
-      slug: 'github',
-      adapter_type: 'webhook',
+      platform: 'service' as never,
+      slug: 'slack-team',
+      adapter_type: 'slack',
       config: {},
-      caps: fileCaps(),
+      caps: {} as never,
       auth_state: 'healthy',
       last_synced_at: null,
     });
     h.store.create({
-      trigger_id: 't-wh',
-      recipe_id: 'r-wh',
+      trigger_id: 't-svc',
+      recipe_id: 'r-svc',
       publisher_id: 'local',
-      pattern: 'data.webhook.**.created',
+      pattern: 'data.service.**.created',
       enabled: true,
       created_at: 1_000,
     });
@@ -269,14 +270,14 @@ describe('D-124 Phase 2.2 — dispatcher backfill gate', () => {
     dispatcher.rebuild();
 
     emit(h.bus, {
-      platform: 'webhook',
-      slug: 'github',
-      entity_type: 'delivery',
+      platform: 'service',
+      slug: 'slack-team',
+      entity_type: 'message',
       event_kind: 'created',
     });
     await flush();
-    // Webhook collections are append-only — no drain window — so
-    // the gate returns true even though the bool defaults false.
+    // A service instance has no drain window, so the gate returns
+    // true even though the bool defaults false.
     expect(h.runRecipe).toHaveBeenCalledOnce();
   });
 

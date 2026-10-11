@@ -38,6 +38,7 @@ import type { DishGroupStore } from './dish-group-store.js';
 import type { DishContextStore } from './dish-context-store.js';
 import type { DishAutomation } from './dish-automation.js';
 import type { WsClient } from './ws-server.js';
+import { readConnectionChoices } from './run-connection-choice.js';
 
 export interface DishHandlerDeps {
   store: DishStore;
@@ -72,14 +73,41 @@ export interface DishHandlerDeps {
   recipeInstall?: (recipe_id: string) => RecipeInstallState | null;
   /** D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH
    *  (`followMainDishWebhookDoors`): a pushed run takes the main dish's
-   *  settings, so the door it runs under is re-derived whenever they change, the
-   *  dish is made main, or the main dish goes. Late-bound by the composition
-   *  (the door substrate composes after the dish stores). Absent ⇒ no door
-   *  moves (a harness, or a server without webhooks). */
+   *  settings and its choice of connection, so the door it runs under is
+   *  re-derived whenever either changes, the dish is made main, or the main dish
+   *  goes. Late-bound by the composition (the door substrate composes after the
+   *  dish stores). Absent ⇒ no door moves (a harness, or a server without
+   *  webhooks). */
   webhookDoors?: {
     mainDishChanged(recipe_id: string): readonly DishWebhookDoorChange[];
   };
+  /** D-320 §3.4 — refuses a dish's choice of connection that names a slot the
+   *  recipe does not sign in through, or a connection not on that slot's list
+   *  (`checkDishConnections`). Late-bound by the websocket server. Absent ⇒ a
+   *  dish naming connections is refused. */
+  checkConnectionChoices?: (recipe_id: string, connections: Readonly<Record<string, string>>) => void;
 }
+
+/** D-320 §3.4 — a dish's `connections`: connection names by slot, checked against
+ *  the recipe's lists. `null` or `{}` is no choice: the dish takes the default. */
+const requireDishConnections = (
+  deps: DishHandlerDeps,
+  recipe_id: string,
+  value: unknown,
+): Record<string, string> | undefined => {
+  if (value === null) return undefined;
+  const choices = readConnectionChoices(value);
+  if (choices === undefined) return undefined;
+  if (deps.checkConnectionChoices === undefined) {
+    throw new RpcError(
+      'not_configured',
+      "Choosing a dish's connection needs a server that keeps its packs' connections.",
+      501,
+    );
+  }
+  deps.checkConnectionChoices(recipe_id, choices);
+  return choices;
+};
 
 /** The door changes a main-dish change made, for the rpc result: only the ones
  *  that MOVED something — an unchanged door is not news to the owner. */
@@ -303,6 +331,7 @@ export const createDish = (
     config_overlay?: unknown;
     enabled?: unknown;
     group_id?: unknown;
+    connections?: unknown;
   },
   opts: { readonly switchOn?: boolean } = {},
 ): { dish: Dish; webhook_doors?: DishWebhookDoorChange[] } => {
@@ -332,6 +361,9 @@ export const createDish = (
   const group_id = body.group_id !== undefined
     ? requireGroupBinding(deps, body.group_id)
     : undefined;
+  const connections = body.connections !== undefined
+    ? requireDishConnections(deps, recipe_id, body.connections)
+    : undefined;
   // What `created` turns on: the switch, and only for a dish made on.
   if ((opts.switchOn ?? enabled) && enabled) refuseSwitchOnNotInstalled(deps, recipe_id);
 
@@ -345,6 +377,7 @@ export const createDish = (
     config_overlay,
     enabled,
     ...(group_id !== undefined ? { group_id } : {}),
+    ...(connections !== undefined ? { connections } : {}),
     created_at: now,
   }, now);
   deps.automation?.created(dish, { switchOn: opts.switchOn ?? enabled });
@@ -413,7 +446,14 @@ const sameSettings = (a: Record<string, unknown>, b: Record<string, unknown>): b
 export const updateDish = (
   deps: DishHandlerDeps,
   dish_id: string,
-  body: { name?: unknown; config_overlay?: unknown; enabled?: unknown; group_id?: unknown; main?: unknown },
+  body: {
+    name?: unknown;
+    config_overlay?: unknown;
+    enabled?: unknown;
+    group_id?: unknown;
+    main?: unknown;
+    connections?: unknown;
+  },
 ): { dish: Dish; webhook_doors?: DishWebhookDoorChange[] } => {
   const existing = deps.store.get(dish_id);
   if (!existing) {
@@ -457,6 +497,12 @@ export const updateDish = (
   } else if (typeof body.group_id === 'string') {
     updated.group_id = requireGroupBinding(deps, body.group_id);
   }
+  // D-320 §3.4 — replaces the dish's choice of connection; none clears it.
+  if (body.connections !== undefined) {
+    const connections = requireDishConnections(deps, existing.recipe_id, body.connections);
+    if (connections === undefined) delete updated.connections;
+    else updated.connections = connections;
+  }
 
   const now = deps.now?.() ?? Date.now();
   const projected = Math.max(0, estimateSize(updated) - estimateSize(existing));
@@ -469,10 +515,11 @@ export const updateDish = (
   if (body.enabled !== undefined) deps.automation?.switched(stored);
   else if (body.config_overlay !== undefined || body.group_id !== undefined) deps.automation?.settingsChanged(stored);
   else deps.automation?.touched();
-  // The main dish's settings are what a pushed run takes: they changed if this
-  // dish is main and its settings did, or if it just BECAME main.
+  // The main dish's settings and its choice of connection are what a pushed run
+  // takes (D-320 §3.4): they changed if this dish is main and either did, or if it
+  // just BECAME main.
   const mainSettingsMoved = stored.is_default
-    && (body.config_overlay !== undefined || !existing.is_default);
+    && (body.config_overlay !== undefined || body.connections !== undefined || !existing.is_default);
   return {
     dish: stored,
     ...(mainSettingsMoved ? movedWebhookDoors(deps, stored.recipe_id) : {}),

@@ -19,12 +19,8 @@ import {
 } from '@recued/config';
 
 const BASELINE_BOOTSTRAP: BootstrapConfig = {
-  data_path: '/var/lib/recued',
-  bind_host: '127.0.0.1',
   bind_port: 7717,
-  mcp_port: 7718,
-  webhook_port: 0,
-  log_path: '/var/log/recued',
+  webhooks_enabled: false,
 };
 
 const BASELINE_RUNTIME: RuntimeConfig = {
@@ -164,8 +160,7 @@ describe('ConfigWatcher.reload — bootstrap-only deltas', () => {
       bootstrap: {
         ...BASELINE_BOOTSTRAP,
         bind_port: 8080,
-        bind_host: '0.0.0.0',
-        mcp_port: 0,
+        webhooks_enabled: true,
       },
       runtime: { ...BASELINE_RUNTIME },
       source: '/etc/recued/config.toml',
@@ -173,7 +168,7 @@ describe('ConfigWatcher.reload — bootstrap-only deltas', () => {
     });
     const watcher = h.createWatcher();
     const info = await watcher.reload('SIGHUP');
-    expect(info.bootstrap_changed.sort()).toEqual(['bind_host', 'bind_port', 'mcp_port']);
+    expect(info.bootstrap_changed.sort()).toEqual(['bind_port', 'webhooks_enabled']);
   });
 
   it('does NOT apply bootstrap changes live — only runtime_changed is applied', async () => {

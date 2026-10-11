@@ -4,7 +4,7 @@
   "publisher": "recued-core",
   "name": "Mail — Compose",
   "description": "Use Mail — Compose in Recued. Draft, rewrite, and polish a message in the compose window, then carry the reviewed message to your enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
-  "version": 2,
+  "version": 3,
   "pre_install": true,
   "recipes": [],
   "requires": [
@@ -22,7 +22,7 @@
     {
       "type": "recipe",
       "slug": "send-composed-mail",
-      "version": 1,
+      "version": 2,
       "visible": false
     },
     {

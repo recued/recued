@@ -16,9 +16,9 @@
  *    5. Mail-collection — initialScan throws → one `failed` row.
  *    6. Calendar-collection — partial drain (one ingest fails inside
  *       upsertPayload) emits one `partial` row.
- *    7. File-collection — initial walk emits one row scoped to the
- *       file's mtime; live `change` events after start() don't
- *       contribute to the count.
+ *    7. File stack — a watched folder's first walk emits one row
+ *       scoped to its files' mtimes; a file that lands after the walk
+ *       doesn't contribute to the count.
  *    8. Multi-adapter — mail + calendar drains emit independent rows
  *       targeted by `<platform>:<slug>`. */
 
@@ -41,7 +41,8 @@ import type {
 import { createInstanceStore } from '../collections/instance-store.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import { createCalendarCollection } from '../collections/calendar/calendar-collection.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { composeFileStack } from '../collections/file/compose.js';
+import { createCollectionRegistry } from '../collections/registry.js';
 import type {
   CanonicalMessage,
   MailProvider,
@@ -53,6 +54,7 @@ import type {
   ProviderEventPayload,
 } from '../collections/calendar/provider.js';
 import { createBlobStore } from '../storage/blob-store.js';
+import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 import {
   COLLECTION_BACKFILL_ACTION,
@@ -518,64 +520,70 @@ describe('D-124 Phase 2.4 — calendar-collection wiring', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// 7. File-collection wiring — present-only counts
+// 7. File stack wiring — the walk's files are the counts
 // ────────────────────────────────────────────────────────────────
 
-describe('D-124 Phase 2.4 — file-collection wiring', () => {
+describe('D-124 Phase 2.4 — file stack wiring', () => {
   let tmpRoot: string;
-  let blobsDir: string;
   let db: Database.Database;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), 'd124-f-'));
-    blobsDir = await mkdtemp(join(tmpdir(), 'd124-fb-'));
     db = new Database(':memory:');
   });
   afterEach(async () => {
     db.close();
     await rm(tmpRoot, { recursive: true, force: true });
-    await rm(blobsDir, { recursive: true, force: true });
   });
 
-  it('emits one row covering the initial walk; live changes after start() do not contribute', async () => {
+  it('emits one row covering the initial walk; a file that lands after it does not contribute', async () => {
     await writeFile(join(tmpRoot, 'a.txt'), 'hello');
     await writeFile(join(tmpRoot, 'b.txt'), 'world');
 
     const fa = newFakeAuditLog();
-    const instances = createInstanceStore({ db });
-    instances.upsert({
+    const stack = composeFileStack(db, { auditLog: fa.store });
+    const registry = createCollectionRegistry();
+    stack.attachWatchedFolders({
+      registry,
+      bus: createWarehouseEventBus(),
+      gates: {
+        get: (slug) => createStorageGate({ quota: 1024 * 1024, reservePct: 1, surface: `collection:file:${slug}` }),
+        release: () => {},
+      },
+    });
+    stack.instances.upsert({
       platform: 'file', slug: 'docs', adapter_type: 'fs',
       config: { path: tmpRoot }, caps: fileCaps(),
       auth_state: 'healthy', last_synced_at: null,
     });
-    const collection = createFileCollection({
-      db,
-      blobs: createBlobStore(blobsDir),
-      gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-      bus: createWarehouseEventBus(),
-      slug: 'docs',
-      config: () => ({
-        path: tmpRoot, ignore: [], max_body_bytes: 10 * 1024 * 1024,
-        retention_days: 0, quota_bytes: 1024 * 1024,
-      }),
-      auditLog: fa.store,
-      instances,
-    });
 
-    await collection.sync.start();
+    await stack.startAll();
     try {
-      const rows = fa.activities.filter((a) => a.action === COLLECTION_BACKFILL_ACTION);
-      expect(rows).toHaveLength(1);
-      expect(rows[0].target).toBe('file:docs');
-      const detail = decodeDetail(rows[0]);
+      const backfillRows = () => fa.activities.filter((a) => a.action === COLLECTION_BACKFILL_ACTION);
+      expect(backfillRows()).toHaveLength(1);
+      expect(backfillRows()[0].target).toBe('file:docs');
+      const detail = decodeDetail(backfillRows()[0]);
       expect(detail.status).toBe('complete');
       expect(detail.records_imported).toBe(2);
       // mtimes are real; just confirm they're populated finite numbers.
       expect(typeof detail.earliest_record_event_at).toBe('number');
       expect(typeof detail.latest_record_event_at).toBe('number');
       expect(detail.run_mode).toBe('backfill');
+
+      // A file written after the walk is a record (the watch delivered it) …
+      await writeFile(join(tmpRoot, 'c.txt'), 'later');
+      const paths = () => (registry.get('file', 'docs')?.list({ platform: 'file', slug: 'docs', limit: 10 }) ?? [])
+        .map((r) => r.hot_fields.path);
+      const deadline = Date.now() + 30_000;
+      while (!paths().includes('c.txt') && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(paths(), 'the live file must land, or the next check proves nothing').toContain('c.txt');
+      // … and the drain's one row is unchanged.
+      expect(backfillRows()).toHaveLength(1);
+      expect(decodeDetail(backfillRows()[0]).records_imported).toBe(2);
     } finally {
-      await collection.sync.stop();
+      await stack.disposeAll();
     }
   });
 });

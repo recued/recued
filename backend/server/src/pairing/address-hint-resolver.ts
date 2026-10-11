@@ -53,10 +53,10 @@ export const pickAddressMatchingClient = (
 /** Extract the SNI hostname from the chosen address. Accepts both
  *  scheme-qualified URLs (`wss://alice.example:8443/ws`) AND the bare
  *  `host:port` form the spec uses for address hints
- *  (`alice.recued.cloud:8443` /
+ *  (`alice.recued.net:8443` /
  *  `192.168.1.42:8443` / `[fe80::1]:8443`). The bare form does not
- *  parse as a URL on its own (`new URL('alice.recued.cloud:8443')`
- *  treats `alice.recued.cloud:` as a scheme + `8443` as the path, so
+ *  parse as a URL on its own (`new URL('alice.recued.net:8443')`
+ *  treats `alice.recued.net:` as a scheme + `8443` as the path, so
  *  `hostname` is empty), so we retry with a synthetic `wss://` prefix
  *  before giving up. Returns null only when neither parse yields a
  *  non-empty hostname.

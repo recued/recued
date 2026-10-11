@@ -14,7 +14,9 @@ import {
   RECIPE_EDITOR_ADD_NAME_ATTR,
   RECIPE_EDITOR_COLLAPSE_ALL_ATTR,
   RECIPE_EDITOR_COND_ADD_ATTR,
+  RECIPE_EDITOR_BINDINGS_ATTR,
   RECIPE_EDITOR_CONN_VAR_ADD_ATTR,
+  RECIPE_EDITOR_CONN_VAR_ADVICE_ATTR,
   RECIPE_EDITOR_CONN_VAR_KIND_ATTR,
   RECIPE_EDITOR_CONN_VAR_NAME_ATTR,
   RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR,
@@ -1240,10 +1242,10 @@ describe('recipe-editor step inspector route', () => {
       findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'read_deal:skip_when'),
     ).toBeDefined();
 
-    // The guidance notice points at the connection-slot requirement.
-    expect(findByAttr(root, RECIPE_EDITOR_OP_NOTICE_ATTR)?.textContent).toContain(
-      'connection input',
-    );
+    // D-320 phase 3 — a step that names no connection is the normal case: the run
+    // settles it, so there is no Connection slot field and nothing to say.
+    expect(findByAttr(root, RECIPE_EDITOR_OP_NOTICE_ATTR)).toBeUndefined();
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'connection')).toBeUndefined();
   });
 
   it('editing the op id mutates the recipe', () => {
@@ -1381,8 +1383,9 @@ describe('recipe-editor step inspector route', () => {
   });
 
   it('editing the connection slot sets the step connection; empty deletes it', () => {
+    // D-320 phase 3 — the field shows only while the step names one.
     const { root, route } = mount({
-      initialRecipe: opRecipe({ id: 'q', op: 'deal.search', args: {} }),
+      initialRecipe: opRecipe({ id: 'q', op: 'deal.search', connection: '{{config.old}}', args: {} }),
     });
 
     setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'connection'), '{{config.crm}}');
@@ -1580,8 +1583,8 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttr(root, RECIPE_EDITOR_DIRTY_ATTR)?.textContent).toBe('');
   });
 
-  it('shows the op notice only while the connection slot is unfilled', () => {
-    // Slot filled → no notice.
+  it('shows the op notice only while the step names an API connection setting (D-320 phase 3)', () => {
+    // Named → the notice says to leave it empty.
     const filled = opRecipe({
       id: 'q',
       op: 'deal.search',
@@ -1590,15 +1593,21 @@ describe('recipe-editor step inspector route', () => {
     });
     filled.variables = { crm: connVar('CRM') };
     const { root: filledRoot } = mount({ initialRecipe: filled });
-    expect(findByAttr(filledRoot, RECIPE_EDITOR_OP_NOTICE_ATTR)).toBeUndefined();
+    expect(findByAttr(filledRoot, RECIPE_EDITOR_OP_NOTICE_ATTR)?.textContent).toContain(
+      'Leave Connection slot empty',
+    );
 
-    // Slot empty with a variable declared → notice points at the picker.
+    // Not named → nothing to do, so nothing said.
     const unfilled = opRecipe({ id: 'q', op: 'deal.search', args: {} });
     unfilled.variables = { crm: connVar('CRM') };
     const { root: unfilledRoot } = mount({ initialRecipe: unfilled });
-    expect(findByAttr(unfilledRoot, RECIPE_EDITOR_OP_NOTICE_ATTR)?.textContent).toContain(
-      'pick one above',
-    );
+    expect(findByAttr(unfilledRoot, RECIPE_EDITOR_OP_NOTICE_ATTR)).toBeUndefined();
+
+    // A notification connection is not one a recipe stops naming.
+    const notify = opRecipe({ id: 'q', op: 'deal.search', connection: '{{config.email}}', args: {} });
+    notify.variables = { email: connVar('Email', 'notification') };
+    const { root: notifyRoot } = mount({ initialRecipe: notify });
+    expect(findByAttr(notifyRoot, RECIPE_EDITOR_OP_NOTICE_ATTR)).toBeUndefined();
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -1623,6 +1632,32 @@ describe('recipe-editor step inspector route', () => {
     expect(doc.activeElement).toBe(
       findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_label:crm'),
     );
+  });
+
+  it('a new connection input is for mail, a notification or an MCP server, never an API (D-320 phase 3)', () => {
+    const { root } = mount();
+    const kinds = findByAttr(root, RECIPE_EDITOR_CONN_VAR_KIND_ATTR)!;
+    expect(kinds.children.map((option) => option.value)).toEqual(['notification', 'mcp']);
+    expect(kinds.value).toBe('notification');
+    expect(textOf(findByAttr(root, RECIPE_EDITOR_BINDINGS_ATTR)!)).toContain(
+      'A step that calls a pack uses the connection chosen for that pack, so a recipe names none.',
+    );
+  });
+
+  it('an API connection input already there keeps its kind on show, with the advice to remove it', () => {
+    const recipe = opRecipe({ id: 'q', op: 'deal.search', args: {} });
+    recipe.variables = { crm: connVar('CRM'), email: connVar('Email', 'notification') };
+    const { root } = mount({ initialRecipe: recipe });
+
+    const kind = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_kind:crm')!;
+    expect(kind.value).toBe('api');
+    expect(kind.children.map((option) => option.value)).toEqual(['api', 'notification', 'mcp']);
+    expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ADVICE_ATTR, 'crm')?.textContent)
+      .toContain('A recipe no longer asks for this');
+    // A notification input is one a recipe still adds: no advice.
+    expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ADVICE_ATTR, 'email')).toBeUndefined();
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_kind:email')?.children
+      .map((option) => option.value)).toEqual(['notification', 'mcp']);
   });
 
   it('an op-step connection slot becomes a picker once a connection variable exists', () => {

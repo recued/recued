@@ -1,8 +1,8 @@
 # Recued Server
 
-Headless recipe engine that runs outside the browser. Executes recipes on a schedule, exposes them as MCP tools for AI agents (Claude Desktop, Cursor), and pairs with the Recued webclient and Browser Bridge for display, DOM actuation and AI delegation.
+The Recued server runs your recipes: on a schedule, when something they watch changes, when you start one in the web app, or when an AI client calls one over MCP. It keeps your data and your accounts' credentials on this machine. The Recued web app and the Browser Bridge pair with it: the web app to show and control things, the Bridge to carry out steps that act on a web page.
 
-The server reuses the same packages the clients use (`@recued/engine`, `@recued/ingredients`, `@recued/llm`, `@recued/contracts`) so recipe behavior is identical. HTTP and MCP ingredients run natively. LLM ingredients run when BYOK API keys are configured. DOM and chat ingredients delegate to a connected Browser Bridge via WebSocket.
+Only the server runs recipes; the web app and the Bridge never do. HTTP, MCP, connection and AI steps run on the server, AI steps on the models you set up (see **AI models**). A step that acts on a web page (a DOM step) is sent to a paired Browser Bridge, and fails if none is connected.
 
 ## Install
 
@@ -12,22 +12,22 @@ The server reuses the same packages the clients use (`@recued/engine`, `@recued/
 | **Windows** (PowerShell) | `irm https://recued.com/install.ps1 \| iex` |
 | **From source** | [Quick start (from source)](#quick-start-from-source) below |
 
-The installers download the signed `recued` binary for this machine, check it against Recued's pinned release key, install it, and set it to start at login (on Linux, as root, at boot). That binary updates itself; see **Update + migrate**.
+The installers download the signed `recued` binary for this machine, check it against Recued's pinned release key, install it, and set it to start on its own: a LaunchAgent at login on macOS, a Startup shortcut on Windows, and on Linux a system service at boot when installed as root, or a user service when a desktop session is running. Set `RECUED_AUTOSTART=0` to skip that step. That binary updates itself; see **Update + migrate**.
 
 [`config.sample.toml`](./config.sample.toml), beside this README, documents the common settings a `config.toml` can hold and where the server looks for that file.
 
 `@recued/server` is not published to npm. Install it with an installer above, or from source.
 
-After install, pair the webclient:
+After install, pair the web app:
 
 ```sh
 recued pair            # prints a pairing code + an app.recued.com/pair link
-# Open that link to complete pairing.
+# Open the link, which fills in the code, and enter your server's address there.
 ```
 
 ### `RECUED_IDENTITY_PASSPHRASE` — sealing the key file (D-212)
 
-The server unwraps its vault key from a key file in the data directory at every boot. On first boot it seals that file with the first factor available: **`RECUED_IDENTITY_PASSPHRASE`** if set, otherwise a platform secret store (macOS login keychain / Windows DPAPI / systemd-creds) whose secret lives outside the data directory, otherwise **nothing**.
+The server unwraps its vault key from a key file in the data directory at every boot. On first boot it seals that file with the first factor available: **`RECUED_IDENTITY_PASSPHRASE`** if set, otherwise a platform secret store (macOS login keychain / Windows DPAPI / the Linux Secret Service / systemd-creds) whose secret lives outside the data directory, otherwise **nothing**.
 
 ```sh
 export RECUED_IDENTITY_PASSPHRASE='a long, random passphrase'
@@ -40,21 +40,23 @@ Or set **`RECUED_IDENTITY_PASSPHRASE_FILE`** to a file that holds it, such as a 
 
 **Changing the FACTOR is not.** Which factor seals the keyfile is recorded when the file is created and is permanent for that realm: before pairing the keyfile is disposable (stop, delete it, set or unset the variable, start again — costs a fresh identity, never data); after pairing it means `recued recover-keyfile` with the 24-word recovery key, which mints a new server identity, re-pairs every device, changes the publisher identity, and drops the account binding. Once sealed with a passphrase it is required at **every** start — the server fails loudly rather than opening the file without it.
 
-Keep it in the service manager's secret mechanism (systemd `EnvironmentFile=`, a secret manager), not in `config.toml` — that file lives in the directory the passphrase protects. The webclient shows how the key file is protected under **Settings → Server → Key Health**. (`recued auth-status` was retired in 26.10.8.)
+Keep it in the service manager's secret mechanism (systemd `EnvironmentFile=`, a secret manager), not in `config.toml`: the server reads the passphrase only from these two variables. The web app shows how the key file is protected under **Settings → Server → Key Health**. (`recued auth-status` was retired in 26.10.8.)
 
 The packaged systemd and launchd services both preserve the Phase C
 exit-code contract so clean shutdowns stay down, restart/crash exits
 respawn, and lock-held exits stop retry loops.
 
-For inbound webhooks (`data.webhook.*`), you'll need a public hostname or tunnel. D-096 is load-bearing: Recued Cloud never relays webhooks. [Reachability](https://recued.com/docs/setup/reachability/) in the docs covers how to give the server a public name.
+For inbound webhooks, you'll need a public hostname or tunnel. D-096 is load-bearing: Recued Cloud never relays webhooks. [Reachability](https://recued.com/docs/setup/reachability/) in the docs covers how to give the server a public name.
 
 ## Update + migrate (D-178)
 
 ### `recued update`
 
 ```sh
-recued update          # check for a newer release (channel-independent)
-recued update check    # explicit form of the default
+recued update            # check for a newer release (channel-independent)
+recued update check      # explicit form of the default
+recued update apply      # install it (server stopped)
+recued update rollback   # go back to the previous release (server stopped)
 ```
 
 `recued update` fetches the signed release manifest, verifies it, and
@@ -62,35 +64,38 @@ resolves it against this install locally — it works on every install,
 because the *check* is universal. It prints the available version (if any)
 plus how to apply it for your channel:
 
-- **Installed with `install.sh` or `install.ps1`** (the binary channel): the
-  running server stages the update and restarts from the webclient
-  (Settings → Server → Updates). A stopped server can run
-  `recued update apply` instead.
+- **Installed with `install.sh` or `install.ps1`** (the binary channel): when
+  the server runs under a service that restarts it, apply the update from the
+  web app (**Settings → Updates**) and the server restarts itself. Otherwise,
+  and always on Windows, stop the server and run `recued update apply`.
 - **Built from source:** `recued update` tells you a newer release exists. It
   never replaces your build.
 
 ### `recued archive`
 
 ```sh
-# Export everything (DB + config + blobs + vault-bundle) to one file:
+# Export everything (DB + config + blobs + vault-bundle) to one encrypted file:
 recued archive export /mnt/usb/recued.archive --key-file=/path/to/recovery.txt
 
-# Dry-run an import — verify signature + manifest without writing:
+# Check an archive without restoring it (signature + manifest):
 recued archive import /mnt/usb/recued.archive --key-file=/path/to/recovery.txt --dry-run
 
-# Peek at the plaintext manifest (no decryption):
+# Restore it (stop the server first):
+recued archive import /mnt/usb/recued.archive --key-file=/path/to/recovery.txt
+
+# Read the plaintext manifest (no key needed):
 recued archive inspect /mnt/usb/recued.archive
 ```
 
-The archive is encrypted with your FileVault recovery key (the same 24-word recovery key). Per D-097, this is the ONLY cross-device migration path — Recued Cloud doesn't carry user data. Keep the archive somewhere safe (USB drive, NAS, cloud storage of your choice); the recovery key decrypts it.
+The archive is encrypted with your recovery key. On the command line the key is its 32 bytes, written as 64 hex characters or in base64, from `--key`, `--key-file` or `RECUED_RECOVERY_KEY`. The web app's **Settings → Backup & Recovery** takes the 24 words instead. Per D-097, this is the ONLY cross-device migration path — Recued Cloud doesn't carry user data. Keep the archive somewhere safe (USB drive, NAS, cloud storage of your choice).
 
-CLI restore flow remains verify-first: stop the server, decrypt + extract the archive into `data_path`, restart. `archive import --dry-run` verifies the archive is intact + the current server can read it before you commit to the restore. The Phase G `server.archive.*` RPC handler is the UI/runtime surface for host-wired restores; the package CLI still does not swap `data_path` in place.
+A restore refuses while the server is running unless you pass `--force`. It backs up the current database and tells you how to roll back, swaps the restored database into place, and then asks you to start the server again.
 
 ## Quick start (from source)
 
 ### Prerequisites
 
-Node.js 24 and npm. The server uses SQLite via `better-sqlite3` -- no external database.
+Node.js 24 and npm. The server keeps its data in SQLite through `better-sqlite3-multiple-ciphers`, a fork of `better-sqlite3` that can encrypt the database. There is no external database.
 
 ### Install
 
@@ -107,16 +112,24 @@ cd backend/server
 npm start
 ```
 
-The server starts on port 7717. Its database lives in your platform's standard place — `~/.local/share/recued/recued-server.db` on Linux, `~/Library/Application Support/recued/recued-server.db` on macOS — unless `--db` names another. A pairing code is printed on first start.
+The server starts on port 7717. Its database lives in your platform's standard place unless `--db` names another:
 
-### Pair the webclient
+| Platform | Database |
+|:---|:---|
+| Linux | `~/.local/share/recued/recued-server.db` (under `$XDG_DATA_HOME` when that is set; `/var/lib/recued/recued-server.db` as root) |
+| macOS | `~/Library/Application Support/recued/recued-server.db` |
+| Windows | `%LOCALAPPDATA%\recued\recued-server.db` |
 
-1. Run `recued pair` — it prints a pairing code and an `app.recued.com/pair` deeplink
-   carrying that code
-2. Open the deeplink (or go to https://app.recued.com/pair and enter the code plus
-   the server URL, e.g. `http://localhost:7717`)
+A pairing code is printed on first start.
 
-The webclient exchanges the pairing code for a long-lived realm token and stores it. All subsequent requests use the token. The pairing code expires after 15 minutes and is single-use.
+### Pair the web app
+
+1. Run `npx tsx src/bin.ts pair` (`recued pair` on an installed server). It prints a
+   pairing code and an `app.recued.com/pair` link that fills in the code.
+2. Open the link, or go to https://app.recued.com/pair and type the code. Enter the
+   server's address there too, e.g. `http://localhost:7717`.
+
+The web app trades the code for a client token of its own and keeps it. Each paired device gets its own token, which you can revoke under **Settings → Devices**. A pairing code works once and expires after 15 minutes; `--pair-code-ttl` or `RECUED_PAIR_CODE_TTL_MS` changes that.
 
 ### Run in the background
 
@@ -134,132 +147,116 @@ to the journal instead (`journalctl -u recued`, or `journalctl --user -u recued`
 
 ## CLI reference
 
+`recued --help` prints:
+
 ```
-recued -- headless recipe engine
+recued <version> — your personal warehouse + 24/7 recipe runner
 
-Daemon:
-  start                               Start server in background
-  stop                                Stop background server
-  restart                             Restart background server
-  status                              Show running state
+About:
+  version, --version, -v              Print the version
+  help, --help, -h                    Show this help
 
-Server:
-  (default)                           Start in foreground
-  --mcp                               Start MCP stdio server
+Daemon (background):
+  start                               Start the server in the background
+  stop                                Stop the background server
+  restart                             Restart the background server
+  status                              Show the running state
 
-Recipes:
-  run <recipe-id>                     Run a recipe
-  export <recipe-id>                  Export recipe bundle (JSON)
-  import <file.json>                  Import recipe or bundle
-  install <slug-or-url>               Install from marketplace
-  import-bundle <bundle.json>         Import a SyncBundle
-  update [recipe-id]                  Update marketplace recipes
-  list                                List recipes
-  get <recipe-id>                     Show recipe detail
-  remove <recipe-id>                  Remove a recipe
-  ingredients                         List ingredients
-  validate <file.json>                Validate recipe without saving
-  check                               Check marketplace recipes for updates
+Server (foreground):
+  (default), serve                    Start in the foreground
+  --mcp --token <token>               Start an MCP stdio server. The token, or
+                                      RECUED_MCP_TOKEN, comes from a contract on
+                                      the web app's Contracts page; without one
+                                      it offers no tools.
 
-Scheduling:
-  schedule                            List schedules
-  schedule add <id> <cron>            Add a schedule (e.g., "*/5 * * * *")
-  schedule remove <schedule-id>       Remove a schedule
-  schedule enable <schedule-id>       Enable a schedule
-  schedule disable <schedule-id>      Disable a schedule
+Pairing:
+  pair                                Show a pairing code + the app.recued.com/pair link
 
-LLM:
-  llm                                 Show LLM config + usage
-  llm set <slot> <prov> <model> <key> Configure slot (slot1 or slot2)
-  llm clear <slot>                    Remove a slot
-  llm budget [tokens]                 Get/set daily token budget (0=unlimited)
-  llm usage                           Show today's usage + status
-  llm thresholds [cut warn hard]      Get/set budget thresholds (%)
+Updates + backup:
+  update [check]                      Check for a newer release
+  update apply | rollback             Install it, or go back (server stopped)
+  archive export <file>               Write an encrypted backup of this server
+  archive import <file> [--dry-run]   Restore one (server stopped), or only check it
+  archive inspect <file>              Print a backup's manifest
 
-Vault:
-  vault                               List stored credentials (masked)
-  vault set <pub.key> <value>         Store a credential (encrypted)
-  vault get <pub.key>                 Retrieve a credential
-  vault delete <pub.key>              Delete a credential
-  vault list [publisher]              List by publisher
+Diagnosis:
+  doctor                              Explain why an install will not start or
+                                      pair, or has stopped doing something
+
+Recovery:
+  recover-keyfile                     Re-create an unopenable server keyfile
+                                      from your 24-word recovery key. Rescues
+                                      the realm; mints a NEW identity, so every
+                                      device must pair again.
+  rotate-passphrase                   Change RECUED_IDENTITY_PASSPHRASE on an
+                                      openable keyfile. Keeps the identity —
+                                      nothing re-pairs. Server must be stopped.
 
 Audit:
-  audit                               List recent executions
-  audit <run-id|recipe-id>            Show detail or filter by recipe
-  audit activities                    List recent activities
-  audit export                        Export full log (JSON)
-  audit clear                         Clear all entries
-  logs                                Show recent server log
+  audit                               List recent runs
+  audit <run-id|recipe-id>            Show one run or filter by recipe
+  audit activities                    List recent activity events
+  audit export                        Export the full audit log as JSON
+  audit clear                         Clear every audit entry
+
+Logs:
+  logs                                Print recent server log lines
   logs -f                             Follow the server log
+
+Encryption:
+  unlock                              Unlock a running server with its 24-word recovery key
+
+LLM config:
+  llm                                 Show the llm subcommand help
+  llm show [--reveal-keys]            Print the current LLM config (keys redacted)
+  llm set-slot <slot> ...             Configure slot_1 or slot_2
+  llm set-budget <tokens>             Set the daily token budget (0 = unlimited)
+  llm set-strategy <name>             Pool coordination: round_robin | weighted
+  llm set-allow-upgrade <bool>        Global allow_llm_upgrade fallback
+  llm list-pool-entries               List every free-pool entry
+  llm add-pool-entry --type api ...
+  llm remove-pool-entry --id <id>
+  llm import <path> / export <path>   Round-trip the full config as JSON
 
 Flags:
   --port <n>                          HTTP port (default: 7717)
-  --db <path>                         SQLite path (default: the platform's standard place)
-  --context '{"entity_id":"123"}'     Context for run
-  --config '{"key":"value"}'          Config overrides for run
-  --publisher <id>                    Publisher id for import/install
-  --json                              Raw JSON output (for run)
-  --webhook-url <url>                 POST results to URL on scheduled runs
+  --db <path>                         SQLite path (default: recued-server.db
+                                      in the platform's standard place)
+  --reset-exposure                    One-shot recovery: discard persisted
+                                      exposure state + restore the bootstrap-
+                                      derived shape (/ws.lan true). Use after
+                                      a lockout. Stamps a signed audit row
+                                      with action exposure_reset_via_cli
+                                      (Ed25519 over server_identity_key).
 ```
 
-### Running a recipe
+It also takes these flags, which `--help` leaves out:
 
-```bash
-# By recipe ID (must be imported/installed first)
-npx tsx src/bin.ts run assess-deal-risk-hubspot
+| Flag | What it does |
+|:---|:---|
+| `--config <path>` | The `config.toml` to read |
+| `--pair-code-ttl <duration>` | With `pair` or the server: how long a pairing code lasts, e.g. `30m`, `12h` or `7d` |
 
-# With config and context overrides
-npx tsx src/bin.ts run assess-deal-risk-hubspot \
-  --config '{"threshold": 70}' \
-  --context '{"entity_id": "12345"}'
-
-# Raw JSON output
-npx tsx src/bin.ts run assess-deal-risk-hubspot --json
-```
-
-If running interactively (TTY), the CLI prompts for any missing variables and vault credentials. In non-interactive mode, it lists what is missing and exits.
-
-### Importing and installing recipes
-
-```bash
-# Import a local recipe JSON or recipe bundle
-npx tsx src/bin.ts import ./my-recipe.json
-
-# Install from the marketplace by slug
-npx tsx src/bin.ts install assess-deal-risk-hubspot
-
-# Install from a URL
-npx tsx src/bin.ts install https://example.com/recipe.json
-
-# Check for marketplace updates
-npx tsx src/bin.ts check
-
-# Update all marketplace recipes
-npx tsx src/bin.ts update
-```
-
-The `import` command auto-detects whether the file is a bare recipe or a recipe bundle. Bundled ingredients are registered; missing ingredients are fetched from the marketplace.
-
-### Validating recipes
-
-```bash
-npx tsx src/bin.ts validate ./my-recipe.json
-```
-
-Runs four checks without saving: schema validation, ingredient availability, variable/vault preflight, and server role restrictions (DOM/chat ingredients are flagged as blocked).
+The CLI has no commands for recipes, packs, schedules or connections. You manage those in the web app, which uses the server's rpc methods (see **WebSocket rpc channel**), and AI clients reach recipes over MCP.
 
 ## Configuration
 
 ### Environment variables
 
+The main ones:
+
 | Variable | Default | Description |
 |:---|:---|:---|
-| `PORT` | `7717` | HTTP listen port |
-| `DB_PATH` | the platform's standard place (see **Start**) | SQLite database path |
-| `RECUED_WEBHOOK_URL` | -- | POST scheduled execution results to this URL |
+| `PORT` | `7717` | HTTP listen port. `--port` wins over it, and it wins over `bind_port` in `config.toml` |
+| `DB_PATH` | the platform's standard place (see **Start**) | SQLite database path. `--db` wins over it |
+| `RECUED_CONFIG` | the platform's config folder | Path of `config.toml`. `--config` wins over it |
+| `RECUED_IDENTITY_PASSPHRASE`, `RECUED_IDENTITY_PASSPHRASE_FILE` | -- | Seal the key file with a passphrase (see above) |
+| `RECUED_MCP_TOKEN` | -- | Token for `recued --mcp` |
+| `RECUED_RECOVERY_KEY` | -- | Recovery key for `recued archive` |
+| `RECUED_PAIR_CODE_TTL_MS` | 15 minutes | How long a pairing code lasts |
 | `RECUED_WEBHOOK_CLOCK_AUTHORITY_URL` | -- | Boot-pinned independent HTTPS time endpoint. It must return a fresh `Date` and exactly echo the request's `X-Recued-Clock-Nonce`; bounded cache-busting HEAD probes gate timestamped webhook profiles. Unset keeps them disabled. |
-| `RECUED_VAULT_*` | -- | Vault entries (see below) |
-| `RECUED_LLM_PROVIDER` | -- | Slot 1 provider (`openai`, `anthropic`, `google`, etc.) |
+| `RECUED_VAULT_*` | -- | Vault entries (see **Credentials**) |
+| `RECUED_LLM_PROVIDER` | -- | Slot 1 provider (`anthropic`, `openai`, `openai-compatible` or `google`) |
 | `RECUED_LLM_MODEL` | -- | Slot 1 model name |
 | `RECUED_LLM_API_KEY` | -- | Slot 1 API key |
 | `RECUED_LLM_BASE_URL` | -- | Slot 1 base URL (optional, for proxies) |
@@ -268,381 +265,208 @@ Runs four checks without saving: schema validation, ingredient availability, var
 | `RECUED_LLM_SLOT2_API_KEY` | -- | Slot 2 API key |
 | `RECUED_LLM_SLOT2_BASE_URL` | -- | Slot 2 base URL (optional) |
 
-### Vault sources
+### Credentials
 
-Vault entries are resolved from two sources, merged over the encrypted store
-(later wins on an exact key collision):
+Account credentials, such as API keys and OAuth tokens, are kept as **connections**, encrypted on this server. Add them on the web app's **Connections** page. A recipe names a connection and never sees its secret.
 
-1. **Per-request overrides** -- `vault` field in `POST /execute` body
-2. **Environment variables** -- `RECUED_VAULT_{key}=value`; the key is lower-cased
-   and otherwise passed through verbatim (underscores are not separators and have
-   no escape)
-3. **Encrypted VaultStore** -- credentials stored via `vault set`, persisted in
-   SQLite under AES-256-GCM. On an enrolled server the key is `sub_dek.vault`,
-   HKDF-derived from the Master DEK; pre-D-148 installs stay on the legacy
-   per-server DEK row
+The older `vault` namespace is still read, from three places in this order of precedence: a `vault` object passed with a single `execute` call, `RECUED_VAULT_<key>` environment variables (the key is lower-cased and otherwise used as written), and an encrypted store. Nothing in the current CLI or web app writes that store, and no shipped ingredient uses the vault.
+
+### AI models
+
+AI steps run on the models you set up in the web app under **Settings → AI / Models**: free-tier entries first, then two BYOK slots, `slot_1` and `slot_2`. A step asks for a speed (`fast`, `quality` or `thinking`) and gets a model of that speed; `slot_1` is `fast` and `slot_2` is `quality` unless you set them otherwise. A step that names a slot skips the free tier.
+
+For a headless server, slot 1 can come from the environment, and then wins over the stored slot 1:
 
 ```bash
-# Via environment (unscoped -- see below)
-export RECUED_VAULT_hubspot_token=pat-na1-xxxxx
-
-# Via CLI (encrypted, persisted, publisher-scoped)
-npx tsx src/bin.ts vault set recued-core.hubspot_token pat-na1-xxxxx
-```
-
-⚠ **Env entries are unscoped and are not a substitute for stored credentials.** An
-environment variable name is a single flat token, so it cannot express the
-`<publisher>.<key>` scoping the encrypted store uses. The two therefore land at
-different reference paths -- `{{vault.hubspot_token}}` for the example above versus
-`{{vault.recued-core.hubspot_token}}` for the stored one -- and do not shadow each
-other unless a variable is named exactly like a publisher scope. Env is a bootstrap
-channel for headless servers that must run before anyone pairs a client (until then
-the encrypted store is empty or locked, so it contributes nothing); it is plaintext
-in the process environment, is inherited by child processes, and is unaffected by
-the vault lock and by at-rest database encryption. Prefer `vault set` for anything
-long-lived.
-
-### LLM slots
-
-The server uses two LLM slots matching the clients' model:
-
-| Slot | Model hint | Purpose |
-|:---|:---|:---|
-| `slot_1` | `fast` | Quick AI tasks (classification, extraction) |
-| `slot_2` | `quality` / `thinking` | Complex reasoning, scoring |
-
-Configured via environment variables, the `llm` CLI, or the SQLite-persisted config (priority: env > SQLite).
-
-```bash
-# Via environment
 export RECUED_LLM_PROVIDER=openai
 export RECUED_LLM_MODEL=gpt-4.1-mini
 export RECUED_LLM_API_KEY=sk-...
-
-# Via CLI (persisted)
-npx tsx src/bin.ts llm set slot1 openai gpt-4.1-mini sk-...
-npx tsx src/bin.ts llm set slot2 anthropic claude-sonnet-4-20250514 sk-ant-...
 ```
 
-### Budget thresholds
+The `RECUED_LLM_SLOT2_*` variables set slot 2, but only when all three slot-1 variables are set.
 
-Daily token budget prevents runaway AI costs. Three thresholds control behavior:
+### Daily token budget
 
-| Threshold | Default | Effect |
-|:---|:---|:---|
-| `schedule_cutoff` | 80% | Scheduled recipes stop running |
-| `warning` | 95% | Warning logged, schedules still blocked |
-| `hard_limit` | 100% | All AI calls blocked until next day |
+Set a daily token budget under **Settings → AI / Models**, or with `recued llm set-budget <tokens>`. 0, the default, means no limit. AI calls from recipes, chat, the LLM gateway and housekeeping all count toward it, and the count resets at midnight UTC.
 
-```bash
-npx tsx src/bin.ts llm budget 100000        # set daily budget to 100k tokens
-npx tsx src/bin.ts llm usage                # check today's usage
-npx tsx src/bin.ts llm thresholds 70 90 100 # custom thresholds
-```
-
-Budget resets daily. Setting budget to 0 means unlimited.
+At 80% of the budget, the background pass that reads facts from your mail pauses. At 100%, recipe AI steps fail with `AI_TOKEN_BUDGET_EXCEEDED` until the reset. Chat, the LLM gateway and housekeeping keep counting but are not stopped. Each slot can also have a daily cap of its own, set on the same page.
 
 ## Architecture
 
-### Shared packages
+### Workspace packages
 
-The server imports directly from the monorepo workspace:
+The server is built from the workspace packages under `packages/`, bundled into its release. The ones at its core:
 
 | Package | Use |
 |:---|:---|
-| `@recued/contracts` | Types, operators, namespaces, error codes |
-| `@recued/engine` | Recipe execution orchestrator (`executeRecipe`) |
-| `@recued/ingredients` | HTTP, MCP, LLM adapters |
-| `@recued/llm` | LLM executor, model routing, BYOK API |
+| `@recued/contracts` | Types, operators, namespaces, error codes, and the rpc registry |
+| `@recued/engine` | Recipe execution (`executeRecipe`) and preflight |
+| `@recued/ingredients` | Step adapters: HTTP, MCP, DOM, kernel and connection |
+| `@recued/llm` | Model routing across the free tier and BYOK slots |
 | `@recued/recipes` | Recipe validation, parsing |
-| `@recued/storage` | Audit log store |
-| `@recued/instances` | Instance UUID generation |
+| `@recued/scheduler` | Cron matching and schedule types |
+| `@recued/storage` | Stores: the encrypted vault, collections, connections, config and the audit log |
 
 ### Source layout
 
 ```
 backend/server/src/
-  bin.ts              CLI entrypoint + subcommand dispatch
-  server.ts           HTTP server + route table
-  ws-server.ts        WebSocket server (client pairing)
-  mcp-server.ts       MCP stdio server (JSON-RPC 2.0)
-  server-executor.ts  Ingredient executor (HTTP, MCP, LLM adapters)
-  execute-handler.ts  POST /execute handler
-  recipe-handlers.ts  Recipe CRUD handlers (import, install, update)
-  recipe-store.ts     SQLite recipe storage
-  handlers.ts         Sync endpoint handlers (vault, instances, schedules)
-  scheduler.ts        Cron tick loop
-  cron.ts             Cron expression parser
-  daemon.ts           Background process management (start/stop/status)
-  pairing.ts          Client pairing flow (code -> token)
-  server-vault.ts     Encrypted vault store (AES-256-GCM, device-local DEK)
-  llm-config.ts       LLM slot + budget config (SQLite-persisted)
-  manifest-loader.ts  Ingredient manifest registry
-  marketplace-client.ts  Marketplace API client
-  preflight.ts        Pre-run checks (variables, vault, ingredients)
-  webhook.ts          POST results to external URL on scheduled runs
-  console-output.ts   Pretty-printed CLI output
-  storage.ts          In-memory storage (tests)
-  storage-sqlite.ts   SQLite storage (production)
-  sqlite-collection.ts  Generic SQLite collection adapter
-  types.ts            API request/response types
+  bin.ts                  CLI entry point; routes each command
+  commands/, cli/, cli-context/   The CLI commands
+  serve/, composition/    Boot: builds and wires the running server
+  server.ts               HTTP path routing (see HTTP endpoints)
+  ws-server.ts            The /ws rpc channel and what it pushes
+  rpc-dispatcher.ts       Routes rpc calls to their handlers
+  mcp-server.ts           MCP over stdio (MCP over HTTP is in ports/mcp/)
+  ports/                  HTTP surfaces: MCP, LLM gateway, webhooks, reception
+  execute-handler.ts      Runs a recipe, for the execute rpc, schedules, MCP and triggers
+  scheduler.ts            The cron tick
+  schedule-handler.ts     The schedules.* rpc methods
+  auto-run-scheduler.ts   Recipes set to run on their own
+  triggers/               Event triggers
+  bridges/                Browser Bridge commands and the DOM adapter
+  collections/            Mail, calendar, file and webhook collections
+  mail-facts/             Facts read from email
+  housekeeping/           Idle-time maintenance
+  storage/                SQLite stores
+  keys/, key-manager.ts, open-database.ts   Keys, and encryption at rest
+  pairing.ts              Pairing codes
+  server-vault.ts         The encrypted vault store
+  llm-config.ts           AI slots, free tier and budget
+  update/                 Self-update
 ```
 
-### Ingredient support
+### Ingredient kinds
 
-| Adapter | Support | Notes |
-|:---|:---|:---|
-| HTTP | Full | `fetch` is global in Node 18+ |
-| MCP | Full | JSON-RPC over HTTP |
-| LLM | Full | Requires BYOK API keys in slot_1/slot_2 |
-| Chat | Delegated | Broadcasts to connected Bridge via WebSocket |
-| DOM | Unsupported | No browser -- throws `INGREDIENT_ADAPTER_ALL_FAILED` |
+| Kind | Where it runs |
+|:---|:---|
+| `http` | On the server |
+| `mcp` | On the server, as JSON-RPC over HTTP |
+| `ai` | On the server, on your configured models (see **AI models**) |
+| `connection` | On the server, through a named connection: an API, an MCP server or a notification channel |
+| `cli` | On the server: a pack operation that runs a local program |
+| `storage`, `service` | On the server: Recued's own kernel ingredients |
+| `dom` | Sent to a paired Browser Bridge; fails if none is connected |
+| `chat` | Not supported. The web-chat ingredients were retired |
 
 ## MCP integration
 
-The server implements the MCP (Model Context Protocol) over stdio, exposing recipes as tools for AI agents.
+The server speaks MCP (Model Context Protocol) two ways: over stdio, as a separate `recued --mcp` process that opens the server's database itself, and over HTTP at `/mcp` on the running server (see **HTTP endpoints**). Either way the AI client needs a token. Create a contract on the web app's **Contracts** page: it shows the token once, and it decides which tools that token may call. The page also gives ready-made settings for MCP clients that connect over HTTP.
 
 ### Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`, with the full path to `recued` (`command -v recued` prints it):
 
 ```json
 {
   "mcpServers": {
     "recued": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/recued/backend/server/src/bin.ts", "--mcp"],
-      "env": {
-        "RECUED_LLM_PROVIDER": "anthropic",
-        "RECUED_LLM_MODEL": "claude-sonnet-4-20250514",
-        "RECUED_LLM_API_KEY": "sk-ant-..."
-      }
+      "command": "/full/path/to/recued",
+      "args": ["--mcp", "--token", "<token from the Contracts page>"]
     }
   }
 }
 ```
+
+Running from source, use `"command": "npx"` and `"args": ["tsx", "/path/to/recued/backend/server/src/bin.ts", "--mcp", "--token", "<token>"]`. If the key file is sealed with a passphrase, the MCP process needs it too: add `RECUED_IDENTITY_PASSPHRASE_FILE` (or `RECUED_IDENTITY_PASSPHRASE`) under `"env"`.
 
 ### Cursor
 
-Add to `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "recued": {
-      "command": "npx",
-      "args": ["tsx", "/path/to/recued/backend/server/src/bin.ts", "--mcp"]
-    }
-  }
-}
-```
+Add the same `recued` entry to `.cursor/mcp.json`.
 
 ### MCP tools
 
-| Tool | Description |
+The tool list is built for each request and holds only what the token's contract grants:
+
+- the core tools in `MCP_TOOL_CATALOG` (`packages/contracts/src/mcp-tool-catalog.ts`), such as `recued_listRecipes`, `recued_runRecipe`, `recued_getAudit` and `recued_dataTimeline`;
+- a `recued_ingredient_<slug>` tool for each exposed ingredient;
+- recipes and data operations from the registry;
+- the operations of installed packs and configured connections.
+
+Over stdio the server speaks newline-delimited JSON-RPC 2.0. `initialize` answers with protocol version `2024-11-05`; the server also implements the `2026-07-28` revision and its `server/discover` method.
+
+## WebSocket rpc channel
+
+Paired clients talk to the server over one WebSocket at `/ws`, for example `ws://localhost:7717/ws`. The client token from pairing is checked before the connection is accepted; **HTTP endpoints** lists the three ways to send it.
+
+Each call is an rpc envelope:
+
+```
+→ { "type": "rpc", "request_id": "…", "method": "recipe.list", "args": { … } }
+← { "type": "rpc_result", "request_id": "…", "result": … }
+← { "type": "rpc_result", "request_id": "…", "error": { "code": "…", "message": "…" } }
+```
+
+The methods, with their argument and result types, are `ServerRpcRegistry` in `packages/contracts/src/rpc/server-registry.ts`. A socket may have 64 calls in flight, and the server 256 in all; past that a call fails with `rpc_overloaded`. Until a recovery key is enrolled, only a few methods work and the rest fail with `server_not_enrolled`.
+
+The server also pushes:
+
+| Message | When |
 |:---|:---|
-| `recued_runRecipe` | Execute a recipe by ID or inline definition |
-| `recued_listRecipes` | List available recipes |
-| `recued_listIngredients` | List available ingredients |
-| `recued_addSchedule` | Schedule a recipe on a cron expression |
-| `recued_listSchedules` | List all scheduled recipes |
-| `recued_removeSchedule` | Remove a scheduled recipe |
-| `recued_getAudit` | Get recent execution audit entries |
-| `recued_setVault` | Store a credential in the server vault |
-| `recued_checkHealth` | Check recipes for upstream updates |
-| `recued_validateRecipe` | Validate a recipe definition without executing |
+| `server_event` | A broadcast event of a kind the client named in `events.subscribe` |
+| `approval_changed` | An approval changed, once the client has called `approval.subscribe` |
+| `server_heartbeat` | Every 5 seconds |
+| `ws_lockout` | Just before the server closes the socket with code 4004 |
+| `instance_revoked` | This device was revoked; the server closes the socket with code 4003 |
 
-The MCP server uses JSON-RPC 2.0 over stdin/stdout (one JSON object per line). Protocol version: `2024-11-05`.
-
-## WebSocket protocol
-
-The server upgrades HTTP connections on `/ws` to WebSocket for real-time communication between the server and connected clients.
-
-### Connection
-
-```
-ws://localhost:7717/ws?token=<realm_token>
-```
-
-Auth via `Authorization: Bearer <token>` header or `?token=` query parameter.
-
-### Messages: client -> server
-
-| Type | Fields | Purpose |
-|:---|:---|:---|
-| `register` | `instance_id`, `display_name?`, `platform?` | Register this client instance |
-| `ping` | -- | Keepalive |
-| `command_ack` | `command_id` | Acknowledge a received command |
-| `ai_response` | `request_id`, `result` or `error` | Return an AI delegation result |
-| `chat_claim` | `request_id` | Claim a chat delegation broadcast |
-| `chat_result` | `request_id`, `result` or `error` | Return a chat delegation result |
-
-### Messages: server -> client
-
-| Type | Fields | Purpose |
-|:---|:---|:---|
-| `registered` | `instance_id` | Confirm registration |
-| `pong` | -- | Keepalive response |
-| `command` | `command` | Push a command (e.g., run a scheduled recipe) |
-| `ai_request` | `request_id`, `slug`, `input` | Delegate an AI call to the Bridge |
-| `chat_broadcast` | `request_id`, `slug` | Broadcast a chat ingredient -- Bridges claim to execute |
-| `chat_confirmed` | `request_id`, `slug`, `input` | Confirm claim with full input (winner only) |
-| `chat_revoked` | `request_id` | Revoke -- another Bridge won the claim |
-
-### Chat delegation flow
-
-When a recipe uses a chat ingredient (e.g., `web-chat-gemini`), the server cannot execute it directly. Instead:
-
-1. Server broadcasts `chat_broadcast` to all connected Bridges
-2. Bridges that can handle it respond with `chat_claim`
-3. First claim wins: server sends `chat_confirmed` to the winner, `chat_revoked` to others
-4. Winner executes the chat ingredient and returns `chat_result`
-5. Server continues recipe execution with the result
-
-AI delegation follows a simpler pattern: the server sends `ai_request` to the first connected client and waits for `ai_response`. Timeout: 60s for AI, 120s for chat.
+A Browser Bridge also receives page commands as `{ "kind": "command", "command": … }` and answers with `{ "kind": "result", "result": … }`. Files move over sockets of their own: `/ws/upload`, `/ws/download` and `/ws/archive-upload`.
 
 ## Scheduling
 
-The scheduler ticks every 30 seconds, checking for due schedules.
+The scheduler looks for due schedules every 60 seconds, and once at start. A recurring schedule is a 5-field cron expression, read in the schedule's time zone or, if it has none, the server's. It fires at most once a minute, and not while its previous run is still going. A one-off schedule fires at its time. When the server was off at a scheduled time, the schedule's missed-run policy decides what happens: `catch_up`, `skip`, `auto` (the default) or `ask`.
 
-### Execution routing
+Every run happens on this server, through the same path as a run started from the web app. A schedule records its last status (`success`, `error` or `skipped`), its last error and how many times in a row it has failed. It is skipped, and stays armed, while its dish is switched off or its pack is not installed. The owner is told when a schedule starts failing, and after 5 failures in a row it is switched off. Manage schedules in the web app, or with the `schedules.*` rpc methods.
 
-- **No `target_instance_id`**: the server executes the recipe directly using its own adapters.
-- **With `target_instance_id`**: the server enqueues a `run_recipe` command, delivered via WebSocket (instant) or the heartbeat poll endpoint (fallback).
+## HTTP endpoints
 
-### Budget cutoff
+Most of the server is not plain HTTP. Running recipes, schedules, connections, the audit log and settings all go through rpc methods on the `/ws` WebSocket; the full list is `ServerRpcRegistry` in `packages/contracts/src/rpc/server-registry.ts`. The paths below are the only ones the server answers over HTTP. Any other path gets a 404.
 
-When the daily token budget reaches the `schedule_cutoff` threshold (default 80%), all scheduled executions are skipped. Manual runs via `POST /execute` and CLI `run` are unaffected until the `hard_limit` (100%) is reached.
+| Path | Method | Purpose | Credential |
+|:---|:---|:---|:---|
+| `/health` | `GET` | Liveness check: `{ "status": "ok", "now": <epoch_ms> }` | None |
+| `/ws` | WebSocket upgrade | The rpc channel and live events | A client token, as `Authorization: Bearer <token>` or, from a browser, in the `Sec-WebSocket-Protocol` header. A `?token=` query is still accepted from older clients. |
+| `/auth/pair` | `POST` | Exchanges a pairing code or the recovery key for a client token. The first pairing on a server needs a code. | None. The code or key in the body is the credential. |
+| `/auth/identity-probe` | `POST` | Lets a client confirm that the server at an address is the one it already trusts, before sending it a token | None |
+| `/status`, `/status.json` | `GET` | Recipes that were disabled automatically, as HTML or JSON | The realm token, as `Authorization: Bearer` |
+| `/mcp` | `POST` | MCP over HTTP (JSON-RPC 2.0). `GET` opens the older SSE transport. | `Authorization: Bearer` with a paired CLI client's token or an inbound token (`recued_...`) |
+| `/mcp/catalog` | `GET` | The tools that token may call | Same as `/mcp` |
+| `/v1/models`, `/v1/chat/completions` | `GET`, `POST` | OpenAI-compatible chat gateway, also served under `/llm-gateway/`. Only when configured. | `Authorization: Bearer` with an inbound token (`recued_...`) |
+| `/webhooks/<vendor>/<connection>` | `POST` | Bot callbacks from chat apps such as Slack and Telegram. `GET` answers only a vendor's ownership handshake. | The vendor's signature |
+| `/v1/connection/webhook/<vendor>/<connection>` | `POST` | Change events pushed by a CRM such as HubSpot or Salesforce. Only when the server is publicly reachable. | The vendor's signature |
+| `/v1/webhooks/<id>` | Set by the profile | Vendor deliveries for packs and recipes, addressed by an opaque id. Only while webhook profiles are running. | Checked by the profile |
+| `/reception/...` | `GET`, `POST`, `DELETE` | Visitor pages: forms, bookings and file drops | The endpoint's token, as `?t=`, `X-Recued-Endpoint-Token` or `Authorization: Bearer` depending on the kind |
+| `/oauth/complete` | `GET`, `POST` | Finishes an OAuth sign-in this server started. Only when configured. | The signed state of a pending sign-in |
+| `/ask/<ask_id>` | `GET`, `POST` | A page for answering a question the server emailed to the owner. Only when configured. | The unguessable id. A `POST` also needs a single-use form nonce. |
+| `/webclient/` | `GET` | The web app bundled with the server, when a verified bundle is present | None to load it. Pairing happens in the app. |
+| `/` | `GET` | On the LAN, redirects to `/webclient/` when the web app is bundled. On the public listener, redirects to `https://app.recued.com/` by default. | None |
 
-### Webhook
-
-Configure `--webhook-url` or `RECUED_WEBHOOK_URL` to POST results after each scheduled execution. Payload:
-
-```json
-{
-  "recipe_id": "...",
-  "success": true,
-  "duration_ms": 1234,
-  "output": { "sidebar": [...] },
-  "errors": [],
-  "trigger_source": "scheduled",
-  "timestamp": "2026-04-15T12:00:00.000Z"
-}
-```
-
-Webhook is fire-and-forget -- failures never block recipe execution. Timeout: 10s.
-
-## API endpoints
-
-All endpoints require `Authorization: Bearer <realm_token>` except `POST /auth/pair`.
-
-### Pairing
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `POST` | `/auth/pair` | Exchange a pairing code for a realm token |
-
-### Execution
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `POST` | `/execute` | Execute a recipe (by ID or inline) |
-| `GET` | `/ingredients` | List available ingredients |
-
-### Recipes
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/recipes` | List all recipes |
-| `GET` | `/recipes/:id` | Get recipe detail |
-| `DELETE` | `/recipes/:id` | Remove a recipe |
-| `POST` | `/recipes/import` | Import a recipe JSON |
-| `POST` | `/recipes/install` | Install from marketplace (by slug or URL) |
-| `POST` | `/recipes/import-bundle` | Import a SyncBundle |
-| `POST` | `/recipes/update` | Update all marketplace recipes |
-| `POST` | `/recipes/:id/update` | Update one marketplace recipe |
-
-### Vault
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/vault` | List encrypted vault entries |
-| `GET` | `/vault/:key` | Get a vault entry |
-| `PUT` | `/vault/:key` | Store a vault entry |
-| `DELETE` | `/vault/:key` | Delete a vault entry |
-| `GET` | `/realm-key` | Get the wrapped DEK for cross-device sync |
-| `PUT` | `/realm-key` | Store the wrapped DEK |
-
-### Instances
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/instances` | List device roster |
-| `POST` | `/instances` | Register a new device |
-| `DELETE` | `/instances/:id` | Deregister a device |
-| `POST` | `/instances/:id/heartbeat` | Heartbeat + receive pending commands |
-
-### Schedules
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/schedules` | List scheduled recipes |
-| `POST` | `/schedules` | Create a schedule |
-| `PATCH` | `/schedules/:id` | Update a schedule |
-| `DELETE` | `/schedules/:id` | Remove a schedule |
-
-### Commands
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/commands` | List pending commands |
-| `POST` | `/commands/:id/ack` | Acknowledge a command |
-
-### Executions
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/executions` | List execution history |
-| `GET` | `/executions/:id` | Get a single execution |
-| `POST` | `/executions` | Push an execution summary |
-
-### Audit log
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/audit` | List recent audit entries |
-| `GET` | `/audit/activities` | List recent activities |
-| `GET` | `/audit/export` | Export full audit log (GDPR/compliance) |
-| `GET` | `/audit/:run_id` | Get a single audit entry |
-| `DELETE` | `/audit` | Clear all audit entries |
-
-### Health
-
-| Method | Path | Description |
-|:---|:---|:---|
-| `GET` | `/health` | Server status (`{ status: 'ok', now: <epoch_ms> }`) |
+The server can serve each group of paths on its LAN listener, its public TLS listener, both or neither. Three presets set them all at once: `lan_only`, `public` and `maintenance`, which serves nothing. MCP is never served publicly without a separate acknowledgement, and no preset makes the bundled web app public. The groups are `PATH_FOR_ROLE` and the presets `EXPOSURE_PRESET_PATH_MAP`, both in `packages/contracts/src/network.ts`. Older paths such as `/auth/pair` and `/v1/chat/completions` are mapped to their groups in `SERVER_LEGACY_PATH_ALIASES` in `src/server.ts`.
 
 ## Development
 
 ```bash
 npm run dev       # start with auto-reload (tsx --watch)
-npm run build     # tsc --build
+npm run build     # bundle the server into dist/ (scripts/build.mjs)
 npm test          # vitest run
 ```
 
 ### Testing
 
-Tests use `vitest` and spin up server instances on random ports (`port: 0`). The in-memory storage backend is used by default in tests -- no SQLite required.
+Tests use `vitest`. Many open real SQLite databases, mostly in memory (`:memory:`), so the native SQLite module must be built. Tests that need a listening server bind a random port (`port: 0`).
 
 ### Dependencies
 
-- `better-sqlite3` -- SQLite driver (embedded, no external DB)
-- `ws` -- WebSocket server (used for client pairing)
-- Workspace packages: `@recued/contracts`, `@recued/engine`, `@recued/ingredients`, `@recued/instances`, `@recued/llm`, `@recued/recipes`, `@recued/storage`
+- `better-sqlite3-multiple-ciphers` -- SQLite driver that can encrypt the database (embedded, no external DB)
+- `ws` -- the `/ws` rpc channel and the file sockets
+- `imapflow`, `nodemailer` -- reading and sending mail
+- Workspace packages from `packages/`, bundled at build time
 
 ## Security
 
-- **Realm token** is the sole auth credential. Treat it like a password (32+ chars, do not commit).
-- **Vault store** encrypts credentials with AES-256-GCM using a device-local DEK. The server stores ciphertext only -- even with full database access, vault secrets are unreadable.
-- **Pairing code** is single-use, 8 alphanumeric characters, expires after 15 minutes. Issued on server start and displayed in the terminal.
-- **CRM data** is called by THIS SERVER, directly, using locally-stored personal access tokens. It never routes through Recued Cloud. (This line used to say the opposite — that the client called CRM APIs — which was true before the server became the sole orchestrator.)
+- **Client tokens.** Pairing gives each device its own token. The server keeps only an Argon2id hash of it, and you can revoke a device under **Settings → Devices**. Treat a token like a password.
+- **MCP tokens** (`recued_...`) come from a contract and can call only the tools that contract grants.
+- **The realm token** now opens only `/status`.
+- **The recovery key** (24 words) unlocks the server, re-creates a lost key file and decrypts archives. Keep it offline.
+- **Encryption at rest.** Connection credentials and the vault (AES-256-GCM) are encrypted under keys derived from the server's master key, which the key file unwraps at start. Once the server is enrolled, at its first pairing, the database file is encrypted too.
+- **Pairing codes** are single-use, 8 alphanumeric characters, and expire after 15 minutes. The server prints one when it first starts, and `recued pair` prints a new one.
+- **Your accounts' data** is fetched by this server directly, with the credentials stored here. It never goes through Recued Cloud.

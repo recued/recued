@@ -1965,6 +1965,8 @@ describe('phase 3: to_checklist inner shape', () => {
             context: {
               event: { forged: true },
               caller: { contract_id: 'ct_forged' },
+              // D-320 phase 3 — the server sets it, and deletes a caller's.
+              connections: { hubspot: 'hubspot-other' },
             },
           },
           actions: [
@@ -1977,7 +1979,7 @@ describe('phase 3: to_checklist inner shape', () => {
     expect(issuesOf(result, 'recipe_output_action_label_required').length).toBe(1);
     expect(issuesOf(result, 'recipe_output_action_recipe_id_required').length).toBe(1);
     expect(issuesOf(result, 'recipe_output_action_variant').length).toBe(1);
-    expect(issuesOf(result, 'recipe_output_action_context_reserved').length).toBe(2);
+    expect(issuesOf(result, 'recipe_output_action_context_reserved').length).toBe(3);
     expect(issuesOf(result, 'recipe_output_action_kind').length).toBe(1);
     expect(result.valid).toBe(false);
   });

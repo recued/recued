@@ -7,7 +7,7 @@
  *  `at: now()` and hand the event off to the shared bus.
  *
  *  The goal is to keep adapter code free of the bus plumbing so
- *  concrete modules (mail / file / webhook) focus on source-specific
+ *  concrete modules (mail / file / calendar) focus on source-specific
  *  fetch + canonicalization. Subscribers (recipe triggers — Phase G)
  *  attach to the same bus and don't care which emitter produced an
  *  event. Listener failures never reach the emitter — `bus.emit`
@@ -79,8 +79,7 @@ export interface CreateCollectionEmitterOptions {
   platform: CollectionPlatform;
   slug: string;
   /** Emitter-authored vocabulary for what changed. Mail uses
-   *  `'message'`, file uses `'file'`, webhook uses
-   *  `'webhook_delivery'`. Kept free-form so adapters can add
+   *  `'message'`, file uses `'file'`. Kept free-form so adapters can add
    *  sub-entities later (e.g. `'mail.attachment'`) without a union
    *  widening. */
   entityType: string;

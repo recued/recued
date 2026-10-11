@@ -165,6 +165,8 @@ import {
   WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION,
   collapseToFreshestPerTopic,
   e,
+  findAccountLane,
+  findAccountProvider,
   formatRemaining,
   initialMergeReviewDialogState,
   isEtaEligible,
@@ -518,7 +520,6 @@ export type DataTabId =
   | DataReceivedTabId
   | DataMailFactTabId
   | MirrorDataKind
-  | 'webhook'
   | 'records'
   | 'search'
   | DataSingleCollectionTabId;
@@ -567,7 +568,6 @@ const DATA_TABS: readonly DataTabId[] = [
   ...DATA_OWN_IT_TABS,
   ...DATA_RECEIVED_TABS,
   'mail_fact',
-  'webhook',
   ...DATA_MIRROR_TABS,
   ...DATA_PROVENANCE_TABS,
   ...DATA_SHARED_TABS,
@@ -578,13 +578,14 @@ const DATA_TABS: readonly DataTabId[] = [
 ];
 
 /** The "Received" cluster's DISPLAY tabs — `form_response` (its own bespoke
- *  surface) + the `webhook` explorer tab. Distinct from `DATA_RECEIVED_TABS`,
- *  which stays the `isReceivedTab` render-dispatch basis (form_response only);
- *  webhook renders via the explorer, so it must NOT make `isReceivedTab` true.
+ *  surface) + `mail_fact`. Distinct from `DATA_RECEIVED_TABS`, which stays the
+ *  `isReceivedTab` render-dispatch basis (form_response only).
  *
- *  Webhook stays here as a vendor-source working surface; unlike Reception's
- *  human-visitor ledger, it does not belong in immutable Reception Records. */
-const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'mail_fact', 'webhook'];
+ *  ⛔ A "Webhook deliveries" tab sat here until 2026-10-10: a collection
+ *  browser over the Phase D webhook collection, which nothing in production
+ *  ever created, so it was always empty. D-201 deliveries are shown on the
+ *  owner's Connections → Webhooks panel. */
+const DATA_RECEIVED_CLUSTER: readonly DataTabId[] = [...DATA_RECEIVED_TABS, 'mail_fact'];
 
 export type WorkEntitySourceListCaller = () => Promise<{
   sources: ReadonlyArray<SourceRegistration>;
@@ -2237,12 +2238,11 @@ const EXPLORER_TAB_PLATFORM: Partial<Record<DataTabId, CollectionPlatform>> = {
   mail: 'mail',
   calendar: 'calendar',
   files: 'file',
-  webhook: 'webhook',
 };
 /** The tabs the collection explorer serves — keep in sync with the keys of
  *  `EXPLORER_TAB_PLATFORM`. A type predicate (not just `boolean`) so the render
  *  dispatch can prove the non-explorer mirror fallback is `crm`-only. */
-type ExplorerTabId = 'mail' | 'calendar' | 'files' | 'webhook';
+type ExplorerTabId = 'mail' | 'calendar' | 'files';
 const isExplorerTab = (tab: DataTabId): tab is ExplorerTabId =>
   Object.prototype.hasOwnProperty.call(EXPLORER_TAB_PLATFORM, tab);
 
@@ -2344,8 +2344,6 @@ const tabLabel = (tab: DataTabId): string => {
       return 'CRM';
     case 'files':
       return 'Files';
-    case 'webhook':
-      return 'Webhook deliveries';
     case 'annotation':
       return 'Annotations';
     case 'link':
@@ -4073,7 +4071,12 @@ export const contactRollupChips = (
       // row of zeros — a list of "0" against every contact is noise that hides
       // the ones that matter. `complete: false` is never skipped: see below.
       if (value === null || value === 0 || value === '0.0000') continue;
-      parts.push(`${key.replace(/_/g, ' ')} ${String(value)}`);
+      // An average arrives as the division left it (3.3333333333333335), and a
+      // chip shows two places. The figure the server sent is not changed.
+      const shown = typeof value === 'number' && !Number.isInteger(value)
+        ? String(Math.round(value * 100) / 100)
+        : String(value);
+      parts.push(`${key.replace(/_/g, ' ')} ${shown}`);
     }
     if (parts.length === 0 && rollup.complete) continue;
     out.push({
@@ -5478,7 +5481,10 @@ export const bootstrapDataRoute = (
   // Keep intended source identity separately from the latest available roster.
   // A disconnected selection must survive repeated refreshes and tab returns.
   const savedExplorerScopes = new Map<DataTabId, string | null>();
-  if (opts.savedView !== undefined && 'collection_slug' in opts.savedView.definition) {
+  if (opts.savedView !== undefined && 'collection_slug' in opts.savedView.definition
+    // A legacy webhook view never reaches here: `saved-data-route.ts` routes it
+    // to Connections → Webhooks. The tab it named no longer exists.
+    && opts.savedView.definition.tab !== 'webhook') {
     savedExplorerScopes.set(opts.savedView.definition.tab, opts.savedView.definition.collection_slug);
   }
   // ── UNIVERSAL SEARCH state ───────────────────────────────────────────────
@@ -6039,10 +6045,13 @@ export const bootstrapDataRoute = (
       && opts.fileUsageCaller && opts.fileMutateCaller
       ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-usage">File usage and deletion</button>`
         + (fileLifecycle?.fileId === detail.record_id ? renderFileLifecyclePanel(fileLifecycle, DATA_ROUTE_ACTION_ATTR) : '') : '';
-    const remoteChatFile = detail?.record_id.startsWith('file:remote:') && opts.fileChatCallers?.cloud;
-    const useInChat = tab === 'files' && detail?.record != null && (/^file:[0-9a-f]{32}$/.test(detail.record_id) || remoteChatFile)
+    // A connected source's file, or one in a folder Recued watches, goes into
+    // Chat as a copy: it is imported first.
+    const importChatFile = (detail?.record_id.startsWith('file:remote:') || detail?.record_id.startsWith('file:local:'))
+      && opts.fileChatCallers?.cloud;
+    const useInChat = tab === 'files' && detail?.record != null && (/^file:[0-9a-f]{32}$/.test(detail.record_id) || importChatFile)
       && opts.fileChatCallers && opts.onUseFileInChat
-      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-use-in-chat">${remoteChatFile ? 'Import and use in Chat' : 'Use in Chat'}</button>` : '';
+      ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-use-in-chat">${importChatFile ? 'Import and use in Chat' : 'Use in Chat'}</button>` : '';
     const previewControl = tab === 'files' && detail?.record != null && opts.filePreviewCallers
       ? `<button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="file-preview">Preview file</button>` : '';
     // D-315 §6 — an email's two mail-fact actions; none on a security notice.
@@ -6064,6 +6073,13 @@ export const bootstrapDataRoute = (
       instances: explorerInstances,
       ...(tab === 'files' ? { instanceLabels: new Map([
         ['received', 'Saved files'], ...cloudSources.map(source => [cloudFileSourceSlug(source.source_id), source.label] as const),
+        // A folder says what it is in Connections' words ("Local folder ·
+        // clients"), not by its adapter id ("fs · clients").
+        ...explorerInstances.flatMap((inst) => {
+          const lane = findAccountLane('file');
+          const provider = lane ? findAccountProvider(lane, inst.adapter_type) : undefined;
+          return provider ? [[inst.slug, `${provider.label} · ${inst.slug}`] as const] : [];
+        }),
       ]) } : {}),
       selectedSlug: explorerSelectedSlug,
       records: explorerRecords,
@@ -6211,7 +6227,7 @@ export const bootstrapDataRoute = (
         || taskViewFilters.due !== 'all' || taskViewFilters.sort !== 'default')
         ? { task_filters: taskViewFilters } : {}),
     };
-    if (activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files' || activeTab === 'webhook') {
+    if (activeTab === 'mail' || activeTab === 'calendar' || activeTab === 'files') {
       return { tab: activeTab, collection_slug: explorerSelectedSlug
         ?? savedExplorerScopes.get(activeTab) ?? null };
     }

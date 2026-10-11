@@ -221,7 +221,7 @@ export interface ProcessedActionResult<TArgs> {
  *  ingredients the validator's pattern detector flags as
  *  "action-with-conflict-potential" (`category: 'action'` AND
  *  `risk_tier ∈ {'write', 'admin', 'destructive'}` AND
- *  `kind ∈ {'http', 'mcp', 'connection', 'storage', 'service'}`) are
+ *  `kind ∈ {'http', 'mcp', 'connection', 'storage'}`) are
  *  required to either declare `declares_alternatives: true` (with
  *  `fixed_slots_honored: true`) OR explicitly opt out with a
  *  `opt_out_rationale` string explaining why alternatives don't apply.

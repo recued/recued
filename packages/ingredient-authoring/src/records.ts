@@ -19,6 +19,7 @@ import {
   validateRecordsGroupBy,
   validateRecordsBatchAllow,
   validateRecordsRootProjection,
+  validateRecordsRootProjectionNames,
 } from '@recued/contracts';
 
 import { canonicalHash } from './canonical-hash.js';
@@ -574,6 +575,7 @@ export const validateRecordsComposition = (
   });
   const schemaForProjections: Record<string, { fields: { key: string; kind: string }[] }> = {};
   for (const entityKind of Object.keys(entities)) schemaForProjections[entityKind] = kindsFor(entityKind);
+  const everyProjection: { path: string; projection: unknown }[] = [];
   for (const [entityKind, entity] of Object.entries(entities)) {
     const roots = (entity as { roots?: unknown[] }).roots;
     if (roots === undefined) continue;
@@ -583,12 +585,18 @@ export const validateRecordsComposition = (
       continue;
     }
     for (const [index, projection] of roots.entries()) {
+      everyProjection.push({ path: `${at}[${index}]`, projection });
       for (const problem of validateRecordsRootProjection(
         projection, entityKind, schemaForProjections, `${at}[${index}]`,
       )) {
         issue(issues, 'records_root_projection', at, problem);
       }
     }
+  }
+  // Recipes read a pack's rollups by pack, so several need names to be told
+  // apart — across entities, since they all sit under the one pack.
+  for (const problem of validateRecordsRootProjectionNames(everyProjection)) {
+    issue(issues, 'records_root_projection', 'ingredients[0].entities', problem);
   }
   // D-221 §6.2 — `natural_key` is a property of the ENTITY, not of one bind.
   // It is admissible only on `create`, so a sibling bind on the same entity

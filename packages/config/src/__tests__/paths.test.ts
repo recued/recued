@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   defaultConfigPath,
-  defaultDataPath,
   detectOs,
-  expandDataPath,
   expandHome,
-  resolveBootstrapPath,
 } from '../paths.js';
 
 describe('paths', () => {
@@ -57,25 +54,6 @@ describe('paths', () => {
     });
   });
 
-  describe('defaultDataPath', () => {
-    it('differs from config path on Linux (XDG_DATA_HOME)', () => {
-      const p = defaultDataPath({
-        os: 'linux',
-        home: '/home/alice',
-        xdgDataHome: '/custom/data',
-      });
-      expect(p).toBe('/custom/data/recued');
-    });
-
-    it('falls back to ~/.local/share on Linux', () => {
-      const p = defaultDataPath({
-        os: 'linux',
-        home: '/home/alice',
-      });
-      expect(p).toBe('/home/alice/.local/share/recued');
-    });
-  });
-
   describe('expandHome', () => {
     it('rewrites leading ~/', () => {
       expect(expandHome('~/data', '/home/alice')).toBe('/home/alice/data');
@@ -94,24 +72,4 @@ describe('paths', () => {
     });
   });
 
-  describe('expandDataPath', () => {
-    it('substitutes the {data_path} token', () => {
-      expect(expandDataPath('{data_path}/logs', '/data')).toBe('/data/logs');
-    });
-
-    it('substitutes multiple occurrences', () => {
-      expect(expandDataPath('{data_path}/x/{data_path}', '/d')).toBe('/d/x//d');
-    });
-
-    it('no-ops when absent', () => {
-      expect(expandDataPath('/abs/logs', '/d')).toBe('/abs/logs');
-    });
-  });
-
-  describe('resolveBootstrapPath', () => {
-    it('expands ~ + {data_path} and resolves absolute', () => {
-      const out = resolveBootstrapPath('{data_path}/logs', '~/data', '/home/alice');
-      expect(out).toBe('/home/alice/data/logs');
-    });
-  });
 });

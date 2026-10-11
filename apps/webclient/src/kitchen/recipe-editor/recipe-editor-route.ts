@@ -123,6 +123,9 @@ export const RECIPE_EDITOR_CONN_VAR_NAME_ATTR = 'data-recued-recipe-editor-conn-
 export const RECIPE_EDITOR_CONN_VAR_KIND_ATTR = 'data-recued-recipe-editor-conn-var-kind';
 /** The "Add variable" button. */
 export const RECIPE_EDITOR_CONN_VAR_ADD_ATTR = 'data-recued-recipe-editor-conn-var-add';
+/** D-320 phase 3 — the advice under an API connection input to remove it (value =
+ *  the input's name). */
+export const RECIPE_EDITOR_CONN_VAR_ADVICE_ATTR = 'data-recued-recipe-editor-conn-var-advice';
 /** D-315 §5.2 — the recipe's mail template settings, each row (value = the
  *  setting's name), its "copy from" choice, its copy button, and the add
  *  control's name input and button. */
@@ -332,8 +335,11 @@ const ADD_STEP_KINDS: ReadonlyArray<AddStepKind> = [
 const TRANSFORM_NAMES: readonly string[] = Object.keys(TRANSFORM_SCHEMAS).sort();
 
 /** Connection-variable kinds (the `connection_kind` facet — an unlisted
- *  ValueHint field accepted by design; see value-hint.ts CONTRACT_GAP). */
-const CONNECTION_KINDS = ['api', 'mcp', 'notification'] as const;
+ *  ValueHint field accepted by design; see value-hint.ts CONTRACT_GAP).
+ *  D-320 phase 3 (3d): a new one is never `api`. A step that calls a pack uses the
+ *  connection chosen for that pack, so a recipe names none; an existing `api` one
+ *  is shown as it is, with the advice to remove it. */
+const CONNECTION_KINDS = ['notification', 'mcp'] as const;
 
 const ADD_TRIGGER_KINDS = ['A form answer you accepted', 'A mail fact', 'Your own event pattern'] as const;
 type AddTriggerKind = (typeof ADD_TRIGGER_KINDS)[number];
@@ -440,6 +446,13 @@ const connectionVarNames = (recipe: RecipeDefinition): string[] =>
         && (v as { type?: unknown }).type === 'connection',
     )
     .map(([name]) => name);
+
+/** D-320 phase 3 — the recipe's API connection settings, which a recipe no
+ *  longer declares (the validator's `api_connection_setting` advice). */
+const apiConnectionVarNames = (recipe: RecipeDefinition): string[] =>
+  connectionVarNames(recipe).filter(
+    (name) => (recipe.variables[name] as { connection_kind?: unknown }).connection_kind === 'api',
+  );
 
 /** Coerce a `skip_when` / `fail_on` field (string | Condition | undefined) into
  *  the inline-string form the condition builder edits. Object-form conditions
@@ -2508,10 +2521,15 @@ export const bootstrapRecipeEditorRoute = (
     );
 
     // Connection slot — a {{config.<var>}} ref naming a type:'connection'
-    // variable. A picker when the recipe declares any, else free text.
+    // variable. D-320 phase 3: a step names none (it uses the connection chosen
+    // for the pack it calls), so the field shows only while this step or the
+    // recipe still names one. A picker when the recipe declares any, else free text.
     const connVars = connectionVarNames(state.recipe);
     const connValue = String(opStep.connection ?? '');
-    if (connVars.length > 0) {
+    const apiVars = apiConnectionVarNames(state.recipe);
+    if (connValue === '' && apiVars.length === 0) {
+      // Nothing to show: the run settles the connection.
+    } else if (connVars.length > 0) {
       const refs = connVars.map((name) => `{{config.${name}}}`);
       const options =
         connValue !== '' && !refs.includes(connValue)
@@ -2679,20 +2697,18 @@ export const bootstrapRecipeEditorRoute = (
     addWrap.appendChild(addArg);
     grid.appendChild(addWrap);
 
-    // Guidance — only while it's actionable: THIS card's slot is unfilled.
-    // (A filled slot needs no reminder, and repeating the same sentence on
-    // every op card is noise.) The pointer depends on whether a variable
-    // exists to pick yet.
-    if (connValue.trim() === '') {
+    // Guidance — only while it's actionable: THIS card names an API connection
+    // setting, which a recipe no longer does (D-320 phase 3). A card that names
+    // none is the normal case and needs no reminder; the same sentence on every
+    // op card is noise.
+    const namedApi = /^\{\{config\.([A-Za-z_][A-Za-z0-9_]*)\}\}$/.exec(connValue.trim())?.[1];
+    if (namedApi !== undefined && apiVars.includes(namedApi)) {
       const notice = doc.createElement('p');
       notice.className = 'span-full';
       notice.setAttribute(RECIPE_EDITOR_OP_NOTICE_ATTR, '');
       notice.textContent =
-        'Recued works these out when it runs. Anything touching a CRM needs a '
-        + 'connection input to say which one to use. '
-        + (connVars.length === 0
-          ? 'Add one under Connections and dependencies below.'
-          : 'pick one above.');
+        'This step names a connection. Leave Connection slot empty, and the step '
+        + 'uses the connection chosen for the pack it calls.';
       grid.appendChild(notice);
     }
   };
@@ -4325,7 +4341,7 @@ export const bootstrapRecipeEditorRoute = (
     const header = doc.createElement('div');
     header.className = 'recipe-editor-section-header';
     appendText(doc, header, 'h2', 'Connections & dependencies');
-    const meta = appendText(doc, header, 'span', plural(connVars.length, 'slot'));
+    const meta = appendText(doc, header, 'span', plural(connVars.length, 'connection input'));
     meta.className = 'recipe-editor-section-meta';
     section.appendChild(header);
 
@@ -4333,8 +4349,9 @@ export const bootstrapRecipeEditorRoute = (
       doc,
       section,
       'p',
-      'One connection input for each CRM step that needs one, written as '
-        + '{{config.<name>}} — a CRM op-step without one is rejected at save.',
+      'A step that calls a pack uses the connection chosen for that pack, so a '
+        + 'recipe names none. Add a connection input only to send mail or a '
+        + 'notification, or to reach an MCP server.',
     );
     hint.className = 'recipe-editor-hint';
 
@@ -4362,14 +4379,17 @@ export const bootstrapRecipeEditorRoute = (
           markDirty();
         }),
       );
+      // An input a recipe no longer adds keeps its kind on show, beside the ones
+      // it can be changed to.
+      const kind = String(cv.connection_kind ?? 'api');
       addField(
         doc,
         grid,
         'Kind',
         makeSelect(
           doc,
-          String(cv.connection_kind ?? 'api'),
-          CONNECTION_KINDS,
+          kind,
+          (CONNECTION_KINDS as readonly string[]).includes(kind) ? CONNECTION_KINDS : [kind, ...CONNECTION_KINDS],
           `conn_var_kind:${name}`,
           (next) => {
             patchVariable(name, { connection_kind: next });
@@ -4406,6 +4426,18 @@ export const bootstrapRecipeEditorRoute = (
       grid.appendChild(removeWrap);
 
       row.appendChild(grid);
+      if (cv.connection_kind === 'api') {
+        const advice = appendText(
+          doc,
+          row,
+          'p',
+          'A recipe no longer asks for this: a step that calls a pack uses the '
+            + 'connection chosen for that pack. Remove it, and leave each step\'s '
+            + 'Connection slot empty.',
+        );
+        advice.className = 'recipe-editor-hint';
+        advice.setAttribute(RECIPE_EDITOR_CONN_VAR_ADVICE_ATTR, name);
+      }
       section.appendChild(row);
     }
 
@@ -4422,7 +4454,7 @@ export const bootstrapRecipeEditorRoute = (
     });
     nameInput.setAttribute(RECIPE_EDITOR_CONN_VAR_NAME_ATTR, '');
     nameInput.setAttribute('aria-label', 'New connection input');
-    nameInput.setAttribute('placeholder', 'crm');
+    nameInput.setAttribute('placeholder', 'email');
     nameField.appendChild(nameInput);
     addWrap.appendChild(nameField);
 

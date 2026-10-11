@@ -17,7 +17,16 @@
  *  ⚠ THE ASYMMETRY IS THE ASSERTION. Pinning absolute byte counts would be a
  *  frozen literal that fails on any legitimate re-tuning while checking
  *  nothing. What must not regress is the RELATIONSHIP: owner-authored surfaces
- *  are never budgeted below the mirrors that can be re-fetched. */
+ *  are never budgeted below the mirrors that can be re-fetched.
+ *
+ *  ⛔ CORRECTED 2026-10-10: THE MIRROR FIGURES ABOVE WERE NEVER APPLIED. The
+ *  "re-scaled" 5 GB and 2 GB lived only in `collection.{file,mail}.default.*`
+ *  runtime keys that nothing read (removed that day, `RETIRED_RUNTIME_SETTINGS`).
+ *  Each collection takes its budget from its own instance config with a
+ *  built-in default (mail and calendar 512 MiB, received files a fixed 512 MiB),
+ *  in the server, which this package cannot import. So this file no longer
+ *  compares against the mirrors; the gigabyte floor below keeps every
+ *  owner-authored surface above all three. */
 
 import { describe, expect, it } from 'vitest';
 
@@ -40,20 +49,6 @@ describe('owner-authored data is budgeted for a server', () => {
     ['audit.quota.bytes', store.get('audit.quota.bytes') as number],
     ['records (byte quota)', RECORDS_DEFAULT_BYTE_QUOTA],
   ];
-
-  /** Surfaces that MIRROR an external source and can be re-fetched. */
-  const MIRRORS: ReadonlyArray<readonly [string, number]> = [
-    ['collection.mail', store.get('collection.mail.default.quota_bytes') as number],
-    ['collection.calendar', store.get('collection.calendar.default.quota_bytes') as number],
-  ];
-
-  it('⛔ no owner-authored surface is budgeted below a re-syncable mirror', () => {
-    const smallestMirror = Math.min(...MIRRORS.map(([, v]) => v));
-    const offenders = OWNER_AUTHORED
-      .filter(([, v]) => v < smallestMirror)
-      .map(([k, v]) => `${k}=${(v / 1024 / 1024).toFixed(0)}MB < smallest mirror ${(smallestMirror / 1024 / 1024).toFixed(0)}MB`);
-    expect(offenders).toEqual([]);
-  });
 
   it('every owner-authored surface is at least a gigabyte', () => {
     // Not a magic number so much as a floor that a browser-profile budget
@@ -94,12 +89,12 @@ describe('owner-authored data is budgeted for a server', () => {
     ).toEqual([]);
   });
 
-  it('the volatile cache tiers are NOT swept up in this — eviction there is correct', () => {
-    // `shared.max_bytes` and `cache.max_bytes` are LRU/TTL caches. They should
-    // stay modest: evicting a cache loses nothing, and a cache sized like a
-    // data store is just wasted disk. This asserts the distinction is still
-    // being drawn.
+  it('the volatile cache is NOT swept up in this — eviction there is correct', () => {
+    // `cache.max_bytes` caps an LRU/TTL cache (the engine's L2 and the shared
+    // tier; `shared.max_bytes`, a cap for the shared tier alone, was read by
+    // nothing and is gone). It should stay modest: evicting a cache loses
+    // nothing, and a cache sized like a data store is just wasted disk. This
+    // asserts the distinction is still being drawn.
     expect(store.get('cache.max_bytes') as number).toBeLessThan(1 * GB);
-    expect(store.get('shared.max_bytes') as number).toBeLessThan(1 * GB);
   });
 });

@@ -53,6 +53,7 @@ import {
 } from './derive-recipe-capability.js';
 import { RECEPTION_SELLER_OFFER_CONFIG_KEY } from './reception-recipe-runner.js';
 import {
+  carryOwnerRevokes,
   mintDoorContract,
   doorCapabilityChanged,
   retireDoorContract,
@@ -367,8 +368,13 @@ export const planReceptionDoor = (
     };
   }
   const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+  // D-320 phase 3 (3b) — the config the run will resolve connections against,
+  // each slot's empty setting filled as the run fills it (`settleDoorConnections`).
+  const doorConfig = 'config' in dispatchRecipe && dispatchRecipe.config !== undefined
+    ? dispatchRecipe.config
+    : config;
   const derived = deriveResolvedRecipeCapability(input.recipe, dispatchRecipe.recipe, {
-    ...(config === undefined ? {} : { config }),
+    ...(doorConfig === undefined ? {} : { config: doorConfig }),
     ...(resolveOp === undefined ? {} : { resolveOp }),
   });
   // §5.1a — the door's ONE eligibility rule. Refused at BIND, never at fire.
@@ -476,6 +482,88 @@ export const bindReceptionDoor = (
   deps.pairStore.setContractId({ endpoint_id: input.endpointId, contract_id });
 
   return { kind: 'bound', contract_id, capability, unchanged: false };
+};
+
+/** One bound reception door, as the boot re-derive reads it: the endpoint, the recipe its
+ *  pair names, and the pair store that links the two (form or lookup). */
+export interface ReceptionDoorAtBoot {
+  readonly endpointId: string;
+  readonly recipeId: string;
+  readonly link: ReceptionDoorContractLink;
+}
+
+/** ⛔⛔ 2026-10-10 — EVERY BOUND RECEPTION DOOR, RE-DERIVED AT BOOT BY D-299's RULE.
+ *
+ *  A door's grants are now spelled as the gate reads them (`deriveRecipeCapability`,
+ *  `recipe-capability-wiring.ts`), and every runner re-derives its door and refuses one
+ *  that differs ("authority changed; ask the owner to re-bind this form"). A door minted
+ *  before this release differs in one of two ways:
+ *    - it only LOSES ids the gate never read (a Records catalog's second pack-ref
+ *      spelling). It worked, and would start refusing. A narrowing needs no consent, so
+ *      it is re-minted here, and goes on working;
+ *    - it GAINS ids: a kernel step's `core.*` op, a first-party op in the spelling the
+ *      gate reads. Each was refused `op_not_granted` before, and the owner never saw it
+ *      listed as an op. D-299's machine re-bind passes no widening, so neither does this:
+ *      it waits for the owner's re-bind, whose consent lists it.
+ *  The bind is the owner's own (`bindReceptionDoor`, unconfirmed), so a refusal or a
+ *  widening writes nothing. A door its owner revoked stays revoked; an op they switched
+ *  off stays off (`carryOwnerRevokes`); the standing-closure opt-in rides along, as on
+ *  D-299's carry.
+ *
+ *  Idempotent: a current door plans `unchanged` and is not touched, so no ledger is kept.
+ *  Never throws. */
+export const rederiveReceptionDoorsAtBoot = (
+  doors: Iterable<ReceptionDoorAtBoot>,
+  deps: Omit<ReceptionDoorBindDeps, 'pairStore'> & {
+    readonly recipeOf: (recipeId: string) => RecipeDefinition | null;
+  },
+): Array<{
+  readonly endpoint_id: string;
+  readonly recipe_id: string;
+  readonly outcome: 'rebound' | 'needs_owner' | 'refused';
+}> => {
+  const outcomes: Array<{
+    readonly endpoint_id: string;
+    readonly recipe_id: string;
+    readonly outcome: 'rebound' | 'needs_owner' | 'refused';
+  }> = [];
+  for (const door of doors) {
+    try {
+      const contractId = door.link.findByEndpoint(door.endpointId)?.contract_id ?? null;
+      if (contractId === null) continue;
+      const stored = deps.definitionStore.get(contractId);
+      if (stored === null || (stored.revoked_at !== undefined && stored.revoked_at !== null)) continue;
+      const recipe = deps.recipeOf(door.recipeId);
+      if (recipe === null) continue;
+      const result = bindReceptionDoor(
+        {
+          endpointId: door.endpointId,
+          recipeId: door.recipeId,
+          recipe,
+          mintedBy: 'boot_rederive',
+          confirmed: false,
+          standingClosure: stored.door_execution_policy?.standing_closure === true,
+        },
+        { ...deps, pairStore: door.link },
+      );
+      if (result.kind === 'bound') {
+        if (result.unchanged) continue;
+        carryOwnerRevokes([contractId], result.contract_id, deps);
+        outcomes.push({ endpoint_id: door.endpointId, recipe_id: door.recipeId, outcome: 'rebound' });
+        continue;
+      }
+      outcomes.push({
+        endpoint_id: door.endpointId,
+        recipe_id: door.recipeId,
+        outcome: result.kind === 'needs_consent' ? 'needs_owner' : 'refused',
+      });
+    } catch (error) {
+      console.warn(
+        `[reception] door for '${door.endpointId}' not re-derived at boot: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return outcomes;
 };
 
 /** Retire a door: revoke its contract and unlink it from the pair.

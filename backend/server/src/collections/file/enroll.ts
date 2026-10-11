@@ -27,6 +27,7 @@ import type {
 import type { CollectionInstanceStore } from '../instance-store.js';
 import type { FileAdapterRegistry } from './adapter-registry.js';
 import { probeAdapter } from './adapter-registry.js';
+import { RECEIVED_FILE_SLUG } from './watched-folders.js';
 
 const ADAPTER_TYPES: readonly FileAdapterType[] = [
   'fs',
@@ -130,6 +131,15 @@ export const handleFileEnroll = async (
   const slug = requireSlug(args.slug);
   const adapter_type = requireAdapterType(args.adapter_type);
   const config = requireConfig(args.config);
+  // A folder's records are the collection `('file', <slug>)`, and the files
+  // people send already hold `('file', 'received')`.
+  if (slug === RECEIVED_FILE_SLUG) {
+    throw new RpcError(
+      'bad_request',
+      `slug '${RECEIVED_FILE_SLUG}' is the name of the files people send you; choose another name for this source`,
+      400,
+    );
+  }
 
   const existing = deps.instances.get('file', slug);
   if (existing) {

@@ -24,9 +24,12 @@
  *  D-187 slice 3b — `webhook` is in the set: it is a ROOT incoming RESOURCE (external
  *  payloads flowing IN — like `mail` / `calendar`), NOT a sidecar (it has no parent
  *  record to derive its grant from) and NOT a `connection` (that is the OUTBOUND endpoint
- *  + credential, gated by pack-op). Its read ops (`core.data.webhook.get/list`) + the
- *  `data.webhook` collection grant are OWNER-default-only (see
- *  `OWNER_DEFAULT_ONLY_GRANT_ENTRIES`). Accepted `form_response` rows follow
+ *  + credential, gated by pack-op). It fences `core.webhook.event.get` (D-201's
+ *  accepted-event read, `OP_ENTITY_COLLECTION.webhook`), and the `data.webhook`
+ *  collection grant is OWNER-default-only (see `OWNER_DEFAULT_ONLY_GRANT_ENTRIES`).
+ *  ⚠ Keep it even though the Phase D webhook collection and its
+ *  `core.data.webhook.get/list` reads were removed 2026-10-10: dropping the
+ *  member would take that event read out of the fence's jurisdiction. Accepted `form_response` rows follow
  *  the same posture because their free-form contents have no field-level
  *  sensitivity declaration.
  *

@@ -10,7 +10,11 @@
  *
  *  The host owns what is around it: its busy and error state, where the
  *  fields start (a first dish from `dishes.defaults`, which the host reads),
- *  and re-reading its lists afterwards (`onSaved`). */
+ *  and re-reading its lists afterwards (`onSaved`).
+ *
+ *  D-320 §4 — with the recipe's slots (`packs.connections.recipe`, read by the
+ *  host), a Connection line per slot that offers a choice, saved on the dish
+ *  (`connection-lines.ts`); the connection settings are left out of the form. */
 
 import {
   CRON_PRESETS,
@@ -19,8 +23,12 @@ import {
   type ServerRecipeListEntry,
 } from '@recued/contracts';
 import {
+  connectionLines,
+  connectionSettings,
+  dishChoiceFromLines,
   whatStartsIt,
   wireConfigEditorOverlay,
+  type ConnectionLineSlot,
   type ConfigEditorOverlayHandle,
   type MailTemplateVariableCallers,
   type RecordRefVariableSearch,
@@ -42,11 +50,15 @@ export interface DishFormCallers {
     publisher_id: string;
     name?: string;
     config_overlay?: Record<string, unknown>;
+    /** D-320 — the dish's choice of connection, by slot. */
+    connections?: Record<string, string>;
   }) => Promise<{ dish: Dish }>;
   readonly update?: (args: {
     dish_id: string;
     name?: string;
     config_overlay?: Record<string, unknown>;
+    /** D-320 — replaces the dish's choice; `null` clears it. */
+    connections?: Record<string, string> | null;
   }) => Promise<{ dish: Dish }>;
   readonly schedulesCreate?: (args: {
     recipe_id: string;
@@ -70,6 +82,10 @@ export interface OpenDishFormArgs {
   readonly fileRefSearch?: RefPicker.RefPickerSearchCaller;
   readonly recordRefSearch?: RecordRefVariableSearch;
   readonly mailTemplates?: MailTemplateVariableCallers;
+  /** D-320 — the recipe's slots, as `packs.connections.recipe` lists them. Absent
+   *  (an older server, or the read failed) ⇒ no lines, and the dish's choice is
+   *  left as it is. */
+  readonly connectionSlots?: ReadonlyArray<ConnectionLineSlot>;
   /** A dish was made; `scheduleError` when its schedule could not be added
    *  (the dish stands — saving again would make a second one). */
   readonly onCreated?: (dish: Dish, scheduleError: unknown) => void;
@@ -104,6 +120,15 @@ export const openDishForm = (args: OpenDishFormArgs): ConfigEditorOverlayHandle 
   const create = callers.create;
   if (mode === 'settings' ? dish === undefined || update === undefined : create === undefined) return null;
   const recipeName = recipeNameOf(entry);
+  // D-320 — a dish's Settings start from its choice; + Add another from the
+  // main dish's, as its settings do.
+  const slots = args.connectionSlots;
+  const chosen = mode === 'settings'
+    ? dish?.connections
+    : mode === 'add'
+      ? (dishes.find((candidate) => candidate.is_default) ?? dishes[0])?.connections
+      : undefined;
+  const lines = slots === undefined ? [] : connectionLines(slots, { chosen, settings: args.start });
   const name = mode === 'add'
     ? { value: '', required: true }
     : mode === 'settings' && (dishes.length > 1 || dish!.name !== '')
@@ -132,15 +157,30 @@ export const openDishForm = (args: OpenDishFormArgs): ConfigEditorOverlayHandle 
       ? {}
       : { schedules: SWITCH_ON_SCHEDULES }),
     requireSettings: true,
+    ...(slots !== undefined && slots.length > 0
+      ? { connections: { lines, hidden: connectionSettings(slots) } }
+      : {}),
     ...(args.fileRefSearch !== undefined ? { fileRefSearch: args.fileRefSearch } : {}),
     ...(args.recordRefSearch !== undefined ? { recordRefSearch: args.recordRefSearch } : {}),
     ...(args.mailTemplates !== undefined ? { mailTemplates: args.mailTemplates } : {}),
-    onConfirm: async (config, extras) => {
+    onConfirm: async (rawConfig, extras) => {
+      // D-320 — the lines' choice, and the settings it now stands in for. A slot
+      // the form did not show keeps the choice it had.
+      const fromLines = dishChoiceFromLines(lines, extras.connections ?? {});
+      const config = Object.fromEntries(Object.entries(rawConfig)
+        .filter(([key]) => !fromLines.dropSettings.includes(key)));
+      const shown = new Set(lines.map((line) => line.slot));
+      const connections = {
+        ...Object.fromEntries(Object.entries(chosen ?? {}).filter(([slot]) => !shown.has(slot))),
+        ...fromLines.connections,
+      };
+      const hasChoice = Object.keys(connections).length > 0;
       if (mode === 'settings') {
         await update!({
           dish_id: dish!.dish_id,
           config_overlay: config,
           ...(extras.name !== undefined && extras.name !== dish!.name ? { name: extras.name } : {}),
+          ...(slots !== undefined ? { connections: hasChoice ? connections : null } : {}),
         });
       } else {
         const { dish: made } = await create!({
@@ -148,6 +188,7 @@ export const openDishForm = (args: OpenDishFormArgs): ConfigEditorOverlayHandle 
           publisher_id: entry.publisher_id,
           config_overlay: config,
           ...(extras.name !== undefined && extras.name !== '' ? { name: extras.name } : {}),
+          ...(slots !== undefined && hasChoice ? { connections } : {}),
         });
         // The dish exists now. A schedule that fails must not fail the
         // form: saving again would switch on a second dish.

@@ -1,6 +1,6 @@
 /** D-117 Phase 1 Commit 2 — per-instance calendar warehouse table.
  *
- *  Parallel to `collections/table.ts` (mail / file / webhook) but with
+ *  Parallel to `collections/table.ts` (mail / file) but with
  *  a calendar-specific shape: dedicated hot-field columns (not a JSON
  *  blob), a `record_payload` column carrying the full
  *  `CanonicalEvent` JSON, a `prior_payload` column that rotates one

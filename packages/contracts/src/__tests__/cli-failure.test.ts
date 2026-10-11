@@ -18,10 +18,12 @@ describe('cli-failure classification contract', () => {
     expect(cliSpawnErrorReason(null)).toBe('spawn_error');
   });
 
-  it('cliFailureErrorCode: not_found → CLI_TOOL_NOT_FOUND, every other reason → CLI_TOOL_FAILED', () => {
+  it('cliFailureErrorCode: not_found → CLI_TOOL_NOT_FOUND, untested_version → CLI_TOOL_VERSION_UNTESTED, every other reason → CLI_TOOL_FAILED', () => {
     expect(cliFailureErrorCode('not_found')).toBe('CLI_TOOL_NOT_FOUND');
+    // D-321 — a version the pack was not tested with is the owner's to act on.
+    expect(cliFailureErrorCode('untested_version')).toBe('CLI_TOOL_VERSION_UNTESTED');
     for (const reason of CLI_FAILURE_REASONS) {
-      if (reason === 'not_found') continue;
+      if (reason === 'not_found' || reason === 'untested_version') continue;
       expect(cliFailureErrorCode(reason)).toBe('CLI_TOOL_FAILED');
     }
   });
@@ -33,6 +35,9 @@ describe('cli-failure classification contract', () => {
       'nonzero_exit',
       'timeout',
       'bad_output',
+      // D-321 — refused before the tool starts.
+      'untested_version',
+      'broken',
     ]);
   });
 

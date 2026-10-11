@@ -1,6 +1,5 @@
 import type { CalendarStack } from '../collections/calendar/compose.js';
 import type { FileStack } from '../collections/file/compose.js';
-import type { ServiceStack } from '../collections/service/compose.js';
 import type { SupervisionStack } from '../supervision/compose-supervision-stack.js';
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
@@ -21,7 +20,6 @@ export interface InstallShutdownOptions {
   backgroundServices: Pick<BackgroundServiceRegistry, 'stopAll'>;
   fileStack: Pick<FileStack, 'disposeAll'> | undefined;
   calendarStack: Pick<CalendarStack, 'disposeAll'> | undefined;
-  serviceStack: Pick<ServiceStack, 'disposeAll'> | undefined;
   /** Optional — a db-less compose has no supervision stack; the real serve path
    *  always passes it. */
   supervisionStack?: Pick<SupervisionStack, 'disposeAll'> | undefined;
@@ -47,7 +45,6 @@ export const installShutdown = (
     backgroundServices,
     fileStack,
     calendarStack,
-    serviceStack,
     supervisionStack,
     cascade,
     server,
@@ -85,9 +82,6 @@ export const installShutdown = (
     }
     if (calendarStack) {
       try { await calendarStack.disposeAll(); } catch { /* swallow */ }
-    }
-    if (serviceStack) {
-      try { await serviceStack.disposeAll(); } catch { /* swallow */ }
     }
     if (supervisionStack) {
       try { await supervisionStack.disposeAll(); } catch { /* swallow */ }

@@ -52,11 +52,16 @@ export const settingsNoLongerUsed = (
     readonly after: RecipeDefinition;
   }>,
   saved: SavedSettingsReader,
+  /** D-320 phase 3 (3c) — the names `after` still reads a saved value under although
+   *  it declares no such setting (`slotSettingNamesOf`): a connection setting it
+   *  dropped is read by its slot's name, or by the name it maps. Absent ⇒ none. */
+  stillRead?: (after: RecipeDefinition) => ReadonlySet<string>,
 ): SettingNoLongerUsed[] => {
   const out: SettingNoLongerUsed[] = [];
   for (const { recipe_id, before, after } of recipes) {
     const dropped = droppedVariables(before, after);
     if (dropped.length === 0) continue;
+    const read = stillRead?.(after);
     const savedKeys = new Set<string>();
     for (const dish of saved.dishes.listByRecipe(recipe_id)) {
       for (const key of Object.keys(dish.config_overlay)) savedKeys.add(key);
@@ -66,7 +71,7 @@ export const settingsNoLongerUsed = (
     const name = typeof after.metadata?.name === 'string' && after.metadata.name.trim() !== ''
       ? after.metadata.name : recipe_id;
     for (const variable of dropped) {
-      if (!savedKeys.has(variable)) continue;
+      if (!savedKeys.has(variable) || read?.has(variable) === true) continue;
       out.push({ recipe_id, recipe: name, setting: labelOf(variable, before?.variables?.[variable]) });
     }
   }

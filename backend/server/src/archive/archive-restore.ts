@@ -1,8 +1,8 @@
-/** Phase F (D-108) — archive restore (write-into-`data_path`).
+/** Phase F (D-108) — archive restore (write into the data folder).
  *
  *  The inverse-of-the-inverse: `streamImportArchive` decrypts + verifies an
  *  archive; this module DRIVES it, writing the decrypted records straight
- *  into a live `data_path` so the server can boot on them.
+ *  into a live data folder so the server can boot on them.
  *
  *  M4b.0 streaming rework: restore no longer materializes the whole archive
  *  (`ImportedRecords` with a multi-GB `db: Buffer` + every blob in RAM).
@@ -1019,7 +1019,7 @@ export const previewToTempDb = async (
 const ourSwapLeftAMarker = (dbPath: string, markerBefore: boolean): boolean =>
   existsSync(resolveServerBundleSwapMarkerPath(dbPath)) && !markerBefore;
 
-/** Restore an archive into a STOPPED server's `data_path` (the offline
+/** Restore an archive into a STOPPED server's data folder (the offline
  *  `archive` CLI path). Streams the archive — see the module header for the
  *  step-by-step safety contract. Throws `ARCHIVE_RESTORE_SERVER_LIVE`
  *  when a live server is detected without `force`,

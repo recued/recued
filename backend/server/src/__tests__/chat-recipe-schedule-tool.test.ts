@@ -285,7 +285,7 @@ describe('recipe.schedule — a webhook door the schedule moved is the model\'s 
       ok: true,
       result: {
         note: 'Tell the user: Daily digest\'s webhook is now on: messages coming in run with its main settings '
-          + 'and may use recued-core.home-assistant.camera.snapshot, the home-assistant account.',
+          + 'and may use recued-core.home-assistant.camera.snapshot, the home-assistant connection.',
       },
     });
     expect(schedules.list()).toEqual([expect.objectContaining({ dish_id: 'dsh_main' })]);
@@ -297,7 +297,7 @@ describe('recipe.schedule — a webhook door the schedule moved is the model\'s 
       { recipe_id: 'daily-digest', state: 'kept_revoked', was_open: false },
     ]) })(ARGS);
     expect((out as { result: { note: string } }).result.note).toBe(
-      'Tell the user: Daily digest\'s webhook is off: messages coming in are refused until its settings choose an account. '
+      'Tell the user: Daily digest\'s webhook is off: messages coming in are refused until its settings choose a connection. '
       + 'daily-digest\'s webhook stays off: its access was turned off, and scheduling does not turn it back on.',
     );
   });

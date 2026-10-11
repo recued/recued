@@ -208,8 +208,8 @@ export interface PathListenerSetOptions {
   upgradeHandlers?: Partial<Record<PathRole, PortUpgradeHandler>>;
   /** D-148 W3.5b — optional legacy alias map. Threaded into both
    *  listeners' `createPathRouter` calls so existing path shapes
-   *  (`/auth/pair`, `/status*`, `/webhook/*`, `/v1/connection/webhook/*`,
-   *  `/hook/*`) keep dispatching to the
+   *  (`/auth/pair`, `/status*`, `/v1/webhooks/*`,
+   *  `/v1/connection/webhook/*`) keep dispatching to the
    *  appropriate role while the W3.5b production migration lands.
    *  Substrate tests leave this unset. */
   legacyAliases?: ReadonlyArray<PathRouterLegacyAlias>;
@@ -218,7 +218,7 @@ export interface PathListenerSetOptions {
    *  set, the public dispatcher invokes this for exact `path === '/'`
    *  requests ahead of role lookup. Production wiring supplies the
    *  bare-302 redirect handler that responds with HTTP 302 +
-   *  `Location: https://app.recued.com/` for `<handle>.recued.cloud`
+   *  `Location: https://app.recued.com/` for `<handle>.recued.net`
    *  Host headers, and a generic 404 for anything else (BYO custom
    *  domain, bare apex, multi-label subdomain). Unset → public-listener
    *  bare `/` 404s as today. */

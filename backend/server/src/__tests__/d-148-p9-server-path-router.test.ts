@@ -3,10 +3,10 @@
  *
  *  Pins:
  *    - `/webhooks/<vendor>/<connection_name>` routes to the
- *      `vendorWebhookListener` slot (not to Phase D's `webhookListener`
- *      nor D-128 P3's `connectionWebhookListener`).
- *    - `/webhook/<slug>` (singular, Phase D) still routes to the
- *      `webhookListener` slot — the trailing `s` disambiguates.
+ *      `vendorWebhookListener` slot (not to D-128 P3's
+ *      `connectionWebhookListener`).
+ *    - `/webhook/<slug>` (singular, Phase D) is no longer a route: it went
+ *      2026-10-10 with the webhook collection it wrote to.
  *    - Absent `vendorWebhookListener` ⇒ `/webhooks/*` falls through
  *      to the floor 404 (vendor-agnostic per spec § P6 acceptance). */
 
@@ -59,10 +59,8 @@ describe('server.ts webhooks role — D-148 P9 vendor path-router branch', () =>
       res.statusCode = 200;
       res.end('vendor-handled');
     });
-    const webhookListener = vi.fn();
 
     const handlerSet = createServerHandlerSet({
-      webhookListener,
       vendorWebhookListener,
     });
     cleanups.push(() => handlerSet.close());
@@ -74,25 +72,16 @@ describe('server.ts webhooks role — D-148 P9 vendor path-router branch', () =>
     );
 
     expect(vendorWebhookListener).toHaveBeenCalledTimes(1);
-    expect(webhookListener).not.toHaveBeenCalled();
     expect(res.body).toBe('vendor-handled');
   });
 
-  it('routes POST /webhook/<slug> (singular) to webhookListener — trailing `s` disambiguates', async () => {
+  /** `/webhook/{slug}` (Phase D, singular) went 2026-10-10 with the webhook
+   *  collection it wrote to: nothing in production ever created one, so every
+   *  request already answered 404. D-201's `/v1/webhooks/<id>` is the owner's
+   *  inbound webhook. */
+  it('/webhook/<slug> is no longer a route: the generic 404, and no alias claims it', async () => {
     const vendorWebhookListener = vi.fn();
-    const webhookListener = vi.fn(async (
-      _req: IncomingMessage,
-      res: ServerResponse,
-      _slug: string,
-    ) => {
-      res.statusCode = 200;
-      res.end('phase-d-handled');
-    });
-
-    const handlerSet = createServerHandlerSet({
-      webhookListener,
-      vendorWebhookListener,
-    });
+    const handlerSet = createServerHandlerSet({ vendorWebhookListener });
     cleanups.push(() => handlerSet.close());
 
     const res = new FakeRes();
@@ -101,20 +90,15 @@ describe('server.ts webhooks role — D-148 P9 vendor path-router branch', () =>
       res as unknown as ServerResponse,
     );
 
-    expect(webhookListener).toHaveBeenCalledTimes(1);
-    expect(webhookListener).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      'some-slug',
-    );
     expect(vendorWebhookListener).not.toHaveBeenCalled();
-    expect(res.body).toBe('phase-d-handled');
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body!).error.code).toBe('not_found');
+    expect(handlerSet.legacyAliases.some((alias) => alias.kind === 'prefix' && alias.prefix === '/webhook/'))
+      .toBe(false);
   });
 
   it('returns 404 for /webhooks/* when vendorWebhookListener is absent (floor)', async () => {
-    const webhookListener = vi.fn();
     const handlerSet = createServerHandlerSet({
-      webhookListener,
       // vendorWebhookListener intentionally omitted
     });
     cleanups.push(() => handlerSet.close());
@@ -125,7 +109,6 @@ describe('server.ts webhooks role — D-148 P9 vendor path-router branch', () =>
       res as unknown as ServerResponse,
     );
 
-    expect(webhookListener).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(404);
   });
 
@@ -179,22 +162,6 @@ describe('server.ts webhooks role — malformed-encoding + error-leak hardening'
     );
 
     expect(connectionWebhookListener).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body!).error.code).toBe('bad_request');
-  });
-
-  it('maps a malformed %-escape on /webhook/<slug> (Phase D) to a generic 400', async () => {
-    const webhookListener = vi.fn();
-    const handlerSet = createServerHandlerSet({ webhookListener });
-    cleanups.push(() => handlerSet.close());
-
-    const res = new FakeRes();
-    await handlerSet.handlers.webhooks!(
-      buildReq({ url: '/webhook/%zz', body: '{}' }),
-      res as unknown as ServerResponse,
-    );
-
-    expect(webhookListener).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body!).error.code).toBe('bad_request');
   });

@@ -114,10 +114,7 @@ const setupHarness = () => {
   });
   const serverState = createServerStateStore(db);
   const bootstrapDeps: BootstrapHandlerDeps = {
-    bootstrap: {
-      data_path: '/tmp', bind_host: '127.0.0.1', bind_port: 3001,
-      mcp_port: 0, webhook_port: 0, log_path: '/tmp/log',
-    },
+    bootstrap: { bind_port: 3001, webhooks_enabled: false },
     state: serverState,
     gates: registry.all(),
     version: '0.0.0-test',

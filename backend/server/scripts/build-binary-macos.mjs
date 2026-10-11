@@ -378,8 +378,8 @@ for (const t of targets) {
   // where the process re-launches ITSELF, so the check has to go through
   // `start` and ask `status`, exactly as an owner would. The installer prints
   // `recued start` as the way to run in the background.
-  // ⛔ ITS OWN DIRECTORY. The realm lock is `{data_path}/recued-server.lock`,
-  // keyed on the DIRECTORY rather than the db file, so a daemon sharing a
+  // ⛔ ITS OWN DIRECTORY. The realm lock is `recued-server.lock` in the db's
+  // folder, keyed on the DIRECTORY rather than the db file, so a daemon sharing a
   // directory with any other server — including the boot smoke above, whose
   // lock outlives a SIGTERM — is refused with "already running against this
   // data folder" and the gate reports a defect that is not there.

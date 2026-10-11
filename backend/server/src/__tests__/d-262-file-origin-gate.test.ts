@@ -112,7 +112,7 @@ describe('D-262 § B12.2 — the allowlist itself', () => {
   it('admits the origins that are the owner acting, in one form or another', () => {
     for (const origin of [
       'webclient_upload', 'messenger_media', 'mail_attachment',
-      'tool_output', 'connection_download',
+      'tool_output', 'connection_download', 'watched_folder',
     ]) {
       expect(mayAiEnrichFile(fileRecord(origin, 'voice'))).toBe(true);
     }
@@ -121,7 +121,7 @@ describe('D-262 § B12.2 — the allowlist itself', () => {
   it('⛔ refuses a file its capturing op opted out, from every origin it would otherwise admit', () => {
     for (const origin of [
       'webclient_upload', 'messenger_media', 'mail_attachment',
-      'tool_output', 'connection_download',
+      'tool_output', 'connection_download', 'watched_folder',
     ]) {
       expect([origin, mayAiEnrichFile(fileRecord(origin, 'image', { ai_enrichment: 'opt_out' }))])
         .toEqual([origin, false]);

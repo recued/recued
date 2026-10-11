@@ -33,6 +33,8 @@ export interface ComposePackListRpcDepsInput {
    *  scratch dir; production callers leave undefined to use the
    *  bundled location. */
   packDir?: string;
+  /** D-320 audit — whether a connection is set up, for where an update starts. */
+  isConnectionSetUp?: (connection_name: string) => boolean;
 }
 
 export interface PackListRpcBundle {
@@ -56,6 +58,7 @@ export const composePackListRpcDeps = (
     ...(contractStore !== undefined ? { contractStore } : {}),
     ...(recordsStore !== undefined ? { recordsStore } : {}),
     ...(packDir !== undefined ? { packDir } : {}),
+    ...(input.isConnectionSetUp !== undefined ? { isConnectionSetUp: input.isConnectionSetUp } : {}),
   };
 
   return { packListDeps };

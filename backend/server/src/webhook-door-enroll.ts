@@ -46,9 +46,11 @@ import type { DishWebhookDoorChange, RecipeDefinition } from '@recued/contracts'
 import {
   deriveResolvedRecipeCapability,
   type OpResolver,
+  type RecipeCapabilityDerivation,
   type RecipeCapabilityRefusal,
 } from './derive-recipe-capability.js';
 import {
+  carryOwnerRevokes,
   mintDoorContract,
   doorCapabilityChanged,
   retireDoorContract,
@@ -113,14 +115,50 @@ export const describeWebhookDoorRefusal = (
 ): string => {
   switch (refusal.reason) {
     case 'dispatch_unresolvable':
-      return `this recipe cannot be lowered to the exact operations and account bindings the webhook would run: ${refusal.detail}`;
+      return `this recipe cannot be lowered to the exact operations and connections the webhook would run: ${refusal.detail}`;
     case 'dynamic_dispatch':
       return `step '${refusal.step_id}' chooses what to run at runtime (${refusal.field}), so what this webhook could do is not knowable in advance. A webhook-armed recipe must be statically analyzable.`;
     case 'dynamic_connection':
-      return `step '${refusal.step_id}' resolves its connection at runtime (${refusal.ref}), so which account it would use is not knowable in advance.`;
+      return `step '${refusal.step_id}' resolves its connection at runtime (${refusal.ref}), so which connection it would use is not knowable in advance.`;
     case 'literal_connection':
       return `step '${refusal.step_id}' names a connection directly ('${refusal.ref}'). A connection is a slot filled by the pack's enrollment, never hard-coded in a recipe.`;
   }
+};
+
+/** The capability a recipe's webhook door is minted with: derived from the recipe in
+ *  the form its run dispatches, under the config that run resolves its connections
+ *  against. The one derivation the mint and the boot re-derive both read. */
+export const deriveWebhookDoorCapability = (
+  entry: { readonly recipe_id: string; readonly recipe: RecipeDefinition },
+  deps: Pick<WebhookDoorEnrollDeps, 'resolveConfig' | 'resolveDoorRecipe' | 'resolveOp'>,
+): RecipeCapabilityDerivation => {
+  const config = deps.resolveConfig(entry.recipe_id);
+  const dispatchRecipe = deps.resolveDoorRecipe?.(entry.recipe, config ?? {})
+    ?? { ok: true as const, recipe: entry.recipe };
+  if (!dispatchRecipe.ok) {
+    return {
+      ok: false,
+      refusal: {
+        reason: 'dispatch_unresolvable',
+        step_id: '<recipe>',
+        detail: dispatchRecipe.reason,
+      },
+    };
+  }
+  const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+  // D-320 phase 3 (3b) — the config the run will resolve connections against,
+  // each slot's empty setting filled as the run fills it (`settleDoorConnections`).
+  const doorConfig = 'config' in dispatchRecipe && dispatchRecipe.config !== undefined
+    ? dispatchRecipe.config
+    : config;
+  return deriveResolvedRecipeCapability(
+    entry.recipe,
+    dispatchRecipe.recipe,
+    {
+      ...(doorConfig === undefined ? {} : { config: doorConfig }),
+      ...(resolveOp === undefined ? {} : { resolveOp }),
+    },
+  );
 };
 
 /** Distinct non-null door ids stamped on a snapshot's trigger rows —
@@ -205,29 +243,7 @@ export const reconcileWebhookDoors = (
       });
       continue;
     }
-    const config = deps.resolveConfig(entry.recipe_id);
-    const dispatchRecipe = deps.resolveDoorRecipe?.(entry.recipe, config ?? {})
-      ?? { ok: true as const, recipe: entry.recipe };
-    if (!dispatchRecipe.ok) {
-      outcomes.set(entry.recipe_id, {
-        kind: 'refused',
-        refusal: {
-          reason: 'dispatch_unresolvable',
-          step_id: '<recipe>',
-          detail: dispatchRecipe.reason,
-        },
-      });
-      continue;
-    }
-    const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
-    const derived = deriveResolvedRecipeCapability(
-      entry.recipe,
-      dispatchRecipe.recipe,
-      {
-        ...(config === undefined ? {} : { config }),
-        ...(resolveOp === undefined ? {} : { resolveOp }),
-      },
-    );
+    const derived = deriveWebhookDoorCapability(entry, deps);
     if (!derived.ok) {
       outcomes.set(entry.recipe_id, { kind: 'refused', refusal: derived.refusal });
       continue;
@@ -282,6 +298,11 @@ export const reconcileWebhookDoors = (
           },
           deps,
         ).contract_id;
+        // ⛔ The op the owner switched off stays off. Same rule as D-295's whole-door
+        // revoke, one op at a time: a machine re-derive (a pack install, a settings
+        // follow, the boot re-derive) re-mints the door, and the mint grants every
+        // derived op afresh. A Kitchen re-save is the owner acting, and starts clean.
+        if (input.keepOwnerRevoked === true) carryOwnerRevokes(priorIds, contractId, deps);
       }
 
       const stampedRows = deps.consumerStore.stampTriggerContracts({
@@ -378,6 +399,12 @@ export const followMainDishWebhookDoors = (
       | 'consumersOfRecipe'
     >;
   },
+  /** What moved the door, stamped on the one it mints and the ones it retires: a
+   *  main dish's settings (D-209), or a pack's connections (D-320 phase 3). */
+  cause: { readonly mintedBy: string; readonly retireReason: string } = {
+    mintedBy: 'dish_settings',
+    retireReason: 'dish_settings_changed',
+  },
 ): DishWebhookDoorChange[] => {
   // ⚠ Never throws. The settings save already committed, so a door fault must
   // not report the save as failed; it degrades to the fail-closed state and says
@@ -420,8 +447,8 @@ export const followMainDishWebhookDoors = (
             publisher_id: owner.publisher_id,
             recipe: input.recipe,
           }],
-          mintedBy: 'dish_settings',
-          retireReason: 'dish_settings_changed',
+          mintedBy: cause.mintedBy,
+          retireReason: cause.retireReason,
           keepOwnerRevoked: true,
         },
         deps,
@@ -436,13 +463,90 @@ export const followMainDishWebhookDoors = (
       // stamp (D-295 would read that as the owner's revoke).
       if (cleared) {
         try {
-          retireWebhookDoors(snapshotDoorContractIds(owner.snapshot), 'dish_settings_changed', deps);
+          retireWebhookDoors(snapshotDoorContractIds(owner.snapshot), cause.retireReason, deps);
         } catch {
           // A live door that no row names is inert: authority attaches only
           // through a dispatch carrying its id.
         }
       }
       changes.push({ ...subject, state: 'closed', reason: errorMessage(error), reason_code: 'fault' });
+    }
+  }
+  return changes;
+};
+
+/** ⛔⛔ 2026-10-10 — EVERY WEBHOOK DOOR, RE-DERIVED AT BOOT, before the outbox starts.
+ *
+ *  A door minted before this release holds grants spelled as the gate never reads them:
+ *  a first-party catalog op as `<publisher>.<pack>.<op>`, a kernel step as no op at all.
+ *  Each refused every delivery `op_not_granted`. The derivation is fixed, so the runner's
+ *  own re-derive now differs from every such door and refuses the delivery as "door
+ *  authority changed" instead: neither works until the door is minted again.
+ *
+ *  So a recipe whose LIVE door differs from what the mint derives today goes through
+ *  `followMainDishWebhookDoors`, the loop a settings change already runs, with its D-295
+ *  rule: a door the owner revoked stays revoked, and an op the owner switched off stays
+ *  off (`carryOwnerRevokes`).
+ *
+ *  ⛔ IT ONLY EVER REPLACES A DOOR, NEVER CLOSES ONE. A recipe whose derivation refuses
+ *  at boot is left as it is: that loop retires the door of a recipe it cannot derive,
+ *  which is right for a settings save the owner just made and wrong for a boot, where
+ *  the refusal may be the boot's own (a catalog not registered yet). The runner refuses
+ *  such a delivery either way, and says why.
+ *
+ *  ⚠ IDEMPOTENT, SO NO LEDGER. A current door derives unchanged and is not touched, so a
+ *  second boot writes nothing. D-308's `data_repairs` ledger is for a repair whose second
+ *  run would do harm and whose "done" cannot be read off the data; here the data says
+ *  it. What every boot rather than one costs: a door that drifted while the server was
+ *  down follows at the next boot, as it would at the next settings save, rather than
+ *  refusing deliveries until a re-save.
+ *
+ *  Never throws. */
+export const rederiveWebhookDoorsAtBoot = (
+  deps: WebhookDoorEnrollDeps & {
+    readonly consumerStore: Pick<
+      WebhookConsumerStore,
+      | 'recipesWithTriggers'
+      | 'stampTriggerContracts'
+      | 'clearTriggerContracts'
+      | 'doorContractIdForRecipe'
+      | 'consumersOfRecipe'
+    >;
+    readonly recipeOf: (recipeId: string) => RecipeDefinition | null;
+  },
+): DishWebhookDoorChange[] => {
+  let recipeIds: string[];
+  try {
+    recipeIds = deps.consumerStore.recipesWithTriggers();
+  } catch (error) {
+    console.warn(`[webhook] doors not re-derived at boot: ${errorMessage(error)}`);
+    return [];
+  }
+  const changes: DishWebhookDoorChange[] = [];
+  for (const recipe_id of recipeIds) {
+    try {
+      const recipe = deps.recipeOf(recipe_id);
+      if (recipe === null) continue;
+      // Every check the reconcile makes before it mints, so it is reached only to mint.
+      deps.preflightNonOwnerRecipeExposure?.(recipe, 'webhook');
+      const derived = deriveWebhookDoorCapability({ recipe_id, recipe }, deps);
+      if (!derived.ok) continue;
+      const stale = deps.consumerStore.consumersOfRecipe(recipe_id)
+        .flatMap((owner) => snapshotDoorContractIds(owner.snapshot))
+        .some((contractId) => {
+          const stored = deps.definitionStore.get(contractId);
+          return stored !== null
+            && (stored.revoked_at === undefined || stored.revoked_at === null)
+            && doorCapabilityChanged(stored, derived.capability).changed;
+        });
+      if (!stale) continue;
+      changes.push(...followMainDishWebhookDoors(
+        { recipe_id, recipe },
+        deps,
+        { mintedBy: 'boot_rederive', retireReason: 'boot_rederived' },
+      ));
+    } catch (error) {
+      console.warn(`[webhook] door for '${recipe_id}' not re-derived at boot: ${errorMessage(error)}`);
     }
   }
   return changes;

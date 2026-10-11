@@ -755,11 +755,11 @@ export const composeStorageContext = async (
       requireSigningIdentityForBinding().identity.serverIdentityKey(),
     getKeyStore: () => requireSigningIdentityForBinding().keyStore,
     exchangeClient: createHttpAccountBindingExchangeClient({
-      // Resolved per-call so a config / env change takes effect without a
-      // reconstruct. `cloud.base_url` carries the schema default
-      // (`https://api.recued.cloud`) so the prod auth Worker is the
-      // out-of-the-box target; a mirror deployment overrides the apex via
-      // that variable.
+      // Resolved per call. `RECUED_ACCOUNT_BINDING_EXCHANGE_URL` wins;
+      // otherwise the URL is `https://auth.<apex>/…` with the apex from
+      // `RECUED_CLOUD_APEX` (default `recued.com`), which is how a mirror
+      // deployment points elsewhere. `cloudBaseUrl` is passed but no longer
+      // read (see `exchange-url.ts`), so `cloud.base_url` does not move it.
       getEndpointUrl: () =>
         resolveAccountBindingExchangeUrl({
           override: process.env.RECUED_ACCOUNT_BINDING_EXCHANGE_URL,

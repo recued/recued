@@ -47,6 +47,7 @@ import type {
   CompositionIngredient,
   CrmAlias,
   EntitySchemaIngredientInput,
+  IngredientCliConfig,
   OperationApproval,
   PackContentRef,
 } from '@recued/contracts';
@@ -62,6 +63,10 @@ import {
 // command-pin both live here.
 import { cliEnvViolations, cliInterpreterViolations, cliCommandViolation } from '@recued/ingredients/cli-argv-safety';
 import type { CliArgvTemplateEntryLike } from '@recued/ingredients/cli-argv-safety';
+// D-321 — the probe / tested range / install hint rules, shared with the catalog
+// validator the same way.
+import { cliInstallProblems, cliProbeProblems, cliVersionProblems } from '@recued/ingredients/cli-tool-policy';
+import type { CliToolPolicyProblem } from '@recued/ingredients/cli-tool-policy';
 import {
   CANONICAL_WORKFLOW_TEMPLATE_REGISTRY,
   COMPOSITION_MAX_FIELDS,
@@ -1406,6 +1411,18 @@ const DECOMPOSABLE_INGREDIENT_KINDS: ReadonlySet<string> = new Set(['cli', 'http
  *  `cli` ingredient) would otherwise leak into the connection/grant binding. */
 const INGREDIENT_CONFIG_CELLS = ['cli', 'http', 'connection', 'mcp'] as const;
 
+/** The keys a `cli` cell may carry: every key of `IngredientCliConfig`, so a
+ *  new one fails to compile until it is listed. Closed (D-321), so a misspelt
+ *  `versoin` is refused instead of dropped. */
+const CLI_CELL_KEYS: Record<keyof IngredientCliConfig, true> = {
+  tool: true, probe: true, config_dir: true, profile: true, package_ref: true, entry_point: true,
+  version: true, install: true,
+};
+
+/** A shared-check problem's relative path joined onto the cell path. */
+const problemPath = (base: string, problem: CliToolPolicyProblem): string =>
+  problem.path === '' ? base : problem.path.startsWith('[') ? `${base}${problem.path}` : `${base}.${problem.path}`;
+
 const validateIngredientConfigCell = (
   ing: Record<string, unknown>,
   kind: string,
@@ -1427,15 +1444,38 @@ const validateIngredientConfigCell = (
       return;
     }
     const cli = ing.cli;
+    for (const key of Object.keys(cli)) {
+      if (!Object.hasOwn(CLI_CELL_KEYS, key)) {
+        add('error', 'composition_ingredient_cli_unknown_key', `${path}.cli.${key}`,
+          `cli.${key} is not a cli setting (${Object.keys(CLI_CELL_KEYS).join(', ')})`);
+      }
+    }
     if (!isNonEmptyString(cli.tool)) {
       add('error', 'composition_ingredient_cli_tool_required', `${path}.cli.tool`, 'cli.tool is required');
     }
     if (!isStringArray(cli.probe) || cli.probe.length === 0) {
       add('error', 'composition_ingredient_cli_probe_required', `${path}.cli.probe`, 'cli.probe must be a non-empty string array');
+    } else {
+      // The launched binary, as the decomposer derives it for the ops' argv[0].
+      const launched = typeof cli.entry_point === 'string' ? cli.entry_point
+        : typeof cli.tool === 'string' ? cli.tool : undefined;
+      for (const problem of cliProbeProblems(cli.probe, launched, cli.version !== undefined)) {
+        add('error', 'composition_ingredient_cli_probe_invalid', problemPath(`${path}.cli.probe`, problem), problem.message);
+      }
     }
     for (const key of ['config_dir', 'profile', 'package_ref', 'entry_point'] as const) {
       if (cli[key] !== undefined && typeof cli[key] !== 'string') {
         add('error', 'composition_ingredient_cli_field_shape', `${path}.cli.${key}`, `cli.${key} must be a string when present`);
+      }
+    }
+    if (cli.version !== undefined) {
+      for (const problem of cliVersionProblems(cli.version)) {
+        add('error', 'composition_ingredient_cli_version_invalid', problemPath(`${path}.cli.version`, problem), problem.message);
+      }
+    }
+    if (cli.install !== undefined) {
+      for (const problem of cliInstallProblems(cli.install)) {
+        add('error', 'composition_ingredient_cli_install_invalid', problemPath(`${path}.cli.install`, problem), problem.message);
       }
     }
     return;

@@ -30,11 +30,11 @@
  *      backfill_complete. Vacuous-true when no upstream feeders exist
  *      (no drain to wait on).
  *
- *    - `webhook` / `service` — vacuously true. Webhook is append-only
- *      by definition (no drain window); service-collection instances
- *      aren't warehouse mirrors. The spec table omits both — the
- *      helper still answers cleanly so the caller doesn't have to
- *      special-case unknown platforms before the suppression check. */
+ *    - any other platform — vacuously true: nothing drains, so there is
+ *      no window to wait on. None is enrolled today (the D-118 `service`
+ *      platform was retired), but a row an older version wrote still
+ *      answers cleanly, so the caller doesn't have to special-case
+ *      unknown platforms before the suppression check. */
 
 import type { CollectionPlatform } from '@recued/contracts';
 import type {
@@ -44,7 +44,7 @@ import type {
 
 /** Platforms whose `backfill_complete` is meaningful — i.e. they
  *  actually drain a window of historical records on first enrollment.
- *  Webhook + service are vacuously complete (no drain). */
+ *  Any other platform is vacuously complete (no drain). */
 const DRAINING_PLATFORMS: ReadonlySet<CollectionPlatform> = new Set<
   CollectionPlatform
 >(['mail', 'calendar', 'file']);
@@ -61,7 +61,7 @@ export interface BackfillStateLookup {
   /** Synchronous read of the instance row, every call. Returns `true` when:
    *
    *    - the row exists with `backfill_complete = true`,
-   *    - the row exists for `webhook` / `service` (vacuous-true),
+   *    - the row exists for a platform that does not drain (vacuous-true),
    *    - the platform is `contact` and every mail / calendar instance
    *      is `backfill_complete = true` (or no mail / calendar
    *      instances exist at all).
@@ -92,7 +92,7 @@ export const createBackfillStateLookup = (
 
   const computeForRow = (row: CollectionInstanceRecord): boolean => {
     if (!DRAINING_PLATFORMS.has(row.platform)) {
-      // webhook + service: vacuously complete. The bool on the row is
+      // A platform that does not drain: vacuously complete. The bool on the row is
       // tracked but ignored — adapters in these classes don't drain,
       // and never call `markBackfillComplete`.
       return true;

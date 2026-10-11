@@ -37,7 +37,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * while `#packs/<slug>` is keyed by the name the author gave the pack. The row
  * already carries that second identity; use it when present rather than minting
  * a valid-looking route to an inventory key the Packs surface cannot resolve. */
-const ownerFacingPackSlug = (store: ContractStore, inventorySlug: string): string => {
+export const ownerFacingPackSlug = (store: ContractStore, inventorySlug: string): string => {
   const value = store.get('installed_pack', [inventorySlug])?.value;
   if (!isRecord(value)) return inventorySlug;
   const authored = value.authored_pack_slug;

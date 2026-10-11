@@ -652,72 +652,6 @@ describe('versions', () => {
     const m = { ...httpSample, version: 3, min_version: 3 };
     expect(codesOf(validateIngredient(m))).not.toContain('min_version_gt_version');
   });
-
-  it('service manifest with string version → version_invalid (now uniform integer)', () => {
-    const m = {
-      slug: 'svc',
-      kind: 'service',
-      author: 'recued-core',
-      name: 'Svc',
-      description: 'test service',
-      category: 'data',
-      risk_tier: 'read',
-      version: '1.0.0',
-      input: { service: { platform: 'macos' } },
-      output: {},
-    };
-    expect(codesOf(validateIngredient(m))).toContain('version_invalid');
-  });
-
-  it('service manifest with valid integer version + string binary_version → no version_invalid', () => {
-    const m = {
-      slug: 'svc',
-      kind: 'service',
-      author: 'recued-core',
-      name: 'Svc',
-      description: 'test service',
-      category: 'data',
-      risk_tier: 'read',
-      version: 1,
-      input: { service: { platform: 'macos', binary_version: '1.2.3' } },
-      output: {},
-    };
-    const codes = codesOf(validateIngredient(m));
-    expect(codes).not.toContain('version_invalid');
-    expect(codes).not.toContain('binary_version_invalid');
-  });
-
-  it('service manifest with empty binary_version → binary_version_invalid', () => {
-    const m = {
-      slug: 'svc',
-      kind: 'service',
-      author: 'recued-core',
-      name: 'Svc',
-      description: 'test service',
-      category: 'data',
-      risk_tier: 'read',
-      version: 1,
-      input: { service: { platform: 'macos', binary_version: '' } },
-      output: {},
-    };
-    expect(codesOf(validateIngredient(m))).toContain('binary_version_invalid');
-  });
-
-  it('service manifest with non-string binary_version → binary_version_invalid', () => {
-    const m = {
-      slug: 'svc',
-      kind: 'service',
-      author: 'recued-core',
-      name: 'Svc',
-      description: 'test service',
-      category: 'data',
-      risk_tier: 'read',
-      version: 1,
-      input: { service: { platform: 'macos', binary_version: 1.2 } },
-      output: {},
-    };
-    expect(codesOf(validateIngredient(m))).toContain('binary_version_invalid');
-  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -1332,28 +1266,23 @@ describe('D-126 P4.1 — INGREDIENT_KIND_FIELD_FORBIDDEN', () => {
     expect(issue).toBeDefined();
   });
 
-  it("kind:'service' (D-118 template) with chat.* is forbidden", () => {
-    const serviceSample = {
+  it("the retired kind 'service' is refused as unknown (D-321 § 5.5)", () => {
+    const retired = {
       slug: 'mock-service-macos',
       name: 'Mock service',
-      description: 'Stand-in service template used to exercise kind:service shape rules.',
+      description: 'A manifest that still declares the retired D-118 kind.',
       author: 'recued-core',
-      kind: 'service' as const,
+      kind: 'service',
       version: 1,
       category: 'data',
       risk_tier: 'write',
-      tags: ['service', 'mock', 'test'],
-      input: {
-        service: { platform: 'macos', variant_group: 'mock' },
-        'chat.prompt': 'should not be here',
-      },
-      output: {},
+      tags: ['mock', 'test'],
+      input: { service: { platform: 'macos' } },
+      output: { status: 'status' },
     };
-    const result = validateIngredient(serviceSample);
-    const issue = result.issues.find((i) =>
-      i.code === 'INGREDIENT_KIND_FIELD_FORBIDDEN' && i.path === 'input.chat.prompt'
-    );
-    expect(issue).toBeDefined();
+    const result = validateIngredient(retired);
+    expect(result.valid).toBe(false);
+    expect(result.issues.find((i) => i.code === 'INGREDIENT_KIND_INVALID' && i.path === 'kind')).toBeDefined();
   });
 });
 

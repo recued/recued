@@ -80,7 +80,6 @@ describe('resolveDispatchSlot (D-126 P2.2)', () => {
     expect(resolveDispatchSlot(mkManifest({ kind: 'ai' }))).toBe('ai');
     expect(resolveDispatchSlot(mkManifest({ kind: 'chat' }))).toBe('chat');
     expect(resolveDispatchSlot(mkManifest({ kind: 'mcp' }))).toBe('mcp');
-    expect(resolveDispatchSlot(mkManifest({ kind: 'service' }))).toBe('service');
     expect(resolveDispatchSlot(mkManifest({ kind: 'storage' }))).toBe('storage');
     expect(resolveDispatchSlot(mkManifest({ kind: 'connection' }))).toBe('connection');
   });
@@ -89,7 +88,6 @@ describe('resolveDispatchSlot (D-126 P2.2)', () => {
     // Kernel manifests dispatch through the kernel slot regardless of
     // their stamped kind — the kernel adapter routes internally by slug.
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'storage' }))).toBe('kernel');
-    expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'service' }))).toBe('kernel');
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'mcp' }))).toBe('kernel');
   });
 
@@ -120,7 +118,6 @@ describe('resolveDispatchSlot (D-126 P2.2)', () => {
   it('keeps kernel priority for the remaining kernel-backed kinds', () => {
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'http' }))).toBe('kernel');
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'storage' }))).toBe('kernel');
-    expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'service' }))).toBe('kernel');
     expect(resolveDispatchSlot(mkManifest({ author: 'recued', kind: 'mcp' }))).toBe('kernel');
   });
 });

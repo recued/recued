@@ -40,7 +40,7 @@ import type { ArgEditSchema, Checkpoint, ServerPendingAskDetail } from '@recued/
 import type { AuditEntry } from '@recued/storage';
 import type { PendingAsk } from '@recued/notification';
 
-import { buildAskLandingDetails } from './ask-landing-held-op-details.js';
+import { buildAskLandingDetails, readArgPath } from './ask-landing-held-op-details.js';
 import { defaultReviewDetails } from './ask-card-default-details.js';
 import { kernelReviewDetails } from './ask-card-kernel-details.js';
 import { holdCoversSeveralItems } from './foreach-approval-items.js';
@@ -76,7 +76,47 @@ export interface AskCardDetailResolverDeps {
    *  pack declares no reviewable fields (`ask-card-default-details.ts`). Absent
    *  ⇒ such an action shows no block, the behaviour before the default. */
   readonly lookupRequestSchema?: (operation_id: string) => unknown;
+  /** A file id as the owner reads it: its name and where it lives
+   *  (`describeFileView`), or undefined when the server cannot place it. Absent
+   *  ⇒ a file shows as its id, the behaviour before. */
+  readonly describeFileRef?: (record_id: string) => string | undefined;
 }
+
+/** A file id, whole: a saved file's, or a connected source's or a watched
+ *  folder's (two base64url parts). Text that only starts like one is text. */
+const FILE_ID = /^file:(?:[0-9a-f]{32}|(?:remote|local):[A-Za-z0-9_-]+:[A-Za-z0-9_-]+)$/;
+
+/** ⛔ A FILE READS AS THE FILE, NOT AS ITS ID. A held send's attachments showed
+ *  as `["file:local:Y2xpZW50cw:U2Fu…"]` — the one row an owner reads to decide
+ *  whether the right file is leaving, and nothing in it they could check (live
+ *  drive, 2026-10-10). A value that is a file id, or a list of them, is shown by
+ *  name and where it lives; one the server cannot place says so. Display only:
+ *  the held call is untouched, and its raw ids stay in the technical details. */
+const nameFileRefs = (
+  fields: readonly ArgEditSchema['fields'][number][],
+  shown: Record<string, unknown>,
+  describe: (record_id: string) => string | undefined,
+): { fields: ArgEditSchema['fields']; args: Record<string, unknown> } => {
+  const args: Record<string, unknown> = { ...shown };
+  const named = fields.map((field) => {
+    // The value the row would show, read by the row's own rule.
+    const value = readArgPath(shown, field.key);
+    const ids = typeof value === 'string' && FILE_ID.test(value) ? [value]
+      : Array.isArray(value) && value.length > 0
+        && value.every((v) => typeof v === 'string' && FILE_ID.test(v)) ? value as string[]
+        : null;
+    if (ids === null) return field;
+    const names = ids.map((id) => {
+      let name: string | undefined;
+      try { name = describe(id); } catch { name = undefined; }
+      return name ?? `${id} (not found)`;
+    });
+    // A long row is cut at the display cap; the count survives the cut.
+    args[field.key] = names.length === 1 ? names[0] : `${names.length} files: ${names.join('; ')}`;
+    return { ...field, type: 'string' as const };
+  });
+  return { fields: named, args };
+};
 
 const resolveDefaultTimeZone = (): string => {
   try {
@@ -139,10 +179,13 @@ const heldArgs = (checkpoint: Checkpoint): Record<string, unknown> => {
  *      installed `request_schema` (`ask-card-default-details.ts`) — so there
  *      is nothing this block may honestly show.
  *
- *  ⛔ AND NEVER A PARTIAL BLOCK. `buildAskLandingDetails` emits one row per
+ *  ⛔ AND NEVER A PARTIAL BLOCK. `buildAskLandingDetails` accounts for every
  *  ALLOWLIST field, so the set is the allowlist or it is nothing. Four rows
  *  where five values exist is a lie about completeness: absent sends the owner
- *  to the link, partial tells them they have already read it. */
+ *  to the link, partial tells them they have already read it. A field that
+ *  carries nothing is NAMED on one `Not set` or `Empty` row rather than given
+ *  a row of its own (`foldBlank`): a held send showed six such rows among
+ *  twelve (live drive, 2026-10-10), and the folded row still names each. */
 export const createAskCardDetailResolver = (
   deps: AskCardDetailResolverDeps,
 ): ((ask: PendingAsk) => Promise<readonly ServerPendingAskDetail[] | null>) => {
@@ -217,9 +260,14 @@ export const createAskCardDetailResolver = (
     } catch {
       return null;
     }
+    if (deps.describeFileRef !== undefined) {
+      const named = nameFileRefs(arg_schema.fields, shown, deps.describeFileRef);
+      arg_schema = { ...arg_schema, fields: named.fields };
+      shown = named.args;
+    }
     const built = buildAskLandingDetails(
       { args: shown, arg_schema, proposed_action: '' },
-      { timeZone: zoneOf() },
+      { timeZone: zoneOf(), foldBlank: true },
     );
     return built.details.length > 0
       ? built.details.map((d) => ({ label: d.label, value: d.value }))

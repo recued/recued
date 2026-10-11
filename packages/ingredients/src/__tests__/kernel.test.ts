@@ -517,13 +517,19 @@ describe('createKernelAdapter', () => {
       });
     });
 
-    it('routes webhook-list with platform=webhook', async () => {
-      let captured: unknown;
+    // `webhook-list` / `webhook-get` went 2026-10-10 with the Phase D webhook
+    // collection they read: nothing in production ever created one.
+    it('webhook-list and webhook-get are no longer kernel ingredients', async () => {
+      const seen: string[] = [];
       const adapter = createKernelAdapter({
-        collectionList: async (input) => { captured = input; return { records: [] }; },
+        collectionList: async (input) => { seen.push(input.platform); return { records: [] }; },
+        collectionGet: async (input) => { seen.push(input.platform); return { record: null }; },
       });
-      await adapter(mkCall('webhook-list', { slug: 'github' }));
-      expect((captured as { platform: string }).platform).toBe('webhook');
+      await expect(adapter(mkCall('webhook-list', { slug: 'github' })))
+        .rejects.toMatchObject({ code: 'INGREDIENT_NOT_FOUND' });
+      await expect(adapter(mkCall('webhook-get', { slug: 'github', record_id: 'r3' })))
+        .rejects.toMatchObject({ code: 'INGREDIENT_NOT_FOUND' });
+      expect(seen).toEqual([]);
     });
 
     it('routes email-list with platform=mail (slug prefix is "email" but contract is "mail")', async () => {
@@ -535,16 +541,15 @@ describe('createKernelAdapter', () => {
       expect((captured as { platform: string }).platform).toBe('mail');
     });
 
-    it('routes file-get + email-get + webhook-get through collectionGet', async () => {
+    it('routes file-get + email-get through collectionGet', async () => {
       const seen: Array<{ platform: string; slug: string; record_id: string }> = [];
       const adapter = createKernelAdapter({
         collectionGet: async (input) => { seen.push(input); return { record: null }; },
       });
       await adapter(mkCall('file-get', { slug: 'work', record_id: 'r1' }));
       await adapter(mkCall('email-get', { slug: 'work', record_id: 'r2' }));
-      await adapter(mkCall('webhook-get', { slug: 'github', record_id: 'r3' }));
-      expect(seen.map((x) => x.platform)).toEqual(['file', 'mail', 'webhook']);
-      expect(seen.map((x) => x.record_id)).toEqual(['r1', 'r2', 'r3']);
+      expect(seen.map((x) => x.platform)).toEqual(['file', 'mail']);
+      expect(seen.map((x) => x.record_id)).toEqual(['r1', 'r2']);
     });
 
     it('routes email-search through collectionSearch with platform=mail', async () => {

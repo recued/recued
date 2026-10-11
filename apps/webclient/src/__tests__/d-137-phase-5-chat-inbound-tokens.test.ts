@@ -118,9 +118,9 @@ describe('CHAT_INBOUND_TOKEN_KIND_COPY exhaustive over IngredientKind', () => {
       'ai',
       'chat',
       'mcp',
-      'service',
       'storage',
       'connection',
+      'cli',
     ];
     for (const k of expected) {
       expect(CHAT_INBOUND_TOKEN_KIND_COPY[k]).toBeDefined();

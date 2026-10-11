@@ -96,7 +96,7 @@ import {
   type Tier2Source,
   type Tier3Handler,
 } from '@recued/middleware/internal-tool-registry/index.js';
-import type { Tier2RecipeEntry, IngredientKindLookup } from '@recued/recipes';
+import type { Tier2ConnectionSlot, Tier2RecipeEntry, IngredientKindLookup } from '@recued/recipes';
 import type {
   AuditEntry,
   AuditLogStore,
@@ -112,6 +112,8 @@ import { deriveChannelSessionId } from '@recued/gateway';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { DATA_FILE_RECEIVED_SLUG } from './collections/file/file-read-handler.js';
 import { scoreFileNeedle, type FileViewResolver, type DataFileView } from './file-view-resolver.js';
+import { isWatchedFolderCollection } from './collections/file/watched-folder-collection.js';
+import { mediaClassForMimeType } from './collections/file/inbound-file-collection.js';
 import type { Collection } from './collections/types.js';
 import type {
   CalendarCollection,
@@ -153,6 +155,7 @@ import {
   type EscalationOrigin,
 } from './escalation-admission.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
+import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import { createStoreBackedMemoryWriteAdapter } from './memory-write-adapter.js';
 import { emitMemoryUser } from './events/emit-sites.js';
 import type { MemoryRedactionRecord } from './memory-rpc-handler.js';
@@ -218,6 +221,11 @@ export interface ChatToolHandlerDeps {
    *  registry exists. Absent ⇒ `recipe.stop` reports the registry unavailable
    *  rather than silently reporting nothing to stop. */
   getInFlightRegistry?: () => InFlightRegistry | undefined;
+  /** D-320 §3.5 — for one catalog listing, the slots each recipe signs in through
+   *  where the owner has a choice of connection (`recipe-connection-choices.ts`).
+   *  Called once per listing, so the stores are read once. Absent ⇒ no recipe
+   *  tool takes a `connections` argument. */
+  connectionChoices?: () => (recipe: RecipeDefinition) => ReadonlyArray<Tier2ConnectionSlot>;
   /** D-237 P1 — injectable clock for the source-freshness verdicts the
    *  collection reads now carry. Absent ⇒ `Date.now`, matching every D-236 call
    *  site. Present so a test can pin an age rather than infer one from wall
@@ -485,6 +493,11 @@ export interface ChatToolHandlerDeps {
   getOpAdmissionGate?: () =>
     | Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted' | 'isOwnerRecipeGranted' | 'isOwnerGoverned'>
     | undefined;
+  /** D-320 audit — the governing contract's connection axis for the same escalations
+   *  (late-bound off execute deps, like the gate): a contract that lists connections
+   *  bounds the connection an escalated read signs in through. Absent (dbless) ⇒ that
+   *  connection is not fenced, as at raw-op dispatch. */
+  getContractOverlay?: () => Pick<ContractOverlayResolver, 'admitsConnection'> | undefined;
 }
 
 /** Hard ceilings to bound the per-call payload landing in the chat
@@ -1907,10 +1920,14 @@ interface ChatFileRow {
   origin: string;
   scan_status: string;
   received_at: number;
-  /** Present only for a D-192 mirrored file — the model should be able to tell
-   *  a file the owner HOLDS from one a vendor holds on their behalf. */
-  posture?: 'remote';
+  /** Present only for a D-192 mirrored file (`remote`) or a file in a folder
+   *  Recued watches on the owner's machine (`local`): the model should be able
+   *  to tell a file the owner HOLDS from one a vendor holds on their behalf, and
+   *  both from one sitting in her own folder. */
+  posture?: 'remote' | 'local';
   provider?: string;
+  /** `local` only: the watched folder (its name) the file is in. */
+  folder?: string;
 }
 
 const projectChatFileRow = (record: {
@@ -1949,13 +1966,16 @@ const projectFileView = (v: DataFileView): ChatFileRow => ({
   file_id: v.record_id,
   filename: v.filename,
   ...(v.path !== undefined && v.path.length > 0 ? { path: v.path } : {}),
-  media_class: v.media_class ?? 'other',
+  media_class: v.media_class
+    ?? (v.posture === 'local' && v.mime_type !== undefined ? mediaClassForMimeType(v.mime_type) : 'other'),
   size_bytes: v.size ?? 0,
-  origin: v.origin ?? 'unknown',
+  // A watched folder's file is the owner's own, from her own disk.
+  origin: v.origin ?? (v.posture === 'local' ? 'watched_folder' : 'unknown'),
   scan_status: v.scan_status ?? 'unscanned',
   received_at: v.event_at ?? 0,
-  ...(v.posture === 'remote' ? { posture: 'remote' as const } : {}),
+  ...(v.posture === 'remote' || v.posture === 'local' ? { posture: v.posture } : {}),
   ...(v.provider !== undefined ? { provider: v.provider } : {}),
+  ...(v.folder !== undefined ? { folder: v.folder } : {}),
 });
 
 const createFileSearchHandler =
@@ -1988,9 +2008,19 @@ const createFileSearchHandler =
         },
       };
     }
-    const fileSourceFreshness = (): CollectionSourceFreshnessEntry[] =>
+    /** The verdict for each store this read reached. `withFolders` when the
+     *  answer may hold a watched folder's files: those rows are as current as
+     *  that folder's index, so each folder answers for its own (`folder` on a
+     *  row joins `collection_slug`). */
+    const fileSourceFreshness = (withFolders = false): CollectionSourceFreshnessEntry[] =>
       collectionSourceFreshnessFanOut(
-        [{ slug: DATA_FILE_RECEIVED_SLUG, health: collection.health }],
+        [
+          { slug: DATA_FILE_RECEIVED_SLUG, health: collection.health },
+          ...(withFolders
+            ? (registry?.list() ?? []).filter(isWatchedFolderCollection)
+              .map((c) => ({ slug: c.slug, health: () => c.health() }))
+            : []),
+        ],
         (deps.now ?? Date.now)(),
       );
 
@@ -2161,7 +2191,7 @@ const createFileSearchHandler =
         // complete-looking answer from a partial one.
         more_matches: filledQuota(rows.length, limit),
         scope,
-        source_freshness: fileSourceFreshness(),
+        source_freshness: fileSourceFreshness(resolved),
         ...(truncated ? { truncated: true } : {}),
         // ⛔ THE CAUSE OF AN EMPTY PAGE, when there is one to give. See the note
         // where this is computed: a multi-term query that matches nothing in
@@ -2878,11 +2908,13 @@ const applyCrmLiveEscalation = async <
   const admitUnit = (f: CrmConnectionFreshness): boolean => {
     const binding = deps.getCrmEscalationBinding?.(f.connection_name) ?? null;
     if (binding === null) return !external; // see the module note: fail-closed for doors
+    const overlay = deps.getContractOverlay?.();
     return admitSourceCatalogEscalation(deps.getOpAdmissionGate?.(), ctx, {
       catalogSlug: binding.catalogSlug,
       manifest: binding.manifest,
       operation: `${f.entity}.search`,
-    }).admitted;
+      connectionName: f.connection_name,
+    }, overlay === undefined ? undefined : (source, name) => overlay.admitsConnection(source, name)).admitted;
   };
 
   const units = freshness.map((f): SourceLiveEscalationUnit<ScopeSearchCandidate<T>> => {
@@ -3233,6 +3265,10 @@ const buildExecuteRequest = (
   args: Record<string, unknown>,
   ctx: ChatDispatchContext,
   recipeIdOverride?: string,
+  /** D-320 §3.5 — a Tier-2 call's flat args are the recipe's settings, so its
+   *  `connections` (the run's choice of connection) is lifted out of them, unless
+   *  the recipe declares a setting of that name: then it is that setting. */
+  liftConnections = true,
 ): ExecuteRequest | string => {
   const recipeId =
     recipeIdOverride ??
@@ -3262,12 +3298,22 @@ const buildExecuteRequest = (
   // model's composed recipient executes, post-approval, with no recipient and
   // fails). So: Tier 2 → the flat args ARE the config; Tier 1 → the nested
   // `args.config` envelope.
+  const tier2Connections = recipeIdOverride !== undefined
+    && liftConnections
+    && Object.prototype.hasOwnProperty.call(args, 'connections');
   const config =
     recipeIdOverride !== undefined
-      ? args
+      ? (tier2Connections
+          ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'connections'))
+          : args)
       : args.config && typeof args.config === 'object' && !Array.isArray(args.config)
         ? (args.config as Record<string, unknown>)
         : undefined;
+  // Checked in `handleExecute` (`readConnectionChoices`), which refuses a malformed
+  // one in words the model can act on.
+  const connections = recipeIdOverride !== undefined
+    ? (tier2Connections ? args.connections : undefined)
+    : args.connections;
   const vault =
     args.vault && typeof args.vault === 'object' && !Array.isArray(args.vault)
       ? (args.vault as Record<string, unknown>)
@@ -3282,6 +3328,7 @@ const buildExecuteRequest = (
     ...(config ? { config } : {}),
     ...(vault ? { vault } : {}),
     ...(context ? { context } : {}),
+    ...(connections !== undefined ? { connections: connections as Record<string, string> } : {}),
     trigger_source: channelTriggerSource(ctx),
     ...(ctx.execution_source ? { execution_source: ctx.execution_source } : {}),
     ...(ctx.contract_snapshot ? { contract_snapshot: ctx.contract_snapshot } : {}),
@@ -3420,6 +3467,7 @@ export const createChatTier2Dispatch =
       args,
       ctx,
       parsed.recipe_id,
+      !Object.prototype.hasOwnProperty.call(recipe.variables ?? {}, 'connections'),
     );
     if (typeof req === 'string') return invalidArgs(req);
     try {
@@ -4035,7 +4083,9 @@ const createWorkCreateHandler =
     }
   };
 
-const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
+/** The work-entity read tools' deps, from the chat tools' own (exported for the wiring pin,
+ *  `escalation-contract-overlay-wiring.test.ts`). */
+export const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadToolsDeps => ({
   // D-205 #3 — inject the PREDICATE, not the resolver: the gate logic stays in one place
   // and `work-entity-read-tools.ts` grows no grant-store dependency. `kind` IS the
   // collection (`task`/`note`/`commitment`/`project` are all `READABLE_COLLECTIONS`).
@@ -4048,6 +4098,7 @@ const workEntityReadToolsDeps = (deps: ChatToolHandlerDeps): WorkEntityReadTools
   getResolver: () => deps.getWorkEntityResolver?.(),
   getTargetedReadDeps: () => deps.getWorkEntityTargetedReadDeps?.(),
   getOpAdmissionGate: () => deps.getOpAdmissionGate?.(),
+  getContractOverlay: () => deps.getContractOverlay?.(),
   getEdgeStore: () => deps.getWorkEntityEdgeStore?.(),
 });
 
@@ -4081,6 +4132,8 @@ export const createChatTier2Source = (deps: ChatToolHandlerDeps): Tier2Source =>
     // at catalog-build time. */
     const store = deps.getRecipeStore();
     const entries: Tier2RecipeEntry[] = [];
+    // D-320 §3.5 — read once per listing; see `ChatToolHandlerDeps.connectionChoices`.
+    const connectionSlotsOf = deps.connectionChoices?.();
     for (const id of store.ids()) {
       const recipe = store.get(id);
       if (!recipe) continue;
@@ -4099,6 +4152,9 @@ export const createChatTier2Source = (deps: ChatToolHandlerDeps): Tier2Source =>
         // `'bundled'`) are distributed content: absent defaults HIDDEN —
         // the author opts in with explicit `chat_exposed: true`.
         user_authored: stored?.source === 'inline',
+        ...((slots) => (slots.length > 0 ? { connection_slots: slots } : {}))(
+          connectionSlotsOf?.(recipe) ?? [],
+        ),
       });
     }
     return entries;
@@ -4395,10 +4451,10 @@ const recipeScheduleRefusal = (
   return undefined;
 };
 
-/** One entry of a door's diff, in words: an account by name, a tool or an
+/** One entry of a door's diff, in words: a connection by name, a tool or an
  *  action by its id (as the webclient's notice words it). */
 const doorEntryLabel = (entry: string): string => {
-  if (entry.startsWith('connection:')) return `the ${entry.slice('connection:'.length)} account`;
+  if (entry.startsWith('connection:')) return `the ${entry.slice('connection:'.length)} connection`;
   if (entry.startsWith('ingredient:')) return entry.slice('ingredient:'.length);
   return entry;
 };
@@ -4432,7 +4488,7 @@ const webhookDoorNote = (changes: readonly DishWebhookDoorChange[] | undefined):
       }
       case 'closed': {
         const why = change.reason_code === 'no_account'
-          ? ' until its settings choose an account'
+          ? ' until its settings choose a connection'
           : change.reason_code === 'refused' && change.reason !== undefined && change.reason.trim() !== ''
             ? ` (${change.reason.trim().replace(/\.$/, '')})`
             : ' for now; saving its settings again retries';

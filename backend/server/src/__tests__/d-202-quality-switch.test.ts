@@ -20,12 +20,8 @@ import {
 } from '../bootstrap-handler.js';
 
 const baseBootstrap: BootstrapConfig = {
-  data_path: '/var/lib/recued',
-  bind_host: '127.0.0.1',
   bind_port: 3001,
-  mcp_port: 0,
-  webhook_port: 0,
-  log_path: '/var/log/recued',
+  webhooks_enabled: false,
 };
 
 const mkDeps = (overrides: Partial<BootstrapHandlerDeps> = {}): BootstrapHandlerDeps => {

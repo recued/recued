@@ -8,17 +8,19 @@
  *  `backend/api/src/routes/ddns.ts` (single `upsertARecord`).
  *
  *  Named `AuthoritativeDnsProvider` (not `DdnsProvider`) to stay clearly
- *  distinct from `@recued/server-network`'s `DdnsAdapter`, which is a
- *  *different layer*: the server→DDNS-endpoint client push (a user's server
- *  telling a DDNS provider its current IP — recued-cloud / DuckDNS / Dynu /
- *  BYO). That seam stays where it is. */
+ *  distinct from a *different layer*: the server→DDNS-endpoint client push
+ *  (a user's server telling a DDNS provider its current IP). For a Pro name
+ *  that is the server's update poller (`wire-ddns-update-poller.ts`); a BYO
+ *  name is kept current by the provider's own updater. (This named
+ *  `@recued/server-network`'s `DdnsAdapter` until 2026-10-10; it was never
+ *  wired, and was deleted.) */
 
-/** Address record types Recued publishes for `<handle>.recued.cloud`. */
+/** Address record types Recued publishes for `<handle>.recued.net`. */
 export type DnsAddressType = 'A' | 'AAAA';
 
 /** A single authoritative address RRset entry. */
 export interface DnsAddressRecord {
-  /** Fully-qualified name, e.g. `alice.recued.cloud`. */
+  /** Fully-qualified name, e.g. `alice.recued.net`. */
   hostname: string;
   type: DnsAddressType;
   /** IP literal — IPv4 for `A`, IPv6 for `AAAA`. */

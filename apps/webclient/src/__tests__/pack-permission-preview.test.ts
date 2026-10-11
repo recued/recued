@@ -98,6 +98,9 @@ describe('pack permission preview — what installing WOULD allow', () => {
      *  or a legitimate screen looks wrong and the honest one looks suspicious. */
     const el = renderPackPermissionPreview({ document: fakeDoc, manifest: manifest() });
     expect(allText(el as unknown as FakeEl)).toContain('Files.ReadWrite');
+    // D-320 ruling 17 — "connection", never "account".
+    expect(allText(el as unknown as FakeEl)).toContain('Connections it uses');
+    expect(allText(el as unknown as FakeEl)).not.toMatch(/account/i);
   });
 
   it('⛔⛔⛔ says NOTHING IS GRANTED YET — a preview must not read as current state', () => {
@@ -128,7 +131,7 @@ describe('pack permission preview — what installing WOULD allow', () => {
     expect(byTier.get('read')).toContain('runs without asking you');
   });
 
-  it('⛔⛔ lists a bound account even when NO scopes are declared', () => {
+  it('⛔⛔ lists a bound connection even when NO scopes are declared', () => {
     /** THE OBVIOUS IMPLEMENTATION DROPS THIS PACK. Enumerating
      *  `requiredScopesByConnection(manifest)` looks like the right source and is keyed
      *  by the scopes it found — so a connection whose operations declare none produces
@@ -152,7 +155,7 @@ describe('pack permission preview — what installing WOULD allow', () => {
       ],
     } as Partial<BulkPackManifest>);
     const model = packPermissionPreviewModel(scopeless);
-    expect(model!.connections, 'the account must be disclosed even with no scopes')
+    expect(model!.connections, 'the connection must be disclosed even with no scopes')
       .toEqual([{ connection: 'quiet', scopes: [] }]);
     const el = renderPackPermissionPreview({ document: fakeDoc, manifest: scopeless });
     expect(allText(el as unknown as FakeEl)).toContain('quiet');
@@ -168,7 +171,7 @@ describe('pack permission preview — what installing WOULD allow', () => {
     expect(renderPackPermissionPreview({ document: fakeDoc, manifest: bare })).toBeNull();
   });
 
-  it('⚠ connection rows carry their slot, so a multi-account pack is legible', () => {
+  it('⚠ connection rows carry their slot, so a pack with several connections is legible', () => {
     const el = renderPackPermissionPreview({ document: fakeDoc, manifest: manifest() });
     const rows = withAttr(el as unknown as FakeEl, PACK_PERMISSION_PREVIEW_CONNECTION_ATTR);
     expect(rows).toHaveLength(1);

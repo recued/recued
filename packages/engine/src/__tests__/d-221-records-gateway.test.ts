@@ -110,7 +110,7 @@ describe('D-221 Records catalog gateway', () => {
       undefined,
       undefined,
       undefined,
-    )).rejects.toThrow(/not granted|denied|disabled/i);
+    )).rejects.toThrow(/' is not allowed for this run, so it did not run\. \(operation_not_granted\)$/);
 
     await expect(runCatalogOperation(
       context({ recordsOperationExecutor: undefined }),
@@ -167,7 +167,7 @@ describe('D-221 Records catalog gateway', () => {
       undefined,
       undefined,
       undefined,
-    )).rejects.toThrow(/not granted|denied|disabled/i);
+    )).rejects.toThrow(/' is not allowed for this run, so it did not run\. \(operation_not_granted\)$/);
   });
 
   it('treats host-owned reactive work as owner authority but not an anonymous contract-less fire', async () => {
@@ -212,7 +212,7 @@ describe('D-221 Records catalog gateway', () => {
       undefined,
       undefined,
       undefined,
-    )).rejects.toThrow(/not granted|denied|disabled/i);
+    )).rejects.toThrow(/' is not allowed for this run, so it did not run\. \(operation_not_granted\)$/);
     expect(seen).toEqual([null]);
   });
 });

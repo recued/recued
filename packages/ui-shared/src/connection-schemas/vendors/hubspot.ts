@@ -171,10 +171,22 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
   },
 ];
 
-/** The scopes a Service Key needs for what Recued reads by default. `oauth` is
- *  an OAuth-app scope with nothing to tick on a key, so it is left out. A
- *  pack's write scopes are added by the owner when a pack needs them. */
-const SERVICE_KEY_SCOPES = HUBSPOT_OAUTH_SCOPES.filter((scope) => scope !== 'oauth');
+/** The read scopes Recued's own HubSpot reads use. `oauth` is an OAuth-app
+ *  scope with nothing to tick on a key, so it is left out. */
+const SERVICE_KEY_READ_SCOPES = HUBSPOT_OAUTH_SCOPES.filter((scope) => scope !== 'oauth');
+
+/** The rest of what the HubSpot Pack's operations use: changing contacts
+ *  (which HubSpot also checks for notes, tasks and meetings), companies and
+ *  deals, and `tickets`, one scope for reading and changing tickets. The
+ *  owner chose the whole set (2026-10-09), so a key made from the guide
+ *  reads "connected" on the Pack's page; a read-only key skips these, and
+ *  the Pack's page then names what is missing. */
+const SERVICE_KEY_CHANGE_SCOPES = [
+  'crm.objects.contacts.write',
+  'crm.objects.companies.write',
+  'crm.objects.deals.write',
+  'tickets',
+] as const;
 
 /** One setup guide per way to connect, swapped by `auth.type`. The steps
  *  follow HubSpot's own docs as of 2026-10-08: Service keys under
@@ -206,8 +218,10 @@ const HUBSPOT_ONBOARDING: ConnectionOnboarding = {
         },
         {
           title: 'Tick its scopes',
-          detail: `Click Add new scope and tick ${SERVICE_KEY_SCOPES.join(', ')}. `
-            + 'If a Pack will change HubSpot records, tick the write scopes it names too.',
+          detail: `Click Add new scope and tick ${SERVICE_KEY_READ_SCOPES.join(', ')}. `
+            + `Then tick ${SERVICE_KEY_CHANGE_SCOPES.join(', ')}, so the HubSpot Pack can change `
+            + 'records and work with tickets. Changes still go through Recued’s approvals. '
+            + 'For a read-only key, skip that second group: the Pack’s page then names what is missing.',
         },
         {
           title: 'Paste it below',
@@ -216,7 +230,7 @@ const HUBSPOT_ONBOARDING: ConnectionOnboarding = {
       ],
       verification:
         'Reads your HubSpot account details with the key, so a wrong or revoked key shows '
-        + 'at once. It cannot see which scopes the key has: a missing one shows when a Pack first needs it.',
+        + 'at once. It also reads which scopes the key has, so each Pack can say if one is missing.',
       note:
         'HubSpot suggests replacing a Service Key every six months. When you do, paste the new '
         + 'key into this same connection.',
@@ -225,11 +239,15 @@ const HUBSPOT_ONBOARDING: ConnectionOnboarding = {
     {
       key: 'hubspot-app',
       tone: 'advanced',
-      badge: 'Advanced · needs HubSpot’s command-line tool',
+      // A new app is made only with HubSpot's CLI, and that needs sandbox
+      // access, which only paid HubSpot plans have (owner, 2026-10-09). A
+      // free account has no way to make one: the Service Key is its path.
+      badge: 'Advanced · a new app needs a paid HubSpot plan',
       title: 'Connect HubSpot with your own app',
       description:
-        'You build a small app in HubSpot and sign in through it. In return, Recued sees '
-        + 'which scopes HubSpot granted.',
+        'You build a small app in HubSpot and sign in through it. HubSpot makes new apps '
+        + 'only with its command-line tool, and that needs sandbox access, which only paid '
+        + 'HubSpot plans have. On a free account, use a Service Key.',
       portal: {
         label: 'HubSpot’s guide to creating an app',
         url: 'https://developers.hubspot.com/docs/apps/developer-platform/build-apps/create-an-app',

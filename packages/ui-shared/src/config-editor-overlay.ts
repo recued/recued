@@ -48,6 +48,7 @@ import {
   type RecordRefVariableSearch,
 } from './record-ref-variable.js';
 import { wireFocusTrap, type FocusTrapHandle } from './focus-trap.js';
+import type { ConnectionLine } from './connection-lines.js';
 import {
   wireMailTemplateVariables,
   type MailTemplateVariableCallers,
@@ -60,6 +61,8 @@ const ACTION_ATTR = 'data-recued-config-editor-action';
 export const CONFIG_EDITOR_NAME_ATTR = 'data-recued-config-editor-name';
 /** D-319 — the "Also on a schedule" choice, when the form offers one. */
 export const CONFIG_EDITOR_SCHEDULE_ATTR = 'data-recued-config-editor-schedule';
+/** D-320 §4 — a Connection line's select; the value is its slot. */
+export const CONFIG_EDITOR_CONNECTION_ATTR = 'data-recued-config-editor-connection';
 
 const e = (v: unknown): string =>
   String(v)
@@ -190,15 +193,19 @@ const CONFIG_EDITOR_STYLES = `
 /* D-315 — a template setting's own actions: open it, duplicate it to edit. */
 .config-editor-panel .var-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .config-editor-panel .var-actions [hidden] { display: none; }
-/* D-319 — the switch-on form: the dish's name, what starts it, a schedule. */
+/* D-319 — the switch-on form: the dish's name, what starts it, a schedule.
+   D-320 — and which connection the dish uses. */
 .config-editor-panel .config-editor-name,
+.config-editor-panel .config-editor-connection,
 .config-editor-panel .config-editor-schedule { display: grid; gap: 4px; font-size: 12px; font-weight: 600; color: var(--fg); }
 .config-editor-panel .config-editor-name input,
+.config-editor-panel .config-editor-connection select,
 .config-editor-panel .config-editor-schedule select {
   box-sizing: border-box; width: 100%; min-height: 36px; border: 1px solid var(--border);
   border-radius: 6px; padding: 7px 9px; background: var(--surface); color: var(--fg); font: inherit; font-weight: 400;
 }
 .config-editor-panel .config-editor-name input:focus,
+.config-editor-panel .config-editor-connection select:focus,
 .config-editor-panel .config-editor-schedule select:focus { outline: none; border-color: var(--accent); }
 .config-editor-panel .config-editor-lead { margin: 0; overflow-wrap: anywhere; font-size: 13px; color: var(--fg); }
 ${FILE_REF_ARRAY_STYLES}
@@ -286,12 +293,25 @@ export interface ConfigEditorOverlayOptions {
   /** D-319 — refuse to confirm while a required setting is empty (a
    *  connection, a mail template) — the dish would run without it. */
   requireSettings?: boolean;
+  /** D-320 §4 — the Connection lines (`connectionLines`): a choice per slot that
+   *  offers one, and the settings the slots stand in for, which the form leaves
+   *  out and never asks for (the pack holds the connection). Absent ⇒ no lines,
+   *  every setting as before. */
+  connections?: {
+    readonly lines: ReadonlyArray<ConnectionLine>;
+    readonly hidden: ReadonlySet<string>;
+  };
   /** Fired on confirm with a snapshot of the collected config — and, for the
    *  D-319 switch-on form, the name given and the schedule chosen. A returned
    *  promise keeps the editor open, locked, and focus-owned until it settles. */
   onConfirm: (
     config: Record<string, unknown>,
-    extras: { readonly name?: string; readonly cron?: string },
+    extras: {
+      readonly name?: string;
+      readonly cron?: string;
+      /** D-320 — each Connection line's selection, by slot. */
+      readonly connections?: Readonly<Record<string, string>>;
+    },
   ) => void | Promise<void>;
   /** Fired after the overlay detaches (any path) — host cleanup. */
   onClose?: () => void;
@@ -317,9 +337,18 @@ export const wireConfigEditorOverlay = (
   // widgets only, read on input). Namespace widget `id`/`for` so they never
   // collide with a background copy of the same widgets (e.g. an Add form).
   const config: Record<string, unknown> = { ...opts.currentOverlay };
-  const widgetRows = Object.keys(opts.variables)
+  // D-320 — the settings a Connection line stands in for are not the form's.
+  const hidden = opts.connections?.hidden ?? new Set<string>();
+  const asked: Record<string, VariableDefault> = Object.fromEntries(
+    Object.entries(opts.variables).filter(([key]) => !hidden.has(key)),
+  );
+  const connectionRows = (opts.connections?.lines ?? []).map((line) => `<label class="config-editor-connection">${e(line.label)}
+          <select ${CONFIG_EDITOR_CONNECTION_ATTR}="${e(line.slot)}">${line.options.map((option) =>
+            `<option value="${e(option.value)}"${option.value === line.selected ? ' selected' : ''}>${e(option.label)}</option>`,
+          ).join('')}</select></label>`).join('');
+  const widgetRows = Object.keys(asked)
     .map((key) => {
-      const def = opts.variables[key];
+      const def = asked[key];
       return def === undefined
         ? ''
         : renderVariableWidget(toWidgetShape(key, def, config[key]), {
@@ -344,7 +373,7 @@ export const wireConfigEditorOverlay = (
       ${opts.name !== undefined ? `<label class="config-editor-name">Name
         <input type="text" ${CONFIG_EDITOR_NAME_ATTR} value="${e(opts.name.value)}" maxlength="120"
           autocomplete="off"${opts.name.required ? ' required aria-required="true"' : ''}></label>` : ''}
-      <div class="config-editor-fields">${widgetRows}</div>
+      <div class="config-editor-fields">${widgetRows}${connectionRows}</div>
       ${opts.lead !== undefined ? `<p class="config-editor-lead">${e(opts.lead)}</p>` : ''}
       ${opts.schedules !== undefined && opts.schedules.length > 0 ? `<label class="config-editor-schedule">Also on a schedule
         <select ${CONFIG_EDITOR_SCHEDULE_ATTR}>
@@ -468,9 +497,9 @@ export const wireConfigEditorOverlay = (
     }
     // D-314 — a required list with every box unticked is not saved: dropped, its
     // default would come back ticked; kept, the recipe would get no days.
-    const listProblem = choiceListProblem(opts.variables, config);
+    const listProblem = choiceListProblem(asked, config);
     // D-319 — a dish without a required setting would run without it.
-    const settingProblem = opts.requireSettings === true ? requiredSettingProblem(opts.variables, config) : null;
+    const settingProblem = opts.requireSettings === true ? requiredSettingProblem(asked, config) : null;
     const nameBox = queryOverlay<HTMLInputElement>(`[${CONFIG_EDITOR_NAME_ATTR}]`);
     const name = nameBox?.value.trim() ?? opts.name?.value.trim() ?? '';
     const nameProblem = opts.name?.required === true && name === '' ? 'Give it a name to tell it apart.' : null;
@@ -485,9 +514,17 @@ export const wireConfigEditorOverlay = (
     const cron = queryOverlay<HTMLSelectElement>(`[${CONFIG_EDITOR_SCHEDULE_ATTR}]`)?.value ?? '';
     let outcome: void | Promise<void>;
     try {
+      // D-320 — each line's selection; a host with no DOM to read keeps its start.
+      const connections = opts.connections === undefined
+        ? undefined
+        : Object.fromEntries(opts.connections.lines.map((line) => [
+          line.slot,
+          queryOverlay<HTMLSelectElement>(`[${CONFIG_EDITOR_CONNECTION_ATTR}="${line.slot}"]`)?.value ?? line.selected,
+        ]));
       outcome = opts.onConfirm({ ...config }, {
         ...(opts.name !== undefined ? { name } : {}),
         ...(cron !== '' ? { cron } : {}),
+        ...(connections !== undefined ? { connections } : {}),
       });
     } catch {
       showConfirmFailure();

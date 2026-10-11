@@ -46,6 +46,7 @@ import {
   SERVICE_CONSECUTIVE_CRASHES_MAX,
   SERVICE_HEALTH_CHECK_INTERVAL_MS_FLOOR,
   SERVICE_RESTART_BACKOFF_MS,
+  cliToolPolicyOfRuntime,
   isReadyCliDetachedSupervisionSpec,
   type CliMethodBinding,
   type IngredientManifest,
@@ -772,6 +773,12 @@ export const createCliDaemonSupervisor = (
 
     const { supervision: _supervision, ...detachedWithoutSupervision } = binding.detached!;
     void _supervision;
+    // D-321 — every start the supervisor makes (boot, reconcile, a crash
+    // restart) is checked like the first one the gateway sends: the versions the
+    // pack was tested with, and where the owner gets the tool if it is gone.
+    const { tool_version, tool_install } = cliToolPolicyOfRuntime(
+      deps.getManifest(r.config.ingredient_slug)?.surfaces?.connector?.runtime,
+    );
     const call: CliInvocationCall = {
       slug: r.config.ingredient_slug,
       operation_key: r.config.op,
@@ -787,6 +794,8 @@ export const createCliDaemonSupervisor = (
       // result_dir / key are server-owned (not from config.args) so markers land
       // in the confined daemon dir.
       args: { ...r.config.args, result_dir: r.resultDir, key: DAEMON_MARKER_KEY },
+      ...(tool_version !== undefined ? { tool_version } : {}),
+      ...(tool_install !== undefined ? { tool_install } : {}),
     };
 
     let result: { pid?: number | null } & Record<string, unknown>;

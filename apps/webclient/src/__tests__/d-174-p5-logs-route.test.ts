@@ -40,6 +40,7 @@ import {
   LOGS_ROUTE_ROW_ATTR,
   LOGS_ROUTE_STATUS_ATTR,
   LOGS_ROUTE_STYLES_MARKER,
+  LOGS_ROUTE_UNTESTED_TOOL_ATTR,
   LOGS_ROUTE_YIELD_ATTR,
   bootstrapLogsRoute,
   projectRunAffectedItems,
@@ -2117,6 +2118,70 @@ describe('D-182 — cli failure render', () => {
     expect(html).toContain('whisper');
     // No stderr → no <pre> element (asserting the element tag, not the CSS class).
     expect(html).not.toContain('<pre class="logs-cli-stderr"');
+    rig.route.dispose();
+  });
+
+  it('D-321 — a not_found failure shows how to install the tool, and only an https link', async () => {
+    const cliError = recipeError({
+      code: 'CLI_TOOL_NOT_FOUND',
+      message: "cli tool 'opencode' was not found",
+      source: { recipe_id: 'r', step_id: 's', ingredient_slug: 'recued-core/opencode' },
+      details: {
+        cli_failure: {
+          reason: 'not_found',
+          tool: 'opencode',
+          install: ['npm install -g opencode-ai@1', '<b>brew install opencode</b>'],
+          install_docs: ['https://opencode.ai/docs', 'javascript:alert(1)'],
+        },
+      },
+    });
+    const base = runDetail('failed', 'allowed');
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({ run: { ...base, errors: [cliError] } }));
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Install with:');
+    expect(html).toContain('<code>npm install -g opencode-ai@1</code>');
+    // Escaped, never markup.
+    expect(html).toContain('<code>&lt;b&gt;brew install opencode&lt;/b&gt;</code>');
+    expect(html).toContain('href="https://opencode.ai/docs"');
+    expect(html).not.toContain('javascript:');
+    rig.route.dispose();
+  });
+
+  it('D-321 — a run under Warn says which untested version it used; the run data is escaped', async () => {
+    const base = runDetail('succeeded', 'allowed', { errors: [] });
+    const detail: RunDetail = {
+      ...base,
+      audit: {
+        ...base.audit,
+        untested_tools: [
+          { tool: '/opt/homebrew/bin/opencode', version: '2.0.1', tested: { from: '1.18.35', before: '2.0.0' }, state: 'untested' },
+          { tool: '<img src=x onerror=alert(1)>', tested: { from: '0.161.0' }, state: 'unreadable' },
+        ],
+      },
+    };
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({ run: detail }));
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(`${LOGS_ROUTE_UNTESTED_TOOL_ATTR}="/opt/homebrew/bin/opencode"`);
+    expect(html).toContain('This run used opencode 2.0.1, a version its pack was not tested with; '
+      + 'the pack was tested with 1.x versions from 1.18.35. It ran because opencode is set to Warn on its pack&#39;s page.');
+    expect(html).toContain('This run used &lt;img src=x onerror=alert(1)&gt;, whose version could not be read; '
+      + 'the pack was tested with versions from 0.161.0.');
+    expect(html).not.toContain('<img');
+    rig.route.dispose();
+  });
+
+  it('D-321 — a run with no untested program shows no such note', async () => {
+    const getCaller = vi.fn<RunsGetCaller>(async () => ({ run: runDetail('succeeded', 'allowed', { errors: [] }) }));
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openRun('run-1');
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain(LOGS_ROUTE_UNTESTED_TOOL_ATTR);
     rig.route.dispose();
   });
 });

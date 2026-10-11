@@ -389,7 +389,6 @@ const buildDeps = (
   connectionNotificationDeps: undefined,
   fileStack: undefined,
   calendarStack: undefined,
-  serviceStack: undefined,
   sharedStore: undefined,
   formResponseStore: undefined,
   mailFactStore: undefined,
@@ -804,6 +803,33 @@ describe('composeExecutorConfig connection handler block', () => {
       { kind: 'api', name: 'crm' },
       provider,
     );
+  });
+
+  // ⛔ D-217 — `uploadStaging` reached this composer from 2026-07-26 and was never
+  // forwarded: the deps type did not declare it, a spread escapes the
+  // excess-property check, and the adapter's tests hand-build their deps. Every
+  // chunked upload on a real server failed closed. Assert the SIDE it lands on.
+  it('hands the chunked-upload staging and its chunk reader to the api handler', async () => {
+    const uploadStaging = {
+      stage: vi.fn(async () => ({ token: 't', size_bytes: 1 })),
+      dispose: vi.fn(async () => {}),
+    };
+    const readUploadChunk = vi.fn(async () => ({ bytes: new Uint8Array(), mime_type: 'image/png' }));
+    const { config } = await composeWith({
+      connectionStore: connectionStore(),
+      uploadStaging,
+      readUploadChunk,
+    });
+
+    expect(config.connectionApi?.uploadStaging).toBe(uploadStaging);
+    expect(config.connectionApi?.readUploadChunk).toBe(readUploadChunk);
+  });
+
+  it('leaves the chunked-upload deps out of the api handler on a host that stages nothing', async () => {
+    const { config } = await composeWith({ connectionStore: connectionStore() });
+
+    expect(config.connectionApi).toBeDefined();
+    expectAbsent(config.connectionApi!, ['uploadStaging', 'readUploadChunk']);
   });
 
   it('persists refreshed auth with every optional connection row spread when fields are present', async () => {

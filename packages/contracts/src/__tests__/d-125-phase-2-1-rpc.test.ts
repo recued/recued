@@ -42,7 +42,9 @@ describe('D-125 P2.1 — collection.connection.* method registry', () => {
     // accidental SERVER_RPC_METHODS rewrite that loses prior rows.
     expect(SERVER_RPC_METHOD_SET.has('contact.upsert')).toBe(true);
     expect(SERVER_RPC_METHOD_SET.has('collection.list')).toBe(true);
-    expect(SERVER_RPC_METHOD_SET.has('collection.service.enroll')).toBe(true);
+    // `collection.service.*` is gone on purpose: the D-118 service installer
+    // was retired (D-321 § 5.4), so its family is no sentinel any more.
+    expect(SERVER_RPC_METHOD_SET.has('collection.calendar.list')).toBe(true);
     expect(SERVER_RPC_METHOD_SET.has('annotation.write')).toBe(true);
     expect(SERVER_RPC_METHOD_SET.has('enrichment.upsert')).toBe(true);
   });

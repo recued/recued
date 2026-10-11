@@ -156,6 +156,9 @@ export const EXPOSURE_MODAL_CANCEL_ATTR = 'data-recued-exposure-modal-cancel';
 export type ExposureGetCaller = () => Promise<{
   state: ExposureState;
   apex_mode: RootApexMode;
+  /** The server's own answer to "may a path be Public here?" (servers from
+   *  2026-10-10). Absent from an older server, whose gate refused them all. */
+  has_public_address?: boolean;
 }>;
 
 /** R26.2 Delta 2 — set the apex (`GET /`) serving mode. Production wires
@@ -614,7 +617,7 @@ export const mountExposurePanel = (
         })
         .catch(() => { /* section stays unrendered — see above */ });
     }
-    let got: { state: ExposureState; apex_mode: RootApexMode };
+    let got: Awaited<ReturnType<ExposureGetCaller>>;
     try {
       got = await opts.runGet();
     } catch (err) {
@@ -627,7 +630,13 @@ export const mountExposurePanel = (
       return;
     }
     if (disposed) return;
-    hasDdns = await ddnsPromise;
+    // ⛔ The server's own gate answer when it gives one. The hostname-list
+    // guess (`runHasDdns`) is for an older server only: it counted a Pro name
+    // as enough while the server refused every Public choice, so an owner was
+    // offered a button that always failed.
+    hasDdns = typeof got.has_public_address === 'boolean'
+      ? got.has_public_address
+      : await ddnsPromise;
     if (disposed) return;
     apexMode = got.apex_mode;
     // `applyNewState` runs the monotonic guard so a broadcast that landed

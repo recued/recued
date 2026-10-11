@@ -11,6 +11,7 @@ export {
   connectionFormValidationShouldAnnounce,
   connectionCredentialRegenerationAdminHandoff,
   MCP_PACK_INSTALL_SCOPE_HOST_ATTR,
+  SIGNIN_GRIDS_HOST_ATTR,
   validateConnectionForm,
   CONNECTIONS_PAGE_STYLES,
   type ConnectionsPageProps,

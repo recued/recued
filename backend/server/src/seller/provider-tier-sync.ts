@@ -41,6 +41,8 @@ import {
   type SellerProviderSpec,
   type SellerProviderTierSynchronizeRequest,
   type SellerProviderTierSynchronizeResponse,
+  profileForCatalog,
+  profileServesCatalog,
 } from '@recued/contracts';
 
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
@@ -269,9 +271,11 @@ export const createSellerProviderTierProvider = (
       .list({ kind: 'api' })
       .filter((row) => {
         if (resolveConnectionVendor(row) !== spec.vendor) return false;
-        const profile = profiles.get(row.name);
-        return profile?.catalog_slug === spec.catalog_slug
-          && profile.allowed_operations.includes(spec.tier_seed_operation);
+        // D-320 ruling 10 — the seller catalog's own grant on a connection that may
+        // serve several catalogs.
+        const grant = profileForCatalog(profiles.get(row.name), spec.catalog_slug);
+        return grant?.catalog_slug === spec.catalog_slug
+          && grant.allowed_operations.includes(spec.tier_seed_operation);
       })
       .map((row) => ({ name: row.name, display_name: row.display_name }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -287,7 +291,7 @@ export const createSellerProviderTierProvider = (
         return failure('not_configured', `${spec.label} API connection '${input.connection_name}' is not enrolled`);
       }
       const profile = profiles.get(input.connection_name);
-      if (!profile || profile.catalog_slug !== spec.catalog_slug) {
+      if (!profileServesCatalog(profile, spec.catalog_slug)) {
         return failure('not_configured', `connection '${input.connection_name}' is not bound to the installed ${spec.label} seller catalog`);
       }
       const manifest = canonicalManifest(spec);

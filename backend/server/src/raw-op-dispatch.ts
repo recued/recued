@@ -141,6 +141,7 @@ import type { SessionGrantResolver } from './session-grant-resolver.js';
 import type { ContractUseTake } from './policy-contract-overlay.js';
 import { withContractDispatchReservation } from './contract-dispatch-reservation.js';
 import { remoteFileConnectionNamesIn } from './collections/file/remote-file-byte-resolver.js';
+import { CONNECTION_NOT_ADMITTED_DETAIL } from './single-operation-admission.js';
 import {
   createBoundExecutor,
   createGatewayAuditEmitter,
@@ -440,6 +441,7 @@ export const dispatchRawOp = async (
     operation,
     executionSource,
     args: req.args,
+    connectionName,
     ...(req.contractSnapshot !== undefined ? { contractSnapshot: req.contractSnapshot } : {}),
   });
   if (admission.verdict === 'deny') {
@@ -685,6 +687,8 @@ const admitRawOp = (
     contractSnapshot?: ContractSnapshot;
     /** Forwarded to the shared core's connection fence — see its doc. */
     args?: Record<string, unknown>;
+    /** The connection the call names (`RAW_OP_CONNECTION_ARG`), for the same fence. */
+    connectionName?: string;
   },
 ): ReturnType<typeof evaluatePreflightAdmission> => {
   const { binding, manifest, operation, executionSource } = p;
@@ -701,6 +705,7 @@ const admitRawOp = (
       : p.contractSnapshot;
   return admitCatalogOpForSource(deps.opAdmissionGate, {
     ...(p.args !== undefined ? { args: p.args } : {}),
+    ...(p.connectionName !== undefined ? { connectionName: p.connectionName } : {}),
     ...(deps.contractOverlay !== undefined
       ? { admitsConnection: (src, name) => deps.contractOverlay!.admitsConnection(src, name) }
       : {}),
@@ -765,6 +770,11 @@ export const admitCatalogOpForSource = (
      *  ⇒ the fence is a no-op, matching every other grant seam here (a resume re-admits
      *  without re-reading args, and its original dispatch already passed). */
     args?: Record<string, unknown>;
+    /** The connection the call itself binds: the one a fresh raw op's caller names
+     *  (`RAW_OP_CONNECTION_ARG`), or the one an escalated Source or CRM read signs in
+     *  through (`escalation-admission.ts`). Absent (a resume, as for `args`) or `''` (a
+     *  connectionless op) ⇒ nothing to fence. */
+    connectionName?: string;
     admitsConnection?: (source: ExecutionSource, connection_name: string) => boolean;
   },
 ): ReturnType<typeof evaluatePreflightAdmission> => {
@@ -788,6 +798,18 @@ export const admitCatalogOpForSource = (
         verdict: 'deny',
         code: 'connection_not_in_scope',
         detail: `this dispatch reads a file from connection '${fenced}', which this dispatch's governing contract does not admit`,
+      }) as ReturnType<typeof evaluatePreflightAdmission>;
+    }
+    // D-320 audit — and the connection the call itself binds, which a raw op's caller
+    // names per call. The 2026-08-30 ruling ("a door could not choose the connection
+    // anyway") never held at this door, and since D-320 a connection serves several
+    // catalogs (2a), so the op grant no longer pins the account either.
+    if (p.connectionName !== undefined && p.connectionName !== ''
+      && !p.admitsConnection(executionSource, p.connectionName)) {
+      return Object.freeze({
+        verdict: 'deny',
+        code: 'connection_not_in_scope',
+        detail: CONNECTION_NOT_ADMITTED_DETAIL,
       }) as ReturnType<typeof evaluatePreflightAdmission>;
     }
   }

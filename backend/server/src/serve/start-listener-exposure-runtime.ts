@@ -21,7 +21,7 @@ export interface StartListenerExposureRuntimeOptions {
   readonly listener: ComposeListenersOptions;
   readonly exposure: Omit<
     ComposeServeExposureOptions,
-    'listenerCoordinator' | 'lanBindAddress' | 'wsHandleClientCount'
+    'listenerCoordinator' | 'lanBindAddress' | 'wsHandleClientCount' | 'hasPublicAddress'
   >;
   readonly runtime: Omit<
     StartPostListenerRuntimeOptions,
@@ -53,6 +53,10 @@ export const startListenerExposureRuntime = async (
     lanBindAddress: listeners.lanBindAddress,
     wsHandleClientCount: () =>
       listeners.serverHandlerSet.wsHandle.clientCount(),
+    // The same service every link the server hands out reads, so the grid
+    // allows Public exactly when there is an address to be public at.
+    hasPublicAddress: () =>
+      options.listener.storage.publicAddress.ownBaseUrls().length > 0,
   });
 
   const actualPort = listeners.server.port;

@@ -73,10 +73,10 @@ export const isGrantedReadAdmissible = (
  *    - `core.memory.read` / `core.memory.write` — the D-198 collective memory pool.
  *    - `core.work-entity.read` — the whole work graph (task / note / commitment /
  *      project) behind the Tier-1 `work.search` / `work.read` tools.
- *    - `core.data.webhook.get` / `core.data.webhook.list` + the `data.webhook`
- *      collection — raw incoming external webhook payloads; and
- *      `core.webhook.event.get`, whose additional active-run authority gate
- *      scopes one accepted decoded event.
+ *    - the `data.webhook` collection and `core.webhook.event.get`, whose
+ *      additional active-run authority gate scopes one accepted decoded event
+ *      (the raw-payload reads `core.data.webhook.get/list` were removed
+ *      2026-10-10 with the collection they read).
  *    - `core.data.form-response.list/get` + `data.form_response` — arbitrary accepted
  *      visitor form contents. Unlike a typed entity, the free-form payload has no
  *      per-field sensitivity contract.
@@ -142,8 +142,6 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // owner-default-only. The two compose AND, so the spine stays open and the
   // door still needs the verb.
   'core.work-entity.read',
-  'core.data.webhook.get',
-  'core.data.webhook.list',
   'core.webhook.event.get',
   'core.data.form-response.get',
   // D-210 A.8 slice 2 — the lifecycle WRITE. A read of visitor answers is

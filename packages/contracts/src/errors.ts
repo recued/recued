@@ -207,8 +207,8 @@ export type RecipeErrorCode =
   /** Rpc rejected because the server is still in `booting` state and
    *  hasn't completed its ready signal. Retry shortly. */
   | 'NOT_READY'
-  /** Boot aborted — another instance already holds the lock file at
-   *  `{data_path}/recued-server.lock`. The supervisor should stop
+  /** Boot aborted — another instance already holds the lock file
+   *  `recued-server.lock` in the data folder. The supervisor should stop
    *  retrying (exit code 4 is fatal to retry loops). */
   | 'LOCK_HELD'
   /** Crash-loop detection engaged the kill switch. User-class writes
@@ -228,8 +228,8 @@ export type RecipeErrorCode =
    *  sync ticks error out. Retryable with a fresh connect. */
   | 'COLLECTION_SOURCE_UNREACHABLE'
   /** Webhook collection registration or inbound POST rejected because
-   *  the server can't host the endpoint: `public_reachable=false` or
-   *  `webhook_port=0`. Load-bearing per D-096 — the cloud never
+   *  the server can't host the endpoint: `RECUED_PUBLIC_REACHABLE` is not
+   *  set, or `webhooks_enabled` is off. Load-bearing per D-096 — the cloud never
    *  relays inbound webhooks, so self-host users must surface a
    *  public address or run their own tunnel. */
   | 'WEBHOOK_UNAVAILABLE'
@@ -262,70 +262,6 @@ export type RecipeErrorCode =
    *  recipe's filter. Load-bearing — a broken event emitter
    *  should NOT drown the runtime by queueing thousands of runs. */
   | 'EVENT_TRIGGER_BACKPRESSURE'
-  // D-118 — data.service platform
-  /** Slug not in `collection_instances` for `platform = 'service'`.
-   *  Distinct from `COLLECTION_NOT_FOUND` (table absent) — here the
-   *  service registry exists but the named instance does not. */
-  | 'SERVICE_NOT_FOUND'
-  /** `template_slug` at enroll time doesn't resolve to a known
-   *  `kind: service` ingredient on this server. Stale recipe install
-   *  or the user uninstalled the template. */
-  | 'SERVICE_TEMPLATE_UNAVAILABLE'
-  /** Template's declared `platform` doesn't match the server OS.
-   *  Refused early at enroll — clear error rather than a deferred
-   *  install failure. */
-  | 'SERVICE_PLATFORM_MISMATCH'
-  /** `install[]` is null for this template — UI should surface the
-   *  `install_hint` string instead. Returned by the install rpc when
-   *  invoked against a hint-only template. */
-  | 'SERVICE_INSTALL_UNAVAILABLE'
-  /** Installer subprocess exited non-zero. Audit row carries the
-   *  full installer output; user retries via the dashboard. */
-  | 'SERVICE_INSTALL_FAILED'
-  /** Upgrade subprocess exited non-zero. Previous binary preserved
-   *  via `.bak` (download kind) or PM-managed rollback. */
-  | 'SERVICE_UPGRADE_FAILED'
-  /** Uninstaller subprocess exited non-zero. Instance row may or
-   *  may not have been removed depending on the failure stage. */
-  | 'SERVICE_UNINSTALL_FAILED'
-  /** `service-start` was called against an instance already in the
-   *  `running` state. Non-error variant — the dispatcher returns the
-   *  current `ServiceStatus` rather than a fault. */
-  | 'SERVICE_ALREADY_RUNNING'
-  /** `service-stop` or `service-invoke` (for ops requiring a live
-   *  process) called when the instance is stopped. */
-  | 'SERVICE_NOT_RUNNING'
-  /** `consecutive_crashes` reached `SERVICE_CONSECUTIVE_CRASHES_MAX`
-   *  (5). Supervisor stopped restart attempts; user must click
-   *  `[Clear & retry]` to resume. */
-  | 'SERVICE_PERMANENTLY_CRASHED'
-  /** `service-invoke op:` not in `caps.invoke`, OR `service-start` /
-   *  `service-stop` called against a tool-shaped instance with the
-   *  corresponding cap set to `'no'`. */
-  | 'SERVICE_OP_NOT_SUPPORTED'
-  /** `lifecycle.invoke.<op>.input` validation failed — wrong type,
-   *  missing required field, enum value out of range, or a flag-
-   *  injection guard tripped (`file_ref` value starting with `-`). */
-  | 'SERVICE_INPUT_INVALID'
-  /** Two-layer storage gate failed at invoke: cached instance bytes
-   *  exceed the per-instance quota, OR live `statvfs` free-space is
-   *  below `SERVICE_MIN_DISK_FREE_BYTES_DEFAULT`. */
-  | 'SERVICE_STORAGE_PRESSURE'
-  /** D-179 P5 — the invoke would exceed the per-instance or global
-   *  max-concurrent-invokes bound (`collection.service.
-   *  max_concurrent_invokes[_per_instance]`). No queueing — the
-   *  caller re-runs (re-run over resume). Retryable by definition. */
-  | 'SERVICE_INVOKE_CONCURRENCY'
-  /** `service-start` with `wait_until_healthy` exceeded the supplied
-   *  `timeout_ms` before the health check passed. */
-  | 'SERVICE_HEALTH_TIMEOUT'
-  /** A structured check (install / startup / health) returned
-   *  `passed: false`. The check `detail` rides on the error payload. */
-  | 'SERVICE_CHECK_FAILED'
-  /** `download` install kind: verified sha256 didn't match the
-   *  declared sha256. Atomic replace aborted; previous binary (if
-   *  any) preserved via `.bak`. */
-  | 'SERVICE_DOWNLOAD_SHA_MISMATCH'
   // D-119 Phase 15 — execution scope (recipe + ingredient install gate)
   /** Author-declared `execution_scope` is wider than the scope derived
    *  from the manifest shape (or, for recipes, the bundled
@@ -506,6 +442,12 @@ export type RecipeErrorCode =
    *  or hit its tight foreground timeout. The captured stderr tail + exit code
    *  ride on `details.cli_failure`. */
   | 'CLI_TOOL_FAILED'
+  /** D-321 — a cli op's tool is a version its pack was not tested with, or its
+   *  version could not be read, and the tool's setting is Refuse, so nothing
+   *  ran. The read version and the tested range ride on `details.cli_failure`.
+   *  Actionable by the owner: install a tested version, or choose Warn for the
+   *  tool on its pack's page. */
+  | 'CLI_TOOL_VERSION_UNTESTED'
   // D-192 Slice 6b — a work-entity CREATE whose vendor container dependency
   // (Linear `team`, an Asana `workspace`) is AMBIGUOUS: more than one option and
   // none named / stored. The create can't proceed until a human picks one; the
@@ -666,24 +608,6 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   ARCHIVE_IMPORT_IN_PROGRESS: 'error',
   COLLECTION_RECORD_NOT_FOUND: 'error',
   EVENT_TRIGGER_BACKPRESSURE: 'warn',
-  // D-118 — data.service platform.
-  SERVICE_NOT_FOUND: 'error',
-  SERVICE_TEMPLATE_UNAVAILABLE: 'fatal',
-  SERVICE_PLATFORM_MISMATCH: 'fatal',
-  SERVICE_INSTALL_UNAVAILABLE: 'error',
-  SERVICE_INSTALL_FAILED: 'error',
-  SERVICE_UPGRADE_FAILED: 'error',
-  SERVICE_UNINSTALL_FAILED: 'error',
-  SERVICE_ALREADY_RUNNING: 'warn',
-  SERVICE_NOT_RUNNING: 'error',
-  SERVICE_PERMANENTLY_CRASHED: 'fatal',
-  SERVICE_OP_NOT_SUPPORTED: 'fatal',
-  SERVICE_INPUT_INVALID: 'fatal',
-  SERVICE_STORAGE_PRESSURE: 'error',
-  SERVICE_INVOKE_CONCURRENCY: 'error',
-  SERVICE_HEALTH_TIMEOUT: 'error',
-  SERVICE_CHECK_FAILED: 'error',
-  SERVICE_DOWNLOAD_SHA_MISMATCH: 'fatal',
   // D-119 Phase 15 — execution scope.
   EXECUTION_SCOPE_TOO_WIDE: 'fatal',
   EXECUTION_SCOPE_INCOMPATIBLE: 'fatal',
@@ -723,6 +647,7 @@ export const ERR: Record<RecipeErrorCode, ErrorSeverity> = {
   // D-182 — cli executor failure classification.
   CLI_TOOL_NOT_FOUND: 'error',
   CLI_TOOL_FAILED: 'error',
+  CLI_TOOL_VERSION_UNTESTED: 'error',
   CONTAINER_PICK_REQUIRED: 'error',
   CREATE_PLAN_REQUIRED: 'error',
   // A step refused what it was given.
@@ -857,31 +782,13 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   CRASH_LOOP_ACTIVE: 'The server has restarted too often and paused user-class writes. Run server.resetCrashLoop or check the logs.',
   COLLECTION_NOT_FOUND: 'A collection this recipe needs is not registered on the server. Add it under Server → Collections.',
   COLLECTION_SOURCE_UNREACHABLE: 'A collection source is unreachable. Reconnect from Server → Collections to resume the sync.',
-  WEBHOOK_UNAVAILABLE: 'Inbound webhooks need a public address or a tunnel. Set webhook_port and a public host in Server → Config.',
+  WEBHOOK_UNAVAILABLE: 'Inbound webhooks need a public address or a tunnel. In config.toml, set webhooks_enabled = true under [bootstrap] and "collection.webhook.public_reachable" = true under [runtime].',
   TRIGGER_PATTERN_INVALID: 'The trigger pattern did not parse. Check the operator and the namespace path.',
   TRIGGER_RECIPE_NOT_INSTALLED: 'The recipe a trigger points to is not installed. Reinstall it or remove the trigger.',
   ARCHIVE_JOB_UNKNOWN: 'That archive job is unknown. It may have completed and aged out.',
   ARCHIVE_IMPORT_IN_PROGRESS: 'Another archive import is already running. Wait for it to finish before starting a new one.',
   COLLECTION_RECORD_NOT_FOUND: 'No record matches that id in this collection.',
   EVENT_TRIGGER_BACKPRESSURE: 'An event trigger fired faster than the recipe could keep up. Recued dropped the surplus events.',
-  // D-118 — data.service platform.
-  SERVICE_NOT_FOUND: 'No service is enrolled under that slug. Add it under Server → Services or pick a different one in this recipe.',
-  SERVICE_TEMPLATE_UNAVAILABLE: 'The service template this recipe needs is not installed on the server. Install it from the marketplace.',
-  SERVICE_PLATFORM_MISMATCH: 'This service template is for a different operating system than your server. Pick the variant that matches.',
-  SERVICE_INSTALL_UNAVAILABLE: 'This service has no automatic installer. Follow the install hint shown next to the service.',
-  SERVICE_INSTALL_FAILED: 'The installer reported an error. Check the install log under Server → Services for the underlying message.',
-  SERVICE_UPGRADE_FAILED: 'The upgrade did not complete. The previous version is still in place; check the upgrade log for the underlying error.',
-  SERVICE_UNINSTALL_FAILED: 'The uninstaller reported an error. The service may be partially removed; check the uninstall log.',
-  SERVICE_ALREADY_RUNNING: 'The service is already running. Recued returned the current status without restarting it.',
-  SERVICE_NOT_RUNNING: 'This operation needs the service to be running. Start it under Server → Services and try again.',
-  SERVICE_PERMANENTLY_CRASHED: 'The service crashed five times in a row and Recued paused it. Click Clear & retry under Server → Services to resume.',
-  SERVICE_OP_NOT_SUPPORTED: 'This service does not support that operation. Pick one from its declared invoke list.',
-  SERVICE_INPUT_INVALID: 'A value passed to this service did not match the declared input shape. Check the recipe’s inputs against the template.',
-  SERVICE_STORAGE_PRESSURE: 'There is not enough free space to run this service operation. Free disk space or raise the service quota.',
-  SERVICE_INVOKE_CONCURRENCY: 'Too many service operations are running at once. Wait for one to finish and try again, or raise the concurrency limit under Settings → Server.',
-  SERVICE_HEALTH_TIMEOUT: 'The service started but did not become healthy in time. Check the service logs for the underlying issue.',
-  SERVICE_CHECK_FAILED: 'A check on the service did not pass. Open the service detail to see which check tripped.',
-  SERVICE_DOWNLOAD_SHA_MISMATCH: 'The downloaded file did not match its expected checksum. Recued blocked the install to protect against tampering.',
   // D-119 Phase 15 — execution scope.
   EXECUTION_SCOPE_TOO_WIDE: 'This recipe claims to run somewhere it cannot. Its declared execution scope is wider than the ingredients allow — the author needs to narrow the scope or change the ingredients.',
   EXECUTION_SCOPE_INCOMPATIBLE: 'This recipe cannot run on this device. Install it on a paired runtime that matches its execution scope (extension for device-only, server for server-only).',
@@ -917,6 +824,7 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
   // D-182 — cli executor failure classification.
   CLI_TOOL_NOT_FOUND: 'A local tool this recipe runs was not found. Install the tool on the server, or check that it is on the server’s PATH.',
   CLI_TOOL_FAILED: 'A local tool this recipe runs exited with an error. Open the run to see the tool’s output.',
+  CLI_TOOL_VERSION_UNTESTED: 'A local tool this recipe runs is a version its pack was not tested with, so it did not run. Install a tested version, or choose Warn for the tool on its pack’s page in Packs.',
   CONTAINER_PICK_REQUIRED: 'This create needs you to choose which container it belongs to (a team, workspace, or project). Answer the request that was raised, then it will finish on its own.',
   CREATE_PLAN_REQUIRED: 'This create needs to make a new container (a project) first. Confirm the request that was raised and it will create it, then finish on its own.',
   BAD_INPUT: 'A step was given something it cannot use. Check the settings or arguments it names.',
@@ -1082,23 +990,6 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   ARCHIVE_IMPORT_IN_PROGRESS: 'environment',
   COLLECTION_RECORD_NOT_FOUND: 'environment',
   EVENT_TRIGGER_BACKPRESSURE: 'environment',
-  SERVICE_NOT_FOUND: 'choice',
-  SERVICE_TEMPLATE_UNAVAILABLE: 'choice',
-  SERVICE_PLATFORM_MISMATCH: 'choice',
-  SERVICE_INSTALL_UNAVAILABLE: 'choice',
-  SERVICE_INSTALL_FAILED: 'environment',
-  SERVICE_UPGRADE_FAILED: 'environment',
-  SERVICE_UNINSTALL_FAILED: 'environment',
-  SERVICE_ALREADY_RUNNING: 'environment',
-  SERVICE_NOT_RUNNING: 'environment',
-  SERVICE_PERMANENTLY_CRASHED: 'environment',
-  SERVICE_OP_NOT_SUPPORTED: 'choice',
-  SERVICE_INPUT_INVALID: 'choice',
-  SERVICE_STORAGE_PRESSURE: 'environment',
-  SERVICE_INVOKE_CONCURRENCY: 'environment',
-  SERVICE_HEALTH_TIMEOUT: 'environment',
-  SERVICE_CHECK_FAILED: 'environment',
-  SERVICE_DOWNLOAD_SHA_MISMATCH: 'owner',
   EXECUTION_SCOPE_TOO_WIDE: 'choice',
   EXECUTION_SCOPE_INCOMPATIBLE: 'choice',
   INGREDIENT_KIND_MISSING: 'choice',
@@ -1127,6 +1018,9 @@ export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
   DISPATCH_DEPTH_EXCEEDED: 'owner',
   CLI_TOOL_NOT_FOUND: 'choice',
   CLI_TOOL_FAILED: 'environment',
+  // D-321 — this server's tool cannot serve this pack until the owner acts, as
+  // with a missing tool.
+  CLI_TOOL_VERSION_UNTESTED: 'choice',
   CONTAINER_PICK_REQUIRED: 'owner',
   CREATE_PLAN_REQUIRED: 'owner',
   // The arguments, settings or step were wrong for this ask: a real lesson.

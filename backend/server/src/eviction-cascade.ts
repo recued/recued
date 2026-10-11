@@ -88,7 +88,7 @@ export interface EvictionCascadeDeps {
   /** Phase D collection registry. When wired, `collection:{platform}:{slug}`
    *  surface pressure events run the per-collection age-based pruner
    *  inline. Without it, collection surfaces report `not_evictable`
-   *  even when they're mail/webhook — file collections always report
+   *  even when they're mail — file collections always report
    *  not_evictable (user owns the filesystem; no auto-delete). */
   collectionRegistry?: CollectionRegistry;
   /** Live config — read on each pass so runtime reconfigure
@@ -137,18 +137,18 @@ const parseCollectionSurface = (
   if (idx <= 0 || idx >= rest.length - 1) return null;
   const platform = rest.slice(0, idx) as CollectionPlatform;
   const slug = rest.slice(idx + 1);
-  if (platform !== 'mail' && platform !== 'file' && platform !== 'webhook') {
+  if (platform !== 'mail' && platform !== 'file') {
     return null;
   }
   return { platform, slug };
 };
 
 /** File collections are never auto-evictable (the user owns the
- *  filesystem). Mail / webhook run age-based retention inline on
- *  pressure. */
+ *  filesystem). Mail runs age-based retention inline on pressure. (The
+ *  Phase D webhook collection did too, until it was removed 2026-10-10.) */
 const isCollectionSurfaceEvictable = (
   parsed: { platform: CollectionPlatform; slug: string },
-): boolean => parsed.platform === 'mail' || parsed.platform === 'webhook';
+): boolean => parsed.platform === 'mail';
 
 /** Create the cascade, subscribe it to every gate's `onStateChange`,
  *  and wire the retention pruner + orphan sweep into the pipeline. */
@@ -332,7 +332,7 @@ export const createEvictionCascade = (
         }
       } else if (collectionParsed && deps.collectionRegistry) {
         // Phase D: per-collection age-based retention fires inline on
-        // pressure. Mail / webhook only — file is handled by the
+        // pressure. Mail only — file is handled by the
         // not_evictable branch above.
         const { platform, slug } = collectionParsed;
         const collection = deps.collectionRegistry.get(platform, slug);
@@ -410,8 +410,8 @@ export const createEvictionCascade = (
   }
   // Phase D: collection gates are registered after cascade construction
   // (bin.ts creates the registry, then the cascade, then registers
-  // per-collection gates as each MailCollection / FileCollection /
-  // WebhookCollection boots). Auto-subscribe so the cascade never
+  // per-collection gates as each MailCollection / FileCollection
+  // boots). Auto-subscribe so the cascade never
   // misses a state-change from a late-registered surface.
   unsubscribes.push(
     deps.registry.onGateRegistered((gate) => {

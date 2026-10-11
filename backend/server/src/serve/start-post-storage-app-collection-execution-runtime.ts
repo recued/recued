@@ -389,7 +389,7 @@ export const startPostBaseStorageVaultRuntime = async (
             args: base.args,
             dbPath: base.dbPath,
             port: base.port,
-            webhookPort: base.loadedConfig.bootstrap.webhook_port,
+            webhooksEnabled: base.loadedConfig.bootstrap.webhooks_enabled,
             runtimeConfig: base.runtimeConfig,
             backgroundServices,
             storage: storageContext,

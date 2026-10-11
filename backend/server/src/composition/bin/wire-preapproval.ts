@@ -1,6 +1,7 @@
 /** Live realm composition. Public owner requests and kernel requests share
  * one preparation service, repository, notification queue and owned driver. */
 import type { NotificationBlock } from '@recued/notification';
+import { settleDoorConnections } from '../../recipe-capability-wiring.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { PreapprovalHandlerDeps } from '../../preapproval-handler.js';
 import { createPreapprovalActivations, type PreapprovalAutomationDeps } from '../../storage/preapproval-activations.js';
@@ -48,6 +49,10 @@ export const composePreapproval = (deps: {
   let composed = false;
   const service = createPreapprovalService({ storage: deps.storage, sources: deps.sources,
     activations, authority, execution: deps.execution, profiles: deps.profiles, now: deps.now, drafts,
+    // D-320 audit — the reviewed snapshot settles each slot's connection as the run will.
+    settleConnections: (recipe, config, dish, packs) => settleDoorConnections(recipe, config, {
+      ...deps.execution, ...(packs !== undefined ? { packs } : {}), dishChoices: dish,
+    }),
     ...(mail ? { mail } : {}),
     executionCapabilities: () => composed ? {
       activation_kinds: ['one_shot', 'next_schedule', 'next_auto_run', 'next_trigger'],

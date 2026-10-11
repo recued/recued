@@ -24,7 +24,7 @@ import type {
   StorageState,
 } from '@recued/contracts';
 import { worstStorageState } from '@recued/contracts';
-import type { BootstrapConfig } from '@recued/config';
+import { BOOTSTRAP_KEYS, isBootstrapKey, type BootstrapConfig } from '@recued/config';
 import type { AuditLogStore } from '@recued/storage';
 import type { ServerStateStore } from './server-state.js';
 import type { PressureStateStore } from './pressure-state.js';
@@ -82,17 +82,14 @@ export interface BootstrapHandlerDeps {
   onPauseChanged?: (paused: boolean) => void | Promise<void>;
 }
 
-/** Whitelist of bootstrap fields a staged patch may touch. Mirrors
- *  `BootstrapConfig` keys except `data_path` — moving the data path
- *  mid-flight would split durable state across directories, so changing
- *  it requires an explicit migration command rather than a restart. */
-const STAGEABLE_FIELDS: Array<keyof BootstrapConfig> = [
-  'bind_host',
-  'bind_port',
-  'mcp_port',
-  'webhook_port',
-  'log_path',
-];
+/** Every live bootstrap key may be staged: `bind_port` (a port number) and
+ *  `webhooks_enabled` (a boolean).
+ *
+ *  `data_path`, `log_path`, `bind_host` and `mcp_port` were removed on
+ *  2026-10-09 (`@recued/config` `bootstrap-keys.ts`): a patch naming one is
+ *  refused like any unknown field, and the store drops one left in a row
+ *  staged before then (`server-state.ts` `getStagedBootstrap`). */
+const STAGEABLE_FIELDS: readonly (keyof BootstrapConfig)[] = BOOTSTRAP_KEYS;
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -107,35 +104,28 @@ const validatePatch = (
     return { patch, errors };
   }
   for (const [key, value] of Object.entries(raw)) {
-    const k = key as keyof BootstrapConfig;
-    if (!STAGEABLE_FIELDS.includes(k)) {
+    if (!isBootstrapKey(key)) {
       errors[key] = `field '${key}' is not stageable (allowed: ${STAGEABLE_FIELDS.join(', ')})`;
       continue;
     }
-    if (k === 'bind_host' || k === 'log_path') {
-      if (typeof value !== 'string' || value.length === 0) {
-        errors[key] = `${key} expects non-empty string`;
+    if (key === 'webhooks_enabled') {
+      if (typeof value !== 'boolean') {
+        errors[key] = `${key} expects true or false`;
         continue;
       }
-      patch[k] = value;
+      patch[key] = value;
       continue;
     }
-    if (k === 'bind_port' || k === 'mcp_port' || k === 'webhook_port') {
-      if (
-        typeof value !== 'number'
-        || !Number.isInteger(value)
-        || value < 0
-        || value > 65535
-      ) {
-        errors[key] = `${key} expects integer in [0, 65535]`;
-        continue;
-      }
-      patch[k] = value;
+    if (
+      typeof value !== 'number'
+      || !Number.isInteger(value)
+      || value < 0
+      || value > 65535
+    ) {
+      errors[key] = `${key} expects integer in [0, 65535]`;
       continue;
     }
-    // `data_path` is filtered upstream by STAGEABLE_FIELDS; falling out
-    // of the explicit narrow branches is defensive only.
-    errors[key] = `field '${key}' is not stageable`;
+    patch[key] = value;
   }
   return { patch, errors };
 };
@@ -149,12 +139,8 @@ export const handleGetBootstrap = (
   const staged = deps.state.getStagedBootstrap() ?? {};
   return {
     config: {
-      data_path: deps.bootstrap.data_path,
-      bind_host: staged.bind_host ?? deps.bootstrap.bind_host,
       bind_port: staged.bind_port ?? deps.bootstrap.bind_port,
-      mcp_port: staged.mcp_port ?? deps.bootstrap.mcp_port,
-      webhook_port: staged.webhook_port ?? deps.bootstrap.webhook_port,
-      log_path: staged.log_path ?? deps.bootstrap.log_path,
+      webhooks_enabled: staged.webhooks_enabled ?? deps.bootstrap.webhooks_enabled,
       pending_restart: Object.keys(staged).length > 0,
     },
   };

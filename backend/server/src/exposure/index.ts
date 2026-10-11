@@ -135,10 +135,21 @@ export interface ExposureSideEffects {
   broadcast(event: ExposureChangedEvent): Promise<void>;
 }
 
-/** DDNS availability probe. Public-path resolutions require a reachable
- *  DDNS handle (Pro recued.cloud OR user-configured DDNS adapter). The
- *  state machine refuses transitions that would resolve any path to
- *  `public === true` when the probe reports unavailable. */
+/** Whether this server has an address people outside can use. The state
+ *  machine refuses any transition that would leave a path `public === true`
+ *  while it reports none (`preset_unachievable_no_ddns`).
+ *
+ *  Production answers from `public-address.ts` `ownBaseUrls()`: a configured
+ *  `RECUED_PUBLIC_BASE_URL` (never a LAN or local host), or an enabled,
+ *  verified name on the Hostnames screen holding a certificate or sitting
+ *  behind a proxy that does (a Recued Pro name, an own domain, one a proxy
+ *  looks after). NOT the probe-ranked `baseUrls`: those list a name only once
+ *  its path is already Public, and a name cannot answer a probe before then.
+ *
+ *  ⛔ Named for its first intended source (a Pro DDNS handle), and so is the
+ *  wire code. The production wiring was a constant `false` from 2026-05 to
+ *  2026-10-10, which refused every Public choice on every server that had not
+ *  been first booted with `RECUED_PUBLIC_REACHABLE`. */
 export interface DdnsAvailability {
   isConfigured(): Promise<boolean>;
 }
@@ -295,6 +306,10 @@ export interface ExposureStateMachine {
   setPublicMcpAcknowledgement(
     args: SetPublicMcpArgs,
   ): Promise<ExposureMutationResult>;
+  /** The gate's own answer, for a reader that must not disagree with it (the
+   *  Exposure panel decides which choices to offer from it). Optional so a
+   *  test double need not carry it. */
+  hasPublicAddress?(): Promise<boolean>;
 }
 
 const requiresAnyPublic = (
@@ -411,6 +426,7 @@ export const createExposureStateMachine = (
 
   return {
     current: loadOrInit,
+    hasPublicAddress: () => opts.ddns.isConfigured(),
 
     reapply: () =>
       guarded(async () => {

@@ -87,6 +87,9 @@ export interface RunPaletteOptions {
   recipeList: () => Promise<{ recipes: ReadonlyArray<ServerRecipeListEntry> }>;
   /** Run-modal callers (manual path). */
   execute?: RunModal.RunModalExecuteCaller;
+  /** D-320 — a recipe's slots, for the Run tab's Connection lines
+   *  (`packs.connections.recipe`). Absent: no lines, as before. */
+  recipeConnections?: (args: { recipe_id: string }) => ReturnType<NonNullable<RunModal.WireRunModalOptions['connectionSlots']>>;
   schedulesList?: RunModal.RunModalSchedulesListCaller;
   schedulesCreate?: RunModal.RunModalSchedulesCreateCaller;
   schedulesUpdate?: RunModal.RunModalSchedulesUpdateCaller;
@@ -434,6 +437,11 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       document: doc,
       initialTab: tab,
       ...(opts.execute !== undefined ? { execute: opts.execute } : {}),
+      // D-320 — the Run tab's Connection lines. Missing from this dialog until a
+      // visual pass found it (2026-10-10): the recipes and automation routes had them.
+      ...(opts.recipeConnections !== undefined
+        ? { connectionSlots: () => opts.recipeConnections!({ recipe_id: entry.recipe_id }) }
+        : {}),
       ...(opts.schedulesList !== undefined
         ? { schedulesList: opts.schedulesList }
         : {}),

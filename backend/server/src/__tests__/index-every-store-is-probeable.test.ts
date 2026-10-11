@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 import {
@@ -16,10 +17,11 @@ import {
 import { buildChatTier1Handlers } from '../chat-tool-handlers.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { createInboundFileCollection } from '../collections/file/inbound-file-collection.js';
 import { createBlobStore } from '../storage/blob-store.js';
 import { createContactStore } from '../storage/contact-store.js';
-import { scoreFileNeedle } from '../file-view-resolver.js';
+import { createFileViewResolverFromRegistry, scoreFileNeedle } from '../file-view-resolver.js';
+import { startWatchedFolder } from './helpers/watched-folder.js';
 
 /** ⛔⛔ A STORE CAN BE LISTED IN `CHAT_INDEX_STORES` AND ANSWER NOTHING, FOREVER,
  *  WITH NOTHING RED. That is not hypothetical — `file.search` shipped that way.
@@ -39,14 +41,67 @@ import { scoreFileNeedle } from '../file-view-resolver.js';
  *  this file rather than trusting the list when one of those changes shape. */
 const REGISTRY_BACKED = ['mail.search', 'file.search'] as const;
 
+/** A server's files as chat sees them, composed as production composes them:
+ *  the received files' store (every server has one), a folder Recued watches,
+ *  and the resolver over both. Times are milliseconds. */
+const fileWorld = async (opts: {
+  received?: Array<{ filename: string; at: number }>;
+  watched?: Array<{ path: string; mtime: number }>;
+} = {}) => {
+  const db = new Database(':memory:');
+  const dir = mkdtempSync(join(tmpdir(), 'probeable-'));
+  const blobs = createBlobStore(join(dir, 'cas'));
+  const bus = createWarehouseEventBus();
+  const registry = createCollectionRegistry();
+  const received = createInboundFileCollection({
+    db, blobs, bus, slug: 'received',
+    gate: createStorageGate({ quota: 1 << 26, reservePct: 10, surface: 'collection:file:received' }),
+  });
+  registry.register(received);
+  for (const f of opts.received ?? []) {
+    await received.ingest({
+      bytes: Buffer.from(f.filename), filename: f.filename, mime_type: 'application/pdf',
+      origin: 'webclient_upload', source_id: `upload-${f.filename}`, now: f.at,
+    });
+  }
+  const root = join(dir, 'watched');
+  mkdirSync(root, { recursive: true });
+  for (const f of opts.watched ?? []) {
+    const full = join(root, f.path);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, 'x');
+    utimesSync(full, new Date(f.mtime), new Date(f.mtime));
+  }
+  const folder = await startWatchedFolder({ db, bus, registry, slug: 'work', root });
+  const handlers = buildChatTier1Handlers({
+    getContactStore: () => undefined,
+    getCollectionRegistry: () => registry,
+    getFileViewResolver: () => createFileViewResolverFromRegistry(registry),
+    getAuditLog: () => undefined,
+    getEnrichmentStore: () => undefined,
+    getRecipeStore: () => ({
+      ids: () => [], get: () => null, getStored: () => null, listStored: () => [],
+    }) as never,
+    getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
+    getExecuteRecipe: () => undefined,
+  } as never);
+  const ctx = { channel: 'internal_function_call', session_id: 'S', turn_id: 'T' } as never;
+  const handler = (name: string) =>
+    (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)[name];
+  const close = async (): Promise<void> => {
+    await folder.close();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { db, blobs, bus, registry, handler, ctx, close };
+};
+
 describe('every probed store can actually answer a probe', () => {
   it('names each registry-backed store for a term it holds', async () => {
-    const db = new Database(':memory:');
-    const dir = mkdtempSync(join(tmpdir(), 'probeable-'));
+    const world = await fileWorld({ received: [{ filename: 'Zephyrine-renewal-terms.pdf', at: 1 }] });
+    const { db, blobs, bus, registry, ctx } = world;
     try {
-      const blobs = createBlobStore(dir);
       const gate = { addUsed: () => {}, getUsed: () => 0 } as never;
-      const bus = createWarehouseEventBus();
 
       const mail = createMailCollection({
         db, blobs, gate, bus, slug: 'inbox',
@@ -62,43 +117,13 @@ describe('every probed store can actually answer a probe', () => {
         received_at: 1, modified_at: 1,
         body_inline: 'agreed at 83 days', size_bytes: 20, source_id: 'inbox',
       } as never);
-
-      const files = createFileCollection({
-        db, blobs, gate, bus, slug: 'received',
-        config: () => ({ path: dir, quota_bytes: 1 << 26 }),
-      } as never);
-      files.upsert({
-        record_id: 'file:z0',
-        hot_fields: {
-          filename: 'Zephyrine-renewal-terms.pdf', path: `${dir}/Zephyrine-renewal-terms.pdf`,
-          mtime: 1, size_bytes: 10,
-        },
-        received_at: 1, modified_at: 1, body_inline: '', size_bytes: 10, source_id: 'received',
-      } as never);
-
-      const registry = createCollectionRegistry();
       registry.register(mail as never);
-      registry.register(files as never);
-      const handlers = buildChatTier1Handlers({
-        getContactStore: () => undefined,
-        getCollectionRegistry: () => registry,
-        getAuditLog: () => undefined,
-        getEnrichmentStore: () => undefined,
-        getRecipeStore: () => ({
-          ids: () => [], get: () => null, getStored: () => null, listStored: () => [],
-        }) as never,
-        getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
-        getExecuteRecipe: () => undefined,
-      } as never);
-      const ctx = {
-        channel: 'internal_function_call', session_id: 'S', turn_id: 'T',
-      } as never;
 
       for (const store of REGISTRY_BACKED) {
         const entry = CHAT_INDEX_STORES.find(([s]) => s === store);
         expect(entry, `${store} must still be a probed store`).toBeDefined();
         const hitField = entry![1];
-        const h = (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)[store];
+        const h = world.handler(store);
         expect(h, `${store} must have a handler`).toBeTypeOf('function');
         // EXACTLY the shape the composition root probes with, probe args included.
         const res = await h(
@@ -117,43 +142,17 @@ describe('every probed store can actually answer a probe', () => {
           + `than no index at all. Got: ${JSON.stringify(res).slice(0, 200)}`,
         ).toBe(true);
       }
-    } finally { db.close(); }
+    } finally { await world.close(); }
   });
 
   it('file.search specifically needs its probe arg — without it the answer is invisible', async () => {
     // The regression itself, pinned: same world, same handler, only the probe
     // args differ. Delete `CHAT_INDEX_PROBE_ARGS['file.search']` and this fails.
-    const db = new Database(':memory:');
-    const dir = mkdtempSync(join(tmpdir(), 'probeable2-'));
+    const { handler, ctx, close } = await fileWorld({
+      received: [{ filename: 'Zephyrine-renewal-terms.pdf', at: 1 }],
+    });
     try {
-      const files = createFileCollection({
-        db, blobs: createBlobStore(dir),
-        gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-        bus: createWarehouseEventBus(), slug: 'received',
-        config: () => ({ path: dir, quota_bytes: 1 << 26 }),
-      } as never);
-      files.upsert({
-        record_id: 'file:z0',
-        hot_fields: {
-          filename: 'Zephyrine-renewal-terms.pdf', path: `${dir}/x.pdf`, mtime: 1, size_bytes: 10,
-        },
-        received_at: 1, modified_at: 1, body_inline: '', size_bytes: 10, source_id: 'received',
-      } as never);
-      const registry = createCollectionRegistry();
-      registry.register(files as never);
-      const handlers = buildChatTier1Handlers({
-        getContactStore: () => undefined,
-        getCollectionRegistry: () => registry,
-        getAuditLog: () => undefined,
-        getEnrichmentStore: () => undefined,
-        getRecipeStore: () => ({
-          ids: () => [], get: () => null, getStored: () => null, listStored: () => [],
-        }) as never,
-        getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
-        getExecuteRecipe: () => undefined,
-      } as never);
-      const ctx = { channel: 'internal_function_call', session_id: 'S', turn_id: 'T' } as never;
-      const h = (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)['file.search'];
+      const h = handler('file.search');
 
       const narrow = await h({ query: 'zephyrine', limit: 51 }, ctx) as
         { result?: { files?: unknown[] } };
@@ -169,7 +168,7 @@ describe('every probed store can actually answer a probe', () => {
         (probed.result?.files ?? []).length,
         'the probe args are what make the store answerable at all',
       ).toBeGreaterThan(0);
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 });
 
@@ -222,40 +221,13 @@ describe('file.search matches the PATH, not only the leaf name', () => {
     // so nowhere in its leaf name. Filename-only matching answered nothing for
     // the one term a person would actually search on. `path` is already in
     // `hot_fields` locally and is mirrored from `FileMetaProjection.path` for a
-    // D-192 remote source, so this costs no new storage and no new read.
-    const db = new Database(':memory:');
-    const dir = mkdtempSync(join(tmpdir(), 'fpath-'));
+    // D-192 remote source, so this costs no new storage and no new read. Here
+    // it is a folder Recued watches, which is where such a tree lives.
+    const { handler, ctx, close } = await fileWorld({
+      watched: [{ path: 'Clients/Sandhurst/2026/renewal-notice-83-days.pdf', mtime: 1_000 }],
+    });
     try {
-      const files = createFileCollection({
-        db, blobs: createBlobStore(dir),
-        gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-        bus: createWarehouseEventBus(), slug: 'received',
-        config: () => ({ path: dir, quota_bytes: 1 << 26 }),
-      } as never);
-      files.upsert({
-        record_id: 'file:p0',
-        hot_fields: {
-          filename: 'renewal-notice-83-days.pdf',
-          path: 'Clients/Sandhurst/2026/renewal-notice-83-days.pdf',
-          mtime: 1, size: 10,
-        },
-        received_at: 1, modified_at: 1, body_inline: '', size_bytes: 10, source_id: 'received',
-      } as never);
-      const registry = createCollectionRegistry();
-      registry.register(files as never);
-      const handlers = buildChatTier1Handlers({
-        getContactStore: () => undefined,
-        getCollectionRegistry: () => registry,
-        getAuditLog: () => undefined,
-        getEnrichmentStore: () => undefined,
-        getRecipeStore: () => ({
-          ids: () => [], get: () => null, getStored: () => null, listStored: () => [],
-        }) as never,
-        getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
-        getExecuteRecipe: () => undefined,
-      } as never);
-      const ctx = { channel: 'internal_function_call', session_id: 'S', turn_id: 'T' } as never;
-      const h = (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)['file.search'];
+      const h = handler('file.search');
       const res = async (q: string) => await h(
         { query: q, limit: 51, ...CHAT_INDEX_PROBE_ARGS['file.search'] }, ctx,
       ) as { result?: { files?: Array<{ filename: string; path?: string }> } };
@@ -287,7 +259,7 @@ describe('file.search matches the PATH, not only the leaf name', () => {
         (await res('sandhurst invoice')).result?.files ?? [],
         'and all terms must match — a term-splitting rule must not fail OPEN',
       ).toHaveLength(0);
-    } finally { db.close(); }
+    } finally { await close(); }
   });
 });
 
@@ -317,56 +289,37 @@ describe('file matching is TIERED, not binary', () => {
   });
 
   it('ranks a tier-2 hit above a NEWER tier-1 hit, and only sorts by recency without a query', async () => {
-    const db = new Database(':memory:');
-    const dir = mkdtempSync(join(tmpdir(), 'ftier-'));
+    // Over the resolver, as production searches: the phrase hit is a watched
+    // file 9998 s older than the every-term one. Without a query the list is
+    // the received files only, so the recency half is told with those.
+    const { handler, ctx, close } = await fileWorld({
+      watched: [
+        { path: 'Sandhurst/renewal-notice-83.pdf', mtime: 1_000 },
+        { path: 'Renewal/2026/notice.pdf', mtime: 9_999_000 },
+      ],
+      received: [
+        { filename: 'old-upload.pdf', at: 1_000 },
+        { filename: 'new-upload.pdf', at: 9_999_000 },
+      ],
+    });
     try {
-      const files = createFileCollection({
-        db, blobs: createBlobStore(dir),
-        gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-        bus: createWarehouseEventBus(), slug: 'received',
-        config: () => ({ path: dir, quota_bytes: 1 << 26 }),
-      } as never);
-      const put = (id: string, filename: string, path: string, at: number): void => {
-        files.upsert({
-          record_id: id, hot_fields: { filename, path, size: 10 },
-          received_at: at, modified_at: at, body_inline: '', size_bytes: 10,
-          source_id: 'received',
-        } as never);
-      };
-      put('file:OLD-phrase', 'renewal-notice-83.pdf', 'Sandhurst/renewal-notice-83.pdf', 1);
-      put('file:NEW-terms', 'notice.pdf', 'Renewal/2026/notice.pdf', 9999);
-
-      const registry = createCollectionRegistry();
-      registry.register(files as never);
-      const handlers = buildChatTier1Handlers({
-        getContactStore: () => undefined,
-        getCollectionRegistry: () => registry,
-        getAuditLog: () => undefined,
-        getEnrichmentStore: () => undefined,
-        getRecipeStore: () => ({
-          ids: () => [], get: () => null, getStored: () => null, listStored: () => [],
-        }) as never,
-        getExecutorConfig: () => ({ manifests: { get: () => null } }) as never,
-        getExecuteRecipe: () => undefined,
-      } as never);
-      const ctx = { channel: 'internal_function_call', session_id: 'S', turn_id: 'T' } as never;
-      const h = (handlers as Record<string, (a: unknown, c: unknown) => Promise<unknown>>)['file.search'];
-      const ids = async (args: Record<string, unknown>): Promise<string[]> => {
+      const h = handler('file.search');
+      const found = async (args: Record<string, unknown>): Promise<string[]> => {
         const r = await h({ ...args, limit: 20, scope: 'all' }, ctx) as
-          { result?: { files?: Array<{ file_id: string }> } };
-        return (r.result?.files ?? []).map((f) => f.file_id);
+          { result?: { files?: Array<{ filename: string; path?: string }> } };
+        return (r.result?.files ?? []).map((f) => f.path ?? f.filename);
       };
 
       expect(
-        await ids({ query: 'renewal notice' }),
-        'the phrase hit must lead, though it is 9998 ticks older',
-      ).toEqual(['file:OLD-phrase', 'file:NEW-terms']);
+        await found({ query: 'renewal notice' }),
+        'the phrase hit must lead, though it is 9998 s older',
+      ).toEqual(['Sandhurst/renewal-notice-83.pdf', 'Renewal/2026/notice.pdf']);
 
       expect(
-        await ids({}),
+        await found({}),
         'with NO query there is nothing to rank, so recency stands',
-      ).toEqual(['file:NEW-terms', 'file:OLD-phrase']);
-    } finally { db.close(); }
+      ).toEqual(['new-upload.pdf', 'old-upload.pdf']);
+    } finally { await close(); }
   });
 });
 

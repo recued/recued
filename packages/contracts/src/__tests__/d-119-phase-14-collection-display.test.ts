@@ -24,7 +24,6 @@ const ALL_CANONICAL_NAMES: CanonicalCollectionName[] = [
   'calendar',
   'file',
   'webhook',
-  'service',
   'shared',
   'annotation',
   'link',

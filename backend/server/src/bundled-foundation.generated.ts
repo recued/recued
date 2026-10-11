@@ -17,7 +17,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Mail — Compose",
     "description": "Use Mail — Compose in Recued. Draft, rewrite, and polish a message in the compose window, then carry the reviewed message to your enrolled mail account. Sending stops at the approval gate first, and the approval names the recipients, the subject, and every attached file.",
-    "version": 2,
+    "version": 3,
     "pre_install": true,
     "recipes": [],
     "requires": [
@@ -35,7 +35,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
       {
         "type": "recipe",
         "slug": "send-composed-mail",
-        "version": 1,
+        "version": 2,
         "visible": false
       },
       {
@@ -2481,12 +2481,12 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
   },
   "send-composed-mail": {
     "recipe_id": "send-composed-mail",
-    "chat_exposed": false,
-    "version": 1,
+    "chat_exposed": true,
+    "version": 2,
     "ttl": 0,
     "metadata": {
       "name": "Send a composed email",
-      "description": "Use “Send a composed email” in Recued. Carries a message you wrote in the compose window to your own enrolled mail account. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files you already hold, never as bytes.",
+      "description": "Use “Send a composed email” in Recued. Sends one email, written in full, from one of the owner's enrolled mailboxes. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files the owner already holds, never as bytes.",
       "author": "recued-core",
       "supported_platforms": [],
       "budget_ms": 30000,
@@ -2504,12 +2504,14 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "sender_mail_instance": {
         "label": "Send from",
         "type": "string",
-        "default": ""
+        "default": "",
+        "help": "The mailbox to send from, by its name on this server."
       },
       "to": {
         "label": "To",
         "type": "array",
-        "default": []
+        "default": [],
+        "help": "Email addresses to send to."
       },
       "cc": {
         "label": "Cc",
@@ -2539,7 +2541,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "attachments": {
         "label": "Attachments",
         "type": "file_ref[]",
-        "default": []
+        "default": [],
+        "help": "Files to attach, by their file ids. The approval names each one."
       },
       "in_reply_to": {
         "label": "In reply to",
@@ -2554,7 +2557,8 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
       "reconciliation_id": {
         "label": "Delivery reference",
         "type": "string",
-        "default": null
+        "default": null,
+        "help": "Optional. Lets a retry of a send to one recipient be checked instead of repeated; leave it empty for a send to several."
       },
       "references": {
         "label": "Thread references",

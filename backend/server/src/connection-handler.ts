@@ -86,9 +86,12 @@ import {
   MCP_PEER_CONTRACT_CONFIG_KEY,
   MCP_PEER_ADMISSION_CONFIG_KEY,
   invalidExchangeAdmissionEntries,
+  profileCatalogSlugs,
+  profileForCatalog,
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
+  ConnectionCatalogGrant,
   ConnectionCredentialPostSafeStopVerificationSummary,
   ConnectionCredentialRejectionCorrection,
   ConnectionCredentialRejectionResolution,
@@ -435,6 +438,12 @@ export interface ConnectionRpcDeps {
    *  clients re-render the recipes view's status. Best-effort + optional — absent
    *  (dbless / no bus) the mutation still succeeds, just without the live signal. */
   recipeRunnabilityBroadcast?: RecipeRunnabilityBroadcaster;
+  /** D-320 phase 3 (3b) — re-derive every webhook recipe's door once an API
+   *  connection is deleted: the packs that listed it run elsewhere now, or stop,
+   *  and their doors follow. Returns what moved, for the delete to announce. Also
+   *  once an API connection is set up anew: a deleted one's name goes back on the
+   *  lists that kept it. */
+  webhookDoorsMoved?: () => readonly import('@recued/contracts').DishWebhookDoorChange[];
   /** D-194 #6 — the installed pack slugs holding a pack-owned grant on a
    *  connection (`ContractGrantStore.listPacksForConnection`), pre-bound at
    *  composition. When wired, `handleConnectionList` stamps each api row's
@@ -443,6 +452,14 @@ export interface ConnectionRpcDeps {
    *  vendor pack). Absent (dbless / unwired) → the field is left off and the UI
    *  falls back to vendor-match. */
   boundPackSlugsForConnection?: (connection_name: string) => string[];
+  /** D-320 §4 — the packs that use a connection by default (`packsUsingConnection`),
+   *  pre-bound at composition, stamped as `default_for_pack_slugs`. Absent ⇒ left
+   *  off. */
+  defaultPackSlugsForConnection?: (connection_name: string) => string[];
+  /** D-320 slice 2h — the listed packs signing in through another listed one,
+   *  each to it (`packsUsingConnection`), stamped as `pack_holders`. Absent ⇒
+   *  left off. */
+  packHoldersForConnection?: (connection_name: string) => Record<string, string>;
   /** D-192 S5 — the LIVE merged vendor registry (built-ins + installed-pack
    *  entities, via `liveVendorRegistry(localManifestStore)`), pre-bound at
    *  composition. When wired, `handleConnectionList` stamps each api row's
@@ -1251,6 +1268,8 @@ export const handleConnectionList = async (
   }
   const rows = a.kind ? deps.store.list({ kind: a.kind }) : deps.store.list();
   const boundPackSlugsForConnection = deps.boundPackSlugsForConnection;
+  const defaultPackSlugsForConnection = deps.defaultPackSlugsForConnection;
+  const packHoldersForConnection = deps.packHoldersForConnection;
   // D-192 S5 — resolve the live merged registry once per list call (built-ins +
   // installed packs). Unwired (dbless) → the engagement stamp is skipped.
   const engagementRegistry = deps.resolveVendorRegistry?.();
@@ -1290,6 +1309,12 @@ export const handleConnectionList = async (
       // vendor-match.
       if (boundPackSlugsForConnection !== undefined && view.kind === 'api') {
         view.bound_pack_slugs = boundPackSlugsForConnection(view.name);
+      }
+      if (defaultPackSlugsForConnection !== undefined && view.kind === 'api') {
+        view.default_for_pack_slugs = defaultPackSlugsForConnection(view.name);
+      }
+      if (packHoldersForConnection !== undefined && view.kind === 'api') {
+        view.pack_holders = packHoldersForConnection(view.name);
       }
       // D-192 S5 — stamp whether this connection's vendor declares engagement
       // entities (api rows only) so the UI can show the engagement-health toggle
@@ -1817,6 +1842,12 @@ export const handleConnectionEnroll = async (
   // recipes runnable; recompute + broadcast (only `api` carries a vendor profile
   // runnability reads). Best-effort, post-commit — the broadcaster swallows.
   if (kind === 'api') deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
+  // D-320 phase 3 (3b) — the delete's counterpart. A deleted connection's bindings
+  // stay, dormant, so setting the name up again puts it back on those packs'
+  // lists; the webhook doors follow where their runs go, as they did when it was
+  // deleted. They stayed closed, and every delivery was refused, until something
+  // else moved them. A name on no list moves nothing.
+  if (kind === 'api' && existing === null) deps.webhookDoorsMoved?.();
   // D-225 auto-mint — enrolling an mcp connection mints its pack, without a
   // second owner Save.
   //
@@ -2059,6 +2090,22 @@ const vendorProbePath = (vendor: string | undefined): string | undefined =>
     ? VENDOR_PROBE_PATHS[vendor]
     : undefined;
 
+/** Where a vendor's pasted `bearer` key reports its own scopes. An app
+ *  connection records its scopes at sign-in; a pasted key has no sign-in, so
+ *  without this its pack coverage stays "unknown" and a missing scope shows
+ *  only when a run is refused. HubSpot answers this POST with `scopes` only
+ *  when the key is the Bearer AND is named in the body as `tokenKey`
+ *  (measured 2026-10-09). Without the header it answers 404, which is how the
+ *  endpoint was first written off as absent; with a `{}` body it answers 400. */
+const VENDOR_BEARER_SCOPE_PATHS: Readonly<Record<string, string>> = {
+  hubspot: '/oauth/v2/private-apps/get/access-token-info',
+};
+
+const vendorBearerScopePath = (vendor: string | undefined): string | undefined =>
+  vendor !== undefined && Object.hasOwn(VENDOR_BEARER_SCOPE_PATHS, vendor)
+    ? VENDOR_BEARER_SCOPE_PATHS[vendor]
+    : undefined;
+
 /** D-192 slice 4 — the messenger vendor of a notification connection
  *  (slack / telegram), declaration-driven per the kinds-taxonomy §0 rule (a
  *  subtype that carries a `MessengerVendorDeclaration`). `undefined` for a
@@ -2075,7 +2122,11 @@ const resolveMessengerVendor = (
 export const handleConnectionDelete = async (
   deps: ConnectionRpcDeps,
   args: { name: string; kind: ConnectionKind; remove_mirror_data?: boolean },
-): Promise<{ deleted: boolean; purged?: ConnectionDataPurgeSummary }> => {
+): Promise<{
+  deleted: boolean;
+  purged?: ConnectionDataPurgeSummary;
+  webhook_doors?: import('@recued/contracts').DishWebhookDoorChange[];
+}> => {
   const a = ensureRecordArgs('collection.connection.delete', args);
   const name = ensureName('collection.connection.delete', a.name);
   const kind = ensureKind('collection.connection.delete', a.kind);
@@ -2208,7 +2259,16 @@ export const handleConnectionDelete = async (
   // can flip recipes blocked; recompute + broadcast the new snapshot (best-effort,
   // only when a row was actually removed).
   if (deleted && kind === 'api') deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
-  return { deleted, ...(deleted && purged ? { purged } : {}) };
+  // D-320 phase 3 (3b) — the webhook doors follow where those packs' runs go now
+  // (what the Delete dialog said): only the ones that moved are news.
+  const moved = deleted && kind === 'api'
+    ? (deps.webhookDoorsMoved?.() ?? []).filter((change) => change.state !== 'unchanged')
+    : [];
+  return {
+    deleted,
+    ...(deleted && purged ? { purged } : {}),
+    ...(moved.length > 0 ? { webhook_doors: [...moved] } : {}),
+  };
 };
 
 /** D-192 source-data-removal slice 3c/4 — the read-only "[N] records" preview the
@@ -2707,6 +2767,34 @@ export const handleConnectionProbe = async (
       return healthOf('unreachable', redactProbeSecrets(auth, errorMessage(err)));
     }
   };
+  /** The scopes a `bearer` key reports for itself (`VENDOR_BEARER_SCOPE_PATHS`).
+   *  `undefined` unless the vendor answers with a clean list, so coverage then
+   *  reads "unknown", a soft hint, never a false "missing". Only the scope
+   *  names are kept; no error from this call is stored or shown. */
+  const readBearerScopes = async (
+    auth: ConnectionAuth & { type: 'bearer' },
+    scopePath: string,
+  ): Promise<string[] | undefined> => {
+    const base = readConfig().base_url;
+    if (typeof base !== 'string' || base.trim() === '') return undefined;
+    const url = composeApiUrl(base, scopePath);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    applyAuth(auth, headers, url);
+    try {
+      const response = await fetchTimed(url.toString(), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ tokenKey: auth.token }),
+      });
+      if (response.status !== 200) return undefined;
+      const body = await response.json();
+      return isRecord(body)
+        ? ensureGrantedScopes('collection.connection.probe', body.scopes)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const probeMcp = async (auth: ConnectionAuth): Promise<ConnectionHealth> => {
     const config = readConfig();
     // Match live execution's source of truth (`getTransport`): the row subtype
@@ -3187,6 +3275,10 @@ export const handleConnectionProbe = async (
   let health: PersistedProbeHealth;
   let authCiphertext = existing.auth_ciphertext;
   let probedAuthType: ConnectionAuth['type'] | undefined;
+  /** The scopes this check read from a key that reports them: a list, `null`
+   *  when it could not read them, `undefined` when this check does not own the
+   *  row's scopes (they came from a sign-in, or nothing reads them). */
+  let probedGrantedScopes: string[] | null | undefined;
   if (!deps.getEncryptionKey) {
     health = healthOf('unknown');
   } else {
@@ -3280,6 +3372,19 @@ export const handleConnectionProbe = async (
               break;
             }
             health = await probeApi(auth);
+            // A pasted key has no sign-in to record its scopes, so its check
+            // reads them where the vendor can say. The list always describes
+            // the key this check read: a check that could not read it (a
+            // refused key, a vendor that would not say) leaves none, so a
+            // replaced key never shows its predecessor's scopes.
+            if (auth.type === 'bearer') {
+              const scopePath = vendorBearerScopePath(resolveVendorFromConnection(existing));
+              if (scopePath !== undefined) {
+                probedGrantedScopes = health.status === 'ok' && health.last_error === undefined
+                  ? (await readBearerScopes(auth, scopePath)) ?? null
+                  : null;
+              }
+            }
             break;
           }
           case 'mcp': {
@@ -3356,8 +3461,15 @@ export const handleConnectionProbe = async (
     health_json: JSON.stringify(health),
     // D-165 P3.path-picker — preserve the scope across a probe re-stamp.
     ...(existing.subresource_path !== undefined ? { subresource_path: existing.subresource_path } : {}),
-    // granted-scopes — preserve the coverage set across a probe re-stamp.
-    ...(existing.granted_scopes_json !== undefined ? { granted_scopes_json: existing.granted_scopes_json } : {}),
+    // granted-scopes — preserve the coverage set across a probe re-stamp,
+    // unless this check is what reads it (a key that reports its own scopes).
+    ...(probedGrantedScopes === undefined
+      ? (existing.granted_scopes_json !== undefined
+        ? { granted_scopes_json: existing.granted_scopes_json }
+        : {})
+      : probedGrantedScopes === null
+        ? {}
+        : { granted_scopes_json: JSON.stringify(probedGrantedScopes) }),
   });
   const credentialCorrection = health.status === 'auth_failed'
     && probedAuthType !== undefined
@@ -5302,20 +5414,39 @@ const computeOperationGroupView = (
  *  seed does the identical derivation on the next connection upsert, so the
  *  two paths stay consistent — including the `catalog_slug` stamp the gateway
  *  uses for the cross-vendor mismatch guard). Empty set ⇒ drop the profile
- *  (fail-closed). */
+ *  (fail-closed).
+ *
+ *  ⛔ D-320 ruling 10 — A CONNECTION SERVES SEVERAL CATALOGS (the Wise suite:
+ *  seven, one sign-in), each with its own set. Only `catalog_slug`'s set is
+ *  re-derived; every other catalog keeps the set boot/reconcile derived, in their
+ *  order and shape (`deriveConnectionOperationProfileForCatalogs`: one catalog
+ *  left is a one-catalog profile, none drops it). Written as a one-catalog
+ *  profile, a grant dropped the others, and their operations were refused
+ *  `catalog_mismatch` until the next reconcile. */
 const reseedOperationProfile = (
   grants: NonNullable<ConnectionRpcDeps['operationGrants']>,
   connection_name: string,
   allowed_operations: ReadonlyArray<string>,
   catalog_slug: string,
 ): void => {
-  if (allowed_operations.length === 0) {
+  const current = grants.profileStore.get(connection_name);
+  const sets = new Map<string, ConnectionCatalogGrant>(
+    profileCatalogSlugs(current).map((slug) => [
+      slug,
+      { allowed_operations: profileForCatalog(current, slug)?.allowed_operations ?? [] },
+    ]),
+  );
+  if (allowed_operations.length === 0) sets.delete(catalog_slug);
+  else sets.set(catalog_slug, { allowed_operations: [...allowed_operations] });
+  const [first, ...others] = [...sets];
+  if (first === undefined) {
     grants.profileStore.delete(connection_name);
     return;
   }
   grants.profileStore.set(connection_name, {
-    allowed_operations: [...allowed_operations],
-    catalog_slug,
+    allowed_operations: first[1].allowed_operations,
+    catalog_slug: first[0],
+    ...(others.length > 0 ? { catalogs: Object.fromEntries(sets) } : {}),
   });
 };
 

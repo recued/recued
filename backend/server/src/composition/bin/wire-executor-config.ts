@@ -71,7 +71,6 @@ import type { MailCollection } from '../../collections/mail/mail-collection.js';
 import type { FileStack } from '../../collections/file/compose.js';
 import type { RemoteFileReadDeps } from '../../collections/file/remote-file-byte-resolver.js';
 import type { CalendarStack } from '../../collections/calendar/compose.js';
-import type { ServiceStack } from '../../collections/service/compose.js';
 import type { AnnotationRpcDeps } from '../../annotation-handler.js';
 import type {
   NotificationChannel,
@@ -157,9 +156,8 @@ export interface ComposeExecutorConfigDeps {
   /** D-217 slice 2b-ii — read ONE chunk of a staged plaintext for a chunked
    *  upload's APPEND. Deliberately NOT `readFileBytes`: that returns the whole
    *  file, and calling it per chunk would decrypt a 512 MB blob once per
-   *  request. The engine stages once (`ExecutionContext.uploadStaging`) and the
-   *  wire carries the resulting token, which this resolves against the SAME
-   *  registry.
+   *  request. The api handler stages once (`uploadStaging`, below) and reads
+   *  each range by the token that returns, against the SAME registry.
    *
    *  Undefined ⇒ a chunked upload fails CLOSED with `SERVER_NOT_REACHABLE`,
    *  matching the `readFileBytes` posture — a boot with no file-source stores
@@ -168,6 +166,18 @@ export interface ComposeExecutorConfigDeps {
     bytes: Uint8Array;
     mime_type: string;
   }>) | undefined;
+  /** D-217 slice 2b-ii-β2 — stage a warehouse file's plaintext for a chunked
+   *  upload's walk and dispose it after, both in the api handler, below the
+   *  commit boundary (`ConnectionApiHandlerDeps.uploadStaging`).
+   *
+   *  ⛔ The serve composition spread this into these deps from 2026-07-26, and
+   *  nothing declared or forwarded it: a spread is exempt from the
+   *  excess-property check, and the adapter's own tests hand-build their deps.
+   *  So every chunked upload on a real server failed closed behind green
+   *  tests, until check:spread-placement read the syntax tree (2026-10-10).
+   *
+   *  Undefined ⇒ a chunked upload fails CLOSED with `SERVER_NOT_REACHABLE`. */
+  uploadStaging?: ConnectionApiHandlerDeps['uploadStaging'] | undefined;
   /** D-192 remote byte-fetch — the shared `remote` bundle so a `file:remote:*`
    *  id passed to the recipe `data-file-read` ingredient (and, through it, an
    *  `ai-*` multimodal `llm.data` file-ref, which reads via the SAME dispatcher)
@@ -234,7 +244,6 @@ export interface ComposeExecutorConfigDeps {
   connectionNotificationDeps: ConnectionNotificationHandlerDeps | undefined;
   fileStack: FileStack | undefined;
   calendarStack: CalendarStack | undefined;
-  serviceStack: ServiceStack | undefined;
   sharedStore: SharedStore | undefined;
   /** Intake responses are reachable by recipes only through the owner-only
    *  `form-response-list/get` reads and `form-response-set-state` lifecycle write
@@ -699,6 +708,9 @@ export const composeExecutorConfig = async (
               ...(deps.readFileBytes ? { readFileBytes: deps.readFileBytes } : {}),
               // D-217 — the ranged reader for a chunked upload's APPEND.
               ...(deps.readUploadChunk ? { readUploadChunk: deps.readUploadChunk } : {}),
+              // D-217 — and the staging it reads from: stage before the walk,
+              // dispose after it.
+              ...(deps.uploadStaging ? { uploadStaging: deps.uploadStaging } : {}),
             };
           })(),
           // D-125 P4.2 — `connection.mcp` per-kind handler deps. Reuses the

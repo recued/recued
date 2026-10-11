@@ -193,6 +193,12 @@ import {
   makePackInstallHandlers,
   type PackInstallRpcDeps,
 } from './pack-install-handler.js';
+import {
+  makePackConnectionsHandlers,
+  packConnectionsDepsFrom,
+  withDishConnectionCheck,
+  withSharedSignInConnections,
+} from './pack-connections-handler.js';
 // D-145 PA10 follow-on — `packs.list` rpc slice. Read counterpart to
 // `packs.install`. Same `packs.` reserved-prefix gate; same per-pair
 // `RecipeStore` handle for the `installed` join.
@@ -201,6 +207,7 @@ import {
   type PackListRpcDeps,
 } from './pack-list-handler.js';
 import { makePackUnrunnableHandlers, type PackUnrunnableRpcDeps } from './pack-unrunnable-handler.js';
+import { makePackToolStatusHandlers, type PackToolStatusRpcDeps } from './pack-tool-status-handler.js';
 // D-145 PA10 follow-on Slice B — `packs.uninstall` rpc slice. Reverses
 // the install transaction (drops pack-installed SI rows by prefix +
 // deletes each recipe in the bundled manifest). Same `packs.`
@@ -245,7 +252,7 @@ import {
   makeTlsDomainHandlers,
   type TlsDomainRpcDeps,
 } from './tls-domain-handler.js';
-// D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud` unbind rpc.
+// D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net` unbind rpc.
 import {
   makeProAcmeHandlers,
   type ProAcmeRpcDeps,
@@ -393,6 +400,7 @@ import {
   makeCollectionHandlers,
   type CollectionHandlerDeps,
 } from './collections/collection-handler.js';
+import { isLiveSendCapableMailInstance } from './mail-senders.js';
 import {
   makeAuditExportHandlers,
   type AuditExportRpcDeps,
@@ -1027,8 +1035,7 @@ export interface AttachWebSocketOptions {
    *  `collection.list` / `search` / `get` / `runRetention` /
    *  `listEndpoints` methods dispatch against the collection
    *  registry. Absent → those methods return `not_configured` and
-   *  kernel ingredients (`email-list`, `file-list`, `webhook-list`,
-   *  …) fail with `server_not_reachable` on the ext side. */
+   *  kernel ingredients (`email-list`, `file-list`, …) fail with `server_not_reachable` on the ext side. */
   collectionDeps?: CollectionHandlerDeps;
   /** D-120 Phase 7 — unified memory export rpc deps. Enables
    *  `audit.export.estimate` + `audit.export.page` — the export dialog
@@ -1197,6 +1204,8 @@ export interface AttachWebSocketOptions {
   packListDeps?: PackListRpcDeps;
   /** D-259 — `packs.unrunnable` deps. */
   packUnrunnableDeps?: PackUnrunnableRpcDeps;
+  /** D-321 slice 3 — `packs.tool_status` deps. */
+  packToolStatusDeps?: PackToolStatusRpcDeps;
   /** D-145 PA10 follow-on Slice B — `packs.uninstall` rpc. Reverses
    *  the install transaction: drops every `source = 'pack_installed'`
    *  SI row whose id begins with `<pack_slug>:`, then deletes each
@@ -1521,21 +1530,9 @@ export const attachWebSocket = (
   return binding.handle;
 };
 
-/** D-196 Rev 16 Rule 7 — Seller readiness must resolve the currently registered
- *  mail collection, not trust a stored instance id or a stale enrollment row.
- *  Keep `sendCapable` and the executable `send` method in lockstep so a malformed
- *  collection cannot make Settings report outbound mail as ready. */
-export const isLiveSendCapableMailInstance = (
-  registry: Pick<CollectionHandlerDeps['registry'], 'get'>,
-  instanceId: string,
-): boolean => {
-  const collection = registry.get('mail', instanceId);
-  return collection !== undefined
-    && 'sendCapable' in collection
-    && collection.sendCapable === true
-    && 'send' in collection
-    && typeof collection.send === 'function';
-};
+// D-196 Rev 16 Rule 7 — moved to `mail-senders.ts`, which also lists the
+// mailboxes an owner's run may send from; re-exported for its importers.
+export { isLiveSendCapableMailInstance };
 
 const buildWsBinding = (
   options: AttachWebSocketOptions,
@@ -1574,6 +1571,7 @@ const buildWsBinding = (
     packInstallDeps,
     packListDeps,
     packUnrunnableDeps,
+    packToolStatusDeps,
     packUninstallDeps,
     ingredientAuthoringDeps,
     ingredientDraftDeps,
@@ -1729,6 +1727,9 @@ const buildWsBinding = (
   const providerTierProvider = executeDeps
     ? createSellerProviderTierProvider(executeDeps)
     : undefined;
+  // D-320 slice 2b / 2e — a pack's connections, read by the Access page's block,
+  // and checked when a dish chooses one of them.
+  const packConnectionsDeps = packConnectionsDepsFrom(packInstallDeps, connectionDeps);
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
     makeExecuteHandlers(executeDeps),
     makeExecutionControlHandlers(executionControlDeps),
@@ -1745,7 +1746,7 @@ const buildWsBinding = (
     // `not_configured`. Off MCP by catalog omission (like the sibling archive rpc).
     makeArchiveUploadHandlers(archiveUploadDeps),
     makeScheduleHandlers(scheduleDeps),
-    makeDishHandlers(dishDeps),
+    makeDishHandlers(withDishConnectionCheck(dishDeps, packConnectionsDeps)),
     makeCacheHandlers(cacheDeps, peerPrefsFor),
     makeSharedHandlers(sharedDeps),
     makePrefsHandlers(pairedInstances),
@@ -1969,7 +1970,14 @@ const buildWsBinding = (
     // in `MCP_RESERVED_RPC_PREFIXES`, so MCP-channel agents cannot
     // ship attacker-controlled SI rules / body grants / recipes (the
     // D-138 ratchet test asserts the prefix stays reserved).
-    makePackInstallHandlers(packInstallDeps),
+    // D-320 slice 2j — with the accounts a pack's sign-in shares, which its
+    // install dialog offers and a first install adds.
+    makePackInstallHandlers(withSharedSignInConnections(packInstallDeps, packConnectionsDeps)),
+    // D-320 slice 2b — a pack's connections per slot, for the Access page's
+    // Connections block: its list, its default, Add another / Make default /
+    // Remove. Same `packs.` reserved-prefix gate, so no door's agent can move a
+    // pack to another account.
+    makePackConnectionsHandlers(packConnectionsDeps),
     // D-145 PA10 follow-on — Settings → Packs list rpc. Read counterpart
     // to `packs.install`; reads bundled pack manifests off disk +
     // joins each with the per-pair `RecipeStore` to compute the
@@ -1978,6 +1986,9 @@ const buildWsBinding = (
     // D-259 — the durable half of the boot pack finding. Same `packs.`
     // reserved-prefix gate; re-derived per call, never stored.
     makePackUnrunnableHandlers(packUnrunnableDeps),
+    // D-321 slice 3 — whether each installed pack's programs are ready.
+    // Same `packs.` gate; re-derived per call over the shared readiness service.
+    makePackToolStatusHandlers(packToolStatusDeps),
     // D-145 PA10 follow-on Slice B — Settings → Packs uninstall rpc.
     // Reverses the install transaction: drops pack-installed SI rows by
     // `<slug>:` prefix + deletes each recipe in the bundled manifest.
@@ -2035,7 +2046,7 @@ const buildWsBinding = (
     // reserved). Absent deps → every `tls_domain.*` method returns
     // `not_configured` (db-less harness or pre-W3.6 boot).
     makeTlsDomainHandlers(tlsDomainDeps),
-    // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud`
+    // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net`
     // unbind rpc. Wires `pro_acme.unbind` against the `proAcmeUnbind`
     // substrate (W3.6 `SqliteTlsDomainStore` + cloud `DdnsHandleControl`
     // adapter + signed audit sink). Channel-isolation invariant — the

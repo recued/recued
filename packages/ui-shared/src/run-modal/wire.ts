@@ -49,18 +49,22 @@ import {
   parseRunConfig,
   recipeSchedules,
   recipeTriggers,
+  runConnectionLines,
   runTargetGate,
 } from './model.js';
+import { runChoiceFromLines } from '../connection-lines.js';
 import {
   renderRunModal,
   RUN_MODAL_ACTION_ATTR,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_CONNECTION_ATTR,
   RUN_MODAL_DISH_ATTR,
   RUN_MODAL_FACT_ATTR,
   RUN_MODAL_PATTERN_ATTR,
   RUN_MODAL_PRESET_ATTR,
   RUN_MODAL_MISSED_POLICY_ATTR,
   RUN_MODAL_NEW_MISSED_POLICY_ATTR,
+  RUN_MODAL_PANEL_CLASS,
   RUN_MODAL_REPEAT_ATTR,
   RUN_MODAL_RUN_AT_ATTR,
   RUN_MODAL_RULE_ID_ATTR,
@@ -173,6 +177,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   overlay.className = 'run-modal-overlay-root';
 
   type RunModalFocusIdentity =
+    | { kind: 'panel' }
     | { kind: 'action'; value: string; ruleId?: string }
     | {
         kind: 'id';
@@ -189,6 +194,9 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const focusIdentityElement = (
     identity: RunModalFocusIdentity,
   ): HTMLElement | null => {
+    if (identity.kind === 'panel') {
+      return (overlay.querySelector?.(`.${RUN_MODAL_PANEL_CLASS}`) as HTMLElement | null | undefined) ?? null;
+    }
     if (identity.kind === 'action') {
       const candidates = elementsWith(RUN_MODAL_ACTION_ATTR).filter(
         (element) => identity.ruleId === undefined
@@ -222,6 +230,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     ).contains;
     if (typeof contains === 'function' && !contains.call(overlay, activeElement)) {
       return null;
+    }
+    // ⛔ The dialog surface itself, where focus lands on open, has no action and
+    // no id, and `paint()` replaces it. A repaint while it held focus dropped
+    // focus to the page: the Connection lines arriving after open did it on
+    // every run dialog (D-320), unseen while the e2e harness never answered
+    // their read.
+    if (activeElement.classList?.contains(RUN_MODAL_PANEL_CLASS) === true) {
+      return { kind: 'panel' };
     }
     const action = activeElement.getAttribute?.(RUN_MODAL_ACTION_ATTR);
     if (action !== null && action !== undefined) {
@@ -400,6 +416,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       paint(runFocus);
       return;
     }
+    // D-320 — the Connection lines this run moved; this run only.
+    const connections = runChoiceFromLines(runConnectionLines(state, opts.dishes), state.connection_choice);
     state = { ...state, executing: true, run_error: null, result: null };
     paint(runFocus);
     try {
@@ -409,6 +427,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         ...(Object.keys(gate.context).length > 0 ? { context: gate.context } : {}),
         // D-319 — as the chosen dish; `config` is what changed for this run.
         ...(state.dish_id !== null ? { dish_id: state.dish_id } : {}),
+        ...(Object.keys(connections).length > 0 ? { connections } : {}),
       });
       if (destroyed) return;
       const completionFocus = captureFocusIdentity();
@@ -807,6 +826,12 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       if (next !== (state.dish_id ?? '')) setDish(next === '' ? null : next);
       return;
     }
+    // D-320 — a Connection line moved: this run only.
+    if (target.hasAttribute(RUN_MODAL_CONNECTION_ATTR)) {
+      const slot = target.getAttribute(RUN_MODAL_CONNECTION_ATTR) ?? '';
+      if (slot !== '') setConnection(slot, target.value ?? '');
+      return;
+    }
     // Schedule preset — captured in state (not read at Add-click time) so a
     // re-paint mid-choice can't reset it. Selects emit input + change.
     // D-266 — the per-schedule missed-run policy. Selects emit input +
@@ -1090,8 +1115,15 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   function setDish(dish_id: string | null): void {
     if (state.executing || state.dish_id === dish_id) return;
     if (dish_id !== null && !(opts.dishes ?? []).some((dish) => dish.dish_id === dish_id)) return;
-    state = { ...state, dish_id, config_text: '{}', run_error: null };
+    // D-320 — and its Connection lines start where that dish stands.
+    state = { ...state, dish_id, config_text: '{}', connection_choice: {}, run_error: null };
     paint({ kind: 'id', value: 'run-modal-dish', selectionStart: null, selectionEnd: null });
+  }
+  /** D-320 — move one Connection line; this run only. */
+  function setConnection(slot: string, connection_name: string): void {
+    if (state.executing) return;
+    state = { ...state, connection_choice: { ...state.connection_choice, [slot]: connection_name } };
+    paint(captureFocusIdentity());
   }
   const setTargetValue = (key: string, value: string): void => {
     state = {
@@ -1147,6 +1179,15 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   // to Run never costs a `schedules.list`. A later tab switch lazy-loads.
   if (caps.canSchedule && state.tab === 'schedule') void loadSchedules();
   if (caps.canTrigger && state.tab === 'trigger') void loadTriggers();
+  // D-320 — the recipe's slots, for the Run tab's Connection lines. A read that
+  // fails leaves none: the run takes the dish's choice or the default.
+  if (opts.connectionSlots !== undefined) {
+    void opts.connectionSlots().then(({ slots }) => {
+      if (destroyed) return;
+      state = { ...state, connection_slots: slots };
+      paint(captureFocusIdentity());
+    }, () => undefined);
+  }
 
   return {
     element: overlay,
@@ -1154,6 +1195,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     setTab,
     setDish,
     setConfigText,
+    setConnection,
     setTargetValue,
     setContextValues,
     setPreset,

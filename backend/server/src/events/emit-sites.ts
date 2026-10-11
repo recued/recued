@@ -101,8 +101,8 @@ export const bridgeWarehouseEvents = (
  *
  *  Scope: mail / calendar / file / contact only — the enrichment
  *  registry's `valid_scopes` field constrains which scopes carry
- *  registered topics; webhook + service have no enrichment topics
- *  today, so emitting on those would spend a registry walk for zero
+ *  registered topics; service has no enrichment topics today, so
+ *  emitting on it would spend a registry walk for zero
  *  hits. The narrow keeps the steady-state cost down.
  *
  *  Two events fire here:
@@ -232,16 +232,6 @@ export const emitExecution = (
 ): void => {
   if (!bus || !args.recipe_id || !args.run_id) return;
   try { bus.emit({ kind: 'execution', ...args }); }
-  catch { /* swallow */ }
-};
-
-/** Service lifecycle: enroll / start / stop / crash. */
-export const emitService = (
-  bus: EventBus | undefined,
-  args: { service_id: string; op: 'enrolled' | 'lifecycle' | 'error' },
-): void => {
-  if (!bus || !args.service_id) return;
-  try { bus.emit({ kind: 'service', ...args }); }
   catch { /* swallow */ }
 };
 

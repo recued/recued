@@ -97,6 +97,14 @@ import {
 // inside the packs panel's detail ACCESS section).
 import { PACK_ACCESS_STYLES } from '../settings/pack-access-controls.js';
 import {
+  PACK_CONNECTIONS_STYLES,
+  type PackConnectionsCallers,
+} from '../settings/pack-connections-controls.js';
+import {
+  PACK_PROGRAMS_STYLES,
+  type PackProgramsCallers,
+} from '../settings/pack-programs-controls.js';
+import {
   OWNER_OPERATION_STYLES,
   type OwnerOperationDeleteCaller,
   type OwnerOperationInventoryCaller,
@@ -217,6 +225,8 @@ export const PACKS_ROUTE_STYLES = [
   CLI_GRANT_DIALOG_STYLES,
   CONNECTIONS_READINESS_STYLES,
   PACK_ACCESS_STYLES,
+  PACK_CONNECTIONS_STYLES,
+  PACK_PROGRAMS_STYLES,
   OWNER_OPERATION_STYLES,
   // The unified surface (list↔detail toggle) + its browse-list panel styles.
   PACKS_SURFACE_STYLES,
@@ -289,6 +299,11 @@ export interface BootstrapPacksRouteOptions {
    *  with contracts enabled but local-tools disabled must still get the
    *  Access panel. Falls back to the local-tools caller when absent. */
   accessContractsCaller?: GrantContractsCaller;
+  /** D-320 — `packs.connections.*`, the Access tab's Connections block. */
+  packConnectionsCallers?: PackConnectionsCallers;
+  /** D-321 — `packs.tool_status` and the owner's Refuse / Warn writes: the
+   *  pack list's program badge and the DETAIL tab's Programs block. */
+  packProgramsCallers?: PackProgramsCallers;
   /** D-196 R6 — Seller tiers for the expanded install audience checklist. */
   sellerOverviewCaller?: () => Promise<import('@recued/contracts').SellerOverview>;
   // ── The Use tab (pack as an app) ──────────────────────────────────
@@ -367,35 +382,11 @@ const appendUnavailable = (
   host.appendChild(unavailable);
 };
 
-/** Add-a-pack (2026-07-01) — parse the "Add a pack" input into a marketplace
- *  slug or a direct URL. Mirrors `resolveRecipeInput` (marketplace client) but
- *  for the `/packs/` route + lives HERE so the webclient never imports
- *  `@recued/marketplace` (role-boundary lint). Recognises:
- *    - `pack-slug`                                   → `{ slug }`
- *    - `recued.com/packs/pack-slug[.json]`           → `{ slug }`
- *    - `https://recued.com/marketplace/packs/slug`   → `{ slug }`
- *    - `https://example.com/pack.json`               → `{ url }` (local import — deferred)
- *  Empty / unparseable → `null`. Pure + exported for unit tests. */
-export const resolvePackInput = (
-  input: string,
-): { slug: string } | { url: string } | null => {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  // Marketplace pack URL (apex root or legacy /marketplace prefix) → slug.
-  const webUrl = trimmed.match(
-    /^(?:https?:\/\/)?(?:www\.)?recued\.com(?:\/marketplace)?\/packs\/([a-z0-9][a-z0-9-]*[a-z0-9])(?:\.json)?$/i,
-  );
-  if (webUrl) return { slug: webUrl[1] };
-  // Any other full URL → pass through (an arbitrary/local JSON — the local-import
-  // path is deferred, so the resolve caller surfaces it as an unsupported failure).
-  if (/^https?:\/\//i.test(trimmed)) return { url: trimmed };
-  // Bare slug (alphanumeric + hyphens).
-  if (/^[a-z0-9][a-z0-9-]*[a-z0-9]$/i.test(trimmed)) return { slug: trimmed };
-  // Contains a dot but no scheme → treat as a URL.
-  if (trimmed.includes('.')) return { url: `https://${trimmed}` };
-  // Single short token → slug.
-  return { slug: trimmed };
-};
+/** Add-a-pack — `resolvePackInput` lives in its own module, so `packs-surface.ts`
+ *  can use it without importing this route (a cycle: this route reads the
+ *  surface's styles while it loads). Re-exported for the callers that import it
+ *  from here. */
+export { resolvePackInput } from './resolve-pack-input.js';
 
 /** What the open Use tab looks like to the refresh decision. */
 export interface OpenPackViewState {
@@ -479,11 +470,14 @@ export const bootstrapPacksRoute = (
     && opts.localToolsUniverseCaller !== undefined
     && opts.localToolsSetCaller !== undefined
   ) {
+    const programs = opts.packProgramsCallers;
     cliGrantDialog = mountCliGrantDialog({
       host: routeRoot,
       document: doc,
       runUniverse: opts.localToolsUniverseCaller,
       runSet: opts.localToolsSetCaller,
+      // D-321 — each new tool shows whether its program is installed.
+      ...(programs !== undefined ? { runToolStatus: () => programs.status({}) } : {}),
     });
   }
 
@@ -605,6 +599,9 @@ export const bootstrapPacksRoute = (
           ...(opts.packsUnrunnableCaller !== undefined
             ? { listUnrunnable: opts.packsUnrunnableCaller }
             : {}),
+          ...(opts.packProgramsCallers !== undefined
+            ? { listToolStatus: () => opts.packProgramsCallers!.status({}) }
+            : {}),
           ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         }),
       mountDetail: (host, onSelectSlug) => {
@@ -659,6 +656,12 @@ export const bootstrapPacksRoute = (
             : {}),
           ...(opts.sellerOverviewCaller !== undefined
             ? { runSellerOverview: opts.sellerOverviewCaller }
+            : {}),
+          ...(opts.packConnectionsCallers !== undefined
+            ? { runPackConnections: opts.packConnectionsCallers }
+            : {}),
+          ...(opts.packProgramsCallers !== undefined
+            ? { runPackPrograms: opts.packProgramsCallers }
             : {}),
           // ── Use tab ──
           ...(opts.recipesListCaller !== undefined

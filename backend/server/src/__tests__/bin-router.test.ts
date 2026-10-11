@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -543,6 +543,45 @@ describe('production router', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`recued ${version} — `);
     expect(result.stdout).toContain('version, --version, -v');
+  });
+
+  /** ⛔ `recued --db-path X audit` opened the DEFAULT realm and exited 0: the
+   *  flag set a config key nothing read. The flags went with their settings on
+   *  2026-10-09 and are refused before any realm opens, naming what replaced
+   *  them. HOME is a scratch folder, so a regression would show up there as a
+   *  realm created at the default path. */
+  it('refuses the flags removed with their settings, opening nothing', () => {
+    const dir = makeTmp();
+    const home = join(dir, 'home');
+    mkdirSync(home);
+    const wanted = join(dir, 'wanted');
+    const env = {
+      HOME: home,
+      DB_PATH: undefined,
+      XDG_DATA_HOME: undefined,
+      LOCALAPPDATA: undefined,
+      APPDATA: undefined,
+    };
+
+    const dbPathFlag = runBin(['audit', '--db-path', wanted], { env });
+    expect(dbPathFlag.status).toBe(1);
+    expect(dbPathFlag.stderr).toContain('recued: --db-path was removed — use --db <file>.');
+
+    // `--host 0.0.0.0 serve` must still parse as `serve`, so the refusal is what
+    // answers — not the help page for a subcommand called "0.0.0.0".
+    const hostFlag = runBin(['--host', '0.0.0.0', 'serve'], { env });
+    expect(hostFlag.status).toBe(1);
+    expect(hostFlag.stderr).toContain('recued: --host was removed');
+    expect(hostFlag.stderr).toContain('network.lan_bind_address');
+    expect(hostFlag.stdout).not.toContain('Daemon (background):');
+
+    const equalsForm = runBin(['--mcp-port=7718', '--data-path', wanted, 'status'], { env });
+    expect(equalsForm.status).toBe(1);
+    expect(equalsForm.stderr).toContain('recued: --mcp-port was removed');
+    expect(equalsForm.stderr).toContain('recued: --data-path was removed');
+
+    expect(existsSync(wanted)).toBe(false);
+    expect(readdirSync(home)).toEqual([]);
   });
 
   it('reverts a staged update before importing SQLite or the ordinary update profile', () => {

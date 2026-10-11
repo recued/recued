@@ -9,7 +9,14 @@ import { setRole } from '@recued/contracts';
 import { copyFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { classifyBootProfile, createBootTrace, type BootCommandProfile } from './cli/boot-trace.js';
-import { FLAGS_WITH_VALUES, getArg, getFlag, parsePositionals } from './cli/parse.js';
+import {
+  FLAGS_WITH_VALUES,
+  RETIRED_FLAGS,
+  findRetiredFlags,
+  getArg,
+  getFlag,
+  parsePositionals,
+} from './cli/parse.js';
 import { SERVER_VERSION } from './server-version.js';
 
 setRole('server');
@@ -127,6 +134,19 @@ const dispatch = async (): Promise<void> => {
   if (helpRequested || unknownSubcommand) {
     bootTrace.mark('dispatch-help', unknownSubcommand ? commandLabel : undefined);
     await showHelp();
+    return;
+  }
+
+  // Removed with their settings on 2026-10-09 (`RETIRED_FLAGS`). Refused before
+  // any profile opens a realm: `--db-path X` used to start the DEFAULT realm and
+  // exit 0, which reads exactly like success.
+  const retiredFlags = findRetiredFlags(args);
+  if (retiredFlags.length > 0) {
+    bootTrace.mark('dispatch-retired-flag', retiredFlags.join(','));
+    for (const flag of retiredFlags) {
+      console.error(`recued: ${flag} was removed — ${RETIRED_FLAGS.get(flag)}.`);
+    }
+    process.exitCode = 1;
     return;
   }
 

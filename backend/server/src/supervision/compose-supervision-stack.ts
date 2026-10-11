@@ -1,10 +1,12 @@
 /** Supervision feature — composition root for the cli-daemon keep-alive stack.
  *
- *  Bundles the durable store + the supervisor + the rpc deps, and rides the
- *  D-118 `serviceStack` lifecycle threading: built in `compose-collection-
- *  context` (which has db / dataPath / manifests), `startAll`'d at boot in
- *  `startCollectionAdapters`, `disposeAll`'d at shutdown via `install-shutdown`,
- *  and its `rpcDeps` registered on the ws-server handler set.
+ *  Bundles the durable store + the supervisor + the rpc deps: built in
+ *  `compose-collection-context` (which has db / dataPath / manifests),
+ *  `startAll`'d at boot in `startCollectionAdapters`, `disposeAll`'d at shutdown
+ *  via `install-shutdown`, and its `rpcDeps` registered on the ws-server handler
+ *  set. (It once rode the D-118 service installer's lifecycle; that installer is
+ *  retired, and the health checkers it shared live on in
+ *  `collections/service/checkers/`.)
  *
  *  The one dep `compose-collection-context` lacks is the cli executor (built
  *  later, in `compose-execution-context`), so it's LATE-BOUND: the supervisor

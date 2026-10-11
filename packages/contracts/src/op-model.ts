@@ -25,6 +25,7 @@ import type { RecordsRootProjection } from './records-root-projection.js';
  */
 import type { BaseStep, StepPages } from './steps.js';
 import type { Actor } from './commits.js';
+import type { CliInstallHint, CliToolVersionPolicy } from './cli-tool-version.js';
 import { type IngredientKind, INGREDIENT_KINDS, type RiskTier } from './ingredient.js';
 import type {
   OperationApproval,
@@ -330,8 +331,10 @@ export const isOpStep = (step: unknown): step is OpStep => {
 export interface IngredientCliConfig {
   /** the binary the ops invoke (`whisper`, `ffmpeg`, `magick`). */
   tool: string;
-  /** readiness-probe argv — the `reachable` preflight stage runs it and treats
-   *  a clean exit as "binary on PATH" (`["whisper","--help"]`). §6/§7. */
+  /** the tool's probe argv (`["whisper","--help"]`); `probe[0]` is the launched
+   *  binary (`entry_point ?? tool`), the pin the ops' argv[0] has. Nothing runs
+   *  it for a pack without `version`. With `version`, it must ask only for the
+   *  version (`CLI_VERSION_PROBE_FLAGS`), because the server runs it (D-321). */
   probe: string[];
   /** `cli_delegated` profile dir (carried over from the D-170
    *  `CompositionCliProfile`). */
@@ -344,6 +347,11 @@ export interface IngredientCliConfig {
   /** the connector `surfaces_seed.entry_point` (the launched binary). Derived
    *  from `tool` when omitted. */
   entry_point?: string;
+  /** D-321 — the versions of `tool` this pack was tested with, and what a run
+   *  does outside them. Carried onto the catalog with `probe`. */
+  version?: CliToolVersionPolicy;
+  /** D-321 — where the owner gets `tool`. Shown, never run (D-170). */
+  install?: CliInstallHint[];
 }
 
 /** http ingredient shared config — base URL + connection-kind (§4). */

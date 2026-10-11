@@ -7,9 +7,10 @@
  * are never converted into a second run identity.
  */
 
-import type { AuditLogStore } from '@recued/storage';
+import type { AuditEntry, AuditLogStore } from '@recued/storage';
 import {
   contractPermitsDoorType,
+  executionSourceContractId,
   isContractActive,
   type RecipeDefinition,
 } from '@recued/contracts';
@@ -25,6 +26,7 @@ import {
 } from './derive-recipe-capability.js';
 import { doorCapabilityChanged } from './mint-door-contract.js';
 import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
+import type { InternalExecuteOverrides } from './types.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 import { buildWebhookContractSnapshot } from './webhook-contract-snapshot.js';
@@ -41,6 +43,9 @@ export interface ExecuteWebhookRecipeRunnerDeps {
    *  connection its provider reads resolve through, silently resolves to nothing.
    *  Same shape and reason as the reception runner's `resolveConfig` (3c·1). */
   resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  /** D-320 phase 3 (3b) — the main dish's choice of connection, passed to the run for
+   *  the same reason as `resolveConfig` (`composeInstallConnectionsResolver`). */
+  readonly resolveDishConnections?: (recipeId: string) => InternalExecuteOverrides['dish_connections'];
   readonly resolveDoorRecipe?: DoorRecipeResolver;
   readonly resolveOp?: OpResolver;
   /** D-209 #1 W3 — the store the door's `ContractSnapshot` resolves from. MUST be
@@ -70,6 +75,33 @@ const assertTargetStillMatches = (
   return recipe;
 };
 
+/** ⛔ A refusal under a door that has since been REPLACED is not a refusal of this
+ *  delivery. A machine re-derive (a pack's connections, a reinstall, a dish's choice,
+ *  the boot re-derive) never edits a door: it mints a new one, re-stamps the trigger
+ *  rows with it and revokes the old one (`reconcileWebhookDoors`). A run in flight
+ *  under the old door is refused at its next gated step, non-retryably, and the
+ *  retry's claim carries the new door from the re-stamped row. An owner's revoke
+ *  leaves the revoked door stamped (D-295), so its retry claims the door the attempt
+ *  ran under, and stays refused. Read as an owner's denial, the retry was cancelled
+ *  and the event never ran (the D-320 audit). The re-entered run still passes the
+ *  checks below on the new door: live, a webhook door, granting what the recipe
+ *  derives. An owner's denial (`details.denied_by`, `preflight-resumer.ts`) stays
+ *  closed whatever happened to the door since: the owner said no to this delivery. */
+const ranUnderAReplacedDoor = (
+  deps: ExecuteWebhookRecipeRunnerDeps,
+  attempt: AuditEntry,
+  input: WebhookRecipeRunRequest,
+): boolean => {
+  if ((attempt.errors ?? []).some((error) => error.details?.['denied_by'] === 'owner')) return false;
+  const ranUnder = (attempt.execution_source === undefined
+    ? undefined
+    : executionSourceContractId(attempt.execution_source)) ?? attempt.contract_snapshot?.contract_id;
+  const claimed = input.execution_source.contract_id;
+  if (ranUnder === undefined || claimed === undefined || ranUnder === claimed) return false;
+  const door = deps.definitionStore.get(ranUnder);
+  return door !== null && door.revoked_at !== undefined && door.revoked_at !== null;
+};
+
 const runOnce = async (
   deps: ExecuteWebhookRecipeRunnerDeps,
   input: WebhookRecipeRunRequest,
@@ -90,10 +122,12 @@ const runOnce = async (
     // An owner denial (including approval-time authority revocation) is a
     // durable terminal refusal, not a failed execution that the outbox may
     // re-enter. This also closes the crash window between the approval core's
-    // terminal audit write and the webhook store's wait-marker handoff.
+    // terminal audit write and the webhook store's wait-marker handoff. A
+    // refusal under a door that has since been replaced is neither, and re-enters.
     if (existing.commit_status === 'failed'
       && (existing.errors ?? []).some((error) =>
-        error.code === 'RECIPE_POLICY_DENIED' && error.retryable === false)) {
+        error.code === 'RECIPE_POLICY_DENIED' && error.retryable === false)
+      && !ranUnderAReplacedDoor(deps, existing, input)) {
       return 'terminal_non_success';
     }
     // A terminal cancellation, kill, or in-doubt result must never burn the
@@ -119,6 +153,7 @@ const runOnce = async (
   // install config as it stands NOW, exactly like a fresh fire would.
   const recipe = assertTargetStillMatches(deps, input);
   const config = deps.resolveConfig(input.recipe_id);
+  const dishConnections = deps.resolveDishConnections?.(input.recipe_id);
   // Current production wiring always supplies the exact door resolver. Under that wiring,
   // an unstamped, dead, or cross-class door is a terminal non-success before execution.
   // An empty snapshot only fences ingredient calls; a pure-transform recipe could otherwise
@@ -163,8 +198,13 @@ const runOnce = async (
       throw new Error('webhook recipe runner: door binding changed; re-save the recipe');
     }
     const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+    // D-320 phase 3 (3b) — the config the run will resolve connections against,
+    // each slot's empty setting filled as the run fills it (`settleDoorConnections`).
+    const doorConfig = 'config' in dispatchRecipe && dispatchRecipe.config !== undefined
+      ? dispatchRecipe.config
+      : config;
     const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
-      ...(config === undefined ? {} : { config }),
+      ...(doorConfig === undefined ? {} : { config: doorConfig }),
       ...(resolveOp === undefined ? {} : { resolveOp }),
     });
     if (!derived.ok || doorCapabilityChanged(storedDoor, derived.capability).changed) {
@@ -178,7 +218,10 @@ const runOnce = async (
     ...(contract_snapshot === undefined ? {} : { contract_snapshot }),
     trigger_source: 'webhook',
     execution_source: input.execution_source,
-  }, { run_id: input.run_id });
+  }, {
+    run_id: input.run_id,
+    ...(dishConnections === undefined ? {} : { dish_connections: dishConnections }),
+  });
   if (!result.success) {
     if (result.awaiting_approval) return 'awaiting_approval';
     throw new Error(

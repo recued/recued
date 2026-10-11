@@ -1135,6 +1135,26 @@ describe('PreflightResumer.resumeRun', () => {
 });
 
 describe('PreflightResumer.denyRun', () => {
+  it('keeps the run\'s dish and what it did before it paused', async () => {
+    const log = auditLog();
+    const note = { tool: 'opencode', version: '2.0.1', tested: { from: '1.18.35', before: '2.0.0' }, state: 'untested' as const };
+    const before = {
+      dish_id: 'dsh_1',
+      run_yield: { steps_run: 2, steps_skipped: 0, items_total: 3, items_failed: 0 },
+      total_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120, provider_calls: 2 },
+      connections_used: [{ slot: 'hubspot', connection_name: 'hubspot-key' }],
+      untested_tools: [note],
+    };
+    await append(log, pausedAnchor(before));
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(NOW + 3_000);
+    const resumer = createPreflightResumer({ auditLog: log, getExecuteDeps: () => undefined });
+    await resumer.denyRun(checkpoint(), askContext());
+    const updated = await log.get('run-1');
+    expect(updated?.commit_status).toBe('failed');
+    // Only the paused record knew them: the steps before the pause do not run again.
+    expect(updated).toMatchObject(before);
+  });
+
   it('writes a RECIPE_POLICY_DENIED failed row under the paused run_id', async () => {
     const log = auditLog();
     const anchor = await append(log, pausedAnchor());
@@ -1158,6 +1178,9 @@ describe('PreflightResumer.denyRun', () => {
         step_id: 'gated_step',
         ingredient_slug: 'admin-tool',
       },
+      // Who said no (D-320 audit): a webhook delivery refused under a door since
+      // replaced runs again, and must not once the owner has denied it.
+      details: { denied_by: 'owner' },
     });
     expect(updated!.started_at).toBe(anchor.started_at);
     expect(updated!.duration_ms).toBe(Date.now() - anchor.started_at);

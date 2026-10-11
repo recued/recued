@@ -15,13 +15,24 @@
  *  capabilities (`wire-llm-substrate.ts`), which a composed boot hydrates from its
  *  database and which install a listener holding that server's config manager.
  *  A later file in the worker would have budgeted its prompts by what an earlier
- *  one learned about an endpoint they share. */
+ *  one learned about an endpoint they share.
+ *
+ *  ⚠ 2026-10-10 — and the chat's per-session rolling brief and unfolded user
+ *  statements (`chat-rolling-brief.ts`, module-level maps keyed by session id).
+ *  A chat test that ended a session with a statement still unfolded left it for
+ *  the next file using that session id: `d-164-phase-6-3-chat-orchestrator-ratchet`
+ *  then found `pending_user_statements` in a packet it pins key by key, red in the
+ *  sweep of `ec63b6afb` and green alone. Which files share a worker shifts as
+ *  files are added, so the leak shows only on some commits. */
 import { afterAll } from 'vitest';
 import { setVendorAliasRegistryResolver } from '@recued/contracts';
 import { onEndpointCapabilityLearned, resetEndpointCapabilities } from '@recued/llm';
+import { __clearSessionBriefs, __clearUnfoldedUserMessages } from '../../chat-rolling-brief.js';
 
 afterAll(() => {
   setVendorAliasRegistryResolver(null);
   resetEndpointCapabilities();
   onEndpointCapabilityLearned(undefined);
+  __clearSessionBriefs();
+  __clearUnfoldedUserMessages();
 });

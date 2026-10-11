@@ -50,11 +50,12 @@ describe('createEngineBusySignal', () => {
     expect(signal.isBusy()).toBe(true);
   });
 
-  it('ignores non-draining platforms (webhook / service)', () => {
+  // A platform outside the draining set, such as a row of the retired D-118
+  // `service` platform, which this server no longer knows.
+  it('ignores a platform it does not drain (the retired service)', () => {
     const signal = createEngineBusySignal({
       instances: fakeStore([
-        { platform: 'webhook', backfill_complete: false },
-        { platform: 'service', backfill_complete: false },
+        { platform: 'service' as never, backfill_complete: false },
       ]),
     });
     expect(signal.isDraining()).toBe(false);

@@ -1354,17 +1354,17 @@ const validateCanonicalOpStep = (
   if (s.connection !== undefined) {
     if (typeof s.connection !== 'string' || !OP_STEP_CONNECTION_REF_REGEX.test(s.connection)) {
       add('error', 'op_step_connection_shape', `${path}.connection`,
-        'canonical op-step `connection` must be a pure {{config.<var>}} ref naming a type:\'connection\' recipe variable — literal connection names and other refs are not portable');
+        'a step\'s `connection`, when given, must be a pure {{config.<setting>}} ref to a connection setting — literal connection names and other refs are not portable. Leave it out, and the step uses the connection chosen for its pack');
       return;
     }
     const varName = parseOpStepConnectionRef(s.connection);
     if (varName !== undefined && !connectionVars.includes(varName)) {
       add('error', 'op_step_connection_unknown_variable', `${path}.connection`,
-        `canonical op-step connection slot names variable "${varName}", which is not declared as a type:'connection' variable — declare it under variables with type: "connection"`);
+        `this step's connection names "${varName}", which the recipe does not declare as a connection setting. Leave it out, and the step uses the connection chosen for its pack`);
     }
   } else if (connectionVars.length > 1 && !connectionlessKernelOp) {
     add('error', 'op_step_connection_ambiguous', path,
-      `recipe declares ${connectionVars.length} connection variables (${[...connectionVars].sort().join(', ')}) so this op-step has no implicit connection — name its slot explicitly (connection: "{{config.<var>}}")`);
+      `recipe declares ${connectionVars.length} connection settings (${[...connectionVars].sort().join(', ')}), so which one this step uses is not clear. Name one here (connection: "{{config.<setting>}}"), or remove the API connection settings: a step that names none uses the connection chosen for its pack`);
   }
 };
 
@@ -1444,17 +1444,17 @@ const validatePrefetchOpStep = (
   if (s.connection !== undefined) {
     if (typeof s.connection !== 'string' || !OP_STEP_CONNECTION_REF_REGEX.test(s.connection)) {
       add('error', 'op_step_connection_shape', `${path}.connection`,
-        'prefetch op-step `connection` must be a pure {{config.<var>}} ref naming a type:\'connection\' recipe variable');
+        'a prefetch step\'s `connection`, when given, must be a pure {{config.<setting>}} ref to a connection setting. Leave it out, and the step uses the connection chosen for its pack');
       return;
     }
     const varName = parseOpStepConnectionRef(s.connection);
     if (varName !== undefined && !connectionVars.includes(varName)) {
       add('error', 'op_step_connection_unknown_variable', `${path}.connection`,
-        `prefetch op-step connection slot names variable "${varName}", which is not declared as a type:'connection' variable`);
+        `this prefetch step's connection names "${varName}", which the recipe does not declare as a connection setting. Leave it out, and the step uses the connection chosen for its pack`);
     }
   } else if (connectionVars.length > 1 && !connectionlessKernelOp) {
     add('error', 'op_step_connection_ambiguous', path,
-      `recipe declares ${connectionVars.length} connection variables (${[...connectionVars].sort().join(', ')}) so this prefetch op-step has no implicit connection — name its slot explicitly (connection: "{{config.<var>}}")`);
+      `recipe declares ${connectionVars.length} connection settings (${[...connectionVars].sort().join(', ')}), so which one this prefetch step uses is not clear. Name one here (connection: "{{config.<setting>}}"), or remove the API connection settings: a step that names none uses the connection chosen for its pack`);
   }
 };
 
@@ -2912,6 +2912,91 @@ export const validateRetiredCarries = (
       }
     }
   });
+};
+
+/** D-320 phase 3 (ruling 18) — `metadata.retired_connections`: an old connection
+ *  setting's name, and the slot whose connection it named (`retiredConnectionsOf`,
+ *  contracts). Absent is legal.
+ *
+ *  A name must be one a setting could have had, and must not be declared now, or
+ *  a run would read the value twice. A slot is the connection name a pack's catalog
+ *  declares, so any non-empty string; whether the recipe signs in through it is the
+ *  run's to know. */
+export const validateRetiredConnections = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  if (!r.metadata || typeof r.metadata !== 'object' || Array.isArray(r.metadata)) return;
+  const map = (r.metadata as Record<string, unknown>).retired_connections;
+  if (map === undefined) return;
+  const path = 'metadata.retired_connections';
+  if (map === null || typeof map !== 'object' || Array.isArray(map)) {
+    add('error', 'retired_connections_shape', path, 'retired_connections must map an old setting name to the slot it named');
+    return;
+  }
+  const variables = r.variables !== null && typeof r.variables === 'object' && !Array.isArray(r.variables)
+    ? r.variables as Record<string, unknown> : {};
+  for (const [name, slot] of Object.entries(map as Record<string, unknown>)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || typeof slot !== 'string' || slot.trim() === '') {
+      add('error', 'retired_connections_shape', `${path}.${name}`, 'must map a setting name to the slot it named');
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(variables, name)) {
+      add('error', 'retired_connection_declared', `${path}.${name}`,
+        `'${name}' is retired but still declared in variables: a run would read its value twice`);
+    }
+  }
+};
+
+/** D-320 phase 3 (3d) — a recipe names no API connection. A step that calls a
+ *  pack signs in through the pack's connection: its run uses the connection the
+ *  owner chose for that pack, else the pack's default (slice 3a), and a recipe
+ *  reads the one a run used as `{{context.connections.<slot>}}`. So an API
+ *  connection setting (`type: 'connection'`, `connection_kind: 'api'`) and a step
+ *  `connection` naming one are flagged. Mail, notification, MCP and peer
+ *  connection settings stay (no step names one as its connection: 0 of the 15
+ *  shipped, measured 2026-10-10).
+ *
+ *  ⚠ ADVICE (`info`) until the shipped recipes drop theirs (3e). As an error it
+ *  would refuse each of the 1,927 that still declare one, at install and at
+ *  publish; as a warning it would show on each of them in the Kitchen and the
+ *  marketplace, where the owner cannot act on it, and break the pack audits that
+ *  keep shipped recipes free of warnings. A server keeps running a recipe that
+ *  declares one either way (3a reads its value as its slot's).
+ *
+ *    - `api_connection_setting` — a setting asks for an API connection.
+ *    - `step_names_connection`  — a step's `connection` names one. */
+export const validateConnectionSettings = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  const variables = r.variables !== null && typeof r.variables === 'object' && !Array.isArray(r.variables)
+    ? r.variables as Record<string, unknown> : {};
+  const api = new Set<string>();
+  for (const [name, def] of Object.entries(variables)) {
+    if (def === null || typeof def !== 'object' || Array.isArray(def)) continue;
+    const hint = def as { type?: unknown; connection_kind?: unknown };
+    if (hint.type !== 'connection' || hint.connection_kind !== 'api') continue;
+    api.add(name);
+    add('info', 'api_connection_setting', `variables.${name}`,
+      `"${name}" asks for a connection, which a recipe no longer does: each step that calls a pack uses the `
+      + 'connection chosen for that pack, else its default. Remove this setting and every step\'s "connection"; '
+      + 'a recipe that needs the name of the connection a run used reads {{context.connections.<slot>}}');
+  }
+  if (api.size === 0) return;
+  for (const array of ['prefetch_steps', 'steps'] as const) {
+    const steps = r[array];
+    if (!Array.isArray(steps)) continue;
+    steps.forEach((step, index) => {
+      if (step === null || typeof step !== 'object') return;
+      const ref = (step as { connection?: unknown }).connection;
+      const name = typeof ref === 'string' ? parseOpStepConnectionRef(ref) : undefined;
+      if (name === undefined || !api.has(name)) return;
+      add('info', 'step_names_connection', `${array}[${index}].connection`,
+        `this step names the connection {{config.${name}}}; remove "connection", and the step uses the `
+        + 'connection chosen for its pack');
+    });
+  }
 };
 
 /** D-220 Slice A1 — `metadata.requires_form_fields` shape + the static

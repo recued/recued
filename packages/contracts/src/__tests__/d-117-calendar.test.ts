@@ -49,14 +49,13 @@ describe('D-117 calendar constants', () => {
 });
 
 describe('CollectionPlatform union', () => {
-  it('includes calendar alongside mail / file / webhook', () => {
+  it('includes calendar alongside mail / file', () => {
     const platforms: CollectionPlatform[] = [
       'mail',
       'file',
-      'webhook',
       'calendar',
     ];
-    expect(platforms.length).toBe(4);
+    expect(platforms.length).toBe(3);
   });
 });
 
@@ -252,7 +251,7 @@ describe('CalendarAdapterError', () => {
 
 describe('CollectionHealth extensions for calendar', () => {
   it('calendar-specific fields are optional on the base interface', () => {
-    // Existing mail/file/webhook emitters do not populate the
+    // Existing mail/file emitters do not populate the
     // calendar-specific counters. The base shape must remain
     // backward-compatible.
     const mailHealth: CollectionHealth = {

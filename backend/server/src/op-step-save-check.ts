@@ -16,12 +16,15 @@
  *    2. an UNKNOWN kernel domain (`core.nope.x`) — no such `core.<domain>.*`;
  *    3. a MIS-CONVENTIONED canonical op (`core.crm.bogus.read` / a non-canonical
  *       verb `core.acct.invoice.create`) — `lowerCanonicalConventionOpStep` /
- *       the resolver fail closed on it;
- *    4. a SLOTLESS canonical op-step — a bare-canonical or canonical-convention
- *       op in `steps` with ZERO `type:'connection'` variables, which
- *       `opStepConnectionSlots` rejects at dispatch ("declares no type:
- *       'connection' variable").
- *  And ONE non-blocking advisory (5): an uncovered Tier-P `depends_on`.
+ *       the resolver fail closed on it.
+ *  And ONE non-blocking advisory (4): an uncovered Tier-P `depends_on`.
+ *
+ *  ⚠ D-320 phase 3 (3d) — a canonical op-step that names no connection, in a
+ *  recipe that declares none, is NOT refused any more. It was (as unrunnable:
+ *  `opStepConnectionSlots` found no setting at dispatch), but since slice 3a a run
+ *  first gives each step that names no connection its slot's setting
+ *  (`slot-settings.ts`: `crm` for `core.crm.*` and `deal.search`), so it runs on
+ *  the connection chosen for that slot. New recipes name no connection.
  *
  *  Why this REPLACES the old blanket reject: the D-182 Slice 5 dispatch path
  *  (`resolveCanonicalRecipeForDispatch`) lowers + runs inline, never-installed
@@ -47,7 +50,6 @@ import {
   parseOpId,
   uncoveredOpDependencies,
 } from '@recued/contracts';
-import { connectionVariableNames } from '@recued/recipes';
 
 /** The canonical-convention vocab the dispatch lowering validates against
  *  (`lowerCanonicalConventionOpStep` family check + the resolver's verb check).
@@ -84,22 +86,15 @@ export const checkInlineOpSteps = (recipe: RecipeDefinition): OpStepSaveCheck =>
   // Every op id named by an op-step, across `steps` + `prefetch_steps` +
   // `trigger_steps` (the lowering walks all three) — for the depends_on cover.
   const allOps: string[] = [];
-  // Whether a SEQUENTIAL op-step needs a connection slot at dispatch (a bare
-  // canonical or canonical-convention op — `opStepConnectionSlots` requires a
-  // type:'connection' variable for any of these). Closed-kind kernel + Tier-P
-  // ops lower to concrete steps BEFORE that check, so they are NOT slot-needing.
-  let hasSlotNeedingSeqOp = false;
 
-  /** Per-op id validation. `isSequential` marks an op in `steps` (the only list
-   *  `opStepConnectionSlots` reads for the slot requirement). */
-  const classify = (op: string, isSequential: boolean): void => {
+  /** Per-op id validation. */
+  const classify = (op: string): void => {
     allOps.push(op);
     const parsed = parseOpId(op);
     if (parsed === null) {
       // bare canonical `<entity>.<verb>` (CRM / acct / tool) — binds a slot at
       // dispatch. Its verb validity (for a crm_alias entity) is already checked
-      // by parseRecipe; here we only note the slot requirement.
-      if (isSequential) hasSlotNeedingSeqOp = true;
+      // by parseRecipe.
       return;
     }
     if (parsed.tier === 'kernel') {
@@ -133,9 +128,8 @@ export const checkInlineOpSteps = (recipe: RecipeDefinition): OpStepSaveCheck =>
       // canonical_convention (`core.crm.*` / `core.acct.*`) — resolves to a bare
       // CanonicalOpStep at dispatch, so it binds a connection slot like a bare
       // canonical op AND its `<alias>.<verb>` must be valid (dispatch fails
-      // closed otherwise). The structural validator skips both for the two-tier
-      // form (it has no registry), so name them here.
-      if (isSequential) hasSlotNeedingSeqOp = true;
+      // closed otherwise). The structural validator skips the verb for the
+      // two-tier form (it has no registry), so name it here.
       const aliases = CONVENTION_ALIASES[parsed.domain];
       const verbs = CONVENTION_VERBS[parsed.domain];
       if (aliases === undefined || verbs === undefined) return; // unknown convention — dispatch's throw is the backstop
@@ -159,23 +153,13 @@ export const checkInlineOpSteps = (recipe: RecipeDefinition): OpStepSaveCheck =>
   };
 
   for (const s of recipe.steps ?? []) {
-    if (isCanonicalOpStep(s as RecipeStep)) classify((s as { op: string }).op, true);
+    if (isCanonicalOpStep(s as RecipeStep)) classify((s as { op: string }).op);
   }
   for (const s of recipe.prefetch_steps ?? []) {
-    if (isPrefetchOpStep(s)) classify((s as { op: string }).op, false);
+    if (isPrefetchOpStep(s)) classify((s as { op: string }).op);
   }
   for (const s of recipe.trigger_steps ?? []) {
-    if (isCanonicalOpStep(s as RecipeStep)) classify((s as { op: string }).op, false);
-  }
-
-  // A bare-canonical / canonical-convention op in `steps` needs SOME
-  // type:'connection' variable to bind at dispatch; with none declared,
-  // `opStepConnectionSlots` fails closed. (>1 variables + an unnamed slot is the
-  // ambiguity case parseRecipe already errors on.)
-  if (hasSlotNeedingSeqOp && connectionVariableNames(recipe).length === 0) {
-    errors.push(
-      "recipe has a canonical op-step but declares no type:'connection' variable — add a variable with type: \"connection\" so the op binds a connection at dispatch",
-    );
+    if (isCanonicalOpStep(s as RecipeStep)) classify((s as { op: string }).op);
   }
 
   // depends_on coverage (Tier-P) — advisory only: `depends_on` is the

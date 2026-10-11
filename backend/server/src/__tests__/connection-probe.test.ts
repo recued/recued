@@ -3328,17 +3328,47 @@ describe('D-192 seam 8 — registry-driven messenger health probes', () => {
  *  `/account-info/v3/details` answers 200 to a working key and 401 otherwise.
  *  The generic HEAD-root probe therefore passed every Service Key, and
  *  rotation refused every replacement (its invalid control key passed too).
- *  This double answers by URL AND credential, so it can refuse. */
-const hubspotLike = (workingKeys: readonly string[]) => vi.fn<HttpFetcher>(async (url, init) => {
+ *  This double answers by URL AND credential, so it can refuse.
+ *
+ *  2026-10-09: HubSpot reports a key's scopes at POST
+ *  `/oauth/v2/private-apps/get/access-token-info`, but only when the key is
+ *  the Bearer AND the body names it as `tokenKey`. A key it does not know
+ *  gets 404, a body without `tokenKey` gets 400. Here a working key with no
+ *  `scopesByKey` entry also gets 404: a key whose scopes HubSpot will not
+ *  report. */
+const hubspotLike = (
+  workingKeys: readonly string[],
+  scopesByKey: Readonly<Record<string, readonly string[]>> = {},
+) => vi.fn<HttpFetcher>(async (url, init) => {
   const authorization = init?.headers?.Authorization;
+  const bearerKey = workingKeys.find((key) => authorization === `Bearer ${key}`);
   if (url === 'https://api.hubapi.com/') return jsonResponse(302);
   if (url === 'https://api.hubapi.com/account-info/v3/details') {
-    return workingKeys.some((key) => authorization === `Bearer ${key}`)
+    return bearerKey !== undefined
       ? jsonResponse(200, { portalId: 245836902 })
       : jsonResponse(401);
   }
+  if (
+    url === 'https://api.hubapi.com/oauth/v2/private-apps/get/access-token-info'
+    && init?.method === 'POST'
+  ) {
+    if (bearerKey === undefined) return jsonResponse(404);
+    const body = JSON.parse(init.body ?? '{}') as { tokenKey?: unknown };
+    if (body.tokenKey !== bearerKey) return jsonResponse(400, { category: 'VALIDATION_ERROR' });
+    const scopes = scopesByKey[bearerKey];
+    return scopes === undefined
+      ? jsonResponse(404)
+      : jsonResponse(200, { hubId: 245836902, scopes, isUserToken: false });
+  }
   return jsonResponse(404);
 });
+
+const TOKEN_INFO_URL = 'https://api.hubapi.com/oauth/v2/private-apps/get/access-token-info';
+
+const storedScopes = (name: string): unknown => {
+  const json = store.get('api', name)!.granted_scopes_json;
+  return json === undefined ? undefined : JSON.parse(json);
+};
 
 const HUBSPOT_CONFIG = { base_url: 'https://api.hubapi.com', vendor: 'hubspot' };
 
@@ -3361,9 +3391,11 @@ describe('a HubSpot connection is checked with a read that needs the key', () =>
     expect(health.status).toBe('auth_failed');
     expect(health.last_error).toBe('http_status_401');
     expect(storedHealth('api', mistyped).status).toBe('auth_failed');
-    // Both checks were the authenticated read, as a GET — never the root.
+    // Both checks were the authenticated read, as a GET — never the root. The
+    // working key was then asked for its scopes; the refused one was not.
     expect(fetcher.mock.calls.map(([url, init]) => `${String(init?.method)} ${url}`)).toEqual([
       'GET https://api.hubapi.com/account-info/v3/details',
+      `POST ${TOKEN_INFO_URL}`,
       'GET https://api.hubapi.com/account-info/v3/details',
     ]);
   });
@@ -3413,5 +3445,153 @@ describe('a HubSpot connection is checked with a read that needs the key', () =>
       { kind: 'api', name },
       getEncryptionKey,
     )).toEqual({ type: 'bearer', token: 'pat-new' });
+  });
+});
+
+describe("a HubSpot Service Key's check reads which scopes it has", () => {
+  const enrollKey = (name: string, token: string): Promise<string> =>
+    enroll('api', { name, config: HUBSPOT_CONFIG, auth: { type: 'bearer', token } });
+
+  it('records the scopes of a working key, so a pack can say which one is missing', async () => {
+    const name = await enrollKey('hubspot-scoped', 'pat-working');
+    expect(storedScopes(name)).toBeUndefined();
+    const fetcher = hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read', 'crm.objects.deals.read'],
+    });
+
+    expect(await probe('api', name, fetcher)).toMatchObject({ status: 'ok' });
+
+    // The double answers only a request that names the key twice, in the
+    // header and the body, as HubSpot does: a stored list proves both went.
+    expect(storedScopes(name)).toEqual(['crm.objects.contacts.read', 'crm.objects.deals.read']);
+    expect(storedHealth('api', name).status).toBe('ok');
+    expect(storedHealth('api', name).last_error).toBeUndefined();
+  });
+
+  it('reads them again on the next check, as when the owner adds a scope in HubSpot', async () => {
+    const name = await enrollKey('hubspot-widened', 'pat-working');
+    await probe('api', name, hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read'],
+    }));
+
+    await probe('api', name, hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read', 'crm.objects.contacts.write'],
+    }));
+
+    expect(storedScopes(name)).toEqual(['crm.objects.contacts.read', 'crm.objects.contacts.write']);
+  });
+
+  it('keeps no scopes once HubSpot refuses the key, and does not ask for them', async () => {
+    const name = await enrollKey('hubspot-revoked', 'pat-working');
+    await probe('api', name, hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read'],
+    }));
+    expect(storedScopes(name)).toEqual(['crm.objects.contacts.read']);
+    const revoked = hubspotLike([]);
+
+    expect(await probe('api', name, revoked)).toMatchObject({ status: 'auth_failed' });
+
+    expect(storedScopes(name)).toBeUndefined();
+    expect(revoked.mock.calls.map(([url]) => url)).not.toContain(TOKEN_INFO_URL);
+  });
+
+  it('reads as unknown, not as the last list, when HubSpot will not report them', async () => {
+    const name = await enrollKey('hubspot-unreported', 'pat-working');
+    await probe('api', name, hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read'],
+    }));
+
+    expect(await probe('api', name, hubspotLike(['pat-working']))).toMatchObject({ status: 'ok' });
+
+    expect(storedScopes(name)).toBeUndefined();
+    expect(storedHealth('api', name).last_error).toBeUndefined();
+  });
+
+  it('reads a malformed answer as unknown, and the check still passes', async () => {
+    const name = await enrollKey('hubspot-malformed', 'pat-working');
+    const hubspot = hubspotLike(['pat-working']);
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => url === TOKEN_INFO_URL
+      ? jsonResponse(200, { scopes: 'crm.objects.contacts.read' })
+      : hubspot(url, init));
+
+    expect(await probe('api', name, fetcher)).toMatchObject({ status: 'ok' });
+
+    expect(storedScopes(name)).toBeUndefined();
+    expect(storedHealth('api', name).last_error).toBeUndefined();
+  });
+
+  it('leaves the scopes alone while the vault is locked', async () => {
+    const name = await enrollKey('hubspot-locked', 'pat-working');
+    await probe('api', name, hubspotLike(['pat-working'], {
+      'pat-working': ['crm.objects.contacts.read'],
+    }));
+    const fetcher = vi.fn<HttpFetcher>();
+
+    const result = await handleConnectionProbe(
+      { store, now: () => NOW + 2_000, getEncryptionKey: () => null, fetcher },
+      { kind: 'api', name },
+    );
+
+    expect(result.health.last_error).toBe('vault_locked');
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(storedScopes(name)).toEqual(['crm.objects.contacts.read']);
+  });
+
+  it('leaves the scopes alone on a key whose vendor cannot report them', async () => {
+    await handleConnectionEnroll(
+      { store, now: () => NOW, getEncryptionKey },
+      {
+        name: 'other-vendor',
+        kind: 'api',
+        display_name: 'other-vendor',
+        config: { base_url: 'https://api.example.test/root' },
+        auth: { type: 'bearer', token: 'secret' },
+        granted_scopes: ['read:things'],
+      },
+    );
+    const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(204));
+
+    expect(await probe('api', 'other-vendor', fetcher)).toMatchObject({ status: 'ok' });
+
+    expect(storedScopes('other-vendor')).toEqual(['read:things']);
+    expect(fetcher.mock.calls.map(([, init]) => init?.method)).toEqual(['HEAD']);
+  });
+
+  const rotate = async (name: string, fetcher: HttpFetcher, attemptId: string): Promise<void> => {
+    const before = store.get('api', name)!;
+    const result = await handleConnectionRotateCredentials(
+      { store, now: () => NOW + 2_000, getEncryptionKey, fetcher },
+      {
+        attempt_id: attemptId,
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: { auth: { type: 'bearer', token: 'pat-new' } },
+      },
+    );
+    expect(result.verification).toMatchObject({ status: 'verified' });
+  };
+
+  it('a replaced key brings its own scopes', async () => {
+    const name = await enrollKey('hubspot-rotate-scopes', 'pat-old');
+    await probe('api', name, hubspotLike(['pat-old'], { 'pat-old': ['crm.objects.contacts.read'] }));
+
+    await rotate(name, hubspotLike(['pat-old', 'pat-new'], {
+      'pat-old': ['crm.objects.contacts.read'],
+      'pat-new': ['crm.objects.contacts.read', 'crm.objects.contacts.write'],
+    }), 'rotation-attempt-hubspot-0002');
+
+    expect(storedScopes(name)).toEqual(['crm.objects.contacts.read', 'crm.objects.contacts.write']);
+  });
+
+  it("a replaced key whose scopes HubSpot will not report shows none of the old key's", async () => {
+    const name = await enrollKey('hubspot-rotate-unreported', 'pat-old');
+    await probe('api', name, hubspotLike(['pat-old'], { 'pat-old': ['crm.objects.contacts.read'] }));
+
+    await rotate(name, hubspotLike(['pat-old', 'pat-new'], {
+      'pat-old': ['crm.objects.contacts.read'],
+    }), 'rotation-attempt-hubspot-0003');
+
+    expect(storedScopes(name)).toBeUndefined();
   });
 });

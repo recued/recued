@@ -27,6 +27,9 @@ export interface PreapprovalRecipeSource {
   /** Authenticated source stores supply these layers, not request fields. */
   install_config?: Record<string, unknown>;
   bound_dish?: { config_overlay: Record<string, unknown>; group_overlay?: Record<string, unknown> };
+  /** D-320 audit — the connection choice of the dish the run takes its settings from
+   *  (the bound dish, else the main dish), pinned with it (`dishPreapprovalMaterial`). */
+  connection_choices?: { choices: Record<string, string>; label: string };
   dependencies: PreapprovalDependency[];
 }
 export interface PreapprovalResolvedCall {
@@ -49,7 +52,16 @@ export interface PreapprovalPreparationDeps {
   /** The mail service exposes a persisted draft as its trusted frozen send
    * recipe. No draft-save/send effect is performed by preparation. */
   loadDraft?(draftId: string, revision: number): PreapprovalRecipeSource | null;
-  dispatch: Omit<DispatchResolveDeps, 'config'>;
+  dispatch: Omit<DispatchResolveDeps, 'config'> & {
+    /** D-320 audit — settle each slot's connection as the run will (the server's
+     *  `settleDoorConnections`): the reviewed snapshot is then the run's own copy and
+     *  config, and names the connection the run uses. Absent: as before. */
+    settle?: (
+      recipe: RecipeDefinition,
+      config: Record<string, unknown>,
+      dish: PreapprovalRecipeSource['connection_choices'] | null,
+    ) => { ok: true; recipe: RecipeDefinition; config: Record<string, unknown> } | { ok: false; reason: string };
+  };
   manifest(slug: string, version?: number): IngredientManifest | null;
   describe(input: {
     manifest: IngredientManifest; slug: string; input: Record<string, PreapprovalJson>;
@@ -86,8 +98,18 @@ export const prepareRecipeSnapshot = (loaded: PreapprovalRecipeSource, requested
       if (defaultValue !== undefined) config[key] = defaultValue;
     }
   }
-  const effectiveConfig = jsonObject(config);
-  const dispatch = resolveCanonicalRecipeForDispatch(loaded.definition, { ...dispatchDeps, config: effectiveConfig });
+  // D-320 audit — the run gives each step that names no connection its slot's setting,
+  // carries old setting names, applies the dish's choice and fills the pack's default
+  // before its steps resolve, and checks the copy it runs against this snapshot. A
+  // snapshot of the stored recipe never matched, so every pre-approved run of a recipe
+  // whose connection the run settles was refused. The settled config names the
+  // connection, and the run keeps it.
+  const settled = dispatchDeps.settle?.(loaded.definition, jsonObject(config), loaded.connection_choices ?? null);
+  if (settled !== undefined && !settled.ok) return unresolved(settled.reason);
+  const effectiveConfig = jsonObject(settled?.ok ? settled.config : config);
+  const dispatch = settled?.ok
+    ? { ok: true as const, recipe: settled.recipe }
+    : resolveCanonicalRecipeForDispatch(loaded.definition, { ...dispatchDeps, config: effectiveConfig });
   if (!dispatch.ok) return unresolved(dispatch.reason);
   const definitionHash = preapprovalHash(parsePreapprovalJson(loaded.definition));
   return { invocation_path: [...entryPath, { kind: 'recipe', recipe_id: loaded.definition.recipe_id,

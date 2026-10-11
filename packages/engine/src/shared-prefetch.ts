@@ -76,6 +76,12 @@ export interface RootRollup {
   publisher: string;
   pack_slug: string;
   label?: string;
+  /** The projection's declared `name`. A pack with several projections names
+   *  each one, and recipes read it under that name. */
+  name?: string;
+  /** A grouped projection's answer (`group_by`): one rollup per group, each
+   *  carrying the field and its value here — `null` for the empty bucket. */
+  group?: { by: string; key: unknown };
   value: Record<string, unknown>;
   complete: boolean;
   incomplete_reason?: string;
@@ -119,7 +125,6 @@ const ANNOTATABLE_COLLECTIONS = new Set([
   'calendar',
   'file',
   'webhook',
-  'service',
   'contact',
   'task',
   'note',
@@ -140,10 +145,16 @@ type AnnotationLinkTag = 'annotations' | 'links' | 'inbound_links' | 'rollups';
 /** ⚠ `rollups` takes a DEEPER tail than the other tags. An annotation ref names
  *  one key and a link ref one role, so the tag sits at the last or
  *  second-to-last segment. A rollup names a PACK and then an output
- *  (`…rollups.billable-hours.unbilled_minutes`), so it needs one more. The
- *  relaxation is scoped to this tag alone — widening it for the others would
- *  start matching refs the resolver never serves. */
-const ROLLUPS_MAX_TAIL = 2;
+ *  (`…rollups.billable-hours.unbilled_minutes`), so it needs one more — and a
+ *  GROUPED projection's rollup one more again, its group between the two
+ *  (`…rollups.<pack>.<group>.<output>`, 2026-10-09). A pack with several
+ *  projections names each, and the name sits after the pack
+ *  (`…rollups.invoice-book.pays.worst_days_late`), one more again when that
+ *  one is grouped (`…rollups.invoice-book.owed.GBP.outstanding`). The
+ *  shallower position is tried first, so every ref that parsed before parses
+ *  the same. The relaxation is scoped to this tag alone — widening it for the
+ *  others would start matching refs the resolver never serves. */
+const ROLLUPS_TAILS = [2, 3, 4] as const;
 
 const hasPrototypeSensitiveSegment = (segments: readonly string[]): boolean =>
   segments.some((seg) => PROTOTYPE_SENSITIVE_KEYS.has(seg));
@@ -197,11 +208,15 @@ export const parseAnnotationLinkRef = (
     tag = previousSegment;
     tagIndex = last - 1;
   } else {
-    // `rollups` only — one segment deeper, for `<pack_slug>.<output>`.
-    const rollupIndex = last - ROLLUPS_MAX_TAIL;
-    if (rollupIndex > 1 && segments[rollupIndex] === 'rollups') {
-      tag = 'rollups';
-      tagIndex = rollupIndex;
+    // `rollups` only — deeper, for `<pack_slug>.<output>` and, on a grouped
+    // projection, `<pack_slug>.<group>.<output>`.
+    for (const tail of ROLLUPS_TAILS) {
+      const rollupIndex = last - tail;
+      if (rollupIndex > 1 && segments[rollupIndex] === 'rollups') {
+        tag = 'rollups';
+        tagIndex = rollupIndex;
+        break;
+      }
     }
   }
   if (!tag || tagIndex <= 1) return null;
@@ -382,22 +397,70 @@ export const prefetchSharedRefs = async (
             // the wrong numbers under a name that looks right — so a collision
             // becomes an obviously-broken marker instead, and both publishers
             // are named so it can be diagnosed.
+            //
+            // 2026-10-09 — a GROUPED projection answers with one rollup per
+            // group, all from one publisher. Those fold one level deeper,
+            // `rollups.<pack>.<group key>.<output>` (the empty bucket is
+            // `_none`), rather than reading as a collision: before grouping, a
+            // second answer under one slug could only mean a clash.
+            //
+            // A pack with several projections names each one, and each folds
+            // under its name: `rollups.<pack>.<name>.<output>`, or
+            // `.<name>.<group>.<output>` when grouped. A pack's lone unnamed
+            // projection keeps the shorter path.
             const folded: Record<string, unknown> = Object.create(null);
-            const owners: Record<string, string[]> = Object.create(null);
+            const bySlug = new Map<string, RootRollup[]>();
             for (const rollup of rollups) {
-              const slug = rollup.pack_slug;
-              if (PROTOTYPE_SENSITIVE_KEYS.has(slug)) continue;
-              (owners[slug] ??= []).push(rollup.publisher);
-              folded[slug] = owners[slug]!.length > 1
-                ? { error: 'ambiguous_pack_slug', publishers: [...owners[slug]!] }
-                : {
-                    ...rollup.value,
-                    _complete: rollup.complete,
-                    ...(rollup.label === undefined ? {} : { _label: rollup.label }),
-                    ...(rollup.incomplete_reason === undefined
-                      ? {}
-                      : { _incomplete_reason: rollup.incomplete_reason }),
-                  };
+              if (PROTOTYPE_SENSITIVE_KEYS.has(rollup.pack_slug)) continue;
+              const answers = bySlug.get(rollup.pack_slug) ?? [];
+              answers.push(rollup);
+              bySlug.set(rollup.pack_slug, answers);
+            }
+            const flat = (rollup: RootRollup): Record<string, unknown> => ({
+              ...rollup.value,
+              _complete: rollup.complete,
+              ...(rollup.label === undefined ? {} : { _label: rollup.label }),
+              ...(rollup.incomplete_reason === undefined
+                ? {}
+                : { _incomplete_reason: rollup.incomplete_reason }),
+            });
+            /** One projection's answers: one ungrouped rollup reads flat, a
+             *  grouped one by group key. Anything else under one projection is
+             *  not a shape a declaration produces, so null — read as a clash. */
+            const foldOne = (answers: RootRollup[]): Record<string, unknown> | null => {
+              const by = answers[0]!.group?.by;
+              if (answers.length === 1 && by === undefined) return flat(answers[0]!);
+              const groupKeys = answers.map((a) => (a.group?.key ?? null) === null ? '_none' : String(a.group!.key));
+              if (by === undefined || !answers.every((a) => a.group?.by === by)
+                || new Set(groupKeys).size !== groupKeys.length) return null;
+              const groups: Record<string, unknown> = Object.create(null);
+              answers.forEach((a, index) => {
+                if (!PROTOTYPE_SENSITIVE_KEYS.has(groupKeys[index]!)) groups[groupKeys[index]!] = flat(a);
+              });
+              groups._group_by = by;
+              groups._complete = answers.every((a) => a.complete);
+              return groups;
+            };
+            for (const [slug, answers] of bySlug) {
+              const clash = { error: 'ambiguous_pack_slug', publishers: answers.map((a) => a.publisher) };
+              const onePublisher = answers.every((a) => a.publisher === answers[0]!.publisher);
+              const named = answers.filter((a) => a.name !== undefined).length;
+              if (!onePublisher || (named > 0 && named < answers.length)) {
+                folded[slug] = clash;
+              } else if (named === 0) {
+                folded[slug] = foldOne(answers) ?? clash;
+              } else {
+                const byName = new Map<string, RootRollup[]>();
+                for (const a of answers) byName.set(a.name!, [...(byName.get(a.name!) ?? []), a]);
+                const pack: Record<string, unknown> = Object.create(null);
+                let whole = true;
+                for (const [name, mine] of byName) {
+                  const one = foldOne(mine);
+                  if (one === null) whole = false;
+                  else if (!PROTOTYPE_SENSITIVE_KEYS.has(name)) pack[name] = one;
+                }
+                folded[slug] = whole ? pack : clash;
+              }
             }
             seedDataNamespace(
               stores,

@@ -5,7 +5,7 @@
  *  the cloud DDNS update API. The cloud verifies the signature
  *  against the publisher's pinned public key (registered at Pro
  *  subscription start), checks a 5-minute replay window, and updates
- *  the DNS record for `<handle>.recued.cloud`. The post itself is
+ *  the DNS record for `<handle>.recued.net`. The post itself is
  *  the heartbeat side-effect that records `last_seen_at` per
  *  publisher (D-088 Go heartbeat retired per § A.14).
  *
@@ -67,7 +67,7 @@ export interface DdnsPauseClientArgs {
 }
 
 export interface DdnsUpdateClientOptions {
-  /** Cloud base URL — production `https://api.recued.cloud`. Test /
+  /** Cloud base URL — production `https://api.recued.com`. Test /
    *  staging via the `cloud.base_url` runtime-config knob. */
   cloud_base_url: string;
   /** Ed25519 signer (typically `serverIdentity.signWithServerIdentity`).

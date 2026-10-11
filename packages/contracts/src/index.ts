@@ -110,6 +110,7 @@ export {
   withoutRetiredConfig,
   retiredCarriesOf,
   carriedFromRetired,
+  retiredConnectionsOf,
   droppedVariables,
   undeclaredConfigArgumentMessage,
 } from './recipe.js';
@@ -932,7 +933,7 @@ export type {
   RegenPolicy, RegenInputInvariant, RegenDeterminism, RegenTrigger,
 } from './ingredient.js';
 export {
-  isLocalIngredient, isKernelManifest, isServiceManifest, KERNEL_AUTHOR, GENERATED_PACK_PUBLISHER,
+  isLocalIngredient, isKernelManifest, KERNEL_AUTHOR, GENERATED_PACK_PUBLISHER,
   INGREDIENT_KINDS, KIND_ALLOWED_TIERS,
   // D-203 — canonical RiskTier ladder / rank / label (single source of truth)
   RISK_TIERS, RISK_TIER_SET, isRiskTier, RISK_TIER_RANK, RISK_TIER_LABELS, riskTierLabel,
@@ -1002,6 +1003,8 @@ export type {
   // D-165 P3.path-picker (Slice 3) — per-operation path-scope contract.
   PathScopeContract, PathScopeCheck,
   ProviderDefaultPolicy, ConnectionOperationProfile,
+  // D-320 ruling 10 — one catalog's grant on a connection that serves several.
+  ConnectionCatalogGrant,
   CatalogVerdict, CatalogDenyReason, CatalogOperationResolution, GatewayCallAudit,
   // D-211 §2 — the owner's replace-if-present override ruling ({risk?, approval?}).
   OwnerOverridePolicy,
@@ -1065,6 +1068,8 @@ export {
   // D-210 — the approval-card edit length ceiling (a DoS bound, not a field meaning).
   ARG_EDIT_STRING_MAX,
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
+  // D-320 ruling 10 — a connection that serves several catalogs.
+  profileCatalogSlugs, profileServesCatalog, profileForCatalog,
   // Capture-arm narrowing. Both validators and the executor discriminate
   // through these helpers rather than sniffing keys.
   isInPlaceCapture, isStdoutCapture, isProgressAnswerCapture, isD259CliProgressSpec,
@@ -1187,6 +1192,7 @@ export {
   // which is what every row minted before this vocabulary meant.
   USAGE_CAP_PERIODS, isUsageCapPeriod, contractUsePeriod,
   usageCapWindowStart, usageCapWindowRolled, rolledContractUses,
+  CONNECTION_NOT_ADMITTED_DETAIL,
   contractScopeAdmitsConnection,
   CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition,
   isCustomerContractGrantKind,
@@ -1635,6 +1641,8 @@ export {
   renderBatchItemsBlock,
   summarizeArgsPreview,
 } from './batched-approval.js';
+// D-270 — how an approval's detail rows name a field, shared by the server and the cards.
+export { askDetailLabel, humanizeAskField } from './ask-detail-label.js';
 // D-166 override-write path — rpc DTOs + pure wire normalizer for the
 // `collection.contract.*` family that authors `contract.override.*` rows (the
 // editable tightening layer the Slice 4d.4 catalog gateway reads).
@@ -2540,6 +2548,11 @@ export type {
   SubscribeRequest,
   SubscribeAck,
 } from './events.js';
+export {
+  eventsSubscribeRefusedKind,
+  eventsSubscribeUnknownKindMessage,
+  subscribeToKnownKinds,
+} from './events-subscribe.js';
 
 // D-125 Phase 1.1 — connection substrate (mcp / api / notification).
 export {
@@ -3343,47 +3356,22 @@ export type {
   CalendarAdapterErrorCode,
 } from './calendar.js';
 
-// D-118 — service platform types (`data.service.*`).
+// D-118 — the service vocabulary cli-daemon supervision still shares (the
+// installer it came with was retired, D-321 § 5.4).
 export {
-  SERVICE_INSTALL_KINDS,
   SERVICE_CHECK_KINDS,
-  SERVICE_EVENT_NAMES,
   SERVICE_RESTART_POLICIES,
-  SERVICE_TEMPLATE_OS,
-  SERVICE_STARTUP_GRACE_MS_DEFAULT,
   SERVICE_HEALTH_CHECK_INTERVAL_MS_FLOOR,
-  SERVICE_INVOKE_STDOUT_CAP_BYTES,
-  SERVICE_MIN_DISK_FREE_BYTES_DEFAULT,
-  SERVICE_QUOTA_BYTES_DEFAULT,
   SERVICE_CONSECUTIVE_CRASHES_MAX,
   SERVICE_RESTART_BACKOFF_MS,
-  SERVICE_CWD_SUBDIR,
 } from './service.js';
 export type {
-  ServiceInstallKind,
   ServiceCheckKind,
   ServiceCheckSpec,
-  ServiceEventName,
   ServiceRestartPolicy,
-  ServiceTemplateOS,
   ServiceState,
   ServiceHealthState,
-  ServiceCollectionCaps,
-  ServiceStatus,
-  ServiceCollectionHealth,
-  ServiceAuditEvent,
   ServiceCheckResult,
-  ServiceEnrollInput,
-  ServiceEnrollOutput,
-  ServiceInstallOutput,
-  ServiceUpgradeOutput,
-  ServiceUninstallOutput,
-  ServiceInstanceListRow,
-  ServiceInstanceList,
-  ServiceTemplateConfigField,
-  ServiceTemplateListRow,
-  ServiceTemplateListInput,
-  ServiceTemplateList,
 } from './service.js';
 
 // Phase G — event triggers (D-109).
@@ -3535,7 +3523,7 @@ export {
   contextCallerFromExecutionSource,
   installContextCaller,
 } from './context.js';
-export type { ContextCaller, ContextServer } from './context.js';
+export type { ContextCaller, ContextConnections, ContextServer } from './context.js';
 
 // D-120 Phase 4.5 — `context.recipe.*` durability shape.
 export type { ContextRecipe } from './context.js';
@@ -5023,7 +5011,6 @@ export {
   CLOUD_LOG_ALLOWED_FIELDS,
   CLOUD_PATH_FAMILIES,
   isCloudPathFamily,
-  CERT_RENEWAL_OVERDUE_DEGRADED_REASON,
   OPERATOR_ABUSE_ACTIONS,
   OPERATOR_ABUSE_REPLAY_WINDOW_MS,
 } from './cloud-api.js';
@@ -6650,6 +6637,12 @@ export * from './cli-reachability-rpc.js';
 // reason→RecipeErrorCode mapping); replaces the NETWORK_ERROR mislabel so a cli
 // failure reads honestly through the step error / Runs feed / chat errors[].
 export * from './cli-failure.js';
+// D-321 — the tool versions a cli pack was tested with, and its install hints.
+export * from './cli-tool-version.js';
+// D-321 — the owner's per-tool choice outside those versions (refuse or warn).
+export * from './owner-tool-version.js';
+// D-321 — `packs.tool_status`: whether each installed pack's programs are ready.
+export * from './packs-tool-status.js';
 // D-192 Slice 6b — work-entity container-pick carrier (ContainerPickDetail +
 // isContainerPickDetail). Survives the engine seam like CliFailureDetail so the
 // chat/MCP create path can raise a D-158 pick ask instead of losing the choice

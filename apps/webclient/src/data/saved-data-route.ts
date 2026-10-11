@@ -416,6 +416,15 @@ export const bootstrapSavedDataRoute = (opts: SavedDataRouteOptions) => {
         if (view_ !== null && view_ !== undefined) view_.location.hash = target;
         return;
       }
+      // ⛔ The same, for a view of the removed "Webhook deliveries" tab
+      // (2026-10-10): it browsed a collection nothing ever filled. The owner's
+      // webhooks and their deliveries are on Connections → Webhooks.
+      if (definition.tab === 'webhook') {
+        const target = serializeShellRoute('connections', 'webhooks');
+        const view_ = doc.defaultView;
+        if (view_ !== null && view_ !== undefined) view_.location.hash = target;
+        return;
+      }
       await mountData({ ...view, definition }).whenLoaded();
     } catch (error) {
       if (!disposed && seq === loadSeq) showLoadError(humanizeRpcError(error));

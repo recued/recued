@@ -24,7 +24,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import {
   CLI_BINDING_ENV_NAMES,
+  cliInstallSystemOf,
   cliSpawnErrorReason,
+  renderInstallHints,
+  describeTestedRange,
+  effectiveToolVersionOutside,
+  readOwnerToolVersionRow,
   isD259CliProgressSpec,
   isReadyCliDetachedSupervisionSpec,
   isInPlaceCapture,
@@ -37,6 +42,7 @@ import {
   type CliMethodBinding,
   type CliOutputCaptureSpec,
   type CliOutputShape,
+  type RunUntestedTool,
   type StallReason,
   type TempFileRef,
 } from '@recued/contracts';
@@ -47,12 +53,22 @@ import {
 } from './execution/stall-monitor.js';
 import { ResourceProgressSource } from './execution/resource-progress-source.js';
 import type { ProgressContract } from '@recued/contracts';
+import {
+  brokenProbeDetail,
+  createCliToolStatus,
+  unreadableProbeDetail,
+  type CliToolProbeResult,
+  type CliToolStatus,
+  type CliToolStatusReport,
+} from './cli-tool-status.js';
+import { createCliBinaryPathResolver } from './cli-binary-reachability.js';
 import { allocateRunScratchDir } from './execution/run-scratch.js';
 import { envForOthers } from './supervision/env-for-others.js';
 import { assertPreapprovalOrdinaryRun, currentPreapprovalIo } from './preapproval-io-context.js';
 import type { InFlightRegistry } from './execution/in-flight-registry.js';
 import { isInboundFileRecordId } from './collections/file/inbound-file-collection.js';
 import { parseRemoteFileRecordId } from './file-view-resolver.js';
+import { parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
 import {
   killProcessGroup,
   reapProcessGroupAfterLeaderExit,
@@ -62,10 +78,11 @@ import {
   createCliProgressAdapter,
 } from './execution/cli-progress-adapters.js';
 
-/** D-241 P4 — the two id shapes `input_materialize` will fetch: a CAS
- *  `data.file.received` record (`file:<32 hex>`) and a File Source MIRROR row
+/** D-241 P4 — the id shapes `input_materialize` will fetch: a CAS
+ *  `data.file.received` record (`file:<32 hex>`), a File Source MIRROR row
  *  (`file:remote:<scope>:<target>`), whose bytes the wired reader pulls from the
- *  vendor.
+ *  vendor, and (D-106 follow-up, 2026-10-10) a watched folder's file
+ *  (`file:local:<folder>:<path>`), read from the owner's disk.
  *
  *  ⛔ **`isInboundFileRecordId` is deliberately NOT widened to cover both.** It
  *  means "a CAS record id" and `file-view-resolver.ts` uses it to ROUTE cas-vs-
@@ -80,7 +97,8 @@ import {
  *  `file:remote:ZHJvcGJveC…`. */
 const isMaterializableFileRef = (value: unknown): value is string =>
   isInboundFileRecordId(value)
-  || (typeof value === 'string' && parseRemoteFileRecordId(value) !== null);
+  || (typeof value === 'string' && parseRemoteFileRecordId(value) !== null)
+  || (typeof value === 'string' && parseWatchedFileRecordId(value) !== null);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_TIMEOUT_MS = 100;
@@ -99,6 +117,61 @@ const CLI_FILE_REF_ARRAY_MAX_ITEMS = 32;
  * accept a single Buffer must remain bounded to avoid an unbounded read. */
 const DEFAULT_OUTPUT_CAPTURE_MAX_BYTES = 64 * 1024 * 1024;
 type SpawnFn = typeof nodeSpawn;
+
+/** PATH as the child will see it; Windows variable names are case-insensitive. */
+const childPathOf = (env: NodeJS.ProcessEnv): string => {
+  if (process.platform !== 'win32') return env.PATH ?? '';
+  const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH');
+  return key === undefined ? '' : (env[key] ?? '');
+};
+
+/** D-321 — how an action starts its program. A bare name starts the file the
+ *  shared resolver (`createCliBinaryPathResolver`) finds over the child's own
+ *  PATH, with argv[0] kept as the name; a path-bearing one starts as given.
+ *
+ *  ⛔ WHY NOT LET NODE SEARCH. Node's own search reads an empty or relative PATH
+ *  entry from the working folder, and on Windows searches the working folder
+ *  first; an action works in a repository's folder, so a repository's own
+ *  `opencode` could run in place of the installed one, the one the version check
+ *  read. The resolver takes absolute PATH entries only, and files a launch can
+ *  start, so the check and the launch agree on one file. A name it does not find
+ *  fails `ENOENT`, as Node's search would, and the step reports `not_found`. */
+const launchingSpawn = ((command: string, args: readonly string[], options: SpawnOptions) => {
+  const pathBearing = command.includes('/') || command.includes('\\');
+  if (pathBearing) return nodeSpawn(command, args, options);
+  const file = createCliBinaryPathResolver({ path: childPathOf(options.env ?? process.env) })(command);
+  if (file === undefined) {
+    throw Object.assign(new Error(`spawn ${command} ENOENT`), {
+      code: 'ENOENT',
+      errno: -2,
+      syscall: `spawn ${command}`,
+      path: command,
+    });
+  }
+  return nodeSpawn(file, args, { ...options, argv0: options.argv0 ?? command });
+}) as SpawnFn;
+
+/** A cancelled call's refusal, the same words the foreground launch uses. */
+const cancelledBeforeSpawn = (call: CliInvocationCall): Error =>
+  new Error(`cli_invocation '${call.operation_id}' cancelled before spawn`);
+
+/** `pending`, unless the call is cancelled first. */
+const unlessCancelled = <T>(call: CliInvocationCall, pending: Promise<T>): Promise<T> => {
+  const signal = call.signal;
+  if (signal === undefined) return pending;
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(cancelledBeforeSpawn(call));
+      return;
+    }
+    const onAbort = (): void => reject(cancelledBeforeSpawn(call));
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (err: unknown) => { signal.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+};
 
 /** D-181 Slice 3 — optional overrides for the foreground stall monitor's
  *  windows. Production leaves them at the contract defaults; tests shrink them
@@ -183,6 +256,17 @@ export interface CliInvocationExecutorOptions {
    *  ⚠ A seam of the same class as `spawn` and `now`, which this executor
    *  already takes. Nothing in production passes it. */
   tempRoot?: string;
+  /** D-321 — the tool readiness service, shared with the pack page's read.
+   *  Absent ⇒ a private one, so every executor checks a declared range. */
+  toolStatus?: CliToolStatus;
+  /** D-321 — the owner's stored choice for a catalog's tool (the raw
+   *  `owner_tool_version` row value), or undefined when there is none. Absent
+   *  ⇒ the pack's declared default always applies. */
+  readOwnerToolVersion?: (ingredientId: string) => unknown;
+  /** D-321 — told when a run starts a program under Warn although its version
+   *  was not one the pack was tested with, so the run's record can say so.
+   *  Called only for a call that carries its run id. */
+  onUntestedToolRan?: (runId: string, note: RunUntestedTool) => void;
 }
 
 /** A captured cli output file, handed to the ingest sink to become a
@@ -356,6 +440,19 @@ const resolveChildEnv = (call: CliInvocationCall, cwd: string | undefined): Node
     env[name] = value;
   }
   return env;
+};
+
+/** Where the op's process will start, and with what environment: the version
+ *  check reads a version manager's shim there (`isVersionManagerShim`). None
+ *  when either cannot be worked out; the launch then reports why, exactly as it
+ *  does with no check. */
+const launchSite = (call: CliInvocationCall): { cwd: string; env: NodeJS.ProcessEnv } | undefined => {
+  try {
+    const cwd = resolveCwd(call);
+    return { cwd: cwd ?? process.cwd(), env: resolveChildEnv(call, cwd) };
+  } catch {
+    return undefined;
+  }
 };
 
 /** The live argv, working scope, stdin and timeout builders, without launching
@@ -1149,11 +1246,72 @@ const spawnFailureError = (
   const code = (err as NodeJS.ErrnoException | null)?.code;
   const reason = cliSpawnErrorReason(code);
   const label = cmd ?? 'cli tool';
-  const message =
-    reason === 'not_found'
-      ? `cli tool '${label}' was not found — the binary may not be installed or is not on the server's PATH`
-      : `cli tool '${label}' failed to start (${code ?? (err instanceof Error ? err.message : String(err))})`;
-  return makeCliFailureError(message, { reason, ...cliFailureIdentity(call, cmd) });
+  if (reason !== 'not_found') {
+    const message = `cli tool '${label}' failed to start (${code ?? (err instanceof Error ? err.message : String(err))})`;
+    return makeCliFailureError(message, { reason, ...cliFailureIdentity(call, cmd) });
+  }
+  // D-321 § 3.6 — a tool that is not found says how to get it, from the pack's
+  // own hints, written for this server's system and never run: the command asks
+  // for the tested major where the manager can (`npm install -g opencode-ai@1`).
+  const { commands, docs } = renderInstallHints(
+    call.tool_install,
+    cliInstallSystemOf(process.platform),
+    call.tool_version?.version.tested,
+  );
+  const how = commands.length > 0
+    ? ` Install it with: ${commands.join(' or ')}.`
+    : docs.length > 0 ? ` Its install instructions: ${docs.join(' or ')}.` : '';
+  return makeCliFailureError(
+    `cli tool '${label}' was not found — the binary may not be installed or is not on the server's PATH.${how}`,
+    {
+      reason,
+      ...cliFailureIdentity(call, cmd),
+      ...(commands.length > 0 ? { install: commands } : {}),
+      ...(docs.length > 0 ? { install_docs: docs } : {}),
+    },
+  );
+};
+
+/** D-321 — why a tool whose probe did not end in a version cannot run.
+ *  `ffmpeg is installed but does not start: dyld: Library not loaded: …`. */
+const brokenToolSentence = (
+  binary: string,
+  probe: readonly string[],
+  result: Extract<CliToolProbeResult, { kind: 'broken' }>,
+): string => `${binary} is installed but does not start: ${brokenProbeDetail(probe, result)}`;
+
+/** D-321 — the refusal of a tool outside the tested range, or whose version
+ *  could not be read, under Refuse. It names the version, the range and the two
+ *  ways through, and the screen in the owner's words (Packs, the pack's page). */
+const untestedToolSentence = (
+  binary: string,
+  probe: readonly string[],
+  tested: { from: string; before?: string },
+  result: CliToolProbeResult | undefined,
+  folder?: string,
+): string => {
+  const range = describeTestedRange(tested);
+  const warn = `choose Warn for ${binary} on its pack's page in Packs.`;
+  // A version manager's shim, read where the action runs (D-321 § 8): the
+  // version is that folder's, which the installed one may not be.
+  if (result?.kind === 'version' && folder !== undefined) {
+    return `${binary} ${result.version} is the version its version manager starts in ${folder}, `
+      + `and this pack was tested with ${range}, so it did not run. Set a tested version for that `
+      + `folder, or ${warn}`;
+  }
+  if (result?.kind === 'version') {
+    return `${binary} ${result.version} is installed, and this pack was tested with ${range}, `
+      + `so it did not run. Install a tested version, or ${warn}`;
+  }
+  if (result?.kind === 'not_run') {
+    return `${binary}'s version was not read: ${unreadableProbeDetail(binary, probe, result)}. `
+      + `This pack was tested with ${range}, so it did not run. Update the pack, or ${warn}`;
+  }
+  const why = result?.kind === 'unreadable'
+    ? unreadableProbeDetail(binary, probe, result)
+    : `'${probe.join(' ')}' printed no version number`;
+  return `${binary} did not report its version: ${why}. This pack was tested with ${range}, `
+    + `so it did not run. Check that ${binary} works, or ${warn}`;
 };
 
 const runDetached = async (
@@ -1543,7 +1701,7 @@ const captureToolOutputToTemp = (
 export const createCliInvocationExecutor = (
   options: CliInvocationExecutorOptions = {},
 ): CliInvocationExecutor => {
-  const spawn = options.spawn ?? nodeSpawn;
+  const spawn = options.spawn ?? launchingSpawn;
   const now = options.now ?? (() => Date.now());
   const tuning = options.stallTuning ?? {};
   const registry = options.inFlightRegistry;
@@ -1563,10 +1721,85 @@ export const createCliInvocationExecutor = (
   const launchTimeoutMs = resolveTimeoutMs(
     options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS,
   );
+  const toolStatus = options.toolStatus ?? createCliToolStatus();
+  const readOwnerToolVersion = options.readOwnerToolVersion;
+  const onUntestedToolRan = options.onUntestedToolRan;
+
+  // D-321 § 3.4 — a catalog that declares the versions its tool was tested with
+  // has that tool checked before anything starts: foreground, detached, and a
+  // supervised daemon's start all pass through here. A broken tool is refused;
+  // a version outside the range, or one that cannot be read, is refused under
+  // Refuse and runs under Warn. The owner's choice for the tool wins over the
+  // pack's default only while it was made for the range the pack declares now.
+  // A tool not on PATH goes on to the launch, which reports `not_found` exactly
+  // as it does for a catalog with no range. Under Warn it returns the note the
+  // run's record keeps, which is made only once the program has started.
+  const checkToolVersion = async (call: CliInvocationCall): Promise<RunUntestedTool | undefined> => {
+    // ⛔ A cancelled call stops here, checked or not: returning would let a
+    // detached or supervised launch, which reads no signal, start unchecked.
+    if (call.signal?.aborted) throw cancelledBeforeSpawn(call);
+    const declared = call.tool_version;
+    if (declared === undefined) return undefined;
+    const command = commandLabel(call);
+    const probed = declared.probe[0];
+    const binary = typeof probed === 'string' && probed.length > 0 ? probed : (command ?? 'the tool');
+    // ⛔ The probe must name the program the action runs: the validators pin
+    // both to the catalog's binary, so a probe naming another program comes from
+    // a catalog nothing checked, and is never run (the status service holds the
+    // rest of its shape, `isVersionOnlyProbe`).
+    // A run killed while the probe runs stops waiting for it; the probe itself
+    // answers within its own limit, for any other run that shares it.
+    // A version manager's shim is read where the action starts (D-321 § 8).
+    const where = launchSite(call);
+    const report: CliToolStatusReport = command !== undefined && command === probed
+      ? await unlessCancelled(call, toolStatus.check({
+        probe: declared.probe,
+        tested: declared.version.tested,
+        ...(where !== undefined ? { where } : {}),
+      }))
+      : { state: 'unreadable', binary, probe_result: { kind: 'not_run' } };
+    if (report.state === 'ready' || report.state === 'missing') return undefined;
+    const identity = cliFailureIdentity(call, binary);
+    if (report.probe_result?.kind === 'broken') {
+      throw makeCliFailureError(
+        brokenToolSentence(binary, declared.probe, report.probe_result),
+        { reason: 'broken', ...identity },
+      );
+    }
+    let outside: 'refuse' | 'warn';
+    try {
+      outside = effectiveToolVersionOutside(
+        declared.version,
+        readOwnerToolVersionRow(readOwnerToolVersion?.(call.slug)),
+      ).outside;
+    } catch {
+      // The owner's choice could not be read: refuse, which no choice is
+      // stricter than, rather than guess.
+      outside = 'refuse';
+    }
+    const version = report.probe_result?.kind === 'version' ? report.probe_result.version : undefined;
+    if (outside === 'warn') {
+      return {
+        tool: binary,
+        ...(version !== undefined ? { version } : {}),
+        tested: { ...declared.version.tested },
+        state: report.state === 'untested' ? 'untested' : 'unreadable',
+      };
+    }
+    throw makeCliFailureError(
+      untestedToolSentence(binary, declared.probe, declared.version.tested, report.probe_result, report.folder),
+      {
+        reason: 'untested_version',
+        ...identity,
+        ...(version !== undefined ? { version } : {}),
+        tested: { ...declared.version.tested },
+      },
+    );
+  };
 
   // The detached / output-capture / foreground dispatch for an already-resolved
   // call (its `input_materialize` arg, if any, already replaced with a temp path).
-  const runResolved = async (call: CliInvocationCall): Promise<unknown> => {
+  const runResolved = async (call: CliInvocationCall, launch: SpawnFn = spawn): Promise<unknown> => {
     if (call.binding.detached) {
       // Defense-in-depth (the authoring validator already forbids these combos):
       // output_capture is foreground-only — never let a detached job silently
@@ -1601,7 +1834,7 @@ export const createCliInvocationExecutor = (
       return runDetached(
         call,
         resolveArgv(call),
-        spawn,
+        launch,
         now,
         launchTimeoutMs,
         processTreeKiller,
@@ -1614,7 +1847,7 @@ export const createCliInvocationExecutor = (
       return runForeground(
         call,
         resolveArgv(call),
-        spawn,
+        launch,
         now,
         tuning,
         registry,
@@ -1671,7 +1904,7 @@ export const createCliInvocationExecutor = (
         const base = (await runForeground(
           call,
           resolveArgv(call),
-          spawn,
+          launch,
           now,
           tuning,
           registry,
@@ -1744,7 +1977,7 @@ export const createCliInvocationExecutor = (
       const base = (await runForeground(
         call,
         resolveArgv(call),
-        spawn,
+        launch,
         now,
         tuning,
         registry,
@@ -1797,7 +2030,7 @@ export const createCliInvocationExecutor = (
       const base = (await runForeground(
         call,
         resolveArgv(call),
-        spawn,
+        launch,
         now,
         tuning,
         registry,
@@ -1853,7 +2086,7 @@ export const createCliInvocationExecutor = (
       const base = (await runForeground(
         callWithDir,
         resolveArgv(callWithDir),
-        spawn,
+        launch,
         now,
         tuning,
         registry,
@@ -1885,7 +2118,7 @@ export const createCliInvocationExecutor = (
       const base = (await runForeground(
         callWithDir,
         resolveArgv(callWithDir),
-        spawn,
+        launch,
         now,
         tuning,
         registry,
@@ -1935,9 +2168,31 @@ export const createCliInvocationExecutor = (
   // content through any stream. (The bytes-into-subprocess read is itself
   // unaudited — a documented I-4 audit residual; it is not actor-egress once the
   // four channels above are closed.)
+  /** The call's launch: `spawn`, and under Warn at an untested version, the
+   *  run's note made once the program has started (its `spawn` event), so a step
+   *  that fails before anything starts leaves no note that it ran. */
+  const launchFor = (call: CliInvocationCall, note: RunUntestedTool | undefined): SpawnFn => {
+    const runId = call.stepMeta?.run_id;
+    if (note === undefined || runId === undefined || onUntestedToolRan === undefined) return spawn;
+    return ((command: string, args: readonly string[], spawnOptions: SpawnOptions) => {
+      const child = spawn(command, args, spawnOptions);
+      child.once('spawn', () => {
+        try {
+          onUntestedToolRan(runId, note);
+        } catch {
+          // A lost Logs note must never stop a run that Warn lets through.
+        }
+      });
+      return child;
+    }) as SpawnFn;
+  };
+
   return async (call) => {
+    // Before any input is materialized, so a refused run reads no file either.
+    const note = await checkToolVersion(call);
+    const launch = launchFor(call, note);
     const materialize = call.binding.input_materialize;
-    if (!materialize) return runResolved(call);
+    if (!materialize) return runResolved(call, launch);
     const tempDir: { path?: string } = {};
     const ensureTempDir = (): string => {
       tempDir.path ??= mkdtempSync(join(tempRoot, 'recued-cli-in-'));
@@ -2041,14 +2296,14 @@ export const createCliInvocationExecutor = (
           ...call,
           args: { ...call.args, [materialize.arg]: materialized },
         };
-        return await runResolved(callMaterialized);
+        return await runResolved(callMaterialized, launch);
       }
       const inputPath = await materializeOne(readArg(call.args, materialize.arg));
       const callMaterialized: CliInvocationCall = {
         ...call,
         args: { ...call.args, [materialize.arg]: inputPath },
       };
-      return await runResolved(callMaterialized);
+      return await runResolved(callMaterialized, launch);
     } finally {
       if (tempDir.path !== undefined) {
         try {

@@ -32,6 +32,7 @@ import type {
   HeavyOpErrorCategory,
   RecipeError,
   RunDegradation,
+  RunUntestedTool,
   RunAnchorStatus,
   RunMode,
   RunYield,
@@ -98,6 +99,15 @@ export interface AuditEntry {
    *  succeeded while a follow-on audit/provenance write failed, so this
    *  marker lets memory/timeline/Runs render the incomplete record. */
   degraded?: RunDegradation[];
+  /** D-320 §3.5 — the connection each slot of the run settled on (a slot is the
+   *  connection name a pack's catalog declares): the run's own choice, its dish's
+   *  or the pack's default. Absent when the run signed in through none. A slot
+   *  whose steps read two connections is listed once with each. */
+  connections_used?: Array<{ slot: string; connection_name: string }>;
+  /** D-321 — programs this run started under Warn although their version was
+   *  not one the pack was tested with (`RunUntestedTool`). Absent when there
+   *  were none; read by the run's Logs detail. */
+  untested_tools?: RunUntestedTool[];
   /** Optional trigger info for context recipes — what page the recipe
    *  ran on, so the user can review "which recipes ran on which pages".
    *  May be omitted for scheduled/manual runs.
@@ -464,13 +474,9 @@ export type ActivityAction =
   | 'archive_export_start' | 'archive_export_complete'
   | 'archive_import_start' | 'archive_import_complete'
   | 'audit_export'
-  // D-118 Phase 8 additions — `data.service` lifecycle events. One
-  // ActivityEntry per ServiceAuditEvent; `target = slug`, `detail`
-  // carries the JSON-encoded `{ binary, event_name, argv, error }`
-  // tail. The Phase 6 service-logs kernel ingredient filters by
-  // `target = slug` then parses each detail blob back into
-  // `ServiceAuditEvent` for the recipe-facing shape.
-  | 'service_event'
+  // `service_event` (D-118 Phase 8) went 2026-10-10 with the installer that
+  // would have written it (D-321 § 5.5). It never wrote one: no service could
+  // be enrolled.
   // D-119 Phase 13 additions — annotation + link warehouse writes.
   // User-class (recipe authors fire these on every reactive tick);
   // not reserve. Target carries `<collection>/<id>#<key>` for
@@ -630,7 +636,7 @@ export type ActivityAction =
   // retention pruning.
   | 'exposure_reset_via_cli'
   // D-148 follow-up #5 — `pro_acme.unbind` rpc tears down a Pro
-  // `<handle>.recued.cloud` DDNS subdomain + removes the auto-managed
+  // `<handle>.recued.net` DDNS subdomain + removes the auto-managed
   // cert in one transaction. High-assurance: signed with
   // `server_identity_key` so the cloud-side release's authoritative
   // provenance is preserved; reserve-class so the release audit trail
@@ -855,6 +861,12 @@ export type ActivityAction =
   // class as the grant-mint family); the delete restoring the authored
   // default is the other half of that ledger.
   | 'owner_operation_override_written' | 'owner_operation_override_deleted'
+  // D-321 — the owner chose Refuse or Warn for one cli catalog's tool outside
+  // the versions its pack was tested with, or cleared that choice. `target` =
+  // the catalog slug; `detail` carries `{ingredient_id, outside|null, prior|null,
+  // pack_outside?, tested?, version_hash?}`. Reserve-class: Warn lets an untested
+  // version run, a standing loosening of a refusal like an `approval:'never'`.
+  | 'owner_tool_version_written' | 'owner_tool_version_deleted'
   // D-149 P3 § A.3 + § N.3 — Reception substrate high-assurance audit
   // kinds. Mirrors `RECEPTION_HIGH_ASSURANCE_AUDIT_KINDS` from
   // `@recued/contracts/src/reception.ts` verbatim. The signing audit-
@@ -948,8 +960,8 @@ export type ActivityAction =
   // lifecycle. One row per daemon state TRANSITION (boot reconciliation of a
   // daemon that never ran this boot is suppressed — see setState); `target`
   // carries `<ingredient_slug>/<op>`, `detail` is JSON `{ op, state, pid,
-  // last_exit_code, consecutive_crashes }`. Succeeds the D-118 `service_event`
-  // row for the retired `kind: service` supervised templates. Reserve-class
+  // last_exit_code, consecutive_crashes }`. Succeeds D-118's retired
+  // `service_event` row (D-321 § 5.5). Reserve-class
   // like the Phase C lifecycle block: an operator diagnosing a daemon
   // crash-loop after the fact needs the full started/crashed sequence (and a
   // supervised daemon — the cloudflared DDNS ingress, ollama serve — dying is
@@ -1308,6 +1320,11 @@ export const RESERVE_ACTIONS: ReadonlySet<string> = new Set<string>([
   // ledger and must survive with it.
   'owner_operation_override_written',
   'owner_operation_override_deleted',
+  // D-321 — Warn lets a tool version its pack was not tested with run: a
+  // standing loosening of a refusal, unbounded in time, so its ledger and the
+  // delete that ends it survive pruning for the D-211 reason above.
+  'owner_tool_version_written',
+  'owner_tool_version_deleted',
   // D-175 P5 — account ↔ server binding lifecycle. Reserve-class so the
   // forensic ledger of who owned this server (bind / rebind / unbind),
   // the ownership-contention conflicts, and the failed-exchange attack
@@ -2246,6 +2263,10 @@ export interface AuditEntryInput {
   /** Post-execution observability degradation carried onto the durable
    *  audit row when the row itself was written. */
   degraded?: RunDegradation[];
+  /** D-320 — see {@link AuditEntry.connections_used}. */
+  connections_used?: Array<{ slot: string; connection_name: string }>;
+  /** D-321 — see {@link AuditEntry.untested_tools}. */
+  untested_tools?: RunUntestedTool[];
   /** Snapshot of user-visible variables active at the time of the run. */
   config_snapshot?: Record<string, unknown>;
   /** Caller-supplied context of a PAUSED run — see `AuditEntry.context_snapshot`. */
@@ -2358,6 +2379,14 @@ export const buildAuditEntry = (input: AuditEntryInput): AuditEntry => {
       : {}),
     errors: input.errors,
     ...(input.degraded && input.degraded.length > 0 ? { degraded: [...input.degraded] } : {}),
+    // D-320 §3.5 — listed because this is an enumerating copier: a field it does
+    // not name is dropped with no type error.
+    ...(input.connections_used && input.connections_used.length > 0
+      ? { connections_used: input.connections_used.map((used) => ({ ...used })) }
+      : {}),
+    ...(input.untested_tools && input.untested_tools.length > 0
+      ? { untested_tools: input.untested_tools.map((t) => ({ ...t, tested: { ...t.tested } })) }
+      : {}),
     trigger_url: input.trigger_url ?? null,
     trigger_source: input.trigger_source ?? null,
     instance_id: input.instance_id ?? null,

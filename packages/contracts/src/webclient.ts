@@ -123,7 +123,7 @@ export const WEBCLIENT_PROFILE_STORAGE_FIELDS: ReadonlyArray<string> = [
  *  and `cached_assets` is the SW cache (managed by the browser, not
  *  user-data). */
 export interface WebclientLocalStorage {
-  /** WS endpoint URL set at pair time (e.g. `wss://alice.recued.cloud:8443/ws`). */
+  /** WS endpoint URL set at pair time (e.g. `wss://alice.recued.net:8443/ws`). */
   server_url: string | null;
   /** Bearer for WS auth. Encrypted-at-rest via `crypto.subtle` AES-GCM
    *  with a non-extractable key per § A.4.1; stored as opaque

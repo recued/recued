@@ -344,11 +344,19 @@ export interface WebhookConsumerStore {
     recipeId: string,
     publisherId: string,
   ): string | null;
+  /** D-320 audit — the door the trigger row of this run's dispatch carries now, or
+   *  `null` when the run has no dispatch, its trigger row is gone, or the row is
+   *  unstamped. A re-derive re-stamps the row with the door that replaced the one
+   *  the run started under; an owner's revoke leaves it stamped (D-295). */
+  currentDoorForRun(runId: string): string | null;
   /** Every consumer whose trigger rows start this recipe, each with a snapshot
    *  NARROWED to that recipe's own rows (its bindings kept whole). What a door
    *  reconcile for ONE recipe diffs against: given a consumer's whole snapshot,
    *  `reconcileWebhookDoors` would retire a SIBLING recipe's door as "not
    *  re-used" — a pack ships several webhook recipes under one consumer. */
+  /** D-320 phase 3 (3b) — every recipe some trigger row starts, sorted: what a
+   *  change to a pack's connections re-derives the doors of. */
+  recipesWithTriggers(): string[];
   consumersOfRecipe(recipeId: string): Array<{
     consumer_kind: WebhookConsumerKind;
     consumer_id: string;
@@ -1272,6 +1280,20 @@ export const createWebhookConsumerStore = (
     return rows[0]!.contract_id;
   };
 
+  const currentDoorForRun: WebhookConsumerStore['currentDoorForRun'] = (runId) => {
+    const row = db.prepare(`
+      SELECT trigger.contract_id AS contract_id
+      FROM webhook_recipe_dispatches dispatch
+      JOIN webhook_recipe_triggers trigger ON trigger.trigger_id = dispatch.trigger_id
+      WHERE dispatch.run_id = ?
+    `).get(runId) as { contract_id: string | null } | undefined;
+    return row?.contract_id ?? null;
+  };
+
+  const recipesWithTriggers: WebhookConsumerStore['recipesWithTriggers'] = () =>
+    (db.prepare('SELECT DISTINCT recipe_id FROM webhook_recipe_triggers ORDER BY recipe_id ASC')
+      .all() as Array<{ recipe_id: string }>).map((row) => row.recipe_id);
+
   const consumersOfRecipe: WebhookConsumerStore['consumersOfRecipe'] = (recipeId) => {
     requireSafeIdentity(recipeId, 'recipe_id');
     const owners = db.prepare(`
@@ -1892,6 +1914,8 @@ export const createWebhookConsumerStore = (
     stampTriggerContracts,
     clearTriggerContracts,
     doorContractIdForRecipe,
+    currentDoorForRun,
+    recipesWithTriggers,
     consumersOfRecipe,
     hasDispatchTarget(ingressId, providerEventType) {
       return currentTargets(ingressId, providerEventType).length > 0;

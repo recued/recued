@@ -197,7 +197,7 @@ export const composePassportFetchSubstrate = (
         // specific cert source, not `tlsCertSourceRef`. The housekeeping-
         // facing `tlsCertSourceRef` filters to `pro_acme` AND reads
         // hints with LAN-only entries, so on a Pro/DDNS deployment
-        // (cert row keyed on `<handle>.recued.cloud`, no LAN row) the
+        // (cert row keyed on `<handle>.recued.net`, no LAN row) the
         // resolver returns null → `cert_fingerprint: ''` → webclient
         // verify primitive rejects every reconnect as
         // `cert_fingerprint_missing`. The passport source omits the

@@ -771,6 +771,13 @@ export const contractScopeMatches = (
  *  ⚠ An ABSENT connection name on a dispatch that HAS a restricted axis fails CLOSED,
  *  same as the full matcher — a caller that cannot say which connection it is about
  *  to use must not be admitted against a list that names some. */
+/** D-320 audit — the refusal of a dispatch on a connection its governing contract
+ *  does not list, worded once for every door that checks it (the server's admission
+ *  probe, raw-op dispatch, the engine's catalog gateway). It names no connection: a
+ *  contract governs a caller that is not the owner (ruling 12). */
+export const CONNECTION_NOT_ADMITTED_DETAIL =
+  'this dispatch uses a connection that its governing contract does not admit';
+
 export const contractScopeAdmitsConnection = (
   scope: ContractScope,
   connection_name: string | undefined,

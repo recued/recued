@@ -1,6 +1,6 @@
 /** D-148 follow-up #5 — `pro_acme.unbind` rpc handler.
  *
- *  Wire-A entry point for the Pro Settings page's "Release `<handle>.recued.cloud`"
+ *  Wire-A entry point for the Pro Settings page's "Release `<handle>.recued.net`"
  *  affordance. Adapts the wire-shaped args to the `proAcmeUnbind` substrate
  *  (`backend/server/src/pro-acme/unbind.ts`) + maps the tagged-union
  *  result to a wire response / `RpcError`.

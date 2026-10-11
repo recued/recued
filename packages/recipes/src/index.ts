@@ -154,8 +154,11 @@ export {
 export type {
   IngredientKindLookup,
   OpKindLookup,
+  Tier2ConnectionSlot,
   Tier2RecipeEntry,
 } from './chat-catalog.js';
+// A recipe's "Send from" setting, read by the owner's catalog and by the run.
+export { mailSenderSettings } from './mail-sender-settings.js';
 
 // Connection-agnostic op dispatch — the R1 install-time rewrite of a canonical
 // recipe (CanonicalOpStep `deal.search`) into a concrete vendor-bound recipe via

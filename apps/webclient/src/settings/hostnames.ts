@@ -135,9 +135,10 @@ const LOCAL_URL_KIND_LABELS: Record<LocalServerUrl['kind'], string> = {
 const CERT_SOURCE_LABELS: Record<HostnameCertSource, string> = {
   recued_acme: 'Managed by Recued',
   // D-235 — labelled so an existing row renders, but deliberately NOT offered
-  // in the add/update dropdown below: P1 ships enrolment + preflight, and
-  // issuance (P3) does not exist yet. Offering a source that cannot produce a
-  // certificate would read as a broken feature rather than an unbuilt one.
+  // in the add/update dropdown below: the Domains panel is the supported way
+  // to create one, because it runs the DNS preflight and shows the two
+  // records (see the note at the dropdown). Issuance itself is live; this said
+  // "P3 does not exist yet" until 2026-10-10, long after D-235 shipped P1–P5.
   recued_acme_custom: 'My own domain, managed by Recued',
   byo_uploaded: 'Upload my own certificate',
   byo_external: 'Looked after somewhere else',

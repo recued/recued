@@ -456,7 +456,6 @@ const SOURCE_LABELS: Record<string, string> = {
   calendar: 'calendar',
   file: 'file',
   webhook: 'webhook',
-  service: 'service',
   annotation: 'annotation',
   link: 'link',
   memory: 'memory',

@@ -43,9 +43,9 @@ const listenerMocks = vi.hoisted(() => {
     coordinator,
     handlerSet,
     certChain,
-    webhookListener: vi.fn(),
+    connectionWebhookListener: vi.fn(),
     composeWebhookListeners: vi.fn(async () => ({
-      webhookListener: vi.fn(),
+      connectionWebhookListener: vi.fn(),
     })),
     createServerHandlerSet: vi.fn(() => handlerSet),
     // Annotated with the real return type so an OPTIONAL field (today
@@ -129,6 +129,7 @@ import {
   webhookPrefixedPositiveDecimalRegistrationRemoteIdProfilePreset,
 } from '../webhook-shared-profile-parser-presets.js';
 import { webhookProfile } from '@recued/contracts';
+import { createRuntimeConfigStore } from '@recued/config';
 import { createRecipeStore } from '../recipe-store.js';
 import { createDishStore } from '../dish-store.js';
 import { createDish, type DishHandlerDeps } from '../dish-handler.js';
@@ -178,7 +179,7 @@ const resetListenerMocks = (): void => {
   listenerMocks.handlerSet.wsHandle.clientCount.mockReturnValue(3);
   listenerMocks.composeWebhookListeners.mockReset();
   listenerMocks.composeWebhookListeners.mockResolvedValue({
-    webhookListener: listenerMocks.webhookListener,
+    connectionWebhookListener: listenerMocks.connectionWebhookListener,
   });
   listenerMocks.createServerHandlerSet.mockReset();
   listenerMocks.createServerHandlerSet.mockReturnValue(listenerMocks.handlerSet);
@@ -231,7 +232,7 @@ const makeOptions = (
   overrides: Record<string, unknown> = {},
 ): ComposeListenersOptions => ({
   port: 1234,
-  webhookPort: 8080,
+  webhooksEnabled: true,
   storage: {
     db: storageDb,
     pairing: { tag: 'pairing' },
@@ -285,7 +286,6 @@ const makeOptions = (
     // D-124 — the new mail's events a boot scan emitted before the dispatcher
     // subscribed: sealed as it composes, replayed once. Recording, as above.
     bootEvents: { seal: vi.fn(), replay: vi.fn(async () => {}) },
-    serviceStack: undefined,
     channelDispatchers: undefined,
     oauthClientConfigDeps: undefined,
   },
@@ -1935,6 +1935,97 @@ describe('composeListeners', () => {
     }
   });
 
+  /** ⛔ `collection.webhook.public_reachable` was read by NOTHING until
+   *  2026-10-10, though both docker-compose files and the Homebrew caveats told
+   *  operators to set it: only `RECUED_PUBLIC_REACHABLE` opened the gate. This
+   *  drives the REAL composer with the key alone (environment unset) and checks
+   *  both webhook surfaces answer to it: the switch the composer hands the
+   *  D-128 vendor receiver, and D-201's readiness. */
+  it('opens both webhook surfaces on collection.webhook.public_reachable alone, live', async () => {
+    const originalBase = process.env.RECUED_PUBLIC_BASE_URL;
+    const originalReachable = process.env.RECUED_PUBLIC_REACHABLE;
+    const base = makeOptions();
+    const ingressStore = createWebhookIngressStore(storageDb, {
+      getEncryptionKey: () => new Uint8Array(32).fill(4),
+    });
+    const consumerStore = createWebhookConsumerStore(storageDb, { ingressStore });
+    const deliveryStore = createWebhookDeliveryStore(storageDb, {
+      getEncryptionKey: () => new Uint8Array(32).fill(5),
+      hasDispatchTarget: (ingressId, eventType) =>
+        consumerStore.hasDispatchTarget(ingressId, eventType),
+    });
+    const runtimeConfig = createRuntimeConfigStore({});
+    process.env.RECUED_PUBLIC_BASE_URL = 'https://hooks.example.test';
+    delete process.env.RECUED_PUBLIC_REACHABLE;
+    try {
+      const result = await composeListeners(makeOptions({
+        runtimeConfig,
+        storage: { ...base.storage, auditLog: { get: vi.fn(async () => null) } },
+        app: {
+          ...base.app,
+          webhookIngressStoreRef: ingressStore,
+          webhookDeliveryStoreRef: deliveryStore,
+          webhookConsumerStoreRef: consumerStore,
+          connectionStoreRef: { get: vi.fn(() => null) },
+          isVaultUnlocked: () => true,
+        },
+        exposureDeps: {
+          getMachine: () => ({
+            current: async () => ({
+              resolution: { webhooks: { lan: true, public: true } },
+            }),
+          }),
+        },
+      }));
+      const receiverSwitch = (
+        listenerMocks.composeWebhookListeners.mock.calls as unknown as Array<[
+          { publicReachable?: () => boolean },
+        ]>
+      )[0]![0].publicReachable;
+      const config = (
+        listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+          Record<string, unknown>,
+        ]>
+      )[0]![0];
+      const runtimeReadiness = (
+        config.webhookIngressDeps as {
+          runtimeReadiness: (
+            ingress: ReturnType<typeof ingressStore.create>,
+            profile: NonNullable<ReturnType<typeof webhookProfile>>,
+          ) => Promise<Record<string, unknown>>;
+        }
+      ).runtimeReadiness;
+      const raw = ingressStore.create({
+        display_name: 'Raw HMAC',
+        profile_id: 'generic.raw-body-hmac-sha256.v1',
+        environment: 'live',
+        paired_connection_id: null,
+        registration_mode: 'manual',
+        selected_event_types: ['delivery'],
+      });
+      const d201Open = async (): Promise<unknown> =>
+        (await runtimeReadiness(raw, webhookProfile(raw.profile_id)!))
+          .public_reachability_enabled;
+
+      expect(receiverSwitch?.()).toBe(false);
+      await expect(d201Open()).resolves.toBe(false);
+
+      runtimeConfig.set('collection.webhook.public_reachable', true);
+      expect(receiverSwitch?.()).toBe(true);
+      await expect(d201Open()).resolves.toBe(true);
+
+      runtimeConfig.set('collection.webhook.public_reachable', false);
+      expect(receiverSwitch?.()).toBe(false);
+      await expect(d201Open()).resolves.toBe(false);
+      await result.server.close();
+    } finally {
+      if (originalBase === undefined) delete process.env.RECUED_PUBLIC_BASE_URL;
+      else process.env.RECUED_PUBLIC_BASE_URL = originalBase;
+      if (originalReachable === undefined) delete process.env.RECUED_PUBLIC_REACHABLE;
+      else process.env.RECUED_PUBLIC_REACHABLE = originalReachable;
+    }
+  });
+
   it('mounts timestamped HMAC only with a healthy boot-pinned HTTPS clock authority', async () => {
     const originalBase = process.env.RECUED_PUBLIC_BASE_URL;
     const originalReachable = process.env.RECUED_PUBLIC_REACHABLE;
@@ -2872,6 +2963,47 @@ describe('composeListeners — D-209 a webhook door follows the main dish', () =
     // Stamped on the rows the dispatcher reads, and held in the store the Gateway reads.
     expect(doorId()).not.toBeNull();
     expect(definitionStore.get(doorId()!)?.scope.connection_names).toEqual(['acme-prod']);
+  });
+
+  // D-320 phase 3 (3b) — a door also follows its pack's connections: the server
+  // hands the pack-connection rpcs and the connection delete one re-derivation of
+  // every webhook recipe's door (`d-320-door-follows-pack.test.ts` drives it).
+  it("hands the pack-connection rpcs and the connection delete the same re-derivation", async () => {
+    let stamp = 2_099_999_999_999;
+    const ingressStore = createWebhookIngressStore(storageDb, { now: () => stamp, getEncryptionKey: () => new Uint8Array(32).fill(5) });
+    const consumerStore = createWebhookConsumerStore(storageDb, { ingressStore, now: () => ++stamp });
+    const contractStore = createContractStore(storageDb, { now: () => ++stamp });
+    const base = makeOptions() as unknown as {
+      storage: Record<string, unknown>;
+      app: Record<string, unknown>;
+      rpc: Record<string, unknown>;
+      execution: { executeDeps: Record<string, unknown> } & Record<string, unknown>;
+    };
+    await composeListeners(makeOptions({
+      storage: {
+        ...base.storage,
+        recordsStore: { isInstalledOperationId: () => false, isInstalledCatalogOperation: () => false },
+      },
+      app: { ...base.app, webhookConsumerStoreRef: consumerStore, connectionStoreRef: { tag: 'connection-store' } },
+      rpc: { ...base.rpc, packInstallDeps: { tag: 'pack-install' } },
+      execution: {
+        ...base.execution,
+        contractDefinitionStore: createContractDefinitionStore(contractStore),
+        grantEntryStore: createContractGrantEntryStore(contractStore),
+        executeDeps: {
+          ...base.execution.executeDeps,
+          recipeStore: createRecipeStore('/path/that/does/not/exist', storageDb),
+          dishStore: createDishStore(storageDb),
+        },
+      },
+    }));
+    const calls = listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    const options = calls.at(-1)![0];
+    const follow = (options.packInstallDeps as { packConnectionWebhookDoors?: () => unknown }).packConnectionWebhookDoors;
+    expect(typeof follow).toBe('function');
+    expect((options.connectionDeps as { webhookDoorsMoved?: unknown }).webhookDoorsMoved).toBe(follow);
+    // No webhook recipe has trigger rows here, so nothing moves.
+    expect(follow!()).toEqual([]);
   });
 });
 

@@ -9534,9 +9534,10 @@ test('Data collection tabs form one arrow-key keyboard stop', async ({ page }) =
   const records = page.locator(`[${DATA_TAB}="records"]`);
   const search = page.locator(`[${DATA_TAB}="search"]`);
   await expect(tablist).toBeVisible();
-  // D-290 — Today left this tablist for its own `#today` route (18 → 17), and
-  // D-315 put Mail facts under Received (17 → 18).
-  await expect(tabs).toHaveCount(18);
+  // D-290 — Today left this tablist for its own `#today` route (18 → 17),
+  // D-315 put Mail facts under Received (17 → 18), and the Webhooks collection
+  // was deleted (`3452f3017`, 18 → 17).
+  await expect(tabs).toHaveCount(17);
   await expect(tablist.locator('[tabindex="0"]')).toHaveCount(1);
   // ⚠ D-290 — a tabless `#data` lands on Contacts again (D-267 had made it
   // Today, which is no longer a tab here). This test is about the ARROW-KEY
@@ -9583,7 +9584,8 @@ test('Data exposes full mobile targets for its persistent navigation', async ({ 
   expect(Math.min(...heights)).toBeGreaterThanOrEqual(36);
 
   const collections = page.getByRole('combobox', { name: 'Collection', exact: true });
-  await expect(collections.locator('option')).toHaveCount(18);
+  // One option per Data tab: 17 since the Webhooks collection was deleted.
+  await expect(collections.locator('option')).toHaveCount(17);
   await expect(collections).toBeVisible();
   expect((await collections.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await expect(page.getByRole('tablist', { name: 'Data collections' })).toBeHidden();
@@ -13294,13 +13296,13 @@ test('Data preserves calendar reschedule ownership', async ({ page }) => {
 });
 
 test('Data contains long collection records on a narrow phone', async ({ page }) => {
-  const longMethod = `POST${'Method'.repeat(30)}`;
-  const longRemoteIp = `Remote${'Address'.repeat(30)}`;
-  const longRecordId = `Webhook${'Identifier'.repeat(24)}`;
+  const longSubject = `Subject${'Heading'.repeat(30)}`;
+  const longFrom = `Sender${'Address'.repeat(30)}`;
+  const longRecordId = `Message${'Identifier'.repeat(24)}`;
   const longSourceId = `Source${'Identifier'.repeat(24)}`;
   const longBody = `Payload${'Value'.repeat(40)}`;
   await page.setViewportSize({ width: 280, height: 844 });
-  await page.goto(`${HARNESS_URL}?collection_text=long#data/webhook`);
+  await page.goto(`${HARNESS_URL}?collection_text=long#data/mail`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const route = page.locator('[data-recued-data-route]');
@@ -13326,9 +13328,9 @@ test('Data contains long collection records on a narrow phone', async ({ page })
 
   await instances.first().click();
   const row = page.locator(`[${DATA_COLLECTION_RECORD}="${longRecordId}"]`);
-  await expect(row.locator('.col-explorer-row-title')).toHaveText(longMethod);
+  await expect(row.locator('.col-explorer-row-title')).toHaveText(longSubject);
   await expect(row.locator('.col-explorer-row-summary'))
-    .toContainText(longRemoteIp);
+    .toContainText(longFrom);
   const rowGeometry = await row.evaluate((control) => {
     const elements = [
       control,
@@ -13352,8 +13354,8 @@ test('Data contains long collection records on a narrow phone', async ({ page })
 
   await row.click();
   const detail = page.getByRole('region', { name: 'Record detail' });
-  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toHaveText(longMethod);
-  await expect(detail.getByText(longRemoteIp, { exact: true })).toBeVisible();
+  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toHaveText(longSubject);
+  await expect(detail.getByText(longFrom, { exact: true })).toBeVisible();
   await expect(detail.getByText(longSourceId, { exact: true })).toBeVisible();
   await expect(detail.getByText(longRecordId, { exact: true })).toBeVisible();
   await expect(detail.locator('.col-explorer-detail-body')).toHaveText(longBody);
@@ -16935,6 +16937,33 @@ test('Recipes gives list Open and Run separate focus ownership', async ({ page }
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(run).toBeFocused();
+});
+
+// D-320 — the run dialog reads the recipe's slots after it opens, and the
+// repaint that draws the Connection line replaced the focused dialog: focus
+// fell to the page. Held until the dialog has focus, so the read always lands
+// after it, as it does on a real server.
+test('Recipes keeps the Run dialog focused when its Connection line arrives', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_connections=choice&hold_rpc=packs.connections.recipe`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const run = page.locator('[data-recued-recipes-card="autorun-live-1"]')
+    .getByRole('button', { name: 'Run Watch pipeline', exact: true });
+  await run.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'Run a Recipe' });
+  await expect(dialog).toBeFocused();
+  const line = dialog.locator('[data-recued-run-modal-connection]');
+  await expect(line).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.releaseRpcResponses?.('packs.connections.recipe')),
+  ).toBe(1);
+  await expect(line).toHaveCount(1);
+  await expect(dialog).toBeFocused();
 });
 
 test('Recipes offers a missing pack before Run and recovers live', async ({ page }) => {
@@ -26974,10 +27003,12 @@ test('Connections contains long enrolled identities through removal review', asy
   const longName = `service-${'identity'.repeat(5)}`;
   const longDisplayName = `Connection${'Identity'.repeat(24)}`;
   const longEndpoint = `https://${'endpoint'.repeat(7)}.example.test/v1`;
-  const longPackSlug = `pack-${'identity'.repeat(7)}`;
+  // "Used by packs" names a pack by its name, not its slug (D-320 slice 2h), so
+  // the long identity it must contain is the pack's name.
+  const longPackName = `Pack${'N'.repeat(240)}`;
   await page.setViewportSize({ width: 280, height: 844 });
   await page.goto(
-    `${HARNESS_URL}?packs=installed&connection_text=long#connections/others`,
+    `${HARNESS_URL}?packs=installed&connection_text=long&pack_text=long#connections/others`,
   );
   await page.waitForFunction(() => window.__app?.ready === true);
 
@@ -26990,7 +27021,7 @@ test('Connections contains long enrolled identities through removal review', asy
   await expect(row.locator('.connections-row-summary')).toHaveText(longEndpoint);
   const usage = route.locator('.connections-pack-usage');
   await expect(usage.locator('.connections-pack-usage-name')).toHaveText(
-    longPackSlug,
+    longPackName,
   );
   await expect(usage.locator('.connections-pack-usage-status')).toContainText(
     'missing crm.objects.deals.write',

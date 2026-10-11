@@ -13,7 +13,9 @@ import {
   buildRecipeOpDependencyIndex,
   deriveRecipeCapability,
   deriveResolvedRecipeCapability,
+  type RecipeCapabilityRefusal,
 } from '../derive-recipe-capability.js';
+import { describeWebhookDoorRefusal } from '../webhook-door-enroll.js';
 
 const recipe = (partial: Record<string, unknown>): RecipeDefinition =>
   ({ prefetch_steps: [], steps: [], ...partial }) as unknown as RecipeDefinition;
@@ -242,5 +244,21 @@ describe('D-207 §5.1f — the dependency index backs the two grant-consent warn
     })));
     // This is what the owner is shown before enabling the recipe on a public door.
     expect(cap.operation_ids).toEqual(['core.mail.send', 'recued-core.stripe.transaction.list']);
+  });
+});
+
+describe('D-320 ruling 17 — a refusal says connection, never account', () => {
+  it('for a connection resolved at runtime, and for a recipe it cannot lower', () => {
+    const d = deriveRecipeCapability(
+      recipe({ steps: [{ id: 'c', op: 'x.create', connection: '{{config.missing}}' }] }),
+      { config: {} },
+    );
+    if (d.ok) throw new Error('expected a refusal');
+    const runtime = describeWebhookDoorRefusal(d.refusal);
+    expect(runtime).toContain('so which connection it would use is not knowable in advance.');
+    const unlowered: RecipeCapabilityRefusal = { reason: 'dispatch_unresolvable', step_id: '<recipe>', detail: 'no catalog' };
+    const lowered = describeWebhookDoorRefusal(unlowered);
+    expect(lowered).toContain('the exact operations and connections the webhook would run');
+    for (const words of [runtime, lowered]) expect(words).not.toMatch(/account/i);
   });
 });

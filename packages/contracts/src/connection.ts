@@ -1195,6 +1195,15 @@ export interface ConnectionView {
    *  never carries it. Absent → grant data unavailable (dbless / non-api) → the
    *  UI falls back to vendor-match. */
   bound_pack_slugs?: string[];
+  /** D-320 §4 — of those packs, the ones that use this connection by default
+   *  (their stored default, or the only connection on their list; a pack signing
+   *  in through another's, its holder's). Stamped beside `bound_pack_slugs`, by
+   *  `handleConnectionList` only. */
+  default_for_pack_slugs?: string[];
+  /** D-320 slice 2h — of those packs, the ones signing in through another one
+   *  among them (ruling 9), each mapped to that holder, so "Used by packs" names
+   *  a family once. Stamped beside them, by `handleConnectionList` only. */
+  pack_holders?: Record<string, string>;
   /** D-192 S5 — true when this connection's vendor declares engagement
    *  entities in the LIVE merged vendor registry (built-ins + installed
    *  packs), so a pack-declared engagement CRM (e.g. Dynamics) surfaces the
@@ -1382,6 +1391,9 @@ export const CONNECTION_VIEW_RESERVED_FIELDS: ReadonlyArray<string> = [
   // `connectionViewFromRow` / `connectionStoreFromRows` (same guard as
   // `granted_scopes` / `subresource_path`).
   'bound_pack_slugs',
+  // D-320 §4 — stamped beside it, the same way and for the same reason.
+  'default_for_pack_slugs',
+  'pack_holders',
   // D-192 S5 — `supports_engagement_health` is stamped explicitly onto the LIST
   // view by `handleConnectionList` from the live vendor registry; reserved so a
   // stray `config_json` key of that name can neither shadow the authoritative

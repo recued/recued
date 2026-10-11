@@ -1,7 +1,7 @@
 /** Phase D (D-106) end-to-end integration — Commit 19.
  *
  *  Ties the full warehouse chain together:
- *    - Collection registry composition (file + webhook + mail-stub).
+ *    - Collection registry composition (file + mail-stub).
  *    - Real SQLite + CAS + FTS5 + gate registry underneath.
  *    - Kernel ingredient dispatch via `collection.*` rpcs.
  *    - Retention + drain pipelines.
@@ -9,8 +9,11 @@
  *
  *  Mail runs against an in-process stub provider (Commits 13-15 have
  *  their own unit tests for IMAP/Gmail/Graph transport specifics).
- *  File uses a real filesystem scan; webhook uses direct `ingest()`
- *  calls to bypass the HTTP route (the listener has its own tests).
+ *  File is a folder Recued watches, through the file stack as the server
+ *  composes it, over a real directory. (A webhook collection was a third
+ *  member until it was removed 2026-10-10: nothing in production ever
+ *  created one. Until the same day the file member was the Phase D
+ *  `createFileCollection`, which nothing in production created either.)
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -31,8 +34,7 @@ import {
 
 import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 import { createCollectionRegistry, type CollectionRegistry } from '../collections/registry.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
-import { createWebhookCollection } from '../collections/webhook/webhook-collection.js';
+import { composeFileStack, type FileStack } from '../collections/file/compose.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import {
   handleCollectionList,
@@ -96,11 +98,10 @@ interface World {
   registry: CollectionRegistry;
   gates: {
     file: StorageGate;
-    webhook: StorageGate;
     mail: StorageGate;
   };
   mailStub: ReturnType<typeof makeStubProvider>;
-  webhookCollection: ReturnType<typeof createWebhookCollection>;
+  fileStack: FileStack;
   close(): Promise<void>;
 }
 
@@ -126,29 +127,24 @@ const mkWorld = async (opts: { seed?: (watchedDir: string) => void } = {}): Prom
 
   const gates = {
     file: createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:file:docs' }),
-    webhook: createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:webhook:gh' }),
     mail: createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:mail:work' }),
   };
 
   const registry = createCollectionRegistry();
 
-  const fileColl = createFileCollection({
-    db, blobs, gate: gates.file, bus, slug: 'docs',
-    config: () => ({
-      path: watchedDir,
-      ignore: ['**/.DS_Store'],
-      max_body_bytes: 1024 * 1024,
-      retention_days: 0,
-      quota_bytes: BIG_QUOTA,
-    }),
+  // The folder's collection is registered by the stack when it starts.
+  const fileStack = composeFileStack(db);
+  fileStack.attachWatchedFolders({
+    registry, bus, gates: { get: () => gates.file, release: () => {} },
   });
-  registry.register(fileColl);
-
-  const webhookColl = createWebhookCollection({
-    db, blobs, gate: gates.webhook, bus, slug: 'gh',
-    config: () => ({ retention_days: 30, quota_bytes: BIG_QUOTA }),
+  fileStack.instances.upsert({
+    platform: 'file', slug: 'docs', adapter_type: 'fs', config: { path: watchedDir },
+    caps: {
+      read: 'yes', write: 'yes', delete: 'yes', watch: 'realtime',
+      mirror: 'optional', auth: 'none', path_style: 'posix',
+    },
+    auth_state: 'healthy', last_synced_at: null,
   });
-  registry.register(webhookColl);
 
   const mailStub = makeStubProvider('work');
   const mailColl = createMailCollection({
@@ -158,27 +154,29 @@ const mkWorld = async (opts: { seed?: (watchedDir: string) => void } = {}): Prom
   });
   registry.register(mailColl);
 
-  // ⛔ BEFORE `sync.start()`, DELIBERATELY. A file seeded here is found by the
-  // initial directory walk, which `start()` awaits; a file written after start
-  // is found only if the OS delivers an `fs.watch` event.
+  // ⛔ BEFORE THE FILE STACK STARTS, DELIBERATELY. A file seeded here is found
+  // by the initial directory walk, which `startAll()` awaits; a file written
+  // after start is found only if the OS delivers an `fs.watch` event.
   opts.seed?.(watchedDir);
 
-  // Start all sync adapters so the file scan completes + webhook +
-  // mail providers stand up their listeners / stub callbacks.
+  // The file stack walks the folder; the mail provider stands up its stub
+  // callback.
+  await fileStack.startAll();
   for (const c of registry.list()) {
     await c.sync.start();
   }
-  // ⛔ NO SLEEP HERE, AND NONE IS NEEDED. `sync.start()` is already the barrier:
-  // the fs watcher's `start()` resolves only after the initial directory walk
-  // completes and `fs.watch` is attached (`file-collection.ts`: "resolves only
-  // after the initial directory walk completes (`scanDir(root)` in fs-adapter)").
-  // The 30 ms tick that used to sit here described a guarantee it did not provide
-  // and the loop above already had — a barrier made of hope beside a real one.
+  // ⛔ NO SLEEP HERE, AND NONE IS NEEDED. `startAll()` is already the barrier:
+  // it starts each adapter and awaits it, and the fs adapter's `start()`
+  // resolves only after the initial directory walk completes and the watch is
+  // attached. The 30 ms tick that used to sit here described a guarantee it did
+  // not provide and the loop above already had — a barrier made of hope beside
+  // a real one.
 
   return {
-    dir: base, watchedDir, db, blobs, bus, events, registry, gates, mailStub, webhookCollection: webhookColl,
+    dir: base, watchedDir, db, blobs, bus, events, registry, gates, mailStub, fileStack,
     async close() {
       await registry.dispose();
+      await fileStack.disposeAll();
       db.close();
       rmSync(base, { recursive: true, force: true });
     },
@@ -193,12 +191,12 @@ afterEach(async () => { await w?.close(); });
 // ────────────────────────────────────────────────────────────────
 
 describe('Phase D e2e — composition', () => {
-  it('registers three collections and lists them via listEndpoints', async () => {
+  it('registers two collections and lists them via listEndpoints', async () => {
     w = await mkWorld();
     const deps: CollectionHandlerDeps = { registry: w.registry };
     const res = await handleCollectionListEndpoints(deps);
     const slugs = res.endpoints.map((h) => `${h.platform}:${h.slug}`).sort();
-    expect(slugs).toEqual(['file:docs', 'mail:work', 'webhook:gh']);
+    expect(slugs).toEqual(['file:docs', 'mail:work']);
   });
 });
 
@@ -273,7 +271,7 @@ describe('Phase D e2e — file collection', () => {
     // genuinely awaits, so the record exists before the first poll.
     //
     // 🔑 NO COVERAGE IS LOST. The watch path has its own dedicated test —
-    // `file-collection.test.ts` "fires change events when a new file appears" —
+    // `watched-folders.test.ts` "with a live watch, a file written later lands" —
     // which is where a lossy-event dependency belongs, named for what it tests.
     w = await mkWorld({
       seed: (dir) => { writeFileSync(join(dir, 'hello.txt'), 'full text contents'); },
@@ -284,49 +282,11 @@ describe('Phase D e2e — file collection', () => {
     expect(rec).toBeDefined();
     const fullRec = await handleCollectionGet(deps, { platform: 'file', slug: 'docs', record_id: rec!.record_id });
     expect(fullRec.record?.body_inline).toBe('full text contents');
+    expect(
+      w.events.filter((e) => e.platform === 'file' && e.record_id === rec!.record_id).map((e) => e.event_kind),
+      'the walk announced it',
+    ).toEqual(['created']);
   }, 60_000);
-});
-
-// ────────────────────────────────────────────────────────────────
-// Webhook collection — ingest + list + retention
-// ────────────────────────────────────────────────────────────────
-
-describe('Phase D e2e — webhook collection', () => {
-  it('round-trips an ingest through list + get', async () => {
-    w = await mkWorld();
-    await w.webhookCollection.ingest({
-      method: 'POST',
-      body: Buffer.from(JSON.stringify({ action: 'opened', pr: 42 })),
-      contentType: 'application/json',
-      headersSubset: { 'x-github-event': 'pull_request' },
-      query: {},
-      remoteIp: '1.2.3.4',
-      hmacHeader: null,
-      hmacSecret: null,
-    });
-
-    const deps: CollectionHandlerDeps = { registry: w.registry };
-    const list = await handleCollectionList(deps, { platform: 'webhook', slug: 'gh' });
-    expect(list.records.length).toBe(1);
-    const rec = list.records[0];
-    expect(rec.hot_fields.method).toBe('POST');
-
-    const full = await handleCollectionGet(deps, {
-      platform: 'webhook', slug: 'gh', record_id: rec.record_id,
-    });
-    expect(full.record?.body_inline).toContain('"action":"opened"');
-    expect((rec.hot_fields.headers_subset as any)?.['x-github-event']).toBe('pull_request');
-  });
-
-  it('runRetention is callable and respects retention_days', async () => {
-    w = await mkWorld();
-    const deps: CollectionHandlerDeps = { registry: w.registry };
-    const res = await handleCollectionRunRetention(deps, {
-      platform: 'webhook', slug: 'gh',
-    });
-    expect(typeof res.pruned).toBe('number');
-    expect(typeof res.bytes_freed).toBe('number');
-  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -359,6 +319,16 @@ describe('Phase D e2e — mail collection', () => {
 
     const list = await handleCollectionList(deps, { platform: 'mail', slug: 'work' });
     expect(list.records.length).toBe(1);
+  });
+
+  it('runRetention is callable through the handler', async () => {
+    w = await mkWorld();
+    const deps: CollectionHandlerDeps = { registry: w.registry };
+    const res = await handleCollectionRunRetention(deps, {
+      platform: 'mail', slug: 'work',
+    });
+    expect(typeof res.pruned).toBe('number');
+    expect(typeof res.bytes_freed).toBe('number');
   });
 });
 
@@ -395,7 +365,7 @@ describe('Phase D e2e — heartbeat roll-up', () => {
     });
     const deps: CollectionHandlerDeps = { registry: w.registry };
     const res = await handleCollectionListEndpoints(deps);
-    expect(res.endpoints.length).toBe(3);
+    expect(res.endpoints.length).toBe(2);
     for (const h of res.endpoints) {
       expect(typeof h.last_indexed_at).toBe('number');
       expect(typeof h.error_count_24h).toBe('number');

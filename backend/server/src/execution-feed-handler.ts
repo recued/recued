@@ -457,6 +457,12 @@ const projectAuditSummary = (entry: AuditEntry): RunAuditSummary => {
   if (entry.degraded !== undefined && entry.degraded.length > 0) {
     out.degraded = [...entry.degraded];
   }
+  // D-321 — the second hand-written copier this field crosses, after
+  // `buildAuditEntry`: programs the run started under Warn at an untested
+  // version, for its Logs detail.
+  if (entry.untested_tools !== undefined && entry.untested_tools.length > 0) {
+    out.untested_tools = entry.untested_tools.map((t) => ({ ...t, tested: { ...t.tested } }));
+  }
   return out;
 };
 

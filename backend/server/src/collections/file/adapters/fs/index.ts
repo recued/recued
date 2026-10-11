@@ -146,6 +146,10 @@ export const fsAdapterFactory: FileAdapterFactory = {
           watcher = undefined;
         }
       },
+      walkErrors() {
+        // No watcher, no walk: report it as unread rather than complete.
+        return watcher ? watcher.walkErrors() : 1;
+      },
       async writeRecord(path, body) {
         const abs = ensureInsideRoot(root, path);
         try {

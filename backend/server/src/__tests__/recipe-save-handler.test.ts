@@ -88,8 +88,8 @@ const canonicalOpRecipe = (recipe_id: string): RecipeDefinition =>
   );
 
 /** D-182 — the SAME bare canonical op but with NO `type:'connection'` variable.
- *  `opStepConnectionSlots` rejects it at dispatch ("declares no type:'connection'
- *  variable"), so the save boundary now blocks it up front. */
+ *  Refused at save until D-320 phase 3: a run now gives the step its slot's
+ *  setting first (slice 3a), so it runs, and saves (3d). */
 const slotlessCanonicalRecipe = (recipe_id: string): RecipeDefinition =>
   recipeWith(
     recipe_id,
@@ -413,18 +413,11 @@ describe('saveRecipeInline', () => {
     expect(saveCalls).toHaveLength(1);
   });
 
-  it('D-182 — throws RpcError for a canonical op-step with NO type:connection variable', () => {
+  it('D-320 3d — persists a canonical op-step that names no connection (a run gives it its slot\'s)', () => {
     const { store, saveCalls } = inMemoryStore();
-    let thrown: unknown;
-    try {
-      saveRecipeInline({ store }, slotlessCanonicalRecipe('slotless-op'));
-    } catch (e) {
-      thrown = e;
-    }
-    expect(thrown).toBeInstanceOf(RpcError);
-    expect((thrown as RpcError).code).toBe('bad_request');
-    expect((thrown as RpcError).message).toContain("type:'connection' variable");
-    expect(saveCalls).toEqual([]);
+    expect(saveRecipeInline({ store }, slotlessCanonicalRecipe('slotless-op')))
+      .toMatchObject({ saved: true, recipe_id: 'slotless-op' });
+    expect(saveCalls).toHaveLength(1);
   });
 
   it('D-182 — throws RpcError for an UNREGISTERED closed-kind kernel op', () => {
@@ -550,9 +543,10 @@ describe('checkInlineOpSteps', () => {
     expect(out.errors).toEqual([]);
   });
 
-  it('errors on a slotless bare-canonical op (zero connection variables)', () => {
-    const out = checkInlineOpSteps(r({ steps: [opStep('deal.search')], variables: {} }));
-    expect(out.errors.some((e) => e.includes("type:'connection' variable"))).toBe(true);
+  it('clean for a slotless canonical op (D-320 3d: a run gives it its slot\'s setting)', () => {
+    for (const op of ['deal.search', 'core.crm.deal.search']) {
+      expect(checkInlineOpSteps(r({ steps: [opStep(op)], variables: {} })).errors).toEqual([]);
+    }
   });
 
   it('clean for a bare-canonical op WITH a connection variable', () => {

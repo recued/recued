@@ -95,7 +95,7 @@ describe('composeCollectionContext', () => {
 
       expect(context.calendarStack).toBeDefined();
       expect(context.mailStack).toBeDefined();
-      expect(context.serviceStack).toBeDefined();
+      expect(context).not.toHaveProperty('serviceStack');
       expect(context.collectionRegistry).toBeDefined();
       expect(context.watcherDispatcher).toBeDefined();
       expect(context.notificationDeps).toBeDefined();
@@ -252,7 +252,8 @@ describe('composeCollectionContext', () => {
 
     expect(source).toMatch(/composeCalendarBoot/);
     expect(source).toMatch(/composeMailBoot/);
-    expect(source).toMatch(/composeServiceBoot/);
+    // The D-118 service installer was retired (D-321 § 5.4).
+    expect(source).not.toMatch(/composeServiceBoot|serviceStack/);
     expect(source).toMatch(/createCollectionRegistry/);
     expect(source).toMatch(/createWatcherDispatcher/);
     expect(source).toMatch(/composeConnectionNotification/);

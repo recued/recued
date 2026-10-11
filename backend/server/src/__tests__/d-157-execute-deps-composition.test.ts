@@ -75,6 +75,9 @@ const directExecuteDepKeys = [
   'recipeStore',
   'serverName',
   'sharedStore',
+  // D-321 slice 3 — the run-record half of the Warn-note hand-off. The cli
+  // executor holds the other half, and both are built with it, unconditionally.
+  'takeUntestedTools',
 ] as const;
 
 const conditionalExecuteDepKeys = [
@@ -334,6 +337,9 @@ describe('composeExecuteDeps bundle shape', () => {
     const bundle = composeExecuteDeps(buildDeps());
 
     expect(Object.keys(bundle).sort()).toEqual([
+      // D-321 slice 3 — the executor's tool readiness service, surfaced so
+      // `packs.tool_status` reads the same cache a run checks with.
+      'cliToolStatus',
       // D-207 slice 1c — the contract substrate the reception door is minted into,
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
@@ -367,6 +373,9 @@ describe('composeExecuteDeps bundle shape', () => {
     const bundle = composeExecuteDeps(buildDeps(notificationPrereqs()));
 
     expect(Object.keys(bundle).sort()).toEqual([
+      // D-321 slice 3 — the executor's tool readiness service, surfaced so
+      // `packs.tool_status` reads the same cache a run checks with.
+      'cliToolStatus',
       // D-207 slice 1c — the contract substrate the reception door is minted into,
       // surfaced so the boot site hands the door the SAME stores the Gateway reads.
       'contractDefinitionStore',
@@ -490,6 +499,29 @@ describe('composeExecuteDeps ExecuteHandlerDeps field parity', () => {
         allowed_tools: ['mail-send'],
       },
     });
+  });
+
+  it('D-320 audit composes the webhook resume door from the trigger rows and the contract store', () => {
+    const db = makeDb();
+    const contractStore = createContractStore(db, { now: () => NOW });
+    contractStore.seedSchema(D165_CONTRACT_SCHEMA);
+    const currentDoorForRun = vi.fn(() => 'door-new');
+    const { executeDeps } = composeExecuteDeps(buildDeps({
+      contractStore,
+      webhookConsumerStore: { currentDoorForRun },
+    }));
+    // Built over the composer's own contract store: a door it does not hold has no
+    // successor, and the run resumes as persisted.
+    expect(executeDeps.webhookResumeDoor?.successor('run-1', {
+      channel: 'webhook',
+      actor: 'anonymous',
+      vendor: 'generic',
+      webhook_secret_id: 'whi_1',
+      contract_id: 'door-gone',
+    })).toBeUndefined();
+    expect(executeDeps.webhookResumeDoor).toBeDefined();
+    // No webhooks on this server: nothing is composed.
+    expect(composeExecuteDeps(buildDeps({ contractStore })).executeDeps.webhookResumeDoor).toBeUndefined();
   });
 
   it('includes every conditional-spread field with identity when the matching input is present', () => {

@@ -6,7 +6,7 @@
  *  validator + impersonation-detection helpers.
  *
  *  Reserved names overlap with `content-policy.ts`'s `RESERVED_HANDLES`
- *  but D-148 carries a tighter list specific to `<handle>.recued.cloud`
+ *  but D-148 carries a tighter list specific to `<handle>.recued.net`
  *  DDNS subdomains: `admin / api / cloud / mcp / webhooks / reception
  *  / app / apps / docs / blog / status` etc. — the DNS-zone-conflict
  *  set, distinct from the marketplace publisher-handle blocklist
@@ -57,7 +57,7 @@ export const D148_RESERVED_HANDLES: ReadonlySet<string> = new Set([
   'press',
   'careers',
   // D-176 Phase 3 — public-secondary nameserver labels live IN the
-  // customer zone (`ns1-4.recued.cloud` A/AAAA glue, exempted from
+  // customer zone (`ns1-4.recued.net` A/AAAA glue, exempted from
   // rebuild-from-D1 pruning in the apply-agent). A customer handle here
   // would collide with fleet infrastructure. Reserved through ns9 for
   // future fleet growth.

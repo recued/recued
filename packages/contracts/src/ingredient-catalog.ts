@@ -36,10 +36,11 @@
  */
 
 import type { IngredientKind, RiskTier } from './ingredient.js';
-import { RISK_TIER_RANK } from './ingredient.js';
+import { INGREDIENT_KINDS, RISK_TIER_RANK } from './ingredient.js';
 import type { ServiceCheckSpec, ServiceRestartPolicy } from './service.js';
 import type { ExecutionSource } from './commits.js';
 import type { ProgressContract } from './execution-lane.js';
+import type { CliInstallHint, CliToolVersionPolicy } from './cli-tool-version.js';
 import { canonicalizeSubresourcePath } from './connection.js';
 import type { MetaFieldType } from './entity-schema.js';
 import { WIRE_AUTHORITY_ARG_PATHS } from './open-projection.js';
@@ -1971,6 +1972,16 @@ export interface ConnectorRuntimeSpec {
   package_ref: string;
   entry_point: string;
   expected_protocol_version: number;
+  /** D-321 — `cli_invocation` only. The pack's probe and tested range, copied
+   *  together from its `cli` cell when it declares `version`; the probe asks
+   *  only for the version (`CLI_VERSION_PROBE_FLAGS`). Absent for a pack that
+   *  declares no range, whose catalog is then unchanged. An older server's
+   *  validator lets them through and nothing there reads them. */
+  cli_probe?: string[];
+  cli_version?: CliToolVersionPolicy;
+  /** D-321 — `cli_invocation` only: the pack's install hints, when it
+   *  declares any. Shown to the owner, never run (D-170). */
+  cli_install?: CliInstallHint[];
 }
 
 /** D-182 §7 — the canonical `system_binary:<tool>` package-ref prefix the
@@ -2375,15 +2386,26 @@ export interface ProviderSurfaces {
   records?: import('./records.js').ProviderRecordsSurface;
 }
 
+/** True when a manifest declares a `kind` this server does not know: a retired
+ *  kind (`service`, D-321 § 5.5) or a typo. The validator refuses one at install
+ *  (`INGREDIENT_KINDS`); the two fences below fail closed on one that reaches
+ *  the registry anyway. A manifest that declares no `kind` is not this case. */
+const declaresUnknownKind = (manifest: { kind?: unknown }): boolean =>
+  manifest.kind !== undefined
+  && !(typeof manifest.kind === 'string' && INGREDIENT_KINDS.has(manifest.kind as IngredientKind));
+
 /** D-182 §8 + D-221 §3.3 — the hard door-exposability invariant. `cli`,
- *  `service`, and Records-surface ingredients are NEVER externally exposable:
+ *  Records-surface ingredients and any kind this server does not know are
+ *  NEVER externally exposable:
  *  an external actor (a door / MCP-channel agent) may *trigger a recipe* that
  *  uses one internally (itself Gateway-gated), but can NEVER call it directly
  *  as a raw tool. Returns `false` for those cases, `true` otherwise.
  *
  *  The property is DERIVED (the manifest carries no literal `external_exposable`
  *  flag) so it can't drift from the kind:
- *    - `service` — the D-118 long-running-service kind (`kind: 'service'`).
+ *    - an unknown kind — a retired one (`service`, D-321 § 5.5) or a typo. The
+ *      validator refuses one at install; this fails closed on one that reaches
+ *      the registry anyway.
  *    - `cli`     — a connector surface whose runtime invokes a local binary
  *      (`wire_protocol: 'cli_invocation'` → `cliToolFromConnectorRuntime`
  *      resolves a tool). cli is not a core `IngredientKind` enum member — it
@@ -2391,7 +2413,7 @@ export interface ProviderSurfaces {
  *
  *  This is the SINGLE source of truth §8 and D-221 §3.3 reference; every MCP per-ingredient
  *  surface (tools/list, the grant catalog, token authorization, tools/call
- *  routing) gates on it so an installed cli/service catalog can never surface as
+ *  routing) gates on it so an installed cli catalog can never surface as
  *  a `recued_ingredient_<slug>` tool. Records primitives likewise cannot bypass
  *  their receiving recipe's role check. Null/undefined fails closed (not
  *  exposable). */
@@ -2408,7 +2430,7 @@ export const isExternallyExposableIngredient = (
   // middle link (and raw reads default on for new tokens), so both direct MCP
   // surfaces must fail the shared hard fence.
   if (manifest.surfaces?.records !== undefined) return false;
-  if (manifest.kind === 'service') return false;
+  if (declaresUnknownKind(manifest)) return false;
   return !isCliIngredient(manifest);
 };
 
@@ -2427,22 +2449,21 @@ export const isExternallyExposableIngredient = (
  *  call time). Check BOTH signals.
  *
  *  Distinct from `isExternallyExposableIngredient`, which is false for cli AND
- *  `service`. Only cli has the §7.2 per-(principal × ingredient × operation)
- *  reachability authorization path; `service` has none and stays fully fenced. So
+ *  an unknown kind. Only cli has the §7.2 per-(principal × ingredient × op)
+ *  reachability authorization path; an unknown kind has none and stays fenced. So
  *  the door-cli snapshot admit (the recipe-internal cli auth path) gates on THIS
  *  predicate — a stray `cli_reachability` row written for a non-cli slug must
  *  never leak a non-cli ingredient into `allowed_tools`. Null/undefined ⇒ false
  *  (fail closed).
  *
- *  A `kind: 'service'` manifest is NEVER cli, even if it (malformedly) also
- *  carries a `cli_invocation` connector signal: a service declares itself a
- *  service, and service has no reachability auth path — so the service-kind check
- *  fires FIRST (fail-safe). A legit cli ingredient is `kind: 'connection'` (what
- *  the decomposer lowers a `kind: 'cli'` source to), never `'service'`, so this
+ *  A manifest declaring a kind this server does not know (a retired `service`,
+ *  a typo) is NEVER cli, even if it also carries a `cli_invocation` connector
+ *  signal: an unknown kind has no reachability auth path, so that check fires
+ *  FIRST (fail-safe). A legit cli ingredient is `kind: 'connection'` (what the
+ *  decomposer lowers a `kind: 'cli'` source to) or `'cli'`, both known, so this
  *  excludes only a malformed hybrid — which then stays fully fenced (its
  *  door-recipe step is denied `tool_not_in_contract`, never reaches the gateway).
- *  This keeps `isExternallyExposableIngredient` exactly behavior-preserving: a
- *  service is already `false` there via its own kind check. */
+ *  `isExternallyExposableIngredient` makes the same check first. */
 export const isCliIngredient = (
   manifest:
     | { kind?: IngredientKind; surfaces?: ProviderSurfaces }
@@ -2450,7 +2471,7 @@ export const isCliIngredient = (
     | undefined,
 ): boolean => {
   if (!manifest) return false;
-  if (manifest.kind === 'service') return false;
+  if (declaresUnknownKind(manifest)) return false;
   const connector = manifest.surfaces?.connector;
   if (cliToolFromConnectorRuntime(connector?.runtime) !== undefined) return true;
   const executes = connector?.executes;
@@ -2488,7 +2509,61 @@ export interface ConnectionOperationProfile {
   risk_overrides?: Readonly<Record<string, OperationRiskTier>>;
   approval_defaults?: Readonly<Record<string, OperationApproval>>;
   catalog_slug?: string;
+  /** D-320 ruling 10 — present only when the connection serves MORE THAN ONE
+   *  catalog: each served catalog's own grant, keyed by catalog slug, the first
+   *  (`catalog_slug`) included. The top-level fields stay that first catalog's,
+   *  so a reader that knows one catalog per connection reads what it always did.
+   *
+   *  ⛔ Never union these into one set. Two catalogs can declare the same short
+   *  key, and the `catalog_slug` stamp exists so one catalog's grant never
+   *  satisfies another's operation. The gateway narrows to the dispatched
+   *  catalog's entry (`profileForCatalog`) before it checks anything. */
+  catalogs?: Readonly<Record<string, ConnectionCatalogGrant>>;
 }
+
+/** D-320 ruling 10 — one catalog's grant on a connection that serves several. */
+export interface ConnectionCatalogGrant {
+  allowed_operations: ReadonlyArray<string>;
+  risk_overrides?: Readonly<Record<string, OperationRiskTier>>;
+  approval_defaults?: Readonly<Record<string, OperationApproval>>;
+}
+
+/** D-320 ruling 10 — every catalog a connection's profile serves, its first
+ *  (`catalog_slug`) first. Empty for an unstamped (legacy) profile. */
+export const profileCatalogSlugs = (
+  profile: ConnectionOperationProfile | null | undefined,
+): string[] => {
+  if (!profile) return [];
+  const out = profile.catalog_slug !== undefined ? [profile.catalog_slug] : [];
+  for (const slug of Object.keys(profile.catalogs ?? {})) {
+    if (!out.includes(slug)) out.push(slug);
+  }
+  return out;
+};
+
+/** D-320 ruling 10 — whether a connection's profile serves `catalog_slug`. */
+export const profileServesCatalog = (
+  profile: ConnectionOperationProfile | null | undefined,
+  catalog_slug: string,
+): boolean => profileCatalogSlugs(profile).includes(catalog_slug);
+
+/** D-320 ruling 10 — the part of a connection's profile that grants
+ *  `catalog_slug`: that catalog's own entry, stamped with its slug, so the
+ *  catalog check and the grant check both read that catalog's set.
+ *
+ *  A profile serving one catalog, or a catalog this connection does not serve,
+ *  comes back unchanged, and its stamp then refuses a different catalog
+ *  (`catalog_mismatch`) exactly as before. `hasOwnProperty`-guarded: the slug is
+ *  the dispatched step's, and `'constructor'` must not resolve to a grant. */
+export const profileForCatalog = (
+  profile: ConnectionOperationProfile | null | undefined,
+  catalog_slug: string | undefined,
+): ConnectionOperationProfile | null | undefined => {
+  if (!profile || catalog_slug === undefined || profile.catalogs === undefined) return profile;
+  if (!Object.prototype.hasOwnProperty.call(profile.catalogs, catalog_slug)) return profile;
+  const grant = profile.catalogs[catalog_slug];
+  return grant === undefined ? profile : { ...grant, catalog_slug };
+};
 
 /** D-165 follow-on — one operation group's grant state for a connection, for
  *  the Settings → Connections grant UI. `granted` reflects the persisted
@@ -2981,7 +3056,10 @@ export const resolveCatalogOperationPolicy = (args: {
   resolveOperationPolicyAgainstSource({
     operations: args.operations,
     operation_id: args.operation_id,
-    source: args.profile ?? null,
+    // D-320 ruling 10 — a connection serving several catalogs is checked against
+    // the DISPATCHED catalog's own grant; one it does not serve keeps the stamp
+    // that refuses it.
+    source: profileForCatalog(args.profile, args.catalog_slug) ?? null,
     missing_deny_reason: 'no_connection_profile',
     ...(args.default_policy ? { default_policy: args.default_policy } : {}),
     ...(args.catalog_slug ? { catalog_slug: args.catalog_slug } : {}),

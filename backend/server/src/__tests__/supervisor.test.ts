@@ -56,7 +56,9 @@ describe('dev guidance messages', () => {
 
   it('returns a message for lock_held', () => {
     const msg = devSupervisor.guidanceFor?.('lock_held');
-    expect(msg).toMatch(/lock|data_path/i);
+    // Names the data folder, not `data_path` — a setting removed on 2026-10-09.
+    expect(msg).toMatch(/already owns this data folder/);
+    expect(msg).toContain('--db');
   });
 
   it('returns undefined for shutdown/crash (no user message needed)', () => {

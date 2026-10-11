@@ -20,6 +20,7 @@ import {
   CLI_GRANT_DIALOG_SKIP_BTN_ATTR,
   CLI_GRANT_DIALOG_STYLES,
   CLI_GRANT_DIALOG_TOOL_ATTR,
+  CLI_GRANT_DIALOG_TOOL_STATE_ATTR,
   mountCliGrantDialog,
   type CliGrantSetCaller,
   type CliGrantUniverseCaller,
@@ -27,6 +28,8 @@ import {
 import type {
   CliReachabilitySetRequest,
   CliToolGridEntry,
+  PackToolStatus,
+  PacksToolStatusResult,
 } from '@recued/contracts';
 
 // ── fake DOM (the shared webclient panel-test harness) ────
@@ -167,6 +170,7 @@ interface MountOpts {
   initialUniverse?: CliToolGridEntry[];
   universeThrows?: boolean;
   runSet?: CliGrantSetCaller;
+  runToolStatus?: () => Promise<PacksToolStatusResult>;
 }
 
 const mountFor = (opts: MountOpts = {}) => {
@@ -197,6 +201,7 @@ const mountFor = (opts: MountOpts = {}) => {
     document: doc as unknown as Document,
     runUniverse,
     runSet,
+    ...(opts.runToolStatus !== undefined ? { runToolStatus: opts.runToolStatus } : {}),
   });
 
   const setUniverse = (u: CliToolGridEntry[]): void => {
@@ -511,5 +516,133 @@ describe('D-182 §7.1 cli grant dialog — presentation contract', () => {
       '.cg-op:has(.cg-op-box:checked)',
     );
     expect(CLI_GRANT_DIALOG_STYLES).toContain('@media (max-width: 600px)');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// D-321 — each new tool says whether its program is installed
+// ════════════════════════════════════════════════════════════════════
+
+const collectByTag = (root: FakeEl, tag: string, out: FakeEl[] = []): FakeEl[] => {
+  if (root.tagName === tag) out.push(root);
+  for (const c of root.children) collectByTag(c, tag, out);
+  return out;
+};
+
+const program = (over: Partial<PackToolStatus>): PackToolStatus => ({
+  catalog: 'whisper',
+  binary: 'whisper',
+  state: 'missing',
+  install: ['pipx install openai-whisper'],
+  docs: ['https://github.com/openai/whisper'],
+  ...over,
+});
+
+const statusOf = (...tools: PackToolStatus[]): PacksToolStatusResult => ({
+  system: 'macos',
+  packs: [{ slug: 'whisper-pack', tools }],
+});
+
+/** Open the dialog for a freshly installed WHISPER, with `runToolStatus`. */
+const openWithStatus = async (runToolStatus: () => Promise<PacksToolStatusResult>) => {
+  const rig = mountFor({ runToolStatus });
+  rig.setUniverse([]);
+  const before = await rig.mount.snapshot();
+  rig.setUniverse([WHISPER]);
+  const closed = rig.mount.openForNewTools(before!);
+  await tick();
+  const stateLine = (): FakeEl | undefined => collectByAttr(rig.host, CLI_GRANT_DIALOG_TOOL_STATE_ATTR)[0];
+  return { ...rig, closed, stateLine };
+};
+
+describe('D-321 cli grant dialog — the program each new tool runs', () => {
+  it('a program that is not installed says so, with the command and the docs to install it', async () => {
+    const { stateLine, host, mount } = await openWithStatus(async () => statusOf(program({})));
+    expect(stateLine()?.getAttribute(CLI_GRANT_DIALOG_TOOL_STATE_ATTR)).toBe('missing');
+    expect(stateLine()?.textContent).toBe('Not installed. Its actions fail until you install it.');
+    expect(stateLine()?.getAttribute('data-tone')).toBe('danger');
+    const block = collectByAttr(host, CLI_GRANT_DIALOG_TOOL_ATTR)[0]!;
+    expect(collectByTag(block, 'CODE').map((c) => c.textContent)).toEqual(['pipx install openai-whisper']);
+    const link = collectByTag(block, 'A')[0]!;
+    expect(link.getAttribute('href')).toBe('https://github.com/openai/whisper');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    // The grants are offered exactly as before.
+    expect(mount.getDialogTools()).toEqual([{ tool: 'whisper', new_ops: ['transcribe'] }]);
+  });
+
+  it('a program at a tested version reads tested, with no install command', async () => {
+    const { stateLine, host } = await openWithStatus(async () => statusOf(program({
+      state: 'ready', version: '20250625', tested: { from: '20240930' }, outside: 'refuse', pack_outside: 'refuse',
+    })));
+    expect(stateLine()?.textContent).toBe('20250625 · tested');
+    expect(stateLine()?.hasAttribute('data-tone')).toBe(false);
+    expect(collectByTag(host, 'CODE')).toEqual([]);
+    expect(collectByTag(host, 'A')).toEqual([]);
+  });
+
+  it('under Warn, an untested version is not shown as an error: its actions run', async () => {
+    const { stateLine } = await openWithStatus(async () => statusOf(program({
+      state: 'untested', version: '2.0.1', tested: { from: '1.18.35', before: '2.0.0' }, outside: 'warn', pack_outside: 'refuse',
+    })));
+    expect(stateLine()?.textContent).toBe('2.0.1 · not tested. Its actions still run.');
+    expect(stateLine()?.hasAttribute('data-tone')).toBe(false);
+  });
+
+  it('another catalog\'s program is not this tool\'s', async () => {
+    const { stateLine } = await openWithStatus(async () => statusOf(program({ catalog: 'whisper-other' })));
+    expect(stateLine()).toBeUndefined();
+  });
+
+  it('a read that fails shows nothing, and the grants still go through', async () => {
+    const { stateLine, mount, recorded, closed } = await openWithStatus(async () => {
+      throw new Error('unknown_method');
+    });
+    expect(stateLine()).toBeUndefined();
+    mount.toggleOp('whisper', 'transcribe');
+    await mount.confirm();
+    await closed;
+    expect(recorded.map((r) => r.operation_id)).toEqual(['transcribe']);
+  });
+
+  it('a read that answers after the dialog closed changes nothing', async () => {
+    const late = deferred<PacksToolStatusResult>();
+    const { stateLine, mount, host } = await openWithStatus(() => late.promise);
+    expect(stateLine()).toBeUndefined();
+    mount.skip();
+    late.resolve(statusOf(program({})));
+    await tick();
+    expect(mount.isOpen()).toBe(false);
+    expect(collectByAttr(host, CLI_GRANT_DIALOG_TOOL_STATE_ATTR)).toEqual([]);
+  });
+
+  it('a read for a dialog a second install replaced does not overwrite the newer one', async () => {
+    const reads = [deferred<PacksToolStatusResult>(), deferred<PacksToolStatusResult>()];
+    let n = 0;
+    const rig = mountFor({ runToolStatus: () => reads[n++]!.promise });
+    rig.setUniverse([]);
+    const before = await rig.mount.snapshot();
+    rig.setUniverse([WHISPER]);
+    void rig.mount.openForNewTools(before!);
+    await tick();
+    // A second install replaces the dialog before the first read answers.
+    void rig.mount.openForNewTools(before!);
+    await tick();
+    reads[1]!.resolve(statusOf(program({ state: 'ready', version: '20250625', tested: { from: '20240930' }, outside: 'refuse', pack_outside: 'refuse' })));
+    await tick();
+    reads[0]!.resolve(statusOf(program({})));
+    await tick();
+    const states = collectByAttr(rig.host, CLI_GRANT_DIALOG_TOOL_STATE_ATTR);
+    expect(states.map((s) => s.getAttribute(CLI_GRANT_DIALOG_TOOL_STATE_ATTR))).toEqual(['ready']);
+  });
+
+  it('without the caller, the dialog shows the grants alone', async () => {
+    const rig = mountFor();
+    rig.setUniverse([]);
+    const before = await rig.mount.snapshot();
+    rig.setUniverse([WHISPER]);
+    void rig.mount.openForNewTools(before!);
+    await tick();
+    expect(rig.mount.isOpen()).toBe(true);
+    expect(collectByAttr(rig.host, CLI_GRANT_DIALOG_TOOL_STATE_ATTR)).toEqual([]);
   });
 });

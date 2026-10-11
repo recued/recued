@@ -22,7 +22,8 @@
  *  in the spec.
  */
 
-import { loadConfig, type LoadedConfig } from '@recued/config';
+// `BOOTSTRAP_KEYS` keeps the restart diff exhaustive: it is the parser's own list.
+import { BOOTSTRAP_KEYS, loadConfig, type LoadedConfig } from '@recued/config';
 import type {
   BootstrapConfig,
   Distribution,
@@ -93,17 +94,6 @@ export interface ConfigWatcher {
 }
 
 const noopLog: ConfigWatcherLogger = () => { /* silence */ };
-
-/** Keys in BootstrapConfig used by the diff. Refreshing this list when
- *  BootstrapConfig evolves keeps the diff exhaustive. */
-const BOOTSTRAP_KEYS: readonly (keyof BootstrapConfig)[] = [
-  'data_path',
-  'bind_host',
-  'bind_port',
-  'mcp_port',
-  'webhook_port',
-  'log_path',
-];
 
 export const createConfigWatcher = (
   deps: ConfigWatcherDeps,

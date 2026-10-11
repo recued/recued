@@ -49,6 +49,7 @@ export {
   recipeTriggers,
   recipeDisplayName,
   plural,
+  runConnectionLines,
 } from './model.js';
 
 export {
@@ -57,6 +58,7 @@ export {
   RUN_MODAL_ACTION_ATTR,
   RUN_MODAL_TAB_ATTR,
   RUN_MODAL_CONFIG_ATTR,
+  RUN_MODAL_CONNECTION_ATTR,
   RUN_MODAL_FACT_ATTR,
   RUN_MODAL_TARGET_ATTR,
   RUN_MODAL_TARGET_WARNING_ATTR,

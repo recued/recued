@@ -25,7 +25,7 @@
  *  - The path-router dispatches `/webclient` + `/webclient/*` requests
  *    on the LAN listener to the bundle handler BEFORE role lookup. The
  *    PUBLIC listener never serves the bundle — visitors hitting
- *    `<handle>.recued.cloud/webclient/...` get the dispatcher's generic
+ *    `<handle>.recued.net/webclient/...` get the dispatcher's generic
  *    404 (same shape as unknown paths; no fingerprint of the LAN-only
  *    mount).
  *  - LAN-only by structural design (path-router gates on

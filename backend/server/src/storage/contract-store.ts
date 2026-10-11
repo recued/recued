@@ -95,7 +95,9 @@ export interface ContractStore {
    *  throw rolls the whole batch back. Synchronous (better-sqlite3); `fn` must
    *  not await. Lets a multi-row write (e.g. pack inventory: installed_pack +
    *  N installed_ingredient rows) be all-or-nothing rather than leaving partial
-   *  state behind on a mid-batch failure. */
+   *  state behind on a mid-batch failure. Takes the write lock up front
+   *  (BEGIN IMMEDIATE), so it waits for another process's write rather than
+   *  failing on it. */
   transaction(fn: () => void): void;
 }
 
@@ -356,8 +358,17 @@ export const createContractStore = (
       seed();
     },
 
+    // ⛔ IMMEDIATE, NOT THE DRIVER'S DEFERRED DEFAULT. Every caller reads and then
+    // writes (`grandfatherPrimitiveGrants` scans, then writes its mark; the install
+    // and reconcile paths check, then put). A deferred transaction that has read
+    // cannot wait for the write lock: SQLite skips the busy handler on that
+    // upgrade, so while another process writes the realm (the server and each
+    // `recued --mcp` share it) it fails "database is locked" in 0-1 ms instead of
+    // waiting up to 5 s. That killed `--mcp` at startup (d-261-boot, 2026-10-09
+    // and -10). BEGIN IMMEDIATE takes the write lock first, through the busy
+    // handler. Nested inside another transaction it is a savepoint, as before.
     transaction(fn) {
-      db.transaction(fn)();
+      db.transaction(fn).immediate();
     },
   };
 };

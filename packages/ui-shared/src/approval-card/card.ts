@@ -28,7 +28,7 @@
  *
  *  Spec: D-169 § N.5 #4 / I-11 / I-12 / TR-9. */
 
-import { WRITE_STAYS_IN_RECUED_CLAUSE } from '@recued/contracts';
+import { WRITE_STAYS_IN_RECUED_CLAUSE, askDetailLabel, humanizeAskField } from '@recued/contracts';
 
 import { formatClientDateTime } from '../date-time.js';
 
@@ -351,19 +351,10 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
   };
 };
 
-const humanizeAskField = (key: string): string => {
-  const withoutMetadata = key.replace(/^metadata\./, '');
-  const words = withoutMetadata.replace(/[._-]+/g, ' ');
-  return words.charAt(0).toLocaleUpperCase() + words.slice(1);
-};
-
-/** The label a D-270 detail row is shown under, on every surface that shows one.
- *  A pack-declared label stands as written; the raw arg key a server falls back
- *  to is humanized. ⚠ ONLY an identifier-shaped label: humanizing splits on
- *  `[._-]`, which would mangle a real label like "e-mail" into "E mail". Shared
- *  so the Approvals card and the top-bar tray cannot name one value two ways. */
-export const askDetailLabel = (label: string): string =>
-  /^[a-z][a-z0-9._]*$/.test(label) ? humanizeAskField(label) : label;
+/** The label a D-270 detail row is shown under. It lives in contracts since the
+ *  server names fields inside a row's value with the same rule (the `Not set` and
+ *  `Empty` rows); re-exported so both cards keep importing it from here. */
+export { askDetailLabel };
 
 type AskOptionIntent = 'approve' | 'reject' | 'neutral';
 

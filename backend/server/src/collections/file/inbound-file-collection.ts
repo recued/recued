@@ -58,7 +58,12 @@ export type FileOrigin =
   // already content-addressed at finalize; a distinct origin keeps provenance +
   // the CAS sweep honest about owner-pushed uploads vs. the reception-drop
   // (`reception_drop`) open-visitor path that shares the same upload substrate.
-  | 'webclient_upload';
+  | 'webclient_upload'
+  // D-106 follow-up — a copy of a file in a folder Recued watches, made when the
+  // owner brought it into Chat from the Files tab (`folder-file-attachments.ts`).
+  // The owner's own file, from her own disk; later edits in the folder leave the
+  // copy alone.
+  | 'watched_folder';
 
 export type FileMediaClass = 'voice' | 'image' | 'document' | 'other';
 

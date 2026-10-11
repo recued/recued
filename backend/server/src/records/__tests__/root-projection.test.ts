@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   validateRecordsRootProjection,
+  validateRecordsRootProjectionNames,
   type RecordsExecutionBinding,
   type RecordsPackRef,
   type RecordsRootProjection,
@@ -324,5 +325,39 @@ describe('validateRecordsRootProjection — refused at install, not at read time
         { field: 'engagement_ref', entity: 'engagement' },
       ],
     })).toEqual([expect.stringContaining('at most 2 hops')]);
+  });
+
+  it("takes a name that can be one segment of a recipe path, and not the clash marker's keys", () => {
+    const named = (name: unknown) => check({
+      root: 'contact', via: [], key_field: 'task', select: { m: { fn: 'count' } }, name,
+    });
+    expect(named('pays')).toEqual([]);
+    expect(named('days_2')).toEqual([]);
+    for (const bad of ['Pays', 'owes you', 'owes.you', '2nd', '', 'a'.repeat(41), 'error', 'publishers', 7]) {
+      expect(named(bad)).toEqual([expect.stringContaining('.name: must be lower-case letters')]);
+    }
+  });
+});
+
+describe("validateRecordsRootProjectionNames — a pack's projections, taken together", () => {
+  const at = (index: number, projection: unknown) => ({ path: `roots[${String(index)}]`, projection });
+
+  it('lets a lone projection go unnamed', () => {
+    expect(validateRecordsRootProjectionNames([at(0, { root: 'contact' })])).toEqual([]);
+  });
+
+  it('⛔ requires a name on every projection once there are two, or recipes could not tell them apart', () => {
+    expect(validateRecordsRootProjectionNames([at(0, { name: 'owed' }), at(1, {})]))
+      .toEqual([expect.stringContaining('roots[1].name: required when a pack declares more than one')]);
+    expect(validateRecordsRootProjectionNames([at(0, {}), at(1, {})])).toHaveLength(2);
+  });
+
+  it('refuses two projections with one name', () => {
+    expect(validateRecordsRootProjectionNames([at(0, { name: 'pays' }), at(1, { name: 'pays' })]))
+      .toEqual(["roots[1].name: 'pays' already names roots[0]"]);
+  });
+
+  it('accepts several, each named differently', () => {
+    expect(validateRecordsRootProjectionNames([at(0, { name: 'owed' }), at(1, { name: 'pays' })])).toEqual([]);
   });
 });

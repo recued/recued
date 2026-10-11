@@ -16,7 +16,8 @@
  *
  *  ── Slice 1 scope (non-OAuth enrollment) ───────────────────────────
  *  Mail  → IMAP / SMTP (`collection.mail.enrollImap`)
- *  Files → Local folder `fs` + S3 bucket `s3` (`collection.file.enroll`)
+ *  Files → Local folder `fs` (`collection.file.enroll`); a bucket is
+ *          connected from Data → Files (the S3 provider left 2026-10-10)
  *  Calendar carries NO enrollable provider in the UI yet. Its non-OAuth
  *  path (CalDAV) is now wire-drivable after the 2a backend fix —
  *  `enrollBasic` takes `password` + `calendar_home_url` directly and
@@ -390,51 +391,6 @@ const FS_PROVIDER: AccountProvider = {
   }),
 };
 
-const S3_PROVIDER: AccountProvider = {
-  id: 's3',
-  label: 'S3 bucket',
-  description:
-    'Storage that works like Amazon S3: AWS S3, Cloudflare R2, Backblaze B2 or MinIO. You bring your own keys.',
-  transport: 'file-enroll',
-  fields: [
-    { key: 'slug', label: 'Name', type: 'identifier', placeholder: 'archive', help: 'Lowercase identifier for this source.' },
-    { key: 'bucket', label: 'Bucket', type: 'text', placeholder: 'my-bucket' },
-    { key: 'region', label: 'Region', type: 'text', placeholder: 'us-east-1' },
-    { key: 'access_key', label: 'Access Key ID', type: 'text' },
-    { key: 'secret_key', label: 'Secret Access Key', type: 'secret' },
-    {
-      key: 'endpoint',
-      label: 'Endpoint',
-      type: 'url',
-      optional: true,
-      placeholder: 'https://<account>.r2.cloudflarestorage.com',
-      help: 'Fill this in for R2, B2 or MinIO. Leave it empty for AWS S3.',
-    },
-    {
-      key: 'use_path_style',
-      label: 'Path-style URLs',
-      type: 'boolean',
-      optional: true,
-      default: 'true',
-      help:
-        'On to start with for R2, B2, MinIO and most others. '
-        + 'Only turn it off if yours specifically asks for the other style.',
-    },
-  ],
-  project: (v) => {
-    const config: Record<string, unknown> = {
-      access_key: (v['access_key'] ?? '').trim(),
-      secret_key: v['secret_key'] ?? '',
-      region: (v['region'] ?? '').trim(),
-      bucket: (v['bucket'] ?? '').trim(),
-    };
-    const endpoint = (v['endpoint'] ?? '').trim();
-    if (endpoint.length > 0) config['endpoint'] = endpoint;
-    if (!isBlank(v['use_path_style'])) config['use_path_style'] = v['use_path_style'] === 'true';
-    return { slug: (v['slug'] ?? '').trim(), adapter_type: 's3', config };
-  },
-};
-
 /** The lanes, in the locked top-split order. Mail + Files carry their
  *  Slice-1 non-OAuth providers; Calendar is enroll-pending. */
 /** Slug-only field for the calendar OAuth providers — the consent popup
@@ -563,13 +519,17 @@ export const ACCOUNT_LANES: readonly AccountLane[] = [
     id: 'file',
     label: 'Files',
     listTitle: 'File sources',
-    blurb: 'Recued can search approved folders and buckets for file tasks.',
+    blurb: 'Recued can search approved folders for file tasks.',
     emptyTitle: 'Add your first file source',
     emptyDescription:
-      'Make a local folder or S3-compatible bucket available to Recued when you need it.',
+      'Make a folder on the computer running your server available to Recued when you need it.',
     addLabel: 'Add file source',
-    providers: [FS_PROVIDER, S3_PROVIDER],
-    pending: 'Using Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files. Installed packs can add more provider actions.',
+    // ⛔ NO S3 HERE (2026-10-10). A bucket added in this lane was listed and its
+    // events dropped: no records, no search, a Files tab source that failed.
+    // Data → Files mirrors S3 and S3-compatible stores (endpoint, path style)
+    // with search, preview and download, so a bucket is connected there.
+    providers: [FS_PROVIDER],
+    pending: 'Using Amazon S3 or another S3-compatible store, Dropbox, Google Drive, Box, or OneDrive? Connect those from Data → Files. Installed packs can add more provider actions.',
   },
 ];
 
@@ -658,6 +618,10 @@ export interface AccountsDeleteConfirm {
   /** Provider label for the prompt title, resolved when the prompt opens (the
    *  row may leave `rows` while a delete is in flight). */
   providerLabel: string;
+  /** A folder on the server's machine (Files lane, `fs`). Its records mirror
+   *  the files on disk and go with it while the files stay, so its prompt says
+   *  that instead of the account copy. */
+  localFolder?: true;
   /** True once Remove is pressed — disables both buttons so a double-click
    *  cannot fire two deletes. */
   deleting: boolean;
@@ -1726,7 +1690,12 @@ export interface AccountsPanelProps {
  *  the server stops syncing and forgets the sign-in, but everything already
  *  pulled into the warehouse stays (`onDeleted` only stops the live collection —
  *  it does not drop the collection's table). Saying "this deletes your mail"
- *  would be a scarier lie; saying nothing leaves people guessing. */
+ *  would be a scarier lie; saying nothing leaves people guessing.
+ *
+ *  ⛔ A LOCAL FOLDER IS THE EXCEPTION (2026-10-10). Its records mirror the files
+ *  on disk, and removing it DROPS them (`watched-folders.ts` `drop`): kept, they
+ *  would answer searches for files Recued can no longer read. It has no sign-in
+ *  either. The account copy said both the opposite way. */
 const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
   const dc = state.deleteConfirm;
   if (dc === null) return '';
@@ -1736,10 +1705,15 @@ const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
            aria-label="Remove account ${e(dc.slug)}"
            data-accounts-delete-dialog tabindex="-1">
         <h3 class="accounts-delete-title">Remove ${e(dc.slug)}?</h3>
-        <p class="accounts-delete-body">
+        <p class="accounts-delete-body">${dc.localFolder
+          ? `
+          Recued stops watching this folder and removes what it recorded about
+          its files. The files stay in the folder, untouched. Adding the folder
+          again records them again.`
+          : `
           Recued stops syncing this ${e(dc.providerLabel)} account and forgets its
           sign-in. Everything already synced stays in your warehouse. Reconnecting
-          means signing in again.
+          means signing in again.`}
         </p>
         <div class="accounts-delete-actions">
           ${button({

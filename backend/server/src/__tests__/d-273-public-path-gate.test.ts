@@ -72,7 +72,7 @@ const get = async (base: string, path: string) => {
 
 /** The state a stock install actually boots with. */
 const stockExposure = () => deriveBootstrapDerivedExposureState({
-  webhook_port: 0,
+  webhooks_enabled: false,
   public_reachable: true,     // ⚠ the GENEROUS case: the port IS reachable
 }).resolution;
 

@@ -247,6 +247,7 @@ import type { PairedInstancesStore } from '../../paired-instances-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
+import { recipeConnectionChoices } from '../../recipe-connection-choices.js';
 import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
 import { createInstalledRecipeScheduler } from '../../schedule-installed-recipe.js';
 import {
@@ -768,6 +769,23 @@ export const composeChatOrchestrator = (
     // composes before the executor exists. A SECOND instance here would mean
     // the chat door could not see the runs the other doors registered.
     getInFlightRegistry: () => getExecuteDeps()?.inFlightRegistry,
+    // D-320 §3.5 — per catalog listing, the slots each recipe offers a choice of
+    // connection for (the recipe tools' `connections` argument). Late-bound like
+    // its neighbours; with no stores yet, no recipe offers one.
+    connectionChoices: () => {
+      const ex = getExecuteDeps();
+      const contractScan = ex?.contractScan;
+      const profiles = ex?.connectionOperationProfiles;
+      const manifests = getExecutorConfig()?.manifests;
+      if (contractScan === undefined || profiles === undefined || manifests === undefined) return () => [];
+      return recipeConnectionChoices({
+        contractScan,
+        manifests: { get: (slug) => manifests.get(slug) ?? null },
+        enrolled: new Set(profiles.list().map(([name]) => name)),
+        displayName: (name) => ex?.connectionStore?.get('api', name)?.display_name,
+        ...(ex?.packManifestOf !== undefined ? { packManifestOf: ex.packManifestOf } : {}),
+      });
+    },
     // D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound for the same
     // reason `getExecuteRecipe` is: this composes before the executor exists.
     // `dispatchRawOp` takes a Pick of the execute deps, so this is the same
@@ -886,6 +904,9 @@ export const composeChatOrchestrator = (
     // grant-unenforced (the admission gate's own degradation posture)
     // and EXTERNAL escalations refuse outright (fail closed).
     getOpAdmissionGate: () => getExecuteDeps()?.opAdmissionGate,
+    // D-320 audit — and the contract's connection axis, so a door scoped to some
+    // connections cannot escalate a read through another (late-bound, as above).
+    getContractOverlay: () => getExecuteDeps()?.contractOverlay,
   });
 
   // D-182 F2 — op-aware `requires_kinds`. Kernel closed-kind ops resolve inline in
@@ -937,6 +958,9 @@ export const composeChatOrchestrator = (
       chatToolRegistryInputs.tier2Source.listRecipes(),
       chatToolRegistryInputs.manifestLookup,
       opKindLookup,
+      true,
+      // The owner's own catalog: it names each slot's connections (D-320 ruling
+      // 12), and leaves "Send from" optional, since the owner's run fills it.
       true,
     ).filter((entry) => reachable(entry.name));
   };

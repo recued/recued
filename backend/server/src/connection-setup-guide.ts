@@ -44,7 +44,7 @@ export const CONNECTION_SETUP_GUIDE_FIELDS = {
   },
   display_name: {
     label: 'Display Name',
-    description: 'A human-readable label that distinguishes this account.',
+    description: 'A human-readable label that distinguishes this connection.',
   },
   'config.base_url': {
     label: 'Base URL',

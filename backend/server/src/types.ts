@@ -76,6 +76,12 @@ export interface ExecuteRequest {
    *  an ephemeral dish id is derived from the run id (manual-run
    *  attribution only; nothing persists). */
   dish_id?: string;
+  /** D-320 §3.5 — this run's own choice of connection, by slot (the connection
+   *  name a pack's catalog declares): `{ "hubspot": "<connection name>" }`. Wins
+   *  over the dish's choice and the pack's default, for this run only. A slot the
+   *  run does not sign in through, or a connection not on the pack's list for it,
+   *  refuses the run (`connection_choice_invalid`). See `run-connection-choice.ts`. */
+  connections?: Record<string, string>;
   /** Context namespace values (entity_id, page_url, etc.). */
   context?: Record<string, unknown>;
   /** How the execution was triggered (manual, scheduled, backfill, server_command). */
@@ -146,6 +152,17 @@ export interface InternalExecuteOverrides {
   auto_run_qualification?: import('@recued/contracts').Checkpoint['auto_run_qualification'];
   /** Authenticated external tool entry, never accepted from ExecuteRequest. */
   entry_tool_name?: string;
+  /** D-320 §3.5 — set ONLY by `localRecipeInvoker`: the calling run's settled
+   *  connection per slot. The called run takes it for each slot they share, so one
+   *  run's steps stay on one account; a slot it does not use is skipped. Internal,
+   *  so a wire caller's `connections` is always held to the stricter rule. */
+  inherited_connections?: Readonly<Record<string, string>>;
+  /** D-320 phase 3 (3b) — set ONLY by the webhook and public-form runners: their
+   *  recipe's main dish's choice of connection per slot, and its name. Their
+   *  `run_id` makes the run skip the main dish, so they pass its settings and this
+   *  themselves, as the door was derived from both (`settleDoorConnections`). Not
+   *  read on a resume, which carries the values its paused record holds. */
+  dish_connections?: { readonly choices: Readonly<Record<string, string>>; readonly label: string };
   /** D-221 watcher causality minted only by the durable Records outbox
    * runner. It never appears on ExecuteRequest, so recipe/client args cannot
    * reset a root, depth, or watcher identity. */

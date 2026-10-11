@@ -58,7 +58,6 @@ export type PostHousekeepingTailAppContext = Pick<
 export type PostHousekeepingTailCollectionContext = Pick<
   CollectionContext,
   | 'calendarStack'
-  | 'serviceStack'
   | 'supervisionStack'
 >;
 
@@ -268,7 +267,6 @@ export const startPostHousekeepingTail = (
     backgroundServices: options.backgroundServices,
     fileStack: storage.fileStack,
     calendarStack: options.collection.calendarStack,
-    serviceStack: options.collection.serviceStack,
     supervisionStack: options.collection.supervisionStack,
     cascade: options.cascade,
     server: options.server,

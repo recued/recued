@@ -37,7 +37,7 @@ import type {
 } from '@recued/contracts';
 // Same byte formatter the Records explorer uses — these are the same quota
 // ceilings, shown one screen earlier.
-import { formatPressureBytes, installRecipeRiskFromPreview } from '@recued/contracts';
+import { describeTestedRange, formatPressureBytes, installRecipeRiskFromPreview } from '@recued/contracts';
 import {
   ACCESS_LABEL,
   OWN_NEEDS_WHAT,
@@ -121,6 +121,12 @@ export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR =
   'data-recued-packs-dialog-owner-operation-review';
 export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR =
   'data-recued-packs-dialog-owner-operation-review-item';
+// D-321 — the programs whose handling outside their tested range an update
+// changes, because the owner's choice for them was made for the range it replaces.
+export const PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR =
+  'data-recued-packs-dialog-tool-version-review';
+export const PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR =
+  'data-recued-packs-dialog-tool-version-review-item';
 // The whole-pack operation diff an update shows: every removed, changed and
 // added operation, the owner's rules first.
 export const PACKS_DIALOG_OPERATION_DIFF_ATTR =
@@ -192,6 +198,13 @@ const DIALOG_COPY = {
     'This update changes things you have already set rules for. Your rules still apply everywhere afterwards.',
   owner_operation_review_removed:
     'If something is removed, your rule for it is kept but does nothing, unless it comes back.',
+  tool_version_review_heading: 'Programs this update changes',
+  tool_version_review_intro:
+    'You chose what happens when one of these programs is a version the pack was not tested with. That choice was for the versions it tests now.',
+  tool_version_review_refuse: (tool: string, range: string) =>
+    `${tool}: this update was tested with ${range}. An untested version will be refused, not run with a warning. To run it, choose Warn again on the pack's page.`,
+  tool_version_review_warn: (tool: string, range: string) =>
+    `${tool}: this update was tested with ${range}. An untested version will run with a warning, not be refused.`,
   records_review_heading: 'What happens to your records',
   operation_diff_heading: 'What this update changes in what the Pack can do',
   operation_diff_renames:
@@ -416,6 +429,9 @@ export interface InstallPreview {
   readonly resolved: boolean;
   readonly will_enable: readonly InstallPreviewRecipe[];
   readonly hidden_count: number;
+  /** D-320 slice 2j — the connections every other installed pack of its sign-in
+   *  lists: offered ticked beside "Will connect". Absent from a server without it. */
+  readonly shared_connections?: ReadonlyArray<{ readonly connection_name: string; readonly display_name: string }>;
   /** D-295 — the webhooks this install needs chosen. Absent from a server that
    *  cannot say; empty when none are needed. */
   readonly webhook_plan?: readonly PackWebhookPlanEntry[];
@@ -1146,7 +1162,7 @@ export interface PacksInstallDialogProps {
   /** The owner's picked connection name, or undefined = install without
    *  connecting (connect is optional — Model A). */
   chosenConnection: string | undefined;
-  /** Whether the Connect section's "Use a different account" list is expanded. */
+  /** Whether the Connect section's "Use a different connection" list is expanded. */
   connectExpanded: boolean;
   /** True while the install rpc is in flight (disables everything). */
   installing: boolean;
@@ -1166,6 +1182,10 @@ export interface PacksInstallDialogProps {
   onPickConnection(name: string | undefined): void;
   /** D-194 2b-2 — toggle the Connect section's collapsed/expanded reuse list. */
   onToggleConnectExpanded(): void;
+  /** D-320 slice 2j — the shared connections the owner unticked (the preview's
+   *  `shared_connections`), and the toggle. Absent ⇒ none unticked. */
+  alsoUnticked?: ReadonlySet<string>;
+  onToggleAlso?(connection_name: string): void;
   /** D-295 — the webhooks this install needs chosen (from the install preview).
    *  Absent ⇒ none to ask (or a server that cannot say). */
   webhookChoices?: readonly InstallWebhookChoice[];
@@ -1423,6 +1443,43 @@ export const renderPacksInstallDialog = (
     container.appendChild(review);
   }
 
+  // D-321 — a program the owner chose Warn or Refuse for, whose handling the
+  // update changes: the choice was made for the range the update replaces, and
+  // a Warn made for other versions lapses to the pack's default. Read-only, like
+  // the card above; the choice is made again on the pack's page.
+  const toolReview = pack.tool_version_review ?? [];
+  if (isUpdate && toolReview.length > 0) {
+    const review = doc.createElement('section');
+    review.setAttribute(PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR, '');
+    review.className = 'packs-dialog-tool-version-review';
+    review.setAttribute('role', 'region');
+    const reviewHeadingId = `packs-dialog-tool-version-review-${pack.slug}`;
+    review.setAttribute('aria-labelledby', reviewHeadingId);
+    const reviewHeading = doc.createElement('p');
+    reviewHeading.id = reviewHeadingId;
+    reviewHeading.className = 'packs-dialog-summary packs-dialog-tool-version-review-heading';
+    reviewHeading.textContent = DIALOG_COPY.tool_version_review_heading;
+    review.appendChild(reviewHeading);
+    const reviewIntro = doc.createElement('p');
+    reviewIntro.className = 'packs-dialog-tool-version-review-intro';
+    reviewIntro.textContent = DIALOG_COPY.tool_version_review_intro;
+    review.appendChild(reviewIntro);
+    const list = doc.createElement('ul');
+    list.className = 'packs-dialog-tool-version-review-list';
+    for (const item of toolReview) {
+      const row = doc.createElement('li');
+      row.setAttribute(PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR, item.ingredient_id);
+      row.setAttribute('data-outside-after', item.outside_after);
+      const range = describeTestedRange(item.tested);
+      row.textContent = item.outside_after === 'refuse'
+        ? DIALOG_COPY.tool_version_review_refuse(item.tool, range)
+        : DIALOG_COPY.tool_version_review_warn(item.tool, range);
+      list.appendChild(row);
+    }
+    review.appendChild(list);
+    container.appendChild(review);
+  }
+
   const recordsReview = pack.records_review;
   if (recordsReview !== undefined) {
     const review = doc.createElement('section');
@@ -1652,7 +1709,7 @@ export const renderPacksInstallDialog = (
   }
   container.appendChild(permList);
 
-  // D-194 2b-2 — the "Connect account" section for a pack that declares a
+  // D-194 2b-2 — the connection section for a pack that declares a
   // connection requirement (the interim seed — onedrive today). Sits just above
   // the {Access × Audience} grant picker: pick WHICH connection, then WHAT access it
   // gets. Connect is OPTIONAL (Model A) — this NEVER gates the Install button;
@@ -1669,6 +1726,12 @@ export const renderPacksInstallDialog = (
         disabled: installing,
         onPick: (name) => props.onPickConnection(name),
         onToggleExpanded: () => props.onToggleConnectExpanded(),
+        // D-320 slice 2j — the connections its sign-in shares, offered ticked.
+        ...(props.installPreview?.shared_connections !== undefined
+          ? { shared: props.installPreview.shared_connections }
+          : {}),
+        ...(props.alsoUnticked !== undefined ? { alsoUnticked: props.alsoUnticked } : {}),
+        ...(props.onToggleAlso !== undefined ? { onToggleAlso: (name: string) => props.onToggleAlso!(name) } : {}),
       }),
     );
   }

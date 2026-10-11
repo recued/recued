@@ -116,12 +116,19 @@ import type { ManifestRegistry } from '../manifest-loader.js';
 import {
   ingredientOwnership,
   buildPackOpResolution,
+  getInstalledPack,
   isIngredientPackOwned,
   isPrivateByoIngredient,
   packIngredientIds,
   recordPackInventory,
   recordStandaloneIngredient,
 } from '../pack-inventory.js';
+import {
+  addConnectionToPackList,
+  syncBorrowerToHolder,
+  syncBorrowersOf,
+} from '../pack-connection-borrowing.js';
+import { createPackConnectionHolderStore } from '../storage/pack-connection-holder-store.js';
 import type { RecipeStore } from '../recipe-store.js';
 import type { ContractStore } from '../storage/contract-store.js';
 import { createContractGrantStore } from '../storage/contract-grant-store.js';
@@ -129,7 +136,11 @@ import { createContractDefinitionStore } from '../storage/contract-definition-st
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 import { gateGrantGoverningContractId } from '../grant-governing-contract.js';
-import { createConnectionCatalogBindingStore } from '../storage/connection-catalog-binding-store.js';
+import {
+  createConnectionCatalogBindingStore,
+  type ConnectionCatalogBindingStore,
+} from '../storage/connection-catalog-binding-store.js';
+import { createPackConnectionDefaultStore } from '../storage/pack-connection-default-store.js';
 import type { LocalManifestStore } from './local-manifest-store.js';
 
 interface RecipeTrustWriter {
@@ -180,6 +191,10 @@ export interface ProvisionAuthoredDeps {
    *  the profile seeds on the next connect/boot (fail-closed until then, never
    *  over-granted). Never called for a connection-less composition. */
   reconcileConnectionProfile?: (connectionName: string) => void;
+  /** D-320 audit — whether a connection is set up, so a borrower's "Will connect"
+   *  joining its holder's list stores the default by the run's rule: a deleted
+   *  connection's dormant binding does not count (`addConnectionToPackList`). */
+  isConnectionSetUp?: (connection_name: string) => boolean;
   /** D-192 — post-commit register/unregister of the bound connection's
    *  pack-declared work-entity Sources (enroll-before-install; sibling of
    *  `reconcileConnectionProfile`). Omitted (dbless / no work-entity store) → the
@@ -208,6 +223,12 @@ export interface ProvisionAuthoredDeps {
  * installs MUST leave this absent: they replace the pack-owned authority rows
  * with the choices made in the current install review. */
 export interface ProvisionPackCompositionOptions {
+  /** D-320 slice 2j (ruling 16) — the accounts the pack's sign-in shares, which
+   *  a FIRST install puts on the pack's list beside the chosen connection (that
+   *  one stays the default). An update, or a pack that already holds a list,
+   *  keeps its list as it is. Checked by the install handler: still shared, and
+   *  never the chosen one. */
+  alsoConnections?: readonly string[];
   /** Preserve every existing grant, connection binding, and audience fan-out
    * row byte-for-byte while replacing only the pack body + the existing pack
    * row's version field. Used by the closed launch-reconciliation ledger; never
@@ -1334,15 +1355,41 @@ const writePackGrants = (
   deps: ProvisionAuthoredDeps,
   packSlug: string,
   defaultGrants: readonly PackOperationGroupContentRef[],
-  connection: string | undefined,
+  // D-320 slice 2b — every connection on the pack's list (`writeConnectionBinding`),
+  // so a connection the owner added keeps its grants through an update.
+  connections: readonly string[],
 ): void => {
   const grantStore = createContractGrantStore(deps.contractStore);
   // Drop this pack's prior grants first (reinstall = replace, not append).
   grantStore.removePackGroups(packSlug);
-  if (connection === undefined) return;
-  for (const grant of defaultGrants) {
-    grantStore.grantPackGroup(packSlug, grant.ingredient_id, connection, grant.group_id);
+  for (const connection of connections) {
+    for (const grant of defaultGrants) {
+      grantStore.grantPackGroup(packSlug, grant.ingredient_id, connection, grant.group_id);
+    }
   }
+};
+
+/** D-320 slice 2b — the connections an install grants its pack's groups on: the
+ *  pack's list, or, when the binding was refused (an MCP connection another pack
+ *  holds), the one connection it named, as before. */
+const grantConnectionsFor = (
+  listed: readonly string[],
+  connection: string | undefined,
+): readonly string[] => (listed.length > 0 ? listed : connection !== undefined ? [connection] : []);
+
+/** D-320 slice 2b — the connection the owner CHOSE at install becomes the pack's
+ *  default for its slot (spec §5, "Install"), when the pack is bound to it. An
+ *  authored name nobody chose writes none: one connection on a list is the default
+ *  by itself. */
+const writeConnectionDefault = (
+  deps: ProvisionAuthoredDeps,
+  packSlug: string,
+  slot: string | undefined,
+  chosen: string | undefined,
+  listed: readonly string[],
+): void => {
+  if (slot === undefined || chosen === undefined || !listed.includes(chosen)) return;
+  createPackConnectionDefaultStore(deps.contractStore).set(packSlug, slot, chosen);
 };
 
 export const customerTierByContractForInstallAudience = (
@@ -1629,37 +1676,77 @@ const applyInstallOpAdmissionFanOut = (
  *  composition catalog connection resolves to its catalog for the operation-profile
  *  seed + the grant gate (a local catalog has no `config.vendor` to resolve through,
  *  and the composition's `auth.connection` is lost when it decomposes to a
- *  connection-agnostic catalog). `catalogSlug` is the decomposed catalog's slug;
- *  `connection` is the composition's `auth.connection`.
+ *  connection-agnostic catalog). `catalog` is the decomposed catalog;
+ *  `connection` is the composition's `auth.connection`, or the owner's choice.
  *
- *  Clean REPLACE (mirrors `writePackGrants`): drop this pack's prior binding first,
- *  so a reinstall that renamed `auth.connection` doesn't strand the old connection's
- *  binding. Runs INSIDE the caller's commit transaction (same db), so the binding
- *  commits atomically with the body + inventory + grants. No binding is recorded for
- *  a connection-less composition (a cli_delegated artifact has no connection to bind);
- *  the catalog still installs, it just isn't gateway-dispatchable until bound. */
+ *  Clean REPLACE (mirrors `writePackGrants`): this pack's other bindings go, so a
+ *  reinstall that renamed `auth.connection` doesn't strand the old connection's
+ *  binding — EXCEPT an update onto a connection already on the pack's list, which
+ *  keeps the whole list (D-320 slice 2b). A binding it keeps is not rewritten, so it
+ *  keeps its place in the connection's order (the first-bound catalog is the one
+ *  readers that know one catalog per connection see). Returns the pack's list: the
+ *  connections its catalog is bound to afterwards. Runs INSIDE the caller's commit transaction (same db),
+ *  so the binding commits atomically with the body + inventory + grants. No binding is
+ *  recorded for a connection-less composition (a cli_delegated artifact has no
+ *  connection to bind); the catalog still installs, it just isn't gateway-dispatchable
+ *  until bound. */
 const writeConnectionBinding = (
   deps: ProvisionAuthoredDeps,
   packSlug: string,
-  catalogSlug: string,
+  catalog: IngredientManifest,
   connection: string | undefined,
-): void => {
+  // D-320 — the slot the binding serves (`PreparedComposedPack.connectionSlot`),
+  // recorded on the row because the decomposed catalog no longer carries it.
+  slot?: string,
+): string[] => {
+  const catalogSlug = catalog.slug;
   const bindingStore = createConnectionCatalogBindingStore(deps.contractStore);
-  bindingStore.removeForPack(packSlug);
-  if (connection === undefined) return;
-  // One catalog per connection (the ConnectionOperationProfile carries a SINGLE
-  // catalog_slug stamp). After dropping THIS pack's prior binding above, a binding
-  // that still names this connection is owned by ANOTHER pack — don't clobber it
-  // (that would hijack the connection + corrupt the other pack's uninstall). The
-  // other pack's binding wins; this composition's catalog stays non-dispatchable on
-  // that connection (fail-closed) until the conflict is resolved.
-  const existing = bindingStore.list().find((b) => b.connection_name === connection);
-  // ⛔⛔ UNLESS THE INCUMBENT IS THE MACHINE'S OWN MIRROR, WHICH IT ALWAYS IS FOR
-  // AN MCP CONNECTION — AND THAT MADE THE SLOT UNREACHABLE TO EVERY AUTHORED
-  // PACK. D-225 auto-mint installs a GENERATED pack the moment an mcp connection
+  const mine = bindingStore.list().filter((b) => b.installed_pack_id === packSlug);
+  // ⛔ D-320 slice 2b — AN UPDATE KEEPS THE PACK'S LIST. When the install's
+  // connection is already one the pack is bound to (an update starts from the
+  // pack's default, `currentPackConnection`), every connection on the list stays,
+  // rebound to the catalog's new slug if a reinstall renamed it. Otherwise — a first
+  // install, or a reinstall onto a connection not on the list (an authored name that
+  // moved) — the list is that one connection, as before. It was always replaced, so
+  // an update dropped every connection the owner had added.
+  const keepList = connection !== undefined && mine.some((b) => b.connection_name === connection);
+  const targets = keepList
+    ? [...new Set(mine.map((b) => b.connection_name))]
+    : connection !== undefined ? [connection] : [];
+  for (const binding of mine) {
+    if (binding.catalog_slug === catalogSlug && targets.includes(binding.connection_name)) continue;
+    bindingStore.unbind(binding.connection_name, binding.catalog_slug);
+  }
+  for (const target of targets) bindOne(deps, bindingStore, packSlug, catalog, target, slot);
+  return bindingStore.list()
+    .filter((b) => b.installed_pack_id === packSlug && b.catalog_slug === catalogSlug)
+    .map((b) => b.connection_name);
+};
+
+/** Bind `connection` to this pack's catalog, under the rules for a connection that
+ *  other packs' catalogs are bound to as well. */
+const bindOne = (
+  deps: ProvisionAuthoredDeps,
+  bindingStore: ConnectionCatalogBindingStore,
+  packSlug: string,
+  catalog: IngredientManifest,
+  connection: string,
+  slot?: string,
+): void => {
+  const catalogSlug = catalog.slug;
+  const bound = bindingStore.list().filter((b) => b.connection_name === connection);
+  // The connection already serves this catalog for another pack that shares it
+  // (refcount sharing): leave that pack's row, which it removes at its uninstall.
+  if (bound.some((b) => b.catalog_slug === catalogSlug && b.installed_pack_id !== packSlug)) return;
+  const manifestOf = (slug: string): IngredientManifest | null =>
+    deps.registry.get(slug) ?? deps.localManifestStore.getManifest(slug);
+  let others = bound.filter((b) => b.catalog_slug !== catalogSlug);
+  // ⛔⛔ A GENERATED MIRROR YIELDS FIRST. It is the incumbent of every MCP
+  // connection, and it made the slot unreachable to every authored pack.
+  // D-225 auto-mint installs a GENERATED pack the moment an mcp connection
   // is enrolled, and that pack takes the connection's single catalog slot. Every
   // authored composition bound to the same connection afterwards therefore hit
-  // the guard above, logged this warning, and stayed permanently
+  // the no-clobber guard below, logged its warning, and stayed permanently
   // non-dispatchable — `catalog_mismatch` on every op, for a pack the owner
   // deliberately installed and pointed at that connection.
   //
@@ -1680,30 +1767,172 @@ const writeConnectionBinding = (
   // duplicate the authored ones — but an owner who enrolled a third-party MCP
   // server for its tools AND installed an authored pack against the same
   // connection loses the generated half until they uninstall the authored pack.
-  // One catalog per connection is the model; this only decides which one, and it
-  // decides it by provenance rather than by which happened to be installed first.
-  const incumbentIsGenerated = existing !== undefined
-    && existing.catalog_slug === existing.installed_pack_id
-    && deps.registry.get(existing.catalog_slug)?.author === GENERATED_PACK_PUBLISHER;
-  if (existing && existing.installed_pack_id !== packSlug && !incumbentIsGenerated) {
-    console.warn(
-      `[d-170.gap2] connection '${connection}' is already bound to catalog `
-        + `'${existing.catalog_slug}' by pack '${existing.installed_pack_id}'; not rebinding `
-        + `for pack '${packSlug}' (one catalog per connection)`,
-    );
-    return;
-  }
-  if (incumbentIsGenerated && existing !== undefined) {
+  // For MCP, one catalog per connection is the model; this decides which one, by
+  // provenance rather than by which happened to be installed first.
+  const isGenerated = (b: { catalog_slug: string; installed_pack_id: string }): boolean =>
+    b.catalog_slug === b.installed_pack_id
+    && deps.registry.get(b.catalog_slug)?.author === GENERATED_PACK_PUBLISHER;
+  for (const mirror of others.filter(isGenerated)) {
+    bindingStore.unbind(mirror.connection_name, mirror.catalog_slug);
     // ⚠ SAY IT, because a silent takeover of a slot is exactly the kind of thing
     // an owner later has to reconstruct from behaviour. The generated pack stays
     // INSTALLED — only its claim on this connection yields.
     console.warn(
       `[d-170.gap2] connection '${connection}' was bound to the GENERATED catalog `
-        + `'${existing.catalog_slug}'; yielding it to authored pack '${packSlug}' `
+        + `'${mirror.catalog_slug}'; yielding it to pack '${packSlug}' `
         + '(an owner-installed declaration outranks the machine-minted mirror)',
     );
   }
-  bindingStore.bind(connection, catalogSlug, packSlug);
+  others = others.filter((b) => !isGenerated(b));
+  // ⛔ D-320 ruling 10 — SEVERAL HTTP CATALOGS SHARE A CONNECTION. Each is checked
+  // against its own operations at the gateway (`profileForCatalog`), so one pack's
+  // grant never satisfies another's colliding short key, and every request still goes
+  // to the CONNECTION's own `base_url` (`connection-api.ts`), never to an address a
+  // pack declares. It was one catalog per connection, so a family's packs (the Wise
+  // suite: seven catalogs, one sign-in) ran only the first to bind.
+  // ⚠ The decomposer gives an MCP catalog an `api` surface too, so the TRANSPORT
+  // tells them apart (REST and GraphQL share; MCP does not).
+  const isHttp = (manifest: IngredientManifest | null): boolean => {
+    const api = manifest?.surfaces?.api;
+    return api !== undefined && api.transport !== 'mcp';
+  };
+  if (isHttp(catalog) && others.every((b) => isHttp(manifestOf(b.catalog_slug)))) {
+    bindingStore.bind(connection, catalogSlug, packSlug, slot);
+    return;
+  }
+  // MCP catalogs keep one per connection: the catalog IS that peer's served tool
+  // list (D-232). A binding that still names this connection is owned by ANOTHER
+  // pack — don't clobber it (that would hijack the connection + corrupt the other
+  // pack's uninstall). The other pack's binding wins; this composition's catalog
+  // stays non-dispatchable on that connection (fail-closed) until the conflict is
+  // resolved.
+  const existing = others[0];
+  if (existing !== undefined) {
+    console.warn(
+      `[d-170.gap2] connection '${connection}' is already bound to catalog `
+        + `'${existing.catalog_slug}' by pack '${existing.installed_pack_id}'; not rebinding `
+        + `for pack '${packSlug}' (one MCP catalog per connection)`,
+    );
+    return;
+  }
+  bindingStore.bind(connection, catalogSlug, packSlug, slot);
+};
+
+/** D-320 ruling 9 — the pack whose connections this manifest signs in through:
+ *  the first `connection_requirements[].from_pack`, or undefined. */
+const connectionHolderOf = (manifest: Record<string, unknown>): string | undefined => {
+  const requirements = manifest.connection_requirements;
+  if (!Array.isArray(requirements)) return undefined;
+  for (const requirement of requirements) {
+    const holder = requirement !== null && typeof requirement === 'object'
+      ? (requirement as { from_pack?: unknown }).from_pack
+      : undefined;
+    if (typeof holder === 'string' && holder.length > 0) return holder;
+  }
+  return undefined;
+};
+
+/** An installed pack's catalogs that a connection serves (an HTTP or MCP
+ *  surface), read from its inventory. */
+const packConnectionCatalogs = (deps: ProvisionAuthoredDeps, pack: string): string[] =>
+  packIngredientIds(deps.contractStore, pack).filter((id) => {
+    const manifest = deps.registry.get(id) ?? deps.localManifestStore.getManifest(id);
+    return manifest?.surfaces?.api !== undefined;
+  });
+
+/** D-320 — write the connections an install binds this pack's catalog to, its
+ *  grants on them and its default. Returns connections it bound or unbound
+ *  beyond this pack's own (a holder's list, the packs borrowing this one), which
+ *  the caller re-derives profiles for after the commit.
+ *  - A pack naming `from_pack` (ruling 9) signs in through its holder: the
+ *    connection the owner chose joins the HOLDER's list, and this pack's catalog
+ *    is bound to that whole list and no other. It stores no default; a run reads
+ *    the holder's. A holder not installed (it is a dependency, so it was
+ *    installed first) leaves the pack holding its own, as before.
+ *  - A pack holding its own binds as before; then every pack that borrows its
+ *    sign-in follows its new list.
+ *  Runs INSIDE the caller's commit transaction. */
+const writePackConnections = (
+  deps: ProvisionAuthoredDeps,
+  p: {
+    packSlug: string;
+    body: IngredientManifest;
+    grantConnection: string | undefined;
+    connectionSlot: string | undefined;
+    connectionHolder: string | undefined;
+    chosenConnection: string | undefined;
+    grantWriteSet: readonly PackOperationGroupContentRef[];
+    alsoConnections?: readonly string[];
+  },
+): string[] => {
+  const touched = new Set<string>();
+  const holders = createPackConnectionHolderStore(deps.contractStore);
+  const catalogsOf = (pack: string): string[] => packConnectionCatalogs(deps, pack);
+  const holder = p.connectionHolder;
+  if (
+    holder !== undefined
+    && holder !== p.packSlug
+    && getInstalledPack(deps.contractStore, holder) !== null
+  ) {
+    holders.set(p.packSlug, holder, p.connectionSlot);
+    // The pack no longer keeps a list or a default of its own.
+    createPackConnectionDefaultStore(deps.contractStore).removeForPack(p.packSlug);
+    const bindings = createConnectionCatalogBindingStore(deps.contractStore);
+    for (const binding of bindings.list()) {
+      if (binding.installed_pack_id === p.packSlug && binding.catalog_slug !== p.body.slug) {
+        bindings.unbind(binding.connection_name, binding.catalog_slug);
+        touched.add(binding.connection_name);
+      }
+    }
+    // "Will connect: X" for a borrowing pack puts X on the holder's list.
+    if (
+      p.chosenConnection !== undefined
+      && p.grantConnection === p.chosenConnection
+      && p.connectionSlot !== undefined
+      && addConnectionToPackList(
+        deps.contractStore, holder, catalogsOf(holder), p.connectionSlot, p.chosenConnection, deps.isConnectionSetUp,
+      )
+    ) {
+      touched.add(p.chosenConnection);
+      for (const name of syncBorrowersOf(deps.contractStore, holder, catalogsOf)) touched.add(name);
+    }
+    for (const name of syncBorrowerToHolder(deps.contractStore, p.packSlug, holder, [p.body.slug], p.connectionSlot)) {
+      touched.add(name);
+    }
+    const listed = bindings.list()
+      .filter((b) => b.installed_pack_id === p.packSlug && b.catalog_slug === p.body.slug)
+      .map((b) => b.connection_name);
+    for (const name of listed) touched.add(name);
+    writePackGrants(deps, p.packSlug, p.grantWriteSet, listed);
+    return [...touched];
+  }
+  holders.remove(p.packSlug);
+  // D-320 slice 2j — whether the pack held no list before: only then does it take
+  // the accounts its sign-in shares (an update keeps the list it has).
+  const firstList = !createConnectionCatalogBindingStore(deps.contractStore).list()
+    .some((binding) => binding.installed_pack_id === p.packSlug);
+  const listed = writeConnectionBinding(deps, p.packSlug, p.body, p.grantConnection, p.connectionSlot);
+  writePackGrants(deps, p.packSlug, p.grantWriteSet, grantConnectionsFor(listed, p.grantConnection));
+  writeConnectionDefault(deps, p.packSlug, p.connectionSlot, p.chosenConnection, listed);
+  if (
+    firstList
+    && p.chosenConnection !== undefined
+    && listed.includes(p.chosenConnection)
+    && p.connectionSlot !== undefined
+  ) {
+    // Bound beside the chosen one, its grants mirrored onto them; the chosen one
+    // stays the default.
+    for (const also of p.alsoConnections ?? []) {
+      if (also === p.chosenConnection) continue;
+      if (addConnectionToPackList(
+        deps.contractStore, p.packSlug, catalogsOf(p.packSlug), p.connectionSlot, also, deps.isConnectionSetUp,
+      )) {
+        touched.add(also);
+      }
+    }
+  }
+  for (const name of syncBorrowersOf(deps.contractStore, p.packSlug, catalogsOf)) touched.add(name);
+  return [...touched];
 };
 
 /** D-170 gap #2 live-reconcile — the connection names whose operation profile must be
@@ -1998,6 +2227,13 @@ interface PreparedComposedPack {
    *  target in the grant disclosure message. `undefined` for a cli_delegated /
    *  connection-less composition. */
   grantConnection: string | undefined;
+  /** D-320 — the slot the composition signs in to: the connection name its catalog
+   *  declares (`http.connection`), before an owner's choice re-sources it. Keys the
+   *  pack's stored default (`pack_connection_default`). */
+  connectionSlot: string | undefined;
+  /** D-320 ruling 9 — the pack this one signs in through (`connection_requirements[]
+   *  .from_pack`), or undefined when it holds its own connections. */
+  connectionHolder: string | undefined;
   /** The composition's operation families — the resolver matches a canonical
    *  op's `<entity>.<verb>` against these (+ reads a per-op `result_path`) when
    *  rewriting op-step recipes at install (slice 2). */
@@ -2206,6 +2442,8 @@ const prepareComposedPack = (
       // D-194 step 3a — re-source from the owner's chosen connection when the
       // composition binds one; else the authored `auth.connection` literal.
       grantConnection: reSourceGrantConnection(compositionConnectionName(composition), chosenConnection),
+      connectionSlot: compositionConnectionName(composition),
+      connectionHolder: connectionHolderOf(manifest),
       operationFamilies: operationFamiliesFromCatalog(body),
       recipes: decomposed.recipes ?? [],
       publisher,
@@ -2231,7 +2469,8 @@ const provisionPack = (
   if (!prep.ok) return prep.result;
   const {
     body, entitySchemas, bodyVersion, packSlug, packVersion, priorIds, issues,
-    nonCompositionContents, authoredGroupIds, grantConnection, operationFamilies, recipes, publisher,
+    nonCompositionContents, authoredGroupIds, grantConnection, connectionSlot, connectionHolder,
+    operationFamilies, recipes, publisher,
   } = prep.prepared;
   // D-182 §7.1 — the grants to WRITE (replaces the silent derived read-tier
   // auto-grant): the pack's authored read/`ask` defaults (always) + the install
@@ -2287,6 +2526,9 @@ const provisionPack = (
   // this pack's bindings (so a reinstall that moved auth.connection also drops the old
   // connection's profile, not just seeds the new one).
   const reconcileTargets = connectionsToReconcileForInstall(deps, packSlug, grantConnection);
+  // D-320 — connections the commit bound or unbound beyond this pack's own: a
+  // holder's list a borrower joined, or the packs borrowing this one's sign-in.
+  const touchedConnections: string[] = [];
 
   try {
     commit(deps, body, entitySchemas, () => {
@@ -2306,8 +2548,9 @@ const provisionPack = (
       // Pack-owned grants + the connection→catalog binding commit atomically with
       // the inventory (same db + txn). The binding makes the local catalog resolvable
       // at dispatch + grantable (D-170 gap #2).
-      writePackGrants(deps, packSlug, grantWriteSet, grantConnection);
-      writeConnectionBinding(deps, packSlug, body.slug, grantConnection);
+      touchedConnections.push(...writePackConnections(deps, {
+        packSlug, body, grantConnection, connectionSlot, connectionHolder, chosenConnection, grantWriteSet,
+      }));
       // D-182 §7.2 / D-196 — per-door op-admission fan-out (REPLACE semantics:
       // always clears this pack's prior fan-out rows, writes new ones only for
       // non-owner scopes on a connection-backed pack). Same txn as the (A) write.
@@ -2326,11 +2569,15 @@ const provisionPack = (
   // (commit() registers after its txn). (Re)derive each target's profile NOW: the bound
   // connection seeds (connect-BEFORE-install dispatch works at once), a connection a
   // reinstall displaced drops (its binding is gone → fail-closed delete).
-  for (const name of reconcileTargets) deps.reconcileConnectionProfile?.(name);
+  for (const name of new Set([...reconcileTargets, ...touchedConnections])) {
+    deps.reconcileConnectionProfile?.(name);
+  }
   // D-192 — same targets, same moment: register the bound connection's
   // pack-declared work-entity Sources now (or unregister on a reinstall that
   // displaced it), instead of at the next upsert / restart.
-  for (const name of reconcileTargets) deps.reconcileWorkEntitySources?.(name);
+  for (const name of new Set([...reconcileTargets, ...touchedConnections])) {
+    deps.reconcileWorkEntitySources?.(name);
+  }
 
   return {
     ok: true,
@@ -2406,7 +2653,8 @@ export const provisionPackCompositionForBulkInstall = (
   if (!prep.ok) return prep.result;
   const {
     body, entitySchemas, bodyVersion, packSlug, packVersion, priorIds, issues,
-    authoredGroupIds, grantConnection, operationFamilies, recipes, publisher,
+    authoredGroupIds, grantConnection, connectionSlot, connectionHolder, operationFamilies, recipes,
+    publisher,
   } = prep.prepared;
   // D-182 §7.1 — the grants to WRITE (see `provisionPack`). The boot / bulk path
   // typically passes NO `installScope` ⇒ authored read/`ask` defaults only (the
@@ -2471,6 +2719,9 @@ export const provisionPackCompositionForBulkInstall = (
   const reconcileTargets = options.preserveExistingAuthority
     ? []
     : connectionsToReconcileForInstall(deps, packSlug, grantConnection);
+  // D-320 — connections the commit bound or unbound beyond this pack's own: a
+  // holder's list a borrower joined, or the packs borrowing this one's sign-in.
+  const touchedConnections: string[] = [];
 
   const assertExpectedInstalledState = (): void => {
     const expected = preservingState;
@@ -2532,9 +2783,12 @@ export const provisionPackCompositionForBulkInstall = (
         // inventory. The bulk result carries no `warnings` field, so (unlike
         // `provisionPack`) there's no effectiveness note — the rows are written the
         // same way, and the packs.install handler no longer discloses them as deferred.
-        writePackGrants(deps, packSlug, grantWriteSet, grantConnection);
-        // D-170 gap #2 — the connection→catalog binding (resolvable + grantable).
-        writeConnectionBinding(deps, packSlug, body.slug, grantConnection);
+        // D-170 gap #2 — the connection→catalog binding (resolvable + grantable),
+        // then the grants on every connection on the pack's list (D-320 slice 2b).
+        touchedConnections.push(...writePackConnections(deps, {
+          packSlug, body, grantConnection, connectionSlot, connectionHolder, chosenConnection, grantWriteSet,
+          ...(options.alsoConnections !== undefined ? { alsoConnections: options.alsoConnections } : {}),
+        }));
         // D-182 §7.2 / D-196 — per-door op-admission fan-out (REPLACE; see
         // `provisionPack`). Same txn; writes only for non-owner scopes on
         // connection-backed packs.
@@ -2560,11 +2814,15 @@ export const provisionPackCompositionForBulkInstall = (
 
   // D-170 gap #2 live-reconcile — same as `provisionPack`: post-commit, seed the bound
   // connection + drop any connection a reinstall displaced (binding gone → fail-closed).
-  for (const name of reconcileTargets) deps.reconcileConnectionProfile?.(name);
+  for (const name of new Set([...reconcileTargets, ...touchedConnections])) {
+    deps.reconcileConnectionProfile?.(name);
+  }
   // D-192 — same targets, same moment: register the bound connection's
   // pack-declared work-entity Sources now (or unregister on a reinstall that
   // displaced it), instead of at the next upsert / restart.
-  for (const name of reconcileTargets) deps.reconcileWorkEntitySources?.(name);
+  for (const name of new Set([...reconcileTargets, ...touchedConnections])) {
+    deps.reconcileWorkEntitySources?.(name);
+  }
 
   // The bulk path installs the pack's recipes through the engine, and the
   // packs.install RESULT surface (`BulkPackInstallResultLike`) has NO `warnings`

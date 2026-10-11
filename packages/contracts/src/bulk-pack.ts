@@ -1173,6 +1173,10 @@ export interface PackListEntry {
    * this incoming pack version. Present only for an update and only when at
    * least one changed/removed overridden operation needs review. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** D-321 — the programs whose handling outside their tested range this update
+   *  changes, because the owner's choice for them was made for the range the
+   *  pack declares now. Present only for an update, and only when one changes. */
+  tool_version_review?: ReadonlyArray<import('./owner-tool-version.js').ToolVersionUpdateReviewItem>;
   /** What the update does to EVERY operation of the pack — removed, changed,
    *  added, with the owner's rule where they set one. Present only for an
    *  update whose installed operations the server could read. */
@@ -1290,6 +1294,14 @@ export interface PackListEntry {
   pack_kind?: string;
   connection_requirements?: ConnectionRequirement[];
   connection_hints?: ConnectionHint[];
+  /** Per connection slot, the scopes the pack's operations declare
+   *  (`requiredScopesByConnection(manifest)`), lifted for the connections page:
+   *  its "Used by packs" coverage, and the enroll form's scope pre-fill and slot
+   *  discovery. Omitted when no operation declares a scope, as for most packs;
+   *  a vendor pack's is a few hundred bytes. Those three read `manifest` off
+   *  this list until `b06752cc9` cut it, and read nothing from then on: "Used
+   *  by packs" rendered nothing for any connection (found 2026-10-09). */
+  required_scopes_by_connection?: Readonly<Record<string, readonly string[]>>;
 }
 
 /** One installed pack's identity + version, read from the `installed_pack`
@@ -1362,6 +1374,8 @@ export interface PacksResolveResult {
   /** D-211 Slice 5 — same pre-update review projection as `PackListEntry`, for
    * marketplace manifests resolved by slug before install acceptance. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** Same as `PackListEntry.tool_version_review`. */
+  tool_version_review?: ReadonlyArray<import('./owner-tool-version.js').ToolVersionUpdateReviewItem>;
   /** Same whole-pack operation diff as `PackListEntry.operation_diff`. */
   operation_diff?: import('./owner-operation-override.js').PackOperationUpdateDiff;
   /** Same as `PackListEntry.current_access`. */
@@ -2163,6 +2177,26 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         const path = `connection_requirements[${idx}]`;
         for (const msg of validateConnectionRequirementShape(entry)) {
           add('error', 'pack_connection_requirement_invalid', path, msg);
+        }
+        // D-320 ruling 9 / 11 — a pack that signs in through another pack's
+        // connections must depend on that pack, so installing it installs the
+        // holder, and must not name itself.
+        const fromPack = entry !== null && typeof entry === 'object'
+          ? (entry as { from_pack?: unknown }).from_pack
+          : undefined;
+        if (typeof fromPack === 'string') {
+          const dependsOn = Array.isArray(obj.dependencies)
+            && obj.dependencies.some((d: unknown) =>
+              d !== null && typeof d === 'object'
+              && (d as { type?: unknown }).type === 'pack'
+              && (d as { slug?: unknown }).slug === fromPack);
+          if (fromPack === obj.slug) {
+            add('error', 'pack_connection_requirement_invalid', `${path}.from_pack`,
+              'from_pack names the pack itself; a pack holds its own connections by naming no from_pack');
+          } else if (!dependsOn) {
+            add('error', 'pack_connection_requirement_invalid', `${path}.from_pack`,
+              `from_pack '${fromPack}' must also be listed in dependencies, so installing this pack installs it`);
+          }
         }
       });
     }

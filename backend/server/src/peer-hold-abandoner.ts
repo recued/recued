@@ -50,6 +50,7 @@ import type { Dish, RecipeError } from '@recued/contracts';
 import type { PeerAskOutboxRow, PeerAskOutboxStore } from './storage/peer-ask-outbox-store.js';
 import type { PeerAnswerRecord, PeerAnswerStore } from './storage/peer-answer-store.js';
 import type { GatedActionStore } from './gated-action-store.js';
+import { carriedFromPausedRun } from './execution/paused-run-carry.js';
 import { settleLocallyEndedPeerDeliveryReceipt } from './peer-ask-delivery-recovery.js';
 
 /** Durable ownership marker for the local, terminal abandon transition. It is
@@ -185,14 +186,9 @@ const buildAbandonEntry = (
     instance_id: anchor.instance_id ?? null,
     run_id: row.run_id,
     now: nowMs,
-    ...(anchor.dish_id !== undefined ? { dish_id: anchor.dish_id } : {}),
-    ...(anchor.recipe_insight_id !== undefined
-      ? { recipe_insight_id: anchor.recipe_insight_id }
-      : {}),
-    ...(anchor.process_id ? { process_id: anchor.process_id } : {}),
-    ...(anchor.run_mode ? { run_mode: anchor.run_mode } : {}),
-    ...(anchor.execution_source ? { execution_source: anchor.execution_source } : {}),
-    ...(anchor.correlation_id ? { correlation_id: anchor.correlation_id } : {}),
+    // This record replaces the paused one: keep what links the run and what it
+    // did before it paused.
+    ...carriedFromPausedRun(anchor),
   });
 };
 

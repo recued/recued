@@ -17,7 +17,7 @@ const mkCall = (slug: string, input: Record<string, unknown>) => ({
   manifest_version: 1,
 });
 
-describe('Phase 12 — collection (mail/file/webhook) stamping', () => {
+describe('Phase 12 — collection (mail/file) stamping', () => {
   it('email-list stamps each record with _id=record_id and _collection=mail', async () => {
     let captured: unknown;
     const adapter = createKernelAdapter({
@@ -104,20 +104,6 @@ describe('Phase 12 — collection (mail/file/webhook) stamping', () => {
     };
     expect(res.records[0]._collection).toBe('file');
     expect(res.records[0]._id).toBe('f-1');
-  });
-
-  it('webhook-list stamps records with _collection=webhook', async () => {
-    const adapter = createKernelAdapter({
-      collectionList: async () => ({
-        records: [
-          { record_id: 'w-1', received_at: 0, modified_at: 0, hot_fields: {}, size_bytes: 0, source_id: 'req-1' },
-        ],
-      }),
-    });
-    const res = (await adapter(mkCall('webhook-list', { slug: 'github' }))) as {
-      records: { _collection: string }[];
-    };
-    expect(res.records[0]._collection).toBe('webhook');
   });
 
   it('email-get stamps the single record', async () => {

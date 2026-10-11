@@ -57,6 +57,21 @@ describe('contactRollupChips — one contact, one row of chips', () => {
     ]);
   });
 
+  it("⛔ a grouped projection is one chip per group, each under its group's label, never summed", () => {
+    // `invoice-book` answers once per currency (2026-10-09). The server puts the
+    // currency in each label, so this renders it with no knowledge of `group`.
+    expect(contactRollupChips([
+      chip({ label: 'Owes you · GBP', group: { by: 'currency', key: 'GBP' } }),
+      chip({
+        label: 'Owes you · USD', group: { by: 'currency', key: 'USD' },
+        value: { open_invoices: 1, outstanding: '1200.0000' },
+      }),
+    ])).toEqual([
+      { label: 'Owes you · GBP', text: 'open invoices 2 · outstanding 6912.3000', complete: true },
+      { label: 'Owes you · USD', text: 'open invoices 1 · outstanding 1200.0000', complete: true },
+    ]);
+  });
+
   it('falls back to the pack slug when no label was declared', () => {
     const { label, ...rest } = chip();
     expect(contactRollupChips([rest as TimelineRollup])[0]!.label).toBe('invoice-book');
@@ -88,6 +103,15 @@ describe('contactRollupChips — one contact, one row of chips', () => {
     expect(contactRollupChips([chip({
       value: { open_invoices: 2, outstanding: '0.0000', oldest_due: null },
     })])[0]!.text).toBe('open invoices 2');
+  });
+
+  it('an average shows two places, and a whole number or a negative one shows as sent', () => {
+    // A Records `avg` over numbers is the bare division: 10 / 3 days late.
+    expect(contactRollupChips([chip({
+      label: 'Pays', value: { settled: 3, usual_days_late: 10 / 3, worst_days_late: 7 },
+    })])[0]!.text).toBe('settled 3 · usual days late 3.33 · worst days late 7');
+    expect(contactRollupChips([chip({ label: 'Pays', value: { usual_days_late: -1.5 } })])[0]!.text)
+      .toBe('usual days late -1.5');
   });
 
   it('two packs are two chips, in the order the server sent them', () => {

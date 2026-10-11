@@ -390,19 +390,31 @@ const sellerCustomersIndexDdl = (): string => `
  *  older convergers do not carry: the live table must not hold a column the
  *  emitter lacks (a rebuild would silently DROP that column's data — refuse
  *  and let a human look), and the indexes are recreated in the same
- *  transaction rather than on the next boot. */
+ *  transaction rather than on the next boot.
+ *
+ *  ⛔ `declared` IS PER TABLE: the values THIS table's CHECKs name. It was one
+ *  list for both tables (lifecycle sources + access states) from `b8d33345d`
+ *  (2026-09-03) to 2026-10-10, and `seller_tiers` has no access-state CHECK, so
+ *  its SQL never named `'active'` and the "missing" test passed on every call:
+ *  `seller_tiers` was copied, dropped and renamed each time a seller store was
+ *  built, twice per process start, in the server and in every `recued --mcp`.
+ *
+ *  ⛔ The rebuild runs BEGIN IMMEDIATE. Deferred, its first statement (a no-op
+ *  `DROP TABLE IF EXISTS`) took only a read lock, so the CREATE after it was an
+ *  upgrade, which SQLite does not wait for: "database is locked" in 0-1 ms
+ *  whenever another process was writing the realm. */
 const convergeLifecycleSourceTable = (
   db: Database.Database,
   table: string,
   createDdl: (name: string) => string,
   indexDdl: () => string,
+  declared: readonly string[],
 ): void => {
   const existing = db
     .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get(table) as { sql: string } | undefined;
   // Absent: the CREATE just emitted it from the current consts. Nothing to do.
   if (existing === undefined) return;
-  const declared = [...SELLER_LIFECYCLE_SOURCES, ...SELLER_ACCESS_STATES];
   const missing = declared.some((member) => !existing.sql.includes(`'${member}'`));
   // A CHECK compiled under an older list may still ADMIT a member the
   // vocabulary has since retired; narrow it too, so the store refuses what the
@@ -447,7 +459,7 @@ const convergeLifecycleSourceTable = (
     db.exec(`DROP TABLE ${table}`);
     db.exec(`ALTER TABLE ${rebuildTable} RENAME TO ${table}`);
     db.exec(indexDdl());
-  })();
+  }).immediate();
 };
 
 export const ensureSellerSchema = (db: Database.Database): void => {
@@ -590,12 +602,19 @@ export const ensureSellerSchema = (db: Database.Database): void => {
 
   convergeSellerOffersSchema(db);
   convergeSellerOrdersSchema(db);
-  convergeLifecycleSourceTable(db, SELLER_TIERS_TABLE, sellerTiersCreateDdl, sellerTiersIndexDdl);
+  convergeLifecycleSourceTable(
+    db,
+    SELLER_TIERS_TABLE,
+    sellerTiersCreateDdl,
+    sellerTiersIndexDdl,
+    SELLER_LIFECYCLE_SOURCES,
+  );
   convergeLifecycleSourceTable(
     db,
     SELLER_CUSTOMERS_TABLE,
     sellerCustomersCreateDdl,
     sellerCustomersIndexDdl,
+    [...SELLER_LIFECYCLE_SOURCES, ...SELLER_ACCESS_STATES],
   );
 };
 

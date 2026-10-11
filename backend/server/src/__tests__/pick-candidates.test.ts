@@ -422,7 +422,12 @@ describe('unboundConcreteConnectionSlots', () => {
   it('finds an empty connection setting behind a catalog fetch, with its catalogs and operations', () => {
     const recipe = concrete([fetch('a__raw', 'contact.search'), fetch('b__raw', 'deal.search'), fetch('c__raw', 'contact.search')]);
     expect(unboundConcreteConnectionSlots(recipe, {})).toEqual([
-      { variable: 'crm', catalogs: [HUBSPOT_CATALOG], operations: ['contact.search', 'deal.search'] },
+      {
+        variable: 'crm',
+        catalogs: [HUBSPOT_CATALOG],
+        operations: ['contact.search', 'deal.search'],
+        operations_by_catalog: { [HUBSPOT_CATALOG]: ['contact.search', 'deal.search'] },
+      },
     ]);
     // Whitespace only is still empty.
     expect(unboundConcreteConnectionSlots(recipe, { crm: '  ' })).toHaveLength(1);
@@ -474,10 +479,44 @@ describe('concreteSlotCandidates', () => {
     ]);
   });
 
-  it('offers nothing for a slot whose steps fetch from two catalogs', () => {
+  it('offers nothing when a connection does not serve every catalog the slot fetches from', () => {
     const profiles = store([
       ['hs', { allowed_operations: ['contact.search'], catalog_slug: HUBSPOT_CATALOG }],
     ]);
     expect(concreteSlotCandidates(slot([HUBSPOT_CATALOG, SALESFORCE_CATALOG], ['contact.search']), profiles)).toEqual([]);
+  });
+
+  it('D-320 ruling 10 — offers a connection serving every catalog of the slot, each checked against its own grant', () => {
+    // `create-transfer-draft-wise` fetches from four Wise catalogs on one connection;
+    // two are enough to show it. `quote.quote_get` is a short key BOTH catalogs could
+    // declare, so it must be granted by the catalog the step fetches from.
+    const wise = {
+      variable: 'wise',
+      catalogs: ['wise-core', 'wise-quotes'],
+      operations: ['profile.profile_get', 'quote.quote_get'],
+      operations_by_catalog: { 'wise-core': ['profile.profile_get'], 'wise-quotes': ['quote.quote_get'] },
+    };
+    const profiles = store([
+      ['business', {
+        allowed_operations: ['profile.profile_get'],
+        catalog_slug: 'wise-core',
+        catalogs: {
+          'wise-core': { allowed_operations: ['profile.profile_get'] },
+          'wise-quotes': { allowed_operations: ['quote.quote_get'] },
+        },
+      }],
+      ['core-only', { allowed_operations: ['profile.profile_get', 'quote.quote_get'], catalog_slug: 'wise-core' }],
+      ['crossed', {
+        allowed_operations: ['profile.profile_get', 'quote.quote_get'],
+        catalog_slug: 'wise-core',
+        catalogs: {
+          'wise-core': { allowed_operations: ['profile.profile_get', 'quote.quote_get'] },
+          'wise-quotes': { allowed_operations: ['quote.quote_create'] },
+        },
+      }],
+    ]);
+    expect(concreteSlotCandidates(wise, profiles)).toEqual([
+      { connection_name: 'business', catalog_slug: 'wise-core' },
+    ]);
   });
 });

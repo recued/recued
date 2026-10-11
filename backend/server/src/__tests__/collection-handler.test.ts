@@ -102,10 +102,10 @@ beforeEach(() => {
 
 describe('platform / slug validation', () => {
   it('rejects a missing or unserved platform', async () => {
-    // `service` is a real CollectionPlatform type but NOT served by the generic
-    // collection rpc (it has its own `collection.service.*` family) — the gate
-    // rejects it. (`calendar` used to be the example here; D-198 promoted it to
-    // a served platform, so it moved to the positive test below.)
+    // `service` is not a platform any more (the D-118 installer was retired,
+    // D-321 § 5.4); the gate rejects it like any platform it does not serve.
+    // (`calendar` used to be the example here; D-198 promoted it to a served
+    // platform, so it moved to the positive test below.)
     await expect(
       handleCollectionList(deps, { platform: 'service', slug: 'work' }),
     ).rejects.toMatchObject({ code: 'bad_request' });
@@ -359,10 +359,10 @@ describe('handleCollectionListEndpoints', () => {
       ...stubCollection('file', 'broken'),
       health: () => { throw new Error('sensor down'); },
     });
-    registry.register(stubCollection('webhook', 'github'));
+    registry.register(stubCollection('calendar', 'personal'));
     const res = await handleCollectionListEndpoints(deps);
     expect(res.endpoints.map((e) => `${e.platform}:${e.slug}`)).toEqual([
-      'mail:work', 'webhook:github',
+      'mail:work', 'calendar:personal',
     ]);
   });
 });
@@ -376,7 +376,7 @@ describe('makeCollectionHandlers', () => {
     expect(makeCollectionHandlers(undefined)).toBeUndefined();
   });
 
-  it('declares every method name (D-118 Phase 10 follow-up adds listTemplates + lifecycle)', () => {
+  it('declares every method name', () => {
     const slice = makeCollectionHandlers(deps);
     expect(slice?.methods.slice().sort()).toEqual([
       // D-118 mail-setup "Also connect Calendar" (5c3f8c832) — adopts the
@@ -421,18 +421,6 @@ describe('makeCollectionHandlers', () => {
       // cross-store ranks are not comparable). The owner's non-AI path to their
       // own warehouse — until this, searching across it meant asking the AI.
       'collection.searchAll',
-      'collection.service.clear_crash',
-      'collection.service.delete',
-      'collection.service.enroll',
-      'collection.service.install',
-      'collection.service.list',
-      'collection.service.listTemplates',
-      'collection.service.restart',
-      'collection.service.start',
-      'collection.service.stop',
-      'collection.service.uninstall',
-      'collection.service.update',
-      'collection.service.upgrade',
       // sorts after every `collection.*` (d > c). Added by `ae6277f1` but the
       // expected list was not updated — this suite had been red since.
       'data.mirror.search',

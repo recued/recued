@@ -7,6 +7,135 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.11 — 2026-10-11
+
+Webhooks work again. From 26.10.6, every webhook delivery to a shipped workflow
+was refused at its first step and dropped. A delivery, or a step waiting for
+your approval, now also survives a change to its pack's connections. A pack now
+holds the connections it signs in with: give it more than one, choose its
+default, and let one dish or one run use another. A program a pack runs, such
+as a coding agent, is checked against the versions the pack was tested with,
+and the pack's page says how to install it. Files in a folder Recued watches
+show in search, in the Files tab and in Chat, and Chat can send an email with
+files attached.
+
+⚠ The Invoice Book update needs this release. A server on 26.10.9 or older
+refuses it, so update the server first.
+
+⚠ A part payment recorded with Invoice Book before this release was saved as a
+payment its invoice never counted, and retrying it saved it twice. Updating
+does not correct those invoices.
+
+⚠ `--data-path`, `--db-path`, `--host`, `--bind-host` and `--mcp-port` are now
+refused. They never did anything: the server ignored them and opened its usual
+database. A config file that sets one of the settings removed in this release
+still starts, with a warning naming what decides it now.
+
+⚠ An AI key saved with `recued llm set-slot` on a paired server was stored
+without the server's own encryption, though inside the encrypted database. It
+keeps working; set it again to encrypt it.
+
+### Added
+
+- **A pack holds its connections.** A pack can sign in with more than one
+  connection and has a default. On the pack's Access tab you can add one, make
+  one the default or remove one, and Remove first says where the pack's runs
+  will go. The Connections page shows a grid for each service with two or more
+  connections, and a new connection asks which packs may use it. A dish, or a
+  single run, can use another connection from the pack's list.
+- **Packs of one service share their sign-in.** The Azure DevOps, Deel,
+  GoCardless, Stripe and Wise packs sign in through their family's core pack,
+  and installing one installs the core pack too. One connection can now serve
+  several packs of the same service: the Wise packs installed on a connection
+  you had named yourself ran almost nothing.
+- **The programs a pack runs.** A pack that runs a command-line program can say
+  which versions it was tested with and how to install the program. Recued
+  checks the version before each action, and outside the tested range it either
+  refuses or runs with a warning, as you choose on the pack's page. The pack
+  list shows a program that is missing or untested, and the pack's page shows
+  the commands to install it. The Codex, Claude Code, Pi and OpenCode packs
+  declare theirs.
+- **Files in a watched folder are searchable.** A folder you connect is now
+  indexed: its files show in search and in the Files tab, which previews them,
+  and Chat can find and read them. You can bring one into Chat as a copy.
+- **Chat can send an email with files attached,** once you approve it. With one
+  mailbox that can send, Chat uses it without asking.
+- **Invoice Book** records how late each invoice was paid, shows what a client
+  owes in each currency, and adds "Pays", "Buys" and "Billed" to the contact.
+- **Statement Import** keeps each account's balance as the bank last printed it.
+  An import that AI runs now asks you twice: for the file, then for the balance.
+
+### Changed
+
+- **The approval card** names the files an action would send, reads a list as
+  its values, and gathers the empty fields onto one line.
+- **HubSpot.** Checking a Service Key reads which scopes it has, so a pack's
+  page names any that are missing and tells you to add them to the key and press
+  Probe. The Service Key guide asks for every scope the HubSpot pack uses, and
+  the app guide says that a new HubSpot app needs a paid HubSpot plan.
+- **S3 buckets** are connected from Data → Files, which searches and previews
+  them. Connections → Files offers a local folder.
+- **`webhook_port` is now `webhooks_enabled`,** the on/off switch it always
+  was. The old name still works.
+- **Settings that did nothing are removed:** four startup settings
+  (`data_path`, `log_path`, `bind_host`, `mcp_port`) and 23 runtime settings.
+- **`recued --help`** lists `serve`, `doctor`, `update`, `archive` and
+  `--token`, and names where the database lives by default.
+
+### Fixed
+
+- **Webhook deliveries to shipped workflows run.** Each was refused at its first
+  step and dropped, so a Stripe refund never closed its record and a Home
+  Assistant camera alert never fired. On its first start this release brings
+  out-of-date webhook and public-form permissions up to date; a public form
+  that needs more asks you to set it up again. A webhook workflow that changes
+  your data, such as revoking access after a refund, asks for your approval.
+- **A webhook delivery survives a change to its pack's connections.** Changing
+  them replaced the webhook's permission and cancelled a delivery in progress,
+  or one waiting for your approval. Both now carry on under the new permission.
+  A webhook whose access you revoked, or a step you declined, stays that way.
+- **`collection.webhook.public_reachable` turns webhooks on.** The Docker and
+  Homebrew instructions named it, and nothing read it.
+- **The Exposure page offers Public** once the server has an outside address.
+  It refused every Public choice on every server.
+- **Steps that call a pack without naming a connection run.** 83 such steps,
+  in 35 shipped workflows, were refused; they now use the pack's connection.
+- **`recued --mcp` no longer fails to start with "database is locked"** while
+  the server is writing.
+- **Live updates.** A web app and a server that knew different kinds of live
+  event, such as an older server or a web app cached from before an update, got
+  no live updates at all. Now only the kind one side does not know is skipped.
+- **"Run as" another dish** ran with the main dish's settings. It runs as the
+  dish you chose.
+- **Invoice Book** dates invoices and payments by your clock, not the server's
+  (a VPS runs on UTC), and a part payment works. Each one failed after saving
+  the payment.
+- **`recued llm`** reads the AI keys of a paired server and encrypts a key you
+  set. It could not read them, and stored a new one unencrypted.
+- **A refusal is reported as a refusal,** not as a network error, so automation
+  stops instead of retrying, and the message says what happened.
+- **A command-line action runs the installed program,** never a copy in the
+  folder it works in, which an empty or relative PATH entry, or the working
+  folder on Windows, let it pick.
+- **HubSpot.** The notes, tasks and meetings operations ask for scopes HubSpot
+  has. A connection's "Used by packs", the scope pre-fill and pack suggestions
+  show again; they had been blank since September.
+- **Media uploads with the X pack** work. They failed on every server since late
+  July.
+- **The Reachability Doctor** checks your handle at its real address, under
+  `.recued.net`. It asked about `.recued.cloud`, which the check refuses.
+- **A server holding a pre-approval** no longer spends many seconds of CPU at
+  every start re-checking it.
+
+### Removed
+
+- **The `/webhook/<name>` address and the Data page's Webhook deliveries tab.**
+  Nothing could create such a webhook, so every request answered 404 and the tab
+  was always empty. Webhooks are set up under Connections → Webhooks.
+- **The service installer,** which nothing could reach. A pack that declares a
+  service is refused.
+- **DDNS and TLS integrations** that nothing ran.
+
 ## 26.10.9 — 2026-10-09
 
 Pi and OpenCode join Codex and Claude Code. Each has a pack, and the Issue

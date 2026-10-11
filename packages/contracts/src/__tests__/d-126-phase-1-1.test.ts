@@ -7,8 +7,7 @@
  *      rules including the "ai/chat are read-only" + "dom/storage are
  *      local-only" + "mcp excludes destructive" invariants).
  *    - `IngredientManifest.kind` is now a required field, narrowed to
- *      `IngredientKind`, and `isServiceManifest` still routes only on
- *      `kind === 'service'` (D-118 carve-out preserved).
+ *      `IngredientKind`; D-118's `service` kind is gone (D-321 § 5.5).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,7 +15,6 @@ import { describe, it, expect } from 'vitest';
 import {
   INGREDIENT_KINDS,
   KIND_ALLOWED_TIERS,
-  isServiceManifest,
   type IngredientKind,
   type IngredientManifest,
   type RiskTier,
@@ -28,16 +26,16 @@ const ALL_KINDS: readonly IngredientKind[] = [
   'ai',
   'chat',
   'mcp',
-  'service',
   'storage',
   'connection',
   'cli',
 ] as const;
 
 describe('IngredientKind taxonomy', () => {
-  it('INGREDIENT_KINDS contains exactly nine members', () => {
-    // D-182 F2 — `cli` graduated into IngredientKind (8 → 9).
-    expect(INGREDIENT_KINDS.size).toBe(9);
+  it('INGREDIENT_KINDS contains exactly eight members', () => {
+    // D-182 F2 — `cli` graduated into IngredientKind (8 → 9); D-321 § 5.5
+    // retired `service` with its installer (9 → 8).
+    expect(INGREDIENT_KINDS.size).toBe(8);
   });
 
   it('INGREDIENT_KINDS contains every declared kind', () => {
@@ -110,9 +108,9 @@ describe('KIND_ALLOWED_TIERS', () => {
     expect(tiers.has('destructive')).toBe(false);
   });
 
-  it('http + service + connection allow the full RiskTier range', () => {
+  it('http + connection allow the full RiskTier range', () => {
     const allTiers: readonly RiskTier[] = ['read', 'write', 'admin', 'destructive'];
-    for (const kind of ['http', 'service', 'connection'] as const) {
+    for (const kind of ['http', 'connection'] as const) {
       const tiers = KIND_ALLOWED_TIERS[kind];
       for (const tier of allTiers) expect(tiers.has(tier)).toBe(true);
     }
@@ -139,15 +137,7 @@ describe('IngredientManifest.kind required field', () => {
     expect(INGREDIENT_KINDS.has(manifest.kind)).toBe(true);
   });
 
-  it('isServiceManifest narrows to kind === "service" only', () => {
-    const service: Pick<IngredientManifest, 'kind'> = { kind: 'service' };
-    const http: Pick<IngredientManifest, 'kind'> = { kind: 'http' };
-    const storage: Pick<IngredientManifest, 'kind'> = { kind: 'storage' };
-    expect(isServiceManifest(service)).toBe(true);
-    expect(isServiceManifest(http)).toBe(false);
-    expect(isServiceManifest(storage)).toBe(false);
-    expect(isServiceManifest(null)).toBe(false);
-    expect(isServiceManifest(undefined)).toBe(false);
-    expect(isServiceManifest({})).toBe(false);
+  it('the retired `service` kind is not a member (D-321 § 5.5)', () => {
+    expect(INGREDIENT_KINDS.has('service' as IngredientKind)).toBe(false);
   });
 });

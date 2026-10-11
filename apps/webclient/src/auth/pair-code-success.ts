@@ -629,7 +629,7 @@ const finalizePairCodeSuccessLocked = async (
   //    has no transaction primitive.
   //
   //    Codex 2026-05-28 HIGH #2 symmetric fold — mirrors the bridge's
-  //    HIGH #2 fix in [[apps/bridge/src/popup/pair-completion]]
+  //    HIGH #2 fix in [[apps/bridge/src/pairing/pair-completion]]
   //    (commit `bf7aab2a`). `webclient_token` writes LAST so the
   //    bootstrap's `hydratePairState` strict discriminant
   //    (`server_url` + `server_public_key` + `webclient_token` all

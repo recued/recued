@@ -36,6 +36,7 @@ import {
   type SellerInstallAudienceStore,
 } from './ingredient-authoring/install-composition.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
+import { createPackConnectionDefaultStore } from './storage/pack-connection-default-store.js';
 import { createContractDefinitionStore } from './storage/contract-definition-store.js';
 import type { ContractStore } from './storage/contract-store.js';
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
@@ -110,19 +111,36 @@ export const currentPackAudience = (input: {
  *  one vendor was silently moved to the other, and one whose pick another pack
  *  already held was left UNBOUND.
  *
- *  `undefined` when the pack binds no connection, or more than one: the dialog
- *  picks ONE connection, and guessing which binding it means would be exactly
- *  the silent move this exists to stop. */
+ *  With more than one connection on the pack's list (D-320), it is the pack's
+ *  stored default, which an update keeps the whole list around
+ *  (`writeConnectionBinding`). `undefined` when the pack binds no connection, or
+ *  several with no stored default among them: the dialog picks ONE connection, and
+ *  guessing which binding it means would be exactly the silent move this exists to
+ *  stop.
+ *
+ *  With `isSetUp`, it is the run's own rule (`execute-handler.ts`,
+ *  `packConnectionFor`): only connections that are set up count. ⛔ A deleted
+ *  connection's binding stays, dormant (re-enrolling the name restores it, D-320
+ *  slice 2h). Counted, a list of it and one other named no connection while every
+ *  run went to the other, and an update then fell back to the pack's authored name
+ *  and replaced the list with it. Without `isSetUp` every binding counts, for a
+ *  caller that cannot tell. */
 export const currentPackConnection = (
   contractStore: ContractStore,
   packSlug: string,
+  isSetUp?: (connection_name: string) => boolean,
 ): string | undefined => {
   const bound = new Set(
     createConnectionCatalogBindingStore(contractStore).list()
-      .filter((binding) => binding.installed_pack_id === packSlug)
+      .filter((binding) => binding.installed_pack_id === packSlug
+        && (isSetUp === undefined || isSetUp(binding.connection_name)))
       .map((binding) => binding.connection_name),
   );
-  return bound.size === 1 ? [...bound][0] : undefined;
+  if (bound.size === 1) return [...bound][0];
+  const defaults = createPackConnectionDefaultStore(contractStore).forPack(packSlug)
+    .map((row) => row.connection_name)
+    .filter((name) => bound.has(name));
+  return defaults.length === 1 ? defaults[0] : undefined;
 };
 
 /** D-294 — where a generated MCP pack's RE-review starts: the Access it holds now and who may

@@ -70,6 +70,8 @@ export const RESERVED_DATA_SUBNAMESPACES: ReadonlySet<string> = new Set([
   'contact',
   'file',
   'shared',
+  // Retired 2026-10-10 with D-118's installer (D-321 § 5.5). It stays reserved
+  // so a stale `data.service.*` reference never resolves to a vendor alias.
   'service',
   'crm',
   'task',

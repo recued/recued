@@ -43,6 +43,7 @@ import type {
   RunGatewayCallTraceEntry,
   RunOrigin,
   RunProvenanceLink,
+  RunUntestedTool,
   RunYield,
   SessionGrantListRequest,
   SessionGrantListResponse,
@@ -52,10 +53,12 @@ import type {
 import {
   ACTORS,
   RUN_ANCHOR_STATUSES,
+  describeTestedRange,
   isCliFailureDetail,
   parseTimelineEntityId,
   runYieldIsTotalRefusal,
 } from '@recued/contracts';
+import { programDisplayName } from '../settings/pack-programs-controls.js';
 
 import {
   REFERENCE_PROVENANCE_STYLES,
@@ -110,6 +113,8 @@ export const LOGS_ROUTE_DEGRADED_ATTR = 'data-recued-logs-degraded';
  *  inspecting the DOM) can tell an all-refused run from a partial one without
  *  parsing the sentence. */
 export const LOGS_ROUTE_YIELD_ATTR = 'data-recued-logs-yield';
+/** D-321 — on each "ran under Warn at an untested version" note: the program. */
+export const LOGS_ROUTE_UNTESTED_TOOL_ATTR = 'data-recued-logs-untested-tool';
 export const LOGS_ROUTE_REDACTED_IO_ATTR = 'data-recued-logs-redacted-io';
 export const LOGS_ROUTE_LOAD_MORE_ATTR = 'data-recued-logs-load-more';
 export const LOGS_ROUTE_ERROR_ATTR = 'data-recued-logs-error';
@@ -1021,6 +1026,21 @@ const LOGS_ROUTE_STYLES = `
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cli-failure {
   color: var(--danger);
 }
+[${LOGS_ROUTE_HOST_ATTR}] .logs-cli-install {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  min-width: 0;
+  font-size: 12px;
+}
+[${LOGS_ROUTE_HOST_ATTR}] .logs-cli-install code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-sunk);
+  overflow-wrap: anywhere;
+}
 [${LOGS_ROUTE_HOST_ATTR}] .logs-cli-stderr {
   margin: 6px 0 0;
   padding: 8px;
@@ -1191,6 +1211,8 @@ const CLI_FAILURE_LABELS: Record<CliFailureReason, string> = {
   nonzero_exit: 'tool error',
   timeout: 'tool timed out',
   bad_output: 'bad tool output',
+  untested_version: 'tool version not tested',
+  broken: 'tool does not start',
 };
 
 const DEGRADATION_MESSAGES: Record<RunDegradation, string> = {
@@ -1297,6 +1319,22 @@ const CLI_FAILURE_OUTCOMES: Record<CliFailureReason, RunOutcomeCore> = {
       'The run could not use what a tool sent back. Earlier steps may already have changed things.',
     nextStep:
       'Read the error, and check the app or data it touched, before you try again.',
+  },
+  // D-321 — refused before the tool started, so nothing of this step ran.
+  untested_version: {
+    tone: 'danger',
+    title: 'A tool it needed is a version its pack was not tested with',
+    detail:
+      'Recued did not start the tool, so the run never finished. Earlier steps may already have changed things.',
+    nextStep:
+      'Read the error below, then install a tested version, or choose Warn for the tool on its pack’s page.',
+  },
+  broken: {
+    tone: 'danger',
+    title: 'A tool it needed does not start',
+    detail:
+      'The tool is installed but does not start, so the run never finished. Earlier steps may already have changed things.',
+    nextStep: 'Read the error below, then repair or reinstall the tool.',
   },
 };
 
@@ -1723,9 +1761,20 @@ const renderCliFailureDetail = (cli: CliFailureDetail): string => {
   const stderrBlock = hasStderr || cli.stderr_truncated
     ? `<pre class="logs-cli-stderr">${e((cli.stderr ?? '') + trimNote)}</pre>`
     : '';
+  // D-321 § 3.6 — a tool that was not found: how to install it, written by the
+  // server for its own system. Shown, never run. A link is rendered only when
+  // it is https — this is stored run data, so it is checked again here.
+  const commands = (cli.install ?? []).filter((c) => typeof c === 'string' && c.length > 0);
+  const links = (cli.install_docs ?? []).filter((u) => typeof u === 'string' && u.startsWith('https://'));
+  const installBlock = commands.length > 0 || links.length > 0
+    ? `<div class="logs-cli-install">${commands.length > 0 ? '<span>Install with:</span>' : ''}${
+      commands.map((c) => `<code>${e(c)}</code>`).join('')}${
+      links.map((u) => `<a class="rx-link" href="${e(u)}" target="_blank" rel="noopener noreferrer">Install instructions</a>`).join('')}</div>`
+    : '';
   return `
     <div class="logs-detail-meta logs-cli-failure">${meta.join('')}</div>
     ${stderrBlock}
+    ${installBlock}
   `;
 };
 
@@ -2599,6 +2648,19 @@ const renderRecordWarnings = (
   `;
 };
 
+/** D-321 — a program the run started under Warn although its version was not
+ *  one the pack was tested with. Stored run data, so every part is escaped. */
+const renderUntestedTools = (tools: ReadonlyArray<RunUntestedTool> | undefined): string =>
+  (tools ?? []).map((tool) => {
+    const name = programDisplayName(tool.tool);
+    const used = tool.state === 'untested' && tool.version !== undefined
+      ? `This run used ${name} ${tool.version}, a version its pack was not tested with`
+      : `This run used ${name}, whose version could not be read`;
+    return `<p class="logs-outcome-yield" ${LOGS_ROUTE_UNTESTED_TOOL_ATTR}="${e(tool.tool)}" role="note">${
+      e(`${used}; the pack was tested with ${describeTestedRange(tool.tested)}. It ran because ${name} is set to Warn on its pack's page.`)
+    }</p>`;
+  }).join('');
+
 const renderOutcome = (detail: RunDetail): string => {
   const summary = projectRunOutcomeSummary(detail);
   return `
@@ -2615,6 +2677,7 @@ const renderOutcome = (detail: RunDetail): string => {
       ${summary.yieldNotice !== undefined
         ? `<p class="logs-outcome-yield" ${LOGS_ROUTE_YIELD_ATTR}="${e(summary.yieldNotice.kind)}" role="note">${e(summary.yieldNotice.message)}</p>`
         : ''}
+      ${renderUntestedTools(detail.audit.untested_tools)}
       ${renderRecordWarnings(summary.recordWarnings)}
     </section>
   `;

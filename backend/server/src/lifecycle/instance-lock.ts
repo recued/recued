@@ -4,11 +4,11 @@
  *  `recued-server.pid` only when started via `recued-server start`;
  *  users who launch the daemon directly (`tsx bin.ts`, IDE run button,
  *  supervisor unit) bypass that file. This in-process lock at
- *  `{data_path}/recued-server.lock` catches those cases:
+ *  `<dataPath>/recued-server.lock` (the database's folder) catches those cases:
  *
  *    - developer accidentally running the daemon twice on the same DB
  *    - a shared machine where two users both point at the same
- *      data_path
+ *      data folder
  *    - a supervisor respawning the daemon before the previous process
  *      finished exiting
  *
@@ -43,7 +43,7 @@ export interface LockInfo {
   boot_at: number;
   /** Port the holder is bound to. Used to distinguish a crashed
    *  previous process (port mismatch → reclaim) from a live sibling
-   *  on the same data_path (port match + PID alive → refuse). */
+   *  on the same data folder (port match + PID alive → refuse). */
   bind_port: number;
 }
 

@@ -6,6 +6,8 @@ import { buildPackOpResolution } from './pack-inventory.js';
 import { isCollectionReadGrantedForDispatch, wrapRecipeRunResult, type ChatToolHandlerDeps } from './chat-tool-handlers.js';
 import { DOCUMENT_READ_RECIPE_ID, registerResumedRunFinisher } from './resumed-run-finishers.js';
 import type { ExecuteResponse } from './types.js';
+import { isWatchedFolderCollection, parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
+import { watchedFileSelection } from './folder-file-attachments.js';
 
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
@@ -81,7 +83,10 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
   const cache = new Map<string, { text: string; converter: string; at: number }>();
   return async (raw, ctx) => {
     const args = object(raw);
-    if (!args || typeof args.file_ref !== 'string' || !/^file:[0-9a-f]{32}$/.test(args.file_ref)
+    // A file in a folder Recued watches (`file:local:*`, from `file.search`)
+    // reads too: its bytes are on disk, and its version is its revision.
+    const watched = typeof args?.file_ref === 'string' ? parseWatchedFileRecordId(args.file_ref) : null;
+    if (!args || typeof args.file_ref !== 'string' || (!/^file:[0-9a-f]{32}$/.test(args.file_ref) && watched === null)
       || (args.converter !== undefined && !['auto', 'markitdown', 'docling'].includes(String(args.converter)))
       || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || Number(args.offset) < 0))
       || (args.read_version !== undefined && (typeof args.read_version !== 'string' || !/^[0-9a-f]{64}$/.test(args.read_version)))
@@ -90,10 +95,20 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
     }
     const execute = deps.getExecuteRecipe();
     if (!execute || !ctx.execution_source) return { ok: true, result: { status: 'unavailable', hint: 'The governed document reader is unavailable in this context.' } };
-    const files = deps.getCollectionRegistry()?.get('file', 'received');
+    const registry = deps.getCollectionRegistry();
+    const folder = watched ? registry?.get('file', watched.slug) : undefined;
+    const files = watched ? (folder && isWatchedFolderCollection(folder) ? folder : undefined) : registry?.get('file', 'received');
     const record = files?.get(args.file_ref);
-    if (!record) return { ok: true, result: { status: 'unavailable', hint: 'The selected attachment is no longer stored locally.' } };
-    if (record.size_bytes > MAX_SOURCE_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This attachment exceeds the 25 MB reading limit. Its contents have not been read.' } };
+    if (!record) return { ok: true, result: { status: 'unavailable', hint: watched
+      ? 'This file is no longer in its folder.' : 'The selected attachment is no longer stored locally.' } };
+    // A watched file's record keeps little or none of its bytes: its size is the file's.
+    const sourceBytes = watched ? Number(record.hot_fields.size ?? 0) : record.size_bytes;
+    /** A watched file's revision: its modified time and size, as the Files tab
+     *  previews and imports it. Null once it is gone from its folder. */
+    const watchedRevision = (): string | null => {
+      try { return registry ? watchedFileSelection(registry, String(args.file_ref)).selection_revision : null; } catch { return null; }
+    };
+    if (sourceBytes > MAX_SOURCE_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This attachment exceeds the 25 MB reading limit. Its contents have not been read.' } };
     const mime = String(record.hot_fields.mime_type ?? '').toLowerCase();
     const media = mediaType(record.hot_fields.mime_type);
     const plain = media.essence.startsWith('text/') || TEXT_TYPES.includes(media.essence);
@@ -110,10 +125,13 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       suggested_packs: requested === 'auto' ? ['markitdown', 'docling'] : choices,
       hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans. No attachment content has been read.' } };
     // Direct text is the extracted text, so its limit applies before any read.
-    if (direct && record.size_bytes > MAX_TEXT_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This text file exceeds the 2 MB reading limit. Its contents have not been read.' } };
+    if (direct && sourceBytes > MAX_TEXT_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This text file exceeds the 2 MB reading limit. Its contents have not been read.' } };
     const binding = converter ? resolution.get(`recued-core.${converter}`) : undefined;
     const manifest = binding ? config.manifests.get(binding.catalog_slug) : undefined;
-    const hash = record.blob_hash ?? String(record.hot_fields.content_hash ?? '');
+    // The version this reading is anchored to: a retained file's content
+    // address, or a watched file's revision, since its bytes are read from its
+    // folder by the governed read below and never here.
+    const hash = watched ? watchedRevision() ?? '' : record.blob_hash ?? String(record.hot_fields.content_hash ?? '');
     if (!/^[0-9a-f]{64}$/.test(hash)) return { ok: true, result: { status: 'unavailable', hint: 'The attachment has no verifiable content version.' } };
     const key = createHash('sha256').update(JSON.stringify([args.file_ref, hash, record.hot_fields.filename, mime, converter, manifest])).digest('hex');
     const cacheKey = createHash('sha256').update(key).update(callerOf(ctx)).digest('hex');
@@ -138,7 +156,8 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       const payload = object(result.output.render[0]?.data);
       if (!cached && typeof payload?.bytes_b64 !== 'string') return { ok: true, result: { status: 'unavailable', hint: 'The document operation returned no readable bytes. Keep this evidence gap open.' } };
       const current = files!.get(fileRef);
-      if (!current || current.blob_hash !== record.blob_hash || current.hot_fields.content_hash !== record.hot_fields.content_hash
+      if (!current || (watched ? watchedRevision() !== hash
+        : current.blob_hash !== record.blob_hash || current.hot_fields.content_hash !== record.hot_fields.content_hash)
         || current.hot_fields.filename !== record.hot_fields.filename || current.hot_fields.mime_type !== record.hot_fields.mime_type) {
         return { ok: true, result: { status: 'changed', hint: 'The attachment changed during extraction. Read the current version before using it.' } };
       }
@@ -146,13 +165,19 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       // A cache hit re-admits the source with a metadata-only read: the file
       // read still verifies the blob against its content address and returns
       // that hash, without carrying the bytes through the run.
-      if (cached ? payload?.blob_hash !== hash : !converter && createHash('sha256').update(bytes).digest('hex') !== hash) {
+      // A watched file has no content address to check its bytes against; its
+      // revision was checked above.
+      if (!watched && (cached ? payload?.blob_hash !== hash : !converter && createHash('sha256').update(bytes).digest('hex') !== hash)) {
         return { ok: true, result: { status: 'changed', hint: 'The bytes read did not match the selected attachment version. Restart this reading.' } };
       }
       if (!cached && bytes.byteLength > MAX_TEXT_BYTES) return { ok: true, result: { status: 'too_large', hint: EXTRACTED_TOO_LARGE } };
       const text = cached?.text ?? decodeText(bytes, direct ? media.charset : undefined);
+      // A watched file's content hash is the one its bytes were read with, when
+      // this reading read them; a conversion never hands its source back.
+      const contentHash = !watched ? hash
+        : !converter && typeof payload?.blob_hash === 'string' ? payload.blob_hash : undefined;
       if (text === null) {
-        return { ok: true, result: direct ? { status: 'unsupported_encoding', file_ref: args.file_ref, content_hash: hash,
+        return { ok: true, result: direct ? { status: 'unsupported_encoding', file_ref: args.file_ref, ...(contentHash ? { content_hash: contentHash } : {}),
           hint: "This text file's encoding could not be determined from a byte-order mark, a declared charset or UTF-8, so it was not decoded. Retry document.read with converter set to markitdown, which may detect the encoding. No content has been read." }
           : { status: 'unsupported', hint: 'The returned content is not readable UTF-8 text.' } };
       }
@@ -167,7 +192,7 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
       const offset = Number(args.offset ?? 0);
       const page = readerPage(text, offset);
       return { ok: true, result: { status: !text.trim() ? 'empty_extraction' : page === null ? 'invalid_offset' : 'read',
-        file_ref: args.file_ref, content_hash: hash, read_version, filename: record.hot_fields.filename,
+        file_ref: args.file_ref, ...(contentHash ? { content_hash: contentHash } : {}), read_version, filename: record.hot_fields.filename,
         converter: converter ?? 'text', cached: cached !== undefined, body: page?.body ?? '', offset,
         next_offset: page?.next_offset ?? null,
         text_incomplete: page === null || page.next_offset !== null,
@@ -179,7 +204,9 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
     };
     try {
       const outcome = finish(await execute({ recipe: documentReadRecipe(cached ? undefined : converter, cached !== undefined),
-        config: { source: converter && !cached ? { backing: 'cas', record_id: args.file_ref, content_sha256: hash } : args.file_ref },
+        // A watched file goes to the converter by its id: the CLI reads it from
+        // its folder (`input_materialize`); there is no content address to pin.
+        config: { source: converter && !cached && !watched ? { backing: 'cas', record_id: args.file_ref, content_sha256: hash } : args.file_ref },
         trigger_source: ctx.channel === 'mcp_wire' ? 'mcp' : 'chat', execution_source: ctx.execution_source,
         ...(ctx.contract_snapshot ? { contract_snapshot: ctx.contract_snapshot } : {}),
         ...(ctx.dispatch_depth === undefined ? {} : { dispatch_depth: ctx.dispatch_depth }),

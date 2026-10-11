@@ -18,6 +18,7 @@
 import {
   BROADCAST_EVENT_KIND_SET,
   RpcError,
+  eventsSubscribeUnknownKindMessage,
   type BroadcastEventKind,
   type HandlerSlice,
   type ServerEvent,
@@ -96,21 +97,32 @@ export const makeEventsHandlers = (
             400,
           );
         }
-        // D-148 P12 — reject any kind outside the closed enum so a stale
-        // client (or a typo) can't silently subscribe to a retired
-        // variant (e.g. the dropped `session` kind) and miss every
-        // emit. Wire-layer enforcement of the kind taxonomy is what
-        // makes the retirement load-bearing across reconnects.
-        const unknownKind = (args.kinds as unknown[]).find(
-          (k) =>
-            typeof k !== 'string' ||
-            !BROADCAST_EVENT_KIND_SET.has(k as BroadcastEventKind),
+        // ⛔ A KIND THIS SERVER DOES NOT SEND IS LEFT OUT, NOT REFUSED.
+        // D-148 P12 refused the whole call for one, so a stale client could
+        // not wait on a retired kind (`session`) without being told. It then
+        // got NO kind at all: a webclient cached across a retirement, or one
+        // newer than this server, lost every live update and retried the same
+        // list forever (found live 2026-10-10, after `service` was retired).
+        // The ack names what was left out, so the client is still told. A
+        // call that names nothing this server sends is still refused, in the
+        // text a client's fallback for older servers reads.
+        const kinds = args.kinds as unknown[];
+        if (kinds.some((k) => typeof k !== 'string')) {
+          throw new RpcError('bad_request', 'events.subscribe: kinds must be strings', 400);
+        }
+        const known = (kinds as string[]).filter(
+          (k): k is BroadcastEventKind => BROADCAST_EVENT_KIND_SET.has(k as BroadcastEventKind),
         );
-        if (unknownKind !== undefined) {
+        const unknown = (kinds as string[]).filter(
+          (k) => !BROADCAST_EVENT_KIND_SET.has(k as BroadcastEventKind),
+        );
+        if (known.length === 0) {
           throw new RpcError(
             'bad_request',
-            `events.subscribe: unknown kind '${String(unknownKind)}' (not in BROADCAST_EVENT_KIND_SET)`,
+            eventsSubscribeUnknownKindMessage(unknown[0]!),
             400,
+            undefined,
+            { unknown_kinds: unknown },
           );
         }
         // Validate `cursor_since` (contract: `number`). The bus does
@@ -134,8 +146,8 @@ export const makeEventsHandlers = (
           );
         }
         try {
-          const { ack } = wireEventSubscription(deps, client, args);
-          return ack;
+          const { ack } = wireEventSubscription(deps, client, { ...args, kinds: known });
+          return unknown.length > 0 ? { ...ack, unknown_kinds: unknown } : ack;
         } catch (e) {
           throw new RpcError(
             'bad_request',

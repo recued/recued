@@ -1,4 +1,4 @@
-/** D-194 2b-2 — the install dialog's "Connect account" section render.
+/** D-194 2b-2 — the install dialog's connection section render.
  *
  *  Pure render + `defaultChosenConnection`. Three branches: no candidates
  *  (enroll-only), candidates + collapsed (pre-selected one-liner + Customize),
@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  INSTALL_CONNECT_ALSO_ATTR,
   INSTALL_CONNECT_ATTR,
   INSTALL_CONNECT_CANDIDATE_ATTR,
   INSTALL_CONNECT_CUSTOMIZE_ATTR,
@@ -206,16 +207,16 @@ describe('resolveChosenConnection — render↔submit agreement', () => {
   });
 });
 
-describe('D-294 — an update starts at the account the pack uses now', () => {
-  /** An update RE-BINDS the pack. Pre-selecting the first matching account by
-   *  name silently moved an owner with two accounts of one vendor to the other. */
+describe('D-294 — an update starts at the connection the pack uses now', () => {
+  /** An update RE-BINDS the pack. Pre-selecting the first matching connection by
+   *  name silently moved an owner with two connections of one vendor to the other. */
   const cs = [candidate('home-od', 'home@live'), candidate('work-od', 'work@contoso')];
 
-  it('untouched → the account it uses now, even when another sorts first', () => {
+  it('untouched → the connection it uses now, even when another sorts first', () => {
     expect(resolveChosenConnection({ touched: false, pick: undefined }, cs, 'work-od')).toBe('work-od');
   });
 
-  it('an account that is no longer a candidate is never bound — the default again', () => {
+  it('a connection that is no longer a candidate is never bound — the default again', () => {
     expect(resolveChosenConnection({ touched: false, pick: undefined }, cs, 'gone-od')).toBe('home-od');
   });
 
@@ -223,7 +224,7 @@ describe('D-294 — an update starts at the account the pack uses now', () => {
     expect(resolveChosenConnection({ touched: true, pick: 'home-od' }, cs, 'work-od')).toBe('home-od');
   });
 
-  it('says it KEEPS the account — and says so only for that account', () => {
+  it('says it KEEPS the connection — and says so only for that connection', () => {
     const kept = render({ candidates: cs, chosen: 'work-od', current: 'work-od' }).el;
     const summary = findByAttr(kept, INSTALL_CONNECT_SUMMARY_ATTR)!;
     expect(summary.hasAttribute('data-carried-over')).toBe(true);
@@ -232,9 +233,9 @@ describe('D-294 — an update starts at the account the pack uses now', () => {
     expect(findByAttr(moved, INSTALL_CONNECT_SUMMARY_ATTR)!.hasAttribute('data-carried-over')).toBe(false);
   });
 
-  it('says so when the account it used is not connected now', () => {
+  it('says so when the connection it used is no longer set up', () => {
     const { el } = render({ candidates: cs, chosen: 'home-od', current: 'gone-od' });
-    expect(collectText(el)).toContain('This Pack used “gone-od”, which is not connected now.');
+    expect(collectText(el)).toContain('This Pack used “gone-od”, which is no longer set up. Pick the connection to use.');
   });
 });
 
@@ -248,7 +249,7 @@ describe('renderInstallConnectPicker — no candidates (enroll-only)', () => {
     expect(findAllByAttr(el, INSTALL_CONNECT_CANDIDATE_ATTR)).toHaveLength(0);
     expect(findByAttr(el, INSTALL_CONNECT_NONE_ATTR)).toBeNull();
     // The optional-connect hint is present.
-    expect(collectText(el)).toContain('connect the account later');
+    expect(collectText(el)).toContain('set up the connection later');
   });
 });
 
@@ -352,7 +353,7 @@ describe('renderInstallConnectPicker — disabled (install in flight)', () => {
 });
 
 describe('renderInstallConnectPicker — presentation contract', () => {
-  it('ships a card-based, bullet-free account chooser with a visible selected state', () => {
+  it('ships a card-based, bullet-free connection chooser with a visible selected state', () => {
     expect(INSTALL_CONNECT_PICKER_STYLES).toContain(
       '[data-recued-install-connect] .packs-dialog-connect-list',
     );
@@ -363,5 +364,77 @@ describe('renderInstallConnectPicker — presentation contract', () => {
     expect(INSTALL_CONNECT_PICKER_STYLES).toMatch(
       /\.packs-dialog-connect-customize,[\s\S]*?\.packs-dialog-connect-enroll \{[\s\S]*?min-height: 36px;/,
     );
+  });
+});
+
+describe('D-320 slice 2j — the connections the sign-in shares, offered beside the pick', () => {
+  const shared = [
+    { connection_name: 'work-od', display_name: 'work@contoso' },
+    { connection_name: 'team-od', display_name: 'team@contoso' },
+  ];
+  const renderShared = (over: { chosen?: string; current?: string; expanded?: boolean; unticked?: string[]; disabled?: boolean } = {}) => {
+    const onToggleAlso = vi.fn();
+    const el = renderInstallConnectPicker({
+      document: makeFakeDocument(),
+      requirement: REQUIREMENT,
+      candidates: [candidate('work-od', 'work@contoso'), candidate('team-od', 'team@contoso')],
+      chosen: 'chosen' in over ? over.chosen : 'work-od',
+      expanded: over.expanded ?? false,
+      disabled: over.disabled ?? false,
+      ...(over.current !== undefined ? { current: over.current } : {}),
+      onPick: vi.fn(),
+      onToggleExpanded: vi.fn(),
+      shared,
+      alsoUnticked: new Set(over.unticked ?? []),
+      onToggleAlso,
+    }) as unknown as FakeElement;
+    return { el, onToggleAlso };
+  };
+
+  it('offers each shared connection but the pick, ticked, collapsed or expanded', () => {
+    for (const expanded of [false, true]) {
+      const { el } = renderShared({ expanded });
+      const boxes = findAllByAttr(el, INSTALL_CONNECT_ALSO_ATTR);
+      expect(boxes.map((b) => [b.getAttribute(INSTALL_CONNECT_ALSO_ATTR), b.checked])).toEqual([['team-od', true]]);
+      expect(collectText(el)).toContain('Also let it use, as your other onedrive packs do:');
+    }
+  });
+
+  it('shows one the owner unticked as unticked, and a change asks the host', () => {
+    const { el, onToggleAlso } = renderShared({ unticked: ['team-od'] });
+    const box = findByAttr(el, INSTALL_CONNECT_ALSO_ATTR)!;
+    expect(box.checked).toBe(false);
+    box.dispatch('change');
+    expect(onToggleAlso).toHaveBeenCalledWith('team-od');
+  });
+
+  it('offers none on an update, without a pick, or while installing', () => {
+    expect(findAllByAttr(renderShared({ current: 'work-od' }).el, INSTALL_CONNECT_ALSO_ATTR)).toEqual([]);
+    expect(findAllByAttr(renderShared({ chosen: undefined }).el, INSTALL_CONNECT_ALSO_ATTR)).toEqual([]);
+    const { el, onToggleAlso } = renderShared({ disabled: true });
+    const box = findByAttr(el, INSTALL_CONNECT_ALSO_ATTR)!;
+    expect(box.disabled).toBe(true);
+    box.dispatch('change');
+    expect(onToggleAlso).not.toHaveBeenCalled();
+  });
+});
+
+describe('D-320 ruling 17 — the section says connection, never account', () => {
+  const cs = [candidate('work-od', 'work@contoso'), candidate('home-od', 'home@live')];
+  const states = {
+    empty: render({ candidates: [] }).el,
+    collapsed: render({ candidates: cs, chosen: 'work-od' }).el,
+    gone: render({ candidates: cs, chosen: 'home-od', current: 'gone-od' }).el,
+    expanded: render({ candidates: cs, chosen: 'work-od', expanded: true }).el,
+  };
+
+  it('in every state', () => {
+    for (const [state, el] of Object.entries(states)) {
+      expect(collectText(el), state).toContain('onedrive connection');
+      expect(collectText(el), state).not.toMatch(/account/i);
+    }
+    expect(collectText(states.empty)).toContain('No onedrive connection is set up yet.');
+    expect(collectText(findByAttr(states.collapsed, INSTALL_CONNECT_CUSTOMIZE_ATTR)!)).toBe('Use a different connection');
+    expect(collectText(findByAttr(states.expanded, INSTALL_CONNECT_ENROLL_ATTR)!)).toBe('Set up a new connection →');
   });
 });

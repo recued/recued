@@ -77,7 +77,7 @@ describe('CollectionRegistry — register + lookup', () => {
     const reg = createCollectionRegistry();
     const a = stubCollection('mail', 'work');
     const b = stubCollection('file', 'downloads');
-    const c = stubCollection('webhook', 'github');
+    const c = stubCollection('calendar', 'personal');
     reg.register(a);
     reg.register(b);
     reg.register(c);
@@ -104,12 +104,12 @@ describe('CollectionRegistry — duplicate registration', () => {
   });
 
   it('allows the same slug across different platforms', () => {
-    // Users pair a `work` mail account with a `work` webhook
-    // endpoint — registry key is (platform, slug), not slug alone.
+    // Users pair a `work` mail account with a `work` calendar —
+    // registry key is (platform, slug), not slug alone.
     const reg = createCollectionRegistry();
     reg.register(stubCollection('mail', 'work'));
     reg.register(stubCollection('file', 'work'));
-    reg.register(stubCollection('webhook', 'work'));
+    reg.register(stubCollection('calendar', 'work'));
     expect(reg.list().length).toBe(3);
   });
 
@@ -133,11 +133,11 @@ describe('CollectionRegistry — dispose', () => {
     reg.register(stubCollection('file', 'downloads', {
       close: async () => { closed.push('file:downloads'); },
     }));
-    reg.register(stubCollection('webhook', 'github', {
-      close: async () => { closed.push('webhook:github'); },
+    reg.register(stubCollection('calendar', 'personal', {
+      close: async () => { closed.push('calendar:personal'); },
     }));
     await reg.dispose();
-    expect(closed).toEqual(['mail:work', 'file:downloads', 'webhook:github']);
+    expect(closed).toEqual(['mail:work', 'file:downloads', 'calendar:personal']);
   });
 
   it('clears the registry after dispose', async () => {
@@ -168,14 +168,14 @@ describe('CollectionRegistry — dispose', () => {
     reg.register(stubCollection('mail', 'slow', {
       close: async () => { started.push('mail:slow'); await gate; },
     }));
-    reg.register(stubCollection('webhook', 'intake', {
-      close: async () => { started.push('webhook:intake'); await gate; },
+    reg.register(stubCollection('calendar', 'shared', {
+      close: async () => { started.push('calendar:shared'); await gate; },
     }));
 
     const first = reg.dispose();
     const second = reg.dispose();
     expect(second).toBe(first);
-    expect(started).toEqual(['mail:slow', 'webhook:intake']);
+    expect(started).toEqual(['mail:slow', 'calendar:shared']);
 
     release();
     await first;

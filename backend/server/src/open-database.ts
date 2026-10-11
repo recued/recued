@@ -3,7 +3,10 @@
  * Every production SQLite connection is constructed here. Connection-specific
  * policy (read-only mode, WAL, foreign keys, busy timeout) remains at the call
  * site. Enrolled realms resolve a domain-separated key from the sidecar +
- * keyfile and apply it before the first schema read.
+ * keyfile and apply it before the first schema read. One transaction rule is
+ * set here too: `db.transaction(fn)()` takes the write lock first
+ * (`takeWriteLockFirst`). A run from source also says when a transaction holds
+ * that lock too long (`reportLongWriteLockHolds`).
  */
 
 import {
@@ -12,7 +15,7 @@ import {
 } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import CipherDatabase from 'better-sqlite3-multiple-ciphers';
 import type Database from 'better-sqlite3';
 import {
@@ -22,6 +25,7 @@ import {
 } from './database-encryption.js';
 import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
 import { manualRollbackJournalPathForDb } from './update/manual-rollback-journal.js';
+import { runningAsPackagedBinary } from './packaged-binary.js';
 
 type CipherDatabaseHandle = Database.Database & {
   key(key: Buffer): number;
@@ -38,6 +42,10 @@ export interface OpenDatabaseOptions extends Database.Options {
    *  process before this open. Needed only when unresolved CAS parks keep an
    *  otherwise-settled marker for a later retry. Standalone callers omit it. */
   restoreJournalReconciled?: boolean;
+  /** Say when a transaction holds the write lock too long. Omitted: on, at
+   *  `WRITE_LOCK_HOLD_WARN_MS` through `console.warn`, when
+   *  `writeLockWarningByDefault()`; off otherwise. `false` turns it off. */
+  writeLockWarning?: WriteLockHoldWarning | false;
 }
 
 const asCipherHandle = (db: Database.Database): CipherDatabaseHandle =>
@@ -145,6 +153,148 @@ const applyRealmPragmas = (database: Database.Database): void => {
       /* best effort — a driver without the pragma still opens. */
     }
   }
+};
+
+/** ⛔ A realm transaction takes the write lock FIRST (BEGIN IMMEDIATE) unless
+ *  it says `.deferred()`.
+ *
+ *  The driver's default is a plain BEGIN: the first statement takes the lock.
+ *  A transaction that reads first and then writes must upgrade, and SQLite does
+ *  not wait for that upgrade (it skips the busy handler, to avoid deadlock). So
+ *  while another process writes the realm, it fails "database is locked" in 0-1
+ *  ms instead of waiting out the 5 s busy timeout. Two processes write every
+ *  realm: the server and each `recued --mcp` (one per Claude Desktop session).
+ *  Measured 2026-10-10 with this driver: a plain write waited 5.2 s, a deferred
+ *  read-then-write failed after 1 ms. An audit of the test suite found 85
+ *  production transactions of that shape; three of them killed `--mcp` at
+ *  startup (`d-261-boot`).
+ *
+ *  🔑 HERE, NOT AT 85 CALL SITES, because every production realm connection is
+ *  made here: one rule, and a transaction written tomorrow is covered without
+ *  anyone remembering it. The cost: a read-only transaction now holds the write
+ *  lock for its duration too. One that must not (a long snapshot read) says
+ *  `.deferred()`. A read-only CONNECTION is unaffected: SQLite itself opens a
+ *  read transaction for BEGIN IMMEDIATE on a read-only database (an exemption
+ *  here was tried and changed nothing a test could see, so it went).
+ *
+ *  ⚠ Only calling the transaction function changed. `.deferred()`,
+ *  `.immediate()` and `.exclusive()` mean what they always did, and
+ *  `.default()` is still the driver's plain BEGIN. Nested, any of them is a
+ *  savepoint, as before. */
+const takeWriteLockFirst = (database: Database.Database): void => {
+  const transaction = database.transaction.bind(database);
+  database.transaction = ((fn: (...args: never[]) => unknown) =>
+    transaction(fn).immediate) as unknown as Database.Database['transaction'];
+};
+
+/** How long a transaction may hold the write lock before a run from source says
+ *  so. Every other process writing the realm waits that long for its own write,
+ *  and one that waits past its busy timeout (5 s by default) fails "database is
+ *  locked". A fifth of that leaves room to find a long holder first. */
+export const WRITE_LOCK_HOLD_WARN_MS = 1_000;
+
+/** Reports a transaction that held the write lock for `thresholdMs` or more. */
+export interface WriteLockHoldWarning {
+  readonly thresholdMs: number;
+  /** One message per report. */
+  readonly warn: (message: string) => void;
+  /** Milliseconds; `performance.now` by default. */
+  readonly now?: () => number;
+}
+
+/** On only where a developer works: a run from source. Off in the packaged
+ *  binary, under `NODE_ENV=production` (the Docker image) and under test, where
+ *  a loaded machine would turn it into noise. */
+export const writeLockWarningByDefault = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  isPackagedBinary: () => boolean = runningAsPackagedBinary,
+): boolean =>
+  env.NODE_ENV !== 'production'
+  && env.NODE_ENV !== 'test'
+  && !env.VITEST
+  && !env.VITEST_WORKER_ID
+  && !isPackagedBinary();
+
+/** Says when a transaction held the realm's write lock too long. `takeWriteLockFirst`
+ *  made every transaction hold it from BEGIN, so this is how a long one shows up
+ *  before another process times out on it.
+ *
+ *  The clock starts when the body starts, which is when BEGIN IMMEDIATE has the
+ *  lock: time spent waiting for another process's lock is that process's hold.
+ *  It stops after COMMIT, or after the rollback of a throw. A nested call is a
+ *  savepoint inside the outer hold and is not timed on its own. `.deferred()`
+ *  and `.default()` are not timed: they take no lock until they write, and
+ *  `.deferred()` is the opt-out for a long read. Each place is reported once,
+ *  from the caller's own stack frame. */
+const reportLongWriteLockHolds = (
+  database: Database.Database,
+  warning: WriteLockHoldWarning,
+  label: string,
+): void => {
+  const begin = database.transaction.bind(database);
+  const now = warning.now ?? (() => performance.now());
+  const reported = new Set<string>();
+  let heldSince: number | null = null;
+
+  const report = (heldMs: number, caller: (...args: never[]) => unknown): void => {
+    const trace: { stack?: string } = {};
+    Error.captureStackTrace(trace, caller);
+    const frames = (trace.stack ?? '').split('\n').slice(1)
+      .map((line) => line.trim()).filter((line) => line.length > 0).slice(0, 3);
+    const place = frames[0] ?? '(unknown caller)';
+    if (reported.has(place)) return;
+    reported.add(place);
+    warning.warn(
+      `[write-lock] a transaction held the write lock on ${label} for ${Math.round(heldMs)} ms. `
+        + 'Every other process writing this database waits that long, and one that waits '
+        + 'past its busy timeout (5 s by default) fails "database is locked". Called from:\n'
+        + frames.map((frame) => `    ${frame}`).join('\n')
+        + '\n  (Shown once per place.)',
+    );
+  };
+
+  const timed = (
+    variant: (...args: never[]) => unknown,
+  ): ((...args: never[]) => unknown) => {
+    const run = function (this: unknown, ...args: never[]): unknown {
+      if (database.inTransaction) return Reflect.apply(variant, this, args);
+      heldSince = null;
+      try {
+        return Reflect.apply(variant, this, args);
+      } finally {
+        const since = heldSince;
+        heldSince = null;
+        if (since !== null) {
+          const heldMs = now() - since;
+          if (heldMs >= warning.thresholdMs) report(heldMs, run);
+        }
+      }
+    };
+    return run;
+  };
+
+  database.transaction = ((fn: (...args: never[]) => unknown) => {
+    const body = function (this: unknown, ...args: never[]): unknown {
+      heldSince ??= now();
+      return Reflect.apply(fn, this, args);
+    };
+    // `begin` is `takeWriteLockFirst`'s: it returns the IMMEDIATE variant, which
+    // carries the driver's other variants as properties.
+    const transaction = begin(body) as unknown as ((...args: never[]) => unknown) & {
+      default: (...args: never[]) => unknown;
+      deferred: (...args: never[]) => unknown;
+      exclusive: (...args: never[]) => unknown;
+    };
+    const immediate = timed(transaction);
+    Object.defineProperties(immediate, {
+      default: { value: transaction.default },
+      deferred: { value: transaction.deferred },
+      immediate: { value: immediate },
+      exclusive: { value: timed(transaction.exclusive) },
+      database: { value: database, enumerable: true },
+    });
+    return immediate;
+  }) as unknown as Database.Database['transaction'];
 };
 
 /** Narrow a realm file to owner-only.
@@ -345,6 +495,7 @@ const resolveNativeBinding = (): unknown | undefined => {
 const constructDatabase = (
   filename: string | Buffer,
   options?: Database.Options,
+  holdWarning?: WriteLockHoldWarning,
 ): Database.Database => {
   const nativeBinding = resolveNativeBinding();
   // ⚠ Cast: `@types/better-sqlite3` types `nativeBinding` as `string`, but the
@@ -357,6 +508,13 @@ const constructDatabase = (
     ...(nativeBinding ? { nativeBinding: nativeBinding as unknown as string } : {}),
   }) as unknown as Database.Database;
   applyRealmPragmas(database);
+  takeWriteLockFirst(database);
+  if (holdWarning) {
+    const label = typeof filename === 'string' && filename !== ':memory:'
+      ? basename(filename)
+      : 'an in-memory database';
+    reportLongWriteLockHolds(database, holdWarning, label);
+  }
   if (typeof filename === 'string' && filename !== ':memory:') {
     // Narrowing the main file here is enough for all three: call sites enable
     // WAL after this returns, and SQLite's unix VFS creates `-wal` / `-shm`
@@ -378,8 +536,14 @@ export const openDatabase = (
       databaseKey: suppliedDatabaseKey,
       keyEnvironment,
       restoreJournalReconciled,
+      writeLockWarning,
       ...driverOptions
     } = options;
+    const holdWarning = writeLockWarning === false
+      ? undefined
+      : writeLockWarning ?? (writeLockWarningByDefault()
+        ? { thresholdMs: WRITE_LOCK_HOLD_WARN_MS, warn: (message: string) => console.warn(message) }
+        : undefined);
     const hasSuppliedKey = Object.prototype.hasOwnProperty.call(options, 'databaseKey');
     const dbPath = typeof filename === 'string' && filename !== ':memory:'
       ? filename
@@ -418,9 +582,9 @@ export const openDatabase = (
         : null;
 
     try {
-      if (!databaseKey) return constructDatabase(filename, driverOptions);
+      if (!databaseKey) return constructDatabase(filename, driverOptions, holdWarning);
 
-      let keyed = constructDatabase(filename, driverOptions);
+      let keyed = constructDatabase(filename, driverOptions, holdWarning);
       try {
         const key = Buffer.from(databaseKey);
         try {
@@ -442,7 +606,7 @@ export const openDatabase = (
         if (!dbPath || !existsSync(dbPath)) throw keyedError;
         let plaintext: Database.Database | undefined;
         try {
-          plaintext = constructDatabase(filename, driverOptions);
+          plaintext = constructDatabase(filename, driverOptions, holdWarning);
           assertReadable(plaintext);
         } catch {
           try { plaintext?.close(); } catch { /* best effort */ }

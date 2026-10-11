@@ -183,6 +183,11 @@ describe('createContractStore — seedSchema', () => {
       ['composite_keys', 'installed_reception_template'],
       ['composite_keys', 'override'],
       ['composite_keys', 'owner_operation'],
+      // D-321 — one owner choice per cli catalog's tool ('owner_o' < 'owner_t').
+      ['composite_keys', 'owner_tool_version'],
+      // D-320 — a pack's default connection per slot.
+      ['composite_keys', 'pack_connection_default'],
+      ['composite_keys', 'pack_connection_holder'],
       ['composite_keys', 'policy_resolution'],
       // ⛔ The primitive-grandfather watermark — one row per non-owner contract,
       // recording that the D-228 slice-5 migration already covered it. A SEPARATE

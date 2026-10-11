@@ -104,6 +104,7 @@ export const RPC_REFUSAL_RECIPE_CODES: Readonly<Record<string, RecipeErrorCode>>
   ddns_pause_cloud_failed: 'API_SERVER_ERROR', // 502 from the cloud
   dish_disabled: 'NOT_AUTHORIZED', // 409, but the owner turned it off: running again cannot help
   file_storage_missing: 'NOT_CONFIGURED', // 500/404: the file's storage is not set up
+  mail_sender_required: 'NOT_CONFIGURED', // 400: name a mailbox that can send ("Send from")
   not_unlocked: 'SERVER_LOCKED', // 409
   pack_not_installed: 'NOT_CONFIGURED', // 400: "needs a pack that is not installed"
   payload_too_large: 'VALUE_TOO_LARGE', // 413, shared storage and annotations

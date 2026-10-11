@@ -7,7 +7,11 @@
  *  keeps the bus usable). */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ServerEvent } from '@recued/contracts';
+import {
+  eventsSubscribeUnknownKindMessage,
+  subscribeToKnownKinds,
+  type ServerEvent,
+} from '@recued/contracts';
 import { createEventBus } from '../events/bus.js';
 import {
   bridgeWarehouseEvents,
@@ -19,7 +23,6 @@ import {
   emitMemoryLink,
   emitReactiveFire,
   emitSchedule,
-  emitService,
   emitEntitlement,
 } from '../events/emit-sites.js';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
@@ -246,7 +249,6 @@ describe('emit-site helpers', () => {
     emitApprovalPending(bus, '');
     emitMemoryAudit(bus, '');
     emitReactiveFire(bus, '');
-    emitService(bus, { service_id: '', op: 'enrolled' });
     expect(bus.cursor()).toBe(0);
   });
 
@@ -328,29 +330,64 @@ describe('events handler — subscribe rpc', () => {
     ).rejects.toThrow(/kinds/);
   });
 
-  it('rejects unknown kinds via RpcError (D-148 P12 — closed enum gate)', async () => {
+  // ⛔ D-148 P12 refused the WHOLE call for one kind the server does not
+  // send, so a client at another version got no live updates at all (found
+  // live 2026-10-10: a webclient cached from before `service` was retired).
+  it('leaves out a kind it does not send, names it in the ack, and serves the rest', async () => {
     const bus = createEventBus();
+    const sent: unknown[] = [];
     const slice = makeEventsHandlers({
       bus,
+      pushToClient: (_c, payload) => sent.push(payload),
+      subscriberId: () => 'c',
+    })!;
+    // What a webclient cached from before the retirement still asks for.
+    const ack = await slice.handlers['events.subscribe'](
+      { kinds: ['memory', 'service'] as never },
+      registeredClient,
+    );
+    expect(ack.unknown_kinds).toEqual(['service']);
+    bus.emit({ kind: 'memory', subkind: 'audit', id: 'r1' });
+    expect(sent).toEqual([
+      { type: 'server_event', event: expect.objectContaining({ kind: 'memory', id: 'r1' }) },
+    ]);
+    // Every kind known: the ack is as it always was.
+    const plain = await slice.handlers['events.subscribe']({ kinds: ['memory'] }, registeredClient);
+    expect(plain).not.toHaveProperty('unknown_kinds');
+  });
+
+  it('refuses a call naming no kind it sends, in the text older servers send', async () => {
+    const slice = makeEventsHandlers({
+      bus: createEventBus(),
       pushToClient: () => {},
       subscriberId: () => 'c',
     })!;
-    // 'session' was retired by D-148 P12 — a stale client still
-    // requesting it must be rejected at the wire so the retirement
-    // is enforceable across reconnects rather than silently
-    // returning ack with zero matching events.
+    // 'session' was retired by D-148 P12: nothing would ever arrive.
     await expect(
-      slice.handlers['events.subscribe'](
-        { kinds: ['session'] as never },
-        registeredClient,
-      ),
-    ).rejects.toThrow(/unknown kind 'session'/);
+      slice.handlers['events.subscribe']({ kinds: ['session', 'not_a_kind'] as never }, registeredClient),
+    ).rejects.toMatchObject({
+      code: 'bad_request',
+      message: eventsSubscribeUnknownKindMessage('session'),
+      details: { unknown_kinds: ['session', 'not_a_kind'] },
+    });
     await expect(
-      slice.handlers['events.subscribe'](
-        { kinds: ['memory', 'not_a_kind'] as never },
-        registeredClient,
-      ),
-    ).rejects.toThrow(/unknown kind 'not_a_kind'/);
+      slice.handlers['events.subscribe']({ kinds: ['memory', 7] as never }, registeredClient),
+    ).rejects.toMatchObject({ code: 'bad_request', message: 'events.subscribe: kinds must be strings' });
+  });
+
+  it("a client's fallback for older servers costs a current server nothing: one call", async () => {
+    const slice = makeEventsHandlers({
+      bus: createEventBus(),
+      pushToClient: () => {},
+      subscriberId: () => 'c',
+    })!;
+    let calls = 0;
+    const { left_out } = await subscribeToKnownKinds(
+      (req) => { calls += 1; return slice.handlers['events.subscribe'](req, registeredClient); },
+      { kinds: ['execution', 'service', 'not_a_kind'] as never },
+    );
+    expect(left_out).toEqual(['service', 'not_a_kind']);
+    expect(calls).toBe(1);
   });
 
   it('rejects unregistered and revoked callers without installing a subscription', async () => {

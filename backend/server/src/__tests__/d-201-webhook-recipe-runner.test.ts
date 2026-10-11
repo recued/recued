@@ -136,6 +136,21 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     );
   });
 
+  it("passes its recipe's main dish's choice of connection to the run (D-320 3b)", async () => {
+    handleExecute.mockResolvedValue({ success: true });
+    const choice = { choices: { hubspot: 'hubspot-app' }, label: 'Main' };
+    const runner = createExecuteWebhookRecipeRunner({
+      ...deps(async () => null),
+      resolveDishConnections: (recipeId: string) => (recipeId === 'webhook-recipe' ? choice : undefined),
+    });
+    await runner.run(request());
+    expect(handleExecute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ recipe_id: 'webhook-recipe' }),
+      { run_id: request().run_id, dish_connections: choice },
+    );
+  });
+
   // D-209 #1 W3 — a door-stamped dispatch must reach handleExecute WITH its
   // door ContractSnapshot (a contract-bearing source with no snapshot throws at
   // the policy/preflight gates), resolved from the SAME definition store the
@@ -380,6 +395,50 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
 
     await expect(runner.run(request())).resolves.toBe('terminal_non_success');
     expect(handleExecute).not.toHaveBeenCalled();
+  });
+
+  // D-320 audit — a refusal under a door that a re-derive has since replaced is not
+  // the delivery's: the retry's claim carries the new door, and the run goes again on
+  // the same id. An owner's denial stays closed, whatever happened to the door since
+  // (`details.denied_by`, written by the resumer): the owner said no.
+  it.each([
+    ['re-enters a refusal under a door since replaced', {}, 'completed'],
+    ["never re-enters an owner's denial, though its door was replaced", { denied_by: 'owner' }, 'terminal_non_success'],
+  ] as const)('%s', async (_label, details, expected) => {
+    handleExecute.mockResolvedValue({ success: true });
+    const door = (contract_id: string, revoked_at?: number) => ({
+      contract_id,
+      grant_kind: 'standing',
+      status: 'active',
+      minted_at: 1,
+      ...(revoked_at !== undefined ? { revoked_at } : {}),
+      door_types: ['webhook'],
+      scope: { channels: ['webhook'], actors: ['anonymous'], ingredient_ids: ['fixture.send'] },
+    } as never);
+    const refused = anchor('failed');
+    refused.execution_source = { ...request().execution_source, contract_id: 'door-old' } as never;
+    refused.errors = [{
+      error_id: 'refusal-fixture',
+      code: 'RECIPE_POLICY_DENIED',
+      message: 'refused',
+      severity: 'fatal',
+      source: { recipe_id: refused.recipe_id, step_id: 'send', ingredient_slug: 'fixture.send' },
+      details: { ...details },
+      timestamp: new Date(0).toISOString(),
+      retryable: false,
+    }];
+    const d = {
+      ...deps(async () => refused),
+      definitionStore: {
+        get: (id: string) => (id === 'door-old' ? door('door-old', 2) : id === 'door-new' ? door('door-new') : null),
+      },
+      now: () => 3,
+    };
+    const claimed = request();
+    claimed.execution_source.contract_id = 'door-new';
+
+    await expect(createExecuteWebhookRecipeRunner(d as never).run(claimed)).resolves.toBe(expected);
+    expect(handleExecute).toHaveBeenCalledTimes(expected === 'completed' ? 1 : 0);
   });
 
   it.each(['cancelled', 'killed', 'in_doubt'] as const)(

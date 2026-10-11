@@ -6,7 +6,7 @@
  *  the existing `server_config` / `server_dek` tables in SQLite. */
 
 import type Database from 'better-sqlite3';
-import type { BootstrapConfig } from '@recued/config';
+import { BOOTSTRAP_KEYS, LEGACY_WEBHOOK_PORT_KEY, type BootstrapConfig } from '@recued/config';
 import type { QualityGateSwitchStatus } from '@recued/contracts';
 
 const TABLE = 'server_state';
@@ -195,9 +195,26 @@ export const createServerStateStore = (db: Database.Database): ServerStateStore 
       const raw = get(KEY_STAGED_BOOTSTRAP);
       if (!raw) return null;
       try {
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(raw) as unknown;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return parsed as Partial<BootstrapConfig>;
+          // Live keys only. A row staged before 2026-10-09 may still name a
+          // removed key (`data_path`, `log_path`, `bind_host`, `mcp_port`); a
+          // restart would apply nothing for it, so it must not read as a
+          // pending change — here or in the lifecycle's restart flag.
+          const row = parsed as Record<string, unknown>;
+          const patch: Partial<BootstrapConfig> = {};
+          for (const key of BOOTSTRAP_KEYS) {
+            const value = row[key];
+            if (key === 'bind_port' && typeof value === 'number') patch.bind_port = value;
+            if (key === 'webhooks_enabled' && typeof value === 'boolean') patch.webhooks_enabled = value;
+          }
+          // `webhook_port` (renamed `webhooks_enabled` 2026-10-10) in an older
+          // row still means what it meant: non-zero is on.
+          const legacy = row[LEGACY_WEBHOOK_PORT_KEY];
+          if (patch.webhooks_enabled === undefined && typeof legacy === 'number') {
+            patch.webhooks_enabled = legacy > 0;
+          }
+          return Object.keys(patch).length > 0 ? patch : null;
         }
       } catch { /* malformed row — treat as absent */ }
       return null;

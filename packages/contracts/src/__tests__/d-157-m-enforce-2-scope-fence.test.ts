@@ -249,7 +249,7 @@ describe('M-ENFORCE-2 deriveDispatchScope', () => {
   });
 
   it('returns null for every kind that touches no gated scope family', () => {
-    for (const kind of ['http', 'ai', 'mcp', 'dom', 'chat', 'service'] as const) {
+    for (const kind of ['http', 'ai', 'mcp', 'dom', 'chat'] as const) {
       expect(deriveDispatchScope({ kind, slug: `${kind}-tool` }, {})).toBeNull();
     }
   });

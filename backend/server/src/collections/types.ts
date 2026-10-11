@@ -2,15 +2,16 @@
  *
  *  A `Collection` is a durable warehouse store keyed by
  *  `(platform, slug)`. The server runs one per mail account, file
- *  root, or webhook endpoint — a user with two IMAP accounts + one
- *  fs.watch root + one GitHub webhook endpoint runs four Collection
- *  instances. Each composes the same machinery (SQLite table + 64 KB
+ *  root, or calendar — a user with two IMAP accounts + one fs.watch
+ *  root runs three Collection instances. Each composes the same machinery (SQLite table + 64 KB
  *  CAS split + FTS5 companion + gated surface + warehouse events +
  *  sync adapter) behind a uniform read/write surface.
  *
  *  This module defines only the types — the in-memory registry lives
  *  in `./registry.ts`, the generic table in `./table.ts` (Commit 2),
- *  and the concrete adapters under `./mail/`, `./file/`, `./webhook/`.
+ *  and the concrete adapters under `./mail/`, `./file/`, `./calendar/`.
+ *  (`./webhook/` held the Phase D webhook collection until it was
+ *  removed 2026-10-10: nothing in production ever created one.)
  */
 
 import type {
@@ -42,8 +43,8 @@ export interface CollectionPruneResult {
   skipped_reason?: 'retention_disabled';
 }
 
-/** Sync-lifecycle hook. Adapters (IMAP, Gmail, Graph, fs.watch,
- *  webhook listener) drive inbound data via their internal loop; the
+/** Sync-lifecycle hook. Adapters (IMAP, Gmail, Graph, fs.watch) drive
+ *  inbound data via their internal loop; the
  *  owning `Collection` exposes this narrow surface so the registry
  *  and drain orchestrator can start / stop that loop without
  *  reaching into adapter internals.

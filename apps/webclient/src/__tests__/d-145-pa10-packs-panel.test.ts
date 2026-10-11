@@ -70,6 +70,8 @@ import {
   PACKS_DIALOG_OPERATION_DIFF_ITEM_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR,
+  PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
   PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR,
@@ -831,6 +833,54 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(copy).toContain('Pack approval: ask');
     expect(copy).toContain('your rule for it is kept but does nothing');
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  // D-321 — an owner's Warn or Refuse is made for the range the pack declares
+  // now; the update review says which programs the update handles differently.
+  const TOOL_REVIEW = [
+    {
+      ingredient_id: 'opencode', tool: 'opencode', outside_now: 'warn', outside_after: 'refuse',
+      tested: { from: '2.0.0', before: '3.0.0' },
+    },
+    {
+      ingredient_id: 'codex', tool: 'codex', outside_now: 'refuse', outside_after: 'warn',
+      tested: { from: '0.170.0' },
+    },
+  ] as const;
+
+  it('D-321 — names each program whose untested versions the update handles differently', async () => {
+    const { host, mount } = setupMount([
+      baseEntry({ installed: false, installed_any_version: true, tool_version_review: TOOL_REVIEW }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+
+    const review = findByAttr(host, PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR);
+    expect(review).not.toBeNull();
+    expect(review!.getAttribute('role')).toBe('region');
+    expect(collectTextContent(review!)).toContain('Programs this update changes');
+    const rows = findAllByAttr(review!, PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR);
+    expect(rows.map((row) => row.getAttribute(PACKS_DIALOG_TOOL_VERSION_REVIEW_ITEM_ATTR)))
+      .toEqual(['opencode', 'codex']);
+    expect(rows.map((row) => row.getAttribute('data-outside-after'))).toEqual(['refuse', 'warn']);
+    expect(rows[0]!.textContent).toBe(
+      'opencode: this update was tested with 2.x versions from 2.0.0. An untested version will be '
+      + "refused, not run with a warning. To run it, choose Warn again on the pack's page.",
+    );
+    expect(rows[1]!.textContent).toBe(
+      'codex: this update was tested with versions from 0.170.0. An untested version will run '
+      + 'with a warning, not be refused.',
+    );
+  });
+
+  it('D-321 — a first install has no program review, whatever the entry carries', async () => {
+    const { host, mount } = setupMount([
+      baseEntry({ installed: false, tool_version_review: TOOL_REVIEW }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).not.toBe('Update');
+    expect(findByAttr(host, PACKS_DIALOG_TOOL_VERSION_REVIEW_ATTR)).toBeNull();
   });
 
   it('⛔ an update shows EVERY operation change — the owner\'s rules first — and a rename as removed + added', async () => {

@@ -185,7 +185,7 @@ export const renderPackPermissionPreview = (
   if (model.connections.length > 0) {
     const heading = doc.createElement('h4');
     heading.className = 'pack-permission-preview-heading';
-    heading.textContent = 'Accounts it uses';
+    heading.textContent = 'Connections it uses';
     root.appendChild(heading);
 
     const list = doc.createElement('ul');

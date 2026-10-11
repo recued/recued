@@ -11,10 +11,10 @@
  *       / whitespace value is ignored (falls through to the default).
  *    2. Otherwise `https://auth.<apex>`, where the apex is
  *       `RECUED_CLOUD_APEX` if set and `recued.com` otherwise. The auth
- *       Worker lives on the PUBLIC `recued.com` TLD, NOT the Pro-API
- *       `recued.cloud` family, so the two cannot be derived from each other
- *       — which is exactly why the apex is configured rather than computed
- *       from `cloud.base_url`.
+ *       Worker is not the cloud API Worker that `cloud.base_url` names
+ *       (`api.recued.com`), which is why the apex is configured rather than
+ *       computed from `cloud.base_url`. (This said the cloud API lived in a
+ *       Pro-only `recued.cloud` family; that plan was never deployed.)
  *
  *       ⛔ This used to sniff `cloud.base_url`'s host for a hardcoded mirror
  *       domain. Configuration replaced the sniff so no internal environment

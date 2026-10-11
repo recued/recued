@@ -187,6 +187,8 @@ const setup = (
     /** Capture the callback the surface registers for the list's OWN
      *  installed-first default, so a test can fire it like the real list does. */
     captureInstalledOnlyNotifier?: (fire: (on: boolean) => void) => void;
+    /** D-321 — the list's re-read of its program badges. */
+    refreshPrograms?: () => void;
   } = {},
 ): Harness => {
   const doc = opts.document ?? fakeDoc();
@@ -212,6 +214,7 @@ const setup = (
       host.appendChild(listControl as unknown as Node);
       return {
         dispose: () => { listDisposed = true; },
+        ...(opts.refreshPrograms !== undefined ? { refreshPrograms: opts.refreshPrograms } : {}),
         // Opt-in, mirroring the real contract: a list that cannot honour the
         // filter simply does not offer one.
         ...(opts.installedOnly === true || opts.installedOnlySetter !== undefined
@@ -270,6 +273,16 @@ describe('mountPacksSurface — list↔detail composition', () => {
     expect(listView(h.root).hidden).toBe(true);
     expect(detailHost(h.root).hidden).toBe(false);
     expect(h.navCalls).toEqual(['pack-a']);
+  });
+
+  it('D-321 — Back re-reads the list\'s program badges; opening a pack does not', () => {
+    const refreshPrograms = vi.fn();
+    const h = setup({ refreshPrograms });
+    h.listOnSelect('opencode-pack');
+    expect(refreshPrograms).not.toHaveBeenCalled();
+    // The owner may have chosen Warn, or installed the program and pressed Check again.
+    h.detail.clickBackToList();
+    expect(refreshPrograms).toHaveBeenCalledTimes(1);
   });
 
   it('Back returns to the list WITHOUT tearing either child down (browse state survives)', () => {

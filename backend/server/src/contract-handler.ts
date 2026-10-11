@@ -47,7 +47,7 @@
  *  Spec: D-166 §"contract_definition lifecycle"; the use-resolution
  *  overlay this lights up is documented in the contract-definition handover. */
 
-import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, type UsageCapPeriod, type DoorType } from '@recued/contracts';
+import { RpcError, isActor, isChannel, isCatalogForm, ACTORS, CHANNELS, ContractMergeError, OVERRIDE_SCOPE, overrideRowValue, isEmptyOverridePolicy, OWNER_OPERATION_SCOPE, ownerOperationRowValue, isEmptyOwnerOperationPolicy, ownerOperationIngredientViews, OWNER_TOOL_VERSION_SCOPE, cliToolVersionHash, isCliVersionOutside, catalogIngredientViews, contractLifecycleState, DELEGATION_RULE_MAX_USES, DELEGATION_RULE_RISK_TIERS, DELEGATION_RULE_TTL_MS, DELEGATION_SUGGEST_LOOKBACK_MS, delegationRuleMintPlanFromSnapshot, delegationRuleSuggestionKeyHash, qualityDelegationMintPlanFromSnapshot, qualityDelegationSuggestionKeyHash, SCOPED_GRANT_MAX_USES_DEFAULT, SESSION_GRANT_RISK_TIERS, approvalFloorForRisk, isApprovalBelowRiskFloor, isOperationApproval, isRiskTier, RISK_TIER_RANK, renderScopedGrantSentence, scopedGrantSuggestionKeyHash, isDoorType, DOOR_TYPES, derivedDoorType, opGrantEntry, isReservedOwnerContractId, isReservedPublicContractId, CONTRACT_GRANT_KINDS, isContractGrantKind, isStandingContractDefinition, USAGE_CAP_PERIODS, isUsageCapPeriod, type UsageCapPeriod, type DoorType } from '@recued/contracts';
 import type {
   Actor,
   CatalogIngredientView,
@@ -69,6 +69,9 @@ import type {
   OwnerOperationIngredientView,
   OwnerOperationPolicyInput,
   OwnerOperationView,
+  OwnerToolVersionView,
+  CliToolVersionPolicy,
+  CliVersionOutside,
   OverridePolicyInput,
   OverrideView,
   ServerEvent,
@@ -364,7 +367,11 @@ const overrideSegments = (
  *  itself is the durable record and delete is the kill switch). */
 const emitOverrideAudit = async (
   deps: ContractRpcDeps,
-  action: 'owner_operation_override_written' | 'owner_operation_override_deleted',
+  action:
+    | 'owner_operation_override_written'
+    | 'owner_operation_override_deleted'
+    | 'owner_tool_version_written'
+    | 'owner_tool_version_deleted',
   target: string,
   detail: Record<string, unknown>,
 ): Promise<void> => {
@@ -625,6 +632,97 @@ const handleOwnerOperationDelete = async (
       operation_id,
       policy: null,
       prior_policy: priorRow?.value ?? null,
+    });
+  }
+  return { deleted };
+};
+
+// ════════════════════════════════════════════════════════════════
+// D-321 the owner's per-tool choice outside a pack's tested versions
+// ════════════════════════════════════════════════════════════════
+
+/** The tested range a cli catalog declares for its tool. A catalog with none
+ *  has nothing to choose about, so the write is refused rather than stored. */
+const requireDeclaredToolVersion = (
+  deps: ContractRpcDeps,
+  method: string,
+  ingredient_id: string,
+): CliToolVersionPolicy => {
+  const runtime = requireOverrideManifest(deps, method, ingredient_id).surfaces?.connector?.runtime;
+  if (runtime?.wire_protocol !== 'cli_invocation' || runtime.cli_version === undefined) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: '${ingredient_id}' declares no tested versions for its tool`,
+    );
+  }
+  return runtime.cli_version;
+};
+
+/** Replace a pack's declared `outside` for its tool. The row is stamped with the
+ *  pack's current `version` block, so a later update that changes the range or
+ *  the default leaves this choice stale and the pack's default applies again. */
+export const upsertOwnerToolVersion = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string; outside: CliVersionOutside },
+): Promise<OwnerToolVersionView> => {
+  const method = 'collection.operation.upsertOwnerToolVersion';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  if (!isCliVersionOutside(a.outside)) {
+    throw new RpcError('bad_request', `${method}: outside must be refuse or warn`);
+  }
+  const outside = a.outside;
+  const declared = requireDeclaredToolVersion(deps, method, ingredient_id);
+  const version_hash = cliToolVersionHash(declared);
+  const segments = [ingredient_id];
+  const priorRow = deps.store.get(OWNER_TOOL_VERSION_SCOPE, segments);
+  try {
+    deps.store.put(OWNER_TOOL_VERSION_SCOPE, segments, { outside, version_hash });
+  } catch (err) {
+    if (err instanceof ContractWriteInvalidError) {
+      throw new RpcError('bad_request', err.message, undefined, method, { issues: err.issues });
+    }
+    throw err;
+  }
+  const row = deps.store.get(OWNER_TOOL_VERSION_SCOPE, segments);
+  if (row === null) {
+    throw new RpcError('internal', `${method}: owner tool row missing after write`);
+  }
+  await emitOverrideAudit(deps, 'owner_tool_version_written', ingredient_id, {
+    ingredient_id,
+    outside,
+    prior: priorRow?.value ?? null,
+    pack_outside: declared.outside,
+    tested: declared.tested,
+    version_hash,
+  });
+  return {
+    ingredient_id,
+    outside,
+    pack_outside: declared.outside,
+    tested: { ...declared.tested },
+    version_hash,
+    written_at: row.written_at,
+  };
+};
+
+/** Remove the owner's choice; the pack's default applies. Needs no manifest, so a
+ *  choice left by a pack that is gone can still be cleared. */
+const handleOwnerToolVersionDelete = async (
+  deps: ContractRpcDeps,
+  args: { ingredient_id: string },
+): Promise<{ deleted: boolean }> => {
+  const method = 'collection.operation.deleteOwnerToolVersion';
+  const a = ensureRecordArgs(method, args);
+  const ingredient_id = ensureIngredientId(method, a.ingredient_id);
+  const segments = [ingredient_id];
+  const priorRow = deps.store.get(OWNER_TOOL_VERSION_SCOPE, segments);
+  const deleted = deps.store.delete(OWNER_TOOL_VERSION_SCOPE, segments);
+  if (deleted) {
+    await emitOverrideAudit(deps, 'owner_tool_version_deleted', ingredient_id, {
+      ingredient_id,
+      outside: null,
+      prior: priorRow?.value ?? null,
     });
   }
   return { deleted };
@@ -2234,6 +2332,8 @@ type ContractMethods =
   | 'collection.operation.upsertOwnerOverride'
   | 'collection.operation.deleteOwnerOverride'
   | 'collection.operation.listOwnerOverrides'
+  | 'collection.operation.upsertOwnerToolVersion'
+  | 'collection.operation.deleteOwnerToolVersion'
   | 'collection.contract.mintContract'
   | 'collection.contract.revokeContract'
   | 'collection.contract.setDoorTypes'
@@ -2286,6 +2386,8 @@ export const makeContractHandlers = (
       'collection.operation.upsertOwnerOverride',
       'collection.operation.deleteOwnerOverride',
       'collection.operation.listOwnerOverrides',
+      'collection.operation.upsertOwnerToolVersion',
+      'collection.operation.deleteOwnerToolVersion',
       'collection.contract.mintContract',
       'collection.contract.revokeContract',
       'collection.contract.setDoorTypes',
@@ -2381,6 +2483,16 @@ export const makeContractHandlers = (
         handleOwnerOperationList(
           deps,
           args as Parameters<typeof handleOwnerOperationList>[1],
+        ),
+      'collection.operation.upsertOwnerToolVersion': async (args) =>
+        upsertOwnerToolVersion(
+          deps,
+          args as Parameters<typeof upsertOwnerToolVersion>[1],
+        ),
+      'collection.operation.deleteOwnerToolVersion': async (args) =>
+        handleOwnerToolVersionDelete(
+          deps,
+          args as Parameters<typeof handleOwnerToolVersionDelete>[1],
         ),
       // contract_id lifecycle. `mintContract` reads the authenticated client
       // (`ctx`) for `minted_by` provenance; revoke/list don't need it. Both

@@ -11,8 +11,8 @@
  *  on a live request.
  *
  *  This composer threads the following state from the surrounding server:
- *    - `webhookPort` — the same `bootstrap.webhook_port > 0` gate the
- *      Phase D `/webhook/{slug}` listener consults. Port <= 0 ⇒ this
+ *    - `webhooksEnabled` — the same `bootstrap.webhooks_enabled` gate every
+ *      other inbound webhook route consults. Off ⇒ this
  *      composer returns `undefined` and the server.ts path branch
  *      never engages for `/webhooks/*` traffic (vendor-agnostic 404
  *      from the floor, matching the spec's
@@ -84,8 +84,8 @@ import {
 export type DispatchStripeEvent = (event: StripeInboundEvent) => Promise<void>;
 
 export interface ComposeVendorWebhookPortDeps {
-  /** Same gate the Phase D webhook listener uses. `<= 0` ⇒ no port. */
-  webhookPort: number;
+  /** Same gate the other inbound webhook routes use. `false` ⇒ no port. */
+  webhooksEnabled: boolean;
   /** Connection store for vendor connection lookup. Absent
    *  daemon ⇒ no port (no connections to look up against). */
   connectionStore?: ConnectionStoreSqlite;
@@ -273,7 +273,7 @@ const readStripeWebhookSecret = (
 };
 
 /** Compose the D-148 P9 vendor webhook port. Returns `undefined` when
- *  the port is disabled (`webhookPort <= 0`) or when the connection
+ *  webhooks are switched off (`!webhooksEnabled`) or when the connection
  *  store is unwired (no rows to look up against — daemon-only mode).
  *  The path-router in `server.ts` gates the `/webhooks/*` branch on
  *  the returned handler, so undefined ⇒ all `/webhooks/*` traffic
@@ -281,7 +281,7 @@ const readStripeWebhookSecret = (
 export const composeVendorWebhookPort = (
   deps: ComposeVendorWebhookPortDeps,
 ): VendorWebhookPortHandler | undefined => {
-  if (deps.webhookPort <= 0) return undefined;
+  if (!deps.webhooksEnabled) return undefined;
   if (!deps.connectionStore) return undefined;
 
   const { connectionStore } = deps;

@@ -542,7 +542,7 @@ export const createHostnameRegistryStore = (
           input.cert_source === 'recued_acme'
             ? 'invalid_recued_acme_hostname'
             : 'invalid_ddns_managed_hostname',
-          `hostname registry: ${hostname_normalized} is not a single-label recued.cloud hostname`,
+          `hostname registry: ${hostname_normalized} is not a single-label hostname in an enabled DDNS zone (<handle>.recued.net)`,
         );
       }
       // D-235 — the mirror gate. `recued_acme` REQUIRES a fleet-zone hostname;

@@ -13,41 +13,12 @@ export interface PresetOverlay {
   runtime: Partial<RuntimeConfig>;
 }
 
-const BINARY_OVERLAY: PresetOverlay = {
-  bootstrap: {
-    bind_host: '127.0.0.1',
-    bind_port: 7717,
-    mcp_port: 7718,
-    webhook_port: 0,
-  },
-  runtime: {
-    'log.level': 'info',
-  },
-};
-
-const SOURCE_OVERLAY: PresetOverlay = {
-  bootstrap: {
-    bind_host: '127.0.0.1',
-    bind_port: 7717,
-    mcp_port: 7718,
-    webhook_port: 0,
-  },
-  runtime: {
-    'log.level': 'debug',
-  },
-};
-
-const SERVER_OVERLAY: PresetOverlay = {
-  bootstrap: {
-    bind_host: '0.0.0.0',
-    bind_port: 7717,
-    mcp_port: 7718,
-    webhook_port: 0,
-  },
-  runtime: {
-    'log.level': 'info',
-  },
-};
+// The three distributions take the same defaults. They differed in
+// `bind_host` and in `log.level`, neither of which anything read; both were
+// removed (2026-10-09, `bootstrap-keys.ts`; 2026-10-10, `schema.ts`).
+const BINARY_OVERLAY: PresetOverlay = { bootstrap: {}, runtime: {} };
+const SOURCE_OVERLAY: PresetOverlay = { bootstrap: {}, runtime: {} };
+const SERVER_OVERLAY: PresetOverlay = { bootstrap: {}, runtime: {} };
 
 export const presetOverlay = (distribution: Distribution): PresetOverlay => {
   switch (distribution) {
@@ -57,13 +28,9 @@ export const presetOverlay = (distribution: Distribution): PresetOverlay => {
   }
 };
 
-/** Universal bootstrap template. Everything here is safe no-op defaults
- *  that a preset is expected to tighten. `data_path` is filled in at
- *  load-time by the OS-path resolver. */
-export const BOOTSTRAP_TEMPLATE: Omit<BootstrapConfig, 'data_path'> = {
-  bind_host: '127.0.0.1',
+/** Universal bootstrap template: the defaults every distribution starts
+ *  from. Webhooks are off until an operator turns them on. */
+export const BOOTSTRAP_TEMPLATE: BootstrapConfig = {
   bind_port: 7717,
-  mcp_port: 7718,
-  webhook_port: 0,
-  log_path: '{data_path}/logs',
+  webhooks_enabled: false,
 };

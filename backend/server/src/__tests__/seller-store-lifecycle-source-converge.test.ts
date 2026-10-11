@@ -93,6 +93,14 @@ const tableSql = (db: Database.Database, table: string): string =>
   (db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
     .get(table) as { sql: string }).sql;
 
+/** ⛔ The idempotency checks below compared each table's SQL text alone, and a
+ *  rebuild with the same DDL leaves that text unchanged, so they could not see
+ *  one: `seller_tiers` was rebuilt on EVERY call from `b8d33345d` (2026-09-03) to
+ *  2026-10-10, twice per process start, while they passed. Any DDL bumps
+ *  `schema_version`, so a call that rebuilt nothing leaves it where it was. */
+const schemaVersion = (db: Database.Database): number =>
+  db.pragma('schema_version', { simple: true }) as number;
+
 const indexNames = (db: Database.Database, table: string): string[] =>
   (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`)
     .all(table) as { name: string }[]).map((row) => row.name).sort();
@@ -142,9 +150,29 @@ describe('seller_tiers / seller_customers converge onto the current lifecycle-so
       ]));
       // Idempotent: a second boot finds nothing to converge and changes no DDL.
       const before = [tableSql(db, SELLER_TIERS_TABLE), tableSql(db, SELLER_CUSTOMERS_TABLE)];
+      const versionBefore = schemaVersion(db);
       ensureSellerSchema(db);
       expect([tableSql(db, SELLER_TIERS_TABLE), tableSql(db, SELLER_CUSTOMERS_TABLE)]).toEqual(before);
+      expect(schemaVersion(db), 'a second boot rebuilt a table').toBe(versionBefore);
       expect(db.prepare(`SELECT count(*) AS n FROM ${SELLER_TIERS_TABLE}`).get()).toEqual({ n: 3 });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('a database created by the current code is left alone on every later start', () => {
+    const db = new Database(':memory:');
+    try {
+      ensureSellerSchema(db);
+      insertTier(db, 'paddle', 'tier_paddle');
+      const versionBefore = schemaVersion(db);
+      // Each process start builds a seller store and a seller order store, and
+      // each runs this. Neither may touch a table that already matches.
+      ensureSellerSchema(db);
+      ensureSellerSchema(db);
+      expect(schemaVersion(db), 'a start rebuilt a table that already matched').toBe(versionBefore);
+      expect(db.prepare(`SELECT tier_id FROM ${SELLER_TIERS_TABLE}`).all())
+        .toEqual([{ tier_id: 'tier_paddle' }]);
     } finally {
       db.close();
     }

@@ -11,9 +11,12 @@ export interface ComposeServeExposureOptions {
   readonly db: Database.Database | undefined;
   readonly auditLog: AuditLogStore | undefined;
   readonly listenerCoordinator: ProductionPathListenerCoordinator;
-  readonly webhookPort: number;
+  readonly webhooksEnabled: boolean;
   readonly lanBindAddress: string;
   readonly wsHandleClientCount: () => number;
+  /** Whether the server has an address people outside can use; the
+   *  Exposure grid refuses every Public choice while it says no. */
+  readonly hasPublicAddress: () => boolean;
   readonly publishExposureMachine: (machine: ExposureStateMachine) => void;
   /** D-121 broadcast bus, threaded to the exposure `broadcast` side
    *  effect so a transition fans `exposure_changed` to paired clients
@@ -29,9 +32,10 @@ export const composeServeExposure = async (
     db,
     auditLog,
     listenerCoordinator,
-    webhookPort,
+    webhooksEnabled,
     lanBindAddress,
     wsHandleClientCount,
+    hasPublicAddress,
     publishExposureMachine,
     eventBus,
   } = options;
@@ -41,9 +45,10 @@ export const composeServeExposure = async (
     db,
     auditLog,
     listenerCoordinator,
-    webhookPort,
+    webhooksEnabled,
     lanBindAddress,
     wsHandleClientCount,
+    hasPublicAddress,
     eventBus,
   });
 

@@ -561,7 +561,9 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b) — owner ON, e
   let readResolver: ReturnType<typeof createGatedReadGrantResolver>;
 
   const ENGAGEMENTS_OP = 'core.contact.engagements.read'; // owner-only NATIVE verb-op
-  const WEBHOOK_OP = 'core.data.webhook.list'; // owner-only ORDINARY (recipe) read op
+  // owner-only ORDINARY (recipe) read op — D-201's accepted-event read. (This was
+  // `core.data.webhook.list` until that op went with the webhook collection, 2026-10-10.)
+  const WEBHOOK_OP = 'core.webhook.event.get';
   const FORM_RESPONSE_OP = 'core.data.form-response.get'; // owner-only ORDINARY response read
   const NORMAL_OP = 'core.mail.get'; // a NON-sensitive read op (wildcard-permissive)
   const WORK_READ_OP = 'core.work-entity.read'; // owner-only NATIVE verb-op (work.search / work.read)

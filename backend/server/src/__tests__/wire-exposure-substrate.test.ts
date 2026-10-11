@@ -198,9 +198,10 @@ const composeHarness = async (
     db: undefined,
     auditLog: undefined,
     listenerCoordinator,
-    webhookPort: 9443,
+    webhooksEnabled: true,
     lanBindAddress: '192.0.2.20',
     wsHandleClientCount: vi.fn(() => 0),
+    hasPublicAddress: vi.fn(() => false),
     ...overrides,
   };
   const bundle = await composeExposureSubstrate(input);
@@ -281,10 +282,12 @@ describe('composeExposureSubstrate env seed', () => {
   it("wires RECUED_PUBLIC_REACHABLE='true' as public_reachable true", async () => {
     process.env.RECUED_PUBLIC_REACHABLE = 'true';
 
-    await composeHarness({ webhookPort: 1443 });
+    // The switch alternates across these four cases, so each proves the value
+    // is forwarded as given rather than a constant.
+    await composeHarness({ webhooksEnabled: true });
 
     expect(bootstrapMocks.deriveBootstrapDerivedExposureState).toHaveBeenCalledWith({
-      webhook_port: 1443,
+      webhooks_enabled: true,
       public_reachable: true,
     });
   });
@@ -292,10 +295,10 @@ describe('composeExposureSubstrate env seed', () => {
   it("wires RECUED_PUBLIC_REACHABLE='1' as public_reachable true", async () => {
     process.env.RECUED_PUBLIC_REACHABLE = '1';
 
-    await composeHarness({ webhookPort: 2443 });
+    await composeHarness({ webhooksEnabled: false });
 
     expect(bootstrapMocks.deriveBootstrapDerivedExposureState).toHaveBeenCalledWith({
-      webhook_port: 2443,
+      webhooks_enabled: false,
       public_reachable: true,
     });
   });
@@ -303,19 +306,19 @@ describe('composeExposureSubstrate env seed', () => {
   it("wires RECUED_PUBLIC_REACHABLE='false' as public_reachable false", async () => {
     process.env.RECUED_PUBLIC_REACHABLE = 'false';
 
-    await composeHarness({ webhookPort: 3443 });
+    await composeHarness({ webhooksEnabled: true });
 
     expect(bootstrapMocks.deriveBootstrapDerivedExposureState).toHaveBeenCalledWith({
-      webhook_port: 3443,
+      webhooks_enabled: true,
       public_reachable: false,
     });
   });
 
   it('wires an unset RECUED_PUBLIC_REACHABLE as public_reachable false', async () => {
-    await composeHarness({ webhookPort: 4443 });
+    await composeHarness({ webhooksEnabled: false });
 
     expect(bootstrapMocks.deriveBootstrapDerivedExposureState).toHaveBeenCalledWith({
-      webhook_port: 4443,
+      webhooks_enabled: false,
       public_reachable: false,
     });
   });
@@ -583,10 +586,18 @@ describe('composeExposureSubstrate state-machine args', () => {
     expect(wsHandleClientCount).toHaveBeenCalledTimes(1);
   });
 
-  it('passes a DDNS availability stub that resolves false', async () => {
-    await composeHarness();
+  // ⛔ This used to pin `'passes a DDNS availability stub that resolves false'`
+  // — a test written FROM the stub, so it held the bug in place: with the gate
+  // a constant false, no owner could tick Public anywhere (2026-05 to
+  // 2026-10-10). The gate now asks the server's own addresses, live.
+  it('asks hasPublicAddress for the gate, on every call', async () => {
+    const hasPublicAddress = vi.fn(() => false);
+    await composeHarness({ hasPublicAddress });
 
     await expect(lastMachineOptions().ddns.isConfigured()).resolves.toBe(false);
+    hasPublicAddress.mockReturnValue(true);
+    await expect(lastMachineOptions().ddns.isConfigured()).resolves.toBe(true);
+    expect(hasPublicAddress).toHaveBeenCalledTimes(2);
   });
 
   it('passes exposure effects into the state machine', async () => {

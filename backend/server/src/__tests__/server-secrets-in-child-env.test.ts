@@ -5,22 +5,21 @@
 // it in the server's own environment (a systemd EnvironmentFile, a launchd entry, a container's
 // environment), and every program the server started for a pack began from that environment:
 // command-line tools, coding agents that can run `env` and hand the output to a model, and the
-// services a pack installs, checks, invokes and runs.
+// health checks of the daemons a pack runs.
 //
 // Each case runs a REAL child and asks it two things: can it see any `RECUED_*` variable (it
 // must not; the passphrase is one, and so are the LLM keys the audit of 2026-10-09 found
 // reaching every pack), and can it see an ordinary variable (it must). The second keeps the
 // first honest: a child handed an empty environment would also "not see the passphrase".
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCliInvocationExecutor } from '../cli-invocation-executor.js';
+import { createCliToolStatus } from '../cli-tool-status.js';
 import { envForOthers } from '../supervision/env-for-others.js';
-import { defaultSpawnProcess } from '../collections/service/supervisor/process.js';
 import { defaultSpawnWithTimeout } from '../collections/service/checkers/process.js';
-import { defaultSpawnInvoke } from '../collections/service/dispatcher/spawn-invoke.js';
-import { defaultSpawn as defaultInstallerSpawn } from '../collections/service/installers/process.js';
 
 const PASSPHRASE = 'correct horse battery staple';
 
@@ -91,34 +90,39 @@ describe('a pack command-line tool does not inherit the identity passphrase', ()
   });
 });
 
-describe('a service a pack runs, checks, invokes or installs does not inherit it', () => {
-  it('the supervised service process', async () => {
-    const child = defaultSpawnProcess(ENV_CHECK, {});
-    const code = await new Promise<number | null>((done) => { child.onExit((c) => done(c)); });
-    expect(code).toBe(0);
+describe("a pack's version probe does not inherit it (D-321)", () => {
+  // The probe runs on the server's own initiative, before any action, so it is a
+  // program started for others like the actions themselves.
+  it.skipIf(process.platform === 'win32')('it reads a version only when no RECUED_ variable reached it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'recued-probe-env-'));
+    try {
+      const tool = join(dir, 'envtool');
+      writeFileSync(tool, [
+        '#!/bin/sh',
+        "env | grep -i '^RECUED_' >/dev/null && exit 3",
+        '[ "$CHILD_ENV_CANARY" = canary ] || exit 4',
+        'echo 1.2.3',
+      ].join('\n'), { mode: 0o755 });
+      const report = await createCliToolStatus().check({ probe: [tool, '--version'], tested: { from: '1.0.0' } });
+      expect(report.probe_result).toEqual({ kind: 'version', version: '1.2.3' });
+      expect(report.state).toBe('ready');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
+});
 
-  it('the supervised service process given variables of its own', async () => {
-    const child = defaultSpawnProcess(ENV_CHECK, { env: { SERVICE_OWN: '1' } });
-    const code = await new Promise<number | null>((done) => { child.onExit((c) => done(c)); });
-    expect(code).toBe(0);
-  });
-
-  it("the service's health check", async () => {
+describe('a supervised daemon\'s health check does not inherit it', () => {
+  // The D-118 service installer's own spawns (its supervisor, invoke and
+  // installers) were retired with it (D-321 § 5.4); its checkers serve the
+  // cli-daemon supervision.
+  it('the health check', async () => {
     expect((await defaultSpawnWithTimeout(ENV_CHECK, 10_000)).exit_code).toBe(0);
-  });
-
-  it("the service's invoke", async () => {
-    expect((await defaultSpawnInvoke(ENV_CHECK, { timeout_ms: 10_000 })).exit_code).toBe(0);
-  });
-
-  it("the service's installer", async () => {
-    expect((await defaultInstallerSpawn(ENV_CHECK)).exit_code).toBe(0);
   });
 });
 
 describe('every program the server starts for others goes through envForOthers', () => {
-  // ⛔ THE NEXT SITE IS THE ONE THAT LEAKS. The five above were found by listing every
+  // ⛔ THE NEXT SITE IS THE ONE THAT LEAKS. The sites above were found by listing every
   // importer of `node:child_process`; a sixth would inherit the server's environment by
   // default. So the list is re-taken here: an importer either builds its child's environment
   // with `envForOthers` or is named below as starting the server itself or a system tool.
@@ -135,10 +139,9 @@ describe('every program the server starts for others goes through envForOthers',
   };
   const FOR_OTHERS = [
     'cli-invocation-executor.ts',
+    // D-321 — a pack's version probe, run with the environment an action gets.
+    'cli-tool-status.ts',
     'collections/service/checkers/process.ts',
-    'collections/service/dispatcher/spawn-invoke.ts',
-    'collections/service/installers/process.ts',
-    'collections/service/supervisor/process.ts',
   ];
 
   const sourceFiles = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
@@ -164,7 +167,7 @@ describe('every program the server starts for others goes through envForOthers',
       .filter((file) => STARTS_PROCESSES.test(code(file)))
       .map((file) => relative(SERVER_SRC, file).split(sep).join('/'))
       .sort();
-    // Not vacuous: the walk has to find the five sites it protects.
+    // Not vacuous: the walk has to find the six sites it protects.
     expect(importers).toEqual(expect.arrayContaining(FOR_OTHERS));
     const unprotected = importers.filter((rel) => !(rel in NOT_FOR_OTHERS)
       && !/\benvForOthers\(/.test(code(join(SERVER_SRC, rel))));

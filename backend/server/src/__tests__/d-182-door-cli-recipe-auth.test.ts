@@ -13,7 +13,7 @@
  *  has any reachability grant for into `allowed_tools` (coarse, slug-level — the
  *  gateway resolver still enforces the exact granted OPERATION). This suite pins:
  *    1. the snapshot admit (with/without grant, dead-contract, fail-closed,
- *       principal-scoped, and the service-fence guard — Codex F4-HIGH fold), and
+ *       principal-scoped, and the unknown-kind fence — Codex F4-HIGH fold), and
  *    2. the end-to-end policy-gate outcome (a door recipe with a cli step is
  *       admitted iff the grant exists). */
 
@@ -23,6 +23,7 @@ import {
   isCliIngredient,
   isExternallyExposableIngredient,
   type ExecutionSource,
+  type IngredientKind,
   type IngredientManifest,
   type ProviderSurfaces,
   type RecipeDefinition,
@@ -61,14 +62,15 @@ const whisperCli: IngredientManifest = {
   } as unknown as ProviderSurfaces,
 };
 
-/** A D-118 service catalog — `kind: 'service'`. Has NO §7.2 reachability auth
- *  path and must stay fully fenced even if a stray reachability row names it. */
+/** A catalog declaring D-118's retired `kind: 'service'` (D-321 § 5.5), a kind
+ *  this server no longer knows. Has NO §7.2 reachability auth path and must stay
+ *  fully fenced even if a stray reachability row names it. */
 const longService: IngredientManifest = {
   slug: 'indexer-service',
   name: 'Indexer service',
   description: 'A long-running local service.',
   author: 'recued-core',
-  kind: 'service',
+  kind: 'service' as unknown as IngredientKind,
   version: 1,
   category: 'action',
   risk_tier: 'write',
@@ -77,17 +79,17 @@ const longService: IngredientManifest = {
   output: {},
 };
 
-/** A MALFORMED hybrid — declares `kind: 'service'` yet also carries a
- *  `cli_invocation` connector runtime. The validator rejects this at install, but
- *  it can reach the live registry. It must be treated as a service (no
+/** A MALFORMED hybrid — declares the retired `kind: 'service'` yet also carries
+ *  a `cli_invocation` connector runtime. The validator rejects this at install,
+ *  but it can reach the live registry. It must be treated as an unknown kind (no
  *  reachability auth path), NOT cli — else a stray reachability row for it would
- *  evade the service fence (Codex F4-HIGH follow-on). */
+ *  evade the fence (Codex F4-HIGH follow-on). */
 const serviceWithCliBinding: IngredientManifest = {
   slug: 'sneaky-service',
   name: 'Sneaky service',
   description: 'A service that malformedly claims a cli runtime.',
   author: 'recued-core',
-  kind: 'service',
+  kind: 'service' as unknown as IngredientKind,
   version: 1,
   category: 'action',
   risk_tier: 'write',
@@ -163,7 +165,7 @@ describe('D-182 §8 — isCliIngredient (the canonical cli detector)', () => {
   it('detects a cli_invocation-runtime connector', () => {
     expect(isCliIngredient(whisperCli)).toBe(true);
   });
-  it('a service-kind ingredient is NOT cli (it has no reachability auth path)', () => {
+  it('a retired-kind (service) ingredient is NOT cli (it has no reachability auth path)', () => {
     expect(isCliIngredient(longService)).toBe(false);
   });
   it('a normal ingredient is NOT cli', () => {
@@ -192,17 +194,27 @@ describe('D-182 §8 — isCliIngredient (the canonical cli detector)', () => {
     expect(isCliIngredient(null)).toBe(false);
     expect(isCliIngredient(undefined)).toBe(false);
   });
-  it('a kind:service manifest is NEVER cli even with a cli_invocation runtime (service-kind wins)', () => {
+  it('any kind this server does not know fails closed in both fences; no kind at all does not', () => {
+    // D-321 § 5.5 — the fences refuse an unknown kind, not just the retired
+    // `service`: a typo'd kind on a cli catalog is neither cli nor exposable.
+    const typo = 'htpp' as unknown as IngredientKind;
+    expect(isCliIngredient({ ...whisperCli, kind: typo })).toBe(false);
+    expect(isExternallyExposableIngredient({ ...httpReader, kind: typo })).toBe(false);
+    // A manifest that declares no kind is untouched by the unknown-kind check.
+    const kindless = { ...httpReader, kind: undefined } as unknown as IngredientManifest;
+    expect(isExternallyExposableIngredient(kindless)).toBe(true);
+  });
+  it('a manifest declaring the retired service kind is NEVER cli even with a cli_invocation runtime (the unknown kind wins)', () => {
     expect(isCliIngredient(serviceWithCliBinding)).toBe(false);
   });
 
   // Regression pin: isCliIngredient is factored out of isExternallyExposableIngredient,
-  // which must stay exactly behavior-preserving (cli + service → false, normal → true).
+  // which must stay exactly behavior-preserving (cli + an unknown kind → false, normal → true).
   it('isExternallyExposableIngredient stays behavior-preserving after the factor-out', () => {
     expect(isExternallyExposableIngredient(httpReader)).toBe(true);
     expect(isExternallyExposableIngredient(whisperCli)).toBe(false); // cli
-    expect(isExternallyExposableIngredient(longService)).toBe(false); // service
-    expect(isExternallyExposableIngredient(serviceWithCliBinding)).toBe(false); // service+cli hybrid
+    expect(isExternallyExposableIngredient(longService)).toBe(false); // retired kind
+    expect(isExternallyExposableIngredient(serviceWithCliBinding)).toBe(false); // retired kind + cli hybrid
     expect(isExternallyExposableIngredient(null)).toBe(false);
   });
 });

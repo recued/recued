@@ -13,12 +13,22 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 
+import {
+  renamedWebhookPortNotice,
+  retiredSetting,
+  type RetiredSetting,
+} from './bootstrap-keys.js';
 import { parseCliOverrides } from './cli.js';
-import { envConfigPath, envOverrides } from './env.js';
+import {
+  envConfigPath,
+  envOverrides,
+  isLegacyWebhookPortEnv,
+  matchBootstrapKey,
+} from './env.js';
 import { parseToml, ConfigValidationError } from './parse.js';
-import { defaultConfigPath, defaultDataPath, expandDataPath, expandHome } from './paths.js';
+import { defaultConfigPath, expandHome } from './paths.js';
 import { BOOTSTRAP_TEMPLATE, presetOverlay } from './presets.js';
-import { runtimeDefaults } from './schema.js';
+import { RETIRED_RUNTIME_SETTINGS, runtimeDefaults } from './schema.js';
 import type {
   BootstrapConfig,
   LoadOptions,
@@ -34,6 +44,15 @@ export interface LoadResult extends LoadedConfig {
    *  REAL schema key — valid TOML that applies nothing. Each entry names the
    *  key and the table it belongs under. See `parseToml`. */
   misplacedKeys: string[];
+  /** Removed `[bootstrap]` settings (`bootstrap-keys.ts`) and removed runtime
+   *  settings (`RETIRED_RUNTIME_SETTINGS`) that the config file or the
+   *  environment still sets — ignored, each with what does its job now, so boot
+   *  can say so instead of letting them read as applied. */
+  retiredSettings: RetiredSetting[];
+  /** Settings used under an old name that still works — today `webhook_port`
+   *  (file), `RECUED_BOOTSTRAP_WEBHOOK_PORT` (env) and `--webhook-port` (flag),
+   *  all now `webhooks_enabled`. Each says how the value was read. */
+  renamedSettings: RetiredSetting[];
   /** List of env var names that contributed overrides — useful when
    *  `--print-config` wants to annotate each field with its source. */
   envApplied: string[];
@@ -44,15 +63,7 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
 
   // 1. Schema defaults + universal bootstrap template.
   const runtime: RuntimeConfig = { ...runtimeDefaults() } as RuntimeConfig;
-  const dataPathDefault = defaultDataPath({
-    home: env.HOME,
-    xdgDataHome: env.XDG_DATA_HOME,
-    appData: env.APPDATA,
-  });
-  const bootstrap: BootstrapConfig = {
-    data_path: dataPathDefault,
-    ...BOOTSTRAP_TEMPLATE,
-  };
+  const bootstrap: BootstrapConfig = { ...BOOTSTRAP_TEMPLATE };
 
   // 2. Distribution preset overlay.
   const preset = presetOverlay(opts.distribution);
@@ -74,12 +85,25 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
   let source: string | null = null;
   let unknownKeys: string[] = [];
   let misplacedKeys: string[] = [];
+  const retiredSettings: RetiredSetting[] = [];
+  const renamedSettings: RetiredSetting[] = [];
   const resolvedPath = expandHome(configPath, env.HOME ?? undefined);
   if (existsSync(resolvedPath)) {
     const text = readFileSync(resolvedPath, 'utf8');
-    const { parsed, unknown, misplaced } = parseToml(text);
+    const { parsed, unknown, misplaced, retired, retiredRuntime, renamed } = parseToml(text);
     unknownKeys = unknown;
     misplacedKeys = misplaced;
+    for (const key of retired) {
+      const gone = retiredSetting(`bootstrap.${key}`, key);
+      if (gone) retiredSettings.push(gone);
+    }
+    for (const key of retiredRuntime) {
+      const replacement = RETIRED_RUNTIME_SETTINGS.get(key);
+      if (replacement !== undefined) retiredSettings.push({ name: `runtime.${key}`, replacement });
+    }
+    for (const r of renamed) {
+      renamedSettings.push(renamedWebhookPortNotice(`bootstrap.${r.key}`, r.port, r.overridden));
+    }
     if (parsed.bootstrap) Object.assign(bootstrap, parsed.bootstrap);
     if (parsed.runtime) Object.assign(runtime, parsed.runtime);
     source = resolvedPath;
@@ -94,15 +118,13 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
   // needed before any store can be read, which is the one case env must win.
   const envPatch = envOverrides(env);
   Object.assign(bootstrap, envPatch.bootstrap);
+  retiredSettings.push(...envPatch.retired);
+  renamedSettings.push(...envPatch.renamed);
   const envApplied = collectEnvNames(env);
 
   // 5. CLI flag overrides.
   Object.assign(bootstrap, cli.bootstrap);
-
-  // Post-process: expand `{data_path}` in bootstrap paths AFTER all
-  // overrides landed, so overriding data_path via env/CLI still
-  // propagates into log_path.
-  bootstrap.log_path = expandDataPath(bootstrap.log_path, bootstrap.data_path);
+  renamedSettings.push(...cli.renamed);
 
   return {
     bootstrap,
@@ -111,6 +133,8 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
     distribution: opts.distribution,
     unknownKeys,
     misplacedKeys,
+    retiredSettings,
+    renamedSettings,
     envApplied,
   };
 };
@@ -120,11 +144,15 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
  *
  *  `RECUED_RUNTIME_*` is deliberately NOT collected: it is no longer applied,
  *  so listing it would report an override that did not happen. A diagnostic
- *  that names an inert variable is worse than one that omits it. */
+ *  that names an inert variable is worse than one that omits it. The same goes
+ *  for a `RECUED_BOOTSTRAP_*` name that selects no live key — the removed ones
+ *  are reported in `retiredSettings` instead. The renamed
+ *  `RECUED_BOOTSTRAP_WEBHOOK_PORT` still applies, so it is listed. */
 const collectEnvNames = (env: Record<string, string | undefined>): string[] => {
   const out: string[] = [];
-  for (const name of Object.keys(env)) {
-    if (name.startsWith('RECUED_BOOTSTRAP_')) out.push(name);
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (matchBootstrapKey(name) || isLegacyWebhookPortEnv(name)) out.push(name);
   }
   return out;
 };

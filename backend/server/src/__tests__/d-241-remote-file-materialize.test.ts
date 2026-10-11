@@ -41,12 +41,14 @@
  *  concurrently-running suite's `tmpdir()` mid-flight and turns one flake into
  *  many. */
 
-import { mkdtempSync, readFileSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { RpcError } from '@recued/contracts';
+import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 import {
   composeExecuteDeps,
@@ -55,6 +57,9 @@ import {
 import { remoteFileRecordId } from '../file-view-resolver.js';
 import type { InboundFileCollection } from '../collections/file/inbound-file-collection.js';
 import type { RemoteFileReadDeps } from '../collections/file/remote-file-byte-resolver.js';
+import { watchedFileRecordId } from '../collections/file/watched-folder-collection.js';
+import { createCollectionRegistry } from '../collections/registry.js';
+import { startWatchedFolder } from './helpers/watched-folder.js';
 
 /** A Dropbox File Source scope: `CONNECTION_SOURCE_ID(provider, name, 'file')`. */
 const SCOPE = 'dropbox.work.file';
@@ -257,5 +262,84 @@ describe('the cli byte reader routes a mirrored vendor file to its resolver', ()
     await expect(
       runCli(bundle)(call({ source: REMOTE_REF, dest: dest() })),
     ).rejects.toThrow(/no re-resolvable block/u);
+  });
+});
+
+/** D-106 follow-up — a file in a folder Recued watches reaches a converter too.
+ *  Its `file:local:*` id is read from the owner's disk through the folder's
+ *  live adapter: never the CAS, which holds none of its bytes. */
+describe('the cli byte reader reads a watched folder’s file from disk', () => {
+  const WATCHED_BYTES = Buffer.from('A DOCUMENT IN A FOLDER RECUED WATCHES');
+
+  const watchedWorld = async () => {
+    const base = mkdtempSync(join(tmpdir(), 'd241-watched-'));
+    const root = join(base, 'Clients');
+    mkdirSync(join(root, 'Sandhurst'), { recursive: true });
+    writeFileSync(join(root, 'Sandhurst', 'brief.docx'), WATCHED_BYTES);
+    const db = new Database(':memory:');
+    const registry = createCollectionRegistry();
+    const folder = await startWatchedFolder({
+      db, bus: createWarehouseEventBus(), registry, slug: 'clients', root,
+    });
+    const close = async (): Promise<void> => {
+      await folder.close();
+      db.close();
+      rmSync(base, { recursive: true, force: true });
+    };
+    return { registry, close };
+  };
+  const LOCAL_REF = watchedFileRecordId('clients', 'Sandhurst/brief.docx');
+
+  it('materializes a file:local:* id from the folder on disk, not from the CAS', async () => {
+    const world = await watchedWorld();
+    try {
+      const casReads: string[] = [];
+      const bundle = composeExecuteDeps(baseDeps({
+        inboundFileCollection: inboundCollection(casReads),
+        collectionRegistry: world.registry,
+      }));
+      const out = dest();
+
+      await runCli(bundle)(call({ source: LOCAL_REF, dest: out }));
+
+      expect(readFileSync(out)).toEqual(WATCHED_BYTES);
+      expect(casReads).toEqual([]);
+    } finally {
+      await world.close();
+    }
+  });
+
+  /** ⛔ No registry, or no such folder: a refusal with its reason, never an
+   *  empty temp file read as success. */
+  it('refuses a watched id when the server has no such folder', async () => {
+    const casReads: string[] = [];
+    const unwired = composeExecuteDeps(baseDeps({ inboundFileCollection: inboundCollection(casReads) }));
+    await expect(runCli(unwired)(call({ source: LOCAL_REF, dest: dest() })))
+      .rejects.toThrow(/names a watched folder this server does not have/u);
+
+    const elsewhere = composeExecuteDeps(baseDeps({
+      inboundFileCollection: inboundCollection(casReads),
+      collectionRegistry: createCollectionRegistry(),
+    }));
+    await expect(runCli(elsewhere)(call({ source: LOCAL_REF, dest: dest() })))
+      .rejects.toThrow(/names a watched folder this server does not have/u);
+    expect(casReads).toEqual([]);
+  });
+
+  /** The join, as for the remote reader above: the dep is optional and fails
+   *  closed, so a boot that stopped passing it would leave every watched file
+   *  refused with nothing red. */
+  it('is wired at boot, not only in these tests', () => {
+    const source = readFileSync(
+      join(__dirname, '..', 'serve', 'compose-execution-context.ts'),
+      'utf8',
+    );
+    const marker = source.indexOf('composeExecuteDeps({');
+    expect(marker, 'composeExecuteDeps call not found — this pin has gone stale').toBeGreaterThan(0);
+    expect(
+      source.slice(marker),
+      'compose-execution-context no longer passes the collection registry to composeExecuteDeps, '
+      + 'so no watched folder’s file can reach a converter.',
+    ).toContain('collectionRegistry: collection.collectionRegistry');
   });
 });

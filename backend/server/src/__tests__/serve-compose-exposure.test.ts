@@ -44,9 +44,10 @@ const makeOptions = (
     db: { tag: 'db' },
     auditLog: { tag: 'audit-log' },
     listenerCoordinator: { tag: 'listener-coordinator' },
-    webhookPort: 8732,
+    webhooksEnabled: true,
     lanBindAddress: '192.168.1.10',
     wsHandleClientCount: vi.fn(() => 4),
+    hasPublicAddress: vi.fn(() => true),
     publishExposureMachine: vi.fn(),
     eventBus: { tag: 'event-bus' },
     ...overrides,
@@ -84,9 +85,10 @@ describe('composeServeExposure', () => {
       db: options.db,
       auditLog: options.auditLog,
       listenerCoordinator: options.listenerCoordinator,
-      webhookPort: options.webhookPort,
+      webhooksEnabled: options.webhooksEnabled,
       lanBindAddress: options.lanBindAddress,
       wsHandleClientCount: options.wsHandleClientCount,
+      hasPublicAddress: options.hasPublicAddress,
       eventBus: options.eventBus,
     });
     expect(publishExposureMachine).toHaveBeenCalledTimes(1);

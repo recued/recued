@@ -22,7 +22,7 @@
  *      `/webclient/` so relative refs + SW scope resolve correctly.
  *    - `not_found` — the generic 404 floor.
  *
- *  When a visitor hits `https://<handle>.recued.cloud/` (bare root) under
+ *  When a visitor hits `https://<handle>.recued.net/` (bare root) under
  *  the `redirect` mode, the public listener responds with HTTP 302 +
  *  `Location: https://app.recued.com/`.
  *  The redirect target is a hardcoded constant — the handle from the
@@ -45,7 +45,7 @@
  *
  *  | Method        | Host                              | Response               |
  *  | ------------- | --------------------------------- | ---------------------- |
- *  | GET, HEAD     | `<handle>.recued.cloud[:port]`    | 302 → ROOT_REDIRECT_TARGET |
+ *  | GET, HEAD     | `<handle>.recued.net[:port]`      | 302 → ROOT_REDIRECT_TARGET |
  *  | GET, HEAD     | anything else (BYO domain, IP)    | 404 generic            |
  *  | other         | (any)                             | 405 method-not-allowed |
  *
@@ -109,7 +109,7 @@ export interface RootApexHandlerOptions {
   /** Override the Host-suffix matcher. Production wiring leaves this
    *  unset to use `isProDdnsHost`; tests inject a stub matcher to
    *  exercise the "host accepted" + "host rejected" branches without
-   *  depending on the canonical `.recued.cloud` zone. */
+   *  depending on the DDNS zone registry. */
   hostMatcher?: (host: string | undefined) => boolean;
   /** Optional structured logger. Receives one entry per dispatch
    *  decision. Diagnostic only; never affects behavior. */

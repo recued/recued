@@ -19,11 +19,25 @@ export function cmdHelp(version: string): void {
     status                              Show the running state
 
   Server (foreground):
-    (default)                           Start in the foreground
-    --mcp                               Start an MCP stdio server
+    (default), serve                    Start in the foreground
+    --mcp --token <token>               Start an MCP stdio server. The token, or
+                                        RECUED_MCP_TOKEN, comes from a contract on
+                                        the web app's Contracts page; without one
+                                        it offers no tools.
 
   Pairing:
     pair                                Show a pairing code + the app.recued.com/pair link
+
+  Updates + backup:
+    update [check]                      Check for a newer release
+    update apply | rollback             Install it, or go back (server stopped)
+    archive export <file>               Write an encrypted backup of this server
+    archive import <file> [--dry-run]   Restore one (server stopped), or only check it
+    archive inspect <file>              Print a backup's manifest
+
+  Diagnosis:
+    doctor                              Explain why an install will not start or
+                                        pair, or has stopped doing something
 
   Recovery:
     recover-keyfile                     Re-create an unopenable server keyfile
@@ -62,7 +76,8 @@ export function cmdHelp(version: string): void {
 
   Flags:
     --port <n>                          HTTP port (default: 7717)
-    --db <path>                         SQLite path (default: ./recued-server.db)
+    --db <path>                         SQLite path (default: recued-server.db
+                                        in the platform's standard place)
     --reset-exposure                    One-shot recovery: discard persisted
                                         exposure state + restore the bootstrap-
                                         derived shape (/ws.lan true). Use after

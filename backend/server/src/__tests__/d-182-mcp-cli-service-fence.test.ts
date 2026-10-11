@@ -1,7 +1,8 @@
 /** D-182 §8 — the MCP per-ingredient fence (Codex F4 from increment 3).
  *
- *  `cli` / `service` ingredients are local code-exec / external subprocess and
- *  are NEVER door-exposable (`external_exposable: false`): an external actor may
+ *  `cli` ingredients are local code-exec, and a kind this server does not know
+ *  (D-118's retired `service`, D-321 § 5.5) fails closed too: neither is ever
+ *  door-exposable (`external_exposable: false`). An external actor may
  *  *trigger a recipe* that uses one internally (Gateway-gated via the §7.2
  *  reachability grant), but can NEVER call it directly as a raw
  *  `recued_ingredient_<slug>` MCP tool. This invariant must hold across EVERY MCP
@@ -22,6 +23,7 @@ import {
 } from '../mcp-server.js';
 import {
   isExternallyExposableIngredient,
+  type IngredientKind,
   type IngredientManifest,
   type ProviderSurfaces,
 } from '@recued/contracts';
@@ -72,13 +74,14 @@ const whisperCli: IngredientManifest = {
   } as unknown as ProviderSurfaces,
 };
 
-/** A D-118 service catalog — `kind: 'service'`. */
+/** A catalog declaring D-118's retired `kind: 'service'` (D-321 § 5.5), a kind
+ *  this server no longer knows. */
 const longService: IngredientManifest = {
   slug: 'indexer-service',
   name: 'Indexer service',
   description: 'A long-running local service.',
   author: 'recued-core',
-  kind: 'service',
+  kind: 'service' as unknown as IngredientKind,
   version: 1,
   category: 'action',
   risk_tier: 'write',
@@ -166,7 +169,7 @@ describe('D-182 §8 — isExternallyExposableIngredient (the single source of tr
     expect(isExternallyExposableIngredient(whisperCli)).toBe(false);
   });
 
-  it('a service-kind ingredient is NOT externally exposable', () => {
+  it('a manifest declaring the retired service kind is NOT externally exposable', () => {
     expect(isExternallyExposableIngredient(longService)).toBe(false);
   });
 
@@ -198,7 +201,7 @@ describe('D-182 §8 — isExternallyExposableIngredient (the single source of tr
     expect(isExternallyExposableIngredient(sneakyCli)).toBe(false);
   });
 
-  it('a non-cli connector (e.g. mcp wire) stays exposable — the fence is cli/service-only', () => {
+  it('a non-cli connector (e.g. mcp wire) stays exposable — the fence is cli and unknown kinds only', () => {
     const mcpConnector: IngredientManifest = {
       ...whisperCli,
       slug: 'remote-mcp-catalog',

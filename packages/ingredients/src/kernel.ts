@@ -5,10 +5,11 @@
  *  `recued` publisher namespace) to caller-supplied dispatchers:
  *    - Phase A: seven `shared-*` ingredients (durable + cache tier).
  *    - Phase D: read-only warehouse ingredients — `file-list`,
- *      `file-get`, `webhook-list`, `webhook-get`, `email-list`,
- *      `email-search`, `email-get`. A single `collectionList` /
+ *      `file-get`, `email-list`, `email-search`, `email-get`
+ *      (`webhook-list` / `webhook-get` went 2026-10-10 with the webhook
+ *      collection they read). A single `collectionList` /
  *      `collectionGet` / `collectionSearch` dispatcher slot handles
- *      all three platforms; the slug determines the platform passed
+ *      both platforms; the slug determines the platform passed
  *      to the dispatcher.
  *    - Accepted FormResponse read: `form-response-get` uses a dedicated
  *      dispatcher because its canonical free-form record shape is not a
@@ -239,7 +240,7 @@ const withCreateOrigin = <T extends {
 };
 
 const collectionForKernelPlatform = (
-  platform: 'mail' | 'file' | 'webhook',
+  platform: KernelCollectionPlatform,
 ): CanonicalCollectionName => platform;
 
 /** Phase D collection record shape — kept inline here instead of
@@ -285,7 +286,7 @@ export interface KernelCollectionSearchMatch {
   body_truncated?: boolean;
 }
 
-export type KernelCollectionPlatform = 'mail' | 'file' | 'webhook';
+export type KernelCollectionPlatform = 'mail' | 'file';
 
 /** D-117 — calendar dispatcher inputs / outputs. Kept inline here to
  *  preserve `@recued/ingredients`'s declaration-dep-free posture; the
@@ -1025,7 +1026,7 @@ export interface KernelDispatchers {
   // Phase D (D-106) — warehouse reader slots. Dispatched by platform
   // extracted from the kernel slug (`file-list` → platform='file').
 
-  /** Backs `file-list`, `webhook-list`, `email-list`.
+  /** Backs `file-list`, `email-list`.
    *
    *  D-236 — `source_freshness` is how current the collection instance was at
    *  read time, returned WITH the records it qualifies so a recipe cannot hold
@@ -1044,7 +1045,7 @@ export interface KernelDispatchers {
     records: KernelCollectionRecord[];
     source_freshness?: CollectionSourceFreshness;
   }>;
-  /** Backs `file-get`, `webhook-get`, `email-get`. D-236 — `source_freshness`
+  /** Backs `file-get`, `email-get`. D-236 — `source_freshness`
    *  optional, same contract as `collectionList`. */
   collectionGet?: (input: {
     platform: KernelCollectionPlatform;
@@ -2406,7 +2407,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
       // Phase D — warehouse readers. Platform is derived from the
       // slug prefix so the dispatcher sees a uniform surface.
       case 'file-list':
-      case 'webhook-list':
       case 'email-list': {
         if (!dispatchers.collectionList) {
           throw new IngredientError(
@@ -2458,7 +2458,6 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         };
       }
       case 'file-get':
-      case 'webhook-get':
       case 'email-get': {
         if (!dispatchers.collectionGet) {
           throw new IngredientError(
@@ -5891,7 +5890,6 @@ const parseEntityRef = (
 const platformForSlug = (slug: string): KernelCollectionPlatform => {
   if (slug.startsWith('email-')) return 'mail';
   if (slug.startsWith('file-')) return 'file';
-  if (slug.startsWith('webhook-')) return 'webhook';
   throw new IngredientError(
     'INGREDIENT_NOT_FOUND',
     `unsupported collection slug '${slug}'`,

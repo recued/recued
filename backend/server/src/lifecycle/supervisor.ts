@@ -115,7 +115,7 @@ export const devSupervisor: Supervisor = {
     }
     if (intent === 'lock_held') {
       return (
-        'another recued instance already owns this data_path; ' +
+        'another recued instance already owns this data folder; ' +
         'stop the other instance or pick a different --db path.'
       );
     }

@@ -158,17 +158,17 @@ describe('D-148 W3.5b — production path-routed bin smoke', () => {
 });
 
 describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state', () => {
-  it('keeps webhooks off when webhook_port=0 (no listener wired)', () => {
+  it('keeps webhooks off when webhooks_enabled is false (no listener wired)', () => {
     const state = deriveBootstrapDerivedExposureState({
-      webhook_port: 0,
+      webhooks_enabled: false,
       public_reachable: false,
     });
     expect(state.resolution.webhooks).toEqual({ lan: false, public: false });
   });
 
-  it('enables webhooks LAN when webhook_port>0 (LAN-only deployment)', () => {
+  it('enables webhooks LAN when webhooks_enabled is true (LAN-only deployment)', () => {
     const state = deriveBootstrapDerivedExposureState({
-      webhook_port: 80,
+      webhooks_enabled: true,
       public_reachable: false,
     });
     expect(state.resolution.webhooks).toEqual({ lan: true, public: false });
@@ -177,7 +177,7 @@ describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state
 
   it('enables webhooks + ws + health public when public_reachable=true (legacy public deployment)', () => {
     const state = deriveBootstrapDerivedExposureState({
-      webhook_port: 443,
+      webhooks_enabled: true,
       public_reachable: true,
     });
     expect(state.resolution.webhooks).toEqual({ lan: true, public: true });
@@ -202,37 +202,37 @@ describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state
     const T = true;
     const F = false;
     const expected: Record<string, Record<string, [boolean, boolean]>> = {
-      // key: `${webhook_port}/${public_reachable}` → role → [lan, public]
-      '0/false': {
+      // key: `${webhooks_enabled}/${public_reachable}` → role → [lan, public]
+      'false/false': {
         health: [T, F], ws: [T, F], mcp: [T, F], llm_gateway: [T, F],
         webhooks: [F, F], reception: [F, F], oauth: [F, F], ask: [F, F],
         webclient: [T, F],
       },
-      '0/true': {
+      'false/true': {
         health: [T, T], ws: [T, T], mcp: [T, F], llm_gateway: [T, T],
-        // ⛔ NO WEBHOOK PORT ⇒ NOT PUBLIC, even on a reachable server. The
+        // ⛔ WEBHOOKS OFF ⇒ NOT PUBLIC, even on a reachable server. The
         // `webhooksLan &&` conjunct is the only thing enforcing it, and the
-        // port=0 test above passes `public_reachable: false`, so that conjunct
+        // webhooks-off test above passes `public_reachable: false`, so that conjunct
         // never decided — dropping it left the suite green while publishing a
         // listener for a service that is not running.
         webhooks: [F, F],
         reception: [F, F], oauth: [F, F], ask: [F, F], webclient: [T, F],
       },
-      '443/false': {
+      'true/false': {
         health: [T, F], ws: [T, F], mcp: [T, F], llm_gateway: [T, F],
         webhooks: [T, F], reception: [F, F], oauth: [F, F], ask: [F, F],
         webclient: [T, F],
       },
-      '443/true': {
+      'true/true': {
         health: [T, T], ws: [T, T], mcp: [T, F], llm_gateway: [T, T],
         webhooks: [T, T], reception: [F, F], oauth: [F, F], ask: [F, F],
         webclient: [T, F],
       },
     };
-    for (const webhook_port of [0, 443]) {
+    for (const webhooks_enabled of [false, true]) {
       for (const public_reachable of [false, true]) {
-        const state = deriveBootstrapDerivedExposureState({ webhook_port, public_reachable });
-        const key = `${webhook_port}/${public_reachable}`;
+        const state = deriveBootstrapDerivedExposureState({ webhooks_enabled, public_reachable });
+        const key = `${webhooks_enabled}/${public_reachable}`;
         const table = expected[key]!;
         expect(
           Object.keys(state.resolution).sort(),
@@ -257,14 +257,14 @@ describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state
     // even under the `public` preset, so a bootstrap that widened it would be
     // unreachable by any subsequent gesture.
     const mostPermissive = EXPOSURE_PRESET_PATH_MAP.public;
-    for (const webhook_port of [0, 443]) {
+    for (const webhooks_enabled of [false, true]) {
       for (const public_reachable of [false, true]) {
-        const state = deriveBootstrapDerivedExposureState({ webhook_port, public_reachable });
+        const state = deriveBootstrapDerivedExposureState({ webhooks_enabled, public_reachable });
         for (const role of PATH_ROLES) {
           if (!state.resolution[role].public) continue;
           expect(
             mostPermissive[role].public,
-            `bootstrap (${webhook_port}/${public_reachable}) exposes ${role} publicly, `
+            `bootstrap (${webhooks_enabled}/${public_reachable}) exposes ${role} publicly, `
             + 'but the `public` preset keeps it private — no preset can reach this state',
           ).toBe(true);
         }
@@ -278,16 +278,16 @@ describe('D-148 W3.5b Codex P1 fold — bootstrap-derived initial exposure state
     // first-boot row indistinguishable from a runtime re-apply in the audit
     // trail — the one row that says "nobody chose this, it was derived".
     const state = deriveBootstrapDerivedExposureState({
-      webhook_port: 443,
+      webhooks_enabled: true,
       public_reachable: true,
     });
     expect(state.changed_by_client_id).toBe('system:bootstrap_derive');
-    expect(state.reason).toBe('webhook_port=443, public_reachable=true');
+    expect(state.reason).toBe('webhooks_enabled=true, public_reachable=true');
   });
 
   it('labels mixed-shape states as `custom` (not one of the 3 presets)', () => {
     const state = deriveBootstrapDerivedExposureState({
-      webhook_port: 443,
+      webhooks_enabled: true,
       public_reachable: true,
     });
     expect(state.derived_preset_label).toBe('custom');

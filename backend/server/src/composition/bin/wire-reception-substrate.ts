@@ -371,7 +371,7 @@ export const composeReceptionSubstrate = async (
   };
 
   // D-149 P12 § A.20.7 — Public Trust Footer deployment mode. A
-  // `<handle>.recued.cloud` host is the Pro auto-managed path
+  // `<handle>.recued.net` host is the Pro auto-managed path
   // (`pro_cloud`); every other host (BYO DDNS / custom domain /
   // localhost) is `byo_ddns`. Malformed base URL falls back to the
   // conservative `byo_ddns` copy.
@@ -708,6 +708,7 @@ export const composeReceptionSubstrate = async (
     // webhook door's save/install wiring for the same reason.)
     const {
       composeInstallConfigResolver,
+      composeInstallConnectionsResolver,
       composeDoorRecipeResolver,
     } = await import(
       '../../recipe-capability-wiring.js'
@@ -749,6 +750,9 @@ export const composeReceptionSubstrate = async (
         // for any run carrying a `run_id`, and the runner always carries one (idempotency).
         // Without this the door's recipe runs with an EMPTY config.
         resolveConfig: resolveInstallConfig,
+        // D-320 phase 3 (3b) — and its main dish's choice of connection, which the door
+        // was derived with.
+        resolveDishConnections: composeInstallConnectionsResolver(dishStore),
         resolveRecipe: (recipeId) => deps.recipeStore?.get(recipeId) ?? null,
         ...(resolveDoorRecipe ? { resolveDoorRecipe } : {}),
         ...(resolveOp ? { resolveOp } : {}),
@@ -822,7 +826,7 @@ export const composeReceptionSubstrate = async (
       if (deps.receptionManageCredentialStore) {
         const [
           { createReceptionManageRescheduleRunner, RECEPTION_MANAGE_RESCHEDULE_RECIPE_ID },
-          { mintDoorContract },
+          { carryOwnerRevokes, doorCapabilityChanged, mintDoorContract, retireDoorContract },
           { deriveRecipeCapability },
           { isContractActive },
         ] = await Promise.all([
@@ -839,7 +843,11 @@ export const composeReceptionSubstrate = async (
           ?? null;
         let manageContractId: string | null = null;
         if (manageRecipe) {
-          const derived = deriveRecipeCapability(manageRecipe, resolveOp ? { resolveOp } : {});
+          // A door: its grants name the kernel ops the gate checks (`kernelStepOps`).
+          const derived = deriveRecipeCapability(manageRecipe, {
+            ...(resolveOp ? { resolveOp } : {}),
+            kernelStepOps: true,
+          });
           if (derived.ok) {
             // `mintDoorContract` sets exactly `Reception door — <recipeId>`; matching on it
             // is what makes the mint idempotent across restarts.
@@ -847,17 +855,27 @@ export const composeReceptionSubstrate = async (
             const existing = definitionStore
               .list()
               .find((d) => d.display_name === displayName && isContractActive(d, Date.now()));
-            manageContractId =
-              existing?.contract_id
-              ?? mintDoorContract(
+            // ⛔ 2026-10-10 — reused only while it is still the door this boot derives. A
+            // door minted before then has no row for the recipe's kernel ops (it was
+            // derived from the LOWERED recipe, whose kernel steps carried no op id), so
+            // every reschedule was refused `op_not_granted`. Replaced once, carrying any
+            // op its owner switched off; current, it is reused as before.
+            const mintDeps = { definitionStore, grantEntryStore, now: () => Date.now() };
+            if (existing !== undefined && !doorCapabilityChanged(existing, derived.capability).changed) {
+              manageContractId = existing.contract_id;
+            } else {
+              if (existing !== undefined) retireDoorContract(existing.contract_id, 'boot_rederived', mintDeps);
+              manageContractId = mintDoorContract(
                 {
                   door: 'reception',
                   recipeId: RECEPTION_MANAGE_RESCHEDULE_RECIPE_ID,
                   capability: derived.capability,
                   mintedBy: 'system',
                 },
-                { definitionStore, grantEntryStore, now: () => Date.now() },
+                mintDeps,
               ).contract_id;
+              if (existing !== undefined) carryOwnerRevokes([existing.contract_id], manageContractId, mintDeps);
+            }
           }
         }
         manageRescheduleRunner = createReceptionManageRescheduleRunner({
@@ -868,6 +886,40 @@ export const composeReceptionSubstrate = async (
           resolveContractId: () => manageContractId,
           now: () => Date.now(),
         });
+      }
+
+      // ⛔ 2026-10-10 — every bound form and lookup door, re-derived at boot by D-299's
+      // rule before a visitor reaches it (`rederiveReceptionDoorsAtBoot`): a door that only
+      // loses ids the gate never read is re-minted, a widening waits for its owner.
+      // Same deps the owner's bind uses; the pair store is per door. Never throws.
+      {
+        const { rederiveReceptionDoorsAtBoot } = await import('../../reception-door-bind.js');
+        const bootDoors: Array<import('../../reception-door-bind.js').ReceptionDoorAtBoot> = [];
+        for (const endpoint of registryStore.list()) {
+          if (endpoint.revoked_at !== null) continue;
+          try {
+            const intake = pairStore.findByEndpoint(endpoint.endpoint_id);
+            if (intake?.contract_id) {
+              bootDoors.push({ endpointId: endpoint.endpoint_id, recipeId: intake.binding.recipe_id, link: pairStore });
+            }
+            const lookup = lookupRecipePairStore?.findByEndpoint(endpoint.endpoint_id);
+            if (lookup?.contract_id && lookupRecipePairStore !== undefined) {
+              bootDoors.push({ endpointId: endpoint.endpoint_id, recipeId: lookup.recipe_id, link: lookupRecipePairStore });
+            }
+          } catch (error) {
+            console.warn(`[reception] door for '${endpoint.endpoint_id}' not read at boot`, error);
+          }
+        }
+        const { pairStore: _formLink, ...bootBindDeps } = doorBindDeps;
+        void _formLink;
+        for (const outcome of rederiveReceptionDoorsAtBoot(bootDoors, {
+          ...bootBindDeps,
+          recipeOf: (recipeId) => deps.recipeStore?.get(recipeId) ?? null,
+        })) {
+          console.info(
+            `[reception] door for '${outcome.endpoint_id}' (recipe '${outcome.recipe_id}') ${outcome.outcome} at boot`,
+          );
+        }
       }
     }
   }

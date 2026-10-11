@@ -57,7 +57,6 @@ const makeOptions = (
     backgroundServices: { stopAll: vi.fn(async () => undefined) },
     fileStack: undefined,
     calendarStack: undefined,
-    serviceStack: undefined,
     cascade: undefined,
     server: { close: vi.fn(async () => undefined) },
     db: undefined,
@@ -102,9 +101,6 @@ describe('installShutdown', () => {
       calendarStack: {
         disposeAll: vi.fn(async () => { order.push('calendar'); }),
       },
-      serviceStack: {
-        disposeAll: vi.fn(async () => { order.push('service'); }),
-      },
       cascade: {
         close: vi.fn(async () => { order.push('cascade'); }),
       },
@@ -136,7 +132,6 @@ describe('installShutdown', () => {
       'stopAll',
       'file',
       'calendar',
-      'service',
       'cascade',
       'server',
       'audit',
@@ -205,11 +200,6 @@ describe('installShutdown', () => {
       calendarStack: {
         disposeAll: vi.fn(async () => {
           throw new Error('calendar dispose failed');
-        }),
-      },
-      serviceStack: {
-        disposeAll: vi.fn(async () => {
-          throw new Error('service dispose failed');
         }),
       },
       server: {

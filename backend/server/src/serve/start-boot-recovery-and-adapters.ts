@@ -19,6 +19,7 @@ import {
 } from '../upload/inbound-scratch.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
 import type { FileStack } from '../collections/file/compose.js';
+import type { WatchedFoldersAttachment } from '../collections/file/watched-folders.js';
 import type { CollectionContext } from './compose-collection-context.js';
 
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
@@ -80,6 +81,9 @@ export interface StartBootRecoveryAndAdaptersOptions {
   readonly preserveInterruptedDispatch?:
     NotificationBlockBootRecoveryDeps['preserveInterruptedDispatch'];
   readonly fileStack: FileStack | undefined;
+  /** D-106 follow-up — where a watched folder's records go. Absent (a dbless
+   *  harness) ⇒ folders are watched with no records, as before 2026-10-10. */
+  readonly watchedFolders?: WatchedFoldersAttachment;
   readonly collection: Pick<CollectionContext, 'startCollectionAdapters'>;
   /** Absolute server db path. `dirname(dbPath)` is the data dir holding the
    *  restore-provenance marker the post-restart hook commits + clears (M5 S1),
@@ -123,6 +127,7 @@ export const startBootRecoveryAndAdapters = async (
     commitStore,
     gatedActionStore,
     fileStack,
+    watchedFolders,
     collection,
     dbPath,
     configPath,
@@ -386,6 +391,8 @@ export const startBootRecoveryAndAdapters = async (
   }
 
   if (fileStack) {
+    // Before `startAll`, so each folder's first walk lands in its collection.
+    if (watchedFolders) fileStack.attachWatchedFolders(watchedFolders);
     await fileStack.startAll();
   }
 

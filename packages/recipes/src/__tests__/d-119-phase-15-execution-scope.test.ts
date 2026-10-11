@@ -76,17 +76,21 @@ const domWriteIngredient: IngredientManifest = {
   },
 };
 
-const serviceTemplate: IngredientManifest = {
-  slug: 'cloudflared-linux',
-  kind: 'service',
-  name: 'cloudflared (Linux)',
-  description: 'Long-running Cloudflare Tunnel daemon.',
+/** A server-only ingredient: `kind: 'cli'` derives `['server']`. A cli
+ *  ingredient never stands alone in practice (it ships as a decomposed pack
+ *  catalog), so this fixture is not a valid manifest by itself; the scope tests
+ *  below assert the scope rule, not overall validity. */
+const cliTemplate: IngredientManifest = {
+  slug: 'whisper-cli',
+  kind: 'cli',
+  name: 'Whisper (local)',
+  description: 'Transcribe audio with a local binary.',
   author: 'recued-core',
   category: 'data',
-  risk_tier: 'admin',
-  tags: ['service', 'tunnel'],
-  input: { service: { platform: 'linux' } },
-  output: {},
+  risk_tier: 'read',
+  tags: ['cli', 'audio'],
+  input: {},
+  output: { text: 'text' },
 };
 
 const noopLookup = async (_k: string) => null;
@@ -146,9 +150,9 @@ describe('validateIngredient — execution_scope subset rule', () => {
     expect(issue?.path).toBe('execution_scope');
   });
 
-  it('rejects a too-wide scope on a service-template ingredient', () => {
-    // kind:service → derived ['server']. Declaring ['device','server'] is wider.
-    const result = validateIngredient({ ...serviceTemplate, execution_scope: ['device', 'server'] });
+  it('rejects a too-wide scope on a server-only (cli) ingredient', () => {
+    // kind:cli → derived ['server']. Declaring ['device','server'] is wider.
+    const result = validateIngredient({ ...cliTemplate, execution_scope: ['device', 'server'] });
     expect(result.valid).toBe(false);
     const issue = result.issues.find((i) => i.code === 'EXECUTION_SCOPE_TOO_WIDE');
     expect(issue).toBeDefined();
@@ -159,9 +163,10 @@ describe('validateIngredient — execution_scope subset rule', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('accepts a matching narrow scope on a service template', () => {
-    const result = validateIngredient({ ...serviceTemplate, execution_scope: ['server'] });
-    expect(result.valid).toBe(true);
+  it('accepts a matching narrow scope on a server-only (cli) ingredient', () => {
+    const result = validateIngredient({ ...cliTemplate, execution_scope: ['server'] });
+    // Only the scope rule is under test: a lone cli manifest has no executor.
+    expect(result.issues.find((i) => i.code === 'EXECUTION_SCOPE_TOO_WIDE')).toBeUndefined();
   });
 });
 
@@ -283,18 +288,20 @@ describe('planBundleInstall — execution scope install gate', () => {
     }
   });
 
-  it('returns kind:incompatible when installRole=device but a service template pins server-only', async () => {
+  it('a lone cli manifest in a bundle is invalid before the scope gate (cli ships only in a pack)', async () => {
+    // D-321 § 5.5 — with `service` retired, `cli` is the only server-only kind,
+    // and a cli ingredient is never a standalone manifest: a bundle carrying one
+    // fails validation first. The DOM case above covers the incompatible branch.
     const out = await planBundleInstall({
-      input: { recipe: baseRecipe, ingredients: [serviceTemplate] },
+      input: { recipe: baseRecipe, ingredients: [cliTemplate] },
       source: { kind: 'bundle-file', slug: 'detect-deal-risk-hubspot' },
       contentHash: 'h1',
       lookupExisting: noopLookup,
       installRole: 'device',
     });
-    expect(out.kind).toBe('incompatible');
-    if (out.kind === 'incompatible') {
-      expect(out.derivedScope).toEqual(['server']);
-      expect(out.installRole).toBe('device');
+    expect(out.kind).toBe('invalid');
+    if (out.kind === 'invalid') {
+      expect(out.issues.some((i) => i.code === 'executor_ambiguous')).toBe(true);
     }
   });
 

@@ -124,11 +124,6 @@ export const CHAT_INBOUND_TOKEN_KIND_COPY: Readonly<Record<
       + 'That app’s own tools are not here. Recued puts them into a Pack, '
       + 'so you will find them under “Direct operation calls” below.',
   },
-  service: {
-    label: 'Long-running service',
-    description:
-      'Jobs that keep running in the background and watch for changes.',
-  },
   storage: {
     label: 'Local storage',
     description:
@@ -438,7 +433,6 @@ export const buildChatInboundTokenDetailModel = (args: {
     'dom',
     'ai',
     'chat',
-    'service',
     'connection',
     // D-171 slice-2c follow-on #1 — the legacy buckets render last (after the
     // curated registry kinds): Recued's own server tools, then raw direct

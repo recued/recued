@@ -76,6 +76,7 @@ import {
   RpcError,
   MAX_HEADER_AUTH_ENTRIES,
   getVendorProvider,
+  requiredScopesByConnection,
   resolveVendorOAuthEndpoints,
   type ConnectionHealth,
   type ConnectionCredentialPostSafeStopVerificationSummary,
@@ -88,6 +89,29 @@ import {
   type PackListEntry,
   type ReprobeEngagementCapabilitiesResponse,
 } from '@recued/contracts';
+
+/** A `packs.list` row as the server sends it: the manifest's connection fields
+ *  lifted onto the row and the manifest itself left off (`b06752cc9`). These
+ *  fakes used to hand the panel a `manifest`, so they passed for three weeks
+ *  while the real panel read nothing and "Used by packs" stayed empty. */
+const asListRow = (row: PackListEntry): PackListEntry => {
+  const { manifest, ...rest } = row;
+  if (manifest === undefined) return rest as PackListEntry;
+  const scopes = requiredScopesByConnection(manifest);
+  return {
+    ...rest,
+    ...(rest.publisher === undefined && manifest.publisher !== undefined
+      ? { publisher: manifest.publisher }
+      : {}),
+    ...(manifest.connection_requirements !== undefined
+      ? { connection_requirements: manifest.connection_requirements }
+      : {}),
+    ...(manifest.connection_hints !== undefined
+      ? { connection_hints: manifest.connection_hints }
+      : {}),
+    ...(Object.keys(scopes).length > 0 ? { required_scopes_by_connection: scopes } : {}),
+  } as PackListEntry;
+};
 
 // ════════════════════════════════════════════════════════════════
 // Lightweight string-innerHTML fake host (unit tests)
@@ -1243,7 +1267,7 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
   it('Fork 1 B — pre-fills the Scopes field with the vendor const ∪ installed packs needs', async () => {
     // An installed HubSpot pack whose write op needs a scope the read-only
     // vendor const omits — exactly the under-scoping Fork 1 fixes.
-    const hubspotPack = {
+    const hubspotPack = asListRow({
       slug: 'recued-core.hubspot',
       installed: true,
       manifest: {
@@ -1267,7 +1291,7 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
           },
         ],
       },
-    } as unknown as PackListEntry;
+    } as unknown as PackListEntry);
     const { mount, click } = mountPanel({
       connections: [],
       runPacksList: async () => ({ packs: [hubspotPack] }),
@@ -1297,7 +1321,7 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
 
   it('surfaces and retries a failed pack-context read', async () => {
     let packReads = 0;
-    const hubspotPack = {
+    const hubspotPack = asListRow({
       slug: 'hubspot-workflows',
       installed: true,
       manifest: {
@@ -1330,7 +1354,7 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
           },
         }],
       },
-    } as unknown as PackListEntry;
+    } as unknown as PackListEntry);
     const panel = mountPanel({
       connections: [connection('hubspot-work', {
         vendor: 'hubspot',
@@ -1360,7 +1384,7 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
   });
 
   it('serializes live pack-context refreshes and drops the stale middle roster', async () => {
-    const pack = (slug: string): PackListEntry => ({
+    const pack = (slug: string): PackListEntry => asListRow({
       slug,
       installed: true,
       manifest: {
@@ -10376,6 +10400,31 @@ describe('D-165 P3 connections enrollment panel — row actions', () => {
     mount.dispose();
   });
 
+  it('a check re-reads the rows, so the row shows the scopes the check found', async () => {
+    // A HubSpot Service Key's check stores the scopes HubSpot reports for it.
+    // "Used by packs" reads them from the row, so a check that left the rows
+    // as loaded would keep saying a scope is missing after the owner added it.
+    const scopes = ['crm.objects.contacts.read', 'crm.objects.contacts.write'];
+    const { mount, click, calls } = mountPanel({
+      runList: vi
+        .fn<ConnectionsEnrollListCaller>()
+        .mockResolvedValueOnce({ connections: [connection('hubspot')] })
+        .mockResolvedValueOnce({ connections: [connection('hubspot', { granted_scopes: scopes })] }),
+      runProbe: async () => ({ health: { status: 'ok' } as ConnectionHealth }),
+    });
+    await mount.whenLoaded();
+    expect(mount.getState().connections[0]?.granted_scopes).toBeUndefined();
+
+    click({ action: 'connections-probe', kind: 'api', name: 'hubspot' });
+    await tick();
+
+    expect(calls.runList).toHaveBeenCalledTimes(2);
+    expect(mount.getState().connections[0]?.granted_scopes).toEqual(scopes);
+    expect(mount.getState().loading).toBe(false);
+    expect(mount.getState().dialog.recentProbe).toMatchObject({ name: 'hubspot', status: 'ok' });
+    mount.dispose();
+  });
+
   it('delete removes the row by re-listing', async () => {
     const tabs = rotationTabs();
     const remaining = [connection('keep')];
@@ -11402,7 +11451,7 @@ describe('multi-header auth — repeatable header-list form', () => {
 });
 
 describe('D-223 — a pre-filled box says who filled it', () => {
-  const hintingPack = {
+  const hintingPack = asListRow({
     slug: 'acme-tasks',
     installed: true,
     manifest: {
@@ -11417,7 +11466,7 @@ describe('D-223 — a pre-filled box says who filled it', () => {
       }],
       contents: [],
     },
-  } as unknown as PackListEntry;
+  } as unknown as PackListEntry);
 
   it('seeds the value, attributes it, and drops the marker once the owner edits', async () => {
     const { mount, click, field, getHtml } = mountPanel({

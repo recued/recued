@@ -124,7 +124,7 @@ describe('buildSchema ∘ applyField round-trip', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// D-103 Phase A: runtime-config fields (vault quotas, log levels, etc.)
+// D-103 Phase A: runtime-config fields (vault quotas, supervisor mode, etc.)
 // ────────────────────────────────────────────────────────────────
 
 describe('buildSchema — runtime config fields', () => {
@@ -134,7 +134,7 @@ describe('buildSchema — runtime config fields', () => {
     const keys = schema.map((f) => f.key);
     expect(keys).toContain('llm.allow_upgrade_default');
     expect(keys).not.toContain('vault.quota.per_publisher_bytes');
-    expect(keys).not.toContain('log.level');
+    expect(keys).not.toContain('supervisor.mode');
   });
 
   it('emits every non-LLM runtime key when runtimeConfig is wired', () => {
@@ -145,9 +145,12 @@ describe('buildSchema — runtime config fields', () => {
     expect(keys).toContain('vault.quota.per_publisher_bytes');
     expect(keys).toContain('vault.quota.total_bytes');
     expect(keys).toContain('data.shared.quota.bytes');
-    expect(keys).toContain('log.level');
+    expect(keys).toContain('supervisor.mode');
     expect(keys).toContain('public_port');
     expect(keys).toContain('scheduler.min_interval_minutes');
+    // Removed 2026-10-10: nothing read them (`RETIRED_RUNTIME_SETTINGS`).
+    expect(keys).not.toContain('log.level');
+    expect(keys).not.toContain('collection.mail.default.quota_bytes');
   });
 
   it('does NOT surface internal fields (network.apex_mode) to the generic schema (Codex R26.2 fold)', () => {
@@ -174,12 +177,12 @@ describe('buildSchema — runtime config fields', () => {
     const runtimeConfig = createRuntimeConfigStore({});
     const schema = buildSchema({ llmManager, runtimeConfig });
 
-    const level = schema.find((f) => f.key === 'log.level');
-    expect(level?.type).toBe('enum');
-    expect(level?.enum).toEqual(['debug', 'info', 'warn', 'error']);
-    expect(level?.section).toBe('Logging');
-    expect(level?.label).toBe('Log level');
-    expect(typeof level?.description).toBe('string');
+    const supervisor = schema.find((f) => f.key === 'supervisor.mode');
+    expect(supervisor?.type).toBe('enum');
+    expect(supervisor?.enum).toEqual(['auto', 'native', 'systemd', 'launchd', 'docker', 'dev']);
+    expect(supervisor?.section).toBe('Lifecycle');
+    expect(supervisor?.label).toBe('Supervisor mode');
+    expect(typeof supervisor?.description).toBe('string');
 
     const reserve = schema.find((f) => f.key === 'storage.reserve_pct');
     expect(reserve?.min).toBe(0);
@@ -210,8 +213,8 @@ describe('applyField — runtime config fields', () => {
   it('routes non-LLM keys to the runtimeConfig store', () => {
     const llmManager = createLLMConfigManager(db);
     const runtimeConfig = createRuntimeConfigStore({});
-    applyField('log.level', 'warn', { llmManager, runtimeConfig });
-    expect(runtimeConfig.get('log.level')).toBe('warn');
+    applyField('supervisor.mode', 'systemd', { llmManager, runtimeConfig });
+    expect(runtimeConfig.get('supervisor.mode')).toBe('systemd');
   });
 
   it('applies a round-trip: set then observe via buildSchema', () => {
@@ -232,7 +235,7 @@ describe('applyField — runtime config fields', () => {
 
   it('rejects a non-LLM write when no runtimeConfig is wired', () => {
     const llmManager = createLLMConfigManager(db);
-    expect(() => applyField('log.level', 'warn', { llmManager }))
+    expect(() => applyField('supervisor.mode', 'systemd', { llmManager }))
       .toThrow(/Unknown config key/);
   });
 

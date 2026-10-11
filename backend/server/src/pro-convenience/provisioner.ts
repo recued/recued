@@ -23,7 +23,7 @@
  *                                    (`active` / `error` / `pending`)
  *
  *  ACTUATION is deliberately NOT in this engine. Reserving the
- *  `<handle>.recued.cloud` handle (`HandleStateMachine.reserveInitial`)
+ *  `<handle>.recued.net` handle (`HandleStateMachine.reserveInitial`)
  *  and issuing the ACME cert (`acme-domain-renewer.issueInitialDomain`)
  *  already have a production driver gated on the D-148
  *  `pro_subscription_token` (the cert-stack composition + the running
@@ -38,7 +38,7 @@
  *
  *  Secret invariant. Every value this engine emits is secret-free — only
  *  states + `account_id` / `publisher_handle` / the public
- *  `<handle>.recued.cloud` hostname. The `server_scoped_credential` and
+ *  `<handle>.recued.net` hostname. The `server_scoped_credential` and
  *  the entitlement claim token are confined to the `ProEntitlementSource`
  *  and never reach this engine.
  */
@@ -66,7 +66,7 @@ export interface ProConvenienceReachability {
  *  once the gate (entitled ∧ bound ∧ reachable) passes. Every field is
  *  secret-free. */
 export interface ProvisionedConvenienceSnapshot {
-  /** The `<handle>.recued.cloud` actually reserved, when known. Overrides
+  /** The `<handle>.recued.net` actually reserved, when known. Overrides
    *  the binding-derived hostname for display. */
   ddns_hostname?: string;
   /** The handle is reserved + its DDNS subscription is active/grace. */

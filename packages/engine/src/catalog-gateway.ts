@@ -44,6 +44,7 @@
 
 import {
   BATCH_ARGS_PREVIEW_MAX_BYTES,
+  cliToolPolicyOfRuntime,
   CHUNKED_UPLOAD_WIRE_PREFIX,
   CHUNKED_UPLOAD_WIRE_WALK_KEY,
   HTTP_UPLOAD_WIRE_FIELD_KEY,
@@ -68,7 +69,9 @@ import {
   isLockedInputKey,
   isPaginationStyle,
   isPreflightRequiredSignal,
+  isRealtimeApiBindingKind,
   mergeRoleResults,
+  CLI_REACHABILITY_OWNER_PRINCIPAL,
   cliPrincipalFromExecutionSource,
   projectResolvedArgs,
   projectToResolution,
@@ -85,6 +88,7 @@ import {
   CONTRACTED_DEFAULT_TRUST_CEILING,
   isRecordsExecutionBinding,
   recordsPrincipalFromExecutionSource,
+  CONNECTION_NOT_ADMITTED_DETAIL,
 } from '@recued/contracts';
 // D-217 § 9.8 — the walk's plan lives in `@recued/ingredients` (the sequencer
 // that drives it is the connection adapter). engine → ingredients is the
@@ -102,6 +106,7 @@ import type {
   ApiExecutionBindingKind,
   ArgHashes,
   ChunkedUploadWalkInput,
+  CatalogDenyReason,
   CatalogOperationResolution,
   CliMethodBinding,
   DispatchRole,
@@ -344,32 +349,129 @@ const auditBase = (
   ...(canonicalArgHashHex !== undefined ? { canonical_arg_hash: canonicalArgHashHex } : {}),
 });
 
-/** Thrown on a gate denial. A plain `Error` — the step-runner's catch
- *  records it as a `NETWORK_ERROR` `RecipeError` and halts the run; the
- *  structured deny reason rides on the gateway audit row, not the message. */
-const denyError = (call: CatalogCall, resolution: CatalogOperationResolution): Error =>
-  new Error(
-    `D-165 gateway: operation '${resolution.operation_id}' on connection `
-      + `'${call.connection_name}' denied (${resolution.deny_reason}).`,
+/** A thrown gateway error that keeps its own step code. The step runner reads
+ *  an error's `code` when it is a `RecipeErrorCode` (`adapterErrorCode`); a
+ *  plain `Error` became its catch-all `NETWORK_ERROR`, whose "check your
+ *  connection and try again" sent an agent back to retry a refusal that fails
+ *  the same way every time (the D-313 class, at the gate). */
+const codedError = (message: string, code: RecipeErrorCode): Error =>
+  Object.assign(new Error(message), { code });
+
+/** The run a refused cli op was dispatched for: its reachability principal
+ *  (`cliPrincipalFromExecutionSource`), `null` when no principal can reach a
+ *  cli op. Absent for every op that is not cli. */
+interface CliRefusal {
+  principal: string | null;
+}
+
+/** One plain sentence per deny reason: what an owner reads in a run's output
+ *  and an agent reads in a tool result. A `foreach` keeps only an item's
+ *  message, so in a recipe's rows this sentence is all the owner sees.
+ *
+ *  A cli op names no connection, because it has none (the old wording printed
+ *  `on connection 'undefined'`). Its switched-off sentence follows the run's
+ *  principal: the owner's own runs and schedules read the owner's switch,
+ *  "Self (you)" on the pack's Access tab (`pack-access-controls.ts`); a
+ *  contract's runs read that contract's switch on the same tab; any other run
+ *  can never reach a cli op. Only that reason names a remedy, because only its
+ *  remedy is one switch; the others say what happened. Keyed by the closed
+ *  `CatalogDenyReason`, so a new reason does not compile without a sentence. */
+const REFUSAL_SENTENCES: Record<
+  CatalogDenyReason,
+  (op: string, connection: string | undefined, cli: CliRefusal | undefined) => string
+> = {
+  cli_reachability_disabled: (op, _connection, cli) => {
+    if (cli?.principal === CLI_REACHABILITY_OWNER_PRINCIPAL) {
+      return `${op} is switched off, so it did not run. To use it, open its pack in Packs `
+        + 'and turn it on under Self (you) on the Access tab.';
+    }
+    if (typeof cli?.principal === 'string') {
+      return `${op} is switched off for the contract this run is under, so it did not run. `
+        + 'The owner can turn it on for that contract on its pack’s Access tab, in Packs.';
+    }
+    return `${op} runs a program on your server, which only your own runs, your schedules `
+      + 'and contracts you allow can do, so it did not run.';
+  },
+  operation_not_declared: (op) => `Its pack has no action named ${op}, so nothing ran.`,
+  no_connection_profile: (op, connection) =>
+    connection !== undefined
+      ? `There is no connection ${connection} set up for ${op}, so it did not run.`
+      : `${op} needs a connection and this run named none, so it did not run.`,
+  operation_not_granted: (op, connection) =>
+    connection !== undefined
+      ? `${op} is not allowed on connection ${connection} for this run, so it did not run.`
+      : `${op} is not allowed for this run, so it did not run.`,
+  catalog_mismatch: (op, connection) =>
+    `${connection !== undefined ? `Connection ${connection}` : 'The connection this run named'} `
+      + `belongs to another service, so ${op} did not run.`,
+  policy_denied: (op) => `Its pack’s policy does not allow ${op} to run, so it did not run.`,
+};
+
+/** Thrown on a gate denial, coded `NOT_AUTHORIZED` (the server refused this
+ *  run). The sentence ends with the deny reason in parentheses; the audit row
+ *  carries the same reason as its `failure_mode`. */
+const denyError = (
+  call: CatalogCall,
+  resolution: CatalogOperationResolution,
+  cli: CliRefusal | undefined,
+): Error => {
+  const op = `'${resolution.operation_id}'`;
+  const connection = cli === undefined && call.connection_name
+    ? `'${call.connection_name}'`
+    : undefined;
+  const reason = resolution.deny_reason;
+  return codedError(
+    reason === undefined
+      ? `${op} was refused, so it did not run.`
+      : `${REFUSAL_SENTENCES[reason](op, connection, cli)} (${reason})`,
+    'NOT_AUTHORIZED',
   );
+};
 
 /** Thrown when a catalog operation's `path_scope` rejects the call's resolved
- *  target (D-165 P3.path-picker, Slice 3b). Like `denyError` it is a plain
- *  `Error` — the structured reason + both canonical paths ride the gateway
- *  audit row's `path_scope` detail, not the message. The message names the
- *  target (or `(unresolved)` when a template token had no arg), the connection
- *  scope, and the `checkPathScope` reason for log readability. */
+ *  target (D-165 P3.path-picker, Slice 3b), coded `NOT_AUTHORIZED` like
+ *  `denyError`. The structured reason + both canonical paths ride the gateway
+ *  audit row's `path_scope` detail. The message names the target (or
+ *  `(unresolved)` when a template token had no arg), the connection scope, and
+ *  the `checkPathScope` reason for log readability. */
 const pathScopeError = (
   call: CatalogCall,
   resolution: CatalogOperationResolution,
   ps: PathScopeCheck,
 ): Error =>
-  new Error(
+  codedError(
     `D-165 gateway: operation '${resolution.operation_id}' target `
       + `'${ps.target_path ?? '(unresolved)'}' is outside connection `
       + `'${call.connection_name}' scope '${ps.connection_path}' `
       + `(${ps.reason ?? 'path_scope_violation'}).`,
+    'NOT_AUTHORIZED',
   );
+
+/** Why a declared operation cannot run as a step, in words, for the gateway's
+ *  fail-closed binding check. `no_api_binding`: the pack binds the operation to
+ *  nothing. `unsupported_binding_kind`: it is bound, but not to anything this
+ *  server runs as a step: a real-time subscription (webhook, queue, push
+ *  channel, or a GraphQL `subscription`) delivers events instead, and the rest
+ *  (a connector `method_call`, a malformed Records binding) have no runner
+ *  here. The failure mode ends the sentence, as on the audit row. */
+const cannotRunSentence = (
+  operationId: string,
+  failureMode: 'no_api_binding' | 'unsupported_binding_kind',
+  binding: ApiExecutionBinding | undefined,
+): string => {
+  const op = `'${operationId}'`;
+  if (failureMode === 'no_api_binding') {
+    return `Its pack declares ${op} but gives it no way to run, so nothing ran. (no_api_binding)`;
+  }
+  const deliversEvents = binding !== undefined && (
+    isRealtimeApiBindingKind(binding.kind)
+    || (binding.kind === 'graphql' && binding.operation_type === 'subscription'));
+  return deliversEvents
+    ? `${op} delivers events from its service as they happen, which is not an action a step `
+      + 'can run, so nothing ran. (unsupported_binding_kind)'
+    : `This server cannot run ${op} the way its pack binds it, so nothing ran. `
+      + '(unsupported_binding_kind)';
+};
 
 /** D-165 follow-on (op-identity binding) — true when the resume-approved
  *  target matches the re-resolved catalog call. A catalog admit-on-resume
@@ -2368,10 +2470,13 @@ const runCatalogOperationInner = async (
   const isRecordsOp = authorityTarget.records;
   // ⛔ `pages: "all"` reads a Records search page by page (`StepPages`). On any
   // other operation nothing would read it, and a step that believes it read
-  // everything would hold one page, so it is refused before anything runs.
+  // everything would hold one page, so it is refused before anything runs:
+  // `BAD_INPUT`, since the step asked for something this operation cannot give.
   if (stepOptions?.pages === 'all' && rawRecordsBinding?.action !== 'search') {
-    throw new Error(
-      `pages: "all" reads a Records search page by page, and '${call.operation_id}' is not one`,
+    const named = manifest.operations?.[call.operation_id]?.operation_id ?? call.operation_id;
+    throw codedError(
+      `pages: "all" reads a Records search page by page, and '${named}' is not one, so nothing ran.`,
+      'BAD_INPUT',
     );
   }
 
@@ -2453,18 +2558,21 @@ const runCatalogOperationInner = async (
   // `operation_not_declared`, ahead of any reachability deny). A throwing store
   // read fails CLOSED to not-reachable (a transient SQLite error must never
   // accidentally admit); the resolver itself maps a null principal → false.
+  // The principal also picks the sentence a refusal reads (`REFUSAL_SENTENCES`).
+  const cliPrincipal = isCliOp
+    ? cliPrincipalFromExecutionSource(
+        ctx.execution_source ?? {
+          actor: ctx.actor ?? '',
+          ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
+        },
+      )
+    : null;
   let cliReachable = false;
   if (isCliOp) {
     // The op must be DECLARED (carries a risk tier in the manifest) to be
     // reachable; an undeclared op short-circuits to `operation_not_declared`.
     const cliRisk = manifest.operations?.[call.operation_id]?.risk_tier;
     if (cliRisk !== undefined) {
-      const cliPrincipal = cliPrincipalFromExecutionSource(
-        ctx.execution_source ?? {
-          actor: ctx.actor ?? '',
-          ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
-        },
-      );
       try {
         cliReachable = ctx.cliReachabilityResolver?.(cliPrincipal, slug, call.operation_id) ?? false;
       } catch {
@@ -2597,7 +2705,7 @@ const runCatalogOperationInner = async (
       outcome: 'failed',
       ...(resolution.deny_reason ? { failure_mode: resolution.deny_reason } : {}),
     });
-    throw denyError(call, resolution);
+    throw denyError(call, resolution, isCliOp ? { principal: cliPrincipal } : undefined);
   }
 
   // A model-facing qualified id is routing metadata, not a provider-native
@@ -2673,9 +2781,12 @@ const runCatalogOperationInner = async (
       outcome: 'failed',
       failure_mode: 'request_schema_violation',
     });
-    throw new Error(
+    // `BAD_INPUT`: the caller sent arguments this op cannot take, which a retry
+    // of the same call will not change.
+    throw codedError(
       `D-165 gateway: operation '${resolution.operation_id}' arguments violate `
       + `its closed request schema: ${requestSchemaViolation}.`,
+      'BAD_INPUT',
     );
   }
 
@@ -2720,6 +2831,24 @@ const runCatalogOperationInner = async (
       });
       throw pathScopeError(call, resolution, ps);
     }
+  }
+
+  // ── connection scope ── (D-320 audit) the governing contract's list of
+  // connections, checked here too, before the `ask`: the admission probe refuses
+  // such a call only as it dispatches, so a write would first be held for the
+  // owner's approval and then refused. Names no connection: the caller may not be
+  // the owner (ruling 12).
+  if (call.connection_name && ctx.admitsConnection?.(call.connection_name) === false) {
+    emitGatewayAudit(ctx, {
+      ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+      outcome: 'failed',
+      failure_mode: 'connection_not_in_scope',
+    });
+    throw codedError(
+      `D-165 gateway: operation '${resolution.operation_id}' did not run: `
+        + `${CONNECTION_NOT_ADMITTED_DETAIL} (connection_not_in_scope).`,
+      'NOT_AUTHORIZED',
+    );
   }
 
   // ── ask ── pause for preflight approval (D-157 Flow 2), unless the
@@ -3111,11 +3240,11 @@ const runCatalogOperationInner = async (
       outcome: 'failed',
       failure_mode,
     });
-    throw new Error(
-      `D-165 gateway: operation '${resolution.operation_id}' on connection `
-        + `'${call.connection_name}' has no dispatchable REST/GraphQL/CLI surface `
-        + `binding (${failure_mode}).`,
-    );
+    // `BAD_INPUT`: the step named an operation it cannot run, and running it
+    // again changes nothing. (The publish-time validator refuses an unwired
+    // operation in a catalog with an `api` surface; a connector-only catalog
+    // is exempt there, so this is its only check.)
+    throw codedError(cannotRunSentence(resolution.operation_id, failure_mode, binding), 'BAD_INPUT');
   }
   if (cliBinding && !ctx.cliInvocationExecutor) {
     emitGatewayAudit(ctx, {
@@ -3454,12 +3583,22 @@ const runCatalogOperationInner = async (
     }
     if (cliBinding) {
       const timeout_ms = catalogInvocationTimeoutMs(manifest, call.operation_id);
+      // D-321 — the catalog's tested range and the probe that reads the
+      // installed version travel together (the catalog validator refuses a
+      // range without its probe); the executor checks them before it starts
+      // anything. A catalog that declares no range is not probed (R5). Read
+      // through `cliToolPolicyOfRuntime`, which checks a stored catalog's values
+      // again: one that predates the catalog validator was never held to them.
+      // …and where the owner gets the tool, for a refusal that it is not found.
+      const { tool_version, tool_install } = cliToolPolicyOfRuntime(manifest.surfaces?.connector?.runtime);
       const result = await ctx.cliInvocationExecutor!({
         slug,
         operation_key: call.operation_id,
         operation_id: resolution.operation_id,
         binding: cliBinding,
         args: effectiveArgs,
+        ...(tool_version !== undefined ? { tool_version } : {}),
+        ...(tool_install !== undefined ? { tool_install } : {}),
         ...(timeout_ms !== undefined ? { timeout_ms } : {}),
         ...(ctx.runAbortSignal ? { signal: ctx.runAbortSignal } : {}),
         ...(stepMeta ? { stepMeta } : {}),

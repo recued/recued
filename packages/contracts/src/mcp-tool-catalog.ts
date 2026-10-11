@@ -138,7 +138,7 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // cert; the cert + private-key pair is the server's identity to its
   // pinned clients. Channel-isolation invariant.
   'tls_domain.',
-  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.cloud`
+  // D-148 follow-up #5 — Pro auto-managed `<handle>.recued.net`
   // unbind is operator-only. External AI agents must never tear down a
   // Pro-managed DDNS handle; the release reshapes every paired
   // client's server-address pin. Channel-isolation invariant.

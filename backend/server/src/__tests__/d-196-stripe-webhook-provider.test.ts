@@ -116,7 +116,7 @@ describe('D-196 Stripe webhook composition', () => {
   it('does not register a Stripe route without a real lifecycle dispatcher', async () => {
     const body = eventBody();
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       now: () => NOW_MS,
     })!;
@@ -134,7 +134,7 @@ describe('D-196 Stripe webhook composition', () => {
   it('preserves exact raw bytes through the live server route and dispatches', async () => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const vendorWebhookListener = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -184,7 +184,7 @@ describe('D-196 Stripe webhook composition', () => {
   it('accepts one matching v1 digest during endpoint-secret rotation', async () => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -209,7 +209,7 @@ describe('D-196 Stripe webhook composition', () => {
   it('accepts the exact five-minute freshness boundary', async () => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -232,7 +232,7 @@ describe('D-196 Stripe webhook composition', () => {
       .mockRejectedValueOnce(new Error('reconciliation unavailable'))
       .mockResolvedValueOnce(undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -253,7 +253,7 @@ describe('D-196 Stripe webhook composition', () => {
   it('lets idempotent lifecycle convergence absorb a replay inside the signature window', async () => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -284,7 +284,7 @@ describe('D-196 Stripe-Signature verification', () => {
     const dispatch = vi.fn(async () => undefined);
     const rows = options.rows ?? [options.row ?? buildRow()];
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore(rows),
       dispatchStripeEvent: dispatch,
       now: () => NOW_MS,
@@ -371,7 +371,7 @@ describe('D-196 Stripe event and connection authority', () => {
   ])('returns 502 without dispatch for a signed %s', async (_label, body) => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -406,7 +406,7 @@ describe('D-196 Stripe event and connection authority', () => {
   ])('returns the vendor-agnostic 404 for a %s', async (_label, row) => {
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([row]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -431,7 +431,7 @@ describe('D-196 Stripe event and connection authority', () => {
     });
     const dispatchStripeEvent = vi.fn(async () => undefined);
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([row]),
       dispatchStripeEvent,
       now: () => NOW_MS,
@@ -453,7 +453,7 @@ describe('D-196 Stripe event and connection authority', () => {
       throw new Error('provider read-back failed');
     });
     const handler = composeVendorWebhookPort({
-      webhookPort: 8443,
+      webhooksEnabled: true,
       connectionStore: stubConnectionStore([buildRow()]),
       dispatchStripeEvent,
       now: () => NOW_MS,

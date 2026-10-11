@@ -514,10 +514,8 @@ export const CLOUD_PATH_FAMILIES: ReadonlyArray<CloudPathFamily> = [
 export const isCloudPathFamily = (f: string): f is CloudPathFamily =>
   (CLOUD_PATH_FAMILIES as ReadonlyArray<string>).includes(f);
 
-// ────────────────────────────────────────────────────────────────
-// § A.5.4 — sources_degraded code for cert renewal failures
-// ────────────────────────────────────────────────────────────────
-
-/** D-148 § A.5.4 — coverage degradation code emitted when the
- *  cert-renewal task fails. Reachability Doctor surfaces this. */
-export const CERT_RENEWAL_OVERDUE_DEGRADED_REASON = 'cert_renewal_overdue' as const;
+// § A.5.4's `CERT_RENEWAL_OVERDUE_DEGRADED_REASON` ('cert_renewal_overdue') was
+// deleted on 2026-10-10 with the only code that emitted it, an unwired renewal
+// task (`backend/server/src/tls/cert-renewal.ts`); nothing surfaced it. An
+// owner sees a certificate's expiring / critical / overdue state on the
+// Certificates tab instead.

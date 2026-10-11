@@ -8,7 +8,7 @@
  *  domain hosted on the server has its own cert + private key. The
  *  Settings page lists every configured domain + lets Mary upload a
  *  new BYO cert / replace an existing one / remove a stale one. Pro
- *  recued.cloud domains auto-renew via the existing ACME helper;
+ *  recued.net domains auto-renew via the existing ACME helper;
  *  BYO-uploaded domains are user-managed.
  *
  *  This module is the renderer + dispatch builders. The substrate

@@ -3,23 +3,18 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { createStorageGate } from '@recued/storage-gate';
 import {
   createWarehouseEventBus,
   type WarehouseEventBus,
 } from '@recued/warehouse-events';
 import { createKernelAdapter, type KernelDispatchers } from '@recued/ingredients';
 
-import { createBlobStore } from '../storage/blob-store.js';
 import { createCollectionRegistry } from '../collections/registry.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { startWatchedFolder } from './helpers/watched-folder.js';
 import {
   handleCollectionGet,
   handleCollectionList,
 } from '../collections/collection-handler.js';
-
-const BIG_QUOTA = 100 * 1024 * 1024;
-const DEFAULT_MAX = 10 * 1024 * 1024;
 
 const mkCall = (slug: string, input: Record<string, unknown>) => ({
   slug,
@@ -47,23 +42,13 @@ const newHarness = async (): Promise<Harness> => {
   mkdirSync(data, { recursive: true });
   const db = new Database(join(data, 'test.db'));
   db.pragma('journal_mode = WAL');
-  const gate = createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:file:work' });
-  const blobs = createBlobStore(join(data, 'blobs'));
   const bus = createWarehouseEventBus();
   const registry = createCollectionRegistry();
 
-  // Seed a test file + start the file collection so the table has
-  // a record to read via the kernel ingredient.
+  // Seed a test file and start the watched folder, so the table has a record
+  // to read via the kernel ingredient.
   writeFileSync(join(root, 'note.md'), '# Q3 Review\n\nStuff and things.');
-  const collection = createFileCollection({
-    db, blobs, gate, bus, slug: 'work',
-    config: () => ({
-      path: root, ignore: [],
-      max_body_bytes: DEFAULT_MAX, retention_days: 0, quota_bytes: BIG_QUOTA,
-    }),
-  });
-  await collection.sync.start();
-  registry.register(collection);
+  const folder = await startWatchedFolder({ db, bus, registry, slug: 'work', root });
 
   const dispatchers: KernelDispatchers = {
     collectionList: async ({ platform, slug, filters, since, until, limit }) => {
@@ -81,7 +66,7 @@ const newHarness = async (): Promise<Harness> => {
   return {
     base, root, db, registry, dispatchers, bus,
     async close() {
-      await collection.close();
+      await folder.close();
       db.close();
       rmSync(base, { recursive: true, force: true });
     },

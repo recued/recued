@@ -1,16 +1,16 @@
 /** Phase D (D-106) — warehouse collection shared types.
  *
- *  One shape behind every collection (mail / file / webhook). The
+ *  One shape behind every collection (mail / file / calendar). The
  *  server-side runtime builds adapters that populate a durable table
  *  per `(platform, slug)` pair, and exposes them via the kernel
- *  ingredients (`email-list`, `file-list`, `webhook-list`, etc.) —
+ *  ingredients (`email-list`, `file-list`, etc.) —
  *  all of which dispatch to the `collection.*` rpc methods declared
  *  in `rpc/server-registry.ts`.
  *
  *  Records are append-mostly: adapters write on sync, retention
  *  prunes on age, recipes read via the kernel ingredients. Direct
  *  writes from recipes are NOT exposed — Phase D warehouse namespaces
- *  (`data.email.*`, `data.file.*`, `data.webhook.<endpoint>.*`) are
+ *  (`data.email.*`, `data.file.*`) are
  *  read-only for recipes (D-106 #12). The `data.shared.*` path
  *  remains the writable sibling, owned by `shared-write`.
  */
@@ -20,14 +20,16 @@ import type { Actor } from './commits.js';
 /** Identifiers for the warehouse platforms. Kept as a union rather
  *  than a string so handlers can exhaustively narrow on the platform
  *  discriminator. `'calendar'` was added in D-117 on top of the Phase
- *  D launch three (mail / file / webhook). `'service'` (D-118) is the
- *  fifth platform — typed process-execution endpoints rather than a
- *  stream of records, but rides on the same `collection_instances`
- *  row + capability-cache machinery. */
-export type CollectionPlatform = 'mail' | 'file' | 'webhook' | 'calendar' | 'service';
+ *  D launch three (mail / file / webhook). */
+export type CollectionPlatform = 'mail' | 'file' | 'calendar';
+// `'service'` (D-118) went 2026-10-10 with the service installer that enrolled
+// its instances: no template was ever registered, so none could exist.
+// `'webhook'` went 2026-10-10 with the Phase D webhook collection: nothing in
+// production ever created one. Inbound webhooks are D-201 ingresses, which are
+// not collections.
 
 /** One record inside a collection table. The shape is identical across
- *  mail / file / webhook; `(platform, slug)` identify which table a
+ *  the platforms; `(platform, slug)` identify which table a
  *  record lives in — they travel on the surrounding rpc envelope, not
  *  on the record itself, so records can be stored without redundant
  *  tags.
@@ -66,7 +68,7 @@ export interface CollectionRecord {
    *  that want HTML / binary reach into the CAS blob instead. */
   body_inline?: string;
   /** CAS blob hash when `size_bytes > 64 * 1024`. Points at the CAS
-   *  entry under `{data_path}/cas/`. Mutually exclusive with
+   *  entry under `cas/` in the server's data folder. Mutually exclusive with
    *  `body_inline`. */
   blob_hash?: string;
   /** D-161 P1 — origin provenance facet: the actor of the execution
@@ -418,17 +420,13 @@ export type CollectionAuthState =
 export type FileAdapterType = 'fs' | 's3' | 'ext-downloads';
 
 /** D-117 — union of every per-platform capability shape. Calendar
- *  was added in D-117; service (D-118) is the next entrant — its
- *  cap shape encodes install / lifecycle / invoke / health surfaces
- *  rather than read/write/delete. Mail / webhook still ride on the
- *  placeholder file caps from the D-111 autopromote
- *  (`PLACEHOLDER_URI_CAPS`). Future platforms widen this union;
- *  consumers narrow by `platform` discriminator on the surrounding
- *  row before reading caps fields. */
+ *  was added in D-117. Mail still rides on the placeholder file caps
+ *  from the D-111 autopromote (`PLACEHOLDER_URI_CAPS`). Future
+ *  platforms widen this union; consumers narrow by `platform`
+ *  discriminator on the surrounding row before reading caps fields. */
 export type CollectionCaps =
   | FileCollectionCaps
-  | import('./calendar.js').CalendarCollectionCaps
-  | import('./service.js').ServiceCollectionCaps;
+  | import('./calendar.js').CalendarCollectionCaps;
 
 /** Phase 7 (D-110) — DB-backed instance row surfaced over the rpc
  *  `collection.listInstances`. Carries everything parseRecipe needs
@@ -446,9 +444,8 @@ export interface CollectionInstanceRow {
   slug: string;
   platform: CollectionPlatform;
   /** The registry key — `'fs'` / `'s3'` / `'ext-downloads'` for file,
-   *  `'gmail'` / `'graph'` / `'imap'` for mail, `'webhook'` for the
-   *  existing webhook collection, `'gcal'` / `'graph'` / `'caldav'`
-   *  for calendar (D-117). Drives which enroll/update form the UI
+   *  `'gmail'` / `'graph'` / `'imap'` for mail, `'gcal'` / `'graph'` /
+   *  `'caldav'` for calendar (D-117). Drives which enroll/update form the UI
    *  renders. */
   adapter_type: string;
   /** Cached capability shape. File rows carry `FileCollectionCaps`,
@@ -473,7 +470,7 @@ export const COLLECTION_SOURCE_STALE_AFTER_MS = 21_600_000; // 6h
 
 /** D-236 — the freshness verdict for a collection instance, returned ALONGSIDE
  *  the records of the read that consumed it (`collection.list` → the kernel's
- *  `email-list` / `file-list` / `webhook-list` → `{{step.<id>.source_freshness}}`).
+ *  `email-list` / `file-list` → `{{step.<id>.source_freshness}}`).
  *
  *  ⛔ WHY IT RIDES WITH THE READ RATHER THAN SITTING IN A NAMESPACE.
  *  `last_synced_at` has been stored per collection instance since D-110 and

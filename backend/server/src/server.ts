@@ -259,12 +259,6 @@ export interface ServerConfig {
    *  `search` / `get` / `runRetention` / `listEndpoints`. When
    *  absent, those methods return `not_configured`. */
   collectionDeps?: import('./collections/collection-handler.js').CollectionHandlerDeps;
-  /** Phase D webhook listener (D-106). When wired, enables
-   *  `POST /webhook/{slug}`. bin.ts wires this only when
-   *  `public_reachable=true` AND `webhook_port>0` — D-096 keeps
-   *  webhook ingestion self-host-only. Absent → POST /webhook/*
-   *  returns 404 like any other unknown route. */
-  webhookListener?: import('./collections/webhook/webhook-listener.js').WebhookRequestHandler;
   /** D-201 Slice 2/5A — opaque profile route `/v1/webhooks/<public-id>`.
    * Production supplies this only with the durable binding-aware consumer and
    * admitted code-backed profile subset. The listener stays on a generic 404
@@ -281,8 +275,8 @@ export interface ServerConfig {
   connectionWebhookListener?: import('./connection-webhook-listener.js').ConnectionWebhookRequestHandler;
   /** D-148 P9 § A.13 — `POST /webhooks/<vendor>/<connection_name>`
    *  vendor port for Slack + Telegram bot callbacks. Same
-   *  `webhook_port > 0` gate as `webhookListener` (D-096 keeps inbound
-   *  webhooks self-host-only). The handler does its own internal
+   *  `webhooks_enabled` gate as the other inbound webhook routes (D-096
+   *  keeps inbound webhooks self-host-only). The handler does its own internal
    *  vendor-prefix matching + signature verification + idempotency
    *  ledger dedup; this slot is the path-router branch that delegates
    *  any `/webhooks/*` POST to it. Absent → `/webhooks/*` falls through
@@ -360,6 +354,15 @@ export interface ServerConfig {
   packInstallDeps?: import('./pack-install-handler.js').PackInstallRpcDeps;
   /** D-145 PA10 — `packs.list` rpc deps. */
   packListDeps?: import('./pack-list-handler.js').PackListRpcDeps;
+  /** D-259 — `packs.unrunnable` rpc deps. ⛔ Declared and forwarded only on
+   *  2026-10-10: `composeListeners` had composed it by a conditional spread since
+   *  D-259, which skips the excess-property check, so it was dropped here and the
+   *  rpc answered `not_configured` in production — the trap the block above
+   *  records for seven other families. `d-321-packs-tool-status.test.ts` now
+   *  calls it through the real WebSocket dispatch. */
+  packUnrunnableDeps?: import('./pack-unrunnable-handler.js').PackUnrunnableRpcDeps;
+  /** D-321 slice 3 — `packs.tool_status` rpc deps. */
+  packToolStatusDeps?: import('./pack-tool-status-handler.js').PackToolStatusRpcDeps;
   /** D-145 PA10 Slice B — `packs.uninstall` rpc deps. */
   packUninstallDeps?: import('./pack-uninstall-handler.js').PackUninstallRpcDeps;
   /** D-170 — `ingredient.install` / `ingredient.uninstall` rpc deps. */
@@ -694,7 +697,7 @@ export interface ServerConfig {
   /** D-148 follow-up #7 — disable the bare-302 root redirect handler.
    *  When `true`, `createServerHandlerSet` omits the `rootHandler`
    *  slot; the path-listener-set then leaves bare `/` 404'ing on the
-   *  public listener like a non-recued.cloud host. Default (`undefined`
+   *  public listener like a host outside the DDNS zones. Default (`undefined`
    *  / `false`) → the redirect handler is wired. Tests and dev
    *  compositions opt out by setting `true`. */
   rootRedirectDisabled?: boolean;
@@ -740,7 +743,7 @@ export interface ServerConfig {
 
 /** D-148 W3.5b — closed-list legacy alias map.
  *
- *  Maps existing path shapes (`/auth/pair`, `/status*`, `/webhook/*`,
+ *  Maps existing path shapes (`/auth/pair`, `/status*`, `/v1/webhooks/*`,
  *  `/v1/connection/webhook/*`) to
  *  the appropriate canonical role. Production wiring (bin.ts) and the
  *  test-side `startServer` shim both thread this through `createPathListenerSet`
@@ -769,7 +772,8 @@ export const SERVER_LEGACY_PATH_ALIASES: ReadonlyArray<PathRouterLegacyAlias> = 
   { kind: 'exact', path: '/status.json', role: 'ws' },
   { kind: 'exact', path: '/v1/models', role: 'llm_gateway' },
   { kind: 'exact', path: '/v1/chat/completions', role: 'llm_gateway' },
-  { kind: 'prefix', prefix: '/webhook/', role: 'webhooks' },
+  // `/webhook/{slug}` (Phase D, a `data.webhook` collection per slug) went on
+  // 2026-10-10: nothing created a collection, so it only ever answered 404.
   { kind: 'prefix', prefix: '/v1/webhooks/', role: 'webhooks' },
   { kind: 'prefix', prefix: '/v1/connection/webhook/', role: 'webhooks' },
   // `/hook/{recipe_id}/{slug}` (D-115 6C) went with the webhook watcher it fed,
@@ -1233,27 +1237,11 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
       const url = req.url ?? '/';
       const [pathname] = url.split('?');
 
-      // Phase D — `POST /webhook/<slug>` collection webhook listener.
-      if (pathname.startsWith('/webhook/') && method === 'POST' && config.webhookListener) {
-        const slug = safeDecodeURIComponent(pathname.slice('/webhook/'.length));
-        if (slug === null || slug.length === 0 || slug.includes('/')) {
-          respond(res, {
-            ok: false,
-            status: 400,
-            error: { code: 'bad_request', message: 'webhook slug must be a single non-empty path segment' },
-          });
-          return;
-        }
-        await config.webhookListener(req, res, slug);
-        return;
-      }
-
       // D-148 P9 § A.13 — `POST /webhooks/<vendor>/<connection_name>`
       // vendor port. The handler does its own vendor-prefix matching,
       // signature verification, and vendor-appropriate replay handling;
       // this branch delegates the original request stream without reading or
-      // rewriting its body. Note the trailing slash distinguishes this from
-      // the Phase D `/webhook/` (singular) listener above.
+      // rewriting its body.
       // D-192 WhatsApp make-live — GET is delegated too, and ONLY so the port can
       // answer a vendor's ownership handshake (Meta will not deliver a single POST
       // until this endpoint echoes `hub.challenge` on a GET). The port itself
@@ -1376,7 +1364,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
   // ─── root redirect (D-148 FU#7) ────────────────────────────────
   // R26.2 Delta 2 — apex (`GET /`) handler on the public listener only
   // (LAN visitors never see it). Default mode is the bare-302 redirect
-  // from `<handle>.recued.cloud/` to `https://app.recued.com/`. The mode +
+  // from `<handle>.recued.net/` to `https://app.recued.com/`. The mode +
   // the `serve_reception` consistency gate are read PER REQUEST so a config
   // flip is hot (the handler instance is reused across listener rebuilds).
   // `rootRedirectDisabled` suppresses wiring for tests + dev composes.
@@ -1544,6 +1532,8 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
       ? { packInstallDeps: config.packInstallDeps }
       : {}),
     ...(config.packListDeps ? { packListDeps: config.packListDeps } : {}),
+    ...(config.packUnrunnableDeps ? { packUnrunnableDeps: config.packUnrunnableDeps } : {}),
+    ...(config.packToolStatusDeps ? { packToolStatusDeps: config.packToolStatusDeps } : {}),
     ...(config.packUninstallDeps
       ? { packUninstallDeps: config.packUninstallDeps }
       : {}),

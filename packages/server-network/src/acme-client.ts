@@ -6,13 +6,9 @@
  *  `server_identity_key`, POSTs to the cloud, and lands the cert on
  *  disk.
  *
- *  Renewal cadence: triggered by the housekeeping cycle when
- *  `expires_at - now < CERT_RENEWAL_LEAD_TIME_MS` (30 days).
- *  Failure flips `coverage.sources_degraded: 'cert_renewal_overdue'`
- *  per § A.5.4.
- *
- *  Free-tier users use certbot/Caddy instead — `tls-integration.ts`
- *  resolves which mode the server runs in.
+ *  Renewal runs from the housekeeping task `tls-cert-renewal`. A server
+ *  without Pro gets its certificate elsewhere: a proxy in front, or one
+ *  uploaded under Settings → Server → Certificates.
  */
 
 import type {
@@ -24,8 +20,7 @@ export interface AcmeClientConfig {
   cloud_base_url: string;
   pro_subscription_token: string;
   publisher_id: string;
-  /** Sign function — same shape as the DDNS adapter's. Wires to
-   *  `server_identity_key` `ed25519Sign`. */
+  /** Sign function. Wires to `server_identity_key` `ed25519Sign`. */
   sign(payload: Uint8Array): string;
   fetch?: typeof fetch;
   now?: () => number;

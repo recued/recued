@@ -115,6 +115,12 @@ describe('resolveSlotStatus (vendor-match + reduce)', () => {
       .toEqual({ status: 'under_scoped', label: 'hubspot account', missing: ['b'] });
   });
 
+  it('under_scoped from a pasted key says so, so its fix is not a sign-in', () => {
+    expect(resolveSlotStatus('hubspot', ['a', 'b'], [
+      conn('hubspot', ['a'], { auth_type: 'bearer' }),
+    ])).toEqual({ status: 'under_scoped', label: 'hubspot account', missing: ['b'], key: true });
+  });
+
   it('unverified when enrolled but granted scopes are unknown', () => {
     expect(resolveSlotStatus('hubspot', ['a'], [conn('hubspot', undefined)]))
       .toEqual({ status: 'unverified', label: 'hubspot account' });
@@ -253,6 +259,29 @@ describe('createConnectionsReadinessController.renderForPack', () => {
     expect(row.getAttribute(CONNECTIONS_READINESS_STATUS_ATTR)).toBe('under_scoped');
     expect(textOf(row)).toContain('crm.objects.deals.write');
     expect(textOf(findByAttr(section, CONNECTIONS_READINESS_CTA_ATTR)!)).toContain('Re-authorize');
+  });
+
+  it('sends a pasted key that lacks a scope to Probe, not to a new sign-in', async () => {
+    // A HubSpot Service Key keeps its value when the owner adds a scope in
+    // HubSpot; Probe on the connection then reads the scopes again.
+    const pack = packWith(
+      [httpIngredient('hs', 'hubspot')],
+      [op('deal.write', 'hs', ['crm.objects.deals.read', 'crm.objects.deals.write'])],
+    );
+    const one = mount([conn('hubspot', ['crm.objects.deals.read'], { auth_type: 'bearer' })]);
+    await one.refresh();
+    const section = one.renderForPack(pack) as unknown as FakeElement;
+    const row = findByAttr(section, CONNECTIONS_READINESS_ROW_ATTR, 'hubspot')!;
+    expect(row.getAttribute(CONNECTIONS_READINESS_STATUS_ATTR)).toBe('under_scoped');
+    expect(textOf(row)).toContain('missing crm.objects.deals.write');
+    const cta = findByAttr(section, CONNECTIONS_READINESS_CTA_ATTR)!;
+    expect(textOf(cta)).toBe('Add it to the key, then Probe →');
+    expect(cta.getAttribute('href')).toBe('#connections/others');
+
+    const two = mount([conn('hubspot', [], { auth_type: 'bearer', granted_scopes: ['x'] })]);
+    await two.refresh();
+    const both = findByAttr(two.renderForPack(pack) as unknown as FakeElement, CONNECTIONS_READINESS_CTA_ATTR)!;
+    expect(textOf(both)).toBe('Add them to the key, then Probe →');
   });
 
   it('renders unknown_enrollment (soft) when no list caller is wired', async () => {

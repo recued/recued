@@ -118,6 +118,7 @@ import {
   workEntityReadVerbOpFencedHint,
 } from './read-grant-checker.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
+import type { ContractOverlayResolver } from './policy-contract-overlay.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
 import {
   projectWorkEntitySourceRow,
@@ -203,6 +204,11 @@ export interface WorkEntityReadToolsDeps {
   getOpAdmissionGate?: () =>
     | Pick<OpAdmissionGate, 'isFrozenByPause' | 'isOpGranted'>
     | undefined;
+  /** D-320 audit — the governing contract's connection axis: a contract that lists
+   *  connections bounds the connection an escalated read signs in through (the
+   *  Source's `connection_name`). Absent (dbless / unit) ⇒ not fenced, as at raw-op
+   *  dispatch. */
+  getContractOverlay?: () => Pick<ContractOverlayResolver, 'admitsConnection'> | undefined;
   /** D-192 P5 edges, surfaced on demand by `work.read`'s `include_related`.
    *
    *  ⚠ **NOT a second grant axis, and must never become one.** Edges are rows of
@@ -401,6 +407,16 @@ const escalationDenied = (code: string | undefined, detail: string | undefined):
   + 'ask the owner to grant the backing catalog tool / operation on this '
   + 'door; do not retry.';
 
+/** D-320 audit — the door's contract lists connections, and the read would sign in
+ *  through one it does not list. Its own copy: the generic denial's remedy (grant the
+ *  catalog tool / operation) would not open it. Names no connection (ruling 12). */
+const ESCALATION_CONNECTION_NOT_IN_SCOPE =
+  'the vendor read is denied by the active contract policy (connection_not_in_scope: '
+  + 'the read would sign in through a connection this door\'s contract does not cover) '
+  + '— the local mirror row is served (see source_freshness). Server policy, not a '
+  + 'transient failure; ask the owner to add that connection to this door\'s '
+  + 'contract; do not retry.';
+
 /** D-188 — the pause refusal, aligned with the canonical `server_paused`
  *  admission detail so the model reads pause as pause (never a grant or
  *  network problem). Leads with the transient truth + the resume cue. */
@@ -433,13 +449,18 @@ const admitEscalation = (
     catalogSlug: string;
     manifest: IngredientManifest;
     operation: string;
+    /** The connection the read signs in through, which the contract's
+     *  connection axis bounds. */
+    connectionName: string;
   },
 ): EscalationAdmission => {
+  const overlay = deps.getContractOverlay?.();
   const admission = admitSourceCatalogEscalation(deps.getOpAdmissionGate?.(), ctx, {
     catalogSlug: prepared.catalogSlug,
     manifest: prepared.manifest,
     operation: prepared.operation,
-  });
+    connectionName: prepared.connectionName,
+  }, overlay === undefined ? undefined : (source, name) => overlay.admitsConnection(source, name));
   if (admission.admitted) return { admitted: true };
   const refusal = admission.refusal;
   switch (refusal.kind) {
@@ -452,7 +473,12 @@ const admitEscalation = (
     case 'requires_approval':
       return { admitted: false, reason: escalationRequiresApproval(refusal.detail) };
     case 'denied':
-      return { admitted: false, reason: escalationDenied(refusal.code, refusal.detail) };
+      return {
+        admitted: false,
+        reason: refusal.code === 'connection_not_in_scope'
+          ? ESCALATION_CONNECTION_NOT_IN_SCOPE
+          : escalationDenied(refusal.code, refusal.detail),
+      };
   }
 };
 
@@ -1085,6 +1111,7 @@ const runReadThroughList = async (
     catalogSlug: p.catalogSlug,
     manifest: p.manifest,
     operation: p.operation,
+    connectionName: p.connection_name,
   });
   if (!admission.admitted) return { ok: false, kind: 'policy', reason: admission.reason };
   const origin = escalationOrigin(ctx);
@@ -1124,6 +1151,7 @@ const runReadThroughList = async (
       catalogSlug: readPrepared.prepared.catalogSlug,
       manifest: readPrepared.prepared.manifest,
       operation: readPrepared.prepared.readOp.opKey,
+      connectionName: readPrepared.prepared.connection_name,
     });
     if (!readAdmission.admitted) {
       return { ok: false, kind: 'policy', reason: readAdmission.reason };
@@ -1563,6 +1591,7 @@ export const runWorkEntitySearchTool = async (
           catalogSlug: prep.prepared.catalogSlug,
           manifest: prep.prepared.manifest,
           operation: prep.prepared.readOp.opKey,
+          connectionName: prep.prepared.connection_name,
         });
         if (!admission.admitted) {
           escalationErrors.push({
@@ -1759,6 +1788,7 @@ export const runWorkEntityReadTool = async (
           catalogSlug: prep.prepared.catalogSlug,
           manifest: prep.prepared.manifest,
           operation: prep.prepared.readOp.opKey,
+          connectionName: prep.prepared.connection_name,
         });
         if (!admission.admitted) {
           return executionError(
@@ -1916,6 +1946,7 @@ export const runWorkEntityReadTool = async (
     catalogSlug: prep.prepared.catalogSlug,
     manifest: prep.prepared.manifest,
     operation: prep.prepared.readOp.opKey,
+    connectionName: prep.prepared.connection_name,
   });
   if (!admission.admitted) return degrade('policy', admission.reason);
   const live = await readLive(targeted, prep.prepared, source_record_id, readOrigin);

@@ -1,13 +1,21 @@
 /** CLI-flag overrides. Narrow by design — only fields meaningful to a
  *  user running `recued-server` from the command line. Full edits go
- *  through the config file or `server.setConfigField` rpc. */
+ *  through the config file or `server.setConfigField` rpc.
+ *
+ *  `--data-path` / `--db-path`, `--host` / `--bind-host` and `--mcp-port` were
+ *  removed with their keys on 2026-10-09 (`bootstrap-keys.ts`). They are not
+ *  parsed here: the server's router refuses them before any config loads
+ *  (`RETIRED_FLAGS`, `backend/server/src/cli/parse.ts`). */
 
+import { renamedWebhookPortNotice, type RetiredSetting } from './bootstrap-keys.js';
 import { ConfigValidationError } from './parse.js';
 import type { BootstrapConfig } from './types.js';
 
 export interface CliOverrides {
   configPath?: string;
   bootstrap: Partial<BootstrapConfig>;
+  /** `--webhook-port`, the old name of the webhook switch, when it was used. */
+  renamed: RetiredSetting[];
 }
 
 /** Pluck the known flags out of argv. Unknown flags are left alone so
@@ -15,6 +23,7 @@ export interface CliOverrides {
 export const parseCliOverrides = (argv: readonly string[]): CliOverrides => {
   const bootstrap: Partial<BootstrapConfig> = {};
   let configPath: string | undefined;
+  let legacyWebhookPort: number | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -43,52 +52,27 @@ export const parseCliOverrides = (argv: readonly string[]): CliOverrides => {
       continue;
     }
 
-    if (arg === '--bind-host' || arg === '--host') {
-      if (!next) throw new ConfigValidationError(`${arg} expects a host`, 'bind_host');
-      bootstrap.bind_host = next;
-      i++;
-      continue;
-    }
-    if (arg.startsWith('--bind-host=') || arg.startsWith('--host=')) {
-      bootstrap.bind_host = arg.split('=', 2)[1];
-      continue;
-    }
-
-    if (arg === '--data-path' || arg === '--db-path') {
-      if (!next) throw new ConfigValidationError(`${arg} expects a path`, 'data_path');
-      bootstrap.data_path = next;
-      i++;
-      continue;
-    }
-    if (arg.startsWith('--data-path=') || arg.startsWith('--db-path=')) {
-      bootstrap.data_path = arg.split('=', 2)[1];
-      continue;
-    }
-
-    if (arg === '--mcp-port') {
-      if (!next) throw new ConfigValidationError('--mcp-port expects a number', 'mcp_port');
-      bootstrap.mcp_port = parsePort(arg, next);
-      i++;
-      continue;
-    }
-    if (arg.startsWith('--mcp-port=')) {
-      bootstrap.mcp_port = parsePort(arg, arg.split('=', 2)[1]);
-      continue;
-    }
-
+    // The old name of `webhooks_enabled` (renamed 2026-10-10). It still works:
+    // non-zero is on. There is no flag for the new name; set it in the config
+    // file or as RECUED_BOOTSTRAP_WEBHOOKS_ENABLED.
     if (arg === '--webhook-port') {
       if (!next) throw new ConfigValidationError('--webhook-port expects a number', 'webhook_port');
-      bootstrap.webhook_port = parsePort(arg, next);
+      legacyWebhookPort = parsePort(arg, next);
       i++;
       continue;
     }
     if (arg.startsWith('--webhook-port=')) {
-      bootstrap.webhook_port = parsePort(arg, arg.split('=', 2)[1]);
+      legacyWebhookPort = parsePort(arg, arg.split('=', 2)[1]);
       continue;
     }
   }
 
-  return { configPath, bootstrap };
+  const renamed: RetiredSetting[] = [];
+  if (legacyWebhookPort !== undefined) {
+    bootstrap.webhooks_enabled = legacyWebhookPort > 0;
+    renamed.push(renamedWebhookPortNotice('--webhook-port', legacyWebhookPort, false));
+  }
+  return { configPath, bootstrap, renamed };
 };
 
 const parsePort = (flag: string, raw: string): number => {

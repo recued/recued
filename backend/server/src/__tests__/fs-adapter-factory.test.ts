@@ -2,7 +2,7 @@
  *
  *  Covers the probe + factory lifecycle + path-escape defence. The
  *  underlying createFsWatcher has its own coverage in
- *  file-collection.test.ts — these tests only exercise the Phase 7
+ *  fs-watcher.test.ts — these tests only exercise the Phase 7
  *  wrapping layer. */
 
 import {

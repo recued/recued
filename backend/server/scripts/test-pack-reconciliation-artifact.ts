@@ -137,7 +137,9 @@ const authorityKeys = (fixtures: readonly { slug: PackSlug }[]): AuthorityKey[] 
     .filter((owner) => fixtures.some((fixture) => fixture.slug === owner.pack))
     .flatMap((owner) => [
       { scope: 'grant', segments: [owner.pack, owner.catalog, owner.connection, owner.group] },
-      { scope: 'connection_catalog_binding', segments: [owner.connection] },
+      // D-320: a binding is keyed by connection AND catalog, so one connection can
+      // serve several catalogs (794d11813). The one-segment key is the legacy shape.
+      { scope: 'connection_catalog_binding', segments: [owner.connection, owner.catalog] },
       { scope: 'contract_grant', segments: [AUDIENCE_CONTRACT, owner.operation] },
     ]);
 

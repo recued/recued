@@ -42,6 +42,13 @@ import {
   type CatalogResult,
 } from './catalog-client.js';
 import { makeUpdateVersionResolver } from './update-versions.js';
+import {
+  describeTestedRange,
+  type CliToolState,
+  type PackToolStatus,
+  type PacksToolStatusResult,
+} from '@recued/contracts';
+import { programDisplayName, programStopsRuns } from '../settings/pack-programs-controls.js';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
   readListContinuity,
@@ -114,6 +121,10 @@ export interface MountPackDiscoveryOptions {
    *  per render: it is a server round-trip, and the condition only changes when
    *  a pack is installed or updated — both of which already re-list. */
   listUnrunnable?: () => Promise<{ findings: ReadonlyArray<{ slug: string }> }>;
+  /** D-321 — `packs.tool_status`: whether each installed pack's programs are
+   *  ready on the server. Optional; absent (or a failed read) ⇒ no program
+   *  badge, never a false one. Read with the roster, like `listUnrunnable`. */
+  listToolStatus?: () => Promise<PacksToolStatusResult>;
   /** Server-side search (`/catalog/search?kind=pack`) — the browse path. When
    *  present the panel pages the catalogue from the server instead of
    *  downloading + reducing over the whole corpus; `fetchCatalog` becomes the
@@ -200,10 +211,66 @@ export { packSpec };
  *  it must not be carried by anything that can be answered, dismissed, or go
  *  stale. D-259 previously delivered this as a durable ask; an answered ask
  *  cleared the finding while the pack stayed broken. A badge cannot. */
+/** Which program's state a pack's one badge reports: the most urgent first. */
+const PROGRAM_STATE_URGENCY: Record<CliToolState, number> = {
+  broken: 0,
+  missing: 1,
+  untested: 2,
+  unreadable: 3,
+  ready: 4,
+};
+
+/** D-321 — the one badge for a pack's programs, or null when every one is
+ *  ready: "Needs opencode", "opencode 2.0.1 not tested", "ffmpeg does not
+ *  start". A program a run refuses reads `danger`; one Warn lets run, `muted`.
+ *  Like `unrunnable`, it is re-derived from the server on every roster load and
+ *  never stored. */
+export const programBadge = (tools: readonly PackToolStatus[] | undefined): DiscoverBadge | null => {
+  // A program that stops the pack's actions comes before one Warn lets run,
+  // whatever their states; then the order above.
+  const worst = [...(tools ?? [])].sort(
+    (a, b) => Number(programStopsRuns(b)) - Number(programStopsRuns(a))
+      || PROGRAM_STATE_URGENCY[a.state] - PROGRAM_STATE_URGENCY[b.state],
+  )[0];
+  if (worst === undefined || worst.state === 'ready') return null;
+  const name = programDisplayName(worst.binary);
+  const range = worst.tested !== undefined ? describeTestedRange(worst.tested) : undefined;
+  const runs = worst.outside === 'warn'
+    ? 'Its actions still run.'
+    : 'Its actions are refused until you install a tested version or choose Warn on its page.';
+  switch (worst.state) {
+    case 'broken':
+      return {
+        label: `${name} does not start`,
+        tone: 'danger',
+        title: `${name} is installed on the server but does not start. Open the pack to see why.`,
+      };
+    case 'missing':
+      return {
+        label: `Needs ${name}`,
+        tone: 'danger',
+        title: `This pack runs ${name}, which is not installed on the server. Open the pack to see how to install it.`,
+      };
+    case 'untested':
+      return {
+        label: `${name} ${worst.version ?? ''} not tested`.replace(/\s+/gu, ' '),
+        tone: worst.outside === 'warn' ? 'muted' : 'danger',
+        title: `This pack was tested with ${range ?? 'other versions'}. ${runs}`,
+      };
+    case 'unreadable':
+      return {
+        label: `${name} version unknown`,
+        tone: worst.outside === 'warn' ? 'muted' : 'danger',
+        title: `The server could not read which ${name} is installed. This pack was tested with ${range ?? 'other versions'}. ${runs}`,
+      };
+  }
+};
+
 export const packBadges = (
   r: CatalogPackRow,
   preInstall?: ReadonlySet<string>,
   unrunnable?: ReadonlySet<string>,
+  programs?: ReadonlyMap<string, readonly PackToolStatus[]>,
 ): DiscoverBadge[] => {
   const out: DiscoverBadge[] = [];
   if (unrunnable?.has(r.slug) === true) {
@@ -215,6 +282,9 @@ export const packBadges = (
       title: 'This Pack no longer works on this server. Nothing it does will work until you update it.',
     });
   }
+  // Second: also about what is wrong (or untested) on THIS server.
+  const program = programBadge(programs?.get(r.slug));
+  if (program !== null) out.push(program);
   if (preInstall?.has(r.slug) === true) {
     out.push({
       label: 'Included',
@@ -252,6 +322,10 @@ export const mountPackDiscovery = (
   /** Observe state the list decides for itself — the installed-first default,
    *  which can only be resolved once the roster has loaded. */
   onInstalledOnlyChange: (cb: (on: boolean) => void) => void;
+  /** D-321 — read the programs' state again (the badges repaint if it changed):
+   *  after the owner acted on a pack's Programs block, the list must not still
+   *  show what it showed before. */
+  refreshPrograms: () => void;
 } => {
   const doc = opts.document ?? (globalThis as { document?: Document }).document;
   if (doc === undefined) {
@@ -398,6 +472,36 @@ export const mountPackDiscovery = (
       unrunnableSlugs = new Set(res.findings.map((f) => f.slug));
     } catch { /* keep the last-known set — see above */ }
   };
+  /** D-321 — each installed pack's programs, by pack slug. Read with the
+   *  roster, and a failed read keeps what the owner was last shown rather than
+   *  clearing it, as the unrunnable set does.
+   *
+   *  ⛔ NOT AWAITED BY THE ROSTER LOAD, unlike the unrunnable set. Its answer can
+   *  take a version probe's full limit (a tool that hangs; a cold cache starting
+   *  each agent's program after a restart), and the list waited for it: on a
+   *  server whose `packs.tool_status` never answered, the list stayed on
+   *  "Loading packs…" (measured, the webclient e2e). So the list renders at once
+   *  and the badges re-render when the answer lands — through `setInstalled`,
+   *  which repaints without asking the marketplace again, and only when the
+   *  answer changed. The newest read wins; an older one landing late is dropped. */
+  let programsBySlug: ReadonlyMap<string, readonly PackToolStatus[]> = new Map();
+  let programsShown = '';
+  let toolStatusRead = 0;
+  const refreshToolStatus = (): void => {
+    if (opts.listToolStatus === undefined) return;
+    const mine = ++toolStatusRead;
+    void opts.listToolStatus().then(
+      (res) => {
+        if (mine !== toolStatusRead) return;
+        const shown = JSON.stringify(res.packs);
+        if (shown === programsShown) return;
+        programsShown = shown;
+        programsBySlug = new Map(res.packs.map((entry) => [entry.slug, entry.tools]));
+        panelRef?.setInstalled((slug) => currentLookup(slug));
+      },
+      () => { /* keep the last-known map — see above */ },
+    );
+  };
 
   const applyRoster = (
     src: { packs: ReadonlyArray<RosterPack>; installed_versions?: ReadonlyArray<{ slug: string; version: number }> } | null,
@@ -418,6 +522,7 @@ export const mountPackDiscovery = (
    *  `packs.list` failure falls back to the last-known snapshot — never to an
    *  empty roster, which would regress install-state on a refresh. */
   const refreshRoster = async (): Promise<ReadonlyArray<RosterPack>> => {
+    refreshToolStatus();
     const [rosterRes] = await Promise.all([
       opts.listInstalled().catch(() => null),
       refreshUnrunnable(),
@@ -535,6 +640,7 @@ export const mountPackDiscovery = (
   // catalog. Offline-resilient: a catalog failure degrades to the roster-only
   // corpus so a LAN-paired webclient still lists its installed packs.
   const loadUnion = async (): Promise<CatalogResult<CatalogPackRow>> => {
+    refreshToolStatus();
     const [catalogRes, rosterRes] = await Promise.all([
       fetchCatalog(opts.origin),
       opts.listInstalled().catch(() => null),
@@ -645,7 +751,7 @@ export const mountPackDiscovery = (
     },
     title: (r) => r.name,
     description: (r) => r.description,
-    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs),
+    badges: (r) => packBadges(r, preInstallSlugs(), unrunnableSlugs, programsBySlug),
     metaLine: packMeta,
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },
@@ -720,6 +826,7 @@ export const mountPackDiscovery = (
       installedOnlyListener = cb;
       if (hasRememberedFilter) cb(installedOnly);
     },
+    refreshPrograms: () => refreshToolStatus(),
     setInstalledOnly: async (on: boolean): Promise<void> => {
       installedOnlyUserSet = true;
       if (installedOnly === on) {

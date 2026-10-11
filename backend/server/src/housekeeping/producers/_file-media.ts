@@ -62,6 +62,9 @@ const AI_ENRICHABLE_FILE_ORIGINS: ReadonlySet<string> = new Set([
   'tool_output',
   // Fetched by a granted REST op the owner configured.
   'connection_download',
+  // A copy of a file in a folder the owner has Recued watch, brought into Chat
+  // by her from the Files tab.
+  'watched_folder',
 ]);
 
 export const fileOriginOf = (record: CollectionRecord): string | null => {

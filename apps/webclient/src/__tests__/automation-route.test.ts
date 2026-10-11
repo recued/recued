@@ -1049,6 +1049,49 @@ describe('Automation route — D-319: one auto-run timer per dish', () => {
     expect(editor!.innerHTML).toContain('data-var-key="topic"');
   });
 
+  it('D-320 — a dish’s Settings show a Connection line from the recipe’s slots, not the setting', async () => {
+    const withConnection = recipeEntry('ticker', 'Ticker recipe');
+    withConnection.recipe.variables = {
+      hubspot: { label: 'HubSpot connection', type: 'connection' },
+      topic: { label: 'Topic', type: 'text', default: 'news' },
+    } as never;
+    const recipeConnectionsCaller = vi.fn(async () => ({
+      slots: [{
+        slot: 'hubspot',
+        variables: ['hubspot'],
+        connections: [
+          { connection_name: 'hubspot-app', display_name: 'Sales app', is_default: false },
+          { connection_name: 'hubspot-key', display_name: 'Service Key', is_default: true },
+        ],
+      }],
+    }));
+    const rig = mountRoute({
+      initialSection: 'auto-run',
+      autoRunListCaller: async () => ({
+        entries: [autoRunEntry({ dish_id: 'dsh_work', dish_name: '', variables: withConnection.recipe.variables ?? {} })],
+      }),
+      dishesListCaller: async () => ({ dishes: [dishRow({ connections: { hubspot: 'hubspot-app' } })] }),
+      dishesUpdateCaller: vi.fn(async () => ({ dish: dishRow() })) as never,
+      recipeEntriesCaller: async () => ({ recipes: [withConnection] }),
+      recipeConnectionsCaller,
+    });
+    await rig.route.whenLoaded();
+    await flush();
+    await flush();
+    const before = rig.doc.body.children.length;
+
+    clickAction(rig.host, 'configure:auto_run', 'dsh_work');
+    await flush();
+
+    expect(recipeConnectionsCaller).toHaveBeenCalledWith({ recipe_id: 'ticker' });
+    const editor = rig.doc.body.children[before];
+    expect(editor).toBeDefined();
+    expect(editor!.innerHTML).toContain('data-recued-config-editor-connection="hubspot"');
+    expect(editor!.innerHTML).toContain('<option value="hubspot-app" selected>Sales app</option>');
+    expect(editor!.innerHTML).not.toContain('data-var-key="hubspot"');
+    expect(editor!.innerHTML).toContain('data-var-key="topic"');
+  });
+
   it('a recipe nobody switched on has no next run to look at: a forged click opens nothing', async () => {
     const preapprovalPrepareCaller = vi.fn();
     const rig = mountRoute({

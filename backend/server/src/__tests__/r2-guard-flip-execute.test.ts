@@ -175,6 +175,6 @@ describe('R2 build step 2 — execute-handler guard-flip (canonical recipe resol
     const { deps } = setup();
     await expect(
       handleExecute(deps, { recipe: canonicalWithConn(), trigger_source: 'manual', config: {} }),
-    ).rejects.toThrow(/needs a connection[\s\S]*must be pinned/i);
+    ).rejects.toThrow(/needs a connection[\s\S]*no one to ask which/i);
   });
 });

@@ -563,7 +563,7 @@ export const startPostListenerRuntime = async (
 
   // D-175 — Pro-convenience handle provisioning. Composed AFTER the late
   // cert stack so the handle state machine + binding-entitlement source
-  // are live. Idempotent + self-gating; reserves `<handle>.recued.cloud`
+  // are live. Idempotent + self-gating; reserves `<handle>.recued.net`
   // with `publisher_id = serverIdentity fingerprint` once bound + entitled.
   startProConvenienceProvisioning({
     backgroundServices: options.backgroundServices,

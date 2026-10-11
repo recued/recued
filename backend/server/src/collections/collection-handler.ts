@@ -72,21 +72,6 @@ import {
   handleMailDelete,
   type MailEnrollDeps,
 } from './mail/enroll.js';
-import {
-  handleServiceClearCrash,
-  handleServiceDelete,
-  handleServiceEnroll,
-  handleServiceInstall,
-  handleServiceList,
-  handleServiceListTemplates,
-  handleServiceRestart,
-  handleServiceStart,
-  handleServiceStop,
-  handleServiceUninstall,
-  handleServiceUpdate,
-  handleServiceUpgrade,
-  type ServiceEnrollDeps,
-} from './service/enroll.js';
 
 export interface CollectionHandlerDeps {
   registry: CollectionRegistry;
@@ -119,11 +104,6 @@ export interface CollectionHandlerDeps {
    *  wiring keep working; `collection.calendar.*` returns
    *  `not_configured` when absent. */
   calendarEnroll?: CalendarEnrollDeps;
-  /** D-118 Phase 7 — service-adapter enroll family. Optional so
-   *  test harnesses without the supervisor / template registry
-   *  wiring keep working; `collection.service.*` returns
-   *  `not_configured` when absent. */
-  serviceEnroll?: ServiceEnrollDeps;
   /** D-127 wire-up — mail-adapter enroll family. Optional so
    *  test harnesses without the mail composition root keep working;
    *  `collection.mail.enrollImap` / `collection.mail.list` /
@@ -174,8 +154,8 @@ export interface EnrollOAuthDeps {
 
 // D-198 Slice 5 — `calendar` reads through the generic collection rpc now that
 // the calendar collection's `list`/`get` delegate to its warehouse table (was a
-// stub). `service` stays out — it's a process endpoint, not a record stream.
-const PLATFORMS = new Set<CollectionPlatform>(['mail', 'file', 'webhook', 'calendar']);
+// stub).
+const PLATFORMS = new Set<CollectionPlatform>(['mail', 'file', 'calendar']);
 
 const requirePlatform = (value: unknown): CollectionPlatform => {
   if (typeof value !== 'string' || !PLATFORMS.has(value as CollectionPlatform)) {
@@ -326,7 +306,7 @@ const SEARCH_ALL_DEFAULT_PER_GROUP = 5;
 const SEARCH_ALL_MAX_PER_GROUP = 25;
 
 /** 🔑 THE NON-AI PATH TO THE OWNER'S OWN WAREHOUSE. Until this existed, the only
- *  way to search across mail / calendar / files / webhooks was to ask the AI —
+ *  way to search across mail / calendar / files was to ask the AI —
  *  an odd shape for a product whose thesis is that the AI is OPTIONAL and the
  *  owner is in control.
  *
@@ -890,7 +870,7 @@ export const handleCollectionDeleteRecord = async (
   }
   if (deps.annotationCascade) {
     try {
-      // The platform name (mail / file / webhook / calendar) doubles
+      // The platform name (mail / file / calendar) doubles
       // as the canonical-collection name in the annotation+link store.
       deps.annotationCascade(platform, record_id);
     } catch {
@@ -898,10 +878,8 @@ export const handleCollectionDeleteRecord = async (
       // failure logs (handler-side) but doesn't roll back.
     }
   }
-  // D-122 Phase 4.5 — enrichment cascade. Webhook collections don't
-  // carry enrichment topics today (no registry entries reference
-  // `webhook` scope), so we narrow to the two platforms this rpc
-  // accepts that DO carry topics. Calendar deletes don't flow through
+  // D-122 Phase 4.5 — enrichment cascade. Narrowed to the two platforms
+  // this rpc accepts that carry enrichment topics. Calendar deletes don't flow through
   // this rpc (PLATFORMS allowlist excludes calendar — calendar uses
   // its own `calendar.deleteEvent` dispatcher path); the calendar
   // delete cascade fires from `bridgeEnrichmentCascade` against the
@@ -951,19 +929,7 @@ export type CollectionMethods =
   | 'collection.calendar.update'
   | 'collection.calendar.delete'
   | 'collection.calendar.resync'
-  | 'collection.calendar.reauth'
-  | 'collection.service.list'
-  | 'collection.service.listTemplates'
-  | 'collection.service.enroll'
-  | 'collection.service.install'
-  | 'collection.service.upgrade'
-  | 'collection.service.uninstall'
-  | 'collection.service.update'
-  | 'collection.service.delete'
-  | 'collection.service.clear_crash'
-  | 'collection.service.start'
-  | 'collection.service.stop'
-  | 'collection.service.restart';
+  | 'collection.calendar.reauth';
 
 const requireFileEnroll = (
   deps: CollectionHandlerDeps,
@@ -989,19 +955,6 @@ const requireCalendarEnroll = (
     );
   }
   return deps.calendarEnroll;
-};
-
-const requireServiceEnroll = (
-  deps: CollectionHandlerDeps,
-): ServiceEnrollDeps => {
-  if (!deps.serviceEnroll) {
-    throw new RpcError(
-      'not_configured',
-      'collection.service.* enroll family requires the service stack — compose bin.ts with serviceStack',
-      503,
-    );
-  }
-  return deps.serviceEnroll;
 };
 
 const requireMailEnroll = (
@@ -1051,18 +1004,6 @@ export const makeCollectionHandlers = (
       'collection.calendar.delete',
       'collection.calendar.resync',
       'collection.calendar.reauth',
-      'collection.service.list',
-      'collection.service.listTemplates',
-      'collection.service.enroll',
-      'collection.service.install',
-      'collection.service.upgrade',
-      'collection.service.uninstall',
-      'collection.service.update',
-      'collection.service.delete',
-      'collection.service.clear_crash',
-      'collection.service.start',
-      'collection.service.stop',
-      'collection.service.restart',
     ],
     handlers: {
       'collection.list': async (args) =>
@@ -1126,33 +1067,6 @@ export const makeCollectionHandlers = (
         handleCalendarEnrollResync(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollResync>[1]),
       'collection.calendar.reauth': async (args) =>
         handleCalendarReauth(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarReauth>[1]),
-      'collection.service.list': async () =>
-        handleServiceList(requireServiceEnroll(deps)),
-      'collection.service.listTemplates': async (args) =>
-        handleServiceListTemplates(
-          requireServiceEnroll(deps),
-          args as Parameters<typeof handleServiceListTemplates>[1],
-        ),
-      'collection.service.enroll': async (args) =>
-        handleServiceEnroll(requireServiceEnroll(deps), args as Parameters<typeof handleServiceEnroll>[1]),
-      'collection.service.install': async (args) =>
-        handleServiceInstall(requireServiceEnroll(deps), args as Parameters<typeof handleServiceInstall>[1]),
-      'collection.service.upgrade': async (args) =>
-        handleServiceUpgrade(requireServiceEnroll(deps), args as Parameters<typeof handleServiceUpgrade>[1]),
-      'collection.service.uninstall': async (args) =>
-        handleServiceUninstall(requireServiceEnroll(deps), args as Parameters<typeof handleServiceUninstall>[1]),
-      'collection.service.update': async (args) =>
-        handleServiceUpdate(requireServiceEnroll(deps), args as Parameters<typeof handleServiceUpdate>[1]),
-      'collection.service.delete': async (args) =>
-        handleServiceDelete(requireServiceEnroll(deps), args as Parameters<typeof handleServiceDelete>[1]),
-      'collection.service.clear_crash': async (args) =>
-        handleServiceClearCrash(requireServiceEnroll(deps), args as Parameters<typeof handleServiceClearCrash>[1]),
-      'collection.service.start': async (args) =>
-        handleServiceStart(requireServiceEnroll(deps), args as Parameters<typeof handleServiceStart>[1]),
-      'collection.service.stop': async (args) =>
-        handleServiceStop(requireServiceEnroll(deps), args as Parameters<typeof handleServiceStop>[1]),
-      'collection.service.restart': async (args) =>
-        handleServiceRestart(requireServiceEnroll(deps), args as Parameters<typeof handleServiceRestart>[1]),
     },
   };
 };

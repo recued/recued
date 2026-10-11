@@ -95,6 +95,15 @@ describe('connection setup guide privacy boundary', () => {
     expect(prompt).not.toContain('DO-NOT-SHARE');
   });
 
+  it('calls the alias a connection\'s, not an account\'s (D-320 ruling 17)', () => {
+    const prompt = buildConnectionSetupGuidePrompt({
+      target_url: 'https://developer.example.com/apps',
+      auth_type: 'bearer',
+      field_keys: ['display_name'],
+    });
+    expect(prompt).toContain('A human-readable label that distinguishes this connection.');
+  });
+
   it('returns only reviewed fields and drops model-invented credential values', async () => {
     let sentPrompt = '';
     const result = await generateConnectionSetupGuide({

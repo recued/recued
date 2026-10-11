@@ -5,10 +5,10 @@
  *
  *    1. **First-boot seed.** `deriveBootstrapDerivedExposureState`
  *       derives the initial `ExposureState` from the operator's explicit
- *       gestures — `bootstrap.webhook_port > 0` + `RECUED_PUBLIC_REACHABLE`.
+ *       gestures — `bootstrap.webhooks_enabled` + `RECUED_PUBLIC_REACHABLE`.
  *       Without this seed the lan_only baseline keeps `webhooks.lan` +
- *       `webhooks.public` false, so the path-router 404s every legacy
- *       `/webhook/*` / `/hook/*` / `/v1/connection/webhook/*` ingress.
+ *       `webhooks.public` false, so the path-router 404s every
+ *       `/v1/webhooks/*` / `/v1/connection/webhook/*` ingress.
  *       With W3.9 persistence the seed is the FIRST-BOOT only — subsequent
  *       boots load Mary's persisted preset from SQLite.
  *
@@ -78,16 +78,22 @@ export interface ComposeExposureSubstrateInput {
   /** Production listener coordinator. The composer reads `.status()` once
    *  after `reapply()` to assert LAN bind succeeded. */
   listenerCoordinator: ProductionPathListenerCoordinator;
-  /** `loadedConfig.bootstrap.webhook_port` — bootstrap-derived seed feeds
-   *  `deriveBootstrapDerivedExposureState`. `> 0` flips webhook paths
+  /** `loadedConfig.bootstrap.webhooks_enabled` — bootstrap-derived seed feeds
+   *  `deriveBootstrapDerivedExposureState`. `true` flips webhook paths
    *  reachable on first boot. */
-  webhookPort: number;
+  webhooksEnabled: boolean;
   /** Resolved LAN bind address (`resolveLanAddress().address`). */
   lanBindAddress: string;
   /** Live WS-handle client count getter. Threaded into the state machine
    *  as `activeWsConnections.count`. Late-bound by getter so the caller
    *  can wire the WS handle before the machine constructs. */
   wsHandleClientCount: () => number;
+  /** Whether the server has an address people outside can use
+   *  (`public-address.ts` `ownBaseUrls()` is non-empty). Read on every
+   *  mutation, so adding a name on the Hostnames screen applies at once.
+   *  Required: a composition that forgets it must not quietly refuse every
+   *  Public choice, which is what the stub this replaced did. */
+  hasPublicAddress: () => boolean;
   /** D-121 realtime broadcast bus. The exposure `broadcast` side effect
    *  fans an `exposure_changed` event onto it per transition (M-XSURF-1)
    *  so paired clients refresh their connection assumptions. Absent
@@ -123,9 +129,10 @@ export const composeExposureSubstrate = async (
     db,
     auditLog,
     listenerCoordinator,
-    webhookPort,
+    webhooksEnabled,
     lanBindAddress,
     wsHandleClientCount,
+    hasPublicAddress,
     eventBus,
   } = input;
 
@@ -139,7 +146,7 @@ export const composeExposureSubstrate = async (
   const publicReachableFlag =
     RECUED_PUBLIC_REACHABLE_ENV === 'true' || RECUED_PUBLIC_REACHABLE_ENV === '1';
   const initialExposureState = deriveBootstrapDerivedExposureState({
-    webhook_port: webhookPort,
+    webhooks_enabled: webhooksEnabled,
     public_reachable: publicReachableFlag,
   });
 
@@ -243,12 +250,12 @@ export const composeExposureSubstrate = async (
     store: exposureStore,
     listener: listenerCoordinator,
     effects: exposureEffects,
-    // DDNS probe — defaults to false until Pro DDNS substrate wires the
-    // production source. The in-process stub keeps the state machine
-    // refusing transitions that would resolve any path public until the
-    // substrate is wired.
+    // ⛔ Was `isConfigured: async () => false` from 2026-05 ("until Pro DDNS
+    // substrate wires the production source") to 2026-10-10, so no owner could
+    // tick Public anywhere unless the realm's first boot had seeded it from
+    // RECUED_PUBLIC_REACHABLE. Found driving an inbound webhook in Docker.
     ddns: {
-      isConfigured: async () => false,
+      isConfigured: async () => hasPublicAddress(),
     },
     bind_addresses: { lan: lanBindAddress, public: '0.0.0.0' },
     activeWsConnections: { count: wsHandleClientCount },

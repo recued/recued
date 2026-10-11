@@ -1,8 +1,14 @@
-/** OS-conventional config + data paths. Kept separate from the TOML
- *  parser so tests can stub a fake environment. */
+/** OS-conventional config-file path. Kept separate from the TOML parser so
+ *  tests can stub a fake environment.
+ *
+ *  The data folder is not here: it is the folder that holds the database,
+ *  resolved by `backend/server/src/realm-db-path.ts` from `--db` / `DB_PATH`.
+ *  A `data_path` default lived here until 2026-10-09, and it disagreed with
+ *  where the server really keeps its data on Windows (Roaming vs Local
+ *  AppData) and for root on Linux — harmless only because nothing read it. */
 
 import { homedir, platform } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 export type Os = 'darwin' | 'linux' | 'windows';
 
@@ -15,7 +21,6 @@ export interface PathEnv {
   os?: Os;
   home?: string;
   xdgConfigHome?: string;
-  xdgDataHome?: string;
   appData?: string;
 }
 
@@ -40,41 +45,6 @@ export const defaultConfigPath = (env: PathEnv = {}): string => {
   }
 };
 
-/** Default `data_path` for each OS — where SQLite, blobs, vault, and
- *  the server's pidfile all live. */
-export const defaultDataPath = (env: PathEnv = {}): string => {
-  const os = env.os ?? detectOs();
-  const home = env.home ?? homedir();
-  switch (os) {
-    case 'darwin':
-      return join(home, 'Library', 'Application Support', 'Recued');
-    case 'windows': {
-      const appData = env.appData ?? process.env.APPDATA ?? join(home, 'AppData', 'Roaming');
-      return join(appData, 'Recued');
-    }
-    case 'linux':
-    default: {
-      const xdg = env.xdgDataHome ?? process.env.XDG_DATA_HOME;
-      const base = xdg && xdg.length > 0 ? xdg : join(home, '.local', 'share');
-      return join(base, 'recued');
-    }
-  }
-};
-
 /** Expand `~` at the start of a path. Safe no-op when absent. */
 export const expandHome = (p: string, home: string = homedir()): string =>
   p.startsWith('~/') || p === '~' ? join(home, p.slice(1)) : p;
-
-/** Expand `{data_path}` placeholders inside bootstrap path values so
- *  users can keep the "logs next to data" default even when they move
- *  data_path. Intentionally minimal — only this one token. */
-export const expandDataPath = (p: string, dataPath: string): string =>
-  p.includes('{data_path}') ? p.split('{data_path}').join(dataPath) : p;
-
-/** Resolve a user-supplied bootstrap path: expand `~` and `{data_path}`,
- *  then resolve to absolute. */
-export const resolveBootstrapPath = (
-  p: string,
-  dataPath: string,
-  home: string = homedir(),
-): string => resolve(expandHome(expandDataPath(p, dataPath), home));

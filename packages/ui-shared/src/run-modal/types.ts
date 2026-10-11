@@ -30,6 +30,7 @@ import type {
   MissedSchedulePolicy,
 } from '@recued/contracts';
 import type { RefPickerSearchCaller } from '../ref-picker/types.js';
+import type { ConnectionLineSlot } from '../connection-lines.js';
 import type { RecordRefVariableSearch } from '../record-ref-variable.js';
 
 /** Which tab the modal opens on. A manual recipe's `[Run]` opens `run`;
@@ -50,6 +51,9 @@ export type RunModalExecuteCaller = (args: {
   /** D-319 — run as this dish, with its settings; `config` changes them for
    *  this run alone. */
   dish_id?: string;
+  /** D-320 §3.5 — the connection this run uses, by slot, where it moved a
+   *  Connection line; this run only. */
+  connections?: Record<string, string>;
 }) => Promise<ServerExecuteResponse>;
 
 /** Lists ALL schedules; the modal filters to this recipe's. */
@@ -170,6 +174,11 @@ export interface RunModalState {
    *  from the string target inputs so numbers, booleans, arrays, and objects
    *  survive review and dispatch without coercion. */
   context_values: Record<string, unknown>;
+  /** D-320 — the recipe's slots (`packs.connections.recipe`); null until read,
+   *  or when the host cannot read them (no lines then). */
+  connection_slots: ReadonlyArray<ConnectionLineSlot> | null;
+  /** D-320 — the Connection lines this run moved, by slot; this run only. */
+  connection_choice: Record<string, string>;
   /** A run is in flight (Run button → "Running...", disabled). */
   executing: boolean;
   /** Last run error, surfaced in the result block. */
@@ -240,6 +249,10 @@ export interface WireRunModalOptions {
   dishes?: readonly Dish[];
   /** D-319 — the dish it was opened from. Absent ⇒ the main dish. */
   dish_id?: string;
+  /** D-320 §4 — the recipe's slots (`packs.connections.recipe`), read when the
+   *  dialog opens: the Run tab's Connection lines, preselected from the dish it
+   *  runs as. Absent, or a read that fails ⇒ no lines. */
+  connectionSlots?: () => Promise<{ slots: ReadonlyArray<ConnectionLineSlot> }>;
   /** DOM factory — pass for non-browser (test) environments. */
   document?: Document;
   /** Tab to open on. Default `'run'`. */
@@ -308,6 +321,8 @@ export interface RunModalHandle {
   setDish(dish_id: string | null): void;
   /** Set the raw-JSON config (mirrors a textarea edit). */
   setConfigText(text: string): void;
+  /** D-320 — move one Connection line (mirrors its select); this run only. */
+  setConnection(slot: string, connection_name: string): void;
   /** Set one context-target value (mirrors a target-input edit). */
   setTargetValue(key: string, value: string): void;
   /** Set the JSON-typed author context prefilled by a result action. */

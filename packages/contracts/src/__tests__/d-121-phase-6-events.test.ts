@@ -145,7 +145,6 @@ describe('D-121 Phase 6 — broadcast event constants', () => {
       'records',
       'remerge_prompt',
       'schedule',
-      'service',
       // D-153 P7 — session lifecycle transition; paired clients
       // refresh their session UI from the bus without polling.
       'session_lifecycle',

@@ -28,7 +28,7 @@ describe('webhookDoorToasts — one notice per door a save moved', () => {
     }))).toEqual([{
       title: 'Webhook on: Home Assistant camera alert',
       text: 'Messages coming in now run with these settings. They may use: '
-        + 'recued-core.home-assistant.camera.snapshot, core-ai-classify, the home-assistant account.',
+        + 'recued-core.home-assistant.camera.snapshot, core-ai-classify, the home-assistant connection.',
       sticky: true,
     }]);
   });
@@ -45,7 +45,7 @@ describe('webhookDoorToasts — one notice per door a save moved', () => {
     expect(swap).toEqual({
       title: 'Webhook changed: Acme order paid',
       text: 'These settings changed what messages coming in may use. '
-        + 'Now: the acme-staging account. No longer: the acme-prod account.',
+        + 'Now: the acme-staging connection. No longer: the acme-prod connection.',
       sticky: true,
     });
     const [widened] = webhookDoorToasts(result({
@@ -64,7 +64,7 @@ describe('webhookDoorToasts — one notice per door a save moved', () => {
     ))).toEqual([
       {
         title: 'Webhook off: Acme order paid',
-        text: 'Messages coming in are refused until its settings choose an account.',
+        text: 'Messages coming in are refused until its settings choose a connection.',
         sticky: true,
       },
       {
@@ -184,7 +184,10 @@ describe('withWebhookDoorNotices — the app\'s one connection tells every door 
 
   it('lists exactly the rpcs the server returns door changes from', () => {
     expect([...DISH_WEBHOOK_DOOR_RPCS].sort()).toEqual([
-      'auto_run.update', 'dishes.create', 'dishes.delete', 'dishes.update', 'schedules.create', 'triggers.create',
+      'auto_run.update', 'collection.connection.delete', 'dishes.create', 'dishes.delete', 'dishes.update',
+      // D-320 phase 3 (3b) — a door follows its pack's connections too.
+      'packs.connections.add', 'packs.connections.add_many', 'packs.connections.remove', 'packs.connections.set_default',
+      'schedules.create', 'triggers.create',
     ]);
   });
 });

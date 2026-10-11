@@ -1,4 +1,4 @@
-/** M1 — export-archive on-disk lifecycle (the `<data_path>/exports/` slot).
+/** M1 — export-archive on-disk lifecycle (the `<dataPath>/exports/` slot).
  *
  *  Phase F/G wrote `recued-<datetime>-<rand>.recued.archive` files into
  *  `exports/` and NEVER deleted them: `archive-handler`'s `pruneExpired`
@@ -18,7 +18,7 @@
  *    - `estimateExportBytes` — conservative peak-disk estimate for the
  *                            statfs pre-flight (refuse before ENOSPC).
  *
- *  Pure filesystem helpers over a `data_path` — no db, no crypto — so the
+ *  Pure filesystem helpers over a data folder — no db, no crypto — so the
  *  whole slot is unit-testable against a tmpdir.
  */
 
@@ -142,7 +142,7 @@ export const pruneStagedArchives = (
   return deleted;
 };
 
-/** `<data_path>/exports/` — where exports land. */
+/** `<dataPath>/exports/` — where exports land. */
 export const exportsDir = (dataPath: string): string => join(dataPath, 'exports');
 
 /** Reclaim incomplete RPC export assembly after a process death. No age gate:

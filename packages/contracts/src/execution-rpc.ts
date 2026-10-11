@@ -17,6 +17,7 @@ import type {
 } from './commits.js';
 import type { HeavyOpErrorCategory } from './execution-control.js';
 import type { CliFailureReason } from './cli-failure.js';
+import type { RunUntestedTool } from './cli-tool-version.js';
 import type { PreflightApprovedTarget } from './checkpoint.js';
 import type { RecipeError } from './errors.js';
 import type { RunMode } from './memory.js';
@@ -297,6 +298,9 @@ export interface RunAuditSummary {
    *  field) — never zero. See `AuditEntry.total_usage` for why the two fields
    *  take opposite emit rules. */
   total_usage?: TokenUsageReport;
+  /** D-321 — programs this run started under Warn although their version was
+   *  not one the pack was tested with. Absent when there were none. */
+  untested_tools?: RunUntestedTool[];
 }
 
 export interface RunApprovalCheckpoint {

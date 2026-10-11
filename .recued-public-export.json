@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "ded31ef348cd48a5de64ea5b4b3575b6296352a7",
-    "tree": "2ddc152aef46ace04f24cd06b704ebc4af797f45",
-    "committed_at": "2026-10-09T12:14:08-07:00"
+    "commit": "a7eb147d6e80457818872646f0d4974387176928",
+    "tree": "dc002df68a1130fef1dd0310e10588ad1d14c791",
+    "committed_at": "2026-10-11T00:28:07-07:00"
   },
-  "export_manifest_sha256": "8ee471a10894515a5fdb1f68cdb8cd3768c478784e40cc91775e757dfdb50d8e",
-  "version": "26.10.9",
+  "export_manifest_sha256": "fda6c7990e8ed15ae05416299e1f349f0640a86ef319edcfe7177d36bd731b3b",
+  "version": "26.10.11",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -52,8 +52,7 @@
     "packages/ingredient-authoring/src/__tests__/d-192-api-pack-authoring-guide.test.ts",
     "packages/middleware-recued/prompt-cache/scripts/fts-prefetch-probe.mjs",
     "packages/middleware-recued/prompt-cache/src/__tests__/ner-corpus-eval.report.test.ts",
-    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts",
-    "packages/server-network/src/__tests__/setup-guide-currency.test.ts"
+    "packages/recipes/src/__tests__/qualify-recipes-output.test.ts"
   ],
   "omitted_private_coupled_tests": {
     "paths": [
@@ -188,6 +187,31 @@
       "backend/server/src/__tests__/d-311-marketplace-pack-brings-its-dependencies.test.ts",
       "backend/server/src/__tests__/d-312-a-notification-reaches-every-channel-set-up.test.ts",
       "backend/server/src/__tests__/d-312-notification-channel-settings.ratchet.test.ts",
+      "backend/server/src/__tests__/d-320-borrowing.test.ts",
+      "backend/server/src/__tests__/d-320-contract-connection-scope.test.ts",
+      "backend/server/src/__tests__/d-320-dish-connection-choice.test.ts",
+      "backend/server/src/__tests__/d-320-door-follows-install.test.ts",
+      "backend/server/src/__tests__/d-320-door-follows-pack.test.ts",
+      "backend/server/src/__tests__/d-320-door-follows-run.test.ts",
+      "backend/server/src/__tests__/d-320-door-slot.test.ts",
+      "backend/server/src/__tests__/d-320-dormant-bindings.test.ts",
+      "backend/server/src/__tests__/d-320-holder-and-shared-connection.test.ts",
+      "backend/server/src/__tests__/d-320-install-shares.test.ts",
+      "backend/server/src/__tests__/d-320-new-recipes-name-no-connection.test.ts",
+      "backend/server/src/__tests__/d-320-one-connection-several-catalogs.test.ts",
+      "backend/server/src/__tests__/d-320-pack-connection-fill-e2e.test.ts",
+      "backend/server/src/__tests__/d-320-pack-connection-fill.test.ts",
+      "backend/server/src/__tests__/d-320-pack-connection-list-and-default.test.ts",
+      "backend/server/src/__tests__/d-320-preapproval-settles.test.ts",
+      "backend/server/src/__tests__/d-320-removal-effects.test.ts",
+      "backend/server/src/__tests__/d-320-removal-recipes.test.ts",
+      "backend/server/src/__tests__/d-320-retired-connections.test.ts",
+      "backend/server/src/__tests__/d-320-run-connection-choice.test.ts",
+      "backend/server/src/__tests__/d-320-sign-ins.test.ts",
+      "backend/server/src/__tests__/d-320-slot-settings.test.ts",
+      "backend/server/src/__tests__/d-321-recipe-run-version-check.test.ts",
+      "backend/server/src/__tests__/d-321-run-untested-tools.test.ts",
+      "backend/server/src/__tests__/d-321-tool-version-update-review.test.ts",
       "backend/server/src/__tests__/dependency-manifest.test.ts",
       "backend/server/src/__tests__/dispatch-canonical-resolve.test.ts",
       "backend/server/src/__tests__/door-standing-closure-e2e.test.ts",
@@ -210,6 +234,8 @@
       "backend/server/src/__tests__/fundamentals-watch-drive.test.ts",
       "backend/server/src/__tests__/held-foreach-approval-cover.test.ts",
       "backend/server/src/__tests__/held-run-result-for-the-page.test.ts",
+      "backend/server/src/__tests__/helpers/d320-hubspot-world.ts",
+      "backend/server/src/__tests__/helpers/d320-webhook-door.ts",
       "backend/server/src/__tests__/helpers/mail-facts-live-server.ts",
       "backend/server/src/__tests__/helpers/records-pack-harness.ts",
       "backend/server/src/__tests__/home-assistant-camera-alert-pushed-run.test.ts",
@@ -223,6 +249,9 @@
       "backend/server/src/__tests__/installer-safety-guards.test.ts",
       "backend/server/src/__tests__/installer-shell-functions.test.ts",
       "backend/server/src/__tests__/invoice-book-billable-hours-drive.test.ts",
+      "backend/server/src/__tests__/invoice-book-owner-day-drive.test.ts",
+      "backend/server/src/__tests__/invoice-book-partial-payment-drive.test.ts",
+      "backend/server/src/__tests__/invoice-book-pays-and-buys-drive.test.ts",
       "backend/server/src/__tests__/issue-pipeline-agents-live-drive.test.ts",
       "backend/server/src/__tests__/issue-pipeline-install.test.ts",
       "backend/server/src/__tests__/issue-pipeline.test.ts",
@@ -273,6 +302,8 @@
       "backend/server/src/__tests__/queue-desk-mcp-staff-lane.test.ts",
       "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
       "backend/server/src/__tests__/receipts-pack-live.test.ts",
+      "backend/server/src/__tests__/reception-door-boot-rederive.test.ts",
+      "backend/server/src/__tests__/reception-door-first-party-op.test.ts",
       "backend/server/src/__tests__/recipe-list-handler-shipped-importer.test.ts",
       "backend/server/src/__tests__/records-pack-entry-points.test.ts",
       "backend/server/src/__tests__/records-pack-write-approval.test.ts",
@@ -285,9 +316,11 @@
       "backend/server/src/__tests__/saga-write-seal.test.ts",
       "backend/server/src/__tests__/sea-entry-is-cjs.test.ts",
       "backend/server/src/__tests__/seller-quote-payment-events-install.test.ts",
+      "backend/server/src/__tests__/seller-refund-revoke-pushed-run.test.ts",
       "backend/server/src/__tests__/serve-compose-execution-context.test.ts",
       "backend/server/src/__tests__/split-pack-op-provenance.test.ts",
       "backend/server/src/__tests__/spreadsheet-import-corpus.test.ts",
+      "backend/server/src/__tests__/statement-import-account-balance-drive.test.ts",
       "backend/server/src/__tests__/statement-import-business-workflow.test.ts",
       "backend/server/src/__tests__/stranger-first-walk-e2e.test.ts",
       "backend/server/src/__tests__/subscriptions-pack-live.test.ts",
@@ -299,6 +332,8 @@
       "backend/server/src/__tests__/watch-canonical-poll.test.ts",
       "backend/server/src/__tests__/watcher-required-args.ratchet.test.ts",
       "backend/server/src/__tests__/web-watch-recipes.test.ts",
+      "backend/server/src/__tests__/webhook-door-boot-rederive.test.ts",
+      "backend/server/src/__tests__/webhook-door-replaced-mid-run.test.ts",
       "backend/server/src/__tests__/wire-observability-rpc-deps.test.ts",
       "backend/server/src/__tests__/zoho-desk-tickets-pack.test.ts",
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
@@ -307,13 +342,13 @@
       "backend/server/src/records/__tests__/client-document-intake-golden.test.ts",
       "backend/server/src/records/__tests__/job-status-board-golden.test.ts",
       "backend/server/src/records/__tests__/ledger-book-structures.test.ts",
-      "backend/server/src/records/__tests__/records-same-version-recipe-update.test.ts",
       "backend/server/src/records/__tests__/records-update-carries-reception-pairs.test.ts",
       "backend/server/src/records/__tests__/records-update-review.test.ts",
       "backend/server/src/records/__tests__/request-path-pii.test.ts",
       "backend/server/src/records/__tests__/root-projection-batch.test.ts",
       "backend/server/src/records/__tests__/root-projection-fanout.test.ts",
       "backend/server/src/records/__tests__/root-projection-from-pack.test.ts",
+      "backend/server/src/records/__tests__/root-projection-group-by.test.ts",
       "backend/server/src/records/__tests__/seller-quote-request-golden.test.ts",
       "backend/server/src/seller/__tests__/d-196-1d-pass-checkout.integration.test.ts",
       "backend/server/src/seller/__tests__/d-308-permanent-pass-repair.test.ts",
@@ -493,6 +528,7 @@
       "packages/ingredient-authoring/src/__tests__/d-254-hubspot-record-id-arg.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-259-cli-corpus-ratchet.test.ts",
       "packages/ingredient-authoring/src/__tests__/d-282-spends-per-call-shipped-pack.test.ts",
+      "packages/ingredient-authoring/src/__tests__/d-321-cli-tool-version.test.ts",
       "packages/ingredient-authoring/src/__tests__/decision-log-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/deeptutor-daily-mastery-pack-audit.test.ts",
       "packages/ingredient-authoring/src/__tests__/derivable-request-schema-ratchet.test.ts",
@@ -630,6 +666,7 @@
       "packages/recipes/src/__tests__/linear-issue-closure-loop.test.ts",
       "packages/recipes/src/__tests__/linear-issue-comment-closure-loop.test.ts",
       "packages/recipes/src/__tests__/mail-commitment-proposal-loop.test.ts",
+      "packages/recipes/src/__tests__/mail-sender-settings.test.ts",
       "packages/recipes/src/__tests__/mail-task-proposal-loop.test.ts",
       "packages/recipes/src/__tests__/mailgun-sending-domains-pack-audit.test.ts",
       "packages/recipes/src/__tests__/meeting-minutes.test.ts",
@@ -666,6 +703,7 @@
       "packages/recipes/src/__tests__/recipe-bundle-pack-identity.test.ts",
       "packages/recipes/src/__tests__/recipe-corpus-validity.test.ts",
       "packages/recipes/src/__tests__/rental-book-audit.test.ts",
+      "packages/recipes/src/__tests__/send-composed-mail-chat-tool.test.ts",
       "packages/recipes/src/__tests__/sentry-linear-work-handoff-loop.test.ts",
       "packages/recipes/src/__tests__/sentry-measured-vs-extrapolated-pack-audit.test.ts",
       "packages/recipes/src/__tests__/shared-key-prefix.test.ts",
@@ -700,9 +738,10 @@
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts",
       "packages/transforms/src/__tests__/d-282-map-item-refs-corpus.test.ts",
       "packages/ui-shared/src/__tests__/calendar-reminder-switch-on.test.ts",
+      "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "c7b4e8b687c467bc45b40292305f72113f5164992f09338d54a4eb4ee3c83789",
+    "sha256": "a114b86e9d75654b28ae5daba301ce6f22c4a9ca153c4c23fc21c327e1d715e4",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -719,15 +758,15 @@
     ]
   },
   "internal_reference_scrub": {
-    "files_changed": 1103,
+    "files_changed": 1109,
     "rules": [
       {
         "id": "internal-spec-reference",
-        "comments_rewritten": 1032
+        "comments_rewritten": 1040
       },
       {
         "id": "internal-design-document",
-        "comments_rewritten": 131
+        "comments_rewritten": 129
       },
       {
         "id": "internal-handover-note",
@@ -816,7 +855,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6489,
-    "sha256": "aff7c0c32dbf96fbddd55359fe83090c1a875d569f22604b8c8c46ecb284ae3c"
+    "file_count": 6506,
+    "sha256": "fe01bf6cbceae2d718fba8be179e3365bfd9f0cffd5c8fd1815199886bc5f1bb"
   }
 }

@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// The D-128 vendor-connection receiver is the bundle's one listener since the
+// Phase D `/webhook/{slug}` listener was removed (2026-10-10). Its factory is
+// mocked so these tests read the options it was composed with; the funnel
+// underneath is the real one over fake stores.
 const listenerMocks = vi.hoisted(() => ({
-  webhookListener: { kind: 'webhook-listener' },
-  createWebhookListener: vi.fn(),
+  connectionWebhookListener: vi.fn(async () => {}),
+  createConnectionWebhookListener: vi.fn(),
 }));
 
-vi.mock('../collections/webhook/webhook-listener.js', () => ({
-  createWebhookListener: listenerMocks.createWebhookListener,
+vi.mock('../connection-webhook-listener.js', () => ({
+  createConnectionWebhookListener: listenerMocks.createConnectionWebhookListener,
 }));
 
 import {
@@ -17,8 +21,10 @@ import {
 const originalPublicReachable = process.env.RECUED_PUBLIC_REACHABLE;
 
 const resetListenerMocks = (): void => {
-  listenerMocks.createWebhookListener.mockReset();
-  listenerMocks.createWebhookListener.mockReturnValue(listenerMocks.webhookListener);
+  listenerMocks.createConnectionWebhookListener.mockReset();
+  listenerMocks.createConnectionWebhookListener.mockReturnValue(
+    listenerMocks.connectionWebhookListener,
+  );
 };
 
 const setPublicReachableEnv = (value: string | undefined): void => {
@@ -30,17 +36,51 @@ const setPublicReachableEnv = (value: string | undefined): void => {
   process.env.RECUED_PUBLIC_REACHABLE = value;
 };
 
-const makeDeps = (webhookPort: number) => ({
-  webhookPort,
-  collectionRegistry: { kind: 'collection-registry' },
+const fakeConnectionStore = (rows: Array<{
+  name: string;
+  config: Record<string, unknown>;
+}>) => ({
+  list: (filter?: { kind?: string }) =>
+    filter?.kind === 'api'
+      ? rows.map((r) => ({
+          kind: 'api',
+          name: r.name,
+          config_json: JSON.stringify(r.config),
+          auth_ciphertext: '',
+          enrolled_at: 1,
+          updated_at: 1,
+        }))
+      : [],
+  get: (kind: string, name: string) => {
+    if (kind !== 'api') return null;
+    const row = rows.find((r) => r.name === name);
+    return row
+      ? {
+          kind: 'api',
+          name: row.name,
+          config_json: JSON.stringify(row.config),
+          auth_ciphertext: '',
+          enrolled_at: 1,
+          updated_at: 1,
+        }
+      : null;
+  },
 });
 
-const composeWithPort = async (webhookPort: number) =>
-  composeWebhookListeners(makeDeps(webhookPort) as any);
+/** Everything the receiver needs to compose. */
+const makeDeps = (webhooksEnabled: boolean) => ({
+  webhooksEnabled,
+  connectionStore: fakeConnectionStore([]),
+  enrichmentStore: { listByTarget: () => [], refreshMetaForTarget: () => {} },
+  warehouseBus: { emit: () => {}, subscribe: () => () => {}, dispose: () => {} },
+});
 
-const lastWebhookOptions = () => {
-  const call = listenerMocks.createWebhookListener.mock.calls.at(-1);
-  if (!call) throw new Error('createWebhookListener was not called');
+const composeWith = async (webhooksEnabled: boolean) =>
+  composeWebhookListeners(makeDeps(webhooksEnabled) as any);
+
+const lastReceiverOptions = () => {
+  const call = listenerMocks.createConnectionWebhookListener.mock.calls.at(-1);
+  if (!call) throw new Error('createConnectionWebhookListener was not called');
   return call[0] as any;
 };
 
@@ -55,88 +95,59 @@ afterEach(() => {
 });
 
 describe('composeWebhookListeners gate matrix', () => {
-  it.each([0, -1])(
-    'returns undefined listeners and skips factories when webhookPort=%i',
-    async (webhookPort) => {
-      const bundle = await composeWithPort(webhookPort);
+  it('returns an undefined receiver and skips its factory when webhooks are off', async () => {
+    const bundle = await composeWith(false);
 
-      expect(bundle.webhookListener).toBeUndefined();
-      expect(listenerMocks.createWebhookListener).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([80, 8443])(
-    'returns the webhook listener and invokes its factory once when webhookPort=%i',
-    async (webhookPort) => {
-      const bundle = await composeWithPort(webhookPort);
-
-      expect(bundle.webhookListener).toBe(listenerMocks.webhookListener);
-      expect(listenerMocks.createWebhookListener).toHaveBeenCalledTimes(1);
-      // The D-115 `/hook/{recipe_id}/{slug}` listener went with the webhook
-      // watcher (2026-10-05): no bundle carries one.
-      expect(bundle).not.toHaveProperty('hookListener');
-    },
-  );
-});
-
-describe('D-272 — webhook_port is a SWITCH, and that is a property not a sample', () => {
-  it('⛔ the NUMBER never reaches a listener — only whether it is > 0', async () => {
-    // ⛔ THE NAME SAYS "PORT" AND THE CODE SAYS "ON". The gate matrix above
-    // proves 80 and 8443 both compose listeners, which is two samples agreeing;
-    // this asserts the reason they agree — the value is consumed by `> 0` and
-    // then DROPPED, so every non-zero value is the same value.
-    //
-    // 🔑 WHY PIN IT: an operator who reads this key as a port forwards it in
-    // their router, and nothing is listening there. The corrected preset copy
-    // says so; a comment cannot hold. If someone later threads the number into
-    // a listener, this reds and the naming question has to be answered rather
-    // than inherited.
-    await composeWithPort(9000);
-
-    const args = [lastWebhookOptions()];
-    for (const arg of args) {
-      expect(JSON.stringify(arg, (_k, v) => (typeof v === 'function' ? '[fn]' : v)))
-        .not.toContain('9000');
-      // ...and not under a differently-named key either.
-      expect(Object.values(arg)).not.toContain(9000);
-    }
+    expect(bundle.connectionWebhookListener).toBeUndefined();
+    expect(listenerMocks.createConnectionWebhookListener).not.toHaveBeenCalled();
   });
 
-  it('⛔ and NOTHING in the bundle differs between two non-zero values', async () => {
-    // The user-visible claim, stated over the composer's whole output rather
-    // than over the fields this test happened to think of.
-    const shapeOf = async (port: number): Promise<string> => {
-      resetListenerMocks();
-      const bundle = await composeWithPort(port);
-      return JSON.stringify(
-        { keys: Object.keys(bundle).sort(), defined: Object.entries(bundle)
-          .map(([k, v]) => [k, v !== undefined]).sort() },
-      );
-    };
-    expect(await shapeOf(9000)).toBe(await shapeOf(1));
+  it('returns the receiver and invokes its factory once when webhooks are on', async () => {
+    const bundle = await composeWith(true);
+
+    expect(bundle.connectionWebhookListener).toBe(listenerMocks.connectionWebhookListener);
+    expect(listenerMocks.createConnectionWebhookListener).toHaveBeenCalledTimes(1);
+    // The D-115 `/hook/{recipe_id}/{slug}` listener went with the webhook
+    // watcher (2026-10-05), and Phase D's `/webhook/{slug}` listener with its
+    // collection (2026-10-10): no bundle carries either.
+    expect(bundle).not.toHaveProperty('hookListener');
+    expect(bundle).not.toHaveProperty('webhookListener');
   });
 });
+
+// D-272 pinned two properties here while the switch was `webhook_port`: that the
+// NUMBER never reached a listener, and that every non-zero value composed the
+// same bundle. The switch is `webhooks_enabled: boolean` since 2026-10-10, so
+// there is no number left to leak; the old name's mapping (any non-zero → on)
+// is pinned where it now lives, in `packages/config`'s parse / env / cli tests.
 
 describe('composeWebhookListeners factory args', () => {
-  it('passes the collection registry and a publicReachable thunk', async () => {
-    const deps = makeDeps(80);
+  it('passes the funnel handler and a publicReachable thunk', async () => {
+    await composeWith(true);
 
-    await composeWebhookListeners(deps as any);
-
-    const webhookOptions = lastWebhookOptions();
-    expect(webhookOptions.registry).toBe(deps.collectionRegistry);
-    expect(webhookOptions.publicReachable).toEqual(expect.any(Function));
+    const options = lastReceiverOptions();
+    expect(options.funnel).toEqual(expect.any(Function));
+    expect(options.publicReachable).toEqual(expect.any(Function));
   });
 
-  it('forwards the master pause flag to the listener (D-188)', async () => {
+  // The composition root builds ONE switch (`createWebhookPublicReachable`,
+  // which also reads the runtime key) and hands it to D-201's intake too, so
+  // this must forward that function, not build its own from the environment.
+  it('forwards the publicReachable switch it is given, the same function', async () => {
+    const publicReachable = () => true;
+    await composeWebhookListeners({ ...makeDeps(true), publicReachable } as any);
+    expect(lastReceiverOptions().publicReachable).toBe(publicReachable);
+  });
+
+  it('forwards the master pause flag to the receiver (D-188)', async () => {
     const isPaused = () => true;
-    await composeWebhookListeners({ ...makeDeps(80), isPaused } as any);
-    // The same conditional-spread forwards `isPaused` to the connection
-    // webhook listener too (covered by behaviour tests on each handler).
-    expect(lastWebhookOptions().isPaused).toBe(isPaused);
+    await composeWebhookListeners({ ...makeDeps(true), isPaused } as any);
+    expect(lastReceiverOptions().isPaused).toBe(isPaused);
   });
 });
 
+// With no switch passed, the environment alone decides (the composition root
+// always passes one; `webhook-public-reachable.test.ts` covers the key).
 describe('composeWebhookListeners publicReachable thunk', () => {
   it.each([
     ['true', true],
@@ -149,16 +160,16 @@ describe('composeWebhookListeners publicReachable thunk', () => {
   ] as const)('returns %s for env value %s', async (envValue, expected) => {
     setPublicReachableEnv(envValue);
 
-    await composeWithPort(80);
+    await composeWith(true);
 
-    expect(lastWebhookOptions().publicReachable()).toBe(expected);
+    expect(lastReceiverOptions().publicReachable()).toBe(expected);
   });
 
   it('reads RECUED_PUBLIC_REACHABLE on every call after construction', async () => {
     setPublicReachableEnv('false');
-    await composeWithPort(80);
+    await composeWith(true);
 
-    const publicReachable = lastWebhookOptions().publicReachable;
+    const publicReachable = lastReceiverOptions().publicReachable;
     expect(publicReachable()).toBe(false);
 
     setPublicReachableEnv('true');
@@ -172,37 +183,6 @@ describe('composeWebhookListeners publicReachable thunk', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('WatchSource — connection webhook receiver + governance provider', () => {
-  const fakeConnectionStore = (rows: Array<{
-    name: string;
-    config: Record<string, unknown>;
-  }>) => ({
-    list: (filter?: { kind?: string }) =>
-      filter?.kind === 'api'
-        ? rows.map((r) => ({
-            kind: 'api',
-            name: r.name,
-            config_json: JSON.stringify(r.config),
-            auth_ciphertext: '',
-            enrolled_at: 1,
-            updated_at: 1,
-          }))
-        : [],
-    get: (kind: string, name: string) => {
-      if (kind !== 'api') return null;
-      const row = rows.find((r) => r.name === name);
-      return row
-        ? {
-            kind: 'api',
-            name: row.name,
-            config_json: JSON.stringify(row.config),
-            auth_ciphertext: '',
-            enrolled_at: 1,
-            updated_at: 1,
-          }
-        : null;
-    },
-  });
-
   const fakeRegistry = () => {
     const providers: Array<{ list: () => unknown[] }> = [];
     return {
@@ -215,30 +195,28 @@ describe('WatchSource — connection webhook receiver + governance provider', ()
     };
   };
 
-  it('composes the connection webhook receiver when port + stores are present', async () => {
+  it('composes the connection webhook receiver when webhooks are on + stores are present', async () => {
     const { registry } = fakeRegistry();
     const bundle = await composeWebhookListeners({
-      ...makeDeps(8787),
-      connectionStore: fakeConnectionStore([]),
-      enrichmentStore: { listByTarget: () => [], refreshMetaForTarget: () => {} },
-      warehouseBus: { emit: () => {}, subscribe: () => () => {}, dispose: () => {} },
+      ...makeDeps(true),
       sourceRegistry: registry,
     } as any);
-    expect(bundle.connectionWebhookListener).toBeTypeOf('function');
+    expect(bundle.connectionWebhookListener).toBe(listenerMocks.connectionWebhookListener);
   });
 
-  it('leaves the receiver undefined without the stores, and undefined below the port gate', async () => {
-    const portless = await composeWithPort(0);
-    expect(portless.connectionWebhookListener).toBeUndefined();
+  it('leaves the receiver undefined without the stores, and undefined with webhooks off', async () => {
+    const switchedOff = await composeWith(false);
+    expect(switchedOff.connectionWebhookListener).toBeUndefined();
 
-    const storeless = await composeWithPort(8787);
+    const storeless = await composeWebhookListeners({ webhooksEnabled: true } as any);
     expect(storeless.connectionWebhookListener).toBeUndefined();
+    expect(listenerMocks.createConnectionWebhookListener).not.toHaveBeenCalled();
   });
 
-  it('registers the webhook provider even when the port gate is closed — rows name the blocker', async () => {
+  it('registers the webhook provider even with webhooks off — rows name the blocker', async () => {
     const { registry } = fakeRegistry();
     await composeWebhookListeners({
-      ...makeDeps(0),
+      ...makeDeps(false),
       connectionStore: fakeConnectionStore([
         { name: 'main-crm', config: { vendor: 'hubspot', webhook_secret: 'shh' } },
       ]),
@@ -247,7 +225,7 @@ describe('WatchSource — connection webhook receiver + governance provider', ()
     // The hubspot kernel reconcilers are registered by vendor boot in
     // production; this harness has none, so the provider lists no rows
     // for the enrolled connection — what we pin here is registration
-    // itself (port-gate-independent).
+    // itself (independent of the webhook switch).
     expect(registry.list()).toEqual([]);
   });
 });
@@ -323,7 +301,7 @@ describe('WatchSource — webhook provider row derivation', () => {
     const conn = [{ name: 'main-crm', config: { vendor: 'hubspot', webhook_secret: 'shh' } }];
     expect(
       providerRows({ reconcilers: [hubspotDeal], connections: conn, receiverLive: false })[0],
-    ).toMatchObject({ active: false, inactive_reason: 'inbound webhook port not configured' });
+    ).toMatchObject({ active: false, inactive_reason: 'inbound webhooks are off (webhooks_enabled)' });
     expect(
       providerRows({
         reconcilers: [hubspotDeal],
@@ -333,7 +311,7 @@ describe('WatchSource — webhook provider row derivation', () => {
       })[0],
     ).toMatchObject({
       active: false,
-      inactive_reason: 'public reachability is off (RECUED_PUBLIC_REACHABLE)',
+      inactive_reason: 'public reachability is off (collection.webhook.public_reachable)',
     });
     expect(
       providerRows({

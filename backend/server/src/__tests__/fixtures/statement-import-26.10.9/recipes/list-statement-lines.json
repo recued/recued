@@ -1,0 +1,169 @@
+{
+  "recipe_id": "list-statement-lines",
+  "chat_exposed": false,
+  "version": 1,
+  "ttl": 0,
+  "metadata": {
+    "name": "List statement lines",
+    "description": "Use “List statement lines” in Recued. Shows imported statement lines, most recently imported first, for one account or across all of them, with the net for the page.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/statement-import",
+    "tags": [
+      "pack:statement-import",
+      "banking",
+      "records",
+      "read"
+    ],
+    "budget_ms": 30000,
+    "readme": "Leave the account blank to see every account at once. The net is the sum of the lines SHOWN, not the account balance — raise the limit or filter by account before reading anything into it.\n\n## The order is import order, not date order\n\nYour bank's date is stored exactly as it wrote it, and text like `20-Aug-2020` does not sort into date order — December would land before August. Recued will not guess your bank's date format, because a wrong guess silently reorders your statement. Lines come back most-recently-imported first, which within one import is the order your file listed them. To pick a day, filter on it.\n\n## Why there are three money columns\n\nRecued stores your statement the way your bank printed it. A bank that prints one signed column fills **Amount**; a bank that prints a pair fills **In** and **Out**. Nothing is folded together on the way in, because which column means money out is a fact about your bank — a stored line you can check against the paper is worth more than a tidier table. The net combines all three here, at reading time, where it is easy to check and easy to change."
+  },
+  "depends_on": [
+    "recued-core.statement-import"
+  ],
+  "variables": {
+    "account_label": {
+      "label": "Account (blank = all accounts)",
+      "type": "string",
+      "default": ""
+    },
+    "limit": {
+      "label": "How many lines to show",
+      "type": "number",
+      "default": 100
+    }
+  },
+  "requires": [],
+  "prefetch_steps": [],
+  "steps": [
+    {
+      "id": "acct",
+      "transform": "trim",
+      "input": "{{config.account_label}}"
+    },
+    {
+      "id": "scoped",
+      "transform": "compare",
+      "left": "{{step.acct}}",
+      "operator": "is_not_empty"
+    },
+    {
+      "id": "all_lines",
+      "op": "recued-core.statement-import.line.search",
+      "args": {
+        "sort": "-_record.created_at",
+        "limit": "{{config.limit}}"
+      },
+      "skip_when": "{{step.scoped}} equal true"
+    },
+    {
+      "id": "account_lines",
+      "op": "recued-core.statement-import.line.search",
+      "args": {
+        "filters": {
+          "account_label": "{{step.acct}}"
+        },
+        "sort": "-_record.created_at",
+        "limit": "{{config.limit}}"
+      },
+      "skip_when": "{{step.scoped}} equal false"
+    },
+    {
+      "id": "lines",
+      "transform": "coalesce",
+      "values": [
+        "{{step.account_lines.records}}",
+        "{{step.all_lines.records}}"
+      ]
+    },
+    {
+      "id": "shown",
+      "transform": "count",
+      "input": "{{step.lines}}"
+    },
+    {
+      "id": "net_signed",
+      "transform": "sum",
+      "array": "{{step.lines}}",
+      "field": "amount"
+    },
+    {
+      "id": "net_in",
+      "transform": "sum",
+      "array": "{{step.lines}}",
+      "field": "money_in"
+    },
+    {
+      "id": "net_out",
+      "transform": "sum",
+      "array": "{{step.lines}}",
+      "field": "money_out"
+    },
+    {
+      "id": "net",
+      "transform": "math",
+      "expression": "{{step.net_signed}} + {{step.net_in}} - {{step.net_out}}"
+    },
+    {
+      "id": "table",
+      "transform": "to_table",
+      "array": "{{step.lines}}",
+      "columns": [
+        {
+          "field": "posted_on",
+          "label": "Date (as your bank wrote it)"
+        },
+        {
+          "field": "description",
+          "label": "Description"
+        },
+        {
+          "field": "amount",
+          "label": "Amount"
+        },
+        {
+          "field": "money_in",
+          "label": "In"
+        },
+        {
+          "field": "money_out",
+          "label": "Out"
+        },
+        {
+          "field": "currency",
+          "label": "Currency"
+        },
+        {
+          "field": "account_label",
+          "label": "Account"
+        }
+      ]
+    },
+    {
+      "id": "card",
+      "transform": "to_summary",
+      "fields": [
+        {
+          "label": "Lines",
+          "value": "{{step.shown}}"
+        },
+        {
+          "label": "Net",
+          "value": "{{step.net:currency}}"
+        }
+      ]
+    }
+  ],
+  "output": {
+    "render": [
+      {
+        "type": "summary",
+        "source": "step.card"
+      },
+      {
+        "type": "table",
+        "source": "step.table"
+      }
+    ]
+  }
+}

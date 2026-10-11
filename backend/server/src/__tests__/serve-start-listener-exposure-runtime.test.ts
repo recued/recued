@@ -56,12 +56,17 @@ const makeOptions = (
   overrides: Partial<StartListenerExposureRuntimeOptions> = {},
 ): StartListenerExposureRuntimeOptions =>
   ({
-    listener: { tag: 'listener-options' },
+    listener: {
+      tag: 'listener-options',
+      // The Exposure gate's question: does the server have an address people
+      // outside can use? Answered by the same service every handed-out link reads.
+      storage: { publicAddress: { ownBaseUrls: vi.fn(() => ['https://alice.recued.net']) } },
+    },
     exposure: {
       args: ['--reset-exposure'],
       db: { tag: 'db' },
       auditLog: { tag: 'audit-log' },
-      webhookPort: 9876,
+      webhooksEnabled: true,
       publishExposureMachine: vi.fn(),
     },
     runtime: {
@@ -130,9 +135,11 @@ describe('startListenerExposureRuntime', () => {
       order.push('listeners');
       return listeners;
     });
+    let hasPublicAddress: (() => boolean) | undefined;
     bridgeMocks.composeServeExposure.mockImplementation(async (options) => {
       order.push('exposure');
       expect(options.wsHandleClientCount()).toBe(5);
+      hasPublicAddress = options.hasPublicAddress;
       return { tag: 'exposure-machine' };
     });
     bridgeMocks.startPostListenerRuntime.mockImplementation(async (options) => {
@@ -174,7 +181,15 @@ describe('startListenerExposureRuntime', () => {
       listenerCoordinator: listeners.listenerCoordinator,
       lanBindAddress: '0.0.0.0',
       wsHandleClientCount: expect.any(Function),
+      hasPublicAddress: expect.any(Function),
     });
+    // Live, from the server's own addresses: none left ⇒ Public is refused.
+    const ownBaseUrls = (options.listener as unknown as {
+      storage: { publicAddress: { ownBaseUrls: ReturnType<typeof vi.fn> } };
+    }).storage.publicAddress.ownBaseUrls;
+    expect(hasPublicAddress?.()).toBe(true);
+    ownBaseUrls.mockReturnValue([]);
+    expect(hasPublicAddress?.()).toBe(false);
     expect(bridgeMocks.startPostListenerRuntime).toHaveBeenCalledWith({
       ...options.runtime,
       server,

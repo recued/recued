@@ -56,6 +56,8 @@ import type { ContractStore } from '../storage/contract-store.js';
 import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 import { createContractGrantStore } from '../storage/contract-grant-store.js';
 import { createConnectionCatalogBindingStore } from '../storage/connection-catalog-binding-store.js';
+import { createPackConnectionDefaultStore } from '../storage/pack-connection-default-store.js';
+import { createPackConnectionHolderStore } from '../storage/pack-connection-holder-store.js';
 import {
   applyInstallAudienceGrantIds,
   provisionAuthoredArtifact,
@@ -274,6 +276,9 @@ const uninstallPack = (
     // D-170 gap #2 — drop this pack's connection→catalog binding too (so the local
     // catalog connection stops resolving / being grantable once the pack is gone).
     bindingStore.removeForPack(packSlug);
+    // D-320 — the pack's stored defaults go with its bindings.
+    createPackConnectionDefaultStore(deps.contractStore).removeForPack(packSlug);
+    createPackConnectionHolderStore(deps.contractStore).remove(packSlug);
   });
   for (const id of localDroppable) deps.registry.unregister(id);
   // D-170 gap #2 live-reconcile — bindings dropped + catalog deregistered above;

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
+import type { BootstrapConfig } from '@recued/config';
 import { createServerStateStore } from '../server-state.js';
 
 let db: Database.Database;
@@ -113,11 +114,30 @@ describe('createServerStateStore — staged bootstrap', () => {
 
   it('round-trips a partial patch', () => {
     const state = createServerStateStore(db);
-    state.setStagedBootstrap({ bind_port: 9000, bind_host: '127.0.0.1' });
+    state.setStagedBootstrap({ bind_port: 9000, webhooks_enabled: true });
     expect(state.getStagedBootstrap()).toEqual({
       bind_port: 9000,
-      bind_host: '127.0.0.1',
+      webhooks_enabled: true,
     });
+  });
+
+  it('drops keys removed on 2026-10-09 from a row staged before then', () => {
+    const state = createServerStateStore(db);
+    state.setStagedBootstrap(
+      JSON.parse('{"bind_port":9000,"bind_host":"127.0.0.1","log_path":"/tmp/x"}') as Partial<BootstrapConfig>,
+    );
+    expect(state.getStagedBootstrap()).toEqual({ bind_port: 9000 });
+    // Only removed keys left ⇒ nothing staged at all, so no restart reads as pending.
+    state.setStagedBootstrap(JSON.parse('{"mcp_port":0}') as Partial<BootstrapConfig>);
+    expect(state.getStagedBootstrap()).toBeNull();
+  });
+
+  it('reads a row staged as webhook_port (renamed 2026-10-10) as the switch it was', () => {
+    const state = createServerStateStore(db);
+    state.setStagedBootstrap(JSON.parse('{"webhook_port":8443}') as Partial<BootstrapConfig>);
+    expect(state.getStagedBootstrap()).toEqual({ webhooks_enabled: true });
+    state.setStagedBootstrap(JSON.parse('{"webhook_port":0}') as Partial<BootstrapConfig>);
+    expect(state.getStagedBootstrap()).toEqual({ webhooks_enabled: false });
   });
 
   it('clearing drops the row', () => {

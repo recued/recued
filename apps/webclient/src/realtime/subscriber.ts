@@ -270,7 +270,6 @@ export const WEBCLIENT_DEFAULT_SUBSCRIPTIONS: ReadonlyArray<BroadcastEventKind> 
   'recipe_runnability_changed',
   'remerge_prompt',
   'schedule',
-  'service',
   // D-153 P7 — session lifecycle transition. The webclient is a paired
   // client with session UI (spinner while `executing`, done badge on
   // `closed`); subscribed so it refreshes from the bus without polling.

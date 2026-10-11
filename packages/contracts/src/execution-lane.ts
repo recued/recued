@@ -40,10 +40,9 @@ export type CallClass = ExecutionLane | 'fast-path' | 'ai-governor';
  *  concern; this function only classifies a known kind. */
 export const callClassForKind = (kind: IngredientKind): CallClass => {
   switch (kind) {
-    case 'service':
     case 'cli':
       // D-182 — a cli op is a local subprocess (whisper / docling / ffmpeg /
-      // imagemagick); RAM-sized local-heavy lane, same as a service.
+      // imagemagick); RAM-sized local-heavy lane.
       return 'local-heavy';
     case 'ai':
       return 'ai-governor'; // own free-pool/BYOK bound; never double-counted

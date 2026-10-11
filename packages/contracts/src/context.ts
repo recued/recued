@@ -45,6 +45,23 @@ export interface ContextServer {
   time_zone?: string;
 }
 
+/** D-320 phase 3 — `context.connections`: the connection a run settled on for
+ *  each slot it signs in through, for a recipe that reads it as a value. A closure
+ *  watcher keeps only the records its own account wrote:
+ *
+ *      "field": "value.linear_connection", "operator": "equal",
+ *      "value": "{{context.connections.linear}}"
+ *
+ *  Host-owned, like `context.caller`: the server drops a caller's own and sets it
+ *  from what the run settled on (`connections_used`, each slot that settled on one
+ *  connection). Absent when the run signs in through none. A slot keeps its name
+ *  here, hyphens included (`{{context.connections.azure-devops}}`).
+ *
+ *  A vendor-neutral step (`core.crm.*`, `core.acct.*`) signs in through its vendor's
+ *  slot (`hubspot`), which a vendor-neutral recipe cannot know, so its family is
+ *  given too: `{{context.connections.crm}}`. */
+export type ContextConnections = Readonly<Record<string, string>>;
+
 /** `context.caller` — the trusted, minimal recipe-visible projection of
  *  the server-authenticated execution source.
  *

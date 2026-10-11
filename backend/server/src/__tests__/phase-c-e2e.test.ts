@@ -46,12 +46,8 @@ interface E2eHarness {
 }
 
 const BOOTSTRAP: BootstrapConfig = {
-  data_path: '',
-  bind_host: '127.0.0.1',
   bind_port: 7717,
-  mcp_port: 0,
-  webhook_port: 0,
-  log_path: '',
+  webhooks_enabled: false,
 };
 
 const RUNTIME: RuntimeConfig = {
@@ -80,7 +76,7 @@ const newE2e = async (): Promise<E2eHarness> => {
     version: '0.0.0-e2e',
     configPath: null,
     distribution: 'source',
-    initialBootstrap: { ...BOOTSTRAP, data_path: dataPath, log_path: dataPath },
+    initialBootstrap: { ...BOOTSTRAP },
     initialRuntime: { ...RUNTIME },
     runtimeStore,
     serverState,

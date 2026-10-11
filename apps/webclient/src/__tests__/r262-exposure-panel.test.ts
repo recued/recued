@@ -212,6 +212,9 @@ const okResponse = (state: ExposureState): ExposureMutationResponse => ({
 interface SetupOpts {
   state?: ExposureState;
   hasDdns?: boolean;
+  /** The server's own answer in `exposure.get` (servers from 2026-10-10);
+   *  unset = an older server that does not send it. */
+  hasPublicAddress?: boolean;
   getRejects?: boolean;
   applyPresetState?: ExposureState;
   setPathState?: ExposureState;
@@ -262,7 +265,11 @@ const setup = async (over: SetupOpts = {}) => {
     runGet: async () => {
       calls.get += 1;
       if (getRejects) throw new Error('boom');
-      return { state: initial, apex_mode: over.apexMode ?? 'redirect' };
+      return {
+        state: initial,
+        apex_mode: over.apexMode ?? 'redirect',
+        ...(over.hasPublicAddress !== undefined ? { has_public_address: over.hasPublicAddress } : {}),
+      };
     },
     ...(over.noSetApex
       ? {}
@@ -644,6 +651,19 @@ describe('R26.2 Delta 1 — broadcast, DDNS gate, dispose', () => {
     // The radio (first child) is disabled.
     expect(rowEl?.children[0]?.disabled).toBe(true);
     expect(collectText(rowEl as FakeElement)).toMatch(/Set up a web address first/);
+  });
+
+  // ⛔ The hostname-list guess counted a Pro name as enough while the server
+  // refused every Public choice, so the panel offered a button that always
+  // failed. A server that answers in `exposure.get` is believed instead, in
+  // both directions; the guess is only for a server too old to answer.
+  it("believes the server's answer over the hostname guess, both ways", async () => {
+    const refused = await setup({ hasDdns: true, hasPublicAddress: false });
+    expect(refused.mount.getState().model?.preset_rows
+      .find((r) => r.preset === 'public')?.requires_ddns).toBe(true);
+    const allowed = await setup({ hasDdns: false, hasPublicAddress: true });
+    expect(allowed.mount.getState().model?.preset_rows
+      .find((r) => r.preset === 'public')?.requires_ddns).toBe(false);
   });
 
   it('dispose removes the panel from the host + unsubscribes', async () => {

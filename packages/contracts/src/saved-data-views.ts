@@ -32,7 +32,14 @@ export type SavedDataViewDefinition =
       /** Only valid on Tasks. Absent on older views means the default settings. */
       task_filters?: TaskViewFilters;
     }
-  | { tab: 'mail' | 'calendar' | 'files' | 'webhook'; collection_slug: string | null }
+  | { tab: 'mail' | 'calendar' | 'files'; collection_slug: string | null }
+  /** ⛔ `webhook` IS LEGACY AND UNCREATABLE — READ PATH ONLY. Its "Webhook
+   *  deliveries" tab browsed the Phase D webhook collection, removed 2026-10-10
+   *  (nothing in production ever created one), so there is no tab to save it
+   *  from. Kept parseable for the reason `today` below spells out: a row that
+   *  no longer decodes takes the owner's whole saved-view list with it.
+   *  Opening one routes to Connections → Webhooks (`saved-data-route.ts`). */
+  | { tab: 'webhook'; collection_slug: string | null }
   | { tab: 'memory'; origin: 'all' | 'user_self' | 'contracted_user' | 'system' }
   | ({ tab: 'records'; owner: RecordsPackRef | null; entity: string | null } & RecordsViewSettings)
   /** ⛔ `today` IS LEGACY AND UNCREATABLE — READ PATH ONLY. D-290 moved Today

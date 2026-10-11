@@ -19,12 +19,15 @@
  *  you what "billable" is. */
 import {
   createRecordsAggregator,
+  evaluateRecordsGroupedAggregate,
+  RECORDS_MAX_GROUPS,
   type RecordsFieldKind,
   type RecordsRootKind,
   type RecordsRootProjection,
   type RecordsRootProjectionResult,
   type RecordsPackRef,
   type RecordsSchemaSnapshot,
+  type TimelineRollup,
 } from '@recued/contracts';
 
 import type { RecordsStore } from './store.js';
@@ -79,7 +82,7 @@ const resolveOne = (
   baseEntity: string,
   projection: RecordsRootProjection,
   rootKey: string,
-): RecordsRootProjectionResult => {
+): RecordsRootProjectionResult[] => {
   const chain = [baseEntity, ...projection.via.map(hop => hop.entity)];
   const finalEntity = chain[chain.length - 1]!;
 
@@ -135,6 +138,14 @@ const resolveOne = (
   return finish(schema, baseEntity, projection, owner, [], complete, reason);
 };
 
+/** The projection's answer over the rows its walk reached: ONE result, or —
+ *  for a `group_by` projection — one result per group.
+ *
+ *  ⛔ Grouping is the aggregate op's own (`evaluateRecordsGroupedAggregate`):
+ *  the same key kinds, the same cap, the same absent bucket sorted last. A
+ *  grouped rollup and a grouped op over the same rows cannot disagree. Each
+ *  group says what it is in its `label` ("Owes you · GBP"), so a client that
+ *  knows nothing of `group` still shows one honest line per group. */
 const finish = (
   schema: RecordsSchemaSnapshot,
   baseEntity: string,
@@ -143,24 +154,74 @@ const finish = (
   rows: Record<string, unknown>[],
   complete: boolean,
   reason: string | undefined,
-): RecordsRootProjectionResult => {
+): RecordsRootProjectionResult[] => {
   const kinds: Record<string, RecordsFieldKind> = {};
   for (const field of schema.entities[baseEntity]?.fields ?? []) {
     if (field.kind !== 'id') kinds[field.key] = field.kind;
   }
-  const acc = createRecordsAggregator(projection.select, kinds);
-  for (const row of rows) acc.push(row);
-  return {
+  const result = (
+    value: Record<string, unknown>,
+    label: string | undefined,
+    done: boolean,
+    why: string | undefined,
+    group?: { by: string; key: unknown },
+  ): RecordsRootProjectionResult => ({
     publisher: owner.publisher,
     pack_slug: owner.pack_slug,
     entity: baseEntity,
     root: projection.root,
-    ...(projection.label === undefined ? {} : { label: projection.label }),
-    value: acc.finish(),
-    complete,
-    ...(complete ? {} : { incomplete_reason: reason ?? 'the walk hit a bound' }),
-  };
+    ...(label === undefined ? {} : { label }),
+    ...(projection.name === undefined ? {} : { name: projection.name }),
+    ...(group === undefined ? {} : { group }),
+    value,
+    complete: done,
+    ...(done ? {} : { incomplete_reason: why ?? 'the walk hit a bound' }),
+  });
+
+  const by = projection.group_by;
+  if (by === undefined) {
+    const acc = createRecordsAggregator(projection.select, kinds);
+    for (const row of rows) acc.push(row);
+    return [result(acc.finish(), projection.label, complete, reason)];
+  }
+
+  const grouped = evaluateRecordsGroupedAggregate(rows, by, projection.select, kinds);
+  const done = complete && grouped.complete;
+  const why = !complete
+    ? reason
+    : `more than ${RECORDS_MAX_GROUPS} values of ${by}: the first ${RECORDS_MAX_GROUPS} are shown, each one whole`;
+  if (grouped.groups.length === 0) {
+    // No rows, so no groups — and still an answer: the honest zero an
+    // ungrouped projection gives, under the declared label and with no group.
+    // ⛔ An empty list here would read as "this pack said nothing", and an
+    // absent key and a zero are different claims (`readRootProjectionsBatch`).
+    // A screen skips a rollup of zeros either way.
+    return [result(createRecordsAggregator(projection.select, kinds).finish(), projection.label, done, why)];
+  }
+  const name = projection.label ?? owner.pack_slug;
+  return grouped.groups.map(({ key, values }) =>
+    result(values, `${name} · ${key === null ? `no ${by}` : String(key)}`, done, why, { by, key }));
 };
+
+/** The wire shape of one projection result: the timeline rpc, MCP and the
+ *  recipe surface all send this.
+ *
+ *  ⛔ ONE copy. Three call sites each copied these fields by hand, and a field
+ *  added to the result — as `group` was, 2026-10-09 — reaches only the copies
+ *  someone remembers: the D-226 defect shape, a hand-kept list over a growing
+ *  contract that fails silently. */
+export const toTimelineRollup = (projection: RecordsRootProjectionResult): TimelineRollup => ({
+  publisher: projection.publisher,
+  pack_slug: projection.pack_slug,
+  ...(projection.label === undefined ? {} : { label: projection.label }),
+  ...(projection.name === undefined ? {} : { name: projection.name }),
+  ...(projection.group === undefined ? {} : { group: projection.group }),
+  value: projection.value,
+  complete: projection.complete,
+  ...(projection.incomplete_reason === undefined
+    ? {}
+    : { incomplete_reason: projection.incomplete_reason }),
+});
 
 // ── batched: many identities at once ────────────────────────────────────────
 /** Root keys per `IN (…)` predicate. ⚠ A DIFFERENT bound from
@@ -230,7 +291,7 @@ const resolveBatch = (
   baseEntity: string,
   projection: RecordsRootProjection,
   keys: readonly string[],
-): Map<string, RecordsRootProjectionResult> => {
+): Map<string, RecordsRootProjectionResult[]> => {
   const chainDown = [baseEntity, ...projection.via.map(hop => hop.entity)];
   const finalEntity = chainDown[chainDown.length - 1]!;
   const state = new Map<string, KeyState>(keys.map(k => [k, { rows: [], complete: true }]));
@@ -333,7 +394,7 @@ export const readRootProjectionsBatch = (
         if (projection.root !== root) continue;
         try {
           const byKey = resolveBatch(store, owner, schema, entityKind, projection, keys);
-          for (const key of keys) out.get(key)!.push(byKey.get(key)!);
+          for (const key of keys) out.get(key)!.push(...byKey.get(key)!);
         } catch (error) {
           // Scoped to this pack, for every key — the same posture as the solo
           // path. One pack whose declaration no longer matches its schema must
@@ -344,6 +405,7 @@ export const readRootProjectionsBatch = (
               publisher: owner.publisher, pack_slug: owner.pack_slug, entity: entityKind,
               root: projection.root,
               ...(projection.label === undefined ? {} : { label: projection.label }),
+              ...(projection.name === undefined ? {} : { name: projection.name }),
               value: {}, complete: false, incomplete_reason: message,
             });
           }
@@ -384,7 +446,7 @@ export const readRootProjections = (
       for (const projection of entity.roots ?? []) {
         if (projection.root !== root) continue;
         try {
-          results.push(resolveOne(store, owner, schema, entityKind, projection, key));
+          results.push(...resolveOne(store, owner, schema, entityKind, projection, key));
         } catch (error) {
           // A pack whose declaration no longer matches its schema is a refusal
           // for THAT pack, reported as incomplete — never a silent zero, and
@@ -393,6 +455,7 @@ export const readRootProjections = (
             publisher: owner.publisher, pack_slug: owner.pack_slug, entity: entityKind,
             root: projection.root,
             ...(projection.label === undefined ? {} : { label: projection.label }),
+            ...(projection.name === undefined ? {} : { name: projection.name }),
             value: {}, complete: false,
             incomplete_reason: error instanceof Error ? error.message : 'projection failed',
           });

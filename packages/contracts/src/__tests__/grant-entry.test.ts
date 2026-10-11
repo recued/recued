@@ -124,8 +124,6 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       // owner-default-only, so a write that moves a visitor's state must be at
       // least as closed.
       'core.data.form-response.set-state',
-      'core.data.webhook.get',
-      'core.data.webhook.list',
       // D-198 Slice 4 — collective-memory write/read: owner-on, door-off default.
       'core.memory.read',
       'core.memory.write',

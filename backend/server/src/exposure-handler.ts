@@ -378,14 +378,22 @@ export const handleExposureSetPublicMcpAcknowledgement = async (
 export const handleExposureGet = async (
   deps: ExposureRpcDeps,
   caller: { instance_id: string | null | undefined } | undefined,
-): Promise<{ state: ExposureState; apex_mode: RootApexMode }> => {
+): Promise<{ state: ExposureState; apex_mode: RootApexMode; has_public_address?: boolean }> => {
   requireCallerInstance(caller, 'exposure.get');
-  const state = await deps.getMachine().current();
+  const machine = deps.getMachine();
+  const state = await machine.current();
   // R26.2 Delta 2 — hydrate the apex mode alongside the grid so the panel
   // reads both in one call. `redirect` is the privacy-safe fallback when the
   // apex config isn't wired (db-less / pre-Delta-2 boot).
   const apex_mode = deps.apex?.get() ?? 'redirect';
-  return { state, apex_mode };
+  // The gate's own answer, so the panel offers Public exactly when the server
+  // would take it. It used to guess from the hostname list and disagree.
+  const has_public_address = await machine.hasPublicAddress?.();
+  return {
+    state,
+    apex_mode,
+    ...(has_public_address === undefined ? {} : { has_public_address }),
+  };
 };
 
 // R26.2 Delta 2 — set the apex (`GET /`) serving mode. Cross-validated

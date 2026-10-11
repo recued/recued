@@ -64,7 +64,7 @@ describe('D-126 Phase 2.3 — caller-supplied adapters', () => {
     const registry = createAdapterRegistry({});
     // D-182 — `cli` joins the unsupported-placeholder set: cli ops execute via
     // the per-kind handler registry, never this legacy adapter table.
-    const kinds: readonly IngredientKind[] = ['http', 'dom', 'ai', 'chat', 'mcp', 'service', 'storage', 'cli'];
+    const kinds: readonly IngredientKind[] = ['http', 'dom', 'ai', 'chat', 'mcp', 'storage', 'cli'];
     for (const kind of kinds) {
       await expect(registry[kind](stubResolved(`any-${kind}`))).rejects.toMatchObject({
         code: 'INGREDIENT_ADAPTER_ALL_FAILED',

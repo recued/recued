@@ -1,11 +1,11 @@
 {
   "recipe_id": "send-composed-mail",
-  "chat_exposed": false,
-  "version": 1,
+  "chat_exposed": true,
+  "version": 2,
   "ttl": 0,
   "metadata": {
     "name": "Send a composed email",
-    "description": "Use “Send a composed email” in Recued. Carries a message you wrote in the compose window to your own enrolled mail account. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files you already hold, never as bytes.",
+    "description": "Use “Send a composed email” in Recued. Sends one email, written in full, from one of the owner's enrolled mailboxes. Sending is irreversible, so it stops at the approval gate first, and the approval names the recipients, the subject, and every attached file. Attachments travel as references to files the owner already holds, never as bytes.",
     "author": "recued-core",
     "supported_platforms": [],
     "budget_ms": 30000,
@@ -16,12 +16,14 @@
     "sender_mail_instance": {
       "label": "Send from",
       "type": "string",
-      "default": ""
+      "default": "",
+      "help": "The mailbox to send from, by its name on this server."
     },
     "to": {
       "label": "To",
       "type": "array",
-      "default": []
+      "default": [],
+      "help": "Email addresses to send to."
     },
     "cc": {
       "label": "Cc",
@@ -51,7 +53,8 @@
     "attachments": {
       "label": "Attachments",
       "type": "file_ref[]",
-      "default": []
+      "default": [],
+      "help": "Files to attach, by their file ids. The approval names each one."
     },
     "in_reply_to": {
       "label": "In reply to",
@@ -59,7 +62,8 @@
       "default": ""
     },
     "reply_to": { "label": "Reply to", "type": "string", "default": "" },
-    "reconciliation_id": { "label": "Delivery reference", "type": "string", "default": null },
+    "reconciliation_id": { "label": "Delivery reference", "type": "string", "default": null,
+      "help": "Optional. Lets a retry of a send to one recipient be checked instead of repeated; leave it empty for a send to several." },
     "references": {
       "label": "Thread references",
       "type": "array",

@@ -31,7 +31,6 @@ import {
   MAX_HEADER_AUTH_ENTRIES,
   MESSAGE_MATCH_MAX_PATTERNS,
   validateMessageMatchPatterns,
-  type BulkPackManifest,
   type ConnectionKind,
   type ConnectionVendorProvider,
   type ConnectionView,
@@ -76,7 +75,14 @@ import {
   renderEngagementHealthPanel,
   ENGAGEMENT_HEALTH_PANEL_STYLES,
 } from './engagement-health.js';
-import { packsUsingConnection } from './pack-usage.js';
+import { packsUsingConnection, type InstalledPackScopes } from './pack-usage.js';
+import {
+  connectionRemovalChanges,
+  connectionRemovalRecipeChanges,
+  connectionRemovalRecipeSentence,
+  connectionRemovalSentence,
+} from '../connection-removal.js';
+import type { ConnectionsDeleteEffects } from './state.js';
 import { mcpPackBadge, type McpPackBadge, type McpPackStatusView } from './mcp-pack.js';
 import type { McpPackReviewState } from './state.js';
 import {
@@ -115,6 +121,10 @@ export interface ConnectionsPageProps extends ConnectionsPageState {
   postSafeStopProfileLabel?: string;
   /** Safe landing when a recovery URL cannot be bound to this boot. */
   postSafeStopProfileHandoff?: ConnectionsPostSafeStopProfileHandoff | null;
+  /** D-320 slice 2h — the host mounts the per-sign-in grids ("Which packs use
+   *  which connection") into a placeholder at the top of the API group. Absent:
+   *  none. */
+  signInGrids?: boolean;
   /** D-127 P4.3 / wire-up — dynamic option lists keyed by
    *  `options_source` id. Field is inherited from
    *  `ConnectionsPageState` (D-127 wire-up moved storage there so
@@ -205,32 +215,47 @@ const connectionVendor = (conn: ConnectionView): string | undefined => {
  *  a gate. */
 const renderPackUsage = (
   conn: ConnectionView,
-  installedManifests: readonly BulkPackManifest[],
+  installedPacks: readonly InstalledPackScopes[],
 ): string => {
   if (conn.kind !== 'api') return '';
   const vendor = connectionVendor(conn);
-  if (vendor === undefined) return '';
+  // A vendor is needed to read the packs' scopes; the packs whose list holds the
+  // connection are named without one (D-320).
+  if (vendor === undefined && (conn.bound_pack_slugs ?? []).length === 0) return '';
   // D-194 #6 — `bound_pack_slugs` (stamped by handleConnectionList from the grant
   // store) narrows the vendor-match to packs granted on THIS specific connection,
-  // so two accounts of one vendor don't both list every vendor pack. Absent
+  // so two connections of one vendor don't both list every vendor pack. Absent
   // (dbless / legacy) → packsUsingConnection falls back to vendor-match.
   const usage = packsUsingConnection(
-    installedManifests,
-    vendor,
+    installedPacks,
+    vendor ?? '',
     conn.granted_scopes,
     conn.bound_pack_slugs,
+    conn.default_for_pack_slugs,
+    conn.pack_holders,
   );
   if (usage.length === 0) return '';
   const items = usage
     .map((u) => {
       const c = u.coverage;
-      const status = !c.known
-        ? 'Recued has not checked what it may do'
-        : c.covered
-          ? 'covered'
-          : `missing ${c.missing.join(', ')}`;
+      // A pack that needs no scope has no coverage to say (D-320).
+      const status = u.needed.length === 0
+        ? null
+        : !c.known
+          ? 'Recued has not checked what it may do'
+          : c.covered
+            ? 'covered'
+            : `missing ${c.missing.join(', ')}`;
       const tone = c.known && !c.covered ? 'warn' : 'ok';
-      return `<li class="connections-pack-usage-item" data-pack-usage="${e(u.pack_slug)}" data-pack-usage-tone="${tone}"><span class="connections-pack-usage-name">${e(u.pack_slug)}</span> <span class="connections-pack-usage-status">— ${e(status)}</span></li>`;
+      // D-320 §4 — the pack runs on this connection unless told otherwise.
+      const isDefault = u.is_default === true
+        ? ' <span class="connections-pack-usage-default" data-pack-usage-default>· its default</span>'
+        : '';
+      // D-320 slice 2h — a family once, by its holder, its members counted.
+      const members = u.members.length === 0
+        ? ''
+        : ` <span class="connections-pack-usage-members" data-pack-usage-members="${u.members.length}" title="${e(u.members.join(', '))}">and ${u.members.length} ${u.members.length === 1 ? 'pack that signs' : 'packs that sign'} in through it</span>`;
+      return `<li class="connections-pack-usage-item" data-pack-usage="${e(u.pack_slug)}" data-pack-usage-tone="${tone}"><span class="connections-pack-usage-name">${e(u.pack_name)}</span>${members}${status === null ? '' : ` <span class="connections-pack-usage-status">— ${e(status)}</span>`}${isDefault}</li>`;
     })
     .join('');
   return `
@@ -278,7 +303,7 @@ const renderRow = (
   probeInFlight: Set<string>,
   deleteInFlight: Set<string>,
   engagementHealth: ConnectionsPageState['engagementHealth'],
-  installedManifests: readonly BulkPackManifest[],
+  installedPacks: readonly InstalledPackScopes[],
   mcpPackStatus: Readonly<Record<string, McpPackStatusView>> | undefined,
 ): string => {
   const key = connectionRowKey(conn.kind, conn.name);
@@ -350,7 +375,7 @@ const renderRow = (
         </div>
       </div>
       ${engagementPanel}
-      ${renderPackUsage(conn, installedManifests)}
+      ${renderPackUsage(conn, installedPacks)}
       ${renderMcpPackBadge(conn, mcpPackStatus)}
 
     </div>
@@ -476,21 +501,30 @@ const renderMcpPackReview = (review: McpPackReviewState | null): string => {
   `;
 };
 
+/** D-320 slice 2h — where the host mounts the per-sign-in grids ("Which packs use
+ *  which connection"): at the top of the API group, an overview above the rows. */
+export const SIGNIN_GRIDS_HOST_ATTR = 'data-recued-signin-grids-host';
+
 const renderKindGroup = (
   kind: ConnectionKind,
   rows: readonly ConnectionView[],
   probeInFlight: Set<string>,
   deleteInFlight: Set<string>,
   engagementHealth: ConnectionsPageState['engagementHealth'],
-  installedManifests: readonly BulkPackManifest[],
+  installedPacks: readonly InstalledPackScopes[],
   mcpPackStatus: Readonly<Record<string, McpPackStatusView>> | undefined,
+  signInGrids = false,
 ): string => {
   if (rows.length === 0) return '';
+  const grids = kind === 'api' && signInGrids
+    ? `<div class="connections-signin-grids" ${SIGNIN_GRIDS_HOST_ATTR}=""></div>`
+    : '';
   return `
     <section class="connections-group" data-kind="${e(kind)}">
       <h3 class="connections-group-title">${e(KIND_LABELS[kind])} (${rows.length})</h3>
+      ${grids}
       <div class="connections-group-rows">
-        ${rows.map((r) => renderRow(r, probeInFlight, deleteInFlight, engagementHealth, installedManifests, mcpPackStatus)).join('')}
+        ${rows.map((r) => renderRow(r, probeInFlight, deleteInFlight, engagementHealth, installedPacks, mcpPackStatus)).join('')}
       </div>
     </section>
   `;
@@ -1234,7 +1268,7 @@ const renderListView = (props: ConnectionsPageProps): string => {
     return inlineError(props.error);
   }
   const groups = groupByKind(props.connections);
-  const installedManifests = props.installedPackManifests ?? [];
+  const installedPacks = props.installedPacks ?? [];
   const groupBlocks = KIND_ORDER.map((kind) =>
     renderKindGroup(
       kind,
@@ -1242,8 +1276,9 @@ const renderListView = (props: ConnectionsPageProps): string => {
       props.probeInFlight,
       props.deleteInFlight,
       props.engagementHealth,
-      installedManifests,
+      installedPacks,
       props.mcpPackStatus,
+      props.signInGrids === true,
     ),
   ).join('');
   const empty =
@@ -3415,6 +3450,36 @@ const renderHeader = (props: ConnectionsPageProps): string => {
  *  appears ONLY when the `previewPurge` count resolved to > 0 (a `null` count —
  *  still loading, caller unwired, or a non-purgeable connection — or a 0 count
  *  render a plain confirm: the connection is removed, its synced data kept). */
+/** D-320 slice 2g (ruling 16) — what deleting the connection does to the packs
+ *  whose lists hold it: only the ones whose runs change, each in one sentence.
+ *  While it loads, and if it fails, the dialog says so: silence would read as
+ *  "nothing changes". */
+const renderDeleteEffects = (effects: ConnectionsDeleteEffects | undefined): string => {
+  if (effects === undefined) return '';
+  if (effects.status === 'loading') {
+    return '<p class="connections-delete-effects-note" data-connections-delete-effects="loading">Checking what changes for your packs…</p>';
+  }
+  if (effects.status === 'failed') {
+    return '<p class="connections-delete-effects-note" data-connections-delete-effects="failed">Could not check what changes for your packs.</p>';
+  }
+  const changes = connectionRemovalChanges(effects.packs);
+  // D-320 audit — and each recipe reading two of those lists at once: its runs need a
+  // connection on both, so its answer is not its packs'.
+  const recipeChanges = connectionRemovalRecipeChanges(effects.recipes);
+  if (changes.length === 0 && recipeChanges.length === 0) return '';
+  const items = changes
+    .map((effect) => `<li data-delete-effect="${e(effect.outcome)}" data-delete-effect-pack="${e(effect.pack_slug)}">${e(connectionRemovalSentence(effect))}</li>`)
+    .join('')
+    + recipeChanges
+      .map((effect) => `<li data-delete-effect="${e(effect.outcome)}" data-delete-effect-recipe="${e(effect.recipe_id)}">${e(connectionRemovalRecipeSentence(effect))}</li>`)
+      .join('');
+  return `
+        <div class="connections-delete-effects" data-connections-delete-effects="ready">
+          <p class="connections-delete-effects-title">What changes for your packs</p>
+          <ul class="connections-delete-effects-list">${items}</ul>
+        </div>`;
+};
+
 const renderDeleteConfirm = (props: ConnectionsPageProps): string => {
   const dc = props.deleteConfirm;
   if (dc === null) return '';
@@ -3443,6 +3508,7 @@ const renderDeleteConfirm = (props: ConnectionsPageProps): string => {
            aria-label="Remove connection ${e(dc.name)}">
         <h3 class="connections-delete-title">Remove ${e(dc.name)}?</h3>
         <p class="connections-delete-body">${body}</p>
+        ${renderDeleteEffects(dc.effects)}
         ${optInBlock}
         <div class="connections-delete-actions">
           ${button({
@@ -4858,6 +4924,57 @@ ${REFERENCE_PROVENANCE_STYLES}
   margin: 6px 0 0 24px;
   overflow-wrap: anywhere;
   font-size: 12px;
+  color: var(--fg-muted);
+}
+.connections-signin-grids:empty { display: none; }
+.sg-section { min-width: 0; margin: 4px 0 12px; font-size: 13px; }
+.sg-heading { margin: 0 0 2px; font-size: 14px; }
+.sg-note { min-width: 0; margin: 4px 0; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.sg-error { min-width: 0; margin: 4px 0; font-size: 12px; color: var(--danger, #b42318); overflow-wrap: anywhere; }
+.sg-grid { min-width: 0; margin: 10px 0; }
+.sg-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.sg-scroll { max-width: 100%; overflow-x: auto; }
+.sg-table { border-collapse: collapse; font-size: 13px; }
+.sg-table th, .sg-table td { padding: 4px 8px; text-align: center; border-bottom: 1px solid var(--border, #e5e5e5); }
+.sg-table .sg-pack, .sg-table .sg-corner { text-align: left; font-weight: 500; min-width: 140px; }
+.sg-table .sg-corner { font-size: 12px; color: var(--fg-muted); }
+.sg-table button { white-space: nowrap; }
+.sg-connection { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.sg-cell input { margin: 0 3px; }
+.sg-cannot { color: var(--fg-muted); }
+.sg-members summary { cursor: pointer; font-size: 12px; color: var(--fg-muted); }
+.sg-members-list { margin: 2px 0 0; padding-left: 16px; font-size: 12px; text-align: left; }
+.sg-confirm { min-width: 0; margin: 6px 0 0; padding: 8px; border: 1px solid var(--border, #e5e5e5); border-radius: 6px; }
+.sg-confirm-question { margin: 0 0 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.sg-confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.connections-pack-usage-members { color: var(--fg-muted); }
+.sg-offer { min-width: 0; margin: 8px 0 12px; padding: 10px; border: 1px solid var(--border, #e5e5e5); border-radius: 6px; }
+.sg-offer-title { margin: 0 0 4px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.sg-offer-question { margin: 6px 0 2px; font-size: 13px; overflow-wrap: anywhere; }
+.sg-offer-list { margin: 0; padding-left: 0; list-style: none; }
+.sg-offer-item { min-width: 0; margin: 2px 0; overflow-wrap: anywhere; }
+.sg-offer-label { display: inline-flex; gap: 6px; align-items: baseline; }
+.connections-delete-effects {
+  min-width: 0;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.connections-delete-effects-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+.connections-delete-effects-list {
+  min-width: 0;
+  margin: 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.connections-delete-effects-list li + li { margin-top: 4px; }
+.connections-delete-effects-note {
+  min-width: 0;
+  margin: 0 0 12px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
   color: var(--fg-muted);
 }
 .connections-delete-actions {

@@ -189,8 +189,13 @@ export const createReceptionLookupRecipeRunner = (
       // for a relabelled block is what makes a consent surface stop being read.
       if (deps.resolveDoorRecipe !== undefined) {
         const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+        // D-320 phase 3 (3b) — the config the run will resolve connections against,
+        // each slot's empty setting filled as the run fills it (`settleDoorConnections`).
+        const doorConfig = 'config' in dispatchRecipe && dispatchRecipe.config !== undefined
+          ? dispatchRecipe.config
+          : config;
         const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
-          ...(config === undefined ? {} : { config }),
+          ...(doorConfig === undefined ? {} : { config: doorConfig }),
           ...(resolveOp === undefined ? {} : { resolveOp }),
         });
         if (!derived.ok || doorCapabilityChanged(storedDoor, derived.capability).changed) {

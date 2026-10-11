@@ -52,6 +52,9 @@ export const createPreapprovalRecipeSources = (deps: PreapprovalRecipeSourceDeps
       if (group) dependencies.push(pin('dish_group', group.group_id, { config_overlay: group.config_overlay }));
       source.bound_dish = { config_overlay: structuredClone(dish.config_overlay),
         ...(group ? { group_overlay: structuredClone(group.config_overlay) } : {}) };
+      if (dish.connections !== undefined && Object.keys(dish.connections).length > 0) {
+        source.connection_choices = { choices: { ...dish.connections }, label: dish.name };
+      }
     } else {
       const install = deps.dishes.getDefault(recipeId);
       if (install && install.publisher_id !== publisherId) return null;
@@ -61,6 +64,9 @@ export const createPreapprovalRecipeSources = (deps: PreapprovalRecipeSourceDeps
       if (install) {
         dependencies.push(pin('dish', install.dish_id, dishPreapprovalMaterial(install)));
         source.install_config = structuredClone(install.config_overlay);
+        if (install.connections !== undefined && Object.keys(install.connections).length > 0) {
+          source.connection_choices = { choices: { ...install.connections }, label: install.name };
+        }
       }
     }
     return source;

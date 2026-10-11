@@ -74,6 +74,7 @@ import {
   timerWaitsForData,
   whatStartsIt,
   type ConfigEditorOverlayHandle,
+  type ConnectionLineSlot,
   type MailTemplateVariableCallers,
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
@@ -368,6 +369,10 @@ export interface BootstrapAutomationRouteOptions {
   serverTimeZone?: () => string | undefined;
   /** D-319 — what a first dish starts from (a mail template), for Switch on. */
   dishesDefaultsCaller?: (args: { recipe_id: string }) => Promise<{ config_overlay: Record<string, unknown> }>;
+  /** D-320 §4 — `packs.connections.recipe`: the recipe's slots, for the dish
+   *  form's Connection lines. Absent (or a server without the rpc) ⇒ no lines;
+   *  the dish's choice is left as it is. */
+  recipeConnectionsCaller?: (args: { recipe_id: string }) => Promise<{ slots: ReadonlyArray<ConnectionLineSlot> }>;
   /** D-319 §5.4 — the run dialog's Run tab. Absent, it said "Running is not
    *  available on this server yet" in a dialog opened to add a rule. */
   recipeExecuteCaller?: RunModal.RunModalExecuteCaller;
@@ -1769,6 +1774,10 @@ export const bootstrapAutomationRoute = (
       initialTab: tab,
       // D-319 §5.4 — its Run tab runs (it said running was unavailable).
       ...(opts.recipeExecuteCaller !== undefined ? { execute: opts.recipeExecuteCaller } : {}),
+      // D-320 — the Run tab's Connection lines, from the recipe's slots.
+      ...(opts.recipeConnectionsCaller !== undefined
+        ? { connectionSlots: () => opts.recipeConnectionsCaller!({ recipe_id: entry.recipe_id }) }
+        : {}),
       // D-319 — a schedule or trigger added here is a dish's: which one, when
       // the recipe has more than one.
       ...(dishesWired ? { dishes: dishes.filter((dish) => dish.recipe_id === entry.recipe_id) } : {}),
@@ -3675,23 +3684,47 @@ export const bootstrapAutomationRoute = (
     const entry = (recipeEntries ?? []).find((r) => r.recipe_id === d.recipe_id);
     if (entry === undefined) return;
     closeAutoRunConfigModal();
-    const mine = dishes.filter((dish) => dish.recipe_id === d.recipe_id);
-    // D-319 §5.2 — the same form as the recipe page's Settings: the dish's
-    // settings (a mail template too), in place, from its next run.
-    autoRunConfigHandle = openDishForm({
-      document: doc,
-      mode: 'settings',
-      entry,
-      dishes: mine,
-      dish: d,
-      start: dishFormStart('settings', mine, d) ?? { ...d.config_overlay },
-      callers: {
-        ...(opts.dishesUpdateCaller !== undefined ? { update: opts.dishesUpdateCaller as never } : {}),
-      },
-      ...formPickers(entry),
-      onSaved: () => { if (!disposed) void loadAll(); },
-      onClose: () => { autoRunConfigHandle = null; },
+    const open = (connectionSlots: ReadonlyArray<ConnectionLineSlot> | undefined): void => {
+      const mine = dishes.filter((dish) => dish.recipe_id === d.recipe_id);
+      // D-319 §5.2 — the same form as the recipe page's Settings: the dish's
+      // settings (a mail template too), in place, from its next run.
+      autoRunConfigHandle = openDishForm({
+        document: doc,
+        mode: 'settings',
+        entry,
+        dishes: mine,
+        dish: d,
+        start: dishFormStart('settings', mine, d) ?? { ...d.config_overlay },
+        callers: {
+          ...(opts.dishesUpdateCaller !== undefined ? { update: opts.dishesUpdateCaller as never } : {}),
+        },
+        ...formPickers(entry),
+        ...(connectionSlots !== undefined ? { connectionSlots } : {}),
+        onSaved: () => { if (!disposed) void loadAll(); },
+        onClose: () => { autoRunConfigHandle = null; },
+      });
+    };
+    // D-320 — the recipe's slots, for the Connection lines. With no way to read
+    // them the form opens at once, as before; a read that fails opens it without
+    // them. Left, or another form opened, meanwhile: retired.
+    if (opts.recipeConnectionsCaller === undefined) {
+      open(undefined);
+      return;
+    }
+    void readConnectionSlots(d.recipe_id).then((connectionSlots) => {
+      if (disposed || autoRunConfigHandle !== null) return;
+      open(connectionSlots);
     });
+  };
+
+  /** D-320 — a recipe's slots for the Connection lines; undefined when the
+   *  server has no such rpc or the read fails, and the form opens without them. */
+  const readConnectionSlots = async (
+    recipe_id: string,
+  ): Promise<ReadonlyArray<ConnectionLineSlot> | undefined> => {
+    const read = opts.recipeConnectionsCaller;
+    if (read === undefined) return undefined;
+    return read({ recipe_id }).then((answer) => answer.slots, () => undefined);
   };
 
   /** D-319 — a timer's recipe nobody switched on: the switch-on form (from
@@ -3717,6 +3750,10 @@ export const bootstrapAutomationRoute = (
     render();
     const mineNow = (): Dish[] => dishes.filter((dish) => dish.recipe_id === recipe_id);
     let start: Record<string, unknown> | null = mineNow().length > 0 ? dishFormStart('add', mineNow()) : null;
+    // D-320 — the recipe's slots, for the Connection lines (never fails the form).
+    const connectionSlots = opts.recipeConnectionsCaller === undefined
+      ? undefined
+      : await readConnectionSlots(recipe_id);
     try {
       if (recipeEntries === null) await loadRecipeEntriesNow();
       if (start === null) {
@@ -3758,6 +3795,7 @@ export const bootstrapAutomationRoute = (
         ...(opts.schedulesCreateCaller !== undefined ? { schedulesCreate: opts.schedulesCreateCaller as never } : {}),
       },
       ...formPickers(entry),
+      ...(connectionSlots !== undefined ? { connectionSlots } : {}),
       onCreated: (_dish, scheduleError) => {
         if (scheduleError !== null && !disposed) {
           mutationErrors = {

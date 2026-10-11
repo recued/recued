@@ -73,20 +73,20 @@ describe('synced', () => {
 describe('raw escape hatch', () => {
   it('forwards a caller-shaped event, stamping `at` when omitted', () => {
     const em = createCollectionEmitter({
-      bus, platform: 'webhook', slug: 'github', entityType: 'webhook_delivery',
+      bus, platform: 'calendar', slug: 'personal', entityType: 'event',
       now: () => 42,
     });
     em.raw({
-      platform: 'webhook',
-      slug: 'github',
-      entity_type: 'webhook_delivery.partial',
+      platform: 'calendar',
+      slug: 'personal',
+      entity_type: 'event.partial',
       event_kind: 'updated',
       record_id: 'd-1',
     });
     expect(received).toEqual([{
-      platform: 'webhook',
-      slug: 'github',
-      entity_type: 'webhook_delivery.partial',
+      platform: 'calendar',
+      slug: 'personal',
+      entity_type: 'event.partial',
       event_kind: 'updated',
       record_id: 'd-1',
       at: 42,

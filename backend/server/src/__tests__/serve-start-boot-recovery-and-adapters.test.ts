@@ -166,6 +166,28 @@ describe('startBootRecoveryAndAdapters', () => {
     });
   });
 
+  it('D-106 follow-up: attaches the watched folders before the file stack starts, and only when given', async () => {
+    // Attached after `startAll`, each folder's first walk would go nowhere.
+    const order: string[] = [];
+    const watchedFolders = { tag: 'watched-folders' };
+    const fileStack = {
+      attachWatchedFolders: vi.fn(() => { order.push('attach'); }),
+      startAll: vi.fn(async () => { order.push('start'); }),
+    };
+    await startBootRecoveryAndAdapters(makeOptions({
+      fileStack: fileStack as unknown as StartBootRecoveryAndAdaptersOptions['fileStack'],
+      watchedFolders: watchedFolders as unknown as StartBootRecoveryAndAdaptersOptions['watchedFolders'],
+    }));
+    expect(order).toEqual(['attach', 'start']);
+    expect(fileStack.attachWatchedFolders).toHaveBeenCalledWith(watchedFolders);
+
+    fileStack.attachWatchedFolders.mockClear();
+    await startBootRecoveryAndAdapters(makeOptions({
+      fileStack: fileStack as unknown as StartBootRecoveryAndAdaptersOptions['fileStack'],
+    }));
+    expect(fileStack.attachWatchedFolders).not.toHaveBeenCalled();
+  });
+
   it('does not start adapters or replay ordinary answers when pre-approval recovery fails', async () => {
     const options = makeOptions({
       preapprovalStorage: { recover: async () => { throw new Error('Broken durable pre-approval receipt'); } },

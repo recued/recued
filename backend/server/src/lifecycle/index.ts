@@ -255,7 +255,7 @@ export const createLifecycle = (
   // Instance lock.
   // ⛔ `lifecycle.lock_file` WAS INERT — same shape as the crash-loop keys. The
   // schema declares it ("Override the in-process lock file location. Empty
-  // string uses {data_path}/recued-server.lock") and `createLifecycle` accepts
+  // string uses recued-server.lock in the data folder") and `createLifecycle` accepts
   // `lockPath`, but `serve/compose-lifecycle.ts` never passed one, so the
   // fallback below always won and the override did nothing. Resolved here beside
   // the sibling `lifecycle.*` reads; an explicit option still wins for tests.

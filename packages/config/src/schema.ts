@@ -88,17 +88,6 @@ export const RUNTIME_SCHEMA = [
       + 'for a server disk rather than a browser profile.',
   },
   {
-    key: 'shared.max_bytes',
-    section: 'Shared data',
-    label: 'Memory-tier shared cap (bytes)',
-    type: 'number',
-    // Raised with `data.shared`, but far less: this tier is VOLATILE cache
-    // (LRU + TTL), so eviction here loses nothing durable.
-    default: 500 * 1024 * 1024, // 500 MB
-    min: 0,
-    description: 'Memory-tier cap for shared.* volatile entries inside the cache layer.',
-  },
-  {
     key: 'cache.max_bytes',
     section: 'Cache',
     label: 'Total cache size (bytes)',
@@ -274,61 +263,14 @@ export const RUNTIME_SCHEMA = [
       'Maximum CAS blobs examined by a single orphan-sweep pass. Keeps the sweep short so the cascade never blocks the event loop > ~200ms.',
   },
 
-  // ─── Logging ─────────────────────────────────────────────────
-  {
-    key: 'log.level',
-    section: 'Logging',
-    label: 'Log level',
-    type: 'enum',
-    default: 'info',
-    enum: ['debug', 'info', 'warn', 'error'] as const,
-    description: 'Minimum level written to the persistent log. debug stays ring-buffer-only by default.',
-  },
-  {
-    key: 'log.max_bytes',
-    section: 'Logging',
-    label: 'Max log file size (bytes)',
-    type: 'number',
-    default: 100 * 1024 * 1024, // 100 MB
-    min: 1024 * 1024,
-    description: '⛔ NOT WIRED (2026-09-18): `@recued/logger` has no consumer — nothing outside that package imports it, and the server logs through `console`. Setting this has no effect. Per-file size ceiling before rotation.',
-  },
-  {
-    key: 'log.rotate_at_pct',
-    section: 'Logging',
-    label: 'Log rotation threshold (%)',
-    type: 'number',
-    default: 75,
-    min: 10,
-    max: 99,
-    description: '⛔ NOT WIRED (2026-09-18): no log rotation is implemented; `@recued/logger` has no consumer. Setting this has no effect. Rotate the log file once it reaches this percent of log.max_bytes.',
-  },
-  {
-    key: 'log.debounce_window_s',
-    section: 'Logging',
-    label: 'Log debounce window (seconds)',
-    type: 'number',
-    default: 60,
-    min: 1,
-    description: '⛔ NOT WIRED (2026-09-18): the coalescing logger (`@recued/logger`) has no consumer. Setting this has no effect. Rolling window (seconds) used to coalesce identical log entries into a single fingerprint + count.',
-  },
-  {
-    key: 'log.max_fingerprints',
-    section: 'Logging',
-    label: 'Log fingerprint map size',
-    type: 'number',
-    default: 1000,
-    min: 1,
-    description: '⛔ NOT WIRED (2026-09-18): the coalescing logger (`@recued/logger`) has no consumer. Setting this has no effect. Fingerprint map capacity; LRU-evicts (and flushes) the least-recent entries when exceeded.',
-  },
-
   // ─── Network ─────────────────────────────────────────────────
   {
     // ⛔ NAMED AS THE BOOLEAN IT IS. D-272 spent a whole section on
-    // `webhook_port` / `mcp_port` — feature flags wearing port names, which sent
-    // operators off to forward a number nothing binds. This one decides WHETHER
-    // the server asks the router to forward `public_port`; it is not a port and
-    // must never read like one.
+    // `webhook_port` (a feature flag; renamed `webhooks_enabled` 2026-10-10) and
+    // `mcp_port` (read by nothing; removed 2026-10-09), both wearing port names,
+    // which sent operators off to forward a number nothing binds. This one decides WHETHER the server asks the
+    // router to forward `public_port`; it is not a port and must never read
+    // like one.
     key: 'network.auto_port_mapping',
     section: 'Network',
     label: 'Ask the router to forward the public port',
@@ -407,7 +349,7 @@ export const RUNTIME_SCHEMA = [
     // `server.setConfigField`, so the consistency gate can't be bypassed.
     internal: true,
     description:
-      'What the public listener serves at the bare root URL. "redirect" sends <handle>.recued.cloud visitors to app.recued.com (default); "serve_reception" serves the visitor-intake page; "serve_webclient" serves the embedded webclient; "not_found" closes the root with a 404.',
+      'What the public listener serves at the bare root URL. "redirect" sends <handle>.recued.net visitors to app.recued.com (default); "serve_reception" serves the visitor-intake page; "serve_webclient" serves the embedded webclient; "not_found" closes the root with a 404.',
   },
 
   // ─── Scheduler ───────────────────────────────────────────────
@@ -423,15 +365,6 @@ export const RUNTIME_SCHEMA = [
 
   // ─── Recipes ─────────────────────────────────────────────────
   {
-    key: 'recipe.default_timeout_seconds',
-    section: 'Recipes',
-    label: 'Default recipe timeout (seconds)',
-    type: 'number',
-    default: 600, // 10 min
-    min: 1,
-    description: '⛔ NOT WIRED (2026-09-18): the engine reads only a recipe\u2019s own `metadata.budget_ms`; a recipe declaring none runs UNBOUNDED, and nothing caps one that does. Neither half of this key is applied. Per-recipe hard timeout default. Recipes may declare their own, bounded by this.',
-  },
-  {
     // D-157 N.8 / D-158 O-5 — the optional staleness guard for paused
     // preflight approvals. Deliberately generous + days-scale: this is
     // product policy against an approval clicked months later firing
@@ -445,17 +378,6 @@ export const RUNTIME_SCHEMA = [
     default: 30,
     min: 0,
     description: 'Days a paused run may wait for preflight approval before the staleness guard expires it (the prompt is withdrawn and the run fails with "approval was not granted in time"). An approval the user already gave is never expired. Set to 0 to keep paused runs waiting forever. This governs the DECISION only — the public /ask link is separately capped at 48h by a fixed constant (ASK_LANDING_LINK_TTL_MS), so 0 does not leave a forwardable bearer URL alive forever.',
-  },
-
-  // ─── Tier ────────────────────────────────────────────────────
-  {
-    key: 'tier.grace_period_hours',
-    section: 'Tier',
-    label: 'Tier grace period (hours)',
-    type: 'number',
-    default: 72,
-    min: 0,
-    description: '⛔ NOT WIRED (2026-09-18): no entitlement grace period is implemented anywhere — expiry does not degrade through a grace window. Setting this has no effect. Grace period after entitlement expiry during which Pro features keep working before degrading to free.',
   },
 
   // ─── Lifecycle + supervisor (D-105 Phase C) ──────────────────
@@ -526,200 +448,23 @@ export const RUNTIME_SCHEMA = [
     type: 'string',
     default: '',
     description:
-      'Override the in-process lock file location. Empty string uses {data_path}/recued-server.lock.',
+      'Override the in-process lock file location. Empty string uses recued-server.lock in the data folder (the folder that holds the database).',
   },
 
   // ─── Phase D — collection defaults (D-106) ────────────────────
-  {
-    key: 'collection.mail.default.quota_bytes',
-    section: 'Collections',
-    label: 'Mail collection quota default (bytes)',
-    type: 'number',
-    default: 2 * 1024 * 1024 * 1024, // 2 GB
-    min: 16 * 1024 * 1024,
-    description:
-      'Per-mail-account default quota. DB-backed instances can override via their `quota_bytes` config field; this runtime key seeds the gate when the instance omits it.',
-  },
-  {
-    key: 'collection.mail.default.retention_days',
-    section: 'Collections',
-    label: 'Mail collection retention default (days)',
-    type: 'number',
-    default: 365,
-    min: 0,
-    description:
-      'Age-based retention window for mail collections. Overridable per-account via the instance config `retention_days` field. Zero disables the pruner (records kept indefinitely).',
-  },
-  {
-    key: 'collection.file.default.quota_bytes',
-    section: 'Collections',
-    label: 'File collection quota default (bytes)',
-    type: 'number',
-    default: 5 * 1024 * 1024 * 1024, // 5 GB
-    min: 16 * 1024 * 1024,
-    description:
-      'Per-file-root default quota. File collections never auto-evict (user owns the filesystem); hitting the quota rejects writes with STORAGE_PRESSURE instead.',
-  },
-  {
-    key: 'collection.file.default.retention_days',
-    section: 'Collections',
-    label: 'File collection retention default (days)',
-    type: 'number',
-    default: 0,
-    min: 0,
-    description:
-      'Retention disabled by default for file collections — the user owns the filesystem, so we never auto-delete records of files they still have on disk.',
-  },
-  {
-    key: 'collection.webhook.default.quota_bytes',
-    section: 'Collections',
-    label: 'Webhook collection quota default (bytes)',
-    type: 'number',
-    default: 200 * 1024 * 1024, // 200 MB
-    min: 4 * 1024 * 1024,
-    description:
-      'Per-endpoint default quota. Webhook payloads are short-lived by design; keep the ceiling small to force retention rather than indefinite accumulation.',
-  },
-  {
-    key: 'collection.webhook.default.retention_days',
-    section: 'Collections',
-    label: 'Webhook collection retention default (days)',
-    type: 'number',
-    default: 30,
-    min: 0,
-    description:
-      'Age-based retention window for webhook collections. 30 d matches the notifications-in-flight posture; payloads older than this get pruned automatically.',
-  },
-  {
-    key: 'collection.webhook.max_body_bytes',
-    section: 'Collections',
-    label: 'Webhook inbound body ceiling (bytes)',
-    type: 'number',
-    default: 1024 * 1024, // 1 MB
-    min: 1024,
-    description:
-      'Hard cap on inbound webhook body size. Requests above this get 413 before persistence. Per-endpoint `max_body_bytes` can be lower — the listener applies the tighter of the two.',
-  },
-  {
-    key: 'collection.sync.max_inflight_per_adapter',
-    section: 'Collections',
-    label: 'Max concurrent fetches per adapter',
-    type: 'number',
-    default: 4,
-    min: 1,
-    description:
-      '⛔ NOT WIRED (2026-09-18): no per-adapter sync concurrency cap exists (the `collection.service.*` keys are read; this one is not). Setting this has no effect. Concurrency ceiling for per-collection sync loops. Gmail/Graph paginated fetches honor this cap; IMAP fetches are serialised per folder regardless. Raising it trades latency for provider rate-limit headroom.',
-  },
-  {
-    key: 'collection.retention_prune_interval_s',
-    section: 'Collections',
-    label: 'Collection retention cron interval (seconds)',
-    type: 'number',
-    default: 3600,
-    min: 60,
-    description:
-      '⛔ NOT WIRED (2026-09-18): the per-collection retention cron its description assumes is not registered \u2014 only `audit.prune_interval_s` is read. Setting this has no effect. Cron cadence for per-collection age-based retention. The eviction cascade also triggers retention inline on pressure, so this interval is a floor for the steady-state pass.',
-  },
-  {
-    key: 'collection.mail.gmail.poll_seconds',
-    section: 'Collections',
-    label: 'Gmail history poll cadence (seconds)',
-    type: 'number',
-    default: 30,
-    min: 5,
-    description:
-      'Poll interval for Gmail historyId watermark advance. Gmail free-tier quota is generous enough that 30 s is safe for personal mailboxes; raise for rate-limited accounts, lower for busy shared mailboxes.',
-  },
-  {
-    key: 'collection.mail.graph.poll_seconds',
-    section: 'Collections',
-    label: 'Graph delta poll cadence (seconds)',
-    type: 'number',
-    default: 30,
-    min: 5,
-    description:
-      'Poll interval for Microsoft Graph deltaLink. Same rationale as the Gmail knob above — the default is safe for personal accounts on the /common tenant.',
-  },
+  // The mail, file, sync and webhook collection defaults that sat here were
+  // removed 2026-10-10: nothing read them (`RETIRED_RUNTIME_SETTINGS` below).
   {
     key: 'collection.webhook.public_reachable',
     section: 'Collections',
     label: 'Webhook public_reachable gate',
     type: 'boolean',
     default: false,
+    // Read by `createWebhookPublicReachable` (backend/server/src/composition/bin/
+    // webhook-public-reachable.ts) on every request. It was read by NOTHING until
+    // 2026-10-10 while this description called it the gate.
     description:
-      'Gate for the inbound webhook listener. Only accept requests when the operator has confirmed this server is reachable from the open internet (public host or user-hosted tunnel). D-096: Pro cloud never relays webhooks — flipping this is self-host acknowledgement.',
-  },
-
-  // ─── D-117 — calendar collection defaults ─────────────────────
-  {
-    key: 'collection.calendar.default.quota_bytes',
-    section: 'Collections',
-    label: 'Calendar collection quota default (bytes)',
-    type: 'number',
-    default: 512 * 1024 * 1024, // 512 MB
-    min: 8 * 1024 * 1024,
-    description:
-      'Per-calendar-account default quota. Calendar payloads are tiny so 512 MB covers years of warehouse history; raise only if you keep an unusually long retention window.',
-  },
-  {
-    key: 'collection.calendar.default.retention_days',
-    section: 'Collections',
-    label: 'Calendar collection retention default (days)',
-    type: 'number',
-    default: 365,
-    min: 0,
-    description:
-      'Age-based retention window for calendar collections. Overridable per-instance via the instance config `retention_days` field. Zero disables the pruner (events kept indefinitely).',
-  },
-  {
-    key: 'collection.calendar.default.expansion_future_days',
-    section: 'Collections',
-    label: 'Calendar expansion window (forward, days)',
-    type: 'number',
-    default: 90,
-    min: 1,
-    description:
-      'How many days ahead the warehouse expands recurring events to. Smaller = less storage; larger = recipes can plan further out. Per-instance override via the instance config `expansion_future_days` field.',
-  },
-  {
-    key: 'collection.calendar.default.expansion_past_days',
-    section: 'Collections',
-    label: 'Calendar expansion window (backward, days)',
-    type: 'number',
-    default: 30,
-    min: 0,
-    description:
-      'How many days back the warehouse keeps expanded events. The retention pruner additionally drops events older than `retention_days` regardless of expansion window.',
-  },
-  {
-    key: 'collection.calendar.gcal.poll_seconds',
-    section: 'Collections',
-    label: 'gcal poll cadence (seconds)',
-    type: 'number',
-    default: 300,
-    min: 30,
-    description:
-      'Poll interval for the Google Calendar `events.list` syncToken loop. 300 s is calendar-appropriate (low churn); raise on rate-limited accounts.',
-  },
-  {
-    key: 'collection.calendar.graph.poll_seconds',
-    section: 'Collections',
-    label: 'graph (calendar) poll cadence (seconds)',
-    type: 'number',
-    default: 300,
-    min: 30,
-    description:
-      'Poll interval for Microsoft Graph `/me/calendarView/delta`. Same rationale as the gcal knob; the same Graph OAuth grant covers mail + calendar so be mindful when both are enrolled.',
-  },
-  {
-    key: 'collection.calendar.caldav.poll_seconds',
-    section: 'Collections',
-    label: 'caldav poll cadence (seconds)',
-    type: 'number',
-    default: 300,
-    min: 30,
-    description:
-      'Poll interval for the CalDAV `REPORT calendar-query` ETag-diff loop. iCloud / Fastmail / Nextcloud all tolerate 300 s comfortably.',
+      'Gate for inbound webhooks. Only accept them when the operator has confirmed this server is reachable from the open internet (public host or user-hosted tunnel). Also on when the server is started with RECUED_PUBLIC_REACHABLE=true. Changes apply without a restart. D-096: Pro cloud never relays webhooks — flipping this is self-host acknowledgement.',
   },
 
   // ─── D-148 — Recued cloud endpoint (Pro-only API host) ────────
@@ -761,79 +506,6 @@ export const RUNTIME_SCHEMA = [
     description:
       'Base URL for the Recued cloud API. Production is https://api.recued.com — the Pro-only endpoint family (DDNS update, ACME issue-cert, account sync). Override for staging / dev / test environments. Trailing slashes are stripped by each adapter.',
   },
-
-  // ─── D-118 — service collection defaults ──────────────────────
-  {
-    key: 'collection.service.default.quota_bytes',
-    section: 'Collections',
-    label: 'Service collection quota default (bytes)',
-    type: 'number',
-    default: 5 * 1024 * 1024 * 1024, // 5 GB
-    min: 16 * 1024 * 1024,
-    description:
-      'Per-service default quota — bytes consumed by `<data_path>/services/<slug>/`. Per-instance overrides via the instance config `quota_bytes` field. Hitting the quota rejects invokes with SERVICE_STORAGE_PRESSURE; we never auto-evict (user content lives there).',
-  },
-  {
-    key: 'collection.service.min_disk_free_bytes',
-    section: 'Collections',
-    label: 'Service OS free-space floor (bytes)',
-    type: 'number',
-    default: 1 * 1024 * 1024 * 1024, // 1 GB
-    min: 128 * 1024 * 1024,
-    description:
-      'Floor on `statfs(data_path).bavail` checked per service-invoke. When OS free-space drops below this, every invoke gets SERVICE_STORAGE_PRESSURE regardless of per-instance quota — protects the rest of the machine from a service exhausting the disk.',
-  },
-  {
-    key: 'collection.service.invoke_slack_bytes',
-    section: 'Collections',
-    label: 'Service per-invoke slack (bytes)',
-    type: 'number',
-    default: 100 * 1024 * 1024, // 100 MB
-    min: 1 * 1024 * 1024,
-    description:
-      'Headroom above the cached per-instance du sample, allowed before refusing the invoke. Covers binaries that write a few hundred MB inside one op without forcing a synchronous du sample on the hot path.',
-  },
-  {
-    key: 'collection.service.du_sample_interval_s',
-    section: 'Collections',
-    label: 'Service du sample interval (seconds)',
-    type: 'number',
-    default: 30,
-    min: 5,
-    description:
-      'How often the service quota tracker refreshes its cached `du` sample over each enrolled instance cwd. 30 s is cheap on personal-server scale; lower on busy servers, raise to reduce I/O.',
-  },
-  // ─── D-179 P5 — invoke guard knobs (spec § 5: knobs, not designs) ──
-  {
-    key: 'collection.service.invoke_timeout_ceiling_ms',
-    section: 'Collections',
-    label: 'Service invoke timeout ceiling (ms)',
-    type: 'number',
-    default: 600_000, // 10 min — the ffmpeg template precedent
-    min: 1_000,
-    description:
-      'Server-level ceiling on any invoke op\'s authored `timeout_ms` — the effective deadline is min(authored, ceiling), SIGKILL on expiry. Hours-long work belongs in user-space detached jobs (D-179 § 5), not a long invoke; raise this only if a trusted template genuinely needs a longer blocking call.',
-  },
-  {
-    key: 'collection.service.max_concurrent_invokes',
-    section: 'Collections',
-    label: 'Service max concurrent invokes (global)',
-    type: 'number',
-    default: 16,
-    min: 1,
-    description:
-      'Server-wide bound on simultaneously running service invokes. Exceeding it rejects the invoke with SERVICE_INVOKE_CONCURRENCY (no queueing — re-run beats resume). Protects the host from a fan-out (e.g. a 10-dish group firing at once) forking unbounded processes.',
-  },
-  {
-    key: 'collection.service.max_concurrent_invokes_per_instance',
-    section: 'Collections',
-    label: 'Service max concurrent invokes (per instance)',
-    type: 'number',
-    default: 4,
-    min: 1,
-    description:
-      'Per-service-instance bound on simultaneously running invokes, under the global bound. Kickoff wrappers detach in seconds, so parallel dish fires rarely hold more than a couple of slots; a binary that serializes badly (one big scratch dir) can be pinned to 1 here.',
-  },
 ] as const satisfies readonly ScalarSchemaEntry[];
 
 export type RuntimeKey = typeof RUNTIME_SCHEMA[number]['key'];
@@ -845,6 +517,64 @@ export const getRuntimeSchemaEntry = (key: string): ScalarSchemaEntry | undefine
   Object.prototype.hasOwnProperty.call(RUNTIME_SCHEMA_MAP, key)
     ? RUNTIME_SCHEMA_MAP[key]
     : undefined;
+
+const EACH_OWN = (owner: string, field: string, unset: string): string =>
+  `nothing read it; each ${owner}'s own ${field} decides, ${unset} when unset`;
+const LOG_UNTUNED = "nothing read it; no setting sizes, rotates or coalesces the server's log";
+const WEBHOOK_GONE = 'nothing read it; the webhook collection it configured was removed';
+const SERVICE_GONE = 'the service installer it configured was retired';
+
+/** Runtime settings that were removed, each with the clause the boot warning
+ *  gives: what decides the value now, or that nothing does.
+ *
+ *  ⛔ NONE OF THEM WAS EVER READ. A reader check on 2026-10-10 found no server
+ *  code reading any of the first 23 (eight had carried a "NOT WIRED" note since
+ *  2026-09-18); the mail and calendar collections read each instance's own
+ *  config with built-in defaults instead. The three `collection.webhook.*` went
+ *  the same day with the webhook collection they configured, and the seven
+ *  `collection.service.*` with the dormant service installer (D-321 § 5.4): those
+ *  were read, but only by an installer nothing could reach.
+ *
+ *  🔑 IGNORED WITH A WARNING, NEVER REJECTED, like the removed `[bootstrap]`
+ *  settings (`bootstrap-keys.ts`). A self-hosted server updates without its
+ *  config being rewritten, and the sample config offered some of these, so a
+ *  file may still set one. Refusing it would fail that server's first boot after
+ *  the update, and calling it unrecognised would read as a typo. */
+export const RETIRED_RUNTIME_SETTINGS: ReadonlyMap<string, string> = new Map([
+  ['shared.max_bytes', 'nothing read it; the shared tier lives in the cache, which "cache.max_bytes" caps'],
+  ['log.level', "nothing read it; no setting filters the server's log by level"],
+  ['log.max_bytes', LOG_UNTUNED],
+  ['log.rotate_at_pct', LOG_UNTUNED],
+  ['log.debounce_window_s', LOG_UNTUNED],
+  ['log.max_fingerprints', LOG_UNTUNED],
+  ['recipe.default_timeout_seconds', "nothing read it; a recipe's own metadata.budget_ms is the only run budget"],
+  ['tier.grace_period_hours', 'nothing read it; there is no entitlement grace period'],
+  ['collection.mail.default.quota_bytes', EACH_OWN('mail account', 'quota_bytes', '512 MiB')],
+  ['collection.mail.default.retention_days', EACH_OWN('mail account', 'retention_days', '365')],
+  ['collection.mail.gmail.poll_seconds', EACH_OWN('Gmail account', 'poll_seconds', '30')],
+  ['collection.mail.graph.poll_seconds', EACH_OWN('Microsoft mail account', 'poll_seconds', '30')],
+  ['collection.file.default.quota_bytes', 'nothing read it; received files have a fixed 512 MiB quota'],
+  ['collection.file.default.retention_days', 'nothing read it; received files are never pruned by age'],
+  ['collection.sync.max_inflight_per_adapter', 'nothing read it; no per-adapter sync cap exists'],
+  ['collection.retention_prune_interval_s', 'nothing read it; no timer runs collection retention at this interval'],
+  ['collection.calendar.default.quota_bytes', EACH_OWN('calendar', 'quota_bytes', '512 MiB')],
+  ['collection.calendar.default.retention_days', EACH_OWN('calendar', 'retention_days', '365')],
+  ['collection.calendar.default.expansion_future_days', EACH_OWN('calendar', 'expansion_future_days', '90')],
+  ['collection.calendar.default.expansion_past_days', EACH_OWN('calendar', 'expansion_past_days', '30')],
+  ['collection.calendar.gcal.poll_seconds', EACH_OWN('Google calendar', 'poll_seconds', '300')],
+  ['collection.calendar.graph.poll_seconds', EACH_OWN('Microsoft calendar', 'poll_seconds', '300')],
+  ['collection.calendar.caldav.poll_seconds', EACH_OWN('CalDAV calendar', 'poll_seconds', '300')],
+  ['collection.webhook.default.quota_bytes', WEBHOOK_GONE],
+  ['collection.webhook.default.retention_days', WEBHOOK_GONE],
+  ['collection.webhook.max_body_bytes', WEBHOOK_GONE],
+  ['collection.service.default.quota_bytes', SERVICE_GONE],
+  ['collection.service.min_disk_free_bytes', SERVICE_GONE],
+  ['collection.service.invoke_slack_bytes', SERVICE_GONE],
+  ['collection.service.du_sample_interval_s', SERVICE_GONE],
+  ['collection.service.invoke_timeout_ceiling_ms', SERVICE_GONE],
+  ['collection.service.max_concurrent_invokes', SERVICE_GONE],
+  ['collection.service.max_concurrent_invokes_per_instance', SERVICE_GONE],
+]);
 
 /** Default values for every runtime key, derived from the schema. */
 export const runtimeDefaults = (): Record<string, ScalarSchemaEntry['default']> => {

@@ -53,6 +53,10 @@ export const DISPATCH_ROLES = [
   // raw owner-authored inventory, read by exact `(ingredient, operation)` key
   // before the existing admission flow; it is never policy-merged.
   'owner_operation_defaults',
+  // D-321 — the owner's per-tool choice of what a run does outside the versions
+  // its pack was tested with. Raw owner-authored inventory, read by exact
+  // catalog slug before a cli tool runs; never policy-merged.
+  'owner_tool_version',
   'grant_resolution',
   'approval_composition',
   'risk_override',
@@ -152,6 +156,8 @@ export const INVENTORY_DISPATCH_ROLES = [
   'connection_binding',
   // D-211 — one raw global owner ruling per operation.
   'owner_operation_defaults',
+  // D-321 — one raw global owner choice per cli catalog's tool.
+  'owner_tool_version',
   // D-166 `contract_definition` returns the contract row (keyed by contract_id),
   // not a merged policy — its value_shape is therefore NOT policy-projected (the
   // projection-completeness ratchet exempts inventory-only scopes).
@@ -383,16 +389,40 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
    *  `config.vendor` → CATALOG_VENDOR_SLUGS; a local/private composition catalog has
    *  no vendor, so the install planner records this binding (from the composition's
    *  `auth.connection`) and the operation-profile seed + the grant gate resolve a
-   *  local-catalog connection through it. Keyed by connection_name (one catalog per
-   *  connection, matching the `ConnectionOperationProfile`'s single `catalog_slug`
-   *  stamp); `installed_pack_id` attributes the row to its owning pack for uninstall. */
+   *  local-catalog connection through it. Keyed by connection_name AND catalog_slug
+   *  since D-320 ruling 10 (a connection serves several catalogs; it served one
+   *  before); `installed_pack_id` attributes the row to its owning pack for
+   *  uninstall. */
   catalog_binding_info: {
-    fields: ['catalog_slug', 'installed_pack_id'],
+    fields: ['catalog_slug', 'installed_pack_id', 'slot'],
     types: {
       catalog_slug: 'string',
       installed_pack_id: 'string',
+      /** D-320 — the slot the binding serves: the connection name the pack's
+       *  catalog declares (`http.connection`), which the decomposed catalog no longer
+       *  carries. Absent on a row written before D-320 slice 2b. */
+      slot: 'string?',
     },
     required: ['catalog_slug', 'installed_pack_id'],
+  },
+  /** D-320 — a pack's default connection for one slot: the connection a run uses
+   *  when nothing else chooses (spec §3.3). One of the pack's bound connections. */
+  pack_connection_default_info: {
+    fields: ['connection_name'],
+    types: {
+      connection_name: 'string',
+    },
+    required: ['connection_name'],
+  },
+  /** D-320 ruling 9 — the pack that holds a borrowing pack's sign-in (its
+   *  requirement's `from_pack`), and the slot. */
+  pack_connection_holder_info: {
+    fields: ['holder_pack_id', 'slot'],
+    types: {
+      holder_pack_id: 'string',
+      slot: 'string?',
+    },
+    required: ['holder_pack_id'],
   },
   /** D-182 §7.2 — one per-(principal, cli-ingredient, risk_tier) reachability
    *  grant. A row's PRESENCE with `allowed: true` ⇒ a recipe run under the keyed
@@ -506,6 +536,17 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       op_hash: 'string',
     },
     required: ['op_hash'],
+  },
+  /** D-321 — the owner's choice for one cli catalog's tool outside the versions
+   * its pack was tested with. `version_hash` is the server-stamped staleness
+   * anchor (the pack's `version` block when the owner chose), as `op_hash` is. */
+  owner_tool_version_policy: {
+    fields: ['outside', 'version_hash'],
+    types: {
+      outside: 'enum:refuse|warn',
+      version_hash: 'string',
+    },
+    required: ['outside', 'version_hash'],
   },
   // D-166 contract_definition — the (channels × actors × ingredient_ids ×
   // operation_ids × connection_names) scope a minted contract authorizes. Empty
@@ -1016,14 +1057,46 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     writeable_by: 'install_planner',
   },
   connection_catalog_binding: {
-    // D-170 gap #2 — connection_name → the local composition catalog installed
-    // against it. Keyed by connection_name alone (one catalog per connection, matching
-    // the ConnectionOperationProfile's single `catalog_slug` stamp); `override` so a
-    // reinstall replaces the binding. Read directly (not via composeForRole) by the
-    // profile seed + the grant gate.
-    segments: ['connection_name'],
-    required: ['connection_name'],
+    // D-170 gap #2 — connection_name → the local composition catalogs installed
+    // against it. Read directly (not via composeForRole) by the profile seed + the
+    // grant gate; `override` so a reinstall replaces a row.
+    // ⚠ D-320 ruling 10 — keyed by connection_name AND catalog_slug: a connection
+    // serves several catalogs (the Wise suite's seven packs share one sign-in). It
+    // was keyed by connection_name alone, so the first pack to bind a connection
+    // kept it and every other catalog's operation was refused `catalog_mismatch`.
+    // Rows written under the old one-segment key are still READ (the binding store
+    // reads both shapes); nothing writes them any more.
+    segments: ['connection_name', 'catalog_slug'],
+    required: ['connection_name', 'catalog_slug'],
     value_shape: 'catalog_binding_info',
+    applies_to: ['connection_binding'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'install_planner',
+  },
+  pack_connection_default: {
+    // D-320 — a pack's default connection per slot (the connection name its catalog
+    // declares, `http.connection`), keyed by the installed pack and the slot. Written
+    // at install (the connection the owner chose) and by the owner (Make default);
+    // read by a run's connection fill before the pick layer (spec §3.3). The value
+    // names one of the pack's bound connections. Every shipped pack's catalogs declare
+    // one slot, so a pack's rows are one row today.
+    segments: ['installed_pack_id', 'slot'],
+    required: ['installed_pack_id', 'slot'],
+    value_shape: 'pack_connection_default_info',
+    applies_to: ['connection_binding'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'install_planner+user',
+  },
+  pack_connection_holder: {
+    // D-320 ruling 9 — a borrowing pack signs in through its holder's connections
+    // (`connection_requirements[].from_pack`). Keyed by the borrowing pack; written
+    // at its install, dropped at its uninstall. The holder's list and default serve
+    // the borrower's catalog: its bindings follow the holder's list.
+    segments: ['installed_pack_id'],
+    required: ['installed_pack_id'],
+    value_shape: 'pack_connection_holder_info',
     applies_to: ['connection_binding'],
     merge_precedence: 0,
     merge_rule: 'override',
@@ -1116,6 +1189,17 @@ const COMPOSITE_KEYS: Readonly<Record<string, CompositeKeySchema>> = {
     required: ['ingredient_id', 'operation_id'],
     value_shape: 'owner_operation_policy',
     applies_to: ['owner_operation_defaults'],
+    merge_precedence: 0,
+    merge_rule: 'override',
+    writeable_by: 'user',
+  },
+  owner_tool_version: {
+    // D-321 — global to the owner, like `owner_operation`: one row per cli
+    // catalog, which runs one tool. Replaces the pack's declared `outside`.
+    segments: ['ingredient_id'],
+    required: ['ingredient_id'],
+    value_shape: 'owner_tool_version_policy',
+    applies_to: ['owner_tool_version'],
     merge_precedence: 0,
     merge_rule: 'override',
     writeable_by: 'user',

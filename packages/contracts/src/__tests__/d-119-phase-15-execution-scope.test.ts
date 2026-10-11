@@ -107,11 +107,11 @@ const webChatIngredient: IngredientManifest = {
   },
 };
 
-const serviceTemplateIngredient: IngredientManifest = {
+const cliIngredient: IngredientManifest = {
   ...baseManifest,
-  slug: 'cloudflared-linux',
-  kind: 'service',
-  input: { service: { platform: 'linux' } },
+  slug: 'whisper-cli',
+  kind: 'cli',
+  input: {},
   output: {},
 };
 
@@ -236,8 +236,8 @@ describe('deriveIngredientScope', () => {
     expect(deriveIngredientScope(webChatIngredient)).toEqual(['device']);
   });
 
-  it('kind: service templates are server-only', () => {
-    expect(deriveIngredientScope(serviceTemplateIngredient)).toEqual(['server']);
+  it('kind: cli ingredients are server-only', () => {
+    expect(deriveIngredientScope(cliIngredient)).toEqual(['server']);
   });
 
   it('ignores any author-declared `execution_scope` on the manifest', () => {
@@ -271,14 +271,14 @@ describe('deriveExecutionScope', () => {
     expect(deriveExecutionScope([httpIngredient, webChatIngredient])).toEqual(['device']);
   });
 
-  it('any service-kind ingredient narrows to server', () => {
-    expect(deriveExecutionScope([httpIngredient, serviceTemplateIngredient])).toEqual(['server']);
+  it('any cli ingredient narrows to server', () => {
+    expect(deriveExecutionScope([httpIngredient, cliIngredient])).toEqual(['server']);
   });
 
   it('mixing device-only + server-only yields the empty set', () => {
     // Uninstallable on either runtime — surfaces the conflict at validate time.
-    expect(deriveExecutionScope([webChatIngredient, serviceTemplateIngredient])).toEqual([]);
-    expect(deriveExecutionScope([domWriteIngredient, serviceTemplateIngredient])).toEqual([]);
+    expect(deriveExecutionScope([webChatIngredient, cliIngredient])).toEqual([]);
+    expect(deriveExecutionScope([domWriteIngredient, cliIngredient])).toEqual([]);
   });
 
   it('result is canonical-sorted regardless of input order', () => {

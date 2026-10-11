@@ -289,13 +289,13 @@ export const handleTlsDomainRemove = async (
   // Codex FU4 P2 fold — spec § A.6.3: "always allowed for `byo_upload`;
   // `pro_acme` requires explicit DDNS unbinding handled by the caller
   // before this rpc fires." A `pro_acme` row backs the auto-managed
-  // `<handle>.recued.cloud` DDNS subdomain; deleting the cert without
+  // `<handle>.recued.net` DDNS subdomain; deleting the cert without
   // first unbinding the DDNS leaves the public hostname without its
   // managed cert (and the next ACME renewal tick would re-create the
   // row from scratch, masking the operator's intent). Refuse the
   // operation here; the caller (Settings → Server → TLS Certificates
   // page) routes Pro-managed removals through the dedicated unbind
-  // flow (FU5 — Pro auto-managed `<handle>.recued.cloud` flow) which
+  // flow (FU5 — Pro auto-managed `<handle>.recued.net` flow) which
   // tears down the DDNS subdomain + cert in one transaction.
   if (existing?.source === 'pro_acme') {
     throw new RpcError(

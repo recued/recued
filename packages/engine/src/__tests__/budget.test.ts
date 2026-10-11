@@ -92,7 +92,7 @@ describe('RECIPE_BUDGET_EXCEEDED', () => {
     const ctx: ExecutionContext = {
       ...mkCtx(recipe, executor),
       laneGovernor,
-      manifestGetter: () => ({ kind: 'service' }) as IngredientManifest,
+      manifestGetter: () => ({ kind: 'cli' }) as IngredientManifest,
     };
 
     const result = await executeRecipe(ctx);

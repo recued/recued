@@ -14,11 +14,14 @@
  *  recipe `data-file-read` ingredient, the ai-* multimodal overload, and the
  *  chat orchestrator — same read, separate dispatcher, no shared rpc envelope. */
 
+import type Database from 'better-sqlite3';
 import { RpcError, type HandlerSlice, type ServerRpcRegistry } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 import { handleFileRead, type FileReadDeps } from './collections/file/file-read-handler.js';
 import { createCloudFileAttachments, type CloudFileAttachmentDeps } from './cloud-file-attachments.js';
 import type { InboundFileCollection } from './collections/file/inbound-file-collection.js';
+import { parseWatchedFileRecordId } from './collections/file/watched-folder-collection.js';
+import { createFolderFileAttachments, watchedFileSelection } from './folder-file-attachments.js';
 import { previewFile } from './file-preview.js';
 
 export interface FileReadRpcDeps {
@@ -27,6 +30,9 @@ export interface FileReadRpcDeps {
    *  (dbless boot / no blob store) — the handler then returns `not_configured`. */
   getFileReadDeps: () => FileReadDeps | undefined;
   cloudAttachments?: CloudFileAttachmentDeps;
+  /** D-106 follow-up — where a watched folder's file is brought into Chat as a
+   *  copy; its import receipts live in this database. */
+  folderAttachments?: { db: Database.Database };
   changed?: (session: string, file: string, deleted: boolean) => void;
   deleted?: (file: string) => void;
 }
@@ -91,6 +97,17 @@ export const makeFileReadRpcHandlers = (
     if (!deps.cloudAttachments) throw new RpcError('not_configured', 'Connected file sources are unavailable.', 503);
     return cloud ??= createCloudFileAttachments(deps.cloudAttachments, deps.getFileReadDeps);
   };
+  let folder: ReturnType<typeof createFolderFileAttachments> | undefined;
+  const folderFiles = () => {
+    if (!deps.folderAttachments) throw new RpcError('not_configured', 'Watched folders cannot be brought into Chat here.', 503);
+    return folder ??= createFolderFileAttachments(deps.folderAttachments.db, deps.getFileReadDeps);
+  };
+  /** A file in a folder Recued watches is brought into Chat the way a connected
+   *  source's file is, over the same two calls, by its own importer. */
+  const watchedId = (args: unknown): boolean => {
+    const id = (args as { record_id?: unknown } | null | undefined)?.record_id;
+    return typeof id === 'string' && parseWatchedFileRecordId(id) !== null;
+  };
   const retainedFiles = (): InboundFileCollection => {
     const files = deps.getFileReadDeps()?.registry.get('file', 'received') as InboundFileCollection | undefined;
     if (!files?.attachmentLifecycle || !files.mutateLifecycle) throw new RpcError('not_configured', 'Retained file lifecycle is unavailable.', 503);
@@ -109,7 +126,10 @@ export const makeFileReadRpcHandlers = (
         if (!read) throw new RpcError('not_configured', 'File previews are unavailable.', 503);
         return previewFile(read, args, id => id.startsWith('file:remote:')
           ? cloudFiles().get({ record_id: id })
-          : retainedFiles().attachmentLifecycle!.selection(requireFileId(id)));
+          : parseWatchedFileRecordId(id) !== null
+            // D-106 follow-up — a file in a folder Recued watches.
+            ? watchedFileSelection(read.registry, id)
+            : retainedFiles().attachmentLifecycle!.selection(requireFileId(id)));
       },
       'data.file.attachments.sources': async (_args, client) => {
         requireRegisteredClient(client); return cloudFiles().sources();
@@ -118,10 +138,12 @@ export const makeFileReadRpcHandlers = (
         requireRegisteredClient(client); return cloudFiles().list(args);
       },
       'data.file.attachments.remote.get': async (args, client) => {
-        requireRegisteredClient(client); return cloudFiles().get(args);
+        requireRegisteredClient(client);
+        return watchedId(args) ? folderFiles().get(args) : cloudFiles().get(args);
       },
       'data.file.attachments.import': async (args, client) => {
-        requireRegisteredClient(client); return cloudFiles().importFile(args);
+        requireRegisteredClient(client);
+        return watchedId(args) ? folderFiles().importFile(args) : cloudFiles().importFile(args);
       },
       'data.file.attachments.conversation': async (args, client) => {
         requireRegisteredClient(client);

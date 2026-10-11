@@ -23,12 +23,12 @@ describe('createRuntimeConfigStore — reads', () => {
   it('returns schema defaults for keys never set', () => {
     const store = createRuntimeConfigStore({});
     expect(store.get('vault.quota.per_publisher_bytes')).toBe(1 * 1024 * 1024);
-    expect(store.get('log.level')).toBe('info');
+    expect(store.get('supervisor.mode')).toBe('auto');
   });
 
   it('returns the initial value when provided', () => {
-    const store = createRuntimeConfigStore({ 'log.level': 'warn' });
-    expect(store.get('log.level')).toBe('warn');
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'systemd' });
+    expect(store.get('supervisor.mode')).toBe('systemd');
   });
 
   it('throws ConfigValidationError for unknown keys', () => {
@@ -60,9 +60,9 @@ describe('createRuntimeConfigStore — writes (memory)', () => {
 
   it('set() validates enum members', () => {
     const store = createRuntimeConfigStore({});
-    expect(() => store.set('log.level', 'trace')).toThrow(/must be one of/);
-    store.set('log.level', 'warn');
-    expect(store.get('log.level')).toBe('warn');
+    expect(() => store.set('supervisor.mode', 'trace')).toThrow(/must be one of/);
+    store.set('supervisor.mode', 'systemd');
+    expect(store.get('supervisor.mode')).toBe('systemd');
   });
 
   it('set() validates type', () => {
@@ -79,11 +79,11 @@ describe('createRuntimeConfigStore — writes (memory)', () => {
   });
 
   it('snapshot() returns the in-memory map', () => {
-    const store = createRuntimeConfigStore({ 'log.level': 'info' });
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'auto' });
     store.set('storage.reserve_pct', 5);
     const snap = store.snapshot();
     expect(snap['storage.reserve_pct']).toBe(5);
-    expect(snap['log.level']).toBe('info');
+    expect(snap['supervisor.mode']).toBe('auto');
   });
 });
 
@@ -103,8 +103,8 @@ describe('createRuntimeConfigStore — persistence', () => {
     // Composition without a persisted file: writes succeed in memory,
     // nothing to observe on disk.
     const store = createRuntimeConfigStore({});
-    expect(() => store.set('log.level', 'debug')).not.toThrow();
-    expect(store.get('log.level')).toBe('debug');
+    expect(() => store.set('supervisor.mode', 'docker')).not.toThrow();
+    expect(store.get('supervisor.mode')).toBe('docker');
   });
 });
 
@@ -129,19 +129,19 @@ describe('createRuntimeConfigStore — a failed persist changes NOTHING', () => 
   };
 
   it('leaves the in-memory value UNCHANGED when the write throws', () => {
-    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: unwritablePath() });
-    expect(() => store.set('log.level', 'error')).toThrow();
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'systemd' }, { path: unwritablePath() });
+    expect(() => store.set('supervisor.mode', 'launchd')).toThrow();
     // The bug: `set` mutated memory before persisting, so this read returned
-    // 'error' — the caller was told the write failed while the running server
+    // 'launchd' — the caller was told the write failed while the running server
     // had already adopted the new value, and a restart reverted it.
-    expect(store.get('log.level')).toBe('warn');
+    expect(store.get('supervisor.mode')).toBe('systemd');
   });
 
   it('does not fire onChange listeners when the write throws', () => {
-    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: unwritablePath() });
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'systemd' }, { path: unwritablePath() });
     const events: string[] = [];
     store.onChange((key) => events.push(key));
-    expect(() => store.set('log.level', 'error')).toThrow();
+    expect(() => store.set('supervisor.mode', 'launchd')).toThrow();
     expect(events).toEqual([]);
   });
 
@@ -149,19 +149,19 @@ describe('createRuntimeConfigStore — a failed persist changes NOTHING', () => 
     // The positive case. Every assertion above is equally satisfied by a `set`
     // that never applies anything, which would be a broken store that looks
     // impressively safe.
-    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: mkTmpFile() });
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'systemd' }, { path: mkTmpFile() });
     const events: string[] = [];
     store.onChange((key) => events.push(key));
-    store.set('log.level', 'error');
-    expect(store.get('log.level')).toBe('error');
-    expect(events).toEqual(['log.level']);
+    store.set('supervisor.mode', 'launchd');
+    expect(store.get('supervisor.mode')).toBe('launchd');
+    expect(events).toEqual(['supervisor.mode']);
   });
 
   it('applies in memory when there is no path at all (memory-only store)', () => {
     // Persist-first must not turn the pathless store into a no-op.
-    const store = createRuntimeConfigStore({ 'log.level': 'warn' });
-    store.set('log.level', 'error');
-    expect(store.get('log.level')).toBe('error');
+    const store = createRuntimeConfigStore({ 'supervisor.mode': 'systemd' });
+    store.set('supervisor.mode', 'launchd');
+    expect(store.get('supervisor.mode')).toBe('launchd');
   });
 });
 
@@ -170,10 +170,10 @@ describe('createRuntimeConfigStore — onChange', () => {
     const store = createRuntimeConfigStore({});
     const events: Array<{ key: string; value: unknown }> = [];
     store.onChange((key, value) => events.push({ key, value }));
-    store.set('log.level', 'warn');
+    store.set('supervisor.mode', 'systemd');
     store.set('cache.max_bytes', 100);
     expect(events).toEqual([
-      { key: 'log.level', value: 'warn' },
+      { key: 'supervisor.mode', value: 'systemd' },
       { key: 'cache.max_bytes', value: 100 },
     ]);
   });
@@ -182,17 +182,17 @@ describe('createRuntimeConfigStore — onChange', () => {
     const store = createRuntimeConfigStore({});
     const events: string[] = [];
     const un = store.onChange((key) => events.push(key));
-    store.set('log.level', 'warn');
+    store.set('supervisor.mode', 'systemd');
     un();
-    store.set('log.level', 'error');
-    expect(events).toEqual(['log.level']);
+    store.set('supervisor.mode', 'launchd');
+    expect(events).toEqual(['supervisor.mode']);
   });
 
   it('does not fire when set throws ConfigValidationError', () => {
     const store = createRuntimeConfigStore({});
     const events: string[] = [];
     store.onChange((key) => events.push(key));
-    expect(() => store.set('log.level', 123 as unknown as string))
+    expect(() => store.set('supervisor.mode', 123 as unknown as string))
       .toThrow(ConfigValidationError);
     expect(events).toEqual([]);
   });
@@ -202,8 +202,8 @@ describe('createRuntimeConfigStore — onChange', () => {
     const seen: string[] = [];
     store.onChange(() => { throw new Error('boom'); });
     store.onChange((key) => seen.push(key));
-    expect(() => store.set('log.level', 'warn')).not.toThrow();
-    expect(seen).toEqual(['log.level']);
+    expect(() => store.set('supervisor.mode', 'systemd')).not.toThrow();
+    expect(seen).toEqual(['supervisor.mode']);
   });
 
   it('snapshot reflects set values (sanity for onChange consumers)', () => {

@@ -131,7 +131,7 @@ export interface CertStackEarlyDeps {
    *  boot completed before the composer ran. */
   signingIdentity: BootedServerIdentity | undefined;
   eventBus: EventBus;
-  /** Recued cloud API base URL (default `https://api.recued.cloud`). */
+  /** Recued cloud API base URL — `cloud.base_url`, default `https://api.recued.com`. */
   cloudBaseUrl: string;
   /** Paired-instances substrate. The rotation engine's
    *  `revokeAllPairedClients` hook calls `revokeAllActive()` and
@@ -223,7 +223,7 @@ export interface CertStack {
    *  source. Differs from `tlsCertSourceRef` in two ways:
    *
    *    1. `readHints` includes the DDNS hostname
-   *       (`<current_handle>.recued.cloud`) when the handle state
+   *       (`<current_handle>.recued.net`) when the handle state
    *       machine has a reserved row + a non-empty current_handle.
    *       Pro/DDNS deployments without a LAN row resolve through the
    *       DDNS branch instead of returning null + signing

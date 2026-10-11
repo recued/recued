@@ -1,7 +1,7 @@
 /** D-175 — Pro-convenience handle provisioning starter.
  *
  *  Registers the background tick that reserves the bound account's
- *  `<handle>.recued.cloud` handle with `publisher_id = serverIdentity()
+ *  `<handle>.recued.net` handle with `publisher_id = serverIdentity()
  *  .public_key_fingerprint` once the bind → subscribe chain completes.
  *  Mirrors `start-ddns-update-poller.ts`: a `kind: 'timer'` service on
  *  the shared registry, `fireImmediate` so a restart provisions on boot,

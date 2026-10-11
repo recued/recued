@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
@@ -12,9 +12,11 @@ import { createEncryptedBlobStore } from '../storage/blob-store.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import { makeFileReadRpcHandlers } from '../file-read-rpc-handler.js';
 import type { WsClient } from '../ws-server.js';
+import { watchedFileRecordId } from '../collections/file/watched-folder-collection.js';
+import { startWatchedFolder } from './helpers/watched-folder.js';
 
-const cleanups: Array<() => void> = [];
-afterEach(() => { for (const close of cleanups.splice(0).reverse()) close(); });
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 const client = { instance_id: 'paired' } as WsClient;
 const fixture = () => {
   const dir = mkdtempSync(join(tmpdir(), 'file-preview-')); const db = new Database(':memory:'); ensureChatSchema(db);
@@ -30,7 +32,7 @@ const fixture = () => {
     files.ingest({ bytes: Buffer.from(bytes), filename, mime_type, source_id: 'same-upload', origin: 'webclient_upload', scan_status: 'clean' });
   const preview = (record_id: string, selection_revision?: string) => handlers['data.file.attachments.preview']({
     record_id, ...(selection_revision ? { selection_revision } : {}) }, client);
-  return { db, blobs, files, store, handlers, ingest, preview, lifecycle: files.attachmentLifecycle! };
+  return { db, blobs, files, store, registry, handlers, ingest, preview, lifecycle: files.attachmentLifecycle! };
 };
 
 describe('paired file previews', () => {
@@ -108,5 +110,51 @@ describe('paired file previews', () => {
     expect(get).not.toHaveBeenCalled(); size.mockRestore();
     get.mockResolvedValueOnce(Buffer.alloc(FILE_PREVIEW_MAX_BYTES + 1));
     expect(await f.preview(file.record_id)).toMatchObject({ can_download: true, unavailable_reason: expect.stringContaining('limit') });
+  });
+});
+
+/** D-106 follow-up — the Files tab offers Preview on a file in a folder Recued
+ *  watches, and the preview rpc took retained files only: every one failed
+ *  "Choose a retained file." (live drive, 2026-10-10). */
+describe('a watched folder’s file previews', () => {
+  const NOTE = '# Kickoff\n\nRenewal in 83 days.\n';
+  const watched = async () => {
+    const f = fixture();
+    const root = mkdtempSync(join(tmpdir(), 'file-preview-watched-'));
+    mkdirSync(join(root, 'Sandhurst'));
+    writeFileSync(join(root, 'Sandhurst', 'kickoff-notes.md'), NOTE);
+    writeFileSync(join(root, 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    writeFileSync(join(root, 'brief.pdf'), Buffer.from('%PDF-1.4\n%%EOF\n'));
+    writeFileSync(join(root, 'data.bin'), Buffer.from([0, 1, 2]));
+    const folder = await startWatchedFolder({
+      db: f.db, bus: createWarehouseEventBus(), registry: f.registry, slug: 'clients', root,
+    });
+    cleanups.push(async () => { await folder.close(); rmSync(root, { recursive: true, force: true }); });
+    return { ...f, root, id: (path: string) => watchedFileRecordId('clients', path) };
+  };
+
+  it('previews its text, image and PDF read from the folder, and copies nothing into Recued', async () => {
+    const f = await watched(); const put = vi.spyOn(f.blobs, 'put');
+    expect(await f.preview(f.id('Sandhurst/kickoff-notes.md'))).toMatchObject({
+      record_id: f.id('Sandhurst/kickoff-notes.md'), filename: 'kickoff-notes.md', mime_type: 'text/markdown',
+      size_bytes: Buffer.byteLength(NOTE), transient: false, can_download: true,
+      content: { kind: 'text', bytes_b64: Buffer.from(NOTE).toString('base64') },
+    });
+    expect(await f.preview(f.id('logo.png'))).toMatchObject({ mime_type: 'image/png', content: { kind: 'image' } });
+    expect(await f.preview(f.id('brief.pdf'))).toMatchObject({ mime_type: 'application/pdf', content: { kind: 'pdf' } });
+    const binary = await f.preview(f.id('data.bin'));
+    expect(binary).toMatchObject({ can_download: true, unavailable_reason: expect.stringContaining('no preview') });
+    expect(binary).not.toHaveProperty('content');
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale selection, a file gone from its folder, and a folder this server does not have', async () => {
+    const f = await watched();
+    await expect(f.preview(f.id('Sandhurst/kickoff-notes.md'), 'f'.repeat(64)))
+      .rejects.toMatchObject({ code: 'file_selection_changed' });
+    // Gone from disk while its record stands (no live watch here): the read says so.
+    unlinkSync(join(f.root, 'Sandhurst', 'kickoff-notes.md'));
+    await expect(f.preview(f.id('Sandhurst/kickoff-notes.md'))).rejects.toMatchObject({ code: 'file_not_found' });
+    await expect(f.preview(watchedFileRecordId('elsewhere', 'notes.md'))).rejects.toMatchObject({ code: 'file_not_found' });
   });
 });

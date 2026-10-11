@@ -165,7 +165,7 @@ export interface LifecycleStatus {
   /** Seconds since `boot_at`. Recomputed on every call — the server
    *  doesn't store this; callers should treat it as a live reading. */
   uptime_s: number;
-  /** Count of crashed/unclean shutdowns on this `data_path` since the
+  /** Count of crashed/unclean shutdowns on this data folder since the
    *  last explicit reset. Auto-decrements after sustained uptime. */
   restart_count: number;
   /** True iff a prior `stageBootstrap` patch is waiting for a restart

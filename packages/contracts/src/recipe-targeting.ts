@@ -19,7 +19,8 @@
  *              extension used to inject from the page (corpus: 69/165
  *              community recipes, almost all `context.entity_id`).
  *              Engine/client-injected fields (`tabs` / `server` /
- *              `bridge` / `event` / `recipe` / `caller`) never count. A field some
+ *              `bridge` / `event` / `recipe` / `caller` / `connections`)
+ *              never count. A field some
  *              step null-guards in `skip_when` is author-handled
  *              (an authored fallback path) and never counts either —
  *              `fail_on` null-checks are the opposite signal (an authored
@@ -50,6 +51,8 @@ const ENGINE_CONTEXT_FIELDS: ReadonlySet<string> = new Set([
   'event',
   'recipe',
   'caller',
+  // D-320 phase 3 — the connection the run settled on, per slot.
+  'connections',
 ]);
 
 /** One caller-suppliable target requirement. */

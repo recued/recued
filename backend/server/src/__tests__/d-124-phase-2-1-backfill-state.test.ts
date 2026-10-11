@@ -9,9 +9,9 @@
  *    3. `createBackfillStateLookup` helper — reads through (a flip is
  *       seen at once; it no longer caches), draining-vs-vacuous platforms,
  *       `data.contact` AND across mail + calendar.
- *    4. Adapter-collection wiring sites — calling
- *       `markBackfillComplete` after `provider.initialScan`/
- *       `watcher.start` resolves cleanly.
+ *    4. Adapter wiring sites — calling `markBackfillComplete` after
+ *       `provider.initialScan` (mail) / the file stack's `adapter.start`
+ *       resolves cleanly.
  */
 
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -28,7 +28,8 @@ import {
   type CollectionInstanceStore,
 } from '../collections/instance-store.js';
 import { createBackfillStateLookup } from '../triggers/backfill-state.js';
-import { createFileCollection } from '../collections/file/file-collection.js';
+import { composeFileStack } from '../collections/file/compose.js';
+import { createCollectionRegistry } from '../collections/registry.js';
 import { createMailCollection } from '../collections/mail/mail-collection.js';
 import type {
   CanonicalMessage,
@@ -36,6 +37,7 @@ import type {
   ProviderSyncCallback,
 } from '../collections/mail/provider.js';
 import { createBlobStore } from '../storage/blob-store.js';
+import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 
 const fileCaps = (): FileCollectionCaps => ({
@@ -273,18 +275,10 @@ describe('createBackfillStateLookup', () => {
     expect(lookup.isComplete('file', 'never-existed')).toBe(true);
   });
 
-  it('webhook + service rows are vacuously backfill_complete', () => {
+  // A row of a platform this server no longer knows (the retired D-118 `service`).
+  it('a row of a platform it does not drain is vacuously backfill_complete', () => {
     instances.upsert({
-      platform: 'webhook',
-      slug: 'github-deliveries',
-      adapter_type: 'webhook',
-      config: {},
-      caps: { read: 'yes', write: 'no', delete: 'no' } as never,
-      auth_state: 'healthy',
-      last_synced_at: null,
-    });
-    instances.upsert({
-      platform: 'service',
+      platform: 'service' as never,
       slug: 'slack-team',
       adapter_type: 'slack',
       config: {},
@@ -293,7 +287,6 @@ describe('createBackfillStateLookup', () => {
       last_synced_at: null,
     });
     const lookup = createBackfillStateLookup({ instances });
-    expect(lookup.isComplete('webhook', 'github-deliveries')).toBe(true);
     expect(lookup.isComplete('service', 'slack-team')).toBe(true);
   });
 
@@ -337,64 +330,55 @@ describe('createBackfillStateLookup', () => {
 });
 
 // ────────────────────────────────────────────────────────────────
-// adapter-collection wiring: createFileCollection flips the bool
-// after watcher.start() resolves
+// adapter wiring: the file stack flips the bool after a folder's
+// first walk (`adapter.start()`) resolves
 // ────────────────────────────────────────────────────────────────
 
-describe('file-collection: post-initial-walk wiring', () => {
+describe('file stack: post-initial-walk wiring', () => {
   let tmpRoot: string;
   let db: Database.Database;
-  let blobsDir: string;
 
   beforeEach(async () => {
     tmpRoot = await mkdtemp(join(tmpdir(), 'd124-fc-'));
-    blobsDir = await mkdtemp(join(tmpdir(), 'd124-blobs-'));
     db = new Database(':memory:');
   });
   afterEach(async () => {
     db.close();
     await rm(tmpRoot, { recursive: true, force: true });
-    await rm(blobsDir, { recursive: true, force: true });
   });
 
-  it('flips backfill_complete for the matching slug after sync.start() resolves', async () => {
+  it('flips backfill_complete for the matching slug once the folder has been walked', async () => {
     await writeFile(join(tmpRoot, 'a.txt'), 'hello');
 
-    const instances = createInstanceStore({ db });
-    instances.upsert({
+    const stack = composeFileStack(db);
+    const registry = createCollectionRegistry();
+    stack.attachWatchedFolders({
+      registry,
+      bus: createWarehouseEventBus(),
+      gates: {
+        get: (slug) => createStorageGate({ quota: 1024 * 1024, reservePct: 1, surface: `collection:file:${slug}` }),
+        release: () => {},
+      },
+    });
+    stack.instances.upsert({
       platform: 'file',
       slug: 'docs',
       adapter_type: 'fs',
       config: { path: tmpRoot },
-      caps: fileCaps(),
+      caps: { ...fileCaps(), watch: 'none' },
       auth_state: 'healthy',
       last_synced_at: null,
     });
-    expect(instances.get('file', 'docs')?.backfill_complete).toBe(false);
+    expect(stack.instances.get('file', 'docs')?.backfill_complete).toBe(false);
 
-    const blobs = createBlobStore(blobsDir);
-    const bus = createWarehouseEventBus();
-    const collection = createFileCollection({
-      db,
-      blobs,
-      gate: { addUsed: () => {}, getUsed: () => 0 } as never,
-      bus,
-      slug: 'docs',
-      config: () => ({
-        path: tmpRoot,
-        ignore: [],
-        max_body_bytes: 10 * 1024 * 1024,
-        retention_days: 0,
-        quota_bytes: 1024 * 1024,
-      }),
-      instances,
-    });
-
-    await collection.sync.start();
+    await stack.startAll();
     try {
-      expect(instances.get('file', 'docs')?.backfill_complete).toBe(true);
+      expect(stack.instances.get('file', 'docs')?.backfill_complete).toBe(true);
+      // The walk's file is a record by then: the flag is not ahead of the data.
+      const listed = registry.get('file', 'docs')?.list({ platform: 'file', slug: 'docs', limit: 10 }) ?? [];
+      expect(listed.map((r) => r.hot_fields.path)).toEqual(['a.txt']);
     } finally {
-      await collection.sync.stop();
+      await stack.disposeAll();
     }
   });
 });

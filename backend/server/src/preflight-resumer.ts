@@ -78,6 +78,7 @@ import {
 import { requiredResumeBearerToolNames } from './recipe-resume-authority.js';
 import type { QualityDelegationSignalStore } from './storage/quality-delegation-signal-store.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
+import { carriedFromPausedRun } from './execution/paused-run-carry.js';
 
 /** What this implementation needs from the surrounding server. The
  *  three dependencies are wired by `bin.ts` after `executeDeps` exists. */
@@ -981,27 +982,9 @@ export const createPreflightResumer = (
       trigger_source: anchor.trigger_source ?? null,
       instance_id: anchor.instance_id ?? null,
       run_id: checkpoint.run_id,
-      ...(anchor.recipe_insight_id !== undefined
-        ? { recipe_insight_id: anchor.recipe_insight_id }
-        : {}),
-      ...(anchor.backfill ? { backfill: anchor.backfill } : {}),
-      ...(anchor.process_id ? { process_id: anchor.process_id } : {}),
-      ...(anchor.run_mode ? { run_mode: anchor.run_mode } : {}),
-      ...(anchor.execution_source
-        ? { execution_source: anchor.execution_source }
-        : {}),
-      ...(anchor.contract_snapshot
-        ? { contract_snapshot: anchor.contract_snapshot }
-        : {}),
-      ...(anchor.channel_session_id
-        ? { channel_session_id: anchor.channel_session_id }
-        : {}),
-      ...(anchor.cognition_session_id
-        ? { cognition_session_id: anchor.cognition_session_id }
-        : {}),
-      ...(anchor.correlation_id
-        ? { correlation_id: anchor.correlation_id }
-        : {}),
+      // This record replaces the paused one: keep what links the run and what
+      // it did before it paused.
+      ...carriedFromPausedRun(anchor),
     });
     await deps.auditLog.append(entry);
   };
@@ -1578,6 +1561,20 @@ export const createPreflightResumer = (
           delete resumeAnchor.contract_snapshot;
         }
       }
+      // D-320 audit — a webhook run resumes under the door that governs its delivery
+      // now, when a re-derive replaced the one it started under: the owner's approval
+      // is not undone by a change of door (`webhook-resume-door.ts`). The approved step
+      // still runs only if that door grants it; an owner's revoke leaves no successor.
+      if (persistedSource?.channel === 'webhook') {
+        const successor = executeDeps.webhookResumeDoor?.successor(checkpoint.run_id, persistedSource);
+        if (successor !== undefined) {
+          resumeAnchor = {
+            ...resumeAnchor,
+            execution_source: successor.execution_source,
+            contract_snapshot: successor.contract_snapshot,
+          };
+        }
+      }
       const { request, internal } = buildResumeInputs(
         checkpoint,
         resumeAnchor,
@@ -1866,7 +1863,10 @@ export const createPreflightResumer = (
           step_id: checkpoint.gated_step_id!,
           ingredient_slug: context.tool_slug ?? null,
         },
-        details: {},
+        // Who said no, readable without parsing the message: a webhook delivery
+        // refused under a door since replaced runs again (`webhook-recipe-runner.ts`),
+        // and must not when the owner denied it.
+        details: { denied_by: 'owner' },
         timestamp: new Date().toISOString(),
         retryable: false,
       };

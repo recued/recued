@@ -77,7 +77,10 @@ export const resolveScopedCatalogBinding = (
  *  accept rpc's validation set (mint time). Sorted for stable rendering. */
 export const listScopedConnectionCandidates = (
   connectionStore: Pick<ConnectionStoreSqlite, 'list'>,
-  bindingStore: Pick<ConnectionCatalogBindingStore, 'resolveCatalogSlug'> | undefined,
+  bindingStore:
+    | (Pick<ConnectionCatalogBindingStore, 'resolveCatalogSlug'>
+      & Partial<Pick<ConnectionCatalogBindingStore, 'catalogsForConnection'>>)
+    | undefined,
   ingredient_id: string,
 ): string[] =>
   connectionStore
@@ -86,8 +89,12 @@ export const listScopedConnectionCandidates = (
       const vendor = resolveConnectionVendor(row);
       const vendorSlug =
         vendor !== undefined ? catalogSlugForVendor(vendor) : undefined;
-      const slug = vendorSlug ?? bindingStore?.resolveCatalogSlug(row.name);
-      return slug === ingredient_id;
+      if (vendorSlug === ingredient_id) return true;
+      // D-320 ruling 10 — a connection serves every catalog bound to it, beside its
+      // vendor's.
+      const bound = bindingStore?.catalogsForConnection?.(row.name)
+        ?? [bindingStore?.resolveCatalogSlug(row.name)];
+      return bound.includes(ingredient_id);
     })
     .map((row) => row.name)
     .sort();

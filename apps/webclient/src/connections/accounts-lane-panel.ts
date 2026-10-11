@@ -16,8 +16,8 @@
  *  before firing the rpc (the visual state is never load-bearing).
  *
  *  ── Slice 1 (non-OAuth enrollment) ──────────────────────────────────
- *  Mail → IMAP (`collection.mail.enrollImap`); Files → fs + s3
- *  (`collection.file.enroll`). Calendar lists + manages existing
+ *  Mail → IMAP (`collection.mail.enrollImap`); Files → fs
+ *  (`collection.file.enroll`; S3 left for Data → Files, 2026-10-10). Calendar lists + manages existing
  *  accounts but has no enrollable provider yet (OAuth + CalDAV land
  *  later). Each lane's actions degrade honestly when its caller seam is
  *  absent. */
@@ -1583,7 +1583,13 @@ export const mountAccountsLanePanel = (
     const providerLabel = (lane !== undefined && row !== undefined
       ? findAccountProvider(lane, row.adapterType)?.label
       : undefined) ?? 'account';
-    state.deleteConfirm = { slug, providerLabel, deleting: false };
+    state.deleteConfirm = {
+      slug,
+      providerLabel,
+      // A folder's records go with it (its files stay): the prompt says so.
+      ...(state.lane === 'file' && row?.adapterType === 'fs' ? { localFolder: true as const } : {}),
+      deleting: false,
+    };
     render();
     armDeleteFocusTrap();
   };

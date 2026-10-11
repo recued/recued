@@ -4889,7 +4889,13 @@ export const createRecordsStore = (
       };
       return { ...unsigned, digest: sha256(canonicalJson(unsigned)) };
     });
-    return tx();
+    // `.deferred()`: a read-only snapshot, and the longest one there is (every
+    // row of a namespace, projected and hashed). Under the realm default
+    // (`openDatabase` → BEGIN IMMEDIATE) it would hold the write lock for all of
+    // that, so the other process (`recued --mcp`, or the server) could not write
+    // until the export finished. A transaction that never writes never upgrades,
+    // so deferred cannot fail the way a read-then-write one did.
+    return tx.deferred();
   };
 
   const exportNamespaceCsv = (owner: RecordsPackRef, onlyEntity?: string): RecordsCsvExportEnvelope => {

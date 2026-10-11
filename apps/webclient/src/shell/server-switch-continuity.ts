@@ -36,7 +36,7 @@ const SAFE_FIRST_SEGMENTS: Readonly<
   connections: new Set(['mail', 'calendar', 'file', 'others', 'webhooks']),
   data: new Set([
     'contact', 'task', 'note', 'commitment', 'project', 'booking',
-    'form_response', 'mail_fact', 'webhook', 'mail', 'calendar', 'crm', 'files',
+    'form_response', 'mail_fact', 'mail', 'calendar', 'crm', 'files',
     'annotation', 'link', 'shared', 'memory',
   ]),
   automation: new Set(['all', 'coming-up', 'auto-run', 'triggers', 'schedules', 'dishes']),

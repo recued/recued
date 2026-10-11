@@ -71,7 +71,7 @@ const makeOptions = (
       base: {
         loadedConfig: {
           source: '/tmp/config.toml',
-          bootstrap: { webhook_port: 9876 },
+          bootstrap: { webhooks_enabled: true },
           runtime: {},
         },
         runtimeConfig: { tag: 'runtime-config' },
@@ -96,7 +96,7 @@ const makeOptions = (
           distribution: 'source',
           loadedConfig: {
             source: '/tmp/config.toml',
-            bootstrap: { webhook_port: 9876 },
+            bootstrap: { webhooks_enabled: true },
             runtime: {},
           },
           runtimeConfig: { tag: 'runtime-config' },
@@ -120,7 +120,7 @@ const makeOptions = (
         args: ['--reset-exposure'],
         dbPath: '/tmp/recued.db',
         port: 1234,
-        webhookPort: 9876,
+        webhooksEnabled: true,
         runtimeConfig: { tag: 'runtime-config' },
         backgroundServices: { tag: 'background-services' },
         storage: { tag: 'storage' },

@@ -94,7 +94,6 @@ const makeOptions = (
     },
     collection: {
       calendarStack: { disposeAll: vi.fn() },
-      serviceStack: { disposeAll: vi.fn() },
     },
     cloudBaseUrl: 'https://cloud.test',
     getSigningIdentity: vi.fn(() => ({ tag: 'identity' })),
@@ -177,7 +176,6 @@ describe('startPostHousekeepingTail', () => {
       backgroundServices: options.backgroundServices,
       fileStack: options.storage.fileStack,
       calendarStack: options.collection.calendarStack,
-      serviceStack: options.collection.serviceStack,
       cascade: options.cascade,
       server: options.server,
       db: options.storage.db,

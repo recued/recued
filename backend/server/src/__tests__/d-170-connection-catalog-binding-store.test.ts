@@ -1,10 +1,11 @@
 /** D-170 gap #2 — the `contract.connection_catalog_binding` store.
  *
  *  Proves the binding storage in isolation: bind / resolve / list / per-pack
- *  removal, the override (reinstall-replace) semantics, the defensive malformed-row
- *  read, and that another pack's bindings survive a removeForPack. This is the
- *  substrate the profile seed + the grant gate resolve a private/local composition
- *  catalog connection through (a local catalog has no `config.vendor`).
+ *  removal, several catalogs on one connection (D-320 ruling 10) in bind order,
+ *  rows written under the old one-segment key, the defensive malformed-row read,
+ *  and that another pack's bindings survive a removeForPack. This is the substrate
+ *  the profile seed + the grant gate resolve a private/local composition catalog
+ *  connection through (a local catalog has no `config.vendor`).
  */
 
 import Database from 'better-sqlite3';
@@ -43,18 +44,12 @@ describe('connection-catalog-binding-store — bind / resolve', () => {
     expect(bindings.resolveCatalogSlug('never-bound')).toBeUndefined();
   });
 
-  it('writes the row keyed by connection_name with the exact value shape', () => {
+  it('writes the row keyed by connection_name AND catalog_slug with the exact value shape', () => {
     bindings.bind('support', 'acme-tickets', 'acme-pack');
-    const row = contractStore.get(SCOPE, ['support']);
-    expect(row?.segments).toEqual(['support']);
+    const row = contractStore.get(SCOPE, ['support', 'acme-tickets']);
+    expect(row?.segments).toEqual(['support', 'acme-tickets']);
     expect(row?.value).toEqual({ catalog_slug: 'acme-tickets', installed_pack_id: 'acme-pack' });
-  });
-
-  it('bind overwrites (reinstall replace) — last write wins, one row per connection', () => {
-    bindings.bind('support', 'acme-tickets', 'acme-pack');
-    bindings.bind('support', 'acme-tickets-v2', 'acme-pack');
-    expect(bindings.resolveCatalogSlug('support')).toBe('acme-tickets-v2');
-    expect(bindings.list()).toHaveLength(1);
+    expect(contractStore.get(SCOPE, ['support'])).toBeNull();
   });
 
   it('isolates bindings by connection name', () => {
@@ -87,7 +82,87 @@ describe('connection-catalog-binding-store — list', () => {
     // missing `installed_pack_id` can never land — the store's own value-shape gate
     // backstops the store's defensive readBinding. (A direct `contractStore.put` of an
     // incomplete value throws, not the binding wrapper.)
-    expect(() => contractStore.put(SCOPE, ['broken'], { catalog_slug: 'x' })).toThrow();
+    expect(() => contractStore.put(SCOPE, ['broken', 'x'], { catalog_slug: 'x' })).toThrow();
+  });
+});
+
+describe('connection-catalog-binding-store — several catalogs on one connection (D-320 ruling 10)', () => {
+  /** A clock that moves, so bind order is observable. */
+  const ticking = (): ConnectionCatalogBindingStore => {
+    let t = NOW;
+    return createConnectionCatalogBindingStore(createContractStore(db, { now: () => (t += 1) }));
+  };
+
+  it('a second catalog bound to a connection sits beside the first, which stays first', () => {
+    const store = ticking();
+    store.bind('wise', 'wise-quotes', 'wise-quotes');
+    store.bind('wise', 'wise-core', 'wise-core');
+    expect(store.catalogsForConnection('wise')).toEqual(['wise-quotes', 'wise-core']);
+    expect(store.resolveCatalogSlug('wise')).toBe('wise-quotes');
+    expect(store.list()).toHaveLength(2);
+  });
+
+  it('re-binding a pair for its own pack writes nothing, so a reinstall does not reorder', () => {
+    const store = ticking();
+    store.bind('wise', 'wise-core', 'wise-core');
+    store.bind('wise', 'wise-quotes', 'wise-quotes');
+    store.bind('wise', 'wise-core', 'wise-core');
+    expect(store.catalogsForConnection('wise')).toEqual(['wise-core', 'wise-quotes']);
+  });
+
+  it('unbind drops one pair and leaves the connection\'s other catalogs', () => {
+    bindings.bind('wise', 'wise-core', 'wise-core');
+    bindings.bind('wise', 'wise-quotes', 'wise-quotes');
+    bindings.unbind('wise', 'wise-core');
+    expect(bindings.catalogsForConnection('wise')).toEqual(['wise-quotes']);
+  });
+
+  it('lists the connections bound to a catalog', () => {
+    bindings.bind('wise-business', 'wise-core', 'wise-core');
+    bindings.bind('wise-personal', 'wise-core', 'wise-core');
+    bindings.bind('wise-business', 'wise-quotes', 'wise-quotes');
+    expect(bindings.connectionsForCatalog('wise-core')).toEqual(['wise-business', 'wise-personal']);
+    expect(bindings.connectionsForCatalog('nothing')).toEqual([]);
+  });
+});
+
+describe('connection-catalog-binding-store — a row written under the old key', () => {
+  /** What a server wrote before ruling 10: keyed by the connection alone. */
+  const legacyRow = (connection: string, catalog: string, pack: string, writtenAt = 1): void => {
+    db.prepare(
+      "INSERT INTO contract_store (scope, seg_key, value_inline, written_at) VALUES (?, ?, ?, ?)",
+    ).run(SCOPE, connection, JSON.stringify({ catalog_slug: catalog, installed_pack_id: pack }), writtenAt);
+  };
+
+  it('is still read as the binding it always was', () => {
+    legacyRow('wise', 'wise-core', 'wise-core');
+    expect(bindings.resolveCatalogSlug('wise')).toBe('wise-core');
+    expect(bindings.catalogsForConnection('wise')).toEqual(['wise-core']);
+    expect(bindings.list()).toEqual([
+      { connection_name: 'wise', catalog_slug: 'wise-core', installed_pack_id: 'wise-core' },
+    ]);
+  });
+
+  it('stays first when a newer catalog is bound beside it', () => {
+    legacyRow('wise', 'wise-core', 'wise-core');
+    bindings.bind('wise', 'wise-quotes', 'wise-quotes');
+    expect(bindings.catalogsForConnection('wise')).toEqual(['wise-core', 'wise-quotes']);
+  });
+
+  it('is replaced, not duplicated, when the same pair is bound again', () => {
+    legacyRow('wise', 'wise-core', 'wise-core');
+    bindings.bind('wise', 'wise-core', 'wise-core');
+    expect(contractStore.get(SCOPE, ['wise'])).toBeNull();
+    expect(bindings.list()).toHaveLength(1);
+  });
+
+  it('goes with unbind and with removeForPack', () => {
+    legacyRow('wise', 'wise-core', 'wise-core');
+    bindings.unbind('wise', 'wise-core');
+    expect(bindings.list()).toEqual([]);
+    legacyRow('wise', 'wise-core', 'wise-core');
+    bindings.removeForPack('wise-core');
+    expect(bindings.list()).toEqual([]);
   });
 });
 

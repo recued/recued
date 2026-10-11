@@ -98,7 +98,7 @@ describe('stampCanonicalFields', () => {
   });
 
   it('round-trips every canonical collection name', () => {
-    const collections = ['mail', 'calendar', 'file', 'webhook', 'service', 'shared'] as const;
+    const collections = ['mail', 'calendar', 'file', 'webhook', 'shared'] as const;
     for (const col of collections) {
       const stamped = stampCanonicalFields({ x: 1 }, col, `id-${col}`);
       expect(stamped._collection).toBe(col);

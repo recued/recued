@@ -213,6 +213,81 @@ describe('D-210 A.8 3d-2b — buildAskLandingDetails', () => {
     expect(oneValue({ key: 'meta', type: 'json' }, cyclic)).toBe('(unreadable value)');
   });
 
+  it('a list of plain values reads as the values, without the JSON around them', () => {
+    // Live drive 2026-10-10: a held send read `To ["dana@sandhurst.test"]`.
+    expect(oneValue({ key: 'to', type: 'json' }, ['dana@sandhurst.test'])).toBe('dana@sandhurst.test');
+    expect(oneValue({ key: 'to', type: 'json' }, ['a@b.c', 'd@e.f'])).toBe('a@b.c, d@e.f');
+    expect(oneValue({ key: 'mixed', type: 'json' }, [1, true, 'x'])).toBe('1, true, x');
+    // A newline would break the line the list reads on; a blank item says so.
+    expect(oneValue({ key: 'tags', type: 'json' }, ['two\nlines', ' '])).toBe('two lines, (empty)');
+    // Anything else in a list still reads as JSON.
+    expect(oneValue({ key: 'guests', type: 'json' }, [{ email: 'a@b.c' }])).toBe('[{"email":"a@b.c"}]');
+    expect(oneValue({ key: 'guests', type: 'json' }, ['a@b.c', null])).toBe('["a@b.c",null]');
+  });
+
+  it('an empty list or object reads (empty), as an empty text does', () => {
+    expect(oneValue({ key: 'cc', type: 'json' }, [])).toBe('(empty)');
+    expect(oneValue({ key: 'meta', type: 'json' }, {})).toBe('(empty)');
+  });
+
+  it('⛔ a list cut at the cap says how many it left out', () => {
+    // Cut to the few that fit, `to: [500 addresses]` would be approved as those few.
+    const to = Array.from({ length: 500 }, (_, i) => `person${String(i).padStart(3, '0')}@example.com`);
+    const rendered = oneValue({ key: 'to', type: 'json' }, to);
+    const cut = /^(.*) and (\d+) more$/.exec(rendered);
+    expect(cut).not.toBeNull();
+    const shown = cut![1]!.split(', ');
+    // Whole items only, and the count is exactly the rest.
+    expect(shown).toEqual(to.slice(0, shown.length));
+    expect(shown.length + Number(cut![2])).toBe(500);
+    expect(rendered.length).toBeLessThanOrEqual(400);
+    // One item longer than the cap is cut visibly, and the rest are still counted.
+    expect(oneValue({ key: 'to', type: 'json' }, ['x'.repeat(500), 'y'])).toBe(`${'x'.repeat(388)}… and 1 more`);
+    expect(oneValue({ key: 'to', type: 'json' }, ['x'.repeat(500)])).toBe(`${'x'.repeat(399)}…`);
+  });
+
+  describe('blank fields folded onto one row each (`foldBlank`, the approval card)', () => {
+    const fields = [
+      field({ key: 'to', type: 'json' }),
+      field({ key: 'cc', type: 'json' }),
+      field({ key: 'in_reply_to' }),
+      field({ key: 'reconciliation_id' }),
+      field({ key: 'notify_visitor', type: 'boolean' }),
+      field({ key: 'sender', label: 'Sender mailbox' }),
+      field({ key: 'start_at', type: 'datetime' }),
+    ];
+    const held = item({
+      arg_schema: { fields },
+      args: { to: ['dana@sandhurst.test'], cc: [], in_reply_to: '', reconciliation_id: null, sender: '' },
+    });
+
+    it('a Not set row and an Empty row name every field that carries nothing', () => {
+      expect(buildAskLandingDetails(held, { timeZone: PARIS, foldBlank: true }).details).toEqual([
+        { label: 'to', value: 'dana@sandhurst.test' },
+        // A boolean is never blank: absent reads No, as its unchecked box does.
+        { label: 'notify_visitor', value: 'No' },
+        // Absent (null, or not carried) and blank stay apart, as the ask text keeps them.
+        { label: 'Not set', value: 'Reconciliation id, Start at' },
+        // Named as the cards label a row: a key humanized, a declared label as written.
+        { label: 'Empty', value: 'Cc, In reply to, Sender mailbox' },
+      ]);
+    });
+
+    it('never on the editable page, where a row is the field’s control', () => {
+      const details = buildAskLandingDetails(held, { timeZone: PARIS, foldBlank: true, editable: true }).details;
+      expect(details.map((d) => d.label)).toEqual(
+        ['to', 'cc', 'in_reply_to', 'reconciliation_id', 'notify_visitor', 'Sender mailbox', 'start_at'],
+      );
+      expect(details.find((d) => d.label === 'cc')).toMatchObject({ value: '(empty)', edit: { control: 'textarea' } });
+    });
+
+    it('without it, a row each, as the /ask page shows them', () => {
+      expect(buildAskLandingDetails(held, { timeZone: PARIS }).details.map((d) => d.value)).toEqual(
+        ['dana@sandhurst.test', '(empty)', '(empty)', '(not set)', 'No', '(empty)', '(not set)'],
+      );
+    });
+  });
+
   it('cuts a long value and makes the cut VISIBLE', () => {
     // A silent cut would misreport what the operation carries.
     const long = 'x'.repeat(500);

@@ -12,23 +12,49 @@
  *  existing shape of bin.ts.
  */
 
+/** Flags removed with their settings on 2026-10-09, each with what does its job.
+ *  Nothing read their values, so `recued --db-path X` quietly opened the realm
+ *  at the default path instead of X (exit 0, no warning — verified). `bin.ts`
+ *  now refuses them before anything opens. Refused, not ignored: no installer,
+ *  service template or doc ever passed one to the server (every past
+ *  `--data-path` went to the retired `rollback.mjs`), so no installed service
+ *  can be stopped by it. The config-file and env forms are ignored with a
+ *  warning instead — see `@recued/config` `bootstrap-keys.ts`. */
+export const RETIRED_FLAGS: ReadonlyMap<string, string> = new Map([
+  ['--data-path', 'use --db <file>: the data folder is the folder that holds the database'],
+  ['--db-path', 'use --db <file>'],
+  ['--host', 'set "network.lan_bind_address" under [runtime] in config.toml'],
+  ['--bind-host', 'set "network.lan_bind_address" under [runtime] in config.toml'],
+  ['--mcp-port', 'MCP is served at /mcp on the server\'s own port (--port)'],
+]);
+
+/** The removed flags `args` uses, in order, each once — `--host=x` included. */
+export const findRetiredFlags = (args: readonly string[]): string[] => {
+  const found: string[] = [];
+  for (const arg of args) {
+    const flag = arg.startsWith('--') ? arg.split('=', 1)[0] : arg;
+    if (RETIRED_FLAGS.has(flag) && !found.includes(flag)) found.push(flag);
+  }
+  return found;
+};
+
 /** Flags that take a following value — must skip their value when
  *  scanning for positionals. Mirrors every valued flag accepted downstream:
  *  the backend's own `--db`, plus the bootstrap flags `parseCliOverrides`
  *  (@recued/config) understands. A valued flag missing here leaks its value
  *  into the positional list, where it is mis-read as a subcommand — e.g.
  *  `--bind-port 9000 start` would route to subcommand "9000". The `--flag=value`
- *  spelling needs no entry (the whole token starts with `--` and is skipped). */
+ *  spelling needs no entry (the whole token starts with `--` and is skipped).
+ *
+ *  The RETIRED flags stay listed: `--host 0.0.0.0 serve` must still parse as
+ *  `serve`, so that `bin.ts` reaches its refusal instead of showing help for a
+ *  subcommand called "0.0.0.0". */
 export const FLAGS_WITH_VALUES = new Set([
   '--db',
   '--config',
   '--port',
   '--bind-port',
-  '--bind-host',
-  '--host',
-  '--data-path',
-  '--db-path',
-  '--mcp-port',
+  ...RETIRED_FLAGS.keys(),
   '--webhook-port',
   // ⛔⛔ D-228 — `recued mcp --token <bearer>`. WITHOUT THIS ENTRY THE FLAG DOES
   // NOT WORK AT ALL: `parsePositionals` skips any `--flag` it does not know but

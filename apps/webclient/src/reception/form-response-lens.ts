@@ -51,7 +51,8 @@ import { serializeShellRoute } from '../shell/route.js';
 export type ReceptionFormResponseConn = Conn<
   Pick<
     ServerRpcRegistry,
-    'form_response.list' | 'form_response.get' | 'recipe.list' | 'execute'
+    // D-320 — `packs.connections.recipe`: the Run tab's Connection lines.
+    'form_response.list' | 'form_response.get' | 'recipe.list' | 'execute' | 'packs.connections.recipe'
   >
 >;
 
@@ -729,6 +730,8 @@ export const mountReceptionFormResponseLens = (
         // Sourced from the conn — see the header: no bootstrap caller is plumbed for this lens.
         execute: (args) =>
           opts.conn('execute', { ...args, trigger_source: 'manual' }, { timeout: WEBCLIENT_RUN_RPC_TIMEOUT_MS }) as never,
+        // D-320 — the Run tab's Connection lines, from the recipe's slots.
+        connectionSlots: () => opts.conn('packs.connections.recipe', { recipe_id: match.entry.recipe_id }) as never,
         onClose: () => {
           if (runModal === handle) runModal = null;
         },

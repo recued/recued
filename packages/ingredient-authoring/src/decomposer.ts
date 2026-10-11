@@ -275,6 +275,11 @@ const connectorSurface = (composition: CompositionIngredient): ProviderSurfaces 
         package_ref: packageRef,
         entry_point: cli?.entry_point ?? cli?.tool ?? composition.slug,
         expected_protocol_version: 1,
+        // D-321 — the probe travels with the tested range, and only when the
+        // pack declares one: the server runs it to read the installed version.
+        // A pack that declares neither key decomposes as it always did.
+        ...(isCli && cli?.version !== undefined ? { cli_probe: cli.probe, cli_version: cli.version } : {}),
+        ...(isCli && cli?.install !== undefined ? { cli_install: cli.install } : {}),
       },
       lifecycle: {
         auth: { method: 'none' },

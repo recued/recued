@@ -435,6 +435,30 @@ describe('run-palette wire', () => {
     handle.destroy();
   });
 
+  it('D-320 — the Run modal it opens reads the recipe\'s Connection lines', async () => {
+    const recipeConnections = vi.fn(async (_args: { recipe_id: string }) => ({
+      slots: [{
+        slot: 'hubspot',
+        variables: [],
+        connections: [
+          { connection_name: 'hubspot-key', display_name: 'Service Key', is_default: true },
+          { connection_name: 'hubspot-app', display_name: 'Sales app', is_default: false },
+        ],
+      }],
+    }));
+    const { doc, handle } = mount({ execute: vi.fn(async () => executeResponse()), recipeConnections });
+    await tick();
+    handle.selectRecipe('manual-1');
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR).find((a) => a.textContent === 'Run')!.click();
+    await tick();
+    expect(recipeConnections).toHaveBeenCalledWith({ recipe_id: 'manual-1' });
+    const runModalRoot = doc.body.children.find((c) => c.className === 'run-modal-overlay-root')!;
+    expect(runModalRoot.innerHTML).toContain('data-recued-run-modal-connection');
+    expect(runModalRoot.innerHTML).toContain('Sales app');
+    handle.destroy();
+  });
+
   it('selecting an armed auto-run recipe offers Pause and drives auto_run.update', async () => {
     const autoRunUpdate = vi.fn(async () => ({}));
     const { doc, handle } = mount({

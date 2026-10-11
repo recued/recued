@@ -51,6 +51,8 @@ import {
   validateSpreadsheetImport,
   validateRetiredVariables,
   validateRetiredCarries,
+  validateRetiredConnections,
+  validateConnectionSettings,
 } from './validate/structural.js';
 import {
   validateReferences,
@@ -121,6 +123,8 @@ export const validateRecipe = (input: unknown): ValidationResult => {
   validateSpreadsheetImport(r, add);
   validateRetiredVariables(r, add);
   validateRetiredCarries(r, add);
+  validateRetiredConnections(r, add);
+  validateConnectionSettings(r, add);
   validateVariables(r, declaredStepIds, add);
   validateOutput(r, declaredStepIds, add);
   validateReferences(r, declaredStepIds, add);

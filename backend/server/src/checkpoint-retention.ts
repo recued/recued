@@ -60,6 +60,7 @@ import {
   type CheckpointStore,
 } from '@recued/storage';
 import type { GatedActionRecord, GatedActionStore } from './gated-action-store.js';
+import { carriedFromPausedRun } from './execution/paused-run-carry.js';
 
 /** Fixed grace for the garbage-collection half — generous against any
  *  crash-window or in-flight pause write (checkpoint → raise → anchor
@@ -217,27 +218,9 @@ export const createCheckpointRetention = (
       instance_id: anchor.instance_id ?? null,
       run_id: checkpoint.run_id,
       now: nowMs,
-      ...(anchor.recipe_insight_id !== undefined
-        ? { recipe_insight_id: anchor.recipe_insight_id }
-        : {}),
-      ...(anchor.backfill ? { backfill: anchor.backfill } : {}),
-      ...(anchor.process_id ? { process_id: anchor.process_id } : {}),
-      ...(anchor.run_mode ? { run_mode: anchor.run_mode } : {}),
-      ...(anchor.execution_source
-        ? { execution_source: anchor.execution_source }
-        : {}),
-      ...(anchor.contract_snapshot
-        ? { contract_snapshot: anchor.contract_snapshot }
-        : {}),
-      ...(anchor.channel_session_id
-        ? { channel_session_id: anchor.channel_session_id }
-        : {}),
-      ...(anchor.cognition_session_id
-        ? { cognition_session_id: anchor.cognition_session_id }
-        : {}),
-      ...(anchor.correlation_id
-        ? { correlation_id: anchor.correlation_id }
-        : {}),
+      // This record replaces the paused one: keep what links the run and what
+      // it did before it paused.
+      ...carriedFromPausedRun(anchor),
     });
   };
 

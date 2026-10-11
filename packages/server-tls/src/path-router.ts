@@ -60,8 +60,8 @@ export type PathRouterListener = 'lan' | 'public';
  *  prefixes would cascade through ~30 test + provider files and bloat the
  *  slice beyond "bin.ts caller migration." Closed-list alias map gives
  *  the path-router a deterministic mapping from existing path strings
- *  (`/auth/pair`, `/status`, `/status.json`, `/webhook/<slug>`,
- *  `/hook/<recipe>/<slug>`, `/v1/connection/webhook/<vendor>/<conn>`) to
+ *  (`/auth/pair`, `/status`, `/status.json`, `/v1/webhooks/<id>`,
+ *  `/v1/connection/webhook/<vendor>/<conn>`) to
  *  the appropriate role.
  *
  *  Each alias declares an `exact` path match OR a `prefix` match (the
@@ -103,7 +103,7 @@ export interface PathRouterOptions {
   legacyAliases?: ReadonlyArray<PathRouterLegacyAlias>;
   /** D-148 follow-up #7 — bare root (`/`) request handler. Threaded by
    *  the listener-set onto the PUBLIC listener only — visitors hitting
-   *  `https://<handle>.recued.cloud/` need somewhere to land; LAN bare
+   *  `https://<handle>.recued.net/` need somewhere to land; LAN bare
    *  `/` keeps the generic 404 (LAN visitors are the user themselves;
    *  no stranger to redirect). Invoked BEFORE the role + alias lookup
    *  for exact `path === '/'` matches; sub-paths and role bases fall

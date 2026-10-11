@@ -25,6 +25,8 @@ export * from './file-ref-array.js';
 export * from './record-ref-variable.js';
 export * from './mail-template-variable.js';
 export * from './config-editor-overlay.js';
+export * from './connection-lines.js';
+export * from './connection-removal.js';
 // D-319 — a dish said as a line: what starts it, what tells it apart, its status.
 export * from './dish-lead.js';
 export * from './dish-line.js';
@@ -102,6 +104,7 @@ export {
   validateConnectionForm,
   CONNECTIONS_PAGE_STYLES,
   MCP_PACK_INSTALL_SCOPE_HOST_ATTR,
+  SIGNIN_GRIDS_HOST_ATTR,
   initialConnectionsPageState,
   initialConnectionsDialogState,
   initialConnectionsSetupGuideState,

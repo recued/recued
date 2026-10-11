@@ -38,6 +38,7 @@ import type {
   ServerRecipeListEntry,
   ServerSchedule,
   ToolCatalogEntryView,
+  VariableDefault,
 } from '@recued/contracts';
 import { recipeConsumedEnrichments, recipeNotificationChannels } from '@recued/contracts';
 import { DEFAULT_INSTANCE_PREFS, getPref } from '@recued/contracts';
@@ -129,6 +130,7 @@ import {
   plainSettingText,
   type SettingValueText,
   type ConfigEditorOverlayHandle,
+  type ConnectionLineSlot,
   type MailTemplateVariableCallers,
   type RecipeCardState,
   type RecipeCardTriggerKind,
@@ -408,6 +410,14 @@ const hasSettingValue = (value: unknown): boolean =>
   && !(typeof value === 'string' && value.trim() === '')
   && !(Array.isArray(value) && value.length === 0);
 
+/** A value a run of this recipe has to be given before it can run straight away.
+ *  D-320 — never a connection setting: the pack holds the connection, and a run
+ *  that names none takes the dish's choice or the pack's default. */
+export const runMustBeGiven = (definition: VariableDefault): boolean =>
+  isInvocationVariable(definition)
+  && !(definition !== null && typeof definition === 'object'
+    && (definition as { type?: unknown }).type === 'connection');
+
 const relatedActionFocusKey = (action: string | null): string | null =>
   action?.startsWith('toggle-auto-run:') === true ? 'toggle-auto-run' : action;
 const SHARED_ACTION_ATTR = 'data-action';
@@ -441,6 +451,8 @@ export type RecipeExecuteCaller = (args: {
   /** D-319 — run as this dish, with its settings; `config` changes them for
    *  this run alone. Absent ⇒ the recipe's main dish's settings. */
   dish_id?: string;
+  /** D-320 §3.5 — the connection this run uses, by slot; this run only. */
+  connections?: Record<string, string>;
 }) => Promise<ServerExecuteResponse>;
 
 /** D-200 — owner-authenticated file-content read used only after an emitted
@@ -523,6 +535,12 @@ export type RecipesDishesDeleteCaller = (args: { dish_id: string }) => Promise<{
 export type RecipesDishesDefaultsCaller = (args: {
   recipe_id: string;
 }) => Promise<{ config_overlay: Record<string, unknown> }>;
+
+/** D-320 §4 — `packs.connections.recipe`: the recipe's slots, for the dish
+ *  form's and the run dialog's Connection lines. */
+export type RecipesRecipeConnectionsCaller = (args: {
+  recipe_id: string;
+}) => Promise<{ slots: ReadonlyArray<ConnectionLineSlot> }>;
 
 export type RecipesSchedulesListCaller = () => Promise<{
   schedules: ServerSchedule[];
@@ -680,6 +698,9 @@ export interface BootstrapRecipesRouteOptions {
   /** D-319 — the mail template a new dish starts from. Absent ⇒ the recipe's
    *  own defaults only. */
   dishesDefaultsCaller?: RecipesDishesDefaultsCaller;
+  /** D-320 — the recipe's slots, for the Connection lines. Absent (or a server
+   *  without the rpc) ⇒ no lines; the dish's choice is left as it is. */
+  recipeConnectionsCaller?: RecipesRecipeConnectionsCaller;
   schedulesListCaller?: RecipesSchedulesListCaller;
   schedulesCreateCaller?: RecipesSchedulesCreateCaller;
   schedulesUpdateCaller?: RecipesSchedulesUpdateCaller;
@@ -2428,7 +2449,7 @@ const renderRecipeDetail = (
     dish.recipe_id === entry.recipe_id && dish.is_default);
   const mainDishAnswersAll = mainDish !== undefined
     && Object.entries(entry.recipe.variables ?? {}).every(([key, definition]) =>
-      !isInvocationVariable(definition) || hasSettingValue(mainDish.config_overlay[key]));
+      !runMustBeGiven(definition) || hasSettingValue(mainDish.config_overlay[key]));
   const targetRunnability = runnability?.get(entry.recipe_id);
   const missingPacks = targetRunnability === undefined
     ? []
@@ -4063,6 +4084,10 @@ export const bootstrapRecipesRoute = (
         ? { dishes: automationData.dishes.filter((dish) => dish.recipe_id === recipe_id) }
         : {}),
       ...(dish_id !== undefined ? { dish_id } : {}),
+      // D-320 — the Run tab's Connection lines, from the recipe's slots.
+      ...(opts.recipeConnectionsCaller !== undefined
+        ? { connectionSlots: () => opts.recipeConnectionsCaller!({ recipe_id }) }
+        : {}),
       ...(opts.recipeExecuteCaller !== undefined
         ? { execute: opts.recipeExecuteCaller }
         : {}),
@@ -4290,6 +4315,13 @@ export const bootstrapRecipesRoute = (
         start = { ...read };
       }
     }
+    // D-320 — the recipe's slots, for the Connection lines. A server without the
+    // rpc, or a read that fails, opens the form without them.
+    const connectionSlots = opts.recipeConnectionsCaller === undefined
+      ? undefined
+      : await opts.recipeConnectionsCaller({ recipe_id }).then((read) => read.slots, () => undefined);
+    // Left, or another form opened, meanwhile.
+    if (disposed || dishFormHandle !== null) return;
     const recordRefSearch = recordRefSearchFor(entry.recipe);
     dishFormHandle = openSharedDishForm({
       document: doc,
@@ -4306,6 +4338,7 @@ export const bootstrapRecipesRoute = (
       ...(opts.fileRefSearchCaller !== undefined ? { fileRefSearch: opts.fileRefSearchCaller } : {}),
       ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
       ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
+      ...(connectionSlots !== undefined ? { connectionSlots } : {}),
       onCreated: (made, scheduleError) => {
         pendingDishFocus = made.dish_id;
         if (scheduleError !== null && !disposed) {
@@ -4328,7 +4361,7 @@ export const bootstrapRecipesRoute = (
     const dish = dishOf(dish_id);
     if (entry === undefined || dish === undefined) return;
     const answersAll = Object.entries(entry.recipe.variables ?? {}).every(([key, definition]) =>
-      !isInvocationVariable(definition) || hasSettingValue(dish.config_overlay[key]));
+      !runMustBeGiven(definition) || hasSettingValue(dish.config_overlay[key]));
     if (answersAll) void runRecipeDefaults(recipe_id, dish_id);
     else openRunModal(recipe_id, 'run', undefined, undefined, dish_id);
   };

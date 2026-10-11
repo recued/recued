@@ -171,7 +171,7 @@ export const createWebclientPairPassportInvoker = (
     //    out — the timer's `rejectOuter(pending)` call landed but the
     //    function sat on `await transport.open(...)` forever. Symmetric
     //    to the bridge's HIGH #1 fold in
-    //    [[apps/bridge/src/popup/pair-passport-invoker]] (commit
+    //    [[apps/bridge/src/pairing/pair-passport-invoker]] (commit
     //    `bf7aab2a`). The race below uses a discriminated `HandshakeRaceArm`
     //    to make the winner explicit; `settled` is the single source of
     //    truth across both arms.

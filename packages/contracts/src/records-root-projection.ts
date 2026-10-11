@@ -20,7 +20,7 @@
  *  site — which is what makes this analyzable at install and safe to accept
  *  from a third party. */
 import type { RecordsAggregateSelectMap } from './records-aggregate.js';
-import { validateRecordsAggregateSelect } from './records-aggregate.js';
+import { validateRecordsAggregateSelect, validateRecordsGroupBy } from './records-aggregate.js';
 import type { RecordsFieldKind } from './records.js';
 
 /** Closed list of identity roots a pack may orbit. `contact` is the one that
@@ -63,7 +63,35 @@ export interface RecordsRootProjection {
   select: RecordsAggregateSelectMap;
   /** How the projection names itself in a root view. */
   label?: string;
+  /** 2026-10-09 — one rollup PER VALUE of this field of the BASE entity, rather
+   *  than one over every row. The first user is the invoice book's "Owes you",
+   *  grouped by `currency`: a sum of balances across currencies means nothing.
+   *  Same key kinds and the same cap as the aggregate op's `group_by`
+   *  (`RECORDS_GROUP_BY_KINDS`, `RECORDS_MAX_GROUPS`).
+   *
+   *  ⚠ A server older than this refuses a pack that declares it — an unknown
+   *  key here is refused at install — so a pack that uses it needs the release
+   *  that brought it. */
+  group_by?: string;
+  /** 2026-10-09 — the key a recipe reads this projection under,
+   *  `{{data.contact.<email>.rollups.<pack>.<name>.<output>}}`. A pack with one
+   *  projection may leave it out, and its outputs sit straight under the pack
+   *  (`rollups.<pack>.<output>`). A pack with more must name every one, each
+   *  differently (`validateRecordsRootProjectionNames`): recipes read rollups by
+   *  pack, so two unnamed answers from one pack could only be told apart by
+   *  guessing. The first such pack is the invoice book ("Owes you", "Pays",
+   *  "Buys", "Billed").
+   *
+   *  ⚠ Naming a pack's only projection moves its outputs one level down. A
+   *  server older than this refuses the key, as it does `group_by`. */
+  name?: string;
 }
+
+/** A projection's `name` is one segment of a recipe path. `error` and
+ *  `publishers` are the keys of the marker a recipe reads when two publishers
+ *  ship one pack slug, so a projection named either would read as that clash. */
+export const RECORDS_ROOT_NAME_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
+const RESERVED_ROOT_NAMES: readonly string[] = ['error', 'publishers'];
 
 /** Static validation, run at install against the pack's own schema. Returns
  *  every problem rather than the first. Empty = admissible. */
@@ -79,12 +107,20 @@ export const validateRecordsRootProjection = (
   }
   const p = projection as Record<string, unknown>;
   for (const key of Object.keys(p)) {
-    if (!['root', 'via', 'key_field', 'where', 'select', 'label'].includes(key)) {
+    if (!['root', 'via', 'key_field', 'where', 'select', 'label', 'group_by', 'name'].includes(key)) {
       problems.push(`${path}: unknown key '${key}'`);
     }
   }
   if (!RECORDS_ROOT_KINDS.includes(p.root as RecordsRootKind)) {
     problems.push(`${path}.root: must be one of ${RECORDS_ROOT_KINDS.join(', ')}`);
+  }
+  if (p.name !== undefined && (
+    typeof p.name !== 'string' || !RECORDS_ROOT_NAME_PATTERN.test(p.name) || RESERVED_ROOT_NAMES.includes(p.name)
+  )) {
+    problems.push(
+      `${path}.name: must be lower-case letters, digits and _, start with a letter, be at most 40 characters, `
+      + `and not be ${RESERVED_ROOT_NAMES.map((n) => `'${n}'`).join(' or ')}`,
+    );
   }
 
   const via = p.via;
@@ -145,6 +181,11 @@ export const validateRecordsRootProjection = (
     for (const problem of validateRecordsAggregateSelect(p.select, kinds)) {
       problems.push(`${path}.${problem}`);
     }
+    if (p.group_by !== undefined) {
+      for (const problem of validateRecordsGroupBy(p.group_by, kinds)) {
+        problems.push(`${path}.${problem}`);
+      }
+    }
     if (p.where !== undefined) {
       if (p.where === null || typeof p.where !== 'object' || Array.isArray(p.where)) {
         problems.push(`${path}.where: must be an object of field predicates`);
@@ -154,6 +195,31 @@ export const validateRecordsRootProjection = (
         }
       }
     }
+  }
+  return problems;
+};
+
+/** A pack's projections taken together: a lone one may go unnamed, and when
+ *  there are several each carries a different `name`. `projections` is every
+ *  entity's `roots`, in order, each with the path its problems are reported
+ *  under. The name's own shape is `validateRecordsRootProjection`'s to check. */
+export const validateRecordsRootProjectionNames = (
+  projections: readonly { path: string; projection: unknown }[],
+): string[] => {
+  if (projections.length < 2) return [];
+  const problems: string[] = [];
+  const seen = new Map<string, string>();
+  for (const { path, projection } of projections) {
+    if (projection === null || typeof projection !== 'object' || Array.isArray(projection)) continue;
+    const name = (projection as Record<string, unknown>).name;
+    if (name === undefined) {
+      problems.push(`${path}.name: required when a pack declares more than one projection, because recipes read each one by its name`);
+      continue;
+    }
+    if (typeof name !== 'string') continue;
+    const prior = seen.get(name);
+    if (prior === undefined) seen.set(name, path);
+    else problems.push(`${path}.name: '${name}' already names ${prior}`);
   }
   return problems;
 };
@@ -171,6 +237,12 @@ export interface RecordsRootProjectionResult {
   entity: string;
   root: RecordsRootKind;
   label?: string;
+  /** The projection's `name`, when it declares one: where recipes read it. */
+  name?: string;
+  /** On a grouped projection (`group_by`), which field and this rollup's value
+   *  of it — `null` for the rows where that field is empty. Each group is its
+   *  own result, and `label` already names the group ("Owes you · GBP"). */
+  group?: { by: string; key: unknown };
   value: Record<string, unknown>;
   complete: boolean;
   /** Set when `complete` is false — what was hit, in the user's terms. */

@@ -36,6 +36,12 @@ import { initializePreapprovalLifecycle, mutatePreapprovalResource } from './sto
 export const dishPreapprovalMaterial = (dish: Dish): Record<string, unknown> => ({
   recipe_id: dish.recipe_id, publisher_id: dish.publisher_id, enabled: dish.enabled, config_overlay: dish.config_overlay,
   group_id: dish.group_id ?? null,
+  // D-320 §3.4 — a dish's choice of connection decides the account its runs act
+  // in, so changing it is a change to what was approved. Absent from a dish with
+  // none, so a dish saved before it existed keeps the material it was approved on.
+  ...(dish.connections !== undefined && Object.keys(dish.connections).length > 0
+    ? { connections: dish.connections }
+    : {}),
 });
 
 export interface DishStore {

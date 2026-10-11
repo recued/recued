@@ -19,10 +19,12 @@ import {
   recoverPeerAskDeliveries,
 } from '../peer-ask-delivery-recovery.js';
 import { createPeerAnswerStore } from '../storage/peer-answer-store.js';
+import { watchedFolderGates } from '../collections/file/watched-folders.js';
 
 type CollectionContextKey = 'collection';
 type RecoveryRuntimeKeys =
   | 'collection'
+  | 'watchedFolders'
   | 'notificationBlock'
   | 'getBatch'
   | 'reconcileOpenBatch';
@@ -146,6 +148,17 @@ export const startPostAppCollectionExecutionRuntime = async (
       },
       recovery: {
         ...options.postExecution.runtime.recovery,
+        // D-106 follow-up — a watched folder's records: its collection joins
+        // the registry, its events the warehouse bus, its gate the registry.
+        ...(options.collection.gateRegistry
+          ? {
+              watchedFolders: {
+                registry: collection.collectionRegistry,
+                bus: options.collection.warehouseBus,
+                gates: watchedFolderGates(options.collection.gateRegistry),
+              },
+            }
+          : {}),
         notificationBlock: execution.notificationBlock,
         ...(peerDeliveryBoot ?? {}),
         ...(execution.getBatch !== undefined

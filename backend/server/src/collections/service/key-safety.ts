@@ -19,9 +19,3 @@ export const hasOwnSafe = (
 ): boolean =>
   !isPrototypeSensitiveKey(key) &&
   Object.prototype.hasOwnProperty.call(obj, key);
-
-export const ownSafe = (
-  obj: Record<string, unknown>,
-  key: string,
-): unknown =>
-  hasOwnSafe(obj, key) ? obj[key] : undefined;

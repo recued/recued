@@ -49,12 +49,12 @@ describe('runAttentionForTriggerSource', () => {
 
 describe('resolveProgressContract', () => {
   it('prefers the manifest declaration over the kind default', () => {
-    expect(resolveProgressContract({ kind: 'service', progress_contract: 'file-growth' }))
+    expect(resolveProgressContract({ kind: 'cli', progress_contract: 'file-growth' }))
       .toBe('file-growth');
   });
 
-  it('falls back to silent for a service op with no declaration', () => {
-    expect(resolveProgressContract({ kind: 'service' })).toBe('silent');
+  it('falls back to silent for a cli op with no declaration', () => {
+    expect(resolveProgressContract({ kind: 'cli' })).toBe('silent');
   });
 
   it('returns a valid contract for every ingredient kind', () => {

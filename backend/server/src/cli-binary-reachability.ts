@@ -13,8 +13,8 @@
  *  argv is intentionally NOT run here — the locked binary on PATH is the cheaper,
  *  available signal, and it is exactly what the run-time `not_found` means). */
 
-import { accessSync, constants } from 'node:fs';
-import { delimiter as pathDelimiter, isAbsolute, join } from 'node:path';
+import { accessSync, constants, statSync } from 'node:fs';
+import { delimiter as pathDelimiter, posix, win32 } from 'node:path';
 
 export interface CliBinaryReachabilityOptions {
   /** PATH string to search (default `process.env.PATH`). */
@@ -23,22 +23,73 @@ export interface CliBinaryReachabilityOptions {
    *  Injected by tests so a `;`-delimited Windows PATH can be exercised on a
    *  POSIX runner (where `C:\…` would otherwise split on the host `:`). */
   delimiter?: string;
-  /** Windows PATHEXT extensions to try (default `process.env.PATHEXT`). */
-  pathext?: string;
   /** Platform (default `process.platform`); only `'win32'` changes behaviour. */
   platform?: NodeJS.Platform;
-  /** Executable/existence check (default `fs.accessSync(p, X_OK)` → boolean).
-   *  Injected by tests so the probe is hermetic (no real filesystem). */
+  /** Whether a launch can start this file (default: a regular file, and
+   *  executable on POSIX). Injected by tests so the probe is hermetic (no real
+   *  filesystem). */
   isExecutable?: (path: string) => boolean;
 }
 
-const defaultIsExecutable = (path: string): boolean => {
+/** A regular file, and on POSIX one this process may execute. A folder named
+ *  like the tool is not one: a launch passes over it to the next PATH entry, so
+ *  the resolver does too. */
+const defaultIsLaunchable = (platform: NodeJS.Platform) => (path: string): boolean => {
   try {
-    accessSync(path, constants.X_OK);
+    if (!statSync(path).isFile()) return false;
+    if (platform !== 'win32') accessSync(path, constants.X_OK);
     return true;
   } catch {
     return false;
   }
+};
+
+/** What Node's `spawn` starts on Windows without a shell: the name as given when
+ *  it already ends `.com` or `.exe`, else the name with `.com`, then `.exe`,
+ *  appended. A `.cmd` or `.bat` script (npm's shims are both) needs a shell,
+ *  which no action is given, so it is never a match, whatever PATHEXT says. */
+const WINDOWS_LAUNCHABLE = ['.com', '.exe'] as const;
+
+/** Build a resolver over a `cliToolFromConnectorRuntime` tool key (a bare binary
+ *  like `whisper`, or an `entry_point` path): the file a launch would run, or
+ *  `undefined` when there is none. D-321's version check keys its cache on that
+ *  file, and runs it, so the version it reads is the one an action would run. */
+export const createCliBinaryPathResolver = (
+  opts: CliBinaryReachabilityOptions = {},
+): ((tool: string) => string | undefined) => {
+  const platform = opts.platform ?? process.platform;
+  const isWin = platform === 'win32';
+  const paths = isWin ? win32 : posix;
+  const isExecutable = opts.isExecutable ?? defaultIsLaunchable(platform);
+  const candidates = (base: string): string[] => {
+    if (!isWin) return [base];
+    const lower = base.toLowerCase();
+    return WINDOWS_LAUNCHABLE.some((ext) => lower.endsWith(ext))
+      ? [base]
+      : WINDOWS_LAUNCHABLE.map((ext) => base + ext);
+  };
+  const resolved = (base: string): string | undefined => candidates(base).find(isExecutable);
+
+  return (tool: string): string | undefined => {
+    if (tool.length === 0) return undefined;
+    // A path-bearing tool (an `entry_point` path) resolves directly — no PATH walk.
+    if (tool.includes('/') || tool.includes('\\') || paths.isAbsolute(tool)) {
+      return resolved(tool);
+    }
+    // ⛔ ABSOLUTE PATH ENTRIES ONLY. An empty entry (`PATH=:/usr/bin`) means the
+    // working folder, and a relative one is read from it; an action works in a
+    // repository's folder, so either would let the repository's own copy of the
+    // tool run, and not the one the version check read. The executor launches
+    // the file this returns (D-321), so neither is honoured at run time either.
+    const dirs = (opts.path ?? process.env.PATH ?? '')
+      .split(opts.delimiter ?? pathDelimiter)
+      .filter((d) => d.length > 0 && paths.isAbsolute(d));
+    for (const dir of dirs) {
+      const found = resolved(paths.join(dir, tool));
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
 };
 
 /** Build a reachability probe over a `cliToolFromConnectorRuntime` tool key (a
@@ -48,33 +99,6 @@ const defaultIsExecutable = (path: string): boolean => {
 export const createCliBinaryReachabilityProbe = (
   opts: CliBinaryReachabilityOptions = {},
 ): ((tool: string) => boolean) => {
-  const isExecutable = opts.isExecutable ?? defaultIsExecutable;
-  const isWin = (opts.platform ?? process.platform) === 'win32';
-  const exts = isWin
-    ? (opts.pathext ?? process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM')
-        .split(';')
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-    : [];
-  // A path/name resolves if it exists as-is OR, on Windows, with a PATHEXT suffix.
-  const resolves = (base: string): boolean =>
-    isExecutable(base) || exts.some((ext) => isExecutable(base + ext));
-
-  return (tool: string): boolean => {
-    if (tool.length === 0) return false;
-    // A path-bearing tool (an `entry_point` path) resolves directly — no PATH walk.
-    if (tool.includes('/') || tool.includes('\\') || isAbsolute(tool)) {
-      return resolves(tool);
-    }
-    // Drop empty PATH segments. POSIX treats an empty segment (`PATH=:/usr/bin`)
-    // as the CWD — but resolving a cli tool from the server's transient working
-    // directory is a footgun (and not a real "install"), so we DELIBERATELY don't
-    // honour it: a binary reachable only via CWD reads "not installed" here. The
-    // divergence is conservative — Node `spawn` may still find a CWD binary at run
-    // time, but relying on CWD-in-PATH is unsafe, so the badge stays cautious.
-    const dirs = (opts.path ?? process.env.PATH ?? '')
-      .split(opts.delimiter ?? pathDelimiter)
-      .filter((d) => d.length > 0);
-    return dirs.some((dir) => resolves(join(dir, tool)));
-  };
+  const resolve = createCliBinaryPathResolver(opts);
+  return (tool: string): boolean => resolve(tool) !== undefined;
 };

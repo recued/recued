@@ -51,6 +51,10 @@ export interface FileAdapterInstance {
   start(): Promise<void>;
   /** Stop sync cleanly. Idempotent. */
   stop(): Promise<void>;
+  /** Directories the last walk could not read. `0` means the walk listed
+   *  everything on disk, so a stored file it did not see is gone. Absent on an
+   *  adapter with no walk to count. */
+  walkErrors?(): number;
 }
 
 /** Mutation-capable adapter. Write / delete ingredients cast at

@@ -108,7 +108,7 @@ const makeOptions = (
         base: {
           loadedConfig: {
             source: '/tmp/config.toml',
-            bootstrap: { webhook_port: 9876 },
+            bootstrap: { webhooks_enabled: true },
             runtime: {},
           },
           runtimeConfig: { tag: 'runtime-config' },
@@ -132,7 +132,7 @@ const makeOptions = (
             distribution: 'source',
             loadedConfig: {
               source: '/tmp/config.toml',
-              bootstrap: { webhook_port: 9876 },
+              bootstrap: { webhooks_enabled: true },
               runtime: {},
             },
             runtimeConfig: { tag: 'runtime-config' },
@@ -153,7 +153,7 @@ const makeOptions = (
           args: ['--reset-exposure'],
           dbPath: '/tmp/recued.db',
           port: 1234,
-          webhookPort: 9876,
+          webhooksEnabled: true,
           runtimeConfig: { tag: 'runtime-config' },
           backgroundServices: { tag: 'background-services' },
           storage: { tag: 'storage' },
@@ -273,6 +273,59 @@ describe('startPostAppCollectionExecutionRuntime', () => {
     }
     expect(recoveries[0]?.permanentPassRepair).toBe(permanentPassRepair);
     expect(recoveries[1]).not.toHaveProperty('permanentPassRepair');
+  });
+
+  it('D-106 follow-up: hands boot recovery the watched folders — the registry, the warehouse bus, gates from the gate registry', async () => {
+    // Boot recovery attaches them to the file stack before it starts; without
+    // this hop every enrolled folder is watched with nothing recorded, and a
+    // test of either end stays green.
+    const collectionRegistry = { tag: 'collection-registry' };
+    const recoveries: Array<Record<string, unknown>> = [];
+    bridgeMocks.composeCollectionContext.mockImplementation(() => ({
+      collectionRegistry,
+      startCollectionAdapters: vi.fn(async () => undefined),
+    }));
+    bridgeMocks.composeExecutionContext.mockImplementation(async () => ({
+      executorConfig: { tag: 'executor-config' },
+      executeDeps: { tag: 'execute-deps' },
+      notificationBlock: { tag: 'notification-block' },
+      serverDisplayName: 'test-server',
+    }));
+    bridgeMocks.startPostExecutionBootstrapMaintenanceRuntime.mockImplementation(
+      async (actualOptions) => {
+        recoveries.push(actualOptions.runtime.recovery);
+        return { runtime: { tag: 'runtime' }, schedulersBundle: { tag: 'schedulers' } };
+      },
+    );
+    const gateRegistry = {
+      get: vi.fn(() => undefined),
+      register: vi.fn((name: string) => ({ tag: name })),
+      unregister: vi.fn(),
+    };
+    const base = makeOptions();
+    await startPostAppCollectionExecutionRuntime({
+      ...base, collection: { ...base.collection, gateRegistry },
+    } as unknown as StartPostAppCollectionExecutionRuntimeOptions);
+
+    const watched = recoveries[0]?.watchedFolders as {
+      registry: unknown;
+      bus: unknown;
+      gates: { get(slug: string): unknown; release(slug: string): void };
+    };
+    expect(watched.registry).toBe(collectionRegistry);
+    expect(watched.bus).toBe(base.collection.warehouseBus);
+    expect(watched.gates.get('clients')).toEqual({ tag: 'collection:file:clients' });
+    expect(gateRegistry.register).toHaveBeenCalledWith(
+      'collection:file:clients', { quota: 512 * 1024 * 1024, reservePct: 1, initialUsage: 0 },
+    );
+    watched.gates.release('clients');
+    expect(gateRegistry.unregister).toHaveBeenCalledWith('collection:file:clients');
+
+    // No gate registry: no watched folders, rather than a folder without a gate.
+    await startPostAppCollectionExecutionRuntime({
+      ...base, collection: { ...base.collection, gateRegistry: undefined },
+    } as unknown as StartPostAppCollectionExecutionRuntimeOptions);
+    expect(recoveries[1]).not.toHaveProperty('watchedFolders');
   });
 
   it('D-319: threads the pre-bound switch-on notice into boot recovery, and nothing when none is bound', async () => {

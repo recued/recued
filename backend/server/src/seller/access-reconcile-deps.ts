@@ -76,6 +76,7 @@ import {
   type SellerCustomerCloseReason,
   type SellerLifecycleSource,
   type SellerProviderSource,
+  profileForCatalog,
 } from '@recued/contracts';
 
 import {
@@ -524,9 +525,14 @@ export const createSellerAccessReconcileDeps = (
       .list({ kind: 'api' })
       .filter((row) => {
         if (resolveConnectionVendor(row) !== provider.vendor) return false;
-        const profile = deps.connectionOperationProfiles.get(row.name);
-        return profile?.catalog_slug === provider.catalog_slug
-          && profile.allowed_operations.includes(
+        // D-320 ruling 10 — the provider catalog's own grant on a connection that
+        // may serve several catalogs.
+        const grant = profileForCatalog(
+          deps.connectionOperationProfiles.get(row.name),
+          provider.catalog_slug,
+        );
+        return grant?.catalog_slug === provider.catalog_slug
+          && grant.allowed_operations.includes(
             provider.subscription_read_operation,
           );
       })

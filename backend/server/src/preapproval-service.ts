@@ -40,6 +40,14 @@ export interface PreapprovalServiceDeps {
   /** Host composition must report actual runner/gateway/driver readiness.
    * Schema installation or available descriptions alone are insufficient. */
   executionCapabilities(): Pick<PreapprovalCapabilities, 'activation_kinds' | 'bindings' | 'child_calls' | 'decision_channels'>;
+  /** D-320 audit — settle each slot's connection as the run will, over the packs
+   *  preparation resolved (`settleDoorConnections`). */
+  settleConnections?: (
+    recipe: Parameters<NonNullable<PreapprovalPreparationDeps['dispatch']['settle']>>[0],
+    config: Record<string, unknown>,
+    dish: Parameters<NonNullable<PreapprovalPreparationDeps['dispatch']['settle']>>[2],
+    packs: ReturnType<typeof buildPackOpResolution> | undefined,
+  ) => ReturnType<NonNullable<PreapprovalPreparationDeps['dispatch']['settle']>>;
   now?: () => number;
 }
 
@@ -108,7 +116,10 @@ export const createPreapprovalService = (deps: PreapprovalServiceDeps) => {
         return source;
       },
       dispatch: { profiles: { get: name => readCurrentConnectionOperationProfile(deps.profiles, name) },
-        manifests: { get: manifest }, ...(packs ? { packs } : {}) },
+        manifests: { get: manifest }, ...(packs ? { packs } : {}),
+        ...(deps.settleConnections
+          ? { settle: (recipe, config, dish) => deps.settleConnections!(recipe, config, dish, packs) }
+          : {}) },
       describe: call => {
         const result = describe(call, admission);
         if (result.kind === 'resolved') {

@@ -141,7 +141,9 @@ export const openFilePreview = (
   const note = doc.createElement('p');
   note.textContent = target.record_id.startsWith('file:remote:')
     ? 'Temporary preview from your connected source. Import saves a separate copy of the download at that time.'
-    : 'Preview of this saved file.';
+    : target.record_id.startsWith('file:local:')
+      ? 'Preview of this file, read from its folder on your server.'
+      : 'Preview of this saved file.';
   const status = doc.createElement('p'); status.setAttribute('role', 'status');
   const error = doc.createElement('p'); error.setAttribute('role', 'alert'); error.hidden = true;
   const body = doc.createElement('section'); body.setAttribute('data-file-preview-body', '');
