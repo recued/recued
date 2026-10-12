@@ -91,6 +91,11 @@ const bundledOpStepRecipe = (
   output: { sidebar: [] },
 });
 
+/** D-320 3e — a bundled recipe names no connection, so each vendor-neutral step binds the
+ *  setting a run gives its family, filled from the pack's default when it runs. It bound
+ *  the composition's own connection name (`pipedrive1`), which no default or choice moves. */
+const RUN_CRM_SETTING = '{{config.crm}}';
+
 const stepById = (recipe: RecipeDefinition, id: string): Record<string, unknown> =>
   recipe.steps.find((step) => step.id === id) as unknown as Record<string, unknown>;
 
@@ -108,7 +113,7 @@ describe('resolveBundledPackRecipes third-party registry merge', () => {
     const recipe = res.recipes[0];
     const raw = stepById(recipe, 'deal__raw');
     expect(raw.ingredient).toBe('pipedrive-crm');
-    expect(raw.connection).toBe('pipedrive1');
+    expect(raw.connection).toBe(RUN_CRM_SETTING);
     expect(raw.input).toEqual({
       operation: 'deal.read',
       args: { deal_id: '5' },
@@ -159,7 +164,7 @@ describe('resolveBundledPackRecipes third-party registry merge', () => {
     const recipe = res.recipes[0];
     const raw = stepById(recipe, 'deal__raw');
     expect(raw.ingredient).toBe('pipedrive-crm');
-    expect(raw.connection).toBe('pipedrive1');
+    expect(raw.connection).toBe(RUN_CRM_SETTING);
     expect(raw.input).toEqual({
       operation: 'deal.search',
       args: {
@@ -200,7 +205,7 @@ describe('resolveBundledPackRecipes third-party registry merge', () => {
     expect(recipe.steps.map((step) => step.id)).toEqual(['deal__raw', 'deal']);
     const raw = stepById(recipe, 'deal__raw');
     expect(raw.ingredient).toBe('pipedrive-crm');
-    expect(raw.connection).toBe('pipedrive1');
+    expect(raw.connection).toBe(RUN_CRM_SETTING);
     expect(raw.input).toEqual({
       operation: 'deal.create',
       args: {

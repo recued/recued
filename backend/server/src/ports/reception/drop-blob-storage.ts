@@ -224,6 +224,11 @@ export const writeDropBlobStream = async (
   const HEAD_CAPTURE_BYTES = 16;
 
   const out = createWriteStream(tmpPath, { mode: 0o600 });
+  // The scratch file is opened in the background, and a refusal can come before
+  // the open lands: a first chunk over the cap, or a visitor gone at once. An
+  // unlink then finds nothing, and the open creates the file after it. The
+  // stream closes only once its open has run, so a refusal waits for that first.
+  const closed = new Promise<void>((resolve) => out.once('close', () => resolve()));
   let writeError: Error | null = null;
   let aborted = false;
   const cleanupTmp = async (): Promise<void> => {
@@ -276,6 +281,7 @@ export const writeDropBlobStream = async (
       });
     });
   } catch (err) {
+    await closed;
     await cleanupTmp();
     throw err;
   }

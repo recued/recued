@@ -784,6 +784,9 @@ export const composeChatOrchestrator = (
         enrolled: new Set(profiles.list().map(([name]) => name)),
         displayName: (name) => ex?.connectionStore?.get('api', name)?.display_name,
         ...(ex?.packManifestOf !== undefined ? { packManifestOf: ex.packManifestOf } : {}),
+        // D-320 ruling 20 — a vendor-neutral recipe's family, as the run picks for it.
+        profiles,
+        localManifestStore: ex?.localManifestStore,
       });
     },
     // D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound for the same

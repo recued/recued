@@ -58,6 +58,13 @@ import {
   type ServerBundleStore,
 } from '../server-bundle-store.js';
 import { createKeyManager, type KeyManager } from '../key-manager.js';
+import { createManagedOAuthProfileStore } from '../managed-oauth-profile-store.js';
+import { createManagedOAuthService, type ManagedOAuthService } from '../managed-oauth-service.js';
+import { managedOAuthRequiredScopes } from '@recued/contracts';
+import { listInstalledPackManifests } from '../pack-list-handler.js';
+import { decodeAuthFromStorage } from '../connection-handler.js';
+import { createManagedOAuthConsumers, type ManagedOAuthConsumers } from '../managed-oauth-consumers.js';
+import { createInstanceStore } from '../collections/instance-store.js';
 import { makeConnectionCredentialPersistFailureSink } from '../connection-credential-persist-failure.js';
 import { createVaultStateBus, type VaultStateBus } from '../vault-state-bus.js';
 import type { PairedInstancesStore } from '../paired-instances-store.js';
@@ -304,6 +311,9 @@ export interface ComposeAppContextOptions {
 }
 
 export interface AppContext extends LlmSubstrate {
+  /** D-322 — optional third-party OAuth; Recued Cloud is not a broker. */
+  managedOAuth?: ManagedOAuthService;
+  managedOAuthConsumers?: ManagedOAuthConsumers;
   /** D-137 — writes the RESULT half of a paired tool call when a held run
    *  settles, long after the turn that asked for it ended. The BOOT SITE
    *  publishes it into the execution refs bag, being the one place that holds
@@ -670,6 +680,8 @@ export const composeAppContext = (
     | ((fn: (connectionName: string) => void) => void)
     | undefined;
   let connectionStoreRef: ConnectionStoreSqlite | undefined;
+  let managedOAuth: ManagedOAuthService | undefined;
+  let managedOAuthConsumers: ManagedOAuthConsumers | undefined;
   let contractGrantStoreRef: ContractGrantStore | undefined;
   let connectionCatalogBindingStoreRef: ConnectionCatalogBindingStore | undefined;
   let contractStoreRef: ContractStore | undefined;
@@ -1044,6 +1056,20 @@ export const composeAppContext = (
     });
 
     connectionStoreRef = createConnectionStore(db);
+    // D-322 — one instance owns receipt claims and dispatch credentials.
+    const managedConnections = connectionStoreRef;
+    const managedKeys = keys;
+    if (managedKeys !== undefined) managedOAuth = createManagedOAuthService({
+      profiles: createManagedOAuthProfileStore(db, managedKeys.keyProvider('server-data')),
+      listConnections: () => managedConnections.list(),
+      clearGrantedScopes: (names) => managedConnections.clearGrantedScopes(names),
+      decodeAuth: (row) => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
+      requiredScopes: (vendor, baseUrl) => managedOAuthRequiredScopes(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
+    });
+    if (managedOAuth && managedKeys) managedOAuthConsumers = createManagedOAuthConsumers({
+      connections: managedConnections, instances: createInstanceStore({ db }), broker: managedOAuth,
+      decodeAuth: row => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
+    });
     // D-165/D-166 — load the spec-owned contract schema into `contract.schema.*`
     // rows at boot (idempotent). D-166 Slice 4d.1: RETAIN the handle (was
     // discarded) and expose it on AppContext so the 4d.4 catalog-gate resolver can
@@ -1387,6 +1413,7 @@ export const composeAppContext = (
             decodeAuthFromStorage,
             encodeAuthForStorage,
             keyProvider: fileConnKeyProvider,
+            ...(managedOAuth ? { managedOAuth } : {}),
             ...(auditLog
               ? {
                   onPersistFailure:
@@ -1712,6 +1739,8 @@ export const composeAppContext = (
     enrichmentCascadeRef,
     externalContextRegistryRef,
     connectionStoreRef,
+    ...(managedOAuth ? { managedOAuth } : {}),
+    ...(managedOAuthConsumers ? { managedOAuthConsumers } : {}),
     contractGrantStoreRef,
     connectionCatalogBindingStoreRef,
     contractStoreRef,

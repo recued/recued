@@ -349,6 +349,8 @@ export interface ConnectionStoreSqlite {
    *  LWW semantics live one layer up at the sync wire (P2.2); this
    *  store always honors the caller's `updated_at`. */
   upsert(input: ConnectionUpsert): ConnectionRow;
+  /** D-322 — consent changes a shared credential. Clear only its grant evidence. */
+  clearGrantedScopes(names: readonly string[]): void;
   /** Host-only automatic credential renewal. CAS against the credential and
    * material config read before refresh; no stale row replacement. */
   persistRefreshedAuth?(previous: ConnectionRow, auth_ciphertext: string, updated_at: number,
@@ -946,6 +948,12 @@ export const createConnectionStore = (
     return row ? dbRowToConnectionRow(row) : null;
   };
   return {
+    clearGrantedScopes(names) {
+      const clear = db.prepare('UPDATE connections SET granted_scopes_json = NULL WHERE kind = ? AND name = ?');
+      db.transaction(() => {
+        for (const name of names) clear.run('api', name);
+      }).immediate();
+    },
     upsert(input) {
       mutatePreapprovalConnection(db, input.kind, input.name,
         () => readConnection(input.kind, input.name), () => upsertStmt.run(upsertParams(input)));

@@ -2649,7 +2649,11 @@ export type ServerRpcRegistry = {
                 | 'not_found'
                 | 'validator_rejected'
                 | 'fetch_error'
-                | 'bundle_pack_required';
+                | 'bundle_pack_required'
+                /** D-320 ruling 19 — the recipe names a newer Recued than this
+                 *  server (`metadata.min_recued_version`); the message says
+                 *  which, and to update Recued. */
+                | 'version_mismatch';
               message: string;
               /** Present for `bundle_pack_required`; derived from the already
                *  validated `<publisher>/<pack_slug>` recipe_bundle key. */
@@ -4556,6 +4560,12 @@ export type ServerRpcRegistry = {
     }
   >;
 
+  /** D-322 — owner-only broker profiles and verified OAuth sessions. Reserved from MCP. */
+  'collection.connection.managedOAuth': RpcMethodSpec<
+    import('../managed-oauth.js').ManagedOAuthRequest,
+    import('../managed-oauth.js').ManagedOAuthResponse
+  >;
+
   /** D-165 slice 3 — vendor OAuth result-claim. The owner-bound partner
    *  to `startVendorOAuth` + the `/oauth/complete` callback. Once the
    *  user-server completes the code exchange it stashes the credential in
@@ -6282,6 +6292,12 @@ export type ServerRpcRegistry = {
     },
     { ok: true; account_key_prefix: string }
   >;
+  /** D-322: borrow a saved managed API connection; no OAuth code or vendor token. */
+  'collection.mail.enrollManagedOAuth': RpcMethodSpec<
+    { provider: 'gmail' | 'graph'; account_slug: string; connection_name: string;
+      send_enabled?: boolean; mutation_enabled?: boolean },
+    { slug: string; account_email: string; permission_state: 'unknown' | 'reported' }
+  >;
 
   // D-177 N.12 — `collection.mail.send` is NOT a wire rpc method. Outbound
   // mail is a side-effecting action gated at the one enforcement boundary
@@ -6553,6 +6569,10 @@ export type ServerRpcRegistry = {
       calendar_filter?: string[];
     },
     { slug: string; caps: CalendarCollectionCaps }
+  >;
+  'collection.calendar.enrollManagedOAuth': RpcMethodSpec<
+    { adapter: 'gcal' | 'graph'; slug: string; connection_name: string; write_enabled?: boolean },
+    { slug: string; caps: CalendarCollectionCaps; permission_state: 'unknown' | 'reported' }
   >;
   /** Microsoft-only — adopt the calendar lane onto a `graph` grant the MAIL lane
    *  already holds, with no second consent.
@@ -7557,6 +7577,17 @@ export type ServerRpcRegistry = {
     import('../reception-record.js').ReceptionRecordListInput | void,
     import('../reception-record.js').ReceptionRecordListResult
   >;
+  'reception.signoff.quotes': RpcMethodSpec<void, import('../quote-signoff.js').QuoteSignoffQuotesResult>;
+  'reception.signoff.prepare': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffPrepareInput,
+    import('../quote-signoff.js').QuoteSignoffPrepareResult>;
+  'reception.signoff.prepare_addition': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffAdditionPrepareInput,
+    import('../quote-signoff.js').QuoteSignoffPrepareResult>;
+  'reception.signoff.publish': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffPublishInput,
+    import('../quote-signoff.js').QuoteSignoffPublishResult>;
+  'reception.signoff.list': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffListInput | void,
+    import('../quote-signoff.js').QuoteSignoffListResult>;
+  'reception.signoff.cancel': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffCancelInput,
+    import('../quote-signoff.js').QuoteSignoffSummary>;
   // D-210 Appendix B — mint an on-the-go reschedule link for one booking.
   'reception.manage.mint': RpcMethodSpec<
     import('../reception-manage.js').ReceptionManageMintInput,
@@ -8292,6 +8323,7 @@ export const SERVER_RPC_METHODS = [
   'collection.connection.completeVendorOAuth',
   // D-148 § A.12 / D-165 enroll-host #1 — vendor OAuth-start.
   'collection.connection.startVendorOAuth',
+  'collection.connection.managedOAuth',
   // D-165 slice 3 — owner-bound vendor OAuth result-claim.
   'collection.connection.takeVendorOAuthResult',
   // D-139 P2 — Connection-page UX rpc surfaces.
@@ -8513,6 +8545,7 @@ export const SERVER_RPC_METHODS = [
   'collection.runRetention',
   'collection.listEndpoints',
   'collection.mail.enrollOAuth',
+  'collection.mail.enrollManagedOAuth',
   // D-177 N.12 — `collection.mail.send` is DELIBERATELY ABSENT from the
   // wire method set: outbound mail is a side-effecting action, and every
   // action is gated at the ONE enforcement boundary (the gateway, via the
@@ -8558,6 +8591,7 @@ export const SERVER_RPC_METHODS = [
   'collection.listInstances',
   // D-117 Phase 7 — calendar enroll family.
   'collection.calendar.enrollOAuth',
+  'collection.calendar.enrollManagedOAuth',
   // ⚠ Adding a method to the `ServerRpcRegistry` TYPE above is not enough — this
   // runtime list is a second, independent source of truth, and `ws-server.ts`
   // THROWS at wire time for a handler whose method is missing here. A type-only
@@ -8698,6 +8732,12 @@ export const SERVER_RPC_METHODS = [
   // D-210 step 2a — the record read surface. Admin-only like every `reception.` method; the
   // reserved prefix keeps it off MCP.
   'reception.record.list',
+  'reception.signoff.quotes',
+  'reception.signoff.prepare',
+  'reception.signoff.prepare_addition',
+  'reception.signoff.publish',
+  'reception.signoff.list',
+  'reception.signoff.cancel',
   // D-210 Appendix B — mint an on-the-go reschedule link. Admin-only; reserved prefix.
   'reception.manage.mint',
   'reception.lookup.revoke',

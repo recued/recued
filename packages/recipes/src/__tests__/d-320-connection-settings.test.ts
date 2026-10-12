@@ -31,20 +31,23 @@ const issues = (r: Record<string, unknown>) =>
     .map((issue) => [issue.severity, issue.code, issue.path]);
 
 describe('D-320 slice 3d — a recipe names no API connection', () => {
-  it('flags an API connection setting and each step naming it, as advice', () => {
+  it('warns on an API connection setting and each step naming it', () => {
     const r = recipe({ hubspot: API }, [read('{{config.hubspot}}')], [{ ...read('{{config.hubspot}}'), id: 'pre' }]);
     expect(issues(r)).toEqual([
-      ['info', 'api_connection_setting', 'variables.hubspot'],
-      ['info', 'step_names_connection', 'prefetch_steps[0].connection'],
-      ['info', 'step_names_connection', 'steps[0].connection'],
+      ['warn', 'api_connection_setting', 'variables.hubspot'],
+      ['warn', 'step_names_connection', 'prefetch_steps[0].connection'],
+      ['warn', 'step_names_connection', 'steps[0].connection'],
     ]);
-    // Advice: the recipe still installs, and passes the pack audits (which allow no
-    // warning), as the 1,927 shipped ones must until 3e.
-    expect(validateRecipe(r).issues.filter((issue) => issue.severity !== 'info')).toEqual([]);
+    // ⛔ A warning, never an error (3e): every run checks its own copy, which gives each
+    // step that names no connection an API setting (3a), and refuses on an error. So
+    // the recipe still validates, installs and runs; the pack audits, which allow no
+    // warning, keep it out of the shipped recipes.
+    expect(validateRecipe(r).valid).toBe(true);
+    expect(validateRecipe(r).issues.filter((issue) => issue.severity === 'error')).toEqual([]);
   });
 
   it('flags a setting no step names', () => {
-    expect(issues(recipe({ crm: API }, [read()]))).toEqual([['info', 'api_connection_setting', 'variables.crm']]);
+    expect(issues(recipe({ crm: API }, [read()]))).toEqual([['warn', 'api_connection_setting', 'variables.crm']]);
   });
 
   it('leaves a recipe that names no connection', () => {
@@ -54,7 +57,7 @@ describe('D-320 slice 3d — a recipe names no API connection', () => {
   it('leaves a step naming a notification setting', () => {
     const notify = { label: 'Send from', type: 'connection', connection_kind: 'notification', default: '' };
     expect(issues(recipe({ hubspot: API, sender: notify }, [read('{{config.sender}}')])))
-      .toEqual([['info', 'api_connection_setting', 'variables.hubspot']]);
+      .toEqual([['warn', 'api_connection_setting', 'variables.hubspot']]);
   });
 
   it("the validator's connection errors say to leave `connection` out, not to declare a setting", () => {

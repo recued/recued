@@ -195,3 +195,63 @@ describe('D-320 slice 2d — the composed chat wire offers the choice', () => {
     expect(JSON.stringify(door?.arg_schema)).not.toMatch(/hubspot-app|hubspot-key|Sales app|Service Key/);
   });
 });
+
+/** D-320 ruling 20 — a vendor-neutral recipe's FAMILY is offered too, through the
+ *  same wire: its `core.crm.*` step names no pack, and the choices list the `crm`
+ *  family with the connections the run's pick rule finds can serve it (the profiles'
+ *  catalogs, here HubSpot's), not a pack's slot. */
+describe('D-320 ruling 20 — the composed chat wire offers a vendor-neutral family', () => {
+  const ANY_DEAL = {
+    recipe_id: 'read-any-deal',
+    version: 1,
+    metadata: { name: 'Any deal', description: 'One vendor-neutral search.', author: 'd320', tags: [] },
+    chat_exposed: true,
+    variables: {},
+    prefetch_steps: [],
+    steps: [{ id: 'deals', op: 'core.crm.deal.search', args: {} }],
+  } as unknown as RecipeDefinition;
+
+  it("names the family's connections in the owner's catalog", async () => {
+    const { compose: composeChat, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
+    composeChat({
+      db: makeDb(),
+      keys: undefined,
+      eventBus: eventBus(),
+      auditLog: undefined,
+      serverInstanceId: 'server-test',
+      recipeStore: {
+        ids: vi.fn(() => [ANY_DEAL.recipe_id]),
+        get: vi.fn((id: string) => (id === ANY_DEAL.recipe_id ? ANY_DEAL : null)),
+        getStored: vi.fn(() => ({ publisher_id: 'd320', source: 'inline' })),
+        listStored: vi.fn(() => []),
+      } as never,
+      llmConfig: undefined,
+      getLlmConfig: () => undefined,
+      llmQuota: {} as never,
+      llmAdapterRegistry: {} as never,
+      emptyTabProbe: vi.fn(async () => new Set<WebChatTab>()),
+      pairedInstances: undefined,
+      ...inertLateGetters(),
+      getExecuteDeps: vi.fn(() => ({
+        contractScan,
+        connectionOperationProfiles: {
+          list: () => [KEY, APP].map((name) => [name, { catalog_slug: CATALOG, allowed_operations: ['deal.search'] }]),
+        },
+        connectionStore: { get: (_kind: string, name: string) => ({ display_name: ALIAS[name] }) },
+        opAdmissionGate: {
+          isOwnerGoverned: () => true,
+          isOwnerRecipeGranted: () => true,
+          isOpGranted: () => true,
+        },
+      })) as never,
+      getExecutorConfig: vi.fn(() => ({
+        manifests: new Map([[CATALOG, { ...CATALOG_MANIFEST, operations: { 'deal.search': { risk_tier: 'read' } } }]]),
+      })) as never,
+    });
+    const deps = createChatOrchestratorMock.mock.calls.at(-1)![0] as unknown as {
+      tier2OwnerCatalog: (source?: unknown) => ReadonlyArray<ToolEntry> | null;
+    };
+    const owner = deps.tier2OwnerCatalog(OWNER_SOURCE)?.find((entry) => entry.name === 'd320/read-any-deal');
+    expect(connectionsArg(owner)).toMatchObject({ properties: { crm: { enum: [APP, KEY] } } });
+  });
+});

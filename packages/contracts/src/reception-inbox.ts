@@ -91,6 +91,7 @@ export type ReceptionInboxSourceKind =
   | 'intake_form'
   | 'drop_link'
   | 'approval_link'
+  | 'quote_signoff'
   | 'status_link'
   | 'vendor';
 

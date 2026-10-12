@@ -233,13 +233,19 @@ describe('D-167 P4 — engine per-run PII ledger lifecycle', () => {
     // uncooperative test ingredient settles later; D-259 keeps the run pending
     // until that boundary is clean, then the post-call abort check halts before
     // `pii-restore`. The caller-owned ledger remains the caller's to dispose.
+    // ⚠ The slow step's clock starts when the step starts. It used to start
+    // before `executeRecipe`, while the budget's starts inside it, so a run whose
+    // setup took over 50 ms under a sweep's load let the step finish first and
+    // the run succeed (2026-10-11). Now the budget always expires first: it
+    // started before the step did, and its 100 ms is shorter than the step's 300.
     let gateSettled = false;
-    const gate = new Promise<void>((resolve) => {
+    let gate: Promise<void> | undefined;
+    const slowStepRuns = (): Promise<void> => (gate ??= new Promise<void>((resolve) => {
       setTimeout(() => {
         gateSettled = true;
         resolve();
-      }, 75);
-    });
+      }, 300);
+    }));
     let disposeCount = 0;
     const base = createPiiLedgerStore();
     const handles: string[] = [];
@@ -255,7 +261,7 @@ describe('D-167 P4 — engine per-run PII ledger lifecycle', () => {
       recipe_id: 'pii-budget-timeout',
       version: 1,
       ttl: 300,
-      metadata: { name: 'pii budget timeout', description: 'gated', author: 'test', supported_platforms: [], budget_ms: 25 },
+      metadata: { name: 'pii budget timeout', description: 'gated', author: 'test', supported_platforms: [], budget_ms: 100 },
       variables: {},
       prefetch_steps: [],
       steps: [
@@ -266,7 +272,7 @@ describe('D-167 P4 — engine per-run PII ledger lifecycle', () => {
       output: { sidebar: [] },
     };
     const ingredientExecutor: IngredientExecutor = async (slug) => {
-      if (slug === 'slow-step') { await gate; return {}; }
+      if (slug === 'slow-step') { await slowStepRuns(); return {}; }
       return null;
     };
     const ctx: ExecutionContext = {
@@ -354,19 +360,25 @@ describe('D-167 P4 — engine-MINTED store IS disposed (ownership guard does not
 
   it('budget-TIMEOUT path: awaits inner settlement, then disposes the minted store exactly once', async () => {
     mintHooks.trackMinted = true;
+    // ⚠ The slow step's clock starts when the step starts. It used to start
+    // before `executeRecipe`, while the budget's starts inside it, so a run whose
+    // setup took over 50 ms under a sweep's load let the step finish first and
+    // the run succeed (2026-10-11). Now the budget always expires first: it
+    // started before the step did, and its 100 ms is shorter than the step's 300.
     let gateSettled = false;
-    const gate = new Promise<void>((resolve) => {
+    let gate: Promise<void> | undefined;
+    const slowStepRuns = (): Promise<void> => (gate ??= new Promise<void>((resolve) => {
       setTimeout(() => {
         gateSettled = true;
         resolve();
-      }, 75);
-    });
+      }, 300);
+    }));
 
     const recipe: RecipeDefinition = {
       recipe_id: 'pii-budget-timeout-minted',
       version: 1,
       ttl: 300,
-      metadata: { name: 'pii budget timeout minted', description: 'gated', author: 'test', supported_platforms: [], budget_ms: 25 },
+      metadata: { name: 'pii budget timeout minted', description: 'gated', author: 'test', supported_platforms: [], budget_ms: 100 },
       variables: {},
       prefetch_steps: [],
       steps: [
@@ -377,7 +389,7 @@ describe('D-167 P4 — engine-MINTED store IS disposed (ownership guard does not
       output: { sidebar: [] },
     };
     const ingredientExecutor: IngredientExecutor = async (slug) => {
-      if (slug === 'slow-step') { await gate; return {}; }
+      if (slug === 'slow-step') { await slowStepRuns(); return {}; }
       return null;
     };
     const ctx: ExecutionContext = {

@@ -81,7 +81,7 @@ describe('D-249 — kernel op scope classification', () => {
       .filter((r) => !admitted(r.scope))
       .map((r) => `${r.op} => ${String(r.scope)}`)
       .sort();
-    // ⛔ THE TWO DELIBERATE EXCLUSIONS, named so each is a decision on the record
+    // ⛔ THE DELIBERATE EXCLUSIONS, named so each is a decision on the record
     // rather than a silence:
     //
     //  - the LINK family — a link spans two records in two collections and this
@@ -94,12 +94,26 @@ describe('D-249 — kernel op scope classification', () => {
     //    booking's details out; scoping it to `data.booking` would understate the
     //    send. Same two-collection problem, same answer: it stays denied at a
     //    fenced door until the fence can say both.
+    //  - `quote-signoff-release` — writes a quote, task and invoice together.
+    //    Neither `data.task` nor a scope-axis abstention represents all three.
+    //    Keep it denied at collection-fenced doors until the fence can express
+    //    the whole release; its owner grant and explicit review still apply.
     expect(stuck).toEqual([
       'core.mail.notify-booking-visitor => data.notify',
       'core.memory.link.create => data.link',
       'core.memory.link.delete => data.link',
       'core.memory.link.list => data.link',
+      'core.work-entity.quote-signoff.release => data.quote',
     ]);
+  });
+
+  it('keeps quote, task and invoice release denied behind a collection fence', () => {
+    const release = rows({ kind: 'task' }).find((r) => r.op === 'core.work-entity.quote-signoff.release');
+    expect(release).toBeDefined();
+    expect(release!.scope).toBe('data.quote');
+    const tasksOnly = scopeRestrictionsFromReadableCollections(new Set(['task']));
+    expect(evaluateScopeRestrictions(tasksOnly, release!.scope!).verdict).toBe('deny');
+    expect(evaluateScopeRestrictions(MAXIMAL_FENCE, release!.scope!).verdict).toBe('deny');
   });
 
   it('⛔ and WITHOUT its collection arg, an arg-scoped op still denies (fail closed)', () => {

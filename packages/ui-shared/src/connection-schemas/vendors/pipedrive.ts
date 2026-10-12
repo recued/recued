@@ -18,7 +18,7 @@ const PIPEDRIVE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `pipedrive`).',
+    help: 'A short lower-case name for this connection, such as `pipedrive`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 'pipedrive',
   },
   {

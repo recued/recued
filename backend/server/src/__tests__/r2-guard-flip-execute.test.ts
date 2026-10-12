@@ -4,8 +4,11 @@
  *  The `r2-dispatch-resolve-then-execute-probe` test fed a PRE-resolved recipe inline;
  *  this proves the wiring: `handleExecute` given a *canonical* recipe (op-step + a
  *  `type:'connection'` variable) RESOLVES it at dispatch from the connection the run
- *  supplies in `config`, then runs it through the real gate + audit. And the fail-closed
- *  control: the same recipe WITHOUT a supplied connection is still rejected.
+ *  supplies in `config`, then runs it through the real gate + audit. And the control:
+ *  the same recipe WITHOUT a supplied connection is not bound to a guess. Since D-320
+ *  ruling 20 (2026-10-11) its search reads every connection that serves it, which here
+ *  is one; a step on one record with none supplied still fails closed for a run that
+ *  has no one to ask (`pick-resolution-seal.test.ts`).
  */
 
 import type {
@@ -171,10 +174,12 @@ describe('R2 build step 2 — execute-handler guard-flip (canonical recipe resol
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('fail-closed control: the same canonical recipe with NO supplied connection is rejected', async () => {
-    const { deps } = setup();
-    await expect(
-      handleExecute(deps, { recipe: canonicalWithConn(), trigger_source: 'manual', config: {} }),
-    ).rejects.toThrow(/needs a connection[\s\S]*no one to ask which/i);
+  it('control: with NO supplied connection the search reads every connection that serves it (D-320 ruling 20)', async () => {
+    const { deps, log } = setup();
+    const res = await handleExecute(deps, { recipe: canonicalWithConn(), trigger_source: 'manual', config: {} });
+    expect(res.success).toBe(true);
+    const rows = await gatewayRows(log);
+    expect(rows.map((row) => row.target)).toEqual([CONNECTION]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

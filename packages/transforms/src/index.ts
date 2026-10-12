@@ -34,7 +34,7 @@ export {
   icsClock, parseIcsLine, readIcsDateTime, readIcsDuration, unescapeIcsText,
   type IcsClock, type IcsZone, type IcsContentLine,
 } from './ics.js';
-import { round, clamp, to_number, math, weighted_score } from './numeric.js';
+import { round, clamp, to_number, math, decimal_math, weighted_score } from './numeric.js';
 import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date, event_when } from './date.js';
 import { compare, coalesce, switch_, all, any, count, default_, defaults_, not_, ternary, pluralize } from './logic.js';
 import { hash_replace, hash_restore, redact } from './privacy.js';
@@ -58,6 +58,7 @@ export type { TransformFn, TransformContext, EnrichmentRowSnapshot } from './typ
 export type { ReduceOp, MathOp, DateUnit, SortDirection, SortField, TableColumn,
   ChecklistItem, SummaryField } from './types.js';
 export { evaluateOp, getField } from './evaluate.js';
+export { checklistUnknownWhenMissing } from './display.js';
 export {
   TRANSFORM_SCHEMAS,
   getTransformSchema,
@@ -169,7 +170,7 @@ export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   ['contains_any', contains_any], ['concat', concat], ['replace', replace], ['template', template],
   ['truncate', truncate], ['strip_html', strip_html], ['encode_base64', encode_base64], ['decode_base64', decode_base64],
   // Numeric
-  ['round', round], ['clamp', clamp], ['to_number', to_number], ['math', math], ['weighted_score', weighted_score],
+  ['round', round], ['clamp', clamp], ['to_number', to_number], ['math', math], ['decimal_math', decimal_math], ['weighted_score', weighted_score],
   // Date
   ['date_diff', date_diff], ['date_format', date_format], ['date_add', date_add],
   ['date_parse', date_parse], ['is_past', is_past], ['is_future', is_future], ['date_period', date_period],

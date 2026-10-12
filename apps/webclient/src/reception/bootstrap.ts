@@ -120,6 +120,8 @@ import {
 import {
   mountReceptionRecordsSection,
 } from './records-section.js';
+import { mountQuoteSignoffPanel } from './quote-signoff-panel.js';
+import type { QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
 import {
   mountReceptionInboxPanel,
 } from './inbox-panel.js';
@@ -168,6 +170,8 @@ export interface BootstrapReceptionRouteOptions
   /** D-269 step 1 — the server's resolved IANA zone, forwarded down to the run
    *  modal's scheduled-activation stamp. Absent ⇒ this browser's, as before. */
   serverTimeZone?: () => string | undefined;
+  /** Installed Invoice Book workflow, using the shell's normal run caller. */
+  signoffPayment?: QuoteSignoffPaymentOptions;
   /** Root element where the route chrome (header + tab bar + content) is
    *  appended. The caller chooses the root's width / height / position
    *  (in the PWA this is the app shell's content root). */
@@ -539,6 +543,10 @@ export const bootstrapReceptionRoute = (
         ? { enablePendingAsks: opts.enablePendingAsks }
         : {}),
     }) satisfies ReceptionRoute;
+  } else if (section === 'signoffs') {
+    mount = mountQuoteSignoffPanel({ host: content, conn: opts.conn, document: doc,
+      ...(opts.signoffPayment ? { payment: opts.signoffPayment } : {}),
+    });
   } else if (section === 'records') {
     // D-210 §4c — the IMMUTABLE reception layers: Requests (sealed, redacted)
     // + Responses (accepted `form_response`, moved from `#data` on the owner's

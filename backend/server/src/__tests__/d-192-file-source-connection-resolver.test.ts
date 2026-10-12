@@ -83,6 +83,16 @@ const dropboxOAuth = (currentAccessToken?: string, expiresAt?: number): Connecti
 });
 
 describe('createFileSourceConnectionResolver — Dropbox oauth2_refresh', () => {
+  it('refuses managed OAuth when its broker port is unavailable, before anonymous file traffic', async () => {
+    const auth: ConnectionAuth = { type: 'managed_oauth', broker_profile_id: 'cloud', integration_id: 'drive', connection_id: 'remote',
+      target_origin: 'https://www.googleapis.com', requested_scopes: [] };
+    const store = makeStore([makeRow('google', auth, { vendor: 'google' })]);
+    const fetchImpl = tokenFetch('must-not-refresh');
+    const resolve = createFileSourceConnectionResolver({ connectionStore: store, decodeAuthFromStorage, encodeAuthForStorage,
+      keyProvider: undefined, fetchImpl });
+    await expect(resolve('google')).rejects.toThrow('Managed OAuth is unavailable');
+    expect(fetchImpl).not.toHaveBeenCalled(); expect(store.upserts).toHaveLength(0);
+  });
   it('refreshes + persists + returns a fresh access token when current_access_token is absent', async () => {
     const store = makeStore([
       makeRow('dropbox', dropboxOAuth(/* no current_access_token */), { vendor: 'dropbox' }),

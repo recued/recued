@@ -273,7 +273,7 @@ export const renderApprovalLinkHtml = (input: ApprovalLinkRenderInput): string =
 <div>
 <h1 class="rcp-name">Response requested — ${htmlEscape(input.display_name)}</h1>
 <p class="rcp-tagline">${htmlEscape(input.prompt)}</p>
-${input.context_summary.length > 0 ? `<p class="rcp-context">${htmlEscape(input.context_summary)}</p>` : ''}
+${input.context_summary.length > 0 ? `<p class="rcp-context" style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(input.context_summary)}</p>` : ''}
 <p class="rcp-meta">${htmlEscape(input.expiry_display)}</p>
 </div>
 </div>

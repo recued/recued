@@ -316,6 +316,17 @@ const makeFakeElement = (tag: string): FakeElement => {
       listeners[evt]?.delete(fn);
     },
     contains: (): boolean => true,
+    // D-322 mounts its editor into an attribute-addressed descendant. The fake
+    // stores innerHTML as text, so only explicitly created children can match.
+    querySelector: ((selector: string): FakeElement | null => {
+      const attr = selector.match(/^\[([\w-]+)\]$/)?.[1];
+      if (attr === undefined) return null;
+      for (const child of childList) {
+        const found = findChildByAttr(child, attr);
+        if (found !== null) return found;
+      }
+      return null;
+    }) as HTMLElement['querySelector'],
     setAttribute: (name: string, value: string): void => {
       attrs.set(name, value);
     },

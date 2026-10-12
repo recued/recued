@@ -26,7 +26,7 @@ import {
 } from '@recued/ui-shared';
 
 import { classifyRpcError, humanizeRpcError } from '../shell/rpc-error-copy.js';
-import { serializeShellRoute } from '../shell/route.js';
+import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
 
 export type PackConnectionsView = RpcResponse<ServerRpcRegistry, 'packs.connections.list'>;
 type PackConnectionSlot = PackConnectionsView['slots'][number];
@@ -370,7 +370,7 @@ export const createPackConnectionsController = (
     const setUpLink = (parent: HTMLElement): void => {
       if (slot.vendor === undefined) return;
       const link = el(parent, 'a', 'rx-link', COPY.set_up_new);
-      link.setAttribute('href', serializeShellRoute('connections', 'others', 'enroll', slot.vendor));
+      link.setAttribute('href', connectionsEnrollAddress(slot.vendor, { slug: packSlug, slot: slot.slot }).hash);
       link.setAttribute(PACK_CONNECTIONS_SET_UP_ATTR, slot.vendor);
     };
     if (slot.candidates.length === 0) {

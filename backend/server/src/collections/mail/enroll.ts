@@ -106,6 +106,7 @@ const imapPasswordKey = (slug: string): string => `imap.${slug}.password`;
 const imapSmtpPasswordKey = (slug: string): string => `imap.${slug}.smtp_password`;
 
 export interface MailEnrollDeps {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   /** Account-namespace reader / writer. Used to persist OAuth tokens
    *  (gmail / graph) and IMAP passwords (imap). Composition root wraps
@@ -140,6 +141,48 @@ export interface MailEnrollDeps {
   draftCapable?: (slug: string) => boolean | undefined;
   now?: () => number;
 }
+
+/** Attach a broker-backed API account without exchanging or copying vendor tokens. */
+export const handleMailEnrollManagedOAuth = async (deps: MailEnrollDeps, args: {
+  provider?: unknown; account_slug?: unknown; connection_name?: unknown;
+  send_enabled?: unknown; mutation_enabled?: unknown;
+}): Promise<{ slug: string; account_email: string; permission_state: 'unknown' | 'reported' }> => {
+  const provider = requireOAuthAdapter(args.provider);
+  const slug = requireSlug(args.account_slug);
+  const name = requireString(args.connection_name, 'connection_name');
+  for (const key of ['send_enabled', 'mutation_enabled'] as const) {
+    if (args[key] !== undefined && typeof args[key] !== 'boolean') throw new RpcError('bad_request', `${key} must be a boolean`);
+  }
+  if (!deps.managedOAuth) throw new RpcError('not_configured', 'Managed OAuth is unavailable on this server.');
+  if (deps.instances.get('mail', slug)) throw new RpcError('conflict', `Mailbox '${slug}' already exists. Choose another name.`);
+  const transport = await deps.managedOAuth.resolve(provider, name);
+  const response = await transport.fetch(provider === 'gmail'
+    ? 'https://gmail.googleapis.com/gmail/v1/users/me/profile'
+    : 'https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName', { method: 'GET' });
+  if (!response.ok) throw new RpcError('probe_failed', `The managed mailbox probe returned HTTP ${response.status}. Check the account and its permissions.`, 422);
+  let value: unknown;
+  try { value = await response.json(); }
+  catch { throw new RpcError('probe_failed', 'The provider returned an invalid mailbox identity.', 422); }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RpcError('probe_failed', 'The provider did not identify this mailbox.', 422);
+  }
+  const body = value as Record<string, unknown>;
+  const email = provider === 'gmail' ? body.emailAddress : body.mail || body.userPrincipalName;
+  if (typeof email !== 'string' || !email.includes('@')) throw new RpcError('probe_failed', 'The provider did not identify this mailbox.', 422);
+  await transport.assertCurrent();
+  if (deps.instances.get('mail', slug)) throw new RpcError('conflict', `Mailbox '${slug}' was connected while the probe was running.`);
+  const stored = deps.instances.upsert({ platform: 'mail', slug, adapter_type: provider,
+    // Colon cannot appear in a user account slug, keeping direct grant/cursor
+    // keys disjoint even if an owner names an account 'managed-mail-work'.
+    config: { account_slug: `managed-mail:${slug}`, account_email: email, managed_oauth: transport.binding,
+      managed_send_enabled: args.send_enabled === true, managed_mutation_enabled: args.mutation_enabled === true },
+    caps: PLACEHOLDER_MAIL_CAPS, auth_state: 'healthy', last_synced_at: null });
+  try { await deps.onEnrolled?.(toRow(provider, stored.auth_state, slug, null)); }
+  catch {
+    throw new RpcError('adapter_start_failed', 'The mailbox was saved, but its mirror could not start. Use Resync to try again.', 500);
+  }
+  return { slug, account_email: email, permission_state: transport.grantedScopes === null ? 'unknown' : 'reported' };
+};
 
 // ────────────────────────────────────────────────────────────────
 // Input validators
@@ -486,7 +529,8 @@ export const handleMailEnrollOAuth = async (
   // broken.
   const sharesGrantWithCalendar =
     adapter === 'graph'
-    && deps.instances.get('calendar', slug)?.adapter_type === 'graph';
+    && deps.instances.get('calendar', slug)?.adapter_type === 'graph'
+    && deps.instances.get('calendar', slug)?.config.managed_oauth === undefined;
   const snapshot: GraphGrantSnapshot | null = sharesGrantWithCalendar
     ? await snapshotGraphGrant(deps.accountStore, slug)
     : null;
@@ -690,8 +734,11 @@ export const handleMailEnrollOAuth = async (
  *  resolver needs `send_capable` + `account_email` surfaced
  *  side-by-side without a second rpc round trip. */
 export interface MailInstanceRow extends CollectionInstanceRow {
-  /** True iff the underlying provider is configured to send. For OAuth
-   *  rows: granted scopes contain the provider-specific send scope.
+  managed_connection_name?: string;
+  permission_state?: 'unknown';
+  /** True iff the underlying provider is configured to send. For direct OAuth
+   *  rows: granted scopes contain the provider-specific send scope. Managed
+   *  rows use the owner's send switch; vendor grants may still be unknown.
    *  For IMAP rows: enrollment supplied an SMTP block. */
   send_capable: boolean;
   /** Canonical address of the mail account. Populated on enroll
@@ -715,6 +762,7 @@ const computeSendCapable = async (
   slug: string,
   config: Record<string, unknown>,
 ): Promise<boolean> => {
+  if (config.managed_oauth !== undefined) return config.managed_send_enabled === true;
   if (adapter === 'imap') {
     return Boolean(config.smtp);
   }
@@ -763,6 +811,10 @@ export const handleMailList = async (
       send_capable,
       draft_capable: deps.draftCapable?.(r.slug) ?? false,
       account_email: accountEmailFromConfig(r.config),
+      ...(r.config.managed_oauth !== undefined ? {
+        managed_connection_name: (r.config.managed_oauth as { connection_name: string }).connection_name,
+        permission_state: 'unknown' as const,
+      } : {}),
     });
   }
   return { instances: out };
@@ -799,6 +851,14 @@ export const handleMailDelete = async (
       await deps.accountStore.delete(imapPasswordKey(slug));
       await deps.accountStore.delete(imapSmtpPasswordKey(slug));
     }
+  } else if (existing.config.managed_oauth !== undefined) {
+    // Only this lane's sync cursors are local. The saved API account and the other lane survive removal.
+    const prefix = `${existing.adapter_type}.managed-mail:${slug}.`;
+    if (deps.accountStore.getAll) {
+      for (const key of Object.keys(await deps.accountStore.getAll())) {
+        if (key.startsWith(prefix)) await deps.accountStore.delete(key);
+      }
+    }
   } else if (existing.adapter_type === 'gmail' || existing.adapter_type === 'graph') {
     // ⚠ A `graph` grant is SHARED with the calendar lane at the same slug —
     // Microsoft's mail and calendar adapters are both named `graph`, so both
@@ -813,7 +873,8 @@ export const handleMailDelete = async (
     // prefix, so nothing is shared to strand.
     const sharedWithCalendar =
       existing.adapter_type === 'graph'
-      && deps.instances.get('calendar', slug)?.adapter_type === 'graph';
+      && deps.instances.get('calendar', slug)?.adapter_type === 'graph'
+      && deps.instances.get('calendar', slug)?.config.managed_oauth === undefined;
     if (!sharedWithCalendar) {
       const prefix = oauthKeyPrefix(existing.adapter_type as OAuthProvider, slug);
       await deps.accountStore.delete(`${prefix}.access_token`);

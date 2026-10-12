@@ -10,17 +10,14 @@
  *  Render model mirrors the enroll panel: `host.innerHTML = render(...)`,
  *  a `createActionDispatcher` for `data-action` clicks, and a sibling
  *  delegated `input` / `change` listener for `data-acct-field` controls.
- *  These forms have NO conditional field visibility, so every field edit
- *  is SILENT (focus-preserving) — only the Submit button's disabled
- *  attribute is synced imperatively, and the submit handler re-validates
- *  before firing the rpc (the visual state is never load-bearing).
+ *  Ordinary field edits preserve focus and update only Submit's readiness.
+ *  Switching direct/managed OAuth replaces the credential fields and clears
+ *  secrets and write switches; submission always revalidates the selection.
  *
- *  ── Slice 1 (non-OAuth enrollment) ──────────────────────────────────
- *  Mail → IMAP (`collection.mail.enrollImap`); Files → fs
- *  (`collection.file.enroll`; S3 left for Data → Files, 2026-10-10). Calendar lists + manages existing
- *  accounts but has no enrollable provider yet (OAuth + CalDAV land
- *  later). Each lane's actions degrade honestly when its caller seam is
- *  absent. */
+ *  Mail supports IMAP and direct/managed Google or Microsoft OAuth.
+ *  Calendar supports CalDAV and direct/managed OAuth. Files enroll local fs
+ *  here; S3 setup lives under Data → Files. Each lane reports missing server
+ *  capabilities when its caller seam is absent. */
 
 import {
   buildMailAuthorizeUrl,
@@ -32,9 +29,11 @@ import {
   type OAuthAppConfigSnapshot,
   type OAuthAppIssuer,
   type SetOAuthAppConfigArgs,
+  type ConnectionView,
 } from '@recued/contracts';
 import {
   canSubmitAccountForm,
+  managedConnectionsForAccount,
   renderAccountsPanel,
   findAccountLane,
   findAccountProvider,
@@ -82,6 +81,7 @@ export interface MailAccountListRow {
   last_synced_at: number | null;
   send_capable: boolean;
   account_email: string;
+  managed_connection_name?: string;
 }
 
 export interface MailLaneCallers {
@@ -95,6 +95,13 @@ export interface MailLaneCallers {
     code: string;
     redirect_uri: string;
   }) => Promise<{ ok: true; account_key_prefix: string }>;
+  enrollManagedOAuth?: (args: {
+    provider: MailOAuthProvider;
+    account_slug: string;
+    connection_name: string;
+    send_enabled: boolean;
+    mutation_enabled: boolean;
+  }) => Promise<{ slug: string }>;
   delete: (args: { slug: string }) => Promise<{ ok: true }>;
 }
 
@@ -135,6 +142,12 @@ export interface CalendarLaneCallers {
     adapter: CalendarOAuthAdapter;
     oauth_code: string;
     oauth_redirect_uri: string;
+  }) => Promise<{ slug: string }>;
+  enrollManagedOAuth?: (args: {
+    adapter: CalendarOAuthAdapter;
+    slug: string;
+    connection_name: string;
+    write_enabled: boolean;
   }) => Promise<{ slug: string }>;
   /** Microsoft-only — adopt the calendar lane onto the `graph` grant the mail
    *  enroll just persisted, with no second consent. Optional so older mounts
@@ -186,6 +199,8 @@ export interface MountAccountsLanePanelOptions {
   mail?: MailLaneCallers;
   calendar?: CalendarLaneCallers;
   file?: FileLaneCallers;
+  listManagedConnections?: () => Promise<{ connections: readonly ConnectionView[] }>;
+  onOpenManagedConnections?: () => void;
   /** `server.getOAuthClientConfig` caller — required for the OAuth lanes
    *  (Mail/Calendar sign-in). Absent → the Connect button errors. */
   getOAuthClientConfig?: () => Promise<OAuthClientConfigResult>;
@@ -240,6 +255,7 @@ type AccountsAction =
   | 'accounts-back-to-list'
   | 'accounts-submit-form'
   | 'accounts-oauth-connect'
+  | 'accounts-open-managed-connection'
   | 'accounts-copy-oauth-redirect'
   | 'accounts-oauth-dismiss'
   | 'accounts-oauth-cancel'
@@ -569,6 +585,7 @@ export const mountAccountsLanePanel = (
           authState: m.auth_state,
           ...(m.account_email ? { sublabel: m.account_email } : {}),
           sendCapable: m.send_capable,
+          ...(m.managed_connection_name ? { managedConnectionName: m.managed_connection_name } : {}),
           lastSyncedAt: m.last_synced_at,
         };
       }
@@ -578,7 +595,8 @@ export const mountAccountsLanePanel = (
         adapterType: c.adapter_type,
         authState: c.auth_state,
         reauthAvailable:
-          lane === 'calendar' && (c.caps as { auth?: unknown }).auth === 'oauth',
+          lane === 'calendar' && !c.managed_connection_name && (c.caps as { auth?: unknown }).auth === 'oauth',
+        ...(c.managed_connection_name ? { managedConnectionName: c.managed_connection_name } : {}),
         lastSyncedAt: c.last_synced_at,
       };
     });
@@ -622,6 +640,28 @@ export const mountAccountsLanePanel = (
     if (disposed || gen !== loadGeneration) return;
     state.oauthAppConfig = snapshot;
     render(preserveFocus);
+  };
+
+  const loadManagedConnections = async (gen: number): Promise<void> => {
+    if (!opts.listManagedConnections || (state.lane !== 'mail' && state.lane !== 'calendar')) return;
+    try {
+      const { connections } = await opts.listManagedConnections();
+      if (disposed || gen !== loadGeneration) return;
+      state.managedConnections = connections.flatMap(connection => {
+        if (connection.kind !== 'api' || connection.auth_type !== 'managed_oauth' || !connection.managed_oauth) return [];
+        try {
+          const base = new URL(typeof connection.base_url === 'string' ? connection.base_url : '');
+          if (base.origin !== connection.managed_oauth.target_origin) return [];
+          return [{ name: connection.name, label: connection.display_name || connection.name,
+            origin: base.origin, basePath: base.pathname }];
+        } catch { return []; }
+      });
+      state.managedConnectionsError = null;
+    } catch (error) {
+      if (disposed || gen !== loadGeneration) return;
+      state.managedConnections = [];
+      state.managedConnectionsError = errMessage(error);
+    }
   };
 
   // ── List load (generation-guarded) ────────────────────────────
@@ -681,7 +721,7 @@ export const mountAccountsLanePanel = (
       // status response chooses ready vs one-time setup.
       const configLoad = background
         ? Promise.resolve()
-        : loadOAuthAppConfig(gen, preserveFocus);
+        : Promise.all([loadOAuthAppConfig(gen, preserveFocus), loadManagedConnections(gen)]);
       try {
         if (callers === undefined) {
           await configLoad;
@@ -745,6 +785,15 @@ export const mountAccountsLanePanel = (
     state.stage = 'form';
     state.providerId = provider.id;
     state.values = seedAccountFormValues(provider);
+    if (state.managedConnections !== undefined && isOAuthAccountTransport(provider.transport)) {
+      const compatible = managedConnectionsForAccount(provider.id, state.managedConnections);
+      const issuer = oauthAppIssuerForProvider(provider.id as 'gmail' | 'gcal' | 'graph');
+      const status = state.oauthAppConfig?.[issuer];
+      if (compatible.length > 0 && !status?.has_secret) {
+        state.values.auth_method = 'managed_oauth';
+        if (compatible.length === 1) state.values.connection_name = compatible[0]!.name;
+      }
+    }
     state.formError = null;
     // Seed the inline OAuth-app credential fields: pre-fill client_id from the
     // effective (stored/env) id so a configured app shows it; the secret is
@@ -824,7 +873,21 @@ export const mountAccountsLanePanel = (
     render(true);
     try {
       let enrolledSlug: string;
-      if (provider.transport === 'mail-imap') {
+      if (isOAuthAccountTransport(provider.transport) && state.values.auth_method === 'managed_oauth') {
+        if (!canSubmitAccountForm(provider, state)) throw new Error('Select a compatible managed API connection.');
+        const name = state.values.name!.trim();
+        if (state.rows.some(row => row.slug === name)) throw new Error('An account with this name already exists.');
+        if (provider.transport === 'mail-oauth') {
+          if (!opts.mail?.enrollManagedOAuth) throw new Error('Managed OAuth is not available for Mail on this server.');
+          enrolledSlug = (await opts.mail.enrollManagedOAuth({ provider: provider.id as MailOAuthProvider,
+            account_slug: name, connection_name: state.values.connection_name!,
+            send_enabled: state.values.send_enabled === 'true', mutation_enabled: state.values.mutation_enabled === 'true' })).slug;
+        } else {
+          if (!opts.calendar?.enrollManagedOAuth) throw new Error('Managed OAuth is not available for Calendar on this server.');
+          enrolledSlug = (await opts.calendar.enrollManagedOAuth({ adapter: provider.id as CalendarOAuthAdapter,
+            slug: name, connection_name: state.values.connection_name!, write_enabled: state.values.write_enabled === 'true' })).slug;
+        }
+      } else if (provider.transport === 'mail-imap') {
         if (opts.mail === undefined) throw new Error('You cannot set up Mail here.');
         const enrolled = await opts.mail.enrollImap(payload);
         enrolledSlug = enrolled.slug;
@@ -856,6 +919,16 @@ export const mountAccountsLanePanel = (
     } catch (err) {
       if (disposed) return;
       state.saving = false;
+      if (state.values.auth_method === 'managed_oauth' && err !== null && typeof err === 'object'
+        && 'code' in err && err.code === 'adapter_start_failed') {
+        const message = errMessage(err);
+        state.stage = 'list'; state.providerId = null; state.values = {}; state.formError = null;
+        await doRefresh(false, true);
+        if (disposed) return;
+        state.error = message;
+        render(true);
+        return;
+      }
       state.formError = errMessage(err);
       // The retry action has the same semantic identity as the busy action.
       render(true);
@@ -1362,6 +1435,10 @@ export const mountAccountsLanePanel = (
     if (state.saving) return;
     const provider = activeProvider();
     if (provider === undefined || !isOAuthAccountTransport(provider.transport)) return;
+    if (state.values.auth_method === 'managed_oauth') {
+      void submitForm();
+      return;
+    }
     // "Keep working" deliberately returns to an interactive account list. If
     // the owner opens another OAuth form while the first consent is still
     // boot-owned, explain the conflict instead of leaving an enabled Connect
@@ -1725,6 +1802,9 @@ export const mountAccountsLanePanel = (
     'accounts-oauth-connect': () => {
       driveOAuth();
     },
+    'accounts-open-managed-connection': () => {
+      if (!state.saving) opts.onOpenManagedConnections?.();
+    },
     'accounts-copy-oauth-redirect': (dataset, _event, element) => {
       copyOAuthRedirect(dataset.copyValue, element);
     },
@@ -1872,6 +1952,18 @@ export const mountAccountsLanePanel = (
     if ((isSelect ? 'change' : 'input') !== event.type) return;
     if (state.saving) return;
     state.values = { ...state.values, [key]: el.value ?? '' };
+    if (key === 'auth_method') {
+      // Changing modes discards the write choices and any direct-app secret draft.
+      state.oauthCredValues = { client_id: '', client_secret: '' };
+      state.values = { ...state.values, send_enabled: 'false', mutation_enabled: 'false',
+        write_enabled: 'false', calendar_enabled: 'false', connection_name: '' };
+      const provider = activeProvider();
+      const compatible = provider ? managedConnectionsForAccount(provider.id, state.managedConnections ?? []) : [];
+      if (compatible.length === 1) state.values.connection_name = compatible[0]!.name;
+      state.formError = null;
+      render(true);
+      return;
+    }
     if (state.formError !== null) {
       // First edit after a failed submit clears the stale error and re-enables
       // Submit without dropping the corrected field's focus or caret.

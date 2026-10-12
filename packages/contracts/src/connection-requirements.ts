@@ -137,13 +137,16 @@ export type ConnectionAuthDescriptor =
  *
  *  ⚠ **A pack-side vocabulary, distinct from `ConnectionAuth`** — this is what a
  *  pack DECLARES it needs, not what the owner stores. The two happen to carry
- *  the same names, and D-218 found that "happen to" was doing real work: the
+ *  the same direct credential names, and D-218 found that "happen to" was doing real work: the
  *  list was a hand-kept copy, so widening `ConnectionAuth` left it silently
  *  short and a subset typechecks. It is now DERIVED, with the descriptor union
  *  checked against it below — the same both-directions guard `CONNECTION_AUTH_TYPES`
- *  carries. */
+ *  carries. D-322 excludes managed_oauth: packs declare vendor OAuth while the
+ *  owner chooses its broker transport during enrollment. */
 export const CONNECTION_AUTH_DESCRIPTOR_TYPES =
-  CONNECTION_AUTH_TYPES satisfies readonly ConnectionAuthDescriptor['type'][];
+  // D-322 — a pack declares vendor OAuth, never a particular broker transport.
+  CONNECTION_AUTH_TYPES.filter((type): type is Exclude<ConnectionAuthType, 'managed_oauth'> =>
+    type !== 'managed_oauth') satisfies readonly ConnectionAuthDescriptor['type'][];
 
 /** Compile-time proof that no descriptor member is missing from the derived
  *  list — the reverse direction `satisfies` cannot express. */
@@ -487,6 +490,8 @@ const requirementAcceptsAuthType = (
 ): boolean =>
   authType !== undefined && (
     authType === requirement.auth.type
+    // D-322 — authentication transport changes; the pack's native API does not.
+    || (authType === 'managed_oauth' && ['oauth2_refresh', 'bearer'].includes(requirement.auth.type))
     || (getVendorProvider(requirement.vendor)?.also_accepts_auth ?? []).includes(authType)
   );
 

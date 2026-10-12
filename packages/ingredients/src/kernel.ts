@@ -37,6 +37,7 @@
 import { IngredientError, type ResolvedCall } from './types.js';
 import type { Adapter } from './dispatch.js';
 import type { StepMeta } from '@recued/contracts';
+import type { QuoteSignoffReleaseInput, QuoteSignoffReleaseResult } from '@recued/contracts';
 import {
   parsePreparePreapproval,
   parseMailDraftCreate, parseMailDraftGet, parseMailDraftUpdate, parseMailDraftDelete,
@@ -676,6 +677,7 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 }
 
 export interface KernelDispatchers {
+  quoteSignoffRelease?: (input: QuoteSignoffReleaseInput) => Promise<QuoteSignoffReleaseResult>;
   /** D-234 § 234.4 — the asking half. Returns the recorded `PeerAnswer` when the
    *  conversation has one, and otherwise THROWS `PeerAnswerRequiredSignal`, which
    *  the step-runner re-throws and the step loop turns into `awaiting_peer`.
@@ -2005,6 +2007,18 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
     // §5 — a `core-<bare>` kernel alias (e.g. `core-notification-send`) dispatches
     // to the same case as its bare slug; `slug` stays the raw value for error context.
     switch (stripCorePrefix(slug)) {
+      case 'quote-signoff-release': {
+        if (!dispatchers.quoteSignoffRelease) throw new IngredientError('SERVER_NOT_REACHABLE', 'Customer sign-off release is unavailable.', { slug });
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(input, ['signoff_id', 'expected_plan_hash', 'summary'], slug);
+        const signoff_id = requireKernelString(input.signoff_id, 'signoff_id', slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash, 'expected_plan_hash', slug);
+        const summary = requireKernelString(input.summary, 'summary', slug);
+        if (signoff_id.length > 100 || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT', 'Customer sign-off release input is invalid.', { slug });
+        }
+        return dispatchers.quoteSignoffRelease({ signoff_id, expected_plan_hash, summary });
+      }
       case 'mail-draft-create':
       case 'mail-draft-read':
       case 'mail-draft-update':

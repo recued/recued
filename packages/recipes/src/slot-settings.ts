@@ -1,5 +1,7 @@
 /** D-320 phase 3, slice 3a — a step that names no connection signs in through its
- *  slot (D-320 §3.2, §6 step 3).
+ *  slot (D-320 §3.2, §6 step 3). Pure, so a server's run, its doors, the
+ *  corpus migration and a drive of a shipped recipe all read one rule; a server passes
+ *  its recorded bindings to `catalogSignInReader`.
  *
  *  A recipe names no connection: a step calls an operation, and the operation's
  *  pack says which sign-in, its slot, it needs. Every reader of a step's connection
@@ -35,10 +37,8 @@ import {
   type RecipeDefinition,
   type RecipeStep,
 } from '@recued/contracts';
-import type { PackOpResolution } from '@recued/recipes';
 
-import type { PackManifestOf } from './pack-connection-slots.js';
-import { bindingsForCatalogs, type BindingScan } from './storage/connection-catalog-binding-store.js';
+import type { PackOpResolution } from './op-step-lower.js';
 
 /** How a catalog signs in: through the API slot named, through none (a cli,
  *  storage or MCP catalog), or not known here. */
@@ -93,14 +93,22 @@ export const compositionSignIn = (
   return 'unknown';
 };
 
+/** A binding a server recorded for a catalog: the connection's slot, if the install
+ *  stored one, and the pack whose install bound it. */
+export interface CatalogSignInBinding {
+  slot?: string;
+  installed_pack_id?: string;
+}
+
 /** How each catalog signs in, read once per catalog: the slot its bindings recorded,
- *  else the one its pack's manifest declares (the order `catalogSlotsFrom` reads). A
- *  catalog whose manifest is not at hand but that some connection is bound to signs
- *  in through an API connection: only such a catalog is bound. */
+ *  else the one its pack's manifest declares (the order the run's slot reader keeps).
+ *  A catalog whose manifest is not at hand but that some connection is bound to signs
+ *  in through an API connection: only such a catalog is bound. A server passes its
+ *  bindings (`bindingsOf`); without them, the shipped manifests decide alone. */
 export const catalogSignInReader = (deps: {
-  scan?: BindingScan;
+  bindingsOf?: (catalog: string) => readonly CatalogSignInBinding[];
   packs?: PackOpResolution;
-  packManifestOf: PackManifestOf;
+  packManifestOf: (pack_slug: string) => BulkPackManifest | null | undefined;
 }): ((catalog: string) => CatalogSignIn) => {
   const packOf = new Map<string, string>();
   for (const [ref, binding] of deps.packs ?? []) {
@@ -110,7 +118,7 @@ export const catalogSignInReader = (deps: {
   return (catalog) => {
     const known = seen.get(catalog);
     if (known !== undefined) return known;
-    const bindings = deps.scan !== undefined ? bindingsForCatalogs(deps.scan, [catalog]) : [];
+    const bindings = deps.bindingsOf?.(catalog) ?? [];
     const recorded = bindings.find((binding) => binding.slot !== undefined)?.slot;
     const pack = bindings[0]?.installed_pack_id ?? packOf.get(catalog);
     const authored = pack !== undefined ? compositionSignIn(deps.packManifestOf(pack), catalog) : 'unknown';
@@ -165,6 +173,11 @@ const isApiSetting = (definition: unknown): boolean => {
   const { type, connection_kind } = definition as { type?: unknown; connection_kind?: unknown };
   return type === 'connection' && (connection_kind === undefined || connection_kind === 'api');
 };
+
+/** D-320 phase 3 (3e) — whether `recipe` still declares an API connection setting:
+ *  the shape before 3e, a `type: 'connection'` setting of the API kind or of none. */
+export const declaresApiConnectionSetting = (recipe: Pick<RecipeDefinition, 'variables'>): boolean =>
+  Object.values((recipe.variables ?? {}) as Readonly<Record<string, unknown>>).some(isApiSetting);
 
 /** Give each step that needs a sign-in and names no connection the setting for its
  *  slot (see the module comment). */
@@ -264,17 +277,25 @@ export const vendorNeutralSettings = (recipe: RecipeDefinition): Readonly<Record
 
 /** D-320 phase 3 (3d) — `context.connections`: each slot that settled on one
  *  connection (`bySlot`), and each vendor-neutral family under its own name, from
- *  the value its setting settled on. A slot of the same name keeps its own. */
+ *  the value its setting settled on. A slot of the same name keeps its own.
+ *
+ *  D-320 ruling 20 — a search on that setting which nobody pointed at a connection
+ *  read every one that serves it (`fannedOut`: setting → the connections read). The
+ *  family is given the one connection its steps used, and is left out when they
+ *  used several, as a slot that settled on two is. */
 export const contextConnectionsOf = (
   bySlot: Readonly<Record<string, string>>,
   families: Readonly<Record<string, string>>,
   config: Readonly<Record<string, unknown>>,
+  fannedOut: Readonly<Record<string, readonly string[]>> = {},
 ): Record<string, string> => {
   const out: Record<string, string> = { ...bySlot };
   for (const [family, setting] of Object.entries(families)) {
-    const value = config[setting];
     if (Object.prototype.hasOwnProperty.call(out, family)) continue;
-    if (typeof value === 'string' && value.trim() !== '') out[family] = value.trim();
+    const used = new Set<string>(fannedOut[setting] ?? []);
+    const value = config[setting];
+    if (typeof value === 'string' && value.trim() !== '') used.add(value.trim());
+    if (used.size === 1) out[family] = [...used][0]!;
   }
   return out;
 };

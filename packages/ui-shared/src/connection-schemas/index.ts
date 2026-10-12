@@ -82,6 +82,7 @@ export {
 import { MESSENGER_VENDOR_SLUGS, getMessengerVendorDeclaration } from '@recued/contracts';
 
 import type { ConnectionSchema } from './types.js';
+import { withManagedOAuthSchema } from './managed-oauth.js';
 import { apiSchema } from './api.js';
 import { mcpSchemas } from './mcp.js';
 import { notificationSchemas } from './notification.js';
@@ -100,6 +101,7 @@ export const resolveConnectionSchema = (
   kind: 'api' | 'mcp' | 'notification',
   subtype?: string,
   vendor?: string,
+  authType?: string,
 ): ConnectionSchema | undefined => {
   if (vendor) {
     const vendorSchema = _resolveVendorSchema(vendor);
@@ -108,9 +110,9 @@ export const resolveConnectionSchema = (
     // call and falls through to bare mcp resolution rather than
     // returning a kind=api schema. Unregistered vendors also fall
     // through (a stale install registry still gets a usable form).
-    if (vendorSchema && vendorSchema.kind === kind) return vendorSchema;
+    if (vendorSchema && vendorSchema.kind === kind) return withManagedOAuthSchema(vendorSchema, authType);
   }
-  if (kind === 'api') return apiSchema;
+  if (kind === 'api') return withManagedOAuthSchema(apiSchema, authType);
   if (kind === 'mcp') {
     if (subtype && subtype in mcpSchemas) {
       return mcpSchemas[subtype as keyof typeof mcpSchemas];

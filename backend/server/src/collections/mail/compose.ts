@@ -139,6 +139,7 @@ export interface ComposeMailStackOptions {
 }
 
 export interface MailAdapterBundle {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   /** LAZY accessor for the shared `CollectionRegistry`.
    *
    *  ⚠ Lazy because the registry is constructed AFTER the mail stack in the boot
@@ -318,8 +319,10 @@ export const composeMailStack = (
     }
     if (row.adapter_type === 'gmail' || row.adapter_type === 'graph') {
       const provider = row.adapter_type;
-      const providerConfig = oauthConfigFor(provider);
-      if (!providerConfig || !bundle.accountStore) {
+      const managedBinding = cfg.managed_oauth;
+      const managed = managedBinding !== undefined;
+      const providerConfig = managed ? null : oauthConfigFor(provider);
+      if ((!managed && !providerConfig) || (managed && !bundle.managedOAuth) || !bundle.accountStore) {
         log(
           'warn',
           `mail-stack: ${provider} OAuth config or accountStore missing — skipping live mirror for '${slug}'`,
@@ -351,7 +354,12 @@ export const composeMailStack = (
       };
       // Pre-warm the cache so the provider's `config()` calls are
       // synchronous from construction onward.
-      await ensureScopes();
+      if (!managed) await ensureScopes();
+      const managedOptions = managed ? {
+        managedFetcher: bundle.managedOAuth!.fetch(provider, managedBinding),
+        managedSendEnabled: cfg.managed_send_enabled === true,
+        managedMutationEnabled: cfg.managed_mutation_enabled === true,
+      } : {};
       if (provider === 'gmail') {
         const gmailConfig: () => GmailProviderConfig = () => ({
           account_slug: accountSlug,
@@ -368,6 +376,7 @@ export const composeMailStack = (
           granted_scopes: cachedScopes ?? [],
         });
         return createGmailProvider({
+          ...managedOptions,
           slug,
           config: gmailConfig,
           accountStore,
@@ -394,6 +403,7 @@ export const composeMailStack = (
         granted_scopes: cachedScopes ?? [],
       });
       return createGraphProvider({
+        ...managedOptions,
         slug,
         config: graphConfig,
         accountStore,
@@ -542,6 +552,7 @@ export const composeMailStack = (
   };
 
   const enrollDeps: MailEnrollDeps = {
+    ...(bundle.managedOAuth ? { managedOAuth: bundle.managedOAuth } : {}),
     instances,
     accountStore: bundle.accountStore ?? {
       // Safe null-route for test harnesses that skip the account

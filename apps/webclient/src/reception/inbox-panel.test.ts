@@ -969,6 +969,20 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(text).not.toContain('@');
   });
 
+  it('renders the complete accepted quote and release plan without editable fields', async () => {
+    const text = 'Quote Q-1\nFull accepted scope <img src=x>\nCreate task: Plans\nIssue invoice INV-101';
+    const h = setup({ items: [item({ operation_id: 'quote-signoff-release', top_tier_kind: 'task',
+      source: { kind: 'quote_signoff', record_ref: 'signoff' }, arg_schema: { fields: [] },
+      args: { signoff_id: 'signoff', expected_plan_hash: 'a'.repeat(64), summary: text },
+    })] });
+    await flush();
+    const summary = allNodes(h.root).find((node) => node.className === 'reception-inbox-response-summary');
+    expect(summary?.children.map((node) => node.textContent)).toEqual(['Accepted quote and release plan', text]);
+    expect(allNodes(h.root).filter((node) => node.tagName === 'IMG')).toEqual([]);
+    expect(h.root.querySelector('[data-recued-reception-inbox-field="summary"]')).toBeNull();
+    h.mount.dispose();
+  });
+
   it('renders FormResponse answers as read-only review content', async () => {
     const { root } = setup({
       items: [item({

@@ -564,6 +564,7 @@ const mountRoute = (overrides: {
   workEntityListCaller?: DataWorkEntityListCaller;
   workEntityGetCaller?: DataWorkEntityGetCaller;
   workEntityUpsertCaller?: DataWorkEntityUpsertCaller;
+  taskMarkDoneCaller?: BootstrapDataRouteOptions['taskMarkDoneCaller'];
   workEntityDeleteCaller?: DataWorkEntityDeleteCaller;
   manageRescheduleLinkCaller?: DataManageRescheduleLinkCaller;
   contactListCaller?: DataContactListCaller;
@@ -799,6 +800,8 @@ const mountRoute = (overrides: {
     workEntityListCaller,
     workEntityGetCaller,
     workEntityUpsertCaller,
+    ...(overrides.taskMarkDoneCaller !== undefined
+      ? { taskMarkDoneCaller: overrides.taskMarkDoneCaller } : {}),
     workEntityDeleteCaller,
     ...(overrides.manageRescheduleLinkCaller !== undefined
       ? { manageRescheduleLinkCaller: overrides.manageRescheduleLinkCaller }
@@ -990,6 +993,282 @@ const mountRoute = (overrides: {
 // `apps/webclient/src/today/__tests__/today-route.test.ts` (D-290). Today is
 // its own `#today` route; the Data route no longer hosts it, so the three
 // read-ownership tests now drive the surface that actually owns the read.
+
+describe('Task editor completion', () => {
+  type OwnerTask = Extract<WorkEntity, { _kind: 'task' }>;
+  const task = (overrides: Partial<OwnerTask> = {}): OwnerTask => taskEntity(overrides) as OwnerTask;
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((finish) => { resolve = finish; });
+    return { promise, resolve };
+  };
+  const mountTask = () => {
+    let current = task({ body: 'Private delivery note', source_extension_blob: { quote_signoff_id: 'accepted-1' } });
+    const get = vi.fn<DataWorkEntityGetCaller>(async () => ({ entity: current }));
+    const list = vi.fn<DataWorkEntityListCaller>(async () => ({ entities: [current], total: 1 }));
+    const sourceListCaller = vi.fn<WorkEntitySourceListCaller>(async () => ({ sources: [sourceRegistration('task')] }));
+    const markDone = vi.fn<NonNullable<BootstrapDataRouteOptions['taskMarkDoneCaller']>>(async ({ done }) => {
+      if (current.done !== done) current = { ...current, done, updated_at: current.updated_at + 1,
+        completed_at: done ? 1234 : undefined };
+      return { entity: current };
+    });
+    const rig = mountRoute({ initialTab: 'task', workEntityGetCaller: get,
+      workEntityListCaller: list, sourceListCaller, taskMarkDoneCaller: markDone });
+    return { ...rig, get, list, markDone, sourceListCaller, current: () => current,
+      replace: (value: OwnerTask) => { current = value; },
+      html: () => rig.root.children[0]!.innerHTML,
+      click: (action: string) => emitClick(rig.root.children[0]!, action),
+      open: async () => { await rig.route.whenLoaded(); await rig.route.openEditWorkEntityDialog('task', current.id); } };
+  };
+
+  it('completes and reopens an undated task through the lifecycle RPC without replaying its details', async () => {
+    const h = mountTask(); await h.open();
+    const original = structuredClone(h.current());
+    expect(h.html()).toContain('Task unfinished.');
+    expect(h.html()).not.toContain('id="form-renderer-done"');
+    expect(h.html()).not.toContain('id="form-renderer-completed_at"');
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).toHaveBeenLastCalledWith({ id: original.id, done: true });
+    expect(h.current()).toEqual({ ...original, done: true, updated_at: original.updated_at + 1, completed_at: 1234 });
+    expect(h.html()).toContain('Task completed.');
+    expect(h.html()).toContain('data-action="reopen-work-entity-task"');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.click('reopen-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).toHaveBeenLastCalledWith({ id: original.id, done: false });
+    expect(h.current()).toEqual({ ...original, updated_at: original.updated_at + 2, completed_at: undefined });
+    expect(h.html()).toContain('Task reopened.');
+    expect(h.workEntityUpsertCaller).not.toHaveBeenCalled();
+    expect(h.workEntityDeleteCaller).not.toHaveBeenCalled();
+    h.route.dispose();
+  });
+
+  it('keeps unsaved edits intact and refuses completion until they are saved or discarded', async () => {
+    const h = mountTask(); await h.open();
+    const original = { ...h.route.workEntityState().dialog!.values };
+    h.route.setWorkEntityDialogValues({ ...original, body: 'Unfinished draft' });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.html()).toContain('Save or discard your edits');
+    expect(h.route.workEntityState().dialog!.values.body).toBe('Unfinished draft');
+    expect(h.current().body).toBe('Private delivery note');
+    h.route.setWorkEntityDialogValues(original);
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.current().done).toBe(true);
+    expect(h.current().body).toBe('Private delivery note');
+    h.route.dispose();
+  });
+
+  it.each([
+    ['missing', null],
+    ['wrong kind', { ...task(), _kind: 'note' } as unknown as WorkEntity],
+    ['wrong ID', task({ id: 'replacement' })],
+    ['different source', task({ source_id: 'new-source' })],
+    ['different source record', task({ source_record_id: 'replacement' })],
+    ['recreated', task({ created_at: 999 })],
+    ['stale', task({ sync_state: 'stale_unreachable' })],
+    ['tombstoned', task({ sync_state: 'tombstoned' })],
+    ['deleted', task({ deleted_at: 99 })],
+  ] as const)('rereads and refuses a %s task before dispatching completion', async (_name, entity) => {
+    const h = mountTask(); await h.open();
+    h.get.mockResolvedValueOnce({ entity });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.html()).toContain('This task cannot be changed here now');
+    expect(h.route.workEntityState().dialog!.submitting).not.toBe(true);
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it.each([
+    ['missing', []],
+    ['read only', [{ ...sourceRegistration('task'), write_capable: false }]],
+    ['read through', [{ ...sourceRegistration('task'), sync_posture: 'read_through' }]],
+    ['wrong kind', [{ ...sourceRegistration('task'), top_tier_kind: 'note' }]],
+  ] as const)('rereads and refuses a %s source before dispatching completion', async (_name, sources) => {
+    const h = mountTask(); await h.open();
+    h.sourceListCaller.mockResolvedValueOnce({ sources });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.html()).toContain('This task cannot be changed here now');
+    h.route.dispose();
+  });
+
+  it('retains the unfinished status and reports a failed write', async () => {
+    const h = mountTask(); await h.open();
+    h.markDone.mockRejectedValueOnce(new Error('Source unavailable'));
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.html()).toContain('Source unavailable');
+    expect(h.html()).toContain('Task unfinished.');
+    expect(h.html()).not.toContain('Task completed.');
+    expect(h.current().done).toBe(false);
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('refuses a current task whose earlier source write is still pending', async () => {
+    const h = mountTask(); await h.open();
+    h.get.mockResolvedValueOnce({ entity: task({ pending_write: {
+      staged_at: 1, operation: 'update', dirty_fields: ['body'], state: 'awaiting_verify',
+    } }) });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.html()).toContain('change waiting for its source');
+    expect(h.html()).not.toContain('Task completed.');
+    h.route.dispose();
+  });
+
+  it('does not report a pending source acknowledgement as completed work', async () => {
+    const h = mountTask(); await h.open();
+    h.markDone.mockResolvedValueOnce({ entity: task({ done: true, pending_write: {
+      staged_at: 1, operation: 'complete', dirty_fields: ['done', 'completed_at'], state: 'awaiting_verify',
+    } }) });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.html()).toContain('source has not confirmed it yet');
+    expect(h.html()).not.toContain('Task completed.');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('shows pending source confirmation when such a task is opened again', async () => {
+    const h = mountTask();
+    h.get.mockResolvedValueOnce({ entity: task({ done: true, pending_write: {
+      staged_at: 1, operation: 'complete', dirty_fields: ['done'], state: 'awaiting_verify',
+    } }) });
+    await h.open();
+    expect(h.html()).toContain('A task change is waiting for source confirmation.');
+    expect(h.html()).not.toContain('Task complete.');
+    expect(h.html()).not.toContain('data-action="reopen-work-entity-task"');
+    h.route.dispose();
+  });
+
+  it('retries the chosen completion after a lost response without toggling the fresh completed task back', async () => {
+    const h = mountTask(); await h.open();
+    h.markDone.mockImplementationOnce(async () => {
+      h.replace({ ...h.current(), done: true, completed_at: 1234, updated_at: 3 });
+      throw new Error('Response lost');
+    });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.html()).toContain('Response lost');
+    const recorded = structuredClone(h.current());
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).toHaveBeenCalledTimes(2);
+    expect(h.markDone).toHaveBeenLastCalledWith({ id: 'task-1', done: true });
+    expect(h.current()).toEqual(recorded);
+    expect(h.html()).toContain('Task completed.');
+    h.route.dispose();
+  });
+
+  it('reports a failed current read without dispatching any task change', async () => {
+    const h = mountTask(); await h.open();
+    h.get.mockRejectedValueOnce(new Error('Task read failed'));
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.html()).toContain('Task read failed');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it.each([
+    ['wrong completion', task()],
+    ['wrong ID', task({ id: 'replacement', done: true })],
+    ['different source', task({ source_id: 'replacement', done: true })],
+    ['recreated', task({ created_at: 999, done: true })],
+    ['deleted', task({ done: true, deleted_at: 99 })],
+  ] as const)('does not claim success for a %s response', async (_name, entity) => {
+    const h = mountTask(); await h.open();
+    h.markDone.mockResolvedValueOnce({ entity });
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    expect(h.html()).toContain('The server did not confirm the change');
+    expect(h.html()).not.toContain('Task completed.');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('blocks duplicate completion, Save and dismissal while its write is in flight', async () => {
+    const h = mountTask(); await h.open();
+    const write = deferred<{ entity: OwnerTask }>();
+    h.markDone.mockImplementationOnce(() => write.promise);
+    h.click('complete-work-entity-task');
+    const operation = h.route.whenLoaded();
+    await vi.waitFor(() => expect(h.markDone).toHaveBeenCalledTimes(1));
+    h.click('complete-work-entity-task'); h.click('submit-work-entity-dialog'); h.click('close-work-entity-dialog');
+    expect(h.markDone).toHaveBeenCalledTimes(1);
+    expect(h.workEntityUpsertCaller).not.toHaveBeenCalled();
+    expect(h.route.workEntityState().dialog?.entity_id).toBe('task-1');
+    expect(h.html()).toContain('Completing…');
+    expect(h.route.hasInFlightWork()).toBe(true);
+    write.resolve({ entity: task({ ...h.current(), done: true, completed_at: 1234 }) });
+    await operation;
+    expect(h.html()).toContain('Task completed.');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('drops a pending current read after another task editor replaces it', async () => {
+    const h = mountTask(); await h.open();
+    const read = deferred<{ entity: WorkEntity | null }>();
+    h.get.mockImplementationOnce(() => read.promise);
+    h.click('complete-work-entity-task'); const operation = h.route.whenLoaded();
+    h.replace(task({ id: 'task-2', title: 'Different work' }));
+    await h.route.openEditWorkEntityDialog('task', 'task-2');
+    read.resolve({ entity: task() }); await operation;
+    expect(h.markDone).not.toHaveBeenCalled();
+    expect(h.route.workEntityState().dialog?.entity_id).toBe('task-2');
+    expect(h.html()).not.toContain('Task completed.');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('cannot apply a delayed write result to a different task editor', async () => {
+    const h = mountTask(); await h.open();
+    const write = deferred<{ entity: OwnerTask }>();
+    h.markDone.mockImplementationOnce(() => write.promise);
+    h.click('complete-work-entity-task'); const operation = h.route.whenLoaded();
+    await vi.waitFor(() => expect(h.markDone).toHaveBeenCalledTimes(1));
+    h.replace(task({ id: 'task-2', title: 'Different work' }));
+    await h.route.openEditWorkEntityDialog('task', 'task-2');
+    write.resolve({ entity: task({ done: true }) }); await operation;
+    expect(h.route.workEntityState().dialog?.entity_id).toBe('task-2');
+    expect(h.html()).toContain('Task unfinished.');
+    expect(h.html()).not.toContain('Task completed.');
+    expect(h.route.hasInFlightWork()).toBe(false);
+    h.route.dispose();
+  });
+
+  it('drops a pending read after disposal without starting a write', async () => {
+    const h = mountTask(); await h.open();
+    const read = deferred<{ entity: WorkEntity | null }>();
+    h.get.mockImplementationOnce(() => read.promise);
+    h.click('complete-work-entity-task'); const operation = h.route.whenLoaded();
+    h.route.dispose(); read.resolve({ entity: task() }); await operation;
+    expect(h.markDone).not.toHaveBeenCalled();
+  });
+
+  it('retires an older list read so it cannot restore the unfinished row', async () => {
+    const h = mountTask(); await h.open();
+    const old = deferred<Awaited<ReturnType<DataWorkEntityListCaller>>>();
+    h.list.mockImplementationOnce(() => old.promise);
+    h.route.refresh(); const older = h.route.whenLoaded();
+    await vi.waitFor(() => expect(h.list).toHaveBeenCalledTimes(2));
+    h.click('complete-work-entity-task'); await h.route.whenLoaded();
+    old.resolve({ entities: [task()], total: 1 }); await older;
+    expect(h.route.workEntities()[0]).toMatchObject({ done: true });
+    expect(h.html()).toContain('Task completed.');
+    h.route.dispose();
+  });
+
+  it('keeps create-mode completion fields and hides lifecycle actions when unwired', async () => {
+    const rig = mountRoute({ initialTab: 'task' }); await rig.route.whenLoaded();
+    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+    expect(rig.root.children[0]!.innerHTML).toContain('Task unfinished.');
+    expect(rig.root.children[0]!.innerHTML).not.toContain('data-action="complete-work-entity-task"');
+    rig.route.openCreateWorkEntityDialog();
+    expect(rig.root.children[0]!.innerHTML).toContain('id="form-renderer-done"');
+    expect(rig.root.children[0]!.innerHTML).toContain('id="form-renderer-completed_at"');
+    expect(rig.root.children[0]!.innerHTML).not.toContain('data-task-completion-status');
+    rig.route.dispose();
+  });
+});
 
 describe('saved Data view hydration', () => {
   const saved = (definition: NonNullable<BootstrapDataRouteOptions['savedView']>['definition']) => ({

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { round, clamp, to_number, math, weighted_score, evaluateMathExpression } from '../numeric.js';
+import { round, clamp, to_number, math, decimal_math, weighted_score, evaluateMathExpression } from '../numeric.js';
 import { ctx } from './helpers.js';
 
 const c = ctx();
@@ -60,6 +60,37 @@ describe('math — expression mode', () => {
   it('empty expression returns null', () => expect(math({ expression: '' }, c)).toBeNull());
   it('expression takes priority over classic mode', () => {
     expect(math({ expression: '2 + 2', left: 10, operator: 'add', right: 5 }, c)).toBe(4);
+  });
+});
+
+describe('decimal_math', () => {
+  it('adds four-decimal values without float drift', () => {
+    expect(decimal_math({ left: '0.0001', operator: 'add', right: 0.0002, decimal_places: 4 }, c)).toBe('0.0003');
+  });
+  it('preserves the largest stored invoice balance when subtracting a small payment', () => {
+    expect(decimal_math({ left: '922337203685477.5807', operator: 'subtract', right: '0.0001', decimal_places: 4 }, c))
+      .toBe('922337203685477.5806');
+  });
+  it('handles negative differences and normalizes zero', () => {
+    expect(decimal_math({ left: 20.25, operator: 'subtract', right: '120.0001', decimal_places: 4 }, c)).toBe('-99.7501');
+    expect(decimal_math({ left: '-0.0001', operator: 'add', right: '+0.0001', decimal_places: 4 }, c)).toBe('0.0000');
+  });
+  it('supports integer and eighteen-place scales', () => {
+    expect(decimal_math({ left: '9223372036854775807', operator: 'add', right: 1, decimal_places: 0 }, c))
+      .toBe('9223372036854775808');
+    expect(decimal_math({ left: '0.000000000000000001', operator: 'add', right: 0, decimal_places: 18 }, c))
+      .toBe('0.000000000000000001');
+  });
+  it.each([0.00001, '1.12345', '', ' 1', '1e4', 'abc', NaN, Infinity, null, {}, '1'.repeat(257)])
+    ('refuses an invalid operand %s', left => {
+      expect(decimal_math({ left, operator: 'add', right: 0, decimal_places: 4 }, c)).toBeNull();
+    });
+  it.each([-1, 19, 4.5, NaN, Infinity, '4'])('refuses an invalid scale %s', decimal_places => {
+    expect(decimal_math({ left: 1, operator: 'add', right: 2, decimal_places }, c)).toBeNull();
+  });
+  it('refuses unsupported operations and expression mode without falling back to float math', () => {
+    expect(decimal_math({ left: 1, operator: 'multiply', right: 2, decimal_places: 4 }, c)).toBeNull();
+    expect(decimal_math({ expression: '1 + 2', decimal_places: 4 }, c)).toBeNull();
   });
 });
 

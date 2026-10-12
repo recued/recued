@@ -114,7 +114,7 @@ import {
   APPROVAL_LINK_EXPIRY_DAYS_MAX,
   APPROVAL_LINK_EXPIRY_DAYS_MIN,
   APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
-  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS,
+  APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS,
   APPROVAL_LINK_OPTIONS_MAX,
   APPROVAL_LINK_OPTIONS_MIN,
   APPROVAL_LINK_PROMPT_MAX,
@@ -1972,6 +1972,10 @@ export const APPROVAL_LINK_ON_APPROVE_ACTION_COPY: Readonly<
     label: 'Run a Recipe',
     help: 'Run the Recipe named below when they say yes.',
   },
+  quote_signoff: {
+    label: 'Customer quote sign-off',
+    help: 'Review an exact quote revision and release work through Customer sign-offs.',
+  },
 };
 
 /** Full approval_link authoring form model. */
@@ -2154,7 +2158,7 @@ export const buildApprovalLinkFormModel = (
       // one contracts const, so a picker option that the validator refuses is
       // not expressible.
       value: oa?.on_approve_action ?? APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
-      options: APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS.map((a) => ({
+      options: APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS.map((a) => ({
         value: a,
         label: APPROVAL_LINK_ON_APPROVE_ACTION_COPY[a].label,
         help: APPROVAL_LINK_ON_APPROVE_ACTION_COPY[a].help,

@@ -23,12 +23,14 @@ describe('R19 — reception sections vocabulary', () => {
     expect(RECEPTION_SECTIONS.map((s) => s.id)).toEqual([
       'inbox',
       'records',
+      'signoffs',
       'abuse',
       'endpoints',
     ]);
     expect(RECEPTION_SECTIONS.map((s) => s.label)).toEqual([
       'Inbox',
       'Records',
+      'Customer sign-offs',
       'Abuse',
       'Endpoints',
     ]);

@@ -559,6 +559,8 @@ export interface AccountRow {
   sublabel?: string;
   /** True for send-capable mail rows (a small "can send" hint). */
   sendCapable?: boolean;
+  /** A borrowed API account; owner write choices are not evidence of grants. */
+  managedConnectionName?: string;
   /** True only when this lane owns an executable reauthorization action. */
   reauthAvailable?: boolean;
   /** Unix-ms of last successful sync, or null before the first tick. */
@@ -685,6 +687,9 @@ export interface AccountsPanelState {
    *  legacy Connect button + operator env-var error. When loaded, an issuer
    *  with `source === null` is gated behind a "Set up … sign-in" step. */
   oauthAppConfig: OAuthAppConfigSnapshot | null;
+  /** Undefined on mounts that do not offer managed OAuth. */
+  managedConnections?: readonly ManagedAccountConnection[];
+  managedConnectionsError?: string | null;
   /** Inline OAuth-app credential field values (client_id pre-filled from the
    *  effective id; client_secret always starts blank — it is write-only).
    *  Saved via `setOAuthAppConfig` as part of Connect when entered. */
@@ -696,6 +701,23 @@ export interface AccountsPanelState {
   /** Most-recent per-row action error keyed by slug. */
   rowError: Readonly<Record<string, string>>;
 }
+
+export interface ManagedAccountConnection {
+  name: string;
+  label: string;
+  origin: string;
+  basePath: string;
+}
+
+export const managedConnectionsForAccount = (
+  providerId: string,
+  connections: readonly ManagedAccountConnection[],
+): readonly ManagedAccountConnection[] => connections.filter(connection => {
+  if (providerId === 'gmail') return connection.origin === 'https://gmail.googleapis.com';
+  if (providerId === 'gcal') return connection.origin === 'https://www.googleapis.com'
+    && /^\/calendar(?:\/|$)/.test(connection.basePath);
+  return providerId === 'graph' && connection.origin === 'https://graph.microsoft.com';
+});
 
 export const initialAccountsPanelState = (
   lane: AccountLaneId = 'mail',
@@ -798,6 +820,10 @@ export const canSubmitAccountForm = (
   if (validateAccountForm(provider, state.values) !== null) return false;
   const issuer = issuerForProvider(provider);
   if (issuer === null) return true;
+  if (state.values.auth_method === 'managed_oauth') {
+    return managedConnectionsForAccount(provider.id, state.managedConnections ?? [])
+      .some(connection => connection.name === state.values.connection_name);
+  }
 
   const clientId = state.oauthCredValues.client_id.trim();
   const clientSecret = state.oauthCredValues.client_secret.trim();
@@ -1036,13 +1062,21 @@ const renderProviderForm = (
   provider: AccountProvider,
   state: AccountsPanelState,
 ): string => {
-  const fields = provider.fields.map((f) => renderField(f, state.values)).join('');
+  const managed = isOAuthAccountTransport(provider.transport) && state.values.auth_method === 'managed_oauth';
+  const managedFields: AccountField[] = provider.transport === 'mail-oauth'
+    ? [
+      { key: 'send_enabled', label: 'Allow sending mail', type: 'boolean', default: 'false', optional: true },
+      { key: 'mutation_enabled', label: 'Allow moving, marking and deleting mail', type: 'boolean', default: 'false', optional: true },
+    ]
+    : [{ key: 'write_enabled', label: 'Allow calendar changes', type: 'boolean', default: 'false', optional: true }];
+  const fields = (managed ? [...provider.fields.filter(field => field.key === 'name'), ...managedFields] : provider.fields)
+    .map((f) => renderField(f, state.values)).join('');
   const backAction = lane.providers.length > 1 ? 'accounts-open-add' : 'accounts-back-to-list';
 
   const isOAuth = isOAuthAccountTransport(provider.transport);
   const issuer = issuerForProvider(provider);
   const canSubmit = canSubmitAccountForm(provider, state);
-  const needsOAuthSetup = issuer !== null
+  const needsOAuthSetup = !managed && issuer !== null
     && state.oauthAppConfig !== null
     && !isReusableOAuthApp(state.oauthAppConfig[issuer]);
   const formVerb = lane.id === 'file' ? 'Add' : 'Connect';
@@ -1050,7 +1084,30 @@ const renderProviderForm = (
     ? lane.id === 'file' ? 'Adding…' : 'Connecting…'
     : lane.id === 'file' ? 'Add file source' : 'Connect account';
   // BYO OAuth-app credential fields render INLINE on the provider form.
-  const oauthSection = isOAuth && issuer !== null ? renderOAuthAppSection(issuer, state) : '';
+  const authChoice = isOAuth && state.managedConnections !== undefined ? formRow({
+    label: 'Sign-in method',
+    htmlFor: 'acct-field-auth-method',
+    control: selectField({ id: 'acct-field-auth-method', data: { 'acct-field': 'auth_method' },
+      options: [
+        { value: 'direct', label: 'Your OAuth app', selected: !managed },
+        { value: 'managed_oauth', label: 'Managed OAuth — saved API connection', selected: managed },
+      ] }),
+  }) : '';
+  const compatible = managedConnectionsForAccount(provider.id, state.managedConnections ?? []);
+  const managedSection = managed ? `
+    ${formRow({ label: 'Managed API connection', htmlFor: 'acct-field-connection-name', control: selectField({
+      id: 'acct-field-connection-name', data: { 'acct-field': 'connection_name' }, options: [
+        { value: '', label: 'Select a connection', selected: !state.values.connection_name },
+        ...compatible.map(connection => ({ value: connection.name, label: connection.label,
+          selected: connection.name === state.values.connection_name })),
+      ],
+    }) })}
+    <p class="accounts-form-desc">Use an account authorized through an OAuth broker. Add the needed mail or calendar scopes in its API connection before enabling writes here. Requested scopes do not confirm permissions; the vendor checks each action. Write actions also require Recued approval.</p>
+    ${state.managedConnectionsError ? inlineError(state.managedConnectionsError) : ''}
+    ${compatible.length === 0 ? inlineHint('Connect a managed '+provider.label+' API account in Apps & APIs first, then return here.') : ''}
+    ${button({ label: 'Open Apps & APIs', action: 'accounts-open-managed-connection', size: 'sm' })}
+  ` : '';
+  const oauthSection = managed ? managedSection : isOAuth && issuer !== null ? renderOAuthAppSection(issuer, state) : '';
 
   const primary = isOAuth
     ? button({
@@ -1084,6 +1141,7 @@ const renderProviderForm = (
       <h2 class="accounts-form-title" data-accounts-form-heading tabindex="-1">${formVerb} ${e(provider.label)}</h2>
       <p class="accounts-form-desc">${e(provider.description)}</p>
       ${state.formError !== null ? inlineError(state.formError) : ''}
+      ${authChoice}
       ${isOAuth ? '<p class="accounts-form-section-title">Connection details</p>' : ''}
       <div class="accounts-form-fields">${fields}</div>
       ${oauthSection}
@@ -1336,7 +1394,8 @@ const renderRow = (lane: AccountLane, row: AccountRow): string => {
         <span class="accounts-row-meta">
           <span class="accounts-badge">${e(providerLabelFor(lane, row.adapterType))}</span>
           <span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span>
-          ${row.sendCapable ? '<span class="accounts-badge accounts-badge--send">can send</span>' : ''}
+          ${row.sendCapable ? '<span class="accounts-badge accounts-badge--send">'+(row.managedConnectionName ? 'sending enabled' : 'can send')+'</span>' : ''}
+          ${row.managedConnectionName ? '<span class="accounts-badge">managed OAuth</span>' : ''}
         </span>
         ${row.sublabel ? `<span class="accounts-row-sub">${e(row.sublabel)}</span>` : ''}
       </button>
@@ -1461,9 +1520,12 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
         <dt>Provider</dt><dd>${e(providerLabelFor(lane, row.adapterType))}</dd>
         <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
         ${row.sublabel ? `<dt>Account</dt><dd>${e(row.sublabel)}</dd>` : ''}
+        ${row.managedConnectionName ? `<dt>Managed API connection</dt><dd>${e(row.managedConnectionName)}</dd>` : ''}
         <dt>${hasSynced ? 'Last synced' : 'Sync'}</dt><dd>${e(synced)}</dd>
       </dl>
       ${rowErr ? inlineError(rowErr) : ''}
+      ${row.managedConnectionName ? inlineHint('Reconnect this account in Apps & APIs if authorization expires. Vendor permissions are checked when an action runs.') : ''}
+      ${row.managedConnectionName ? button({ label: 'Open Apps & APIs', action: 'accounts-open-managed-connection', size: 'sm' }) : ''}
       <div class="accounts-form-actions">
         ${
           lifecycle

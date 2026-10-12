@@ -205,6 +205,12 @@ export type ReceptionRouteConn = Conn<
     // Received surface, moved here on the owner's IMMUTABLE/MUTABLE rule);
     // `recipe.list` above is reused by its manual-run automation picker.
     | 'reception.record.list'
+    | 'reception.signoff.quotes'
+    | 'reception.signoff.prepare'
+    | 'reception.signoff.prepare_addition'
+    | 'reception.signoff.publish'
+    | 'reception.signoff.list'
+    | 'reception.signoff.cancel'
     | 'form_response.list'
     | 'form_response.get'
     | 'execute'

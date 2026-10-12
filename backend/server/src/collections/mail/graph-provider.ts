@@ -95,6 +95,7 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from './oauth.js';
+import { oauthAuthorizationHeaders } from './oauth.js';
 import {
   startDrainingInterval,
   type ProviderPollScheduler,
@@ -132,6 +133,11 @@ export interface CreateGraphProviderOptions {
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
+  /** Owner's feature choices for managed accounts; vendor permissions still govern each call. */
+  managedSendEnabled?: boolean;
+  managedMutationEnabled?: boolean;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
@@ -410,12 +416,12 @@ interface GraphListResponse<T> {
 
 const graphGet = async <T>(
   url: string,
-  opts: { accessToken: string; fetcher: HttpFetcher },
+  opts: { accessToken: string | undefined; fetcher: HttpFetcher },
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; text: string }> => {
   const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
   const res = await opts.fetcher(safeUrl, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${opts.accessToken}` },
+    headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -430,12 +436,12 @@ const graphGet = async <T>(
  *  in practice, and the one part read from it, an invite, is UTF-8 by RFC 5545. */
 const graphGetBytes = async (
   url: string,
-  opts: { accessToken: string; fetcher: HttpFetcher },
+  opts: { accessToken: string | undefined; fetcher: HttpFetcher },
 ): Promise<{ ok: true; data: Buffer } | { ok: false; status: number; text: string }> => {
   const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
   const res = await opts.fetcher(safeUrl, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${opts.accessToken}` },
+    headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -469,7 +475,7 @@ export const inviteFromMime = async (mime: Buffer): Promise<Buffer | null> => {
 export const createGraphProvider = (
   opts: CreateGraphProviderOptions,
 ): MailProvider => {
-  const fetcher = opts.fetcher ?? defaultHttpFetcher;
+  const fetcher = opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let pollStop: ProviderPollStop | null = null;
@@ -513,7 +519,8 @@ export const createGraphProvider = (
     markError(msg, body);
   };
 
-  const ensureToken = async (force: boolean): Promise<string> => {
+  const ensureToken = async (force: boolean): Promise<string | undefined> => {
+    if (opts.managedFetcher) return undefined;
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
       provider: 'graph',
@@ -539,7 +546,7 @@ export const createGraphProvider = (
   ): Promise<T | null> => {
     const first = await graphGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
-    if (first.status === 401) {
+    if (first.status === 401 && !opts.managedFetcher) {
       const second = await graphGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
@@ -561,7 +568,7 @@ export const createGraphProvider = (
   const getBytesWithRetry = async (url: string): Promise<Buffer> => {
     const first = await graphGetBytes(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
-    const second = first.status === 401
+    const second = first.status === 401 && !opts.managedFetcher
       ? await graphGetBytes(url, { accessToken: await ensureToken(true), fetcher })
       : first;
     if (second.ok) return second.data;
@@ -592,7 +599,7 @@ export const createGraphProvider = (
   const getReconciliationSource = async <T>(url: string): Promise<T> => {
     const first = await graphGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
-    if (first.status === 401) {
+    if (first.status === 401 && !opts.managedFetcher) {
       const second = await graphGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
@@ -1002,16 +1009,16 @@ export const createGraphProvider = (
     url: string,
     body?: string,
   ): ReturnType<HttpFetcher> => {
-    const post = async (token: string) => fetcher(url, {
+    const post = async (token: string | undefined) => fetcher(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...oauthAuthorizationHeaders(token),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body !== undefined ? { body } : {}),
     });
     let res = await post(await ensureToken(false));
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       res = await post(await ensureToken(true));
     }
     return res;
@@ -1431,26 +1438,26 @@ export const createGraphProvider = (
     url: string,
     body: string,
   ): ReturnType<HttpFetcher> => {
-    const patch = async (token: string) => fetcher(url, {
+    const patch = async (token: string | undefined) => fetcher(url, {
       method: 'PATCH',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...oauthAuthorizationHeaders(token),
         'Content-Type': 'application/json',
       },
       body,
     });
     let res = await patch(await ensureToken(false));
-    if (res.status === 401) res = await patch(await ensureToken(true));
+    if (res.status === 401 && !opts.managedFetcher) res = await patch(await ensureToken(true));
     return res;
   };
 
   const deleteWithRetry = async (url: string): ReturnType<HttpFetcher> => {
-    const del = async (token: string) => fetcher(url, {
+    const del = async (token: string | undefined) => fetcher(url, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...oauthAuthorizationHeaders(token) },
     });
     let res = await del(await ensureToken(false));
-    if (res.status === 401) res = await del(await ensureToken(true));
+    if (res.status === 401 && !opts.managedFetcher) res = await del(await ensureToken(true));
     return res;
   };
 
@@ -1588,20 +1595,19 @@ export const createGraphProvider = (
     lastSuccessfulSyncAt = nowOf();
   };
 
-  // sendCapable lockstep with `send`: derive once at construction
-  // from the user's granted-scope list. Re-enrollment with new
-  // scopes recreates the provider so a later config() mutation can't
-  // desync the field from the method.
+  // Derive capability and method together at construction. Direct accounts
+  // use granted scopes; managed accounts require an explicit owner switch,
+  // with vendor permission still enforced on the actual request.
   // Tolerant match — Microsoft may return `https://graph.microsoft.com/Mail.Send`
   // for a `Mail.Send` request, and an exact miss makes send silently unavailable
   // (see `grantedScopesInclude`).
-  const sendCapable = grantedScopesInclude(
+  const sendCapable = opts.managedFetcher ? opts.managedSendEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GRAPH_SEND_SCOPE,
   );
   const accountEmail = opts.config().account_email ?? '';
   // D-239 — same lockstep + tolerant-match discipline as `sendCapable`.
-  const mutationCapable = grantedScopesInclude(
+  const mutationCapable = opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GRAPH_MODIFY_SCOPE,
   );

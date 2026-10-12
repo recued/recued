@@ -118,6 +118,7 @@ export const RPC_REFUSAL_RECIPE_CODES: Readonly<Record<string, RecipeErrorCode>>
 
 /** Codes that stay `NETWORK_ERROR`, each with why. */
 export const RPC_CODES_LEFT_UNNAMED: Readonly<Record<string, string>> = {
+  broker_unavailable: 'owner-only OAuth setup and consent-status transport; API dispatch uses its ingredient errors, never this control-plane code',
   cancelled: 'the Kitchen test run stopping itself (499); never a step\'s refusal',
 };
 

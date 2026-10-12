@@ -1882,6 +1882,49 @@ describe('phase 3: to_checklist inner shape', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].severity).toBe('info');
   });
+  // A key no part of a checklist reads did nothing, silently: `warn` / `detail_warn`,
+  // output-shaped `status` / `detail` and a per-row `skip_when` all shipped.
+  it('a key a row never reads → checklist_item_unknown_key warn, naming what a row reads', () => {
+    const recipe = singleStepRecipe({
+      id: 'cl', transform: 'to_checklist', title: 'Risks',
+      items: [
+        {
+          label: 'Sentiment', issue: '{{step.data}} equal negative', detail_ok: 'ok',
+          warn: '{{step.data}} equal neutral', detail_warn: 'Neutral', detail_nul: 'typo',
+        },
+        { label: 'Setup', status: 'ok', detail: 'Open a deal', skip_when: '{{step.data}} is_null' },
+      ],
+    });
+    const result = validateRecipe(recipe);
+    const issues = issuesOf(result, 'checklist_item_unknown_key');
+    expect(issues.map((issue) => issue.path)).toEqual([
+      'steps[0].items[0].warn',
+      'steps[0].items[0].detail_warn',
+      'steps[0].items[0].detail_nul',
+      'steps[0].items[1].status',
+      'steps[0].items[1].detail',
+      'steps[0].items[1].skip_when',
+    ]);
+    expect(issues.every((issue) => issue.severity === 'warn')).toBe(true);
+    // A warning: the recipe still installs and runs.
+    expect(result.valid).toBe(true);
+    expect(issues[0].message).toContain('there is no warn state');
+    expect(issues[2].message).toBe(
+      'checklist item key `detail_nul` is not read and does nothing. '
+        + 'A row reads label, issue, detail_ok, detail_issue, detail_null, action, actions.',
+    );
+  });
+  it('every key a row reads → no checklist_item_unknown_key', () => {
+    const action = { kind: 'recipe.run', label: 'Review', recipe_id: 'review-recipe' };
+    const recipe = singleStepRecipe({
+      id: 'cl', transform: 'to_checklist', title: 'Risks',
+      items: [{
+        label: 'All', issue: '{{step.data}} is_null', detail_ok: 'ok', detail_issue: 'bad',
+        detail_null: 'n/a', action, actions: [action],
+      }],
+    });
+    expect(issuesOf(validateRecipe(recipe), 'checklist_item_unknown_key')).toEqual([]);
+  });
   it('item missing all detail_* → checklist_item_no_detail info', () => {
     const recipe = singleStepRecipe({
       id: 'cl', transform: 'to_checklist', title: 'Risks',
@@ -2182,6 +2225,35 @@ describe('phase 3: any/all either-or', () => {
       conditions: ['{{step.data.x}} is_not_null'],
     });
     expect(issuesOf(validateRecipe(recipe), 'any_all_missing_operands').length).toBe(0);
+  });
+  // ⛔ `values` are tested for truth once resolved: a condition written there is
+  // non-empty text, always true. 11 shipped steps did it (a Title X check flagged
+  // every deal).
+  it('text under values → any_all_text_in_values warn, pointing at conditions', () => {
+    const recipe = singleStepRecipe({
+      id: 'gate', transform: 'all',
+      values: ['{{step.data.x}}', '{{step.data.x}} equal true', 'false'],
+    });
+    const result = validateRecipe(recipe);
+    const issues = issuesOf(result, 'any_all_text_in_values');
+    // A ref is a value; a condition and a literal word are text.
+    expect(issues.map((issue) => issue.path)).toEqual(['steps[0].values[1]', 'steps[0].values[2]']);
+    expect(issues.every((issue) => issue.severity === 'warn')).toBe(true);
+    expect(issues[0].message).toContain('put it under `conditions`');
+    expect(result.valid).toBe(true);
+  });
+  it('a condition that cannot be evaluated → warned, not refused', () => {
+    const recipe = singleStepRecipe({
+      id: 'gate', transform: 'all',
+      conditions: ['{{step.data.x}} greater 0', '{{step.data.x}} less_equal 48', '{{step.data.x}}'],
+    });
+    const result = validateRecipe(recipe);
+    const atConditions = result.issues.filter((issue) => issue.path.startsWith('steps[0].conditions['));
+    expect(atConditions.map((issue) => [issue.path, issue.code, issue.severity])).toEqual([
+      ['steps[0].conditions[1]', 'condition_operator_invalid', 'warn'],
+      ['steps[0].conditions[2]', 'condition_too_short', 'warn'],
+    ]);
+    expect(result.valid).toBe(true);
   });
 });
 

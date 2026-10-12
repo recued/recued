@@ -650,6 +650,12 @@ export const defaultResolveInboxSource: ResolveInboxSource = ({ anchor, checkpoi
     argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw)
       ? (argsRaw as Record<string, unknown>)
       : {};
+  if (anchor.recipe_id === 'reception-quote-signoff-release' && typeof args.signoff_id === 'string'
+    && typeof args.summary === 'string') {
+    return { top_tier_kind: 'task', source: { kind: 'quote_signoff', record_ref: args.signoff_id }, args,
+      preview: { title: 'Customer-accepted quote', subtitle: args.summary.split('\n')[0] },
+      proposed_action: 'Mark the accepted quote won and create its task and invoice together' };
+  }
   const kind = recoverSourceKind(anchor);
   const rawMetadata = args.metadata;
   const metadata =

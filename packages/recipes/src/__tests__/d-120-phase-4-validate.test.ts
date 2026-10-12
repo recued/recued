@@ -90,6 +90,16 @@ describe('D-120 Phase 4 — `requires` field shape', () => {
     expect(warn?.severity).toBe('warn');
     expect(warn?.message).toContain('do_something_invented');
   });
+
+  // ⛔ The validator's own list knew two of these; 244 shipped recipes requiring
+  // `notification_send` or `mail_send` were warned the permission was unknown
+  // (2026-10-11). It reads contracts' `RECIPE_PERMISSIONS` now.
+  it('knows every permission a kernel ingredient declares, and the data reads', () => {
+    const r = baseRecipe({
+      requires: ['read_memory', 'read_audit', 'write_enrichment', 'notification_send', 'mail_send'],
+    });
+    expect(findIssue(validateRecipe(r), 'requires_unknown')).toBeUndefined();
+  });
 });
 
 describe('D-120 Phase 4 — `read_memory` permission gating', () => {

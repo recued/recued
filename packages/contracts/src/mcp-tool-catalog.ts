@@ -363,6 +363,10 @@ export const MCP_RESERVED_RPC_PREFIXES = [
   // connection + grant topology. None is in the MCP catalog today, but the
   // reserved-prefix gate is the durable channel-isolation invariant.
   'collection.connection.',
+  // D-322: only the owner may activate a Mail/Calendar mirror against a saved
+  // broker account. Agent reads/writes continue through the governed adapters.
+  'collection.mail.enrollManagedOAuth',
+  'collection.calendar.enrollManagedOAuth',
   // D-166 override-write path — the `collection.contract.*` rpc family authors
   // user `contract.override` rows (the tightening policy layer the catalog
   // gateway reads). This is the user's restrict-what-agents-can-do surface; an

@@ -58,11 +58,13 @@ describe('D-218 — the closed vocabulary is ONE list, checked both ways', () =>
     expect(new Set(CONNECTION_AUTH_TYPES).size).toBe(CONNECTION_AUTH_TYPES.length);
   });
 
-  it('⛔ is the SAME list the pack-side descriptor vocabulary uses', () => {
-    // These were two hand-kept copies that happened to agree. "Happened to" was
-    // doing real work: widening the union left the descriptor list short and
-    // nothing complained.
-    expect([...CONNECTION_AUTH_DESCRIPTOR_TYPES]).toEqual([...CONNECTION_AUTH_TYPES]);
+  it('derives the pack vocabulary, excluding the owner-selected managed transport (D-322)', () => {
+    // Packs declare vendor OAuth. Choosing a broker is the owner's setup choice,
+    // so every direct descriptor survives without a broker-specific manifest.
+    expect([...CONNECTION_AUTH_DESCRIPTOR_TYPES]).toEqual(
+      CONNECTION_AUTH_TYPES.filter((type) => type !== 'managed_oauth'),
+    );
+    expect(requirementIssues({ type: 'managed_oauth' })).not.toEqual([]);
   });
 });
 

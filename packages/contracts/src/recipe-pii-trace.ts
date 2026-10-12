@@ -301,6 +301,7 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   clamp: { rule: 'destroy' },
   to_number: { rule: 'destroy' },
   math: { rule: 'destroy' },
+  decimal_math: { rule: 'destroy' },
   weighted_score: { rule: 'destroy' },
   // ── Date ── (dates are not one of the 9 privacy kinds; formatting a date
   // string yields a date, not an identifier)

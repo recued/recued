@@ -72,6 +72,8 @@ export interface WorkEntityDialogProps {
    *  not exist yet has no history) and absent while the read is in flight, so
    *  the section never claims an empty past for an entity still loading. */
   history_html?: string;
+  /** Owner task lifecycle action, separate from saving the form's edits. */
+  task_completion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string };
 }
 
 /** Render the dialog. The dialog body is wrapped in a backdrop +
@@ -90,7 +92,7 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
       ? renderCreateSourcePicker(props.state.source_id, props.sources, props.kind)
       : renderEditSourceLabel(props.state.source_id, props.sources);
   const submitError = props.state.submit_error
-    ? `<div class="work-entity-dialog-submit-error" role="alert">${e(props.state.submit_error)}</div>`
+    ? `<div class="work-entity-dialog-submit-error" role="alert" tabindex="-1">${e(props.state.submit_error)}</div>`
     : '';
   // Codex P2 fold — disable submit when create-mode dialog has no
   // writable Source. The dialog can still mount in this state
@@ -133,6 +135,19 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
           </div>
         </section>`
     : '';
+  const completion = props.kind === 'task' && props.state.mode === 'edit'
+    ? props.task_completion : undefined;
+  const completionHtml = completion === undefined ? '' : `
+    <section class="work-entity-task-completion" aria-label="Task completion">
+      <p data-task-completion-status role="status" tabindex="-1">${e(
+        completion.notice ?? (completion.done ? 'Task complete.' : 'Task unfinished.'),
+      )}</p>
+      ${completion.can_change ? `<button type="button" class="work-entity-dialog-cancel"
+        data-action="${completion.done ? 'reopen-work-entity-task' : 'complete-work-entity-task'}"${
+          props.state.submitting ? ' disabled aria-busy="true"' : ''
+        }>${completion.busy ? (completion.done ? 'Reopening…' : 'Completing…')
+          : (completion.done ? 'Reopen' : 'Complete')}</button>` : ''}
+    </section>`;
   return `
     <div
       class="work-entity-dialog-backdrop"
@@ -159,6 +174,7 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
         </header>
         <form class="work-entity-dialog-form" data-form-kind="${e(props.kind)}"${editorStateAttr}>
           ${sourcePicker}
+          ${completionHtml}
           ${renderForm(props.definition, {
             values: props.state.values,
             errors: props.state.errors,

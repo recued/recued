@@ -15,7 +15,14 @@ import type { ExecutionContext, StepLog } from './types.js';
 import { requireRecipe } from './require-recipe.js';
 import { evaluateCondition } from './condition.js';
 import { fireProgress } from './execute.js';
-import { adapterErrorCode, mergeArgOverrides, resolveCatalogConnection, trackContextSize } from './step-runner.js';
+import {
+  adapterErrorCode,
+  connectionForRecord,
+  mergeArgOverrides,
+  resolveCatalogConnection,
+  trackContextSize,
+  withCallConnection,
+} from './step-runner.js';
 import { runCatalogOperation } from './catalog-gateway.js';
 import { setNamespaceValue } from './store-safety.js';
 import { invokeGoverned } from './lane.js';
@@ -250,14 +257,16 @@ const executePrefetchStep = async (
         input.args !== undefined
           ? { ...input, args: resolveDeep(input.args, ctx.stores) }
           : input;
-      const connectionName = resolveCatalogConnection(
+      // D-320 ruling 20g — a marked step follows its record's connection.
+      const connectionName = connectionForRecord(
         ps as unknown as Record<string, unknown>,
+        manifest,
         resolvedInput,
-        ctx,
+        resolveCatalogConnection(ps as unknown as Record<string, unknown>, resolvedInput, ctx),
       );
-      const catalogResult = await runCatalogOperation(
+      const catalogResult = withCallConnection(ps as unknown as Record<string, unknown>, await runCatalogOperation(
         ctx, manifest, ingredientSlug, resolvedInput, connectionName, ps.output, stepOptions, stepMeta,
-      );
+      ), connectionName);
       setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, catalogResult);
       trackContextSize(ctx, catalogResult);
       return { id, type: 'prefetch', skipped: false, result: catalogResult, error: null, duration_ms: Date.now() - start };

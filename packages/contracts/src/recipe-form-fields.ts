@@ -4,7 +4,8 @@
  *  ## The defect this closes
  *
  *  A recipe that consumes an accepted Reception submission reads named answers
- *  by STATIC path — `{{step.<reader>.record.values.<name>}}` — because dynamic
+ *  by STATIC path — `{{step.<reader>.record.values.<name>}}` or a named batch
+ *  item path — because dynamic
  *  indexing (`values.{{config.field}}`) raises `nested_template`. So the field
  *  NAMES are a hard contract between the recipe and whatever form the owner
  *  points at it, and until this slice that contract lived in a readme
@@ -17,7 +18,8 @@
  *  `requires_form_fields` makes the claim machine-checkable in two places:
  *
  *    1. **Authoring (this slice, static).** `validateRecipe` cross-checks the
- *       declaration against the recipe's own `record.values.<name>` refs, in
+ *       declaration against the recipe's named answer reads, including list,
+ *       foreach, and map bindings, in
  *       BOTH directions — a declared field nothing reads, and a read field
  *       nothing declares, are each an authoring issue. That is what makes this
  *       an enforced contract rather than a second place to write a comment.
@@ -44,6 +46,7 @@
  *
  *  Spec: D-220 § Slice A. */
 
+import { collectRecipeFormReads } from './recipe-form-reads.js';
 import {
   INTAKE_FORM_FIELD_NAME_MAX,
   INTAKE_FORM_FIELDS_COUNT_MAX,
@@ -200,89 +203,17 @@ export const validateRecipeFormFields = (
 // The static cross-check basis
 // ────────────────────────────────────────────────────────────────
 
-/** Matches a read of one named answer off a form-response record:
- *  `{{step.<anything>.record.values.<name>}}` and any deeper path under it
- *  (`…values.address.city`), capturing only the FIRST segment — that is the
- *  form field, and everything after it is structure inside the answer.
- *
- *  ⚠ Deliberately anchored on `.record.values.` rather than the reader step's
- *  id: a recipe may read the response in `prefetch_steps` and again in `steps`,
- *  and the id is author-chosen. What is invariant is the shape of the path. */
-const FORM_VALUE_REF_RE =
-  /\{\{\s*step\.[A-Za-z0-9_]+\.record\.values\.([A-Za-z_][A-Za-z0-9_]*)/g;
+/** Whole submitted-answer reads, including batch items and their aliases.
+ * Collection transport is traced to its consumers; named projections remove
+ * the unrestricted answers from the tracked output. */
+export const collectWholeFormRecordRefs = (recipe: unknown): ReadonlyArray<string> =>
+  collectRecipeFormReads(recipe).wholeObjects;
 
-/** Every form field name the recipe JSON actually reads, in first-seen order.
- *
- *  Operates on the SERIALIZED recipe rather than walking step shapes, because a
- *  ref can appear anywhere a value can: a step arg, a nested object in a
- *  `shared.write` payload, a `to_summary` field, a condition string, an inline
- *  mail body. A structural walk would need to know every one of those places
- *  and would silently miss the next one someone invents.
- *
- *  ⚠ Consequence, accepted: a field name appearing inside recipe PROSE
- *  (a `readme`, a variable `help`) in exactly this template shape would count
- *  as a read. That is the safe direction — it over-reports reads, so the
- *  cross-check nags rather than lets an undeclared read through. */
-/** Matches a WHOLE-OBJECT read of the submitted answers — `…record.values` with
- *  no field after it, or `…record` itself. The resolver preserves objects on a
- *  pure ref, and `json_stringify` accepts anything, so one of these plus a
- *  serialize step carries EVERY visitor field into a task body, a mail, or a
- *  shared row while naming none of them.
- *
- *  ⚠ Found by adversarial review (Codex, 2026-07-29): the named-field scanner
- *  below sees nothing in that recipe, so a `requires_form_fields: []` declaration
- *  — a POSITIVE claim to read no named answers — validated as accurate while the
- *  recipe consumed the lot. A declaration cannot enumerate what a whole-object
- *  read takes, so the two are incompatible by construction rather than by degree.
- *
- *  The negative lookahead is what makes this disjoint from a named read:
- *  `values.item_description` must NOT match here, only bare `values` / `record`. */
-// ⛔ `[a-z_]+`, not `[a-z]+`: the hint vocabulary is FORMAT_HINTS *plus*
-// ESCAPE_HINTS, and the escape hints carry underscores (`soql_string`,
-// `soql_like`). With `[a-z]+` the regex missed
-// `{{step.form_response.record.values:soql_string}}` entirely — `parseRef`
-// strips the hint at runtime and a pure ref preserves the whole object, so
-// every visitor field flowed onward past a `requires_form_fields: []` claim.
-const FORM_WHOLE_OBJECT_REF_RE =
-  /\{\{\s*step\.[A-Za-z0-9_]+\.record(?:\.values)?\s*(?::[a-z_]+)?\s*\}\}/g;
-
-/** Every whole-object read of the submitted answers, verbatim, in first-seen
- *  order. Non-empty ⇒ the recipe reads answers it cannot enumerate. */
-export const collectWholeFormRecordRefs = (recipe: unknown): ReadonlyArray<string> => {
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(recipe) ?? '';
-  } catch {
-    return [];
-  }
-  const found: string[] = [];
-  const seen = new Set<string>();
-  for (const match of serialized.matchAll(FORM_WHOLE_OBJECT_REF_RE)) {
-    const ref = match[0];
-    if (ref === undefined || seen.has(ref)) continue;
-    seen.add(ref);
-    found.push(ref);
-  }
-  return found;
-};
-
-export const collectFormValueRefs = (recipe: unknown): ReadonlyArray<string> => {
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(recipe) ?? '';
-  } catch {
-    return [];
-  }
-  const found: string[] = [];
-  const seen = new Set<string>();
-  for (const match of serialized.matchAll(FORM_VALUE_REF_RE)) {
-    const name = match[1];
-    if (name === undefined || seen.has(name)) continue;
-    seen.add(name);
-    found.push(name);
-  }
-  return found;
-};
+/** Named form answers read through direct refs, foreach/map items, or implicit
+ * transform field paths. Source binding excludes ordinary Records and mail.
+ * Names and whole reads are returned in first-seen order, without duplicates. */
+export const collectFormValueRefs = (recipe: unknown): ReadonlyArray<string> =>
+  collectRecipeFormReads(recipe).fields;
 
 // ────────────────────────────────────────────────────────────────
 // D-220 Slice A2 — comparing the declaration against a real form

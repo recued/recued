@@ -11,14 +11,24 @@
  *  tells an owner nothing to do. The remedy is to update Recued, so say that.
  *
  *  ⚠ A server can only name what IT has a list for: this helps servers from the
- *  release that carries it on, never an older one. */
+ *  release that carries it on, never an older one.
+ *
+ *  D-320 ruling 19 adds what a pack or a recipe SAYS it needs: the lowest Recued
+ *  it runs on (`min_recued_version`, at a pack's root, in a recipe's metadata).
+ *  The same remedy, in the same words, and the same limit: a server older than
+ *  the field ignores it. */
 import {
   CLI_BINDING_ENV_NAMES,
   CLI_PROGRESS_ADAPTERS,
   CLI_PROGRESS_ANSWER_ADAPTERS,
+  isRecuedVersion,
   normalizeBulkPackInstallPlan,
   type BulkPackManifest,
+  type RecipeDefinition,
 } from '@recued/contracts';
+import { compareVersions } from '@recued/release';
+
+import { SERVER_VERSION } from './server-version.js';
 
 const ADAPTERS: ReadonlySet<string> = new Set(CLI_PROGRESS_ADAPTERS);
 const ANSWER_ADAPTERS: ReadonlySet<string> = new Set(CLI_PROGRESS_ANSWER_ADAPTERS);
@@ -72,3 +82,56 @@ export const newerServerMessage = (
   return `packs.install: ${root.name} needs a newer version of Recued. This server does not have `
     + `${listed(lacking)}, which ${users}. Update Recued, then install ${root.name} again.`;
 };
+
+/** D-320 ruling 19 — does a declared floor (`min_recued_version`) name a newer
+ *  Recued than `serverVersion`? Compared as the update checker compares
+ *  (`compareVersions`), so a hotfix suffix counts. A malformed floor reads false
+ *  here because the validators refuse it first: a pack is parsed and a recipe
+ *  validated on every install path. */
+export const needsNewerRecued = (floor: unknown, serverVersion: string = SERVER_VERSION): floor is string =>
+  isRecuedVersion(floor) && compareVersions(serverVersion, floor) < 0;
+
+/** The highest of the floors given, so one update is enough. */
+const highestFloor = <T>(items: readonly T[], floorOf: (item: T) => string): T =>
+  items.reduce((best, item) => (compareVersions(floorOf(item), floorOf(best)) > 0 ? item : best));
+
+/** D-320 ruling 19 — the refusal for a pack, or a pack it brings in, whose own
+ *  floor (`min_recued_version`) names a newer Recued than this one. Null when
+ *  every floor is met. */
+export const packFloorRefusal = (
+  root: BulkPackManifest,
+  manifests: readonly BulkPackManifest[],
+  serverVersion: string = SERVER_VERSION,
+): string | null => {
+  const above = manifests.filter((manifest) => needsNewerRecued(manifest.min_recued_version, serverVersion));
+  if (above.length === 0) return null;
+  const pack = highestFloor(above, (manifest) => manifest.min_recued_version!);
+  const who = pack.slug === root.slug ? root.name : `${root.name} brings in ${pack.name}, which`;
+  return `packs.install: ${who} needs Recued ${pack.min_recued_version} or newer, and this server runs `
+    + `${serverVersion}. Update Recued, then install ${root.name} again.`;
+};
+
+/** D-320 ruling 19 — the same for a recipe a pack brings in, by its own floor
+ *  (`metadata.min_recued_version`). */
+export const recipeFloorRefusal = (
+  packName: string,
+  recipes: ReadonlyArray<RecipeDefinition | null | undefined>,
+  serverVersion: string = SERVER_VERSION,
+): string | null => {
+  const above = recipes.filter((recipe): recipe is RecipeDefinition =>
+    recipe != null && needsNewerRecued(recipe.metadata?.min_recued_version, serverVersion));
+  if (above.length === 0) return null;
+  const recipe = highestFloor(above, (r) => r.metadata.min_recued_version!);
+  return `packs.install: ${packName} includes ${recipe.metadata.name}, which needs Recued `
+    + `${recipe.metadata.min_recued_version} or newer, and this server runs ${serverVersion}. `
+    + `Update Recued, then install ${packName} again.`;
+};
+
+/** D-320 ruling 19 — the same for a recipe installed or updated on its own. */
+export const standaloneRecipeFloorRefusal = (
+  recipe: RecipeDefinition,
+  serverVersion: string = SERVER_VERSION,
+): string | null => needsNewerRecued(recipe.metadata?.min_recued_version, serverVersion)
+  ? `recipe.installBySlug: ${recipe.metadata.name} needs Recued ${recipe.metadata.min_recued_version} or newer, `
+    + `and this server runs ${serverVersion}. Update Recued, then install it again.`
+  : null;

@@ -187,11 +187,18 @@ import {
   applyKernelOpRunnability,
   CanonicalOpResolutionError,
   canonicalRecipeDefinition,
+  carryRetiredConnections,
+  catalogSignInReader,
+  contextConnectionsOf,
   flattenRecipe,
   hashRecipe,
+  describeMissingUnattended,
   lowerOpStepRecipe,
   mailSenderSettings,
+  missingUnattendedSettings,
   serializeFlattenedInsight,
+  vendorNeutralSettings,
+  withSlotSettings,
   type PackOpResolution,
 } from '@recued/recipes';
 import { settleMailSenders } from './mail-senders.js';
@@ -271,7 +278,9 @@ import { createBoundExecutor, createGatewayAuditEmitter, createNamespaceStores, 
 import { createStepEffect } from './step-effect.js';
 import { createCliInvocationExecutor } from './cli-invocation-executor.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
-import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
+import { servingConnectionsFor } from './canonical-search-fanout.js';
+import { markRecordFollowers, recordRoutedConnection, settingsFromRecordIds } from './record-connection-settle.js';
+import { chosenSlots, resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
 import type { WebhookResumeDoorResolver } from './webhook-resume-door.js';
 import { mergeRecipeConfigLayers } from './recipe-effective-config.js';
 import { assertRunTargets } from './targeting-guard.js';
@@ -283,7 +292,7 @@ import {
   unboundConcreteConnectionSlots,
   type ConcreteConnectionSlot,
 } from './pick-candidates.js';
-import { bindingsForCatalogs } from './storage/connection-catalog-binding-store.js';
+import { bindingsForCatalogs, catalogBindingsOf } from './storage/connection-catalog-binding-store.js';
 import { effectiveSlotDefault } from './pack-connection-outcomes.js';
 import { bundledPackManifestOf, catalogSlotsFrom, type PackManifestOf } from './pack-connection-slots.js';
 import {
@@ -300,13 +309,6 @@ import {
   type ConnectionUsed,
 } from './run-connection-choice.js';
 import {
-  carryRetiredConnections,
-  catalogSignInReader,
-  contextConnectionsOf,
-  vendorNeutralSettings,
-  withSlotSettings,
-} from './slot-settings.js';
-import {
   raiseContainerPickAsk,
   type ContainerPickAskInput,
   type ContainerPickNotifier,
@@ -322,6 +324,7 @@ import { recipeGrantKeyFor } from './recipe-grant-identity.js';
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
 import {
   deriveBoundConventionFamilies,
+  liveCatalogVendors,
   liveVendorRegistry,
 } from './connection-convention-families.js';
 import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
@@ -2737,6 +2740,31 @@ const handleExecuteInner = async (
     }
   }
 
+  // D-319 amendment (owner, 2026-10-11): "scheduled runs should require the
+  // necessary fields for any recipes to run properly". A run that starts on its
+  // own (a schedule, a trigger, the auto-run timer, a webhook) has nobody to ask,
+  // and nothing above fills anything for it, so it is refused before its first
+  // step when its settings leave empty one the recipe needs
+  // (`missingUnattendedSettings`), naming them. Before, it ran with the setting
+  // undefined and failed wherever the recipe first needed it — a send, after
+  // drafting. A run by hand is unchanged; a resumed run carries the settings it
+  // was approved with.
+  if (internal.run_id === undefined && runAttentionForTriggerSource(request.trigger_source) === 'unattended') {
+    const missing = missingUnattendedSettings(recipe, request.config ?? {});
+    if (missing.length > 0) {
+      const dishName = boundDish !== null ? (boundDish.name !== '' ? boundDish.name : boundDish.dish_id) : undefined;
+      const recipeName = recipe.metadata?.name ?? recipe.recipe_id;
+      throw new RpcError(
+        'dish_settings_missing',
+        `"${recipeName}" runs on its own here, so it needs ${describeMissingUnattended(missing)} filled in. `
+          + `Fill ${missing.length === 1 ? 'it' : 'them'} in the settings of ${dishName !== undefined ? `"${dishName}"` : 'its main dish'}.`,
+        409,
+        undefined,
+        { missing: missing.map((setting) => setting.key), ...(boundDish !== null ? { dish_id: boundDish.dish_id } : {}) },
+      );
+    }
+  }
+
   // R2 dispatch (internal design notes
   // §3) — a canonical op-step (e.g. `deal.search`) resolves to a concrete vendor binding
   // AT DISPATCH, from the connection the run supplies (its `type:'connection'` variable in
@@ -2847,10 +2875,46 @@ const handleExecuteInner = async (
   // D-320 phase 3 (3d) — each vendor-neutral family's setting, for
   // `context.connections` below (the steps are lowered by then).
   let vendorNeutralFamilies: Readonly<Record<string, string>> = {};
+  // D-320 ruling 20 — and the connections each setting's fanned-out searches read.
+  let fannedOut: Readonly<Record<string, readonly string[]>> = {};
+  // D-320 ruling 20g — the steps that follow their record's connection at the call,
+  // and each such call that went through (its catalog and connection), for the
+  // run's record of the connections it used.
+  let recordFollowers: ReadonlySet<string> = new Set();
+  const followedCalls: Array<{ catalog: string; connection_name: string }> = [];
+  // The run's record of its connections, with each one a followed call used added
+  // under its catalog's slot, as a settled step's is named (`catalogSlotsFrom`).
+  const withFollowedCalls = (
+    used: readonly ConnectionUsed[],
+    calls: ReadonlyArray<{ catalog: string; connection_name: string }>,
+  ): ConnectionUsed[] => {
+    if (calls.length === 0 || deps.contractScan === undefined) return [...used];
+    const catalogs = [...new Set(calls.map((call) => call.catalog))];
+    const slotOf = catalogSlotsFrom(
+      bindingsForCatalogs(deps.contractScan, catalogs),
+      catalogs,
+      deps.packManifestOf ?? bundledPackManifestOf,
+      runPackOps,
+    );
+    const out = [...used];
+    const seen = new Set(out.map((entry) => `${entry.slot}\u0000${entry.connection_name}`));
+    for (const { catalog, connection_name } of calls) {
+      const slot = slotOf.get(catalog) ?? catalog;
+      if (seen.has(`${slot}\u0000${connection_name}`)) continue;
+      seen.add(`${slot}\u0000${connection_name}`);
+      out.push({ slot, connection_name });
+    }
+    return out.sort((a, b) =>
+      a.slot === b.slot ? a.connection_name.localeCompare(b.connection_name) : a.slot.localeCompare(b.slot));
+  };
   // The installed packs' catalogs, for the slots read once the steps resolve.
   let runPackOps: PackOpResolution | undefined;
   {
     const profiles = deps.connectionOperationProfiles;
+    // D-320 ruling 20e — each catalog's vendor and the registry canonical fields map
+    // through, the installed compositions included, so an accounting connection
+    // (QuickBooks, Xero) serves the `acct` family as a CRM's serves `crm`.
+    const catalogVendors = liveCatalogVendors(deps.localManifestStore);
     let effectiveConfig: Record<string, unknown> = request.config ?? {};
     let autoBound = false;
     const boundVars = new Set<string>();
@@ -2884,7 +2948,7 @@ const handleExecuteInner = async (
     const slotSettings = withSlotSettings(recipe, {
       ...(packOpResolution !== undefined ? { packs: packOpResolution } : {}),
       signInOf: catalogSignInReader({
-        ...(deps.contractScan !== undefined ? { scan: deps.contractScan } : {}),
+        ...(deps.contractScan !== undefined ? { bindingsOf: catalogBindingsOf(deps.contractScan) } : {}),
         ...(packOpResolution !== undefined ? { packs: packOpResolution } : {}),
         packManifestOf: deps.packManifestOf ?? bundledPackManifestOf,
       }),
@@ -2949,6 +3013,7 @@ const handleExecuteInner = async (
         profiles,
         manifests: deps.executorConfig.manifests,
         packs: packOpResolution,
+        vendors: catalogVendors,
       }).candidates.map((candidate) => candidate.connection_name);
       const choose = (
         choices: Readonly<Record<string, string>>,
@@ -3012,11 +3077,64 @@ const handleExecuteInner = async (
         autoBound = true;
       }
     }
+    // D-320 ruling 20 — the settings someone chose: the caller's own values, the
+    // dish's, and the run's or the dish's connection choices. Taken once, here,
+    // before anything fills a setting the run settles itself.
+    const chosenSettings = chosenSlots(effectiveConfig);
+    // D-320 ruling 20 — a vendor-neutral search whose setting nobody chose reads
+    // every connection that can serve it and that this run may use (a contract
+    // covers only its own), but for a vendor whose slot a choice gave a connection,
+    // only that one. The pick loop below binds settings and resolves again, and a
+    // search must not stop fanning out because another step's setting was bound.
+    const fanout = profiles === undefined ? undefined : {
+      servingConnections: servingConnectionsFor({
+        profiles,
+        manifests: deps.executorConfig.manifests,
+        vendors: catalogVendors,
+        ...(request.execution_source !== undefined && deps.contractOverlay !== undefined
+          ? { admits: (name: string) => deps.contractOverlay!.admitsConnection(request.execution_source!, name) }
+          : {}),
+        slotChoices: { ...(dishChoices ?? {}), ...(connectionChoices ?? {}) },
+        ...(deps.contractScan !== undefined
+          ? {
+              slotOfCatalog: (catalog: string) => catalogSlotsFrom(
+                bindingsForCatalogs(deps.contractScan!, [catalog]),
+                [catalog],
+                deps.packManifestOf ?? bundledPackManifestOf,
+                packOpResolution,
+              ).get(catalog) ?? catalog,
+            }
+          : {}),
+      }),
+      explicit: chosenSettings,
+    };
+    // D-320 ruling 20d — a step on one record runs on the connection its record's id
+    // names, when nobody chose its setting and the id is known before the run
+    // (`record-connection-settle.ts`). Before the pack's default and the pick layer,
+    // which then find the setting given. A chosen setting is left alone, and the
+    // gateway refuses a record from another connection (D-254 cell B).
+    {
+      const byRecord = settingsFromRecordIds(
+        recipe,
+        { config: effectiveConfig, context: request.context, explicit: chosenSettings },
+        {
+          manifests: deps.executorConfig.manifests,
+          packs: packOpResolution,
+          isSetUp: (name) => profiles?.get(name) != null,
+        },
+      );
+      if (Object.keys(byRecord).length > 0) {
+        effectiveConfig = { ...effectiveConfig, ...byRecord };
+        autoBound = true;
+      }
+    }
     let dispatchResolve = resolveCanonicalRecipeForDispatch(recipe, {
       profiles: profiles ?? { get: () => null },
       manifests: deps.executorConfig.manifests,
       config: effectiveConfig,
       packs: packOpResolution,
+      vendors: catalogVendors,
+      fanout,
     });
     /** One unbound connection slot → bind it, ask, or refuse (doc §4 close-out).
      *  Shared by canonical op-steps and concrete catalog steps, so both follow
@@ -3108,6 +3226,8 @@ const handleExecuteInner = async (
       }
       return null;
     };
+    // D-320 ruling 20g — settings left to their records (see the loop).
+    const recordRouted = new Map<string, string>();
     while (
       !dispatchResolve.ok
       && dispatchResolve.unbound_slot !== undefined
@@ -3119,7 +3239,29 @@ const handleExecuteInner = async (
         profiles,
         manifests: deps.executorConfig.manifests,
         packs: packOpResolution,
+        vendors: catalogVendors,
       });
+      // D-320 ruling 20g — steps that act only on records whose `target_id` the run
+      // produces mid-run need no connection of their own: each call takes its
+      // record's. Where the run would ask which or refuse, it leaves the setting to
+      // them instead (one connection of one's own still binds, as before).
+      const actor = request.execution_source?.actor;
+      const routedBy = recordRoutedConnection(recipe, variable, candidates, packOpResolution);
+      if (routedBy !== undefined
+        && !((actor === 'user_self' || actor === 'contracted_user') && candidates.length === 1)) {
+        recordRouted.set(variable, routedBy);
+        boundVars.add(variable);
+        dispatchResolve = resolveCanonicalRecipeForDispatch(recipe, {
+          profiles,
+          manifests: deps.executorConfig.manifests,
+          config: effectiveConfig,
+          packs: packOpResolution,
+          vendors: catalogVendors,
+          recordRouted,
+          fanout,
+        });
+        continue;
+      }
       const bound = await settleUnboundSlot(recipe, variable, candidates, operations);
       if (bound === null) break; // 0 candidates — the generic resolve failure below owns the message
       boundVars.add(variable);
@@ -3130,6 +3272,9 @@ const handleExecuteInner = async (
         manifests: deps.executorConfig.manifests,
         config: effectiveConfig,
         packs: packOpResolution,
+        vendors: catalogVendors,
+        recordRouted,
+        fanout,
       });
     }
     if (!dispatchResolve.ok) {
@@ -3168,6 +3313,10 @@ const handleExecuteInner = async (
       );
     }
     recipe = dispatchResolve.recipe;
+    // D-320 ruling 20 — each leg of a fanned-out search signs in through a setting
+    // the run's copy declares with its connection as the default, which is where the
+    // run reads it from (a pre-approved run also has it in the config it reviewed).
+    fannedOut = dispatchResolve.fanned_out ?? {};
     // D-320 phase 1 — a pack holds its connections. An empty setting takes the
     // one connection the packs owning the step's catalogs are bound to, BEFORE
     // the pick layer: with the pack's answer in hand, a run neither asks, nor is
@@ -3223,6 +3372,13 @@ const handleExecuteInner = async (
         effectiveConfig = { ...effectiveConfig, [slot.variable]: bound };
       }
     }
+    // D-320 ruling 20g — each record step whose setting nobody chose follows its
+    // record's connection at the call, as the engine reads the mark.
+    {
+      const followers = markRecordFollowers(recipe, chosenSettings, { manifests: deps.executorConfig.manifests });
+      recipe = followers.recipe;
+      recordFollowers = followers.marked;
+    }
     if (autoBound) {
       // The engine re-resolves each op-step's `{{config.<var>}}` at execute,
       // and the held-action identity + audit snapshots read `request.config`
@@ -3255,6 +3411,7 @@ const handleExecuteInner = async (
         slots,
         choices: connectionChoices,
         inherited: inheritedChoices,
+        families: vendorNeutralFamilies,
         config: request.config ?? {},
         variables: recipe.variables,
         bindings,
@@ -3272,6 +3429,7 @@ const handleExecuteInner = async (
         slots,
         choices: dishChoices,
         inherited: false,
+        families: vendorNeutralFamilies,
         dish: dishChoiceLabel ?? '',
         exempt: new Set([...customerUsageCallerRootKeys.config].filter((key) => {
           const value = config[key];
@@ -3513,6 +3671,7 @@ const handleExecuteInner = async (
     inheritableConnections(connectionsUsed),
     vendorNeutralFamilies,
     request.config ?? {},
+    fannedOut,
   );
   if (Object.keys(settledBySlot).length > 0) context.connections = Object.freeze(settledBySlot);
   // The owner's zone is the SERVER's fact, so it is added to whatever
@@ -6372,7 +6531,17 @@ const handleExecuteInner = async (
               ),
           }
         : {}),
-      ...(deps.auditLog ? { onGatewayCall: createGatewayAuditEmitter(deps.auditLog) } : {}),
+      ...((emit) => (emit !== undefined || recordFollowers.size > 0
+        ? {
+            onGatewayCall: (event: Parameters<NonNullable<typeof emit>>[0]) => {
+              // D-320 ruling 20g — a call a record step made: on the run's record.
+              if (event.outcome === 'success' && event.step_id !== undefined && recordFollowers.has(event.step_id)) {
+                followedCalls.push({ catalog: event.ingredient_id, connection_name: event.connection_name });
+              }
+              emit?.(event);
+            },
+          }
+        : {}))(deps.auditLog ? createGatewayAuditEmitter(deps.auditLog) : undefined),
       // D-177 catalog-gate session-grant loop — the catalog gate's grant seam
       // (absent ⇒ every catalog `ask` holds exactly as pre-loop).
       ...(catalogSessionGrants ? { catalogSessionGrants } : {}),
@@ -7921,8 +8090,11 @@ const handleExecuteInner = async (
           // opposite of `run_yield` directly above, whose zero IS its signal.
           // See `AuditEntry.total_usage`; do not "tidy" these two into one rule.
           ...(totalUsage !== undefined ? { total_usage: totalUsage } : {}),
-          // D-320 §3.5 — the connection each slot settled on.
-          ...(connectionsUsed.length > 0 ? { connections_used: connectionsUsed } : {}),
+          // D-320 §3.5 — the connection each slot settled on, and (ruling 20g) each
+          // one a record step's call followed its record to.
+          ...((used) => (used.length > 0 ? { connections_used: used } : {}))(
+            withFollowedCalls(connectionsUsed, followedCalls),
+          ),
           // D-321 — programs this run started under Warn at an untested version.
           ...(untestedTools.length > 0 ? { untested_tools: untestedTools } : {}),
           // D-157 server-wiring (codex BLOCKER 3 fold) — capture the

@@ -27,6 +27,7 @@ import {
   isEnrichmentTopic,
   isHttpsRepoUrl,
   isPlatformReferenceScope,
+  RECIPE_PERMISSIONS,
   OPS,
   parseOpId,
   PAID_DOCUMENT_DIRECT_CHECKOUT_CONFIGURATION_METADATA_KEY,
@@ -38,6 +39,7 @@ import {
   validateWebhookRequirements,
   validateWebhookTriggerBindings,
   validateRecipeBundleKey,
+  isRecuedVersion,
   validateRecipeFormFields,
   collectFormValueRefs,
   collectWholeFormRecordRefs,
@@ -286,6 +288,13 @@ export const validateMetadata = (r: Record<string, unknown>, add: AddFn): void =
 
   for (const issue of validateRecipeBundleKey(meta.recipe_bundle)) {
     add('error', issue.code, issue.field, issue.message);
+  }
+
+  // D-320 ruling 19 — the lowest Recued the recipe runs on. Malformed is refused,
+  // never read as "any server": a floor that fails open is not a floor.
+  if (meta.min_recued_version !== undefined && !isRecuedVersion(meta.min_recued_version)) {
+    add('error', 'min_recued_version_invalid', 'metadata.min_recued_version',
+      `min_recued_version must be a Recued version such as 26.10.12; got ${JSON.stringify(meta.min_recued_version)}`);
   }
 
   // D-200 — this deployment block is optional and does not gate ordinary
@@ -759,21 +768,12 @@ export const validateRunMode = (r: Record<string, unknown>, add: AddFn): void =>
  *                                known set. Soft warn (forward-compat
  *                                so future permissions ride on the same
  *                                field without breaking older clients). */
-const KNOWN_PERMISSIONS = new Set([
-  // D-120 Phase 4 ships `read_memory`. D-128 Phase 6 adds
-  // `write_enrichment` — gates recipes that author rows into the
-  // enrichment substrate via `enrichment-upsert` (mail / contact /
-  // calendar / file scopes plus the platform-reference family).
-  // Future permissions append here as they land in the staged-trust
-  // catalogue.
-  //
-  // The open `read_connection_<connection_name>` family (D-128 P6) is
-  // matched separately by `isConnectionReadPermission` since the
-  // connection_name segment is user-typed and unbounded — listing every
-  // possible value isn't feasible.
-  'read_memory',
-  ENRICHMENT_WRITE_PERMISSION,
-]);
+// Contracts' list, not one kept here: this one held `read_memory` and
+// `write_enrichment` only, and warned 244 shipped recipes that `notification_send`
+// and `mail_send` were unknown while kernel manifests declared both (2026-10-11).
+// The open `read_connection_<connection_name>` family (D-128 P6) is matched
+// separately by `isConnectionReadPermission`: its name segment is the owner's.
+const KNOWN_PERMISSIONS = RECIPE_PERMISSIONS;
 
 /** D-128 P6 — true when a permission slug is recognised by the
  *  validator. Membership in `KNOWN_PERMISSIONS` covers the closed list;
@@ -2957,12 +2957,17 @@ export const validateRetiredConnections = (
  *  connection settings stay (no step names one as its connection: 0 of the 15
  *  shipped, measured 2026-10-10).
  *
- *  ⚠ ADVICE (`info`) until the shipped recipes drop theirs (3e). As an error it
- *  would refuse each of the 1,927 that still declare one, at install and at
- *  publish; as a warning it would show on each of them in the Kitchen and the
- *  marketplace, where the owner cannot act on it, and break the pack audits that
- *  keep shipped recipes free of warnings. A server keeps running a recipe that
- *  declares one either way (3a reads its value as its slot's).
+ *  ⚠ A WARNING, NOT AN ERROR (3e). The shipped recipes declare none since 3e, so
+ *  the pack audits that keep shipped recipes free of warnings now hold the corpus to
+ *  it, and the Kitchen's check shows it to an author. It cannot refuse:
+ *  - every run checks its own copy of the recipe and refuses on an error
+ *    (`executeRecipe`, `strict`), and that copy gives each step that names no
+ *    connection an API setting (`withSlotSettings`, 3a), so an error here would
+ *    refuse nearly every run that calls a pack;
+ *  - an install checks each recipe it brings in, so it would also refuse a recipe
+ *    published before 3e: an older version an owner pins, another publisher's, or
+ *    the marketplace's own while a server updated to 3e still reads it unrepublished.
+ *  A server keeps running a recipe that declares one (3a reads its value as its slot's).
  *
  *    - `api_connection_setting` — a setting asks for an API connection.
  *    - `step_names_connection`  — a step's `connection` names one. */
@@ -2978,7 +2983,7 @@ export const validateConnectionSettings = (
     const hint = def as { type?: unknown; connection_kind?: unknown };
     if (hint.type !== 'connection' || hint.connection_kind !== 'api') continue;
     api.add(name);
-    add('info', 'api_connection_setting', `variables.${name}`,
+    add('warn', 'api_connection_setting', `variables.${name}`,
       `"${name}" asks for a connection, which a recipe no longer does: each step that calls a pack uses the `
       + 'connection chosen for that pack, else its default. Remove this setting and every step\'s "connection"; '
       + 'a recipe that needs the name of the connection a run used reads {{context.connections.<slot>}}');
@@ -2992,7 +2997,7 @@ export const validateConnectionSettings = (
       const ref = (step as { connection?: unknown }).connection;
       const name = typeof ref === 'string' ? parseOpStepConnectionRef(ref) : undefined;
       if (name === undefined || !api.has(name)) return;
-      add('info', 'step_names_connection', `${array}[${index}].connection`,
+      add('warn', 'step_names_connection', `${array}[${index}].connection`,
         `this step names the connection {{config.${name}}}; remove "connection", and the step uses the `
         + 'connection chosen for its pack');
     });
@@ -3032,7 +3037,7 @@ export const validateRequiresFormFields = (
   const metadata = metadataOk ? (r.metadata as Record<string, unknown>) : null;
   const declared = metadata === null ? undefined : metadata.requires_form_fields;
   const read = collectFormValueRefs(r);
-  // ⚠ A whole-object read (`record.values` / `record`, no field after it) takes
+  // ⚠ A whole-object read (including a batch item carrying `record.values`) takes
   // EVERY visitor answer while naming none, so the named-field scan above sees
   // nothing. Found by adversarial review: a `[]` declaration then validated as
   // accurate while the recipe consumed the lot via `json_stringify`. A
@@ -3082,7 +3087,7 @@ export const validateRequiresFormFields = (
   for (const name of read) {
     if (!declaredNames.has(name)) {
       add('error', 'requires_form_fields_undeclared', 'metadata.requires_form_fields',
-        `recipe reads record.values.${name} but does not declare it — add it to metadata.requires_form_fields `
+        `recipe reads form answer '${name}' but does not declare it — add it to metadata.requires_form_fields `
           + 'or the pairing check cannot know the form must collect it');
     }
   }
@@ -3090,7 +3095,7 @@ export const validateRequiresFormFields = (
   for (const name of declaredNames) {
     if (!readNames.has(name)) {
       add('warn', 'requires_form_fields_unread', 'metadata.requires_form_fields',
-        `metadata.requires_form_fields declares '${name}' but no step reads record.values.${name} — `
+        `metadata.requires_form_fields declares '${name}' but no step reads that form answer — `
           + 'drop it, or keep it if the form must collect it for the owner rather than for this recipe');
     }
   }

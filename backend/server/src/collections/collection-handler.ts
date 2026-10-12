@@ -58,6 +58,7 @@ import {
 import {
   handleCalendarAttachGraphGrant,
   handleCalendarEnrollOAuth,
+  handleCalendarEnrollManagedOAuth,
   handleCalendarEnrollBasic,
   handleCalendarList as handleCalendarEnrollList,
   handleCalendarUpdate as handleCalendarEnrollUpdate,
@@ -68,6 +69,7 @@ import {
 } from './calendar/enroll.js';
 import {
   handleMailEnrollImap,
+  handleMailEnrollManagedOAuth,
   handleMailList,
   handleMailDelete,
   type MailEnrollDeps,
@@ -909,6 +911,7 @@ export type CollectionMethods =
   | 'collection.runRetention'
   | 'collection.listEndpoints'
   | 'collection.mail.enrollOAuth'
+  | 'collection.mail.enrollManagedOAuth'
   // D-177 N.12 — `collection.mail.send` is NOT in this slice (not a wire
   // method). `handleCollectionMailSend` stays exported as the gateway's
   // internal executor (kernel `mailSend` dispatcher calls it post-gate).
@@ -923,6 +926,7 @@ export type CollectionMethods =
   | 'collection.file.resync'
   | 'collection.listInstances'
   | 'collection.calendar.enrollOAuth'
+  | 'collection.calendar.enrollManagedOAuth'
   | 'collection.calendar.attachGraphGrant'
   | 'collection.calendar.enrollBasic'
   | 'collection.calendar.list'
@@ -984,6 +988,7 @@ export const makeCollectionHandlers = (
       'collection.runRetention',
       'collection.listEndpoints',
       'collection.mail.enrollOAuth',
+      'collection.mail.enrollManagedOAuth',
       // D-177 N.12 — `collection.mail.send` deliberately omitted (gateway
       // internal executor only; see the type union + handlers below).
       'collection.mail.enrollImap',
@@ -997,6 +1002,7 @@ export const makeCollectionHandlers = (
       'collection.file.resync',
       'collection.listInstances',
       'collection.calendar.enrollOAuth',
+      'collection.calendar.enrollManagedOAuth',
       'collection.calendar.attachGraphGrant',
       'collection.calendar.enrollBasic',
       'collection.calendar.list',
@@ -1022,6 +1028,8 @@ export const makeCollectionHandlers = (
         handleCollectionListEndpoints(deps),
       'collection.mail.enrollOAuth': async (args) =>
         handleCollectionEnrollOAuth(deps, args as Parameters<typeof handleCollectionEnrollOAuth>[1]),
+      'collection.mail.enrollManagedOAuth': async (args) =>
+        handleMailEnrollManagedOAuth(requireMailEnroll(deps), args),
       // D-177 N.12 — NO `collection.mail.send` handler here. Outbound mail
       // is a gated action: the `recued/mail-send` kernel ingredient is the
       // entry point (gateway outbound-send escalation → `ask`), and the
@@ -1050,6 +1058,8 @@ export const makeCollectionHandlers = (
         handleListInstances(requireFileEnroll(deps), args as Parameters<typeof handleListInstances>[1]),
       'collection.calendar.enrollOAuth': async (args) =>
         handleCalendarEnrollOAuth(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollOAuth>[1]),
+      'collection.calendar.enrollManagedOAuth': async (args) =>
+        handleCalendarEnrollManagedOAuth(requireCalendarEnroll(deps), args),
       'collection.calendar.attachGraphGrant': async (args) =>
         handleCalendarAttachGraphGrant(
           requireCalendarEnroll(deps),

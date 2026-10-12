@@ -1178,6 +1178,7 @@ export const wrapWithCommitGateway = (
           // grant must pin what was approved, never what drifted.
           if (
             resumeApproved
+            && decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
             && stepMeta?.preflight_session_grant !== undefined
             && stepMeta.preflight_session_grant.risk_tier === decision.risk_tier
             && deps.sessionGrants?.mint !== undefined
@@ -1287,7 +1288,8 @@ export const wrapWithCommitGateway = (
             // with the per-session sender candidate index (5.d).
             const fireDestinations = scopedDestinationsOnce();
             if (
-              deps.sessionGrants !== undefined
+              decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
+              && deps.sessionGrants !== undefined
               && identity !== undefined
               && argHashes !== undefined
             ) {

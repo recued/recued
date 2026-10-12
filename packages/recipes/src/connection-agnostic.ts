@@ -72,7 +72,9 @@
 import {
   ACCT_ALIAS_VALUES,
   CANONICAL_CRM_VERBS,
+  CONNECTION_VENDOR_ENTITIES,
   CRM_ALIAS_VALUES,
+  composePlatformRecordTargetId,
   getVendorEntityByAcctAlias,
   getVendorEntityByCrmAlias,
   isCanonicalOpStep,
@@ -321,6 +323,36 @@ export const buildProjectionTemplate = (
     assignProjectionPath(template, field.maps_to, projected);
   }
   return template;
+};
+
+/** D-320 ruling 20 — a record says which connection it came from: the connection
+ *  its call went through (`connection_name`) and, for a CRM record, D-190's id
+ *  (`target_id`), the one a later step routes by (D-254). Both beside the
+ *  projection, never over a field it has, and the vendor's own `id` stays as it is
+ *  (D-190 fork C2).
+ *
+ *  `connection` is a ref the engine resolves before the projection reads the record
+ *  (only `{{item.*}}` is deferred). A search's is the step's own connection,
+ *  `{{config.<var>}}`: a search never follows a record. A single-record op's is the
+ *  connection its fetch went through (`{{step.<id>__raw.connection_name}}`,
+ *  `result_names_connection`), since a step that follows its record (ruling 20g)
+ *  runs on the record's connection, not its setting's. `target_id` is composed only
+ *  for a pair the D-190 parser reads (the built-in registry), and its id part is the
+ *  bare field path: a coerced ref (`{{item.id | number}}`, Pipedrive's) does not
+ *  interpolate into text. */
+const withRecordRouting = (
+  projection: Record<string, unknown>,
+  input: { vendor: string; entity: string; connection: string; idRow: EntityFieldRow | undefined },
+): Record<string, unknown> => {
+  const parseable = CONNECTION_VENDOR_ENTITIES.some((e) => e.vendor === input.vendor && e.entity === input.entity);
+  const idPath = input.idRow !== undefined && input.idRow.derivation === undefined ? input.idRow.field_path : undefined;
+  return {
+    ...(parseable && idPath !== undefined
+      ? { target_id: `${composePlatformRecordTargetId(input.vendor, input.entity, input.connection, '')}{{item.${idPath}}}` }
+      : {}),
+    connection_name: input.connection,
+    ...projection,
+  };
 };
 
 /** Resolve the connection a single op-step binds to — shared by the CRM and the
@@ -684,9 +716,12 @@ const resolveOpStep = (
     ingredient: ctx.catalog_slug,
     connection,
     input: { operation: opRow.operation, args: dispatchArgs },
+    // A single record's projection names the connection its call went through.
+    ...(verb !== 'search' ? { result_names_connection: true } : {}),
     ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
     ...(step.cache !== undefined ? { cache: step.cache } : {}),
   };
+  const idRow = responseRows.find((row) => row.maps_to === 'id');
 
   // The fetched step value is NOT the bare vendor body. The catalog op dispatches
   // through the connection-api, whose response shape is
@@ -720,7 +755,7 @@ const resolveOpStep = (
             effectiveResultPath.length > 0
               ? `{{step.${rawId}.result.${effectiveResultPath}}}`
               : `{{step.${rawId}.result}}`,
-          expression: projection,
+          expression: withRecordRouting(projection, { vendor: ctx.vendor, entity: vendorEntity, connection, idRow }),
           ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
           ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
           ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),
@@ -736,7 +771,12 @@ const resolveOpStep = (
           id: step.id,
           transform: 'project',
           object: `{{step.${rawId}.result}}`,
-          expression: projection,
+          expression: withRecordRouting(projection, {
+            vendor: ctx.vendor,
+            entity: vendorEntity,
+            connection: `{{step.${rawId}.connection_name}}`,
+            idRow,
+          }),
           ...(step.skip_when !== undefined ? { skip_when: step.skip_when } : {}),
           ...(step.fail_on !== undefined ? { fail_on: step.fail_on } : {}),
           ...(step.stop_when !== undefined ? { stop_when: step.stop_when } : {}),

@@ -63,6 +63,30 @@ export const memoryDataPermissionFor = (sub: string): string | undefined =>
  *  addressed + CAS-bounded); write access is the trust boundary. */
 export const ENRICHMENT_WRITE_PERMISSION = 'write_enrichment';
 
+/** The permission a kernel notification ingredient declares (`permission` on its
+ *  manifest): a recipe that sends a notification declares it in `requires`, and
+ *  the install dialog surfaces it for approval. */
+export const NOTIFICATION_SEND_PERMISSION = 'notification_send';
+
+/** The permission the kernel mail-send ingredients declare, the same way. */
+export const MAIL_SEND_PERMISSION = 'mail_send';
+
+/** Every staged-trust permission a recipe may name in `requires`, besides the open
+ *  `read_connection_<name>` family. The validator reads this list.
+ *
+ *  ⛔ It was a list kept by hand inside the validator, two entries long, while
+ *  kernel manifests declared `notification_send` and `mail_send`: 244 shipped
+ *  recipes were warned that they required an "unknown permission" (2026-10-11). A
+ *  server test holds every kernel manifest's `permission` to this list or to the
+ *  host-only ones. */
+export const RECIPE_PERMISSIONS: ReadonlySet<string> = new Set([
+  MEMORY_READ_PERMISSION,
+  AUDIT_READ_PERMISSION,
+  ENRICHMENT_WRITE_PERMISSION,
+  NOTIFICATION_SEND_PERMISSION,
+  MAIL_SEND_PERMISSION,
+]);
+
 /** D-128 P6 — permission-slug *prefix* for platform-reference scope
  *  reads. The actual slug is `read_connection_<connection_name>` where
  *  `<connection_name>` is the user-chosen identifier picked at install

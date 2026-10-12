@@ -59,6 +59,7 @@ import {
 // carries. TYPE-only (recipe.ts does not import bulk-pack → no cycle).
 import type { RecipeDefinition } from './recipe.js';
 import { publisherMayDeclare } from './publisher-trust.js';
+import { isRecuedVersion } from './recued-version.js';
 import {
   BULK_PACK_MAX_CONNECTION_HINTS,
   validateConnectionHintShape,
@@ -189,6 +190,12 @@ export interface BulkPackManifest {
   /** Schema version — `1` (recipe-only, D-122) or `2` (app-pack with
    *  `contents[]`, D-165). */
   manifest_version: BulkPackManifestVersion;
+  /** D-320 ruling 19 — the lowest Recued this pack runs on, a released version
+   *  (`26.10.12`). An older server refuses to install or update the pack and
+   *  says to update Recued; the install dialog shows that before Install. Only
+   *  servers from the release that added the field enforce it: older ones
+   *  ignore it (`recued-version.ts`). Absent ⇒ any server. */
+  min_recued_version?: string;
   /** URL-safe pack identifier — `personal-crm-foundation`, etc. Forms
    *  half of the marketplace pack route (`/pack/<slug>`). */
   slug: string;
@@ -1905,6 +1912,12 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
     add('error', 'pack_version_unsupported', 'manifest_version',
       `manifest_version must be ${BULK_INSTALL_PACK_VERSION} or ${BULK_PACK_MANIFEST_VERSION_V2}; got ${JSON.stringify(obj.manifest_version)}`);
   }
+  // D-320 ruling 19 — the lowest Recued the pack runs on. Malformed is refused,
+  // never read as "any server": a floor that fails open is not a floor.
+  if (obj.min_recued_version !== undefined && !isRecuedVersion(obj.min_recued_version)) {
+    add('error', 'pack_min_recued_version_invalid', 'min_recued_version',
+      `min_recued_version must be a Recued version such as 26.10.12; got ${JSON.stringify(obj.min_recued_version)}`);
+  }
   // v2 enables the `contents[]` / `dependencies[]` substrate + makes
   // `recipes[]` optional (recipes can live in contents). A non-2 value
   // (including a malformed one) takes the v1 path so we don't mis-validate.
@@ -1959,11 +1972,17 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
     }
   } else if (obj.recipes !== undefined) {
     // v2 recipes[] alias — optional; shape + cap, no required/empty error.
+    // ⛔ D-320 ruling 20 — capped at the CONTENTS limit, not the v1 recipe limit.
+    // A parsed v2 manifest comes back with its recipe contents lifted into
+    // `recipes` (below), and the install path parses that manifest again
+    // (`packs.resolveBySlug` → `packs.install`). Capped at 50, the second parse
+    // refused every pack carrying 51–100 recipe contents, which the first had
+    // accepted: four shipped packs could not be installed from the web app.
     if (!Array.isArray(obj.recipes)) {
       add('error', 'pack_recipes_required', 'recipes', 'recipes must be an array when present');
-    } else if (obj.recipes.length > BULK_PACK_MAX_RECIPES) {
+    } else if (obj.recipes.length > BULK_PACK_MAX_CONTENTS) {
       add('error', 'pack_recipes_too_many', 'recipes',
-        `recipes may contain at most ${BULK_PACK_MAX_RECIPES} entries; got ${obj.recipes.length}`);
+        `recipes may contain at most ${BULK_PACK_MAX_CONTENTS} entries; got ${obj.recipes.length}`);
     } else {
       const seen = new Set<string>();
       obj.recipes.forEach((entry: unknown, idx: number) =>

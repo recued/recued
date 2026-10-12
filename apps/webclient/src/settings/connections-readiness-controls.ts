@@ -37,6 +37,7 @@ import {
   type PackListEntry,
 } from '@recued/contracts';
 import { serializeShellRoute } from '../shell/route.js';
+import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
 
 /** `collection.connection.list` caller (unfiltered — we filter to `api`
  *  client-side). Shape matches the connections route's enroll-list caller. */
@@ -309,7 +310,7 @@ export const createConnectionsReadinessController = (
           'href',
           keyFix
             ? serializeShellRoute('connections', 'others')
-            : serializeShellRoute('connections', 'others', 'enroll', slot),
+            : connectionsEnrollAddress(pack.connection_requirements?.[0]?.vendor ?? slot, { slug: pack.slug, slot }).hash,
         );
         cta.textContent = keyFix
           ? `Add ${status.missing.length === 1 ? 'it' : 'them'} to the key, then Probe →`

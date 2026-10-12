@@ -1719,6 +1719,7 @@ export const renderPacksInstallDialog = (
       renderInstallConnectPicker({
         document: doc,
         requirement: props.connectionRequirement,
+        packSlug: pack.slug,
         candidates: props.connectionCandidates,
         chosen: props.chosenConnection,
         expanded: props.connectExpanded,

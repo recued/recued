@@ -693,7 +693,15 @@
     "section": "The read layer",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-digests#the-read-layer",
-    "body": "Try sources in this order:\n\n1. **Enrichments.** These are facts worked out ahead of time: rollups,\n   health scores, how long someone has been quiet. They are kept fresh for\n   you. Reading one is instant. See [the warehouse](../concepts/warehouse.md).\n2. **Warehouse reads.** Mail, calendar, contacts, files, and timelines,\n   through the built-in operations.\n3. **Vendor operations.** These come from an installed pack. List the pack\n   in `depends_on`. A step names no connection: it uses the one the owner\n   chose for the pack, else the pack's default.\n\n```json\n\"steps\": [\n  { \"id\": \"invoices\", \"op\": \"core.acct.invoice.search\" }\n]\n```\n\nA canonical family is a shared name for one kind of operation. The one\nabove sends the call to whichever vendor the chosen connection is for. So\none recipe works for QuickBooks and Xero alike. To keep each connection's\nrecords apart, read the one a run used: `{{context.connections.acct}}`.\n\nNormalize right after every read. That means: turn the result into one\nsafe shape. Then later steps see the same shape, even when a source gave\nback nothing:\n\n```json\n{ \"id\": \"invoices_safe\", \"transform\": \"default\",\n  \"value\": \"{{step.invoices.result}}\", \"fallback\": [] }\n```\n\nThat fallback is only for display math. Does a decision depend on the\nvalue? A notification gate, or a proposed action? Then check `is_not_empty`\nfirst, on purpose. An empty fallback would quietly switch the decision off."
+    "body": "Try sources in this order:\n\n1. **Enrichments.** These are facts worked out ahead of time: rollups,\n   health scores, how long someone has been quiet. They are kept fresh for\n   you. Reading one is instant. See [the warehouse](../concepts/warehouse.md).\n2. **Warehouse reads.** Mail, calendar, contacts, files, and timelines,\n   through the built-in operations.\n3. **Vendor operations.** These come from an installed pack. List the pack\n   in `depends_on`. A step names no connection: it uses the one the owner\n   chose for the pack, else the pack's default.\n\n```json\n\"steps\": [\n  { \"id\": \"invoices\", \"op\": \"core.acct.invoice.search\" }\n]\n```\n\nA canonical family is a shared name for one kind of operation. The one\nabove sends the call to whichever vendor the connection is for. So one\nrecipe works for QuickBooks and Xero alike.\n\nNormalize right after every read. That means: turn the result into one\nsafe shape. Then later steps see the same shape, even when a source gave\nback nothing:\n\n```json\n{ \"id\": \"invoices_safe\", \"transform\": \"default\",\n  \"value\": \"{{step.invoices.result}}\", \"fallback\": [] }\n```\n\nThat fallback is only for display math. Does a decision depend on the\nvalue? A notification gate, or a proposed action? Then check `is_not_empty`\nfirst, on purpose. An empty fallback would quietly switch the decision off."
+  },
+  {
+    "id": "guides/authoring-digests#which-connection-a-step-uses",
+    "doc": "Authoring digests and briefs",
+    "section": "Which connection a step uses",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/authoring-digests#which-connection-a-step-uses",
+    "body": "- **A search** reads every connection that can answer it and returns one\n  list. A connection chosen for the run, the dish or the setting limits it\n  to that connection.\n- **A step on one record** (read, update, delete) uses the connection its\n  id names. The `target_id` can come from the run's context or settings.\n  It can also come from an earlier step, such as a search's row or a `foreach` item. Then a\n  step that reads records from two connections reads each in its own. If\n  another connection was chosen, a record from elsewhere is refused and\n  nothing is sent. So is a record of another kind, such as a contact's id\n  on a deal step.\n- **Anything else** uses the pack's default. With no default, the owner's\n  run takes the only connection that can serve it, or asks which. A\n  scheduled run stops and says why.\n\nEach record a vendor-neutral step returns says where it came from in\n`connection_name`, and so does each record a CRM trigger hands a recipe. A\nCRM record also carries `target_id`, an id that names its connection.\n\nThe owner can keep a dish, or one run, on one connection. The dish form\nand the run dialog show a Connection line for the family (`crm`, `acct`).\nIt appears where two or more connections can serve it. Its \"Any connection\" choice\nleaves the rules above.\n\nTo keep each connection's records apart, read the record's\n`connection_name`. When a run used one connection for the family,\n`{{context.connections.acct}}` says which."
   },
   {
     "id": "guides/authoring-digests#the-derive-layer",
@@ -949,7 +957,7 @@
     "section": "Shorthand forms and recipe events",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/authoring-triggers#shorthand-forms-and-recipe-events",
-    "body": "There are short forms for common subscriptions:\n\n- CRM changes across vendors: `\"on\": \"deal.changed\"`. You can narrow it by\n  field and value.\n- Messenger messages: `\"on\": \"message.received\"`.\n- Accepted intake responses: `\"on\": \"form_response.accepted\"`. See\n  [Reception](reception.md).\n- Visitor requests: `\"on\": \"reception.request\"`.\n- Mail facts: `\"on\": \"mail_fact.shipment\"`, or `\"on\": \"mail_fact\"` for any\n  kind of email. See [Mail facts](#mail-facts).\n\nBrowser-page watches use `\"on\": \"element.changed\"` with a URL and a\nselector. They work for your own local recipes. They cannot be published.\n\nOne more family of events comes from recipes themselves.\n`run.<recipe_id>.**.completed` and `.failed` fire when a recipe finishes.\nThat chains one stage to the next without polling."
+    "body": "There are short forms for common subscriptions:\n\n- CRM changes across vendors: `\"on\": \"deal.changed\"`. You can narrow it by\n  field and value. The record (`payload.record`) names its connection in\n  `connection_name`, and its `target_id` is the id to read or update it by.\n- Messenger messages: `\"on\": \"message.received\"`.\n- Accepted intake responses: `\"on\": \"form_response.accepted\"`. See\n  [Reception](reception.md).\n- Visitor requests: `\"on\": \"reception.request\"`.\n- Mail facts: `\"on\": \"mail_fact.shipment\"`, or `\"on\": \"mail_fact\"` for any\n  kind of email. See [Mail facts](#mail-facts).\n\nBrowser-page watches use `\"on\": \"element.changed\"` with a URL and a\nselector. They work for your own local recipes. They cannot be published.\n\nOne more family of events comes from recipes themselves.\n`run.<recipe_id>.**.completed` and `.failed` fire when a recipe finishes.\nThat chains one stage to the next without polling."
   },
   {
     "id": "guides/authoring-triggers#mail-facts",
@@ -1152,6 +1160,78 @@
     "body": "Enroll means \"set up and save\". Open **Settings → Connections** and pick a\nprovider. Or let a pack do it. A pack that needs a connection walks you\nthrough the setup while it installs.\n\nEach connection is known by its kind and its name. So `acme-hubspot` and\n`personal-hubspot` are two different connections. Each one has its own\ngrants. A grant is a yes you give ahead of time."
   },
   {
+    "id": "guides/connections#sign-in-through-nango",
+    "doc": "Connections",
+    "section": "Sign in through Nango",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#sign-in-through-nango",
+    "body": "A broker is another server that holds your vendor sign-in and makes API\ncalls for you. Nango is one such broker. You can choose it under **How to\nconnect → Managed OAuth**. It works with API packs. Mail, Calendar and file\nsync can also use these saved connections.\n\nOpen **Connections → Apps & APIs → Manage OAuth brokers** to set up a\nbroker first. You can also add one while setting up a connection.\n\n1. Give the broker a name.\n2. Enter its **Server URL**. For Nango Cloud, use `https://api.nango.dev`.\n   You can use your own Nango server too. It can run on another machine.\n3. Paste its **Nango API key**. Get it from **Environment Settings → API\n   Keys** in Nango. An environment is a separate place for test or live\n   accounts. The key chooses that place. It does not mean a local machine.\n4. If your own Nango server has a separate sign-in page, enter its **Connect\n   UI origin**. This is the start of that page's address.\n5. Click **Test and save broker**.\n\nTo change its key, choose **Edit broker key**. Use a key from the same\nNango environment. With saved accounts, Recued checks that both keys reach\nthe same accounts. Change the key before you revoke the old one. For a\ndifferent environment, or an old key that no longer works, add a new\nbroker profile and connect its accounts again."
+  },
+  {
+    "id": "guides/connections#choose-a-vendor-app",
+    "doc": "Connections",
+    "section": "Choose a vendor app",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#choose-a-vendor-app",
+    "body": "Choose a vendor integration next. This is the app set up in Nango for that\nvendor. Recued picks it for a pack when exactly one app matches. With more\nthan one, you choose.\n\nIf no app is set up, click **Create vendor integration**. Choose a Nango\nshared app, if your server offers one. Or enter your own vendor app's ID,\nsecret and scopes. A scope is a named permission, such as reading mail.\nRecued sends those app credentials to Nango. It does not save them itself."
+  },
+  {
+    "id": "guides/connections#reuse-or-reauthorize-an-account",
+    "doc": "Connections",
+    "section": "Reuse or reauthorize an account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#reuse-or-reauthorize-an-account",
+    "body": "Recued checks for Nango accounts when you pick a vendor app. If it finds\naccounts, it starts with **Use an existing Nango account**. Pick one and\nclick **Use selected account**. Then save and probe the connection.\nA probe checks whether Recued can reach it. It does not prove that every\nneeded permission was granted.\n\nIf there are no accounts, Recued offers **Authorize a new account**.\nYou can also choose this when you need another account. Each new sign-in\ncreates another Nango connection. After consent, save and probe before\nstarting again.\n\n**Reauthorize** keeps the same Nango connection.\nIf Recued has already requested all the needed scopes\nin completed sign-in flows, it reuses the account without new consent.\nGranted permissions stay unknown. Save and probe, then check the access\nneeded by your task. No custom Nango function or extra setup is needed.\n\nChoose **Sign in again** to repair access with new consent. This also keeps\nthe same Nango connection. Recued checks the scope needs of all its saved\nconnections that share that account."
+  },
+  {
+    "id": "guides/connections#keep-scope-history",
+    "doc": "Connections",
+    "section": "Keep scope history",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#keep-scope-history",
+    "body": "Reused accounts can keep scope history from other saved Recued connections.\nIf that history is unknown, manage consent in Nango with the same scope\nprofile. This keeps Recued from dropping prior permissions.\n\nIf Nango hides app scopes, Recued may refuse to reauthorize a saved\naccount. Use a key that can read those scopes, or manage its consent in\nNango with the same scope profile. Finish or cancel a pending sign-in\nbefore starting another for that account.\n\nCancel stops the Recued sign-in flow. It does not revoke vendor consent.\nScope unions cover requests saved in Recued. If you change consent in\nNango or another tool, keep its full scope profile there.\n\nShared apps may have fixed permissions. Vendor rules and requests for an\nadmin's consent still apply. When Nango does not report granted scopes,\nRecued shows them as unknown."
+  },
+  {
+    "id": "guides/connections#change-the-scopes-you-need",
+    "doc": "Connections",
+    "section": "Change the scopes you need",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#change-the-scopes-you-need",
+    "body": "Recued saves your scope needs apart from past consent. Asking for the same\nor less access can reuse a healthy account when its completed scope history\ncovers all current needs. This history records past requests, not granted\npermissions. A vendor can still refuse access. Use **Sign in again** to\nrepair access when needed.\n\nAsking for new scopes, or a mix of old and new, keeps the same Nango account.\nNew consent requests the full tracked list, app defaults, and the scopes\nneeded by other saved connections.\nA smaller request does not remove old vendor permissions. Other tools may\nstill need them. Recued does not offer a scope downgrade.\n\nBefore new consent, Recued clears old grant proof for all connections\nsharing that account. Access stays in Nango. If sign-in fails or is canceled,\nthose grants stay unknown. Recued will not claim the old scopes still apply.\n\nIf a saved connection's scope needs change during sign-in, start again.\nShared apps with fixed scopes may need an app change first.\n\nRecued keeps scope history from completed consent even if you close the form without saving.\nThis needs Nango to report its internal account ID and creation date.\nIt checks for completed consent when you cancel. A failed scope request is\nnot kept for later sign-ins."
+  },
+  {
+    "id": "guides/connections#keep-nango-connection-use-low",
+    "doc": "Connections",
+    "section": "Keep Nango connection use low",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#keep-nango-connection-use-low",
+    "body": "Many packs can share one saved API connection. You can also reuse the same\nNango account in other Recued API connections. Mail, Calendar and file sync\ncan use a saved API connection too. These choices need no extra Nango account.\n\nThe vendor app and its permissions must fit each task. The same email\naddress in two Nango vendor apps still means two Nango connections.\nRemoving a Recued connection does not free its Nango slot. Use **Manage OAuth\nbrokers** to remove an unused Nango account."
+  },
+  {
+    "id": "guides/connections#use-a-saved-connection-for-mail-or-calendar",
+    "doc": "Connections",
+    "section": "Use a saved connection for Mail or Calendar",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#use-a-saved-connection-for-mail-or-calendar",
+    "body": "First save a managed API connection for the service. Then open **Connections\n→ Mail** or **Calendar**, add an account, and choose Google or Microsoft.\nUnder **How to connect**, choose **Managed OAuth — saved API connection**.\nPick your saved connection and give the account a name. When only one saved\nconnection fits, Recued picks it for you. You do not need another app ID,\napp secret or sign-in.\n\nThe API base URL must match the service:\n\n| Service | API base URL |\n|:---|:---|\n| Gmail | `https://gmail.googleapis.com/gmail/v1` |\n| Google Calendar | `https://www.googleapis.com/calendar/v3` |\n| Outlook Mail or Calendar | `https://graph.microsoft.com/v1.0` |\n\nMail sending, mail changes and Calendar writes start off. Turn on only the\nwrite options you need when you add the account. These switches let Recued\ntry a write; they do not grant new vendor access. Add the needed scopes to\nthe API connection and sign in again there first. The vendor still checks\neach call. If Nango gives no scope list, permissions stay unknown.\n\nTo change these write options later, remove and add the Mail or Calendar\naccount again with the saved API connection. This does not delete the\nremote Nango account. Each account's menu also links back to **Apps & APIs**\nfor reconnecting its source. Remove the Mail and Calendar accounts before\nremoving the API connection they use."
+  },
+  {
+    "id": "guides/connections#use-a-saved-connection-for-file-sync",
+    "doc": "Connections",
+    "section": "Use a saved connection for file sync",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#use-a-saved-connection-for-file-sync",
+    "body": "File sources and remote file reads can use a managed API connection for\nGoogle Drive, OneDrive, SharePoint, Box, Dropbox or Notion. Choose that saved\nconnection in the usual source form. Recued uses the same file readers as\nwith direct credentials. Your packs and recipes need no changes. S3 keeps\nits access key setup."
+  },
+  {
+    "id": "guides/connections#remove-a-nango-account",
+    "doc": "Connections",
+    "section": "Remove a Nango account",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/connections#remove-a-nango-account",
+    "body": "Removing a Recued connection keeps its Nango account. To delete that\naccount too, use **Manage OAuth brokers**. Choose its integration and\nexisting account. Remove its Recued connections first, then type the\naccount ID to confirm. Every other tool using that Nango account loses\naccess too. The vendor may keep its consent until you revoke it there."
+  },
+  {
     "id": "guides/connections#hubspot-a-key-or-your-own-app",
     "doc": "Connections",
     "section": "HubSpot: a key or your own app",
@@ -1165,7 +1245,7 @@
     "section": "Apps sign in through a callback",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#apps-sign-in-through-a-callback",
-    "body": "Salesforce always takes your own app, a Connected App. It also has a sandbox\nswitch.\n\nAn app sends each sign-in back to a callback address. Recued shows the right\none on the form. It depends on where you open Recued:\n\n- On app.recued.com, it is `https://app.recued.com/oauth-callback`. That\n  page only hands the code on to your server.\n- At your server's own HTTPS address, it is `/oauth/complete` there. The\n  vendor sends the sign-in straight to your server. So under **Settings →\n  Server → Exposure**, the `/oauth/complete` row must be **Public**.\n- At `localhost` on the server, your server's own page takes it. The\n  start-up log prints `127.0.0.1`, but HubSpot will not take a callback at\n  a number. So open `http://localhost:7717/webclient` to connect. Is that\n  address new to your browser? Pair it once, like a new device. You connect\n  once. After that, the connection works from any address.\n\nThe first two need an address the internet reaches your server at. A Pro\naddress counts, and so does your own domain once Recued has checked it.\n[Reachability](../setup/reachability.md) shows how to get one.\n\nYour server does the token swap. Your server stores the tokens. There is no\ncentral place that holds everyone's tokens.\n\nAfter you sign in, Recued checks what the provider really allowed. For a\nHubSpot app, it checks the granted scopes. For Salesforce, it probes which\nobjects it can see. Is something missing? You see a warning on the\ncapability that needs it. A capability is one thing a pack can do. Nothing\nis hidden."
+    "body": "Direct Salesforce OAuth takes your own app, a Connected App. It also has a sandbox\nswitch.\n\nAn app sends each sign-in back to a callback address. Recued shows the right\none on the form. It depends on where you open Recued:\n\n- On app.recued.com, it is `https://app.recued.com/oauth-callback`. That\n  page only hands the code on to your server.\n- At your server's own HTTPS address, it is `/oauth/complete` there. The\n  vendor sends the sign-in straight to your server. So under **Settings →\n  Server → Exposure**, the `/oauth/complete` row must be **Public**.\n- At `localhost` on the server, your server's own page takes it. The\n  start-up log prints `127.0.0.1`, but HubSpot will not take a callback at\n  a number. So open `http://localhost:7717/webclient` to connect. Is that\n  address new to your browser? Pair it once, like a new device. You connect\n  once. After that, the connection works from any address.\n\nThe first two need an address the internet reaches your server at. A Pro\naddress counts, and so does your own domain once Recued has checked it.\n[Reachability](../setup/reachability.md) shows how to get one.\n\nFor your own OAuth app, your server does the token swap and stores the\ntokens. A managed OAuth connection uses its chosen broker instead.\n\nAfter you sign in, Recued checks what the provider really allowed. For a\nHubSpot app, it checks the granted scopes. For Salesforce, it probes which\nobjects it can see. Is something missing? You see a warning on the\ncapability that needs it. A capability is one thing a pack can do. Nothing\nis hidden."
   },
   {
     "id": "guides/connections#where-credentials-live",
@@ -1173,7 +1253,7 @@
     "section": "Where credentials live",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#where-credentials-live",
-    "body": "A credential is a secret, like a key or a token. It stays on your server. Only the connection\nexecutor uses it, and only at the moment of a call. A recipe can read the\nnon-secret fields of a connection. The secret key never goes into recipe\ndata or step outputs."
+    "body": "A credential is a secret, like a key or a token. Direct credentials stay on your server. Only the connection\nexecutor uses it, and only at the moment of a call. A recipe can read the\nnon-secret fields of a connection. The secret key never goes into recipe\ndata or step outputs.\n\nWith managed OAuth, the broker keeps the vendor credentials and sees the\nAPI requests and replies. Its API key stays encrypted on your Recued\nserver. You choose the broker; Recued Cloud does not hold those credentials\nor route those calls."
   },
   {
     "id": "guides/connections#what-connections-power",
@@ -1206,6 +1286,70 @@
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/connections#related",
     "body": "- [Connect Gmail and Google Calendar](../setup/connect-google.md). Which way\n  keeps working for your kind of Google account.\n- [Connect Outlook and Microsoft 365](../setup/connect-microsoft.md). Who\n  makes the sign-in app for your kind of Microsoft account.\n- [Grants and approvals](../concepts/grants-and-approvals.md). How your\n  server checks each granted action when it runs."
+  },
+  {
+    "id": "guides/customer-signoffs",
+    "doc": "Customer sign-offs",
+    "section": "Customer sign-offs",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs",
+    "body": "Customer sign-offs link quotes, Reception, Tasks and Invoice Book.\nThe customer sees one saved quote and scope.\nScope means the work and terms you offer.\nTheir reply waits for you in Reception Inbox.\nYou then approve a fixed task and invoice plan.\nRecued marks the quote won and adds both records together."
+  },
+  {
+    "id": "guides/customer-signoffs#prepare-a-request",
+    "doc": "Customer sign-offs",
+    "section": "Prepare a request",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#prepare-a-request",
+    "body": "1. Install **Quote Pipeline version 2** and **Invoice Book version 4** from Packs.\n2. Add an open quote in Quote Pipeline Records.\n   Set the customer, amount, currency and valid-until date.\n3. Open **Reception → Customer sign-offs**. Choose the quote.\n4. Enter your business name and full scope.\n   List what you will do and leave out. Include the terms they must accept.\n   Private quote notes stay private. The scope you enter is shared in full.\n5. Set the task title and a unique invoice reference.\n   Set VAT and dates as shown below.\n6. Set a link life of 1–30 days. Select **Preview customer sign-off**.\n   Check the exact customer text, task and invoice plan.\n7. Select **Publish sign-off link**. Share the returned link yourself.\n\nThe link needs a public server name. See\n[Reachability](../setup/reachability.md).\nOpen `/reception` under **Settings → Server → Exposure** for that address.\nUse Public for an internet address, or LAN for visitors on your network.\nThe preview expires after ten minutes.\nPreview again if the app asks you to.\n\nA new request replaces earlier active requests for that quote.\nThis also replaces an accepted request still waiting for your review."
+  },
+  {
+    "id": "guides/customer-signoffs#vat-and-dates",
+    "doc": "Customer sign-offs",
+    "section": "VAT and dates",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#vat-and-dates",
+    "body": "Enter the VAT already included in the quoted total.\nBlank VAT means zero. Recued does not add it to the total.\nAn empty invoice date uses today in your server's timezone.\nAn empty due date uses 30 days after issue."
+  },
+  {
+    "id": "guides/customer-signoffs#respond-review-and-release",
+    "doc": "Customer sign-offs",
+    "section": "Respond, review and release",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#respond-review-and-release",
+    "body": "The page shows the customer and quote reference.\nIt shows the revision, total, net amount and included VAT.\nIt also shows the valid-until date and full scope.\nEach link takes one reply: accept or decline.\nThey may add their name and email.\nAnyone with the link can reply. Recued does not check who they are.\n\nAn accepted reply queues a release in **Reception → Inbox**.\nCheck the accepted terms, task title, invoice reference, total and dates.\nThe release plan is fixed.\nTo change it, cancel the request and prepare a new one.\nAsk the customer to accept that new request.\n\nApproval makes three local changes together:\n\n- Mark the quote won.\n- Create the task with the accepted scope.\n- Create an open Invoice Book invoice for the quoted total.\n  It uses the included VAT and due date you chose.\n\nThe task appears in Tasks. The invoice is in Invoice Book Records.\nSending it and taking payment are separate steps.\nA declined customer request creates no task or invoice.\nNeither does an owner review you reject."
+  },
+  {
+    "id": "guides/customer-signoffs#follow-the-released-work",
+    "doc": "Customer sign-offs",
+    "section": "Follow the released work",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#follow-the-released-work",
+    "body": "Each released request shows the task's current state and progress.\n**Open task** lets you review the work and set a due date.\nUse **Complete** in the task editor when the work is done.\nSave or discard any unfinished edits before completing the task.\nUse **Reopen** there if the work needs another pass.\nThese actions work even without a due date.\nTasks due in the next seven days also appear in Today, where you can use **Complete**.\nOnly the task's done flag marks the work complete.\nA progress value of 100% does not mark it done.\n\nThe same card shows its invoice's recorded payments and balance.\nIt flags an open balance after the due date as overdue.\nUse **Browse Records**, then choose Invoice Book to review it.\nChoose **Record payment** on the request when money arrives.\nIt opens Invoice Book's workflow with that invoice selected.\nUpdate Invoice Book in Packs if the workflow asks you to.\nEnter the amount and date, then choose **Run** to record it.\nAmounts can have up to four decimal places.\nPart payments leave the balance open. The last payment marks it paid.\nThe workflow refuses an amount above the balance.\nPaid or carried invoices have no **Record payment** button.\nEach added-work invoice has its own balance.\nA carried balance points to its next invoice for follow-up.\n\nSelect **Refresh** to read the current records again.\nThe saved customer terms stay as they were.\nMissing or changed records show a message that asks you to review them.\nThis view reads local records. It does not check a bank or take payment."
+  },
+  {
+    "id": "guides/customer-signoffs#add-work-after-release",
+    "doc": "Customer sign-offs",
+    "section": "Add work after release",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#add-work-after-release",
+    "body": "1. Find the released request in **Requests and responses**. Select **Add work**.\n   Use the latest released request if you already added work.\n2. Enter the added scope and amount. This amount is an extra charge.\n   Use the same currency as the first quote.\n3. Choose a new invoice reference. Enter any VAT included in the added amount.\n4. Select **Preview added work**. Check the old scope, added scope and new total.\n5. Publish the link. Ask the customer to accept it.\n6. Review the added work in **Reception → Inbox**, then approve it.\n\nApproval adds the scope to the same task and creates a separate invoice.\nThe first quote, invoice and accepted scope stay as they were.\nSending the new invoice and taking payment are separate steps.\nThe task must be present and unfinished.\nChanges to it while a request waits block release.\nA new added-work request replaces any earlier one still waiting.\nDeclines, expiry and cancelled requests keep the old agreement in place.\nEach added-work link has its own expiry.\nIt can be used after the first quote's valid-until date."
+  },
+  {
+    "id": "guides/customer-signoffs#changed-quotes-expiry-and-retries",
+    "doc": "Customer sign-offs",
+    "section": "Changed quotes, expiry and retries",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#changed-quotes-expiry-and-retries",
+    "body": "The server checks the full saved quote and revision.\nIt checks before showing the form and saving a reply.\nIt checks again when you approve the release.\nA changed quote or newer scope blocks release.\nSo does an expired link or a missing pack.\nFor a first sign-off, an expired quote also blocks release.\nA pack that is not ready blocks it too.\nIf any write fails, none take effect.\n\nThe customer's reply and your release decision stay separate.\nIf you reject the review, their accepted reply stays recorded.\nRequests and responses shows that review closed without releasing work.\nCheck the run in Runs. To try again, cancel and prepare a new request."
+  },
+  {
+    "id": "guides/customer-signoffs#retries-and-cancellation",
+    "doc": "Customer sign-offs",
+    "section": "Retries and cancellation",
+    "eyebrow": "Guides",
+    "url": "https://recued.com/docs/guides/customer-signoffs#retries-and-cancellation",
+    "body": "Each request keeps one review and one set of record IDs.\nA retry cannot add a second invoice.\nIt cannot bring back an invoice you deleted after release.\n\n**Cancel request** closes the link.\nIt also blocks any release still waiting for you.\nIts Inbox entry may stay. Reject that entry to close it.\nThis does not undo work already released.\nFix those tasks or invoices in their own views.\n\nUse **Manage share link** on a waiting request for link controls.\nYou can rotate a lost link there."
   },
   {
     "id": "guides/exposing-recipes-to-chat",
@@ -1365,7 +1509,7 @@
     "section": "What you can publish",
     "eyebrow": "Guides",
     "url": "https://recued.com/docs/guides/reception#what-you-can-publish",
-    "body": "- **Reception pages**: pages you build from blocks. A block can be text, a\n  form, or links.\n- **Scheduling links**: offer time slots and take bookings.\n- **Intake forms**: a form with set fields. It collects a request from a\n  client or someone you work with.\n- **File drops**: a place where someone can hand you a file.\n- **Approval links**: let one chosen person answer a question you sent to\n  them."
+    "body": "- **Reception pages**: pages you build from blocks. A block can be text, a\n  form, or links.\n- **Scheduling links**: offer time slots and take bookings.\n- **Intake forms**: a form with set fields. It collects a request from a\n  client or someone you work with.\n- **File drops**: a place where someone can hand you a file.\n- **Approval links**: let one chosen person answer a question you sent to\n  them.\n- **Customer sign-offs**: share an exact quote and scope, then review its task\n  and invoice before releasing work. See [Customer sign-offs](customer-signoffs.md)."
   },
   {
     "id": "guides/reception#make-a-page-from-a-template-or-a-sentence",
@@ -2005,7 +2149,7 @@
     "section": "Optional envelope fields",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/pack-manifest#optional-envelope-fields",
-    "body": "| Field | Required | Meaning |\n| --- | --- | --- |\n| `repo` | No | An HTTPS link to the source code or the support page. |\n| `artifact_type` | No | If you set it, it must be `pack`. |\n| `pack_kind` | No | `recipe_pack`, `app_pack`, or `foundation_pack`. |\n| `service_kind` | No | What kind of service the pack adds. See the table below. |\n\nThe pack's version is separate from the versions inside it. Say a recipe goes\nfrom version 2 to version 3. Then you need a new recipe pin and a new pack\nversion."
+    "body": "| Field | Required | Meaning |\n| --- | --- | --- |\n| `repo` | No | An HTTPS link to the source code or the support page. |\n| `artifact_type` | No | If you set it, it must be `pack`. |\n| `pack_kind` | No | `recipe_pack`, `app_pack`, or `foundation_pack`. |\n| `service_kind` | No | What kind of service the pack adds. See the table below. |\n| `min_recued_version` | No | The lowest Recued this pack runs on, such as `26.10.12`. Name a release that has shipped. A server older than that will not install or update the pack, and the install dialog says to update Recued. If a recipe in the pack names one, name the same version or a later one here, so people learn it before they press Install. Only servers that know this field check it. |\n\nThe pack's version is separate from the versions inside it. Say a recipe goes\nfrom version 2 to version 3. Then you need a new recipe pin and a new pack\nversion."
   },
   {
     "id": "reference/pack-manifest#service-kinds",
@@ -2149,7 +2293,7 @@
     "section": "metadata",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/recipe-schema#metadata",
-    "body": "| Field | Notes |\n| --- | --- |\n| `name`, `description` | What people see: the name, and what the recipe does |\n| `author` | The publisher handle. That is your name in the marketplace |\n| `tags` | Any words you like. They help people find and filter recipes |\n| `supported_platforms` | The platforms this copy of the recipe is made for |\n| `variant_group` | Groups the copies of one recipe made for different platforms |\n| `execution_scope` | You can skip it. It narrows where the recipe may run. It must stay inside what the ingredient kinds already allow |\n| `budget_ms` | The most time a run may take, in milliseconds. The engine stops a run that goes past it. Set one on everything you ship |\n| `fork_of` | Where a published fork came from: the original recipe, its author, and its version |"
+    "body": "| Field | Notes |\n| --- | --- |\n| `name`, `description` | What people see: the name, and what the recipe does |\n| `author` | The publisher handle. That is your name in the marketplace |\n| `tags` | Any words you like. They help people find and filter recipes |\n| `supported_platforms` | The platforms this copy of the recipe is made for |\n| `variant_group` | Groups the copies of one recipe made for different platforms |\n| `execution_scope` | You can skip it. It narrows where the recipe may run. It must stay inside what the ingredient kinds already allow |\n| `budget_ms` | The most time a run may take, in milliseconds. The engine stops a run that goes past it. Set one on everything you ship |\n| `fork_of` | Where a published fork came from: the original recipe, its author, and its version |\n| `min_recued_version` | You can skip it. The lowest Recued this recipe runs on, such as `26.10.12`. Name a release that has shipped. A server older than that will not install or update the recipe, and says to update Recued. Only servers that know this field check it |"
   },
   {
     "id": "reference/recipe-schema#steps",
@@ -2229,7 +2373,7 @@
     "section": "Context fields the engine adds",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/recipe-schema#context-fields-the-engine-adds",
-    "body": "| Field | Meaning |\n| --- | --- |\n| `context.tabs` | The ingredient slugs whose URL patterns match a browser tab that is open |\n| `context.server` | `{ available, name? }`. Can the paired server be reached right now? |\n| `context.event` | The event that fired the recipe, on a reactive run (a run started by an event, not by you). On updates, `payload.prev` holds the old values of the hot fields (the fields that change most) |\n| `context.recipe.*` | Step results saved from the last run, so one run can pick up from the one before. Not set on the first run |\n| `context.connections` | The connection the run used for each pack it called, by the pack's connection name: `{{context.connections.hubspot}}`, or `{{context.connections.crm}}` for a `core.crm.*` step. Use it to keep each connection's records apart. The server sets it; a caller cannot |"
+    "body": "| Field | Meaning |\n| --- | --- |\n| `context.tabs` | The ingredient slugs whose URL patterns match a browser tab that is open |\n| `context.server` | `{ available, name? }`. Can the paired server be reached right now? |\n| `context.event` | The event that fired the recipe, on a reactive run (a run started by an event, not by you). On updates, `payload.prev` holds the old values of the hot fields (the fields that change most) |\n| `context.recipe.*` | Step results saved from the last run, so one run can pick up from the one before. Not set on the first run |\n| `context.connections` | The connection the run used for each pack it called, by the pack's connection name: `{{context.connections.hubspot}}`, or `{{context.connections.crm}}` for a `core.crm.*` step. Use it to keep each connection's records apart. Left out when the run used more than one there, as a search that reads every connection does: read the record's own `connection_name` instead. The server sets it; a caller cannot |"
   },
   {
     "id": "reference/recipe-schema#transforms",
@@ -2357,7 +2501,7 @@
     "section": "Logic",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/transforms#logic",
-    "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `compare` | `left`, `operator` (any of the 14), `right?` | boolean |\n| `any` / `all` | `values[]` (booleans) — or `conditions[]` (condition strings) | boolean |\n| `coalesce` | `values[]` | the first value that is not null |\n| `default` | `value`, `fallback` | the value, or the fallback when it is null or an empty string |\n| `not` | `input` | the opposite boolean |\n| `ternary` | `if`, `then`, `else?` | one of two values |\n| `switch` | `input`, `cases` (map), `default` | the mapped value |\n| `pluralize` | `count`, `zero?`, `one`, `many` | the chosen text |\n\n`default` treats an empty string as missing. It keeps `0` and `false`. Use it\ninstead of `coalesce` when a template might turn into `\"\"`."
+    "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `compare` | `left`, `operator` (any of the 14), `right?` | boolean |\n| `any` / `all` | `values[]` (booleans) — or `conditions[]` (condition strings) | boolean |\n| `coalesce` | `values[]` | the first value that is not null |\n| `default` | `value`, `fallback` | the value, or the fallback when it is null or an empty string |\n| `not` | `input` | the opposite boolean |\n| `ternary` | `if`, `then`, `else?` | one of two values |\n| `switch` | `input`, `cases` (map), `default` | the mapped value |\n| `pluralize` | `count`, `zero?`, `one`, `many` | the chosen text |\n\n`any` and `all` evaluate only `conditions`. A condition written under `values`\nis text, and text is always true there, so the validator warns about it.\n\n`default` treats an empty string as missing. It keeps `0` and `false`. Use it\ninstead of `coalesce` when a template might turn into `\"\"`."
   },
   {
     "id": "reference/transforms#privacy",
@@ -2373,7 +2517,15 @@
     "section": "Display",
     "eyebrow": "Reference",
     "url": "https://recued.com/docs/reference/transforms#display",
-    "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `to_checklist` | `title`, `items[]` | checklist object |\n| `to_table` | `array`, `columns[]` of `{ field, label, format? }` | table object |\n| `to_summary` | `fields[]` of `{ label, value }` | summary object |\n| `to_csv` | `array`, `columns?`, `header?`, `delimiter?` | CSV string |\n| `to_slack_blocks` | `blocks[]` | a Slack Block Kit (Slack's message layout format) payload, for a notification step that posts to Slack |\n\nA checklist item looks like `{ label, issue, detail_ok, detail_issue, detail_null }`.\n`issue` is a condition string. True shows as a problem. False shows as fine.\nNull shows as unknown.\n\nA table column can have one of these formats: `text`, `currency`, `number`,\n`date`, `relative_date`, `boolean`, `percent`.\n\nA checklist item or a table column with `type: \"action\"` can carry an action.\nAn action always shows as a button the owner clicks. The click opens a\nnormal recipe run. All the usual rules and approvals still apply. An action\nnever runs on its own.\n\n`to_csv` escapes text the way RFC 4180 (the standard CSV rules) says. Pair it with a file write. Then\nyou get a file a spreadsheet can open."
+    "body": "| Transform | Parameters | Returns |\n| --- | --- | --- |\n| `to_checklist` | `title`, `items[]` | checklist object |\n| `to_table` | `array`, `columns[]` of `{ field, label, format? }` | table object |\n| `to_summary` | `fields[]` of `{ label, value }` | summary object |\n| `to_csv` | `array`, `columns?`, `header?`, `delimiter?` | CSV string |\n| `to_slack_blocks` | `blocks[]` | a Slack Block Kit (Slack's message layout format) payload, for a notification step that posts to Slack |\n\nA checklist item looks like `{ label, issue, detail_ok, detail_issue, detail_null }`.\nSee [Checklist rows](#checklist-rows) for which one a row shows.\n\nA table column can have one of these formats: `text`, `currency`, `number`,\n`date`, `relative_date`, `boolean`, `percent`.\n\nA checklist item or a table column with `type: \"action\"` can carry an action.\nAn action always shows as a button the owner clicks. The click opens a\nnormal recipe run. All the usual rules and approvals still apply. An action\nnever runs on its own.\n\n`to_csv` escapes text the way RFC 4180 (the standard CSV rules) says. Pair it with a file write. Then\nyou get a file a spreadsheet can open."
+  },
+  {
+    "id": "reference/transforms#checklist-rows",
+    "doc": "Transforms",
+    "section": "Checklist rows",
+    "eyebrow": "Reference",
+    "url": "https://recued.com/docs/reference/transforms#checklist-rows",
+    "body": "A checklist row's `issue` is a condition string. True shows as a problem\n(`detail_issue`). False shows as fine (`detail_ok`).\n\nA row shows as unknown, with `detail_null`, when what it judges is missing:\n\n- a comparison (`equal`, `greater` and the rest) whose value is missing;\n- `is_empty`, `is_null`, `is_not_empty` or `is_not_null` on a field whose\n  record is missing, such as `{{step.contact.result.email}}` when the contact\n  was never read;\n- `is_not_empty` or `is_not_null` on a whole step's output or a setting that\n  is missing.\n\n`is_empty` or `is_null` on a whole output or a setting that is missing shows\nthe problem: the missing value is what it asks about. A row with no `issue`\nshows `detail_ok`, or `detail_null` when a value it shows is missing. Without a\n`detail_null`, an unknown row has no text, and the page shows it as no data.\n\nA row reads `label`, `issue`, the three `detail_` texts, `action` and\n`actions`, and nothing else. There is no `warn` state, and a row cannot skip\nitself: gate the whole step instead. The validator warns about any other key,\nbecause it does nothing."
   },
   {
     "id": "reference/transforms#warehouse",

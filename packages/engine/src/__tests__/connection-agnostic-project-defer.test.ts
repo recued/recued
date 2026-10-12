@@ -132,9 +132,11 @@ const canonicalReadRecipe = (): RecipeDefinition => ({
   output: { sidebar: [] },
 });
 
-const run = async (recipe: RecipeDefinition) => {
+const run = async (recipe: RecipeDefinition, manifest: IngredientManifest = CATALOG_MANIFEST) => {
   const gatewayCalls: Array<Record<string, unknown>> = [];
-  const ingredientExecutor: IngredientExecutor = async (slug) => {
+  const providerInputs: Array<Record<string, unknown>> = [];
+  const ingredientExecutor: IngredientExecutor = async (slug, input) => {
+    providerInputs.push(input as Record<string, unknown>);
     if (slug === 'hubspot-full') return { result: RAW_HUBSPOT_RECORD };
     throw new Error(`project defer test: unexpected ingredient '${slug}'`);
   };
@@ -142,7 +144,7 @@ const run = async (recipe: RecipeDefinition) => {
     recipe,
     stores: baseStores(),
     ingredientExecutor,
-    manifestGetter: (slug: string) => (slug === 'hubspot-full' ? CATALOG_MANIFEST : null),
+    manifestGetter: (slug: string) => (slug === 'hubspot-full' ? manifest : null),
     connectionProfileResolver: (): ConnectionOperationProfile => ({
       allowed_operations: ['deal.read'],
       catalog_slug: 'hubspot-full',
@@ -150,7 +152,7 @@ const run = async (recipe: RecipeDefinition) => {
     onGatewayCall: (e) => gatewayCalls.push(e as unknown as Record<string, unknown>),
   };
   const result = await executeRecipe(ctx);
-  return { result, gatewayCalls };
+  return { result, gatewayCalls, providerInputs };
 };
 
 const stepResult = (result: { steps: Array<{ id: string; result: unknown }> }, id: string): unknown =>
@@ -184,8 +186,49 @@ describe('connection-agnostic project expression defer', () => {
       name: 'Acme',
       amount: 30000,
       key_dates: { close_date: 1700000000000 },
+      // D-320 ruling 20 — the connection the call went through.
+      connection_name: 'hubspot1',
     });
     expect(typeof projected.amount).toBe('number');
     expect(typeof (projected.key_dates as Record<string, unknown>).close_date).toBe('number');
+  });
+
+  it("names the connection its call went through: a read that follows its record names the record's, not its setting's", async () => {
+    // D-320 rulings 20 and 20g. The host marks a record step whose connection nobody
+    // chose; at the call it takes the connection its record's id names. The setting
+    // here is `hubspot1` and the record is `hubspot2`'s, so a projection that named
+    // its setting would hand the next step an id routing to the wrong account.
+    const followed = {
+      ...CATALOG_MANIFEST,
+      operations: {
+        'deal.read': { ...CATALOG_MANIFEST.operations!['deal.read']!, record_id_arg: 'deal_id' },
+      },
+    } as IngredientManifest;
+    const withId: PackResolutionContext = {
+      ...HUBSPOT_PACK,
+      entity_fields: [
+        ...HUBSPOT_PACK.entity_fields,
+        entityField({ entity: 'Deal', maps_to: 'id', field_path: 'id', type: 'string' }),
+      ],
+    };
+    const authored = canonicalReadRecipe();
+    authored.steps = [{ id: 'deal', op: 'deal.read', args: { id: 'hubspot_deal_hubspot2_5' } }] as RecipeDefinition['steps'];
+    const { recipe } = resolveConnectionAgnosticRecipe(authored, withId);
+    expect(recipe.steps[0]).toMatchObject({ id: 'deal__raw', connection: 'hubspot1', result_names_connection: true });
+    const marked = {
+      ...recipe,
+      steps: recipe.steps.map((step) => (step.id === 'deal__raw' ? { ...step, connection_follows_record: true } : step)),
+    } as RecipeDefinition;
+
+    const { result, providerInputs } = await run(marked, followed);
+
+    expect(result.success, JSON.stringify(result.errors)).toBe(true);
+    expect(providerInputs).toHaveLength(1);
+    expect(providerInputs[0]).toMatchObject({ connection: 'hubspot2', deal_id: '5' });
+    expect(stepResult(result, 'deal')).toMatchObject({
+      id: '5',
+      connection_name: 'hubspot2',
+      target_id: 'hubspot_deal_hubspot2_5',
+    });
   });
 });

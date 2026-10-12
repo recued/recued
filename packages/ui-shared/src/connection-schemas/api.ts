@@ -46,7 +46,7 @@ export const apiSchema: ConnectionSchema = {
       key: 'name',
       label: 'Name',
       type: 'identifier',
-      help: 'A short name you use in Recipes, in lower case. For example `hubspot` or `hubspot-sandbox`.',
+      help: 'A short lower-case name for this connection, such as `hubspot` or `hubspot-sandbox`. Screens, run records and AI clients refer to the connection by it.',
       placeholder: 'hubspot',
     },
     {
@@ -96,6 +96,7 @@ export const apiSchema: ConnectionSchema = {
       label: 'Auth Type',
       type: 'select',
       options: AUTH_TYPES,
+      optionLabels: { managed_oauth: 'Managed OAuth' }, // D-322
     },
     // Bearer
     {

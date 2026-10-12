@@ -91,7 +91,7 @@ describe('collectFormValueRefs', () => {
 
   it('captures only the first path segment — deeper structure is inside the answer', () => {
     expect(
-      collectFormValueRefs({ x: '{{step.fr.record.values.address.city}}' }),
+      collectFormValueRefs({ steps: [{ ...READER, id: 'fr' }], x: '{{step.fr.record.values.address.city}}' }),
     ).toEqual(['address']);
   });
 
@@ -99,6 +99,7 @@ describe('collectFormValueRefs', () => {
     // A structural walk over known step shapes would miss every one of these.
     const value = {
       steps: [
+        { ...READER, id: 'fr' },
         {
           id: 'write',
           op: 'core.storage.shared.write',
@@ -114,6 +115,7 @@ describe('collectFormValueRefs', () => {
   it('de-duplicates a field read many times', () => {
     expect(
       collectFormValueRefs({
+        prefetch_steps: [{ ...READER, id: 'fr' }],
         a: '{{step.fr.record.values.same}}',
         b: '{{step.fr.record.values.same}}',
       }),
@@ -123,6 +125,7 @@ describe('collectFormValueRefs', () => {
   it('does not mistake a visitor field or a bare record read for a named answer', () => {
     expect(
       collectFormValueRefs({
+        steps: [{ ...READER, id: 'fr' }],
         a: '{{step.fr.record.visitor.email}}',
         b: '{{step.fr.record.submission_id}}',
         c: '{{step.fr.record}}',
@@ -206,6 +209,24 @@ describe('validateRecipeFormFields', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('validateRecipe — requires_form_fields cross-check', () => {
+  it('accepts ordinary record reads alongside an explicit no-answer contract', () => {
+    const value = recipe({
+      requires_form_fields: [],
+      prefetch_steps: [{ id: 'form_response', op: 'core.mail.get', args: { record_id: 'm' } }],
+      steps: [{ id: 'body', transform: 'json_stringify', input: '{{step.form_response.record}}' }],
+    });
+    expect(validateRecipe(value as RecipeDefinition).issues
+      .filter((i) => i.code.startsWith('requires_form_fields'))).toEqual([]);
+  });
+
+  it('does not warn about undeclared answers when a recipe reads an ordinary record', () => {
+    const value = recipe({
+      prefetch_steps: [{ id: 'event', op: 'core.data.calendar.get', args: { record_id: 'e' } }],
+      steps: [{ id: 'body', transform: 'json_stringify', input: '{{step.event.record.values}}' }],
+    });
+    expect(issue(validateRecipe(value as RecipeDefinition), 'requires_form_fields_absent')).toBeUndefined();
+  });
+
   it('a declared + read field is clean', () => {
     const result = validateRecipe(recipe({
       requires_form_fields: [{ name: 'item_description', type: 'textarea', required: true }],
@@ -306,6 +327,69 @@ describe('validateRecipe — requires_form_fields cross-check', () => {
     }) as RecipeDefinition);
     expect(issue(result, 'requires_form_fields_not_array')).toBeDefined();
     expect(issue(result, 'requires_form_fields_undeclared')).toBeUndefined();
+  });
+});
+
+describe('batch form declarations', () => {
+  const list = { id: 'pending', op: 'core.data.form-response.list', args: { endpoint_id: 'door' } };
+
+  it('checks an empty declaration against an implicit filter field read', () => {
+    const result = validateRecipe(recipe({ requires_form_fields: [], prefetch_steps: [list], steps: [{
+      id: 'selected', transform: 'filter', array: '{{step.pending.records}}',
+      field: 'values.full_name', operator: 'equal', value: 'Ada',
+    }] }) as RecipeDefinition);
+    expect(issue(result, 'requires_form_fields_undeclared')?.message).toContain('full_name');
+    expect(result.valid).toBe(false);
+  });
+
+  it('checks an empty declaration against a named foreach answer', () => {
+    const result = validateRecipe(recipe({ requires_form_fields: [], prefetch_steps: [list], steps: [{
+      id: 'body', foreach: '{{step.pending.records}}', transform: 'json_stringify', input: '{{item.values.full_name}}',
+    }] }) as RecipeDefinition);
+    expect(issue(result, 'requires_form_fields_undeclared')?.severity).toBe('error');
+    expect(result.valid).toBe(false);
+  });
+
+  it('checks a declaration against whole-item foreach serialization', () => {
+    const result = validateRecipe(recipe({ requires_form_fields: [], prefetch_steps: [list], steps: [{
+      id: 'body', foreach: '{{step.pending.records}}', transform: 'json_stringify', input: '{{item}}',
+    }] }) as RecipeDefinition);
+    expect(issue(result, 'requires_form_fields_whole_object_read')?.severity).toBe('error');
+    expect(result.valid).toBe(false);
+  });
+
+  it('admits declared named batches and serialization of their projection', () => {
+    const result = validateRecipe(recipe({
+      requires_form_fields: [{ name: 'full_name', type: 'text', required: true }],
+      prefetch_steps: [list], steps: [
+        { id: 'names', transform: 'map', array: '{{step.pending.records}}', expression: { name: '{{item.values.full_name}}' } },
+        { id: 'body', transform: 'json_stringify', input: '{{step.names}}' },
+      ],
+    }) as RecipeDefinition);
+    expect(result.issues.filter((i) => i.code.startsWith('requires_form_fields'))).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it('keeps ordinary record batches outside the form contract', () => {
+    const result = validateRecipe(recipe({ requires_form_fields: [],
+      prefetch_steps: [{ ...list, op: 'core.mail.list', args: {} }], steps: [{
+        id: 'body', transform: 'map', array: '{{step.pending.records}}', expression: { values: '{{item.values}}', note: '{{item.values.note}}' },
+      }],
+    }) as RecipeDefinition);
+    expect(result.issues.filter((i) => i.code.startsWith('requires_form_fields'))).toEqual([]);
+  });
+
+  it('keeps absent contracts compatible while advising about batch answer reads', () => {
+    const named = validateRecipe(recipe({ prefetch_steps: [list], steps: [{
+      id: 'names', transform: 'map', array: '{{step.pending.records}}', expression: '{{item.values.full_name}}',
+    }] }) as RecipeDefinition);
+    expect(issue(named, 'requires_form_fields_absent')?.severity).toBe('info');
+    expect(named.valid).toBe(true);
+    const whole = validateRecipe(recipe({ prefetch_steps: [list], steps: [{
+      id: 'names', transform: 'map', array: '{{step.pending.records}}', expression: '{{item.values}}',
+    }] }) as RecipeDefinition);
+    expect(issue(whole, 'requires_form_fields_absent')?.severity).toBe('warn');
+    expect(whole.valid).toBe(true);
   });
 });
 

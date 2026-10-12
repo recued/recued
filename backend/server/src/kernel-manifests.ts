@@ -7,6 +7,14 @@
 import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
+  {
+    slug: 'quote-signoff-release', name: 'Release accepted quote', mcp_exposed: false,
+    description: 'After owner approval, release an exact accepted quote or added-work amendment in one transaction. An initial quote creates a task and invoice and marks the quote won. Added work appends to its existing task and creates only an additional invoice. Refuse changed, expired, cancelled or superseded plans. Repeating a completed release returns its existing references.',
+    author: 'recued', kind: 'storage' as const, version: 2, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'reception', 'quotes'],
+    input: { signoff_id: null, expected_plan_hash: null, summary: null },
+    output: { signoff_id: 'signoff_id', task_id: 'task_id', invoice_id: 'invoice_id', already_released: 'already_released' },
+  },
   ...(['create', 'read', 'update', 'delete'] as const).map(action => ({
     slug: `mail-draft-${action}`, mcp_exposed: true, name: `${action[0]!.toUpperCase()}${action.slice(1)} saved email draft`,
     description: 'Manage a local saved draft belonging to the caller. This operation cannot send, schedule or approve a message. Updates and deletion require the current draft revision.',

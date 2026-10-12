@@ -32,6 +32,8 @@
  *  D-127 P1.3 — outbound send. Provider opts in by setting
  *  `config.granted_scopes` to the list returned at OAuth completion;
  *  `sendCapable` flips true iff the list contains `gmail.send`.
+ *  Managed accounts use explicit owner write switches instead; the vendor
+ *  checks permission on each operation, and unknown grants stay unknown.
  *  `send` constructs an RFC 5322 message (text/plain or
  *  multipart/alternative when body_html is supplied), base64url-
  *  encodes it as the `raw` field, and POSTs to
@@ -100,6 +102,7 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from './oauth.js';
+import { oauthAuthorizationHeaders } from './oauth.js';
 import {
   startDrainingInterval,
   type ProviderPollScheduler,
@@ -141,6 +144,11 @@ export interface CreateGmailProviderOptions {
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
+  /** Owner's feature choices for managed accounts; vendor permissions still govern each call. */
+  managedSendEnabled?: boolean;
+  managedMutationEnabled?: boolean;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler so suites don't wait
@@ -366,7 +374,7 @@ export const canonicalizeGmail = async (
 // ────────────────────────────────────────────────────────────────
 
 interface GmailFetchOptions {
-  accessToken: string;
+  accessToken: string | undefined;
   fetcher: HttpFetcher;
 }
 
@@ -380,7 +388,7 @@ const gmailGet = async <T>(
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; text: string }> => {
   const res = await opts.fetcher(url, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${opts.accessToken}` },
+    headers: { ...oauthAuthorizationHeaders(opts.accessToken) },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -550,7 +558,7 @@ const base64UrlEncode = (s: string): string =>
 export const createGmailProvider = (
   opts: CreateGmailProviderOptions,
 ): MailProvider => {
-  const fetcher = opts.fetcher ?? defaultHttpFetcher;
+  const fetcher = opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let stopped = false;
@@ -592,7 +600,8 @@ export const createGmailProvider = (
     markError(msg, body);
   };
 
-  const ensureToken = async (force: boolean): Promise<string> => {
+  const ensureToken = async (force: boolean): Promise<string | undefined> => {
+    if (opts.managedFetcher) return undefined;
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
       provider: 'gmail',
@@ -631,7 +640,7 @@ export const createGmailProvider = (
   ): Promise<T | null> => {
     const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
-    if (first.status === 401) {
+    if (first.status === 401 && !opts.managedFetcher) {
       const second = await gmailGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
@@ -653,7 +662,7 @@ export const createGmailProvider = (
   const getReconciliationSource = async <T>(url: string): Promise<T> => {
     const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
-    if (first.status === 401) {
+    if (first.status === 401 && !opts.managedFetcher) {
       const second = await gmailGet<T>(url, {
         accessToken: await ensureToken(true),
         fetcher,
@@ -1033,13 +1042,13 @@ export const createGmailProvider = (
     const raw = base64UrlEncode(buildGmailRfc5322(msg, savedAt));
 
     const call = async (url: string, method: 'POST' | 'PUT'): Promise<Response> => {
-      const attempt = async (token: string) => fetcher(url, {
+      const attempt = async (token: string | undefined) => fetcher(url, {
         method,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { ...oauthAuthorizationHeaders(token), 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: { raw } }),
       });
       let res = await attempt(await ensureToken(false));
-      if (res.status === 401) res = await attempt(await ensureToken(true));
+      if (res.status === 401 && !opts.managedFetcher) res = await attempt(await ensureToken(true));
       return res as Response;
     };
     const throwDraftError = (status: number, text: string): never => {
@@ -1102,17 +1111,17 @@ export const createGmailProvider = (
     const raw = base64UrlEncode(rfc822);
     const url = `${GMAIL_API_BASE}/messages/send`;
 
-    const post = async (token: string) => fetcher(url, {
+    const post = async (token: string | undefined) => fetcher(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...oauthAuthorizationHeaders(token),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ raw }),
     });
 
     let res = await post(await ensureToken(false));
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       res = await post(await ensureToken(true));
     }
 
@@ -1384,10 +1393,10 @@ export const createGmailProvider = (
     verb: string,
   ): Promise<GmailMessageLabelsPayload> => {
     const url = `${GMAIL_API_BASE}/messages/${encodeURIComponent(id)}/${path}`;
-    const post = async (token: string) => fetcher(url, {
+    const post = async (token: string | undefined) => fetcher(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
+        ...oauthAuthorizationHeaders(token),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -1395,7 +1404,7 @@ export const createGmailProvider = (
     let res: Awaited<ReturnType<HttpFetcher>>;
     try {
       res = await post(await ensureToken(false));
-      if (res.status === 401) res = await post(await ensureToken(true));
+      if (res.status === 401 && !opts.managedFetcher) res = await post(await ensureToken(true));
     } catch (err) {
       // A thrown fetch is a transport failure — no response at all, so we
       // cannot know whether Gmail saw the request.
@@ -1508,23 +1517,21 @@ export const createGmailProvider = (
     await mutateMessage(args.source_id, 'trash', {}, 'delete');
   };
 
-  // sendCapable lockstep with `send`: derive once at construction
-  // from the user's granted-scope list. Re-enrollment with new
-  // scopes recreates the provider — config() is read once here so
-  // a later mutation can't desync the field from the method.
+  // Derive capability and method together at construction. Direct accounts
+  // use granted scopes; managed accounts require an explicit owner switch,
+  // with vendor permission still enforced on the actual request.
   // Tolerant match — a provider need not echo a scope in the form it was
   // requested, and an exact miss makes send silently unavailable (see
   // `grantedScopesInclude`).
-  const sendCapable = grantedScopesInclude(
+  const sendCapable = opts.managedFetcher ? opts.managedSendEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GMAIL_SEND_SCOPE,
   );
   const accountEmail = opts.config().account_email ?? '';
   // D-239 — same lockstep discipline as `sendCapable`, and the same
-  // tolerant scope match. A grant with `gmail.readonly` reads fine and
-  // mutates nothing, so the four verbs are attached only when the user
-  // actually consented to modification.
-  const mutationCapable = grantedScopesInclude(
+  // tolerant scope match for direct accounts. Managed mutation opt-in does
+  // not assert that the broker's vendor account granted modification.
+  const mutationCapable = opts.managedFetcher ? opts.managedMutationEnabled === true : grantedScopesInclude(
     opts.config().granted_scopes ?? [],
     GMAIL_MODIFY_SCOPE,
   );

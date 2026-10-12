@@ -108,6 +108,8 @@ describe('composeAppContext', () => {
       expect(app.enrichmentCascadeRef).toBeDefined();
       expect(app.externalContextRegistryRef).toBeDefined();
       expect(app.connectionStoreRef).toBeDefined();
+      expect(app.managedOAuth).toBeDefined();
+      expect(await app.managedOAuth!.handle({ action: 'profiles' })).toEqual({ action: 'profiles', profiles: [] });
       expect(app.webhookIngressStoreRef).toBeDefined();
       expect(app.webhookDeliveryStoreRef).toBeDefined();
       const pairedApi = {

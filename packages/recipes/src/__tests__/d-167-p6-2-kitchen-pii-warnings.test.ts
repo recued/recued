@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { isBatchCapableAISlug } from '@recued/contracts';
 import { validateRecipe, type ValidationIssue } from '../validate.js';
+import { AI_FUNCTION_REQUIRED_INPUTS } from '../validate/constants.js';
 
 type AiSlug = 'ai-classify' | 'ai-compare' | 'ai-prompt';
 
@@ -229,5 +231,34 @@ describe('D-167 P6.2 kitchen llm.pii_fields warnings', () => {
         warn('ai_pii_fields_unmatched_path'),
       ],
     });
+  });
+});
+
+// ⛔ THE OP FORM WAS NEVER TESTED, AND IT IS HOW EVERY SHIPPED STEP IS WRITTEN. The
+// unsupported-slug check read the raw slug, and an op step's is `core.ai.classify`,
+// which the `core-` prefix rule does not strip: all 23 shipped steps with
+// `llm.pii_fields` were warned they fail at run time, and none did (2026-10-11). The
+// executor reads its manifest's `core-ai-classify`, which strips to `ai-classify`.
+describe('D-167 P6.2 — the unsupported-slug warning agrees with the executor, in every form', () => {
+  const unsupported = (step: Record<string, unknown>): boolean =>
+    validateRecipe({ ...recipeFor({}), steps: [step] }).issues
+      .some((issue) => issue.code === 'ai_pii_fields_unsupported_slug');
+
+  const inputFor = (bare: string): Record<string, unknown> => ({
+    ...Object.fromEntries(AI_FUNCTION_REQUIRED_INPUTS[bare]!.map((key) => [key, key === 'llm.prompt' ? 'Review it.' : ['x']])),
+    'llm.pii_fields': { sender: 'email' },
+  });
+
+  it.each(Object.keys(AI_FUNCTION_REQUIRED_INPUTS))('%s: warned exactly when the executor refuses', (bare) => {
+    // What `executeLLM` checks, on the kernel manifest a step of either form reaches.
+    const refused = !isBatchCapableAISlug(`core-${bare}`);
+    const op = `core.ai.${bare.slice('ai-'.length)}`;
+    expect(unsupported({ id: 'step', op, args: inputFor(bare) }), op).toBe(refused);
+    expect(unsupported({ id: 'step', ingredient: `core-${bare}`, input: inputFor(bare) }), `core-${bare}`).toBe(refused);
+  });
+
+  it('the shipped shape: core.ai.classify and core.ai.generate with llm.pii_fields are not warned', () => {
+    expect(unsupported({ id: 'step', op: 'core.ai.classify', args: inputFor('ai-classify') })).toBe(false);
+    expect(unsupported({ id: 'step', op: 'core.ai.generate', args: inputFor('ai-generate') })).toBe(false);
   });
 });

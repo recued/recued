@@ -141,7 +141,7 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "publisher": "recued-core",
     "name": "Reception — Approval",
     "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
-    "version": 1,
+    "version": 3,
     "pre_install": true,
     "recipes": [],
     "requires": [
@@ -155,6 +155,11 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     ],
     "pack_kind": "app_pack",
     "contents": [
+      {
+        "type": "recipe",
+        "slug": "reception-quote-signoff-release",
+        "version": 2
+      },
       {
         "type": "composition",
         "composition": {
@@ -1767,6 +1772,45 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           "source": "step.card"
         }
       ]
+    }
+  },
+  "reception-quote-signoff-release": {
+    "recipe_id": "reception-quote-signoff-release",
+    "version": 2,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Release a customer-accepted quote",
+      "description": "Use “Release a customer-accepted quote” in Recued. Review the quote or added work your customer accepted, then approve its fixed task and invoice plan. Apply the changes together while the accepted terms still match.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "quotes",
+        "sign-off"
+      ],
+      "budget_ms": 30000
+    },
+    "variables": {},
+    "event_triggers": [
+      {
+        "event": "composition.reception_quote_signoff"
+      }
+    ],
+    "steps": [
+      {
+        "id": "release",
+        "op": "core.work-entity.quote-signoff.release",
+        "args": {
+          "signoff_id": "{{context.event.payload.signoff_id}}",
+          "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
+          "summary": "{{context.event.payload.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
     }
   },
   "remind-me-of": {

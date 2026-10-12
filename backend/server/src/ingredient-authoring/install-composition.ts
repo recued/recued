@@ -68,7 +68,9 @@ import {
   parseOpStepConnectionRef,
   OP_STEP_CONNECTION_REF_REGEX,
   CanonicalOpResolutionError,
+  declaresApiConnectionSetting,
   lowerOpStepRecipe,
+  withSlotSettings,
   type PackOpResolution,
 } from '@recued/recipes';
 import {
@@ -86,6 +88,8 @@ import {
   OWNER_CONTRACT_ID,
   CATALOG_VENDOR_SLUGS,
   CONNECTION_VENDOR_ENTITIES,
+  CRM_ALIAS_VALUES,
+  ACCT_ALIAS_VALUES,
   assertEngagementRegistryInvariants,
 } from '@recued/contracts';
 import type {
@@ -113,6 +117,7 @@ import type {
 } from '@recued/contracts';
 
 import type { ManifestRegistry } from '../manifest-loader.js';
+import { checkInlineOpSteps } from '../op-step-save-check.js';
 import {
   ingredientOwnership,
   buildPackOpResolution,
@@ -409,6 +414,25 @@ const hasNonPrefetchableOpStepInPrefetch = (recipe: RecipeDefinition): boolean =
 export const recipesHaveCanonicalOpStep = (recipes: readonly RecipeDefinition[]): boolean =>
   recipes.some((r) => hasCanonicalOpStep(r) || hasOpStepInPrefetch(r));
 
+/** D-320 — the families a run binds a vendor-neutral op-step through: a CRM alias
+ *  (`deal`, of `core.crm.deal.search`) or an accounting one (`invoice`, of
+ *  `core.acct.invoice.search`). */
+const VENDOR_NEUTRAL_FAMILIES: ReadonlySet<string> = new Set<string>([
+  ...CRM_ALIAS_VALUES,
+  ...ACCT_ALIAS_VALUES,
+]);
+
+/** D-320 — is a LOWERED op (`<family>.<verb>`) vendor-neutral? Lowering strips
+ *  `core.crm.` / `core.acct.`, so a legacy bare `deal.search` counts too, as the
+ *  run counts it (`slot-settings.ts`). A tool op (`web.search`) names a catalog's
+ *  operation directly, so it has no family a run could bind it by. */
+const isVendorNeutralOp = (op: string): boolean => {
+  const [family, verb, ...rest] = op.split('.');
+  return rest.length === 0
+    && verb !== undefined && verb.length > 0
+    && family !== undefined && VENDOR_NEUTRAL_FAMILIES.has(family);
+};
+
 /** The resolution-context inputs the install path assembles per pack (the field
  *  mapping itself comes from the registry, not here). */
 interface OpStepResolutionInputs {
@@ -683,6 +707,18 @@ export const resolveOpStepRecipes = (
     if (!hasCanonicalOpStep(recipe)) {
       out.push(recipe);
       continue;
+    }
+    // D-320 phase 3 (3e) — a recipe that declares no API connection setting names no
+    // connection, so each vendor-neutral op-step is given the setting a run gives it
+    // (`withSlotSettings`: `crm` or `acct`, declared here) and binds to that, whether
+    // or not the pack binds a connection. Before, such a recipe was refused here
+    // when the pack bound none, and bound to the pack's literal connection name when
+    // it did (the CRM-maintenance pair in the HubSpot and Salesforce packs, pinned to
+    // whatever connection is named `hubspot`); one whose only setting was a mail
+    // sender bound its CRM steps to it. A recipe that declares one resolves as it
+    // always did.
+    if (!declaresApiConnectionSetting(recipe)) {
+      recipe = withSlotSettings(recipe, { signInOf: () => 'unknown' }).recipe;
     }
     // Per-operand connection (R2 step 5) — explicit slots validated, slot-less
     // default derived per recipe (ambiguity > pack default > the recipe's single
@@ -986,6 +1022,10 @@ export const resolvePerSlotOpStepRecipe = (
   catalogBySlotVariable: ReadonlyMap<string, IngredientManifest>,
   packSlug: string,
   vendorForCatalog: (catalogSlug: string) => string | undefined = defaultVendorForCatalog,
+  /** D-320 ruling 20e — the registry the canonical fields map through. A run passes
+   *  the live one (built-ins + installed compositions, `liveCatalogVendors`), so an
+   *  accounting vendor resolves at run as it did at install. Default: built-ins. */
+  registry: ReadonlyArray<ConnectionVendorEntity> = CONNECTION_VENDOR_ENTITIES,
 ): { ok: true; recipe: RecipeDefinition; warnings: AuthoringValidationIssue[] }
   | { ok: false; message: string } => {
   if (hasNonPrefetchableOpStepInPrefetch(recipe)) {
@@ -1025,7 +1065,8 @@ export const resolvePerSlotOpStepRecipe = (
       search_style: surfaceSearchStyleOf(catalog),
       write_style: surfaceWriteStyleOf(catalog),
       operation_families: operationFamiliesFromCatalog(catalog),
-      entity_fields: entityFieldsFromRegistry(vendor),
+      entity_fields: entityFieldsFromRegistry(vendor, registry),
+      registry,
     });
   }
   let resolved: ReturnType<typeof resolveConnectionAgnosticRecipe>;
@@ -1059,10 +1100,60 @@ export const resolvePerSlotOpStepRecipe = (
   return { ok: true, recipe: resolved.recipe, warnings };
 };
 
+/** D-320 — case 4 of `resolvePackOpStepRecipes`: a pack that carries no composition
+ *  and names no bundled vendor catalog. Its vendor-neutral op-steps (`core.crm.*`,
+ *  `core.acct.*`) have no vendor here to bind to, and need none at install: a run
+ *  binds them to the connection it settles for their family. The run gives each its
+ *  family's setting (`withSlotSettings`), the pick layer offers the connections whose
+ *  catalog serves it (`derivePickCandidates`), and `resolveCanonicalRecipeForDispatch`
+ *  resolves it against that connection's catalog.
+ *
+ *  So a recipe that keeps an op-step after lowering is stored AS AUTHORED, as a
+ *  recipe saved from the Kitchen is, and must pass the op-step check that save
+ *  applies (`checkInlineOpSteps`: a verb the run can never resolve is refused).
+ *  Its id goes in `unbound`. A recipe with no op-step left keeps its lowered form,
+ *  as in case 1.
+ *
+ *  Still refused, with the message this case always gave: an op-step that is not
+ *  vendor-neutral. A tool op (`web.search`) names a catalog's operation directly,
+ *  so only a catalog the pack brings can bind it. */
+const leaveVendorNeutralForRun = (
+  authored: readonly RecipeDefinition[],
+  lowered: readonly RecipeDefinition[],
+): { ok: true; recipes: RecipeDefinition[]; warnings: AuthoringValidationIssue[]; unbound: string[] }
+  | { ok: false; message: string } => {
+  const recipes: RecipeDefinition[] = [];
+  const unbound: string[] = [];
+  for (const [index, recipe] of lowered.entries()) {
+    // Lowered, a recipe keeps op-steps in `steps` only: a prefetch op-step became a
+    // fetch or threw.
+    if (!hasCanonicalOpStep(recipe)) {
+      recipes.push(recipe);
+      continue;
+    }
+    if (!recipe.steps.every((step) => !isCanonicalOpStep(step) || isVendorNeutralOp(step.op))) {
+      return {
+        ok: false,
+        message:
+          'pack bundles canonical op-step recipe(s) but carries neither a composition nor a reference to a bundled CRM vendor catalog (hubspot-catalog / salesforce-catalog) to bind them against',
+      };
+    }
+    const own = authored[index]!;
+    const unrunnable = checkInlineOpSteps(own).errors[0];
+    if (unrunnable !== undefined) {
+      return { ok: false, message: `recipe '${own.recipe_id}': ${unrunnable}` };
+    }
+    recipes.push(own);
+    unbound.push(own.recipe_id);
+  }
+  return { ok: true, recipes, warnings: [], unbound };
+};
+
 /** The op-step resolution entry point the `packs.install` handler calls — picks
  *  the right resolver for a pack's bundled op-step recipes and fails closed
- *  otherwise. Three cases (per the three-layer gate "op-step + no binding →
- *  hard install-block"):
+ *  otherwise. Four cases (per the three-layer gate "op-step + no binding →
+ *  hard install-block", which since D-320 spares a vendor-neutral op-step the run
+ *  binds):
  *
  *  D-182 Slice 5 (Increment 2b) lowers any two-tier op-step FIRST (kernel `core.*`
  *  → concrete; canonical-convention → bare canonical op; Tier-P → fail closed under
@@ -1076,13 +1167,17 @@ export const resolvePerSlotOpStepRecipe = (
  *       in this environment (else the recipes would point at a catalog that was
  *       never registered);
  *    3. pack references a BUNDLED vendor catalog by-ref (no composition) →
- *       `resolveFirstPartyCatalogPackRecipes` (first-party HubSpot / Salesforce).
+ *       `resolveFirstPartyCatalogPackRecipes` (first-party HubSpot / Salesforce);
+ *    4. neither (no composition AND no vendor-catalog ref) → the vendor-neutral
+ *       op-steps (`core.crm.*` / `core.acct.*`) are left for each run to bind
+ *       (`leaveVendorNeutralForRun`, D-320): the shipped `crm`, `acct`,
+ *       `outbound-follow-up-response` and `customer-support-reply-desk` packs.
  *
- *  Anything else with op-steps (no composition AND no vendor-catalog ref, or the
- *  referenced catalog isn't registered) hard-blocks. `getCatalogManifest` is the
- *  live manifest registry's `get` (returns `null` when the substrate is absent —
- *  a db-less boot then fail-closes the first-party path, never over-installs).
- *  Pure of writes. */
+ *  Anything else with op-steps (case 4 with an op-step that is not vendor-neutral,
+ *  or a referenced catalog that isn't registered) hard-blocks. `getCatalogManifest`
+ *  is the live manifest registry's `get` (returns `null` when the substrate is
+ *  absent — a db-less boot then fail-closes the first-party path, never
+ *  over-installs). Pure of writes. */
 export const resolvePackOpStepRecipes = (
   composition: CompositionIngredient | undefined,
   contents: readonly PackContentRef[],
@@ -1109,7 +1204,15 @@ export const resolvePackOpStepRecipes = (
   // own bundled catalog at install" path. Omitted ⇒ no self-binding (a
   // dependency-only resolution, unchanged).
   selfPackRef?: string,
-): { ok: true; recipes: RecipeDefinition[]; warnings: AuthoringValidationIssue[] }
+): {
+  ok: true;
+  recipes: RecipeDefinition[];
+  warnings: AuthoringValidationIssue[];
+  /** Case 4 only: the ids of the recipes stored as authored, their op-steps left
+   *  for each run to bind. The caller marks their engine rows
+   *  (`op_steps_resolved_at_run`), or the engine refuses them. */
+  unbound?: string[];
+}
   | { ok: false; message: string } => {
   // D-182 Slice 4 — merge the self-pack's own bundled-catalog Tier-P binding (see
   // `selfPackRef`). Source the fresh binding from the pack's by-value composition
@@ -1153,6 +1256,7 @@ export const resolvePackOpStepRecipes = (
   // isn't installed. The downstream resolvers re-lower idempotently (a
   // concrete step is not an op-step; a bare canonical op is a 2-segment
   // passthrough). INERT no-op on the current corpus.
+  const authored = recipes;
   const lowered: RecipeDefinition[] = [];
   for (const r of recipes) {
     try {
@@ -1182,13 +1286,8 @@ export const resolvePackOpStepRecipes = (
   // (3) first-party path — the pack references a BUNDLED vendor catalog by-ref.
   const catalogRef = firstPartyVendorCatalogRef(contents, vendorForCatalog);
   if (!catalogRef.ok) return { ok: false, message: catalogRef.message };
-  if (catalogRef.catalogSlug === undefined) {
-    return {
-      ok: false,
-      message:
-        'pack bundles canonical op-step recipe(s) but carries neither a composition nor a reference to a bundled CRM vendor catalog (hubspot-catalog / salesforce-catalog) to bind them against',
-    };
-  }
+  // (4) neither — no vendor of its own: the run binds its vendor-neutral op-steps.
+  if (catalogRef.catalogSlug === undefined) return leaveVendorNeutralForRun(authored, recipes);
   const catalog = getCatalogManifest(catalogRef.catalogSlug);
   if (catalog === null) {
     return {

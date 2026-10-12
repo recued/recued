@@ -75,6 +75,10 @@
  *  silent field edits). */
 
 import {
+  createManagedOAuthPanel,
+  type ManagedOAuthCaller,
+} from './managed-oauth-panel.js';
+import {
   runOAuthPopup,
   defaultFoundationalOAuthEnv,
   type FoundationalOAuthEnv,
@@ -664,6 +668,8 @@ export interface MountConnectionsEnrollPanelOptions {
    *  is the shared `BroadcastSubscriber['on']`; the panel listens for the
    *  `connection.vendor_oauth_completed` frame matching its own `flow_id`. */
   runStartVendorOAuth?: ConnectionsStartVendorOAuthCaller;
+  /** D-322 — broker setup and authorization on this paired server. */
+  runManagedOAuth?: ManagedOAuthCaller;
   runTakeVendorOAuthResult?: ConnectionsTakeVendorOAuthResultCaller;
   /** R26.2 Option B — the pure code-exchange rpc. Wired ⇒ a LOOPBACK PWA runs
    *  the dance entirely on this machine: the provider redirects to the
@@ -697,6 +703,8 @@ export interface MountConnectionsEnrollPanelOptions {
    *  fails the connection-name regex or the user has already begun a dialog
    *  interaction by the time the load settles. */
   initialVendor?: string;
+  /** D-322 — service metadata comes from this current pack row, not a route URL. */
+  initialPack?: import('../connections/connections-navigation.js').ConnectionEnrollmentPack;
 }
 
 export interface ConnectionsEnrollPanelMount {
@@ -1623,6 +1631,45 @@ export const mountConnectionsEnrollPanel = (
   // the `claim_secret` (closure-only, never rendered). `oauthUnsub` is the bus
   // subscription torn down on dispose.
   const oauthEnv = opts.oauthEnv ?? defaultVendorOAuthEnv();
+  let hasPackEnrollmentContext = false;
+  // D-322 — the module owns its short-lived claims and broker key draft.
+  const managedOAuthPanel = createManagedOAuthPanel({
+    ...(opts.runManagedOAuth ? { call: opts.runManagedOAuth } : {}),
+    ...(oauthEnv ? { open: () => oauthEnv.open('about:blank', '_blank') } : {}),
+    context: () => ({
+      enabled: state.dialog.kind === 'api' && state.dialog.stage === 'form' && state.dialog.values['auth.type'] === 'managed_oauth',
+      mode: state.dialog.mode, name: state.dialog.values.name ?? '',
+      base_url: state.dialog.values['config.base_url'] ?? '',
+      scopes: (state.dialog.values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean),
+      profile_id: state.dialog.values['auth.broker_profile_id'] ?? '',
+      integration_id: state.dialog.values['auth.integration_id'] ?? '',
+      connection_id: state.dialog.values['auth.connection_id'] ?? '',
+      ...(state.dialog.values['auth.imported'] === 'true' ? { imported: true } : {}),
+      ...((state.dialog.values['config.vendor'] || state.dialog.vendor) ? {
+        vendor: state.dialog.values['config.vendor'] || state.dialog.vendor!,
+      } : {}),
+    }),
+    select: (profile, integration) => {
+      state.dialog.values['auth.broker_profile_id'] = profile;
+      state.dialog.values['auth.integration_id'] = integration;
+    },
+    requiredScopes: (scopes) => {
+      const current = (state.dialog.values['auth.scopes'] ?? '').split(/[\s,]+/).filter(Boolean);
+      state.dialog.values['auth.scopes'] = [...new Set([...current, ...scopes])].sort().join(' ');
+    },
+    authorized: (auth, grantedScopes) => {
+      delete state.dialog.values['auth.imported'];
+      for (const [key, value] of Object.entries(auth)) {
+        state.dialog.values[`auth.${key}`] = typeof value === 'string' ? value : JSON.stringify(value);
+      }
+      state.dialog.oauthGrantedScopes = grantedScopes === undefined ? null : [...grantedScopes];
+    },
+    invalidate: () => { delete state.dialog.values['auth.authorization_receipt']; state.dialog.oauthGrantedScopes = null; },
+    changed: () => { if (!disposed) {
+      if (state.dialog.values['auth.type'] === 'managed_oauth') state.dialog.oauthInFlight = managedOAuthPanel.busy();
+      render(); syncSubmitDisabled();
+    } },
+  });
   let pendingOAuth: PendingVendorOAuth | null = null;
   let oauthUnsub: (() => void) | null = null;
   // A guide call is a paid owner-triggered model request. Keep a mount-level
@@ -1887,6 +1934,7 @@ export const mountConnectionsEnrollPanel = (
     });
     mountMcpPackInstallScopePicker();
     mountSignInGrids();
+    managedOAuthPanel.mount(host.querySelector<HTMLElement>('[data-managed-oauth-host]'));
     if (
       serverUpdateProgress !== null
       && typeof host.querySelector === 'function'
@@ -2842,6 +2890,7 @@ export const mountConnectionsEnrollPanel = (
    *  wedges every later submit). `resetDialog` / `edit` instead REPLACE the
    *  dialog with a fresh `saving:false` object, so they don't need this. */
   const beginDialogNavigation = (): void => {
+    hasPackEnrollmentContext = false;
     releaseCredentialRotationOwnership(true);
     retireProviderSetupContinuity();
     cancelPendingOAuth();
@@ -2983,6 +3032,7 @@ export const mountConnectionsEnrollPanel = (
         state.dialog.kind,
         state.dialog.subtype ?? undefined,
         state.dialog.vendor ?? undefined,
+        state.dialog.values['auth.type'],
       );
       return schema !== undefined
         && shouldPatchConnectionAuth(schema, state.dialog.values);
@@ -3577,6 +3627,7 @@ export const mountConnectionsEnrollPanel = (
           state.dialog.kind,
           state.dialog.subtype ?? undefined,
           state.dialog.vendor ?? undefined,
+          state.dialog.values['auth.type'],
         );
 
   const setDialogCredentialCorrection = (
@@ -4612,6 +4663,7 @@ export const mountConnectionsEnrollPanel = (
   // visible degraded projection with an explicit retry: `null` is not proof
   // that no packs use these connections.
   let installedPacks: PackListEntry[] | null = null;
+  let availablePacks: readonly PackListEntry[] = [];
   let packsFetchAttempted = false;
   let packsFetchInFlight: Promise<void> | null = null;
   let packsFetchGeneration = 0;
@@ -4654,6 +4706,7 @@ export const mountConnectionsEnrollPanel = (
       .then(() => opts.runPacksList!())
       .then((r) => {
         if (!disposed && generationAtDispatch === packsFetchGeneration) {
+          availablePacks = r.packs;
           installedPacks = r.packs.filter((p) => p.installed);
           // Surface to the renderer so each api connection row can show its
           // "Used by packs" coverage, and re-render — the connection list
@@ -4706,6 +4759,7 @@ export const mountConnectionsEnrollPanel = (
     if (disposed || opts.runPacksList === undefined) return;
     packsFetchGeneration += 1;
     installedPacks = null;
+    availablePacks = [];
     packsFetchAttempted = false;
     if (packsFetchInFlight !== null) {
       packsRefreshPending = true;
@@ -4847,17 +4901,34 @@ export const mountConnectionsEnrollPanel = (
     };
   };
 
-  const openVendorEnrollForm = (vendor: string): void => {
+  const openVendorEnrollForm = (vendor: string, source?: import('../connections/connections-navigation.js').ConnectionEnrollmentPack): void => {
     beginDialogNavigation();
+    hasPackEnrollmentContext = source !== undefined;
     const seed = vendorEnrollSeed(vendor);
+    const pack = source === undefined ? undefined : availablePacks.find((p) => p.slug === source.slug);
+    const requirements = pack?.connection_requirements?.filter((r) => r.vendor === vendor) ?? [];
+    const unresolvedService = source !== undefined && requirements.length !== 1;
+    // A descriptor is service metadata, unlike editable pack hints. Do not seed a
+    // placeholder per-account host, or guess among several service requirements.
+    if (requirements.length === 1 && requirements[0]!.per_org !== true) {
+      seed.values['config.base_url'] = requirements[0]!.api_base;
+      const scopes = source?.slot === undefined
+        ? Object.values(pack?.required_scopes_by_connection ?? {}).flat()
+        : pack?.required_scopes_by_connection?.[source.slot] ?? [];
+      seed.values['auth.scopes'] = [...new Set(scopes)].sort().join(' ');
+    }
     state.dialog.kind = 'api';
     state.dialog.subtype = null;
-    state.dialog.vendor = seed.vendor;
-    state.dialog.values = seed.values;
+    state.dialog.vendor = unresolvedService ? null : seed.vendor;
+    state.dialog.values = unresolvedService ? {
+      name: vendor, display_name: pack?.name ?? vendor, 'config.vendor': vendor,
+      'config.base_url': '', 'auth.type': 'managed_oauth',
+    } : seed.values;
     state.dialog.hintedFields = Object.fromEntries(
       seed.hints.map(({ key, publisher }) => [key, publisher]),
     );
-    state.dialog.error = null;
+    state.dialog.error = unresolvedService
+      ? 'The requested pack service is unavailable or ambiguous. Enter its vendor API base URL, or return to the pack and retry setup.' : null;
     state.dialog.stage = 'form';
     captureDialogDraftBaseline();
   };
@@ -4889,8 +4960,10 @@ export const mountConnectionsEnrollPanel = (
     if (seed.vendor !== null) {
       values = syncVendorOAuthEndpointValue(seed.vendor, values);
     }
+    // D-322 — reconstruct the same visible auth selector used by the live form.
+    const schema = resolveConnectionSchema('api', undefined, seed.vendor ?? undefined, values['auth.type']) ?? seed.schema;
     const rebuilt = buildConnectionSetupGuidePreview(
-      seed.schema,
+      schema,
       values,
       draft.result.shared_context.target_url,
     );
@@ -4905,7 +4978,7 @@ export const mountConnectionsEnrollPanel = (
       return false;
     }
     if (draft.resumeFieldKey !== null) {
-      const resumeField = seed.schema.fields.find((field) =>
+      const resumeField = schema.fields.find((field) =>
         field.key === draft.resumeFieldKey
         && !field.hidden
         && !field.readonly
@@ -6839,7 +6912,17 @@ export const mountConnectionsEnrollPanel = (
       // 404 the follow-up `setMatchPatterns`.
       let savedName = payload.name;
       if (isEdit) {
-        if (patch.auth !== undefined) {
+        if (patch.auth?.type === 'managed_oauth') {
+          if (opts.runManagedOAuth === undefined || expectedUpdatedAt === undefined) throw new Error('Refresh this connection and authorize it again before saving.');
+          const saved = await opts.runManagedOAuth({ action: 'save_reauthorization', name: payload.name, expected_updated_at: expectedUpdatedAt,
+            patch: { ...patch, auth: patch.auth } });
+          if (saved.action !== 'save_reauthorization') throw new Error('Managed OAuth save could not be confirmed. Refresh the connection.');
+          savedName = saved.connection.name;
+          try {
+            const { health } = await opts.runProbe({ name: savedName, kind: payload.kind });
+            probeStatus = health.status;
+          } catch (err) { probeStatus = errMessage(err); }
+        } else if (patch.auth !== undefined) {
           if (opts.runRotateCredentials === undefined) {
             throw new Error(ROTATION_UNAVAILABLE_COPY);
           }
@@ -7009,7 +7092,7 @@ export const mountConnectionsEnrollPanel = (
             ? { access_expires_at: credentialVerification.access_expires_at }
             : {}),
         };
-      } else if (!isEdit) {
+      } else if (!isEdit || patch.auth?.type === 'managed_oauth') {
         state.dialog.recentProbe = {
           kind: payload.kind,
           name: savedName,
@@ -9267,6 +9350,15 @@ export const mountConnectionsEnrollPanel = (
       [key]: nextValue,
       ...(invalidatedOAuthResult ? { 'auth.refresh_token': '' } : {}),
     };
+    // Direct-app defaults can include another service of the same vendor. Let
+    // managed discovery prefill its service's requirements; preserve owner edits
+    // and the explicitly selected pack's scope seed.
+    if (key === 'auth.type' && nextValue === 'managed_oauth' && state.dialog.mode === 'create' && !hasPackEnrollmentContext) {
+      const vendor = state.dialog.values['config.vendor'] || state.dialog.vendor;
+      if (vendor && state.dialog.values['auth.scopes'] === prefillVendorScopes(vendor)) state.dialog.values['auth.scopes'] = '';
+    }
+    // D-322 — an edited target/scope retires the pending broker claim and receipt.
+    managedOAuthPanel.sync();
     if (clearedCredentialCorrection) {
       retireCredentialRegenerationSafeStop(
         credentialCorrectionBeforeEdit,
@@ -9559,7 +9651,7 @@ export const mountConnectionsEnrollPanel = (
     void pendingLoad.then(() => {
       if (disposed || dialogGen !== 0 || state.dialog.stage !== 'closed') return;
       retireProviderSetupContinuity();
-      openVendorEnrollForm(initialVendor);
+      openVendorEnrollForm(initialVendor, opts.initialPack);
       render();
     });
   }
@@ -9712,7 +9804,7 @@ export const mountConnectionsEnrollPanel = (
       }
       renderPreservingActiveField();
     },
-    hasInFlightWork: () => submitInFlight
+    hasInFlightWork: () => managedOAuthPanel.busy() || submitInFlight
       || pendingOAuth !== null
       || guideInFlight
       || credentialRotationActivityCheck !== null
@@ -9725,7 +9817,7 @@ export const mountConnectionsEnrollPanel = (
       || state.probeInFlight.size > 0
       || state.deleteConfirm?.deleting === true
       || state.engagementHealth.reprobing.size > 0,
-    hasUnsavedChanges: hasUnsavedConnectionDraft,
+    hasUnsavedChanges: () => managedOAuthPanel.hasDraft() || hasUnsavedConnectionDraft(),
     unsavedChangesPrompt: connectionDraftLeavePrompt,
     getMcpPackInstallScope: effectiveMcpPackInstallScope,
     clickMcpPackAccessOption: setMcpPackGrantAccess,
@@ -9734,6 +9826,7 @@ export const mountConnectionsEnrollPanel = (
       if (disposed) return;
       disposed = true;
       signInGrid.dispose();
+      managedOAuthPanel.dispose();
       invalidateCredentialRotationSafeStopCheck();
       invalidateCredentialSafeStopAcknowledgement();
       if (

@@ -243,6 +243,19 @@ export const requiredSettingProblem = (
   return null;
 };
 
+/** What a failed confirm says. D-319 amendment (owner, 2026-10-11) — a dish the
+ *  server will not arm without a setting, or a connection it can settle, is refused
+ *  with what to fill or choose named (`dish_settings_missing`,
+ *  `dish_connection_missing`); the form's generic copy would hide which. */
+export const confirmFailureText = (cause: unknown, copy: string | undefined): string => {
+  if (cause !== null && typeof cause === 'object'
+    && ['dish_settings_missing', 'dish_connection_missing'].includes(String((cause as { code?: unknown }).code))
+    && typeof (cause as { message?: unknown }).message === 'string') {
+    return (cause as { message: string }).message;
+  }
+  return copy ?? 'Recued could not save that. What you typed is still here. Try again.';
+};
+
 // D-215 § 9e — `MISSING_FILE_PREFIX` / `fileRefDisplayLabel` moved to
 // `variable-widgets.js`. The rule gained a second consumer
 // (`file-ref-array.ts`, which this module imports), so a home here would be
@@ -475,14 +488,13 @@ export const wireConfigEditorOverlay = (
     if (confirmButton !== null) confirmButton.textContent = opts.confirmLabel;
   };
 
-  const showConfirmFailure = (): void => {
+  const showConfirmFailure = (cause?: unknown): void => {
     if (destroyed) return;
     const active = doc.activeElement;
     setConfirming(false);
     if (error !== null) {
       error.hidden = false;
-      error.textContent = opts.confirmFailureCopy
-        ?? "Recued could not save that. What you typed is still here. Try again.";
+      error.textContent = confirmFailureText(cause, opts.confirmFailureCopy);
     }
     if (active === confirmButton) {
       confirmButton?.focus({ preventScroll: true });
@@ -526,8 +538,8 @@ export const wireConfigEditorOverlay = (
         ...(cron !== '' ? { cron } : {}),
         ...(connections !== undefined ? { connections } : {}),
       });
-    } catch {
-      showConfirmFailure();
+    } catch (cause) {
+      showConfirmFailure(cause);
       return;
     }
     if (
@@ -541,8 +553,8 @@ export const wireConfigEditorOverlay = (
     try {
       await outcome;
       destroy();
-    } catch {
-      showConfirmFailure();
+    } catch (cause) {
+      showConfirmFailure(cause);
     }
   };
 

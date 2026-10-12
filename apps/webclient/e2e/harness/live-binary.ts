@@ -19,7 +19,7 @@
  *   E2E_REQUIRE_LIVE=1  turn "not configured" from a skip into a failure
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -125,6 +125,8 @@ export type LiveServer = {
   dbPath: string;
   /** Run a CLI verb against this realm (`status`, `stop`, …). Daemon mode only. */
   cli: (args: string[]) => { stdout: string; stderr: string; status: number | null };
+  /** Keep local HTTP/WS fixture forwarding alive during a daemon restart. */
+  cliAsync: (args: string[]) => Promise<{ stdout: string; stderr: string; status: number | null }>;
 };
 
 /** Copy the realm — ⛔ never boot the seed's own db, and never write to it. The
@@ -246,6 +248,11 @@ export const bootLiveServer = async (
     const r = spawnSync(exe, args, { cwd: dir, encoding: 'utf8', timeout: 90_000, env: childEnv });
     return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
   };
+  const cliAsync: LiveServer['cliAsync'] = args => new Promise(resolveCli => {
+    execFile(exe, args, { cwd: dir, encoding: 'utf8', timeout: 90_000, env: childEnv }, (error, stdout, stderr) => {
+      resolveCli({ stdout, stderr, status: error === null ? 0 : typeof error.code === 'number' ? error.code : null });
+    });
+  });
 
   let out = '';
   let child: ChildProcess | undefined;
@@ -373,7 +380,7 @@ export const bootLiveServer = async (
 
   return {
     url: `http://127.0.0.1:${port}`, port, pairCode: code, recoveryWords,
-    log: () => readAll(), stop, mode, cli, dbPath,
+    log: () => readAll(), stop, mode, cli, cliAsync, dbPath,
     freshCode: () => {
       const out = cli(['pair', '--db', dbPath]);
       const found = /Pairing code:\s*([A-Z0-9-]+)/.exec(`${out.stdout}${out.stderr}`)?.[1];

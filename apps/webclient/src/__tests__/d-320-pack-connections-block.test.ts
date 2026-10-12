@@ -599,7 +599,7 @@ describe('D-320 slice 2j — "Set up a new connection" opens the vendor\'s form'
   it('sits beside Add another', async () => {
     const m = await mountView(viewWith({ vendor: 'hubspot', candidates: [['hubspot-app', 'HubSpot app']] }));
     const link = one(m.block!, PACK_CONNECTIONS_SET_UP_ATTR)!;
-    expect(link.getAttribute('href')).toBe('#connections/others/enroll/hubspot');
+    expect(link.getAttribute('href')).toBe('#connections/others/enroll/hubspot/pack/hubspot/hubspot');
     expect(text(link)).toBe('Set up a new connection');
     expect(one(m.block!, PACK_CONNECTIONS_ADD_ATTR, 'hubspot')).not.toBeNull();
   });
@@ -607,7 +607,7 @@ describe('D-320 slice 2j — "Set up a new connection" opens the vendor\'s form'
   it('with no other connection to add, it is the way to one', async () => {
     const m = await mountView(viewWith({ vendor: 'hubspot' }));
     expect(text(m.block!)).toContain('No other connection can join yet.');
-    expect(one(m.block!, PACK_CONNECTIONS_SET_UP_ATTR)?.getAttribute('href')).toBe('#connections/others/enroll/hubspot');
+    expect(one(m.block!, PACK_CONNECTIONS_SET_UP_ATTR)?.getAttribute('href')).toBe('#connections/others/enroll/hubspot/pack/hubspot/hubspot');
   });
 
   it('a server that names no vendor keeps the link to Connections', async () => {

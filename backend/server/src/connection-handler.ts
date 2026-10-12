@@ -197,8 +197,13 @@ import {
   type ConnectionSetupGuideDeps,
 } from './connection-setup-guide.js';
 import { makeConnectionRuntimeBaseIssueSink } from './connection-runtime-base-issue.js';
+import type { ManagedOAuthService } from './managed-oauth-service.js';
 
 export interface ConnectionRpcDeps {
+  /** D-322 — the same broker service used by native API execution. */
+  managedOAuth?: ManagedOAuthService;
+  /** First-class collections may reference a saved managed API account. */
+  assertCollectionUnreferenced?: (name: string) => void;
   store: ConnectionStoreSqlite;
   /** Owner-triggered, read-only API setup assistant. The caller supplies the
    *  configured-model invocation; the guide module owns request minimization,
@@ -472,6 +477,12 @@ export interface ConnectionRpcDeps {
    *  UI falls back to a built-in `vendorHasEngagement` read. */
   resolveVendorRegistry?: () => ReadonlyArray<ConnectionVendorEntity>;
 }
+
+/** D-322 — fail closed on hosts that have not composed a broker service. */
+const requireManagedOAuth = (deps: ConnectionRpcDeps): ManagedOAuthService => {
+  if (deps.managedOAuth === undefined) throw new RpcError('not_configured', 'Managed OAuth is unavailable on this server.');
+  return deps.managedOAuth;
+};
 
 const VALID_KINDS: ReadonlySet<string> = new Set(['mcp', 'api', 'notification']);
 const VALID_AUTH_TYPES: ReadonlySet<string> = new Set([
@@ -944,6 +955,7 @@ const ensureOptionalTokenAuthStyleField = (
  *  records: otherwise a row enrolls as `bearer` and is patched into the
  *  unusable shape through the back door. */
 const API_ONLY_AUTH_TYPES: ReadonlySet<ConnectionAuth['type']> = new Set([
+  'managed_oauth', // D-322 — requires the native API proxy transport.
   'request_signature',
   'body_field',
 ]);
@@ -974,6 +986,22 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
     );
   }
   switch (auth.type) {
+    case 'managed_oauth':
+      requireStringField(where, auth, 'broker_profile_id');
+      requireStringField(where, auth, 'integration_id');
+      requireStringField(where, auth, 'connection_id');
+      requireStringField(where, auth, 'target_origin');
+      if (!Array.isArray(auth.requested_scopes) || auth.requested_scopes.some((scope) => typeof scope !== 'string')) {
+        throw new RpcError('bad_request', `${where}: managed OAuth requested_scopes must be a list of strings`);
+      }
+      if (auth.required_scopes !== undefined && (!Array.isArray(auth.required_scopes) || auth.required_scopes.length > 256
+        || auth.required_scopes.some(scope => typeof scope !== 'string' || scope.length > 2048))) {
+        throw new RpcError('bad_request', `${where}: managed OAuth required_scopes must be a bounded list of strings`);
+      }
+      if (auth.imported !== undefined && auth.imported !== true) {
+        throw new RpcError('bad_request', `${where}: managed OAuth imported must be true when present`);
+      }
+      break;
     case 'none':
       break;
     case 'bearer':
@@ -1220,7 +1248,14 @@ export const encodeAuthForStorage = async (
   identity: { kind: ConnectionKind; name: string },
   getEncryptionKey?: () => Uint8Array | null,
 ): Promise<string> => {
-  const plaintext = new TextEncoder().encode(JSON.stringify(auth));
+  // D-322 — one-use consent proofs never enter storage, even transient ciphertext.
+  const storedAuth = auth.type === 'managed_oauth' ? {
+    type: auth.type, broker_profile_id: auth.broker_profile_id, integration_id: auth.integration_id,
+    connection_id: auth.connection_id, target_origin: auth.target_origin, requested_scopes: auth.requested_scopes,
+    ...(auth.required_scopes === undefined ? {} : { required_scopes: auth.required_scopes }),
+    ...(auth.imported === true ? { imported: true } : {}),
+  } : auth;
+  const plaintext = new TextEncoder().encode(JSON.stringify(storedAuth));
   if (!getEncryptionKey) {
     return bytesToBase64(plaintext);
   }
@@ -1297,6 +1332,11 @@ export const handleConnectionList = async (
               : () => listedKey as Uint8Array,
           );
           view.auth_type = auth.type;
+          if (auth.type === 'managed_oauth') {
+            // D-322 — non-secret references let Settings reconnect the SAME account.
+            const { authorization_receipt: ignored, ...references } = auth; void ignored;
+            view.managed_oauth = references;
+          }
         } catch {
           // Keep a corrupt/legacy row visible. Omitting auth_type makes pack
           // reuse matching fail closed instead of guessing from the endpoint.
@@ -1811,8 +1851,9 @@ export const handleConnectionEnroll = async (
     'collection.connection.enroll',
     a.granted_scopes,
   );
-  const granted_scopes_json =
-    grantedFromArgs !== undefined
+  let granted_scopes_json = effectiveAuth.type === 'managed_oauth'
+    ? undefined // Requested broker scopes are not vendor-confirmed grants; clear stale evidence.
+    : grantedFromArgs !== undefined
       ? JSON.stringify(grantedFromArgs)
       : existing?.granted_scopes_json;
   // No network check has happened yet. Do not stamp `last_probed_at` here:
@@ -1824,6 +1865,14 @@ export const handleConnectionEnroll = async (
     { kind, name },
     deps.getEncryptionKey,
   );
+  // Verify and consume only after encryption settles. No await may separate this
+  // profile/connection revision check from the synchronous storage write.
+  if (effectiveAuth.type === 'managed_oauth') {
+    const verified = requireManagedOAuth(deps).authorizeForSave(
+      effectiveAuth, String(effectiveConfig.base_url ?? ''), name, deps.store.get(kind, name) ?? undefined,
+    );
+    granted_scopes_json = verified.granted_scopes === undefined ? undefined : JSON.stringify(verified.granted_scopes);
+  }
   const row = deps.store.upsert({
     name,
     kind,
@@ -1887,7 +1936,7 @@ export const handleConnectionUpdate = async (
     };
     expected_updated_at?: number;
   },
-  internal: { allowCredentialCandidate?: boolean } = {},
+  internal: { allowCredentialCandidate?: boolean; allowManagedConsent?: boolean } = {},
 ): Promise<{ connection: ConnectionView }> => {
   const a = ensureRecordArgs('collection.connection.update', args);
   const name = ensureName('collection.connection.update', a.name);
@@ -1903,7 +1952,10 @@ export const handleConnectionUpdate = async (
   // accepting it here would let a paired/direct caller bypass the provider
   // verification and durable-swap guarantee. Only the rotation handler may run
   // this updater against its isolated candidate store.
-  if (patch.auth !== undefined && internal.allowCredentialCandidate !== true) {
+  // D-322 — managed replacements carry a one-use, server-verified consent receipt.
+  // The receipt is checked below; ordinary credential swaps still use rotation.
+  if (patch.auth !== undefined && internal.allowCredentialCandidate !== true
+    && !(internal.allowManagedConsent === true && isRecord(patch.auth) && patch.auth.type === 'managed_oauth')) {
     throw new RpcError(
       'credential_verification_required',
       'Replacement credentials must be verified before they can be saved. Update your client and try again; your current credentials were not changed.',
@@ -1955,7 +2007,7 @@ export const handleConnectionUpdate = async (
       'collection.connection.update: config must be an object when patched',
     );
   }
-  const auth =
+  let auth =
     patch.auth !== undefined
       ? ensureAuth('collection.connection.update', patch.auth)
       : undefined;
@@ -1992,6 +2044,17 @@ export const handleConnectionUpdate = async (
     config_json = JSON.stringify(normalized);
   }
   const finalConfig = parseStoredConfig(config_json);
+  // D-322 — metadata edits cannot move a managed credential to another vendor.
+  const editedBase = patch.config !== undefined && finalConfig.base_url !== parseStoredConfig(existing.config_json).base_url;
+  const destinationAuth = auth ?? (kind === 'api' && editedBase
+    ? await decodeAuthFromStorage(existing.auth_ciphertext, { kind, name }, deps.getEncryptionKey) : undefined);
+  if (destinationAuth?.type === 'managed_oauth') {
+    let origin: string;
+    try { origin = new URL(String(finalConfig.base_url ?? '')).origin; }
+    catch { throw new RpcError('bad_request', 'Enter a complete vendor API URL.'); }
+    if (origin !== destinationAuth.target_origin) throw new RpcError('bad_request',
+      'Managed OAuth is bound to its authorized vendor origin. Create another connection to use a different vendor API URL.');
+  }
   // ⛔⛔ D-232 § 26 — THE SAME REFUSAL AS ENROLL, AT THE OTHER DOOR. The peer
   // binding was checked WHERE A HUMAN CAN FIX IT and that turned out to be one
   // of the two places a human sets it: `assertPeerContractBinding` was called
@@ -2038,6 +2101,13 @@ export const handleConnectionUpdate = async (
     auth !== undefined
       ? await encodeAuthForStorage(auth, { kind, name }, deps.getEncryptionKey)
       : existing.auth_ciphertext;
+  let granted_scopes_json = existing.granted_scopes_json;
+  if (auth?.type === 'managed_oauth') {
+    const verified = requireManagedOAuth(deps).authorizeForSave(
+      auth, String(finalConfig.base_url ?? ''), name, deps.store.get(kind, name) ?? undefined,
+    );
+    granted_scopes_json = verified.granted_scopes === undefined ? undefined : JSON.stringify(verified.granted_scopes);
+  }
   const row = deps.store.upsert({
     name,
     kind,
@@ -2056,7 +2126,7 @@ export const handleConnectionUpdate = async (
     ...(existing.subresource_path !== undefined ? { subresource_path: existing.subresource_path } : {}),
     // granted-scopes — set at enroll/re-authorize, never via update; preserve
     // verbatim so a config/auth patch can't wipe the coverage set.
-    ...(existing.granted_scopes_json !== undefined ? { granted_scopes_json: existing.granted_scopes_json } : {}),
+    ...(granted_scopes_json === undefined ? {} : { granted_scopes_json }),
   });
   return { connection: connectionViewFromRow(row) };
 };
@@ -2141,6 +2211,7 @@ export const handleConnectionDelete = async (
   // `subtype` is the fallback for older / non-vendor api flavors.
   // Non-api kinds skip vendor cleanup entirely.
   const existing = deps.store.get(kind, name);
+  if (kind === 'api') deps.assertCollectionUnreferenced?.(name);
   const vendor =
     kind === 'api' ? resolveVendorFromConnection(existing) : undefined;
   // D-192 slice 4 — a messenger notification connection (slack/telegram) retracts
@@ -2212,6 +2283,7 @@ export const handleConnectionDelete = async (
       { connection_preserved: true, mirror_data_preserved: true },
     );
   }
+  if (kind === 'api') deps.assertCollectionUnreferenced?.(name);
   const deleted = deps.store.delete(kind, name);
   // D-225 Slice 2 — a generated MCP pack is an artifact OF this connection: its
   // every operation dispatches through a connection that no longer exists, so
@@ -2490,6 +2562,8 @@ export const handleConnectionProbe = async (
     url: URL,
   ): void => {
     switch (auth.type) {
+      case 'managed_oauth':
+        return; // D-322 — applied by the managed fetch port below.
       case 'none':
         return;
       case 'bearer':
@@ -2571,6 +2645,9 @@ export const handleConnectionProbe = async (
       if (typeof value === 'string' && value.length > 0) secrets.push(value);
     };
     switch (auth.type) {
+      case 'managed_oauth':
+        add(auth.authorization_receipt);
+        break;
       case 'bearer':
         add(authRecord.token);
         break;
@@ -2737,6 +2814,16 @@ export const handleConnectionProbe = async (
     const headers: Record<string, string> = {};
     applyAuth(auth, headers, url);
     try {
+      if (auth.type === 'managed_oauth') {
+        const response = await requireManagedOAuth(deps).fetch(auth, url.toString(), {
+          method: probePath === undefined ? 'HEAD' : 'GET', signal: AbortSignal.timeout(probeTimeoutMs),
+        });
+        await response.body?.cancel();
+        const classified = classifyHttpReachability(response.status);
+        // A public API root cannot prove the credential or required permissions work.
+        return classified.status === 'ok' && probePath === undefined
+          ? healthOf('unknown', 'managed_oauth_permissions_unverified') : classified;
+      }
       // A vendor-specific path names an authenticated query, so call it as
       // GET directly. The generic endpoint probe retains its cheap HEAD → GET
       // fallback for APIs without a declared health resource.
@@ -3927,6 +4014,12 @@ const isolatedConnectionStore = (
   const matches = (kind: ConnectionKind, name: string): boolean =>
     row.kind === kind && row.name === name;
   const store: ConnectionStoreSqlite = {
+    clearGrantedScopes: (names) => {
+      if (row.kind === 'api' && names.includes(row.name)) {
+        const { granted_scopes_json: ignored, ...remaining } = row; void ignored;
+        row = remaining;
+      }
+    },
     upsert: (input) => {
       row = { pk: connectionRowKey(input.kind, input.name), ...input };
       return row;
@@ -3996,6 +4089,8 @@ const assertCredentialRotationSnapshotIsCurrent = (
  * variant also drops unknown surplus fields before encryption. */
 const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth => {
   switch (auth.type) {
+    case 'managed_oauth':
+      return { ...auth }; // D-322 — receipt verified before any replacement is stored.
     case 'none':
       return { type: 'none' };
     case 'bearer':
@@ -4072,6 +4167,8 @@ const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth
 const invalidCredentialControlFor = (auth: ConnectionAuth): ConnectionAuth | null => {
   const invalid = 'recued-intentionally-invalid-credential';
   switch (auth.type) {
+    case 'managed_oauth':
+      return null;
     case 'bearer':
       return { type: 'bearer', token: invalid };
     case 'basic':
@@ -4411,6 +4508,7 @@ export const handleConnectionRotateCredentials = async (
   // Validate before constructing the candidate so malformed auth and unsafe
   // OAuth destinations fail without ever entering a network path.
   const auth = credentialCandidateFromOwnerInput(ensureAuth(method, a.patch.auth));
+  if (auth.type === 'managed_oauth') throw new RpcError('bad_request', 'Use managed OAuth reauthorization to replace this broker credential.');
   // ⚠ NO kind gate here, deliberately. An earlier draft added one and no
   // mutation could make it bite: this handler reaches the credential store
   // through `handleConnectionUpdate`, which already runs `ensureSigningAuthKind`
@@ -5654,6 +5752,7 @@ type ConnectionMethods =
   | 'collection.connection.listOperationGroups'
   | 'collection.connection.completeVendorOAuth'
   | 'collection.connection.startVendorOAuth'
+  | 'collection.connection.managedOAuth'
   | 'collection.connection.takeVendorOAuthResult'
   | 'collection.connection.mcpPackPreview'
   | 'collection.connection.mcpPackCommit'
@@ -5687,12 +5786,27 @@ export const makeConnectionHandlers = (
       'collection.connection.listOperationGroups',
       'collection.connection.completeVendorOAuth',
       'collection.connection.startVendorOAuth',
+      'collection.connection.managedOAuth',
       'collection.connection.takeVendorOAuthResult',
       'collection.connection.mcpPackPreview',
       'collection.connection.mcpPackCommit',
       'collection.connection.mcpPackStatus',
     ],
     handlers: {
+      'collection.connection.managedOAuth': async (args) => {
+        if (args !== null && typeof args === 'object' && args.action === 'save_reauthorization') {
+          if (!isRecord(args.patch) || !isRecord(args.patch.auth) || args.patch.auth.type !== 'managed_oauth') {
+            throw new RpcError('bad_request', 'A verified managed OAuth authorization is required.');
+          }
+          const revision = ensureExpectedConnectionUpdatedAt('managedOAuth.save_reauthorization', args.expected_updated_at);
+          if (revision === undefined) throw new RpcError('bad_request', 'The current connection revision is required.');
+          const saved = await handleConnectionUpdate(deps, {
+            name: args.name, kind: 'api', patch: args.patch, expected_updated_at: revision,
+          }, { allowManagedConsent: true });
+          return { action: 'save_reauthorization', connection: saved.connection };
+        }
+        return requireManagedOAuth(deps).handle(args);
+      },
       'collection.connection.list': async (args) =>
         handleConnectionList(deps, args as Parameters<typeof handleConnectionList>[1]),
       'collection.connection.suggestSetup': async (args) => {

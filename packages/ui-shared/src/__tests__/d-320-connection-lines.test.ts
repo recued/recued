@@ -316,3 +316,35 @@ describe('the run dialog', () => {
     expect(execute.mock.calls[0]![0]).not.toHaveProperty('connections');
   });
 });
+
+describe('D-320 ruling 20 — a vendor-neutral family is a line too', () => {
+  const CRM: ConnectionLineSlot = {
+    slot: 'crm',
+    variables: ['crm'],
+    family: true,
+    connections: [
+      { connection_name: 'hubspot-app', display_name: 'Sales app', is_default: false },
+      { connection_name: 'sf1', display_name: 'Salesforce', is_default: false },
+    ],
+  };
+
+  it('offers "Any connection" where a pack\'s slot offers "Choose one": unchosen is a real answer', () => {
+    const [line] = connectionLines([CRM], {});
+    expect(line).toMatchObject({ slot: 'crm', selected: '', start: 'none' });
+    expect(line!.options.map((option) => option.label)).toEqual(['Any connection', 'Sales app', 'Salesforce']);
+    // Left there, a dish saves nothing and a run sends nothing: searches read every connection.
+    expect(dishChoiceFromLines([line!], {})).toEqual({ connections: {}, dropSettings: [] });
+    expect(runChoiceFromLines([line!], {})).toEqual({});
+  });
+
+  it("saves a chosen connection under the family, and drops the family's old setting", () => {
+    const [line] = connectionLines([CRM], {});
+    expect(dishChoiceFromLines([line!], { crm: 'sf1' })).toEqual({ connections: { crm: 'sf1' }, dropSettings: ['crm'] });
+    expect(runChoiceFromLines([line!], { crm: 'hubspot-app' })).toEqual({ crm: 'hubspot-app' });
+  });
+
+  it('starts on a dish\'s old `crm` setting, as a pack\'s line starts on its old setting', () => {
+    const [line] = connectionLines([CRM], { settings: { crm: 'sf1' } });
+    expect(line).toMatchObject({ selected: 'sf1', start: 'setting' });
+  });
+});

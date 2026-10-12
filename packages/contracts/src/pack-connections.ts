@@ -81,10 +81,19 @@ export interface RecipeConnectionSlot {
     display_name: string;
     is_default: boolean;
   }>;
+  /** D-320 ruling 20 (2026-10-11) — a vendor-neutral FAMILY (`crm`, `acct`), not a
+   *  pack's slot: its `core.crm.*` / `core.acct.*` steps, which name no vendor.
+   *  `slot` is the family, `connections` every connection that can serve all of
+   *  them (of any vendor; none is a default), and choosing one keeps them on it.
+   *  Left unchosen, a search reads every connection and a step on a record takes the
+   *  record's connection, so the line offers "any" where a pack's slot offers
+   *  "choose one". */
+  family?: true;
 }
 
 /** The slots a recipe signs in through. A vendor-neutral step (`core.crm.*`)
- *  names no slot until a connection is given, so it is in none of them. */
+ *  names no pack's slot until a connection is given; its family is listed as one
+ *  (`family`), with every connection that can serve it. */
 export interface RecipeConnectionsView {
   recipe_id: string;
   slots: RecipeConnectionSlot[];

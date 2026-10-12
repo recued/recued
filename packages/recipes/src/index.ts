@@ -159,6 +159,12 @@ export type {
 } from './chat-catalog.js';
 // A recipe's "Send from" setting, read by the owner's catalog and by the run.
 export { mailSenderSettings } from './mail-sender-settings.js';
+export {
+  describeMissingUnattended,
+  missingUnattendedSettings,
+  settingsNeededUnattended,
+  type NeededSetting,
+} from './unattended-settings.js';
 
 // Connection-agnostic op dispatch — the R1 install-time rewrite of a canonical
 // recipe (CanonicalOpStep `deal.search`) into a concrete vendor-bound recipe via
@@ -231,6 +237,23 @@ export { lowerOpStep } from './op-step-lower.js';
 // + the recipe-level lowering pass that runs as a pre-pass before
 // resolveConnectionAgnosticRecipe (kernel/canonical/Tier-P; legacy bare-op passthrough).
 export { lowerOpStepRecipe, unboundPackRefs, type PackOpBinding, type PackOpResolution } from './op-step-lower.js';
+// D-320 phase 3 — a step that names no connection signs in through its slot: the one
+// rule the server's run and doors, the corpus migration and a drive of a shipped recipe read.
+export {
+  carryRetiredConnections,
+  catalogSignInReader,
+  compositionSignIn,
+  contextConnectionsOf,
+  declaresApiConnectionSetting,
+  slotSettingName,
+  slotSettingNamesOf,
+  vendorNeutralSettings,
+  withSlotSettings,
+  type CatalogSignIn,
+  type CatalogSignInBinding,
+  type SlotSettings,
+  type SlotSettingsInput,
+} from './slot-settings.js';
 
 // D-182 §10 step 8 / R1 — the runtime verb-split applied to a recipe. Pure: a
 // recipe's `core.crm.*`/`core.acct.*` op-steps × the bound connection families →

@@ -278,6 +278,12 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     operator: OPT_ENUM(MATH_OPS),
     right: OPT('number'),
   },
+  decimal_math: {
+    left: REQ('any'),
+    operator: REQ_ENUM(['add', 'subtract']),
+    right: REQ('any'),
+    decimal_places: REQ('number'),
+  },
   weighted_score: {
     scores: REQ('array'),    // [{value, weight}]
     clamp: OPT('array'),     // [min, max]

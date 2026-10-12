@@ -36,6 +36,9 @@ export const isFoundationalConnectionsLane = (
   typeof value === 'string'
   && (FOUNDATIONAL_CONNECTIONS_LANES as readonly string[]).includes(value);
 
+/** D-322 — resolve non-secret pack metadata locally, never an API URL from a route. */
+export interface ConnectionEnrollmentPack { slug: string; slot?: string }
+
 export type ConnectionsAddress =
   | {
       readonly kind: 'lane';
@@ -49,6 +52,7 @@ export type ConnectionsAddress =
   | {
       readonly kind: 'enroll';
       readonly vendor: string | null;
+      readonly pack?: ConnectionEnrollmentPack;
     };
 
 export const connectionsLaneAddress = (
@@ -69,6 +73,7 @@ export const connectionsAccountAddress = (
 
 export const connectionsEnrollAddress = (
   vendor?: string | null,
+  pack?: ConnectionEnrollmentPack,
 ): HierarchicalAddress => hierarchicalAddress(
   'connections',
   hierarchicalLevel('connections-lane:others', 'others'),
@@ -76,6 +81,11 @@ export const connectionsEnrollAddress = (
   ...(vendor === undefined || vendor === null || vendor.trim().length === 0
     ? []
     : [hierarchicalLevel(`connections-vendor:${vendor}`, vendor)]),
+  ...(vendor && pack ? [
+    hierarchicalLevel('connections-enrollment-source:pack', 'pack'),
+    hierarchicalLevel(`connections-enrollment-pack:${pack.slug}`, pack.slug),
+    ...(pack.slot ? [hierarchicalLevel(`connections-enrollment-slot:${pack.slot}`, pack.slot)] : []),
+  ] : []),
 );
 
 /** Parse only durable workspace places. One-shot recovery/credential tails are
@@ -99,11 +109,15 @@ export const parseConnectionsAddress = (
   }
   if (tab === 'others' && tail === 'enroll') {
     const vendor = route.segments[2];
+    const slug = route.segments[3] === 'pack' ? route.segments[4] : undefined;
+    const slot = route.segments[5];
     return {
       kind: 'enroll',
       vendor: typeof vendor === 'string' && vendor.trim().length > 0
         ? vendor
         : null,
+      ...(typeof slug === 'string' && slug.trim() ? { pack: { slug,
+        ...(typeof slot === 'string' && slot.trim() ? { slot } : {}) } } : {}),
     };
   }
   return { kind: 'lane', tab };

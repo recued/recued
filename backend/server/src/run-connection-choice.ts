@@ -365,6 +365,10 @@ export const assertChoicesHeld = (input: {
   dish?: string;
   /** Settings the run's own values give: a dish's choice yields to them. */
   exempt?: ReadonlySet<string>;
+  /** D-320 ruling 20 — each vendor-neutral family the run's steps sign in through,
+   *  and its setting (`vendorNeutralSettings`): a choice made for the family holds
+   *  when that setting holds it. */
+  families?: Readonly<Record<string, string>>;
 }): void => {
   const declared = (input.variables ?? {}) as Readonly<Record<string, { default?: unknown } | undefined>>;
   const valueOf = (variable: string): string | undefined => {
@@ -373,6 +377,15 @@ export const assertChoicesHeld = (input: {
   };
   for (const [slotName, chosen] of Object.entries(input.choices)) {
     const slot = input.slots.find((s) => s.slot === slotName);
+    const familySetting = slot === undefined ? input.families?.[slotName] : undefined;
+    if (familySetting !== undefined) {
+      if ((input.exempt?.has(familySetting) ?? false) || valueOf(familySetting) === chosen) continue;
+      throw refuse(
+        'conflict',
+        `Recipe '${input.recipe_id}': its ${slotName} steps run on '${valueOf(familySetting) ?? 'no connection'}', and connections.${slotName} names '${chosen}'. Give one of them.`,
+        slotName,
+      );
+    }
     if (slot === undefined) {
       if (input.inherited || input.dish !== undefined) continue;
       throw unknownSlot(input.recipe_id, slotName, input.slots.map((s) => s.slot));

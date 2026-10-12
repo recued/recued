@@ -103,7 +103,9 @@ export const shouldPatchConnectionAuth = (
   schema: ConnectionSchema,
   values: ConnectionFormValues,
 ): boolean =>
-  schema.fields.some((field) => {
+  values['auth.type'] === 'managed_oauth'
+    ? (values['auth.authorization_receipt'] ?? '').length > 0 || !values['auth.connection_id'] || managedScopeRequestChanged(values)
+    : schema.fields.some((field) => {
     if (!field.key.startsWith('auth.')) return false;
     if (AUTH_INTENT_EXCLUDED_KEYS.has(field.key)) return false;
     if (field.showWhen && !field.showWhen(values)) return false;
@@ -113,6 +115,15 @@ export const shouldPatchConnectionAuth = (
     }
     return (values[field.key] ?? '').trim().length > 0;
   });
+
+/** Changing a scope request requires a broker receipt; a metadata save cannot apply it. */
+const managedScopeRequestChanged = (values: ConnectionFormValues): boolean => {
+  let saved: unknown;
+  try { saved = JSON.parse(values['auth.required_scopes'] ?? values['auth.requested_scopes'] ?? '[]'); } catch { return true; }
+  if (!Array.isArray(saved) || saved.some((scope) => typeof scope !== 'string')) return true;
+  const canonical = (scopes: string[]): string => JSON.stringify([...new Set(scopes.map((scope) => scope.trim()).filter(Boolean))].sort());
+  return canonical(saved as string[]) !== canonical((values['auth.scopes'] ?? '').split(/[\s,]+/));
+};
 
 /** Project a (schema, values, kind, subtype?) tuple into the rpc
  *  payload shape. Hidden fields are skipped. Empty optional values
@@ -126,6 +137,8 @@ export const projectConnectionPayload = (
 ): ConnectionPayload => {
   const root: Record<string, unknown> = {};
   for (const field of schema.fields) {
+    // D-322 — the editable scope request is consumed by Connect, not stored as auth.
+    if (values['auth.type'] === 'managed_oauth' && field.key === 'auth.scopes') continue;
     if (field.showWhen && !field.showWhen(values)) continue;
     // D-192 M4c-UI — the messenger triggers are NOT projected into the
     // enroll/update `config`: they are stripped from `ConnectionView` (a config
@@ -212,6 +225,7 @@ export const flattenConnectionViewIntoValues = (
       // restore the right credential family; flattening it as
       // `config.auth_type` would misclassify it as owner configuration.
       || k === 'auth_type'
+      || k === 'managed_oauth'
       || k === 'updated_at'
       || k === 'granted_scopes'
       || k === 'bound_pack_slugs'
@@ -258,11 +272,23 @@ export const buildConnectionEditDialogPatch = (
     ...flattenConnectionViewIntoValues(view),
   };
   values = syncVendorOAuthEndpointValue(vendor, values);
+  if (view.managed_oauth !== undefined) {
+    values['auth.type'] = 'managed_oauth';
+    values['auth.broker_profile_id'] = view.managed_oauth.broker_profile_id;
+    values['auth.integration_id'] = view.managed_oauth.integration_id;
+    values['auth.connection_id'] = view.managed_oauth.connection_id;
+    values['auth.target_origin'] = view.managed_oauth.target_origin;
+    values['auth.requested_scopes'] = JSON.stringify(view.managed_oauth.requested_scopes);
+    if (view.managed_oauth.required_scopes !== undefined) values['auth.required_scopes'] = JSON.stringify(view.managed_oauth.required_scopes);
+    values['auth.scopes'] = (view.managed_oauth.required_scopes ?? view.managed_oauth.requested_scopes).join(' ');
+    if (view.managed_oauth.imported === true) values['auth.imported'] = 'true';
+  }
 
   const schema = resolveConnectionSchema(
     view.kind,
     subtype ?? undefined,
     vendor ?? undefined,
+    view.auth_type,
   );
   if (schema) {
     // A pre-ingress-mode messenger row historically ran as a webhook. The

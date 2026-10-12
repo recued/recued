@@ -21,6 +21,7 @@ import {
   isPlatformRecordTargetId,
   parsePlatformRecordTargetId,
   PlatformRecordIdError,
+  recordIdArgKind,
   routePlatformRecordOperationArgs,
   stampPlatformRecordIds,
 } from '../platform-record-id.js';
@@ -239,6 +240,73 @@ describe('routePlatformRecordOperationArgs', () => {
       id_arg, operation: 'contact.update', connection_name: 'acme-corp', args,
     });
     expect(args.contact_id).toBe(composed('acme-corp', '88'));
+  });
+
+  // A connection numbers each kind of record on its own: deal 88 and contact 88 are
+  // different records. Unwrapped, a deal's id handed to a contact op on the SAME
+  // connection updated the contact that has the deal's number (2026-10-11).
+  const refusal = (args: Record<string, unknown>, connection_name = 'acme-corp'): unknown => {
+    try {
+      routePlatformRecordOperationArgs({ id_arg, operation: 'contact.update', connection_name, args });
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  };
+
+  it("⛔ refuses a record of another kind on the op's own connection, and says nothing was sent", () => {
+    const err = refusal({ contact_id: composed('acme-corp', '88', 'deal') });
+    expect(err).toBeInstanceOf(PlatformRecordIdError);
+    expect(err).toMatchObject({ code: 'PLATFORM_ID_KIND_MISMATCH' });
+    expect((err as Error).message).toBe(
+      "PLATFORM_ID_KIND_MISMATCH: 'contact.update' takes a contact's id in 'contact_id', and the id "
+        + "given is a deal's. No provider call was made. Pass the contact's own id.",
+    );
+  });
+
+  it('refuses the kind before the connection: the same id on its own connection would only be refused again', () => {
+    expect(refusal({ contact_id: composed('other-crm', '88', 'deal') })).toMatchObject({ code: 'PLATFORM_ID_KIND_MISMATCH' });
+    expect(refusal({ contact_id: composed('acme-corp', '88', 'deal') }, '')).toMatchObject({ code: 'PLATFORM_ID_KIND_MISMATCH' });
+  });
+
+  it("checks no kind for an argument not named `<entity>_id`: nothing says which kind it takes", () => {
+    const out = routePlatformRecordOperationArgs({
+      id_arg: 'id',
+      operation: 'record.update',
+      connection_name: 'acme-corp',
+      args: { id: composed('acme-corp', '88', 'deal') },
+    });
+    expect(out.args).toEqual({ id: '88' });
+  });
+
+  it('reads the kind off a multi-word entity, with its article', () => {
+    const opportunity = composePlatformRecordTargetId('salesforce', 'opportunity', 'acme-sf', '006A');
+    const out = routePlatformRecordOperationArgs({
+      id_arg: 'opportunity_id', operation: 'opportunity.update', connection_name: 'acme-sf',
+      args: { opportunity_id: opportunity },
+    });
+    expect(out.args).toEqual({ opportunity_id: '006A' });
+    let err: unknown;
+    try {
+      routePlatformRecordOperationArgs({
+        id_arg: 'email_message_id', operation: 'email_message.read', connection_name: 'acme-sf',
+        args: { email_message_id: opportunity },
+      });
+    } catch (e) { err = e; }
+    expect((err as Error).message).toContain("takes an email_message's id in 'email_message_id', and the id given is an opportunity's");
+  });
+});
+
+describe('recordIdArgKind', () => {
+  it.each([
+    ['deal_id', 'deal'],
+    ['email_message_id', 'email_message'],
+    ['id', undefined],
+    ['_id', undefined],
+    ['dealid', undefined],
+    ['deal_ids', undefined],
+  ])('%s takes %s', (arg, kind) => {
+    expect(recordIdArgKind(arg)).toBe(kind);
   });
 });
 

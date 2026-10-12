@@ -7,6 +7,8 @@
  *  against the pack's composition). `installBulkPack` is the pure engine the
  *  backend funnels through — it rejects (`validator_rejected`) any recipe that
  *  still carries an op-step, so no path can silently persist an unrunnable recipe.
+ *  D-320 §8 — except a row the server's install marked `op_steps_resolved_at_run`:
+ *  a pack with no vendor of its own, whose vendor-neutral op-steps each run binds.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -120,6 +122,39 @@ describe('installBulkPack — op-step safety net (slice 3 / A3)', () => {
     expect(result.failure?.failed_at?.slug).toBe('canonical');
     // The good recipe installed first, then rolled back — net zero persisted.
     expect(reg.uninstalled).toContain('good');
+    expect(reg.rows.size).toBe(0);
+  });
+
+  // D-320 §8 — the server's install leaves a pack's vendor-neutral op-steps for the
+  // run to bind when the pack has no vendor of its own, and marks those rows.
+  const runResolved = (recipe_id: string, steps: unknown[]): BulkPackInstallRecipe => ({
+    ...row(recipe_id, steps),
+    op_steps_resolved_at_run: true,
+  });
+  const VENDOR_NEUTRAL = { id: 'deals', op: 'core.crm.deal.search', args: { limit: 200 } };
+
+  it('admits the op-steps of a row the install left for the run to bind, as authored', async () => {
+    const reg = inMemoryRegistry();
+    const result = await installBulkPack(buildInput([runResolved('canonical', [VENDOR_NEUTRAL])]), {
+      granted_permissions: ALL_PERMS,
+      registry: reg,
+      hashRecipe: () => 'h',
+    });
+    expect(result.ok, result.failure?.message).toBe(true);
+    expect(reg.rows.get('canonical::recued-core')?.recipe.steps).toEqual([VENDOR_NEUTRAL]);
+  });
+
+  it("the mark admits only its own row: another row's op-step is still refused", async () => {
+    const reg = inMemoryRegistry();
+    const result = await installBulkPack(
+      buildInput([runResolved('marked', [VENDOR_NEUTRAL]), row('unmarked', [OP_STEP])]),
+      { granted_permissions: ALL_PERMS, registry: reg, hashRecipe: () => 'h' },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure?.code).toBe('validator_rejected');
+    expect(result.failure?.failed_at?.slug).toBe('unmarked');
+    expect(result.failure?.message).toMatch(/unresolved canonical op-step/);
+    expect(reg.uninstalled).toContain('marked');
     expect(reg.rows.size).toBe(0);
   });
 

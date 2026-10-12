@@ -16,7 +16,7 @@
 
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
-import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
+import { fileTransportOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 const DROPBOX_CONTENT_API = 'https://content.dropboxapi.com';
 
@@ -28,13 +28,13 @@ export interface DropboxRemoteByteResolverDeps {
 export const buildDropboxRemoteByteResolver = (
   deps: DropboxRemoteByteResolverDeps,
 ): RemoteFileByteResolver => async (req) => {
-  const token = bearerTokenOrThrow(req.cred, 'dropbox');
+  const transport = fileTransportOrThrow(req.cred, deps.fetchImpl, 'dropbox');
   return fetchRemoteBytes({
-    fetchImpl: deps.fetchImpl,
+    fetchImpl: transport.fetch,
     url: `${DROPBOX_CONTENT_API}/2/files/download`,
     method: 'POST',
     headers: {
-      authorization: `Bearer ${token}`,
+      ...transport.headers,
       // The argument rides the header; the locator is the opaque `id:…` remote_id.
       'Dropbox-API-Arg': JSON.stringify({ path: req.remote_id }),
     },

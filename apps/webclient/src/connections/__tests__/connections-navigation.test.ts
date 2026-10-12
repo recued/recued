@@ -39,6 +39,13 @@ describe('Connections hierarchical navigation contract', () => {
       .toEqual({ kind: 'lane', tab: 'mail' });
   });
 
+  it('round-trips pack and slot context while keeping the API URL out of the route', () => {
+    const pack = { slug: 'google-sheets', slot: 'google' };
+    const address = connectionsEnrollAddress('google', pack);
+    expect(address.hash).toBe('#connections/others/enroll/google/pack/google-sheets/google');
+    expect(parseConnectionsAddress(parseShellRoute(address.hash))).toEqual({ kind: 'enroll', vendor: 'google', pack });
+  });
+
   it('projects one typed selection for route bootstrap', () => {
     expect(connectionsAddressSelection({
       kind: 'account',

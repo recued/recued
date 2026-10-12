@@ -233,6 +233,25 @@ const validateInputContracts = (
 
 /** Validate to_checklist.items[] — each item is a user-visible row in the
  *  sidebar, so malformed items render broken UI. */
+/** Every key a checklist row is read by (`to_checklist`, and the engine that hands
+ *  it the row). Any other key does nothing, and nothing said so: `warn` /
+ *  `detail_warn` (a fourth state an R&D fixer invented, 2026-04-12), output-shaped
+ *  `status` / `detail`, and a per-row `skip_when` all shipped and were ignored. A
+ *  warning, not an error: an error would refuse a user's own recipe with a stray
+ *  key on the next server update. */
+export const CHECKLIST_ITEM_KEYS: ReadonlySet<string> = new Set([
+  'label', 'issue', 'detail_ok', 'detail_issue', 'detail_null', 'action', 'actions',
+]);
+
+/** What an author who wrote the key most likely meant. */
+const CHECKLIST_KEY_HINTS: Readonly<Record<string, string>> = {
+  detail: 'the row\'s text is detail_ok, detail_issue or detail_null',
+  status: 'a row\'s status comes from its `issue` condition',
+  warn: 'a row is ok, an issue, or unknown (detail_null); there is no warn state',
+  detail_warn: 'a row is ok, an issue, or unknown (detail_null); there is no warn state',
+  skip_when: 'a row cannot skip itself; gate the whole step, or split it',
+};
+
 const validateChecklistItems = (
   items: unknown,
   path: string,
@@ -258,14 +277,23 @@ const validateChecklistItems = (
       continue;
     }
     const it = item as Record<string, unknown>;
+    for (const key of Object.keys(it)) {
+      if (CHECKLIST_ITEM_KEYS.has(key)) continue;
+      const hint = Object.prototype.hasOwnProperty.call(CHECKLIST_KEY_HINTS, key) ? CHECKLIST_KEY_HINTS[key] : undefined;
+      add('warn', 'checklist_item_unknown_key', `${itemPath}.${key}`,
+        `checklist item key \`${key}\` is not read and does nothing${hint === undefined ? '' : ` (${hint})`}. `
+          + `A row reads ${[...CHECKLIST_ITEM_KEYS].join(', ')}.`);
+    }
     if (typeof it.label !== 'string' || !it.label) {
       add('error', 'checklist_item_label_required', `${itemPath}.label`,
         'checklist item requires a label string');
     }
-    // `issue` is the condition that flips the row to ❌. Missing = row is always ✅.
+    // `issue` is the condition that flips the row to ❌. Missing = the row is
+    // information: ✅ with detail_ok, or unknown with detail_null when a value
+    // detail_ok shows is missing.
     if (it.issue === undefined) {
       add('info', 'checklist_item_no_issue', `${itemPath}.issue`,
-        'checklist item has no `issue` condition — the row will always show as ok');
+        'checklist item has no `issue` condition — the row shows detail_ok, or detail_null when a value it shows is missing');
     } else {
       validateConditionField(it.issue, `${itemPath}.issue`, add);
     }
@@ -539,7 +567,30 @@ const validateAnyAllShape = (
     add('warn', 'any_all_empty_conditions', `${path}.conditions`,
       `${step.transform}.conditions is an empty array — result is deterministic`);
   }
+  // ⛔ `values` are tested for truth, after they are resolved. Text — a condition
+  // written there, such as "{{x}} equal true" — resolves to a non-empty string and is
+  // always true: 11 steps in 5 shipped recipes did it until 2026-10-11, and a Title X
+  // check flagged every deal.
+  if (hasValues) {
+    (step.values as unknown[]).forEach((value, i) => {
+      if (typeof value === 'string' && isText(value)) {
+        add('warn', 'any_all_text_in_values', `${path}.values[${i}]`,
+          `${step.transform}.values[${i}] is text, and text is always true here: values are only tested for truth. `
+            + 'To evaluate a condition, put it under `conditions`.');
+      }
+    });
+  }
+  // A condition that cannot be evaluated reads false, silently (one shipped recipe
+  // had `less_equal`). Warned, not refused: an error would refuse a user's own recipe
+  // on the next server update.
+  if (hasConditions) {
+    const warn: AddFn = (_severity, code, at, message) => add('warn', code, at, message);
+    (step.conditions as unknown[]).forEach((cond, i) => validateConditionField(cond, `${path}.conditions[${i}]`, warn));
+  }
 };
+
+/** Anything but references alone. */
+const isText = (value: string): boolean => value.replace(/\{\{[^{}]*\}\}/g, '').trim() !== '';
 
 /** Validate merge — at least one of `source` or `sources` must be present. */
 const validateMergeShape = (
@@ -605,7 +656,7 @@ const validateAiFunctionInputs = (
   }
 
   // D-167 P6.2 — soft-warn on an implausible single-step `llm.pii_fields` tag.
-  validatePiiFields(input, slug, path, add);
+  validatePiiFields(input, slug, bareSlug, path, add);
 };
 
 /** A pure whole-value template ref (`"{{x}}"`) resolves type-preserving at
@@ -631,6 +682,7 @@ const isWholeRef = (v: unknown): v is string =>
 const validatePiiFields = (
   input: Record<string, unknown>,
   slug: string,
+  bareSlug: string,
   path: string,
   add: AddFn,
 ): void => {
@@ -662,7 +714,12 @@ const validatePiiFields = (
   // protection — steer the author to alias upstream with the `pii-protect`
   // transform. (Reaches here because `ai-compare` / `ai-prompt` are themselves
   // in AI_FUNCTION_REQUIRED_INPUTS.)
-  if (!isBatchCapableAISlug(slug)) {
+  //
+  // ⛔ THE BARE SLUG, as the executor reads its manifest's (`core-ai-classify` →
+  // `ai-classify`). This tested the raw `slug`, and an op step's is `core.ai.classify`,
+  // which no prefix rule strips: all 23 shipped op steps with `llm.pii_fields` were
+  // warned that they fail at run time, and none did (2026-10-11).
+  if (!isBatchCapableAISlug(bareSlug)) {
     add('warn', 'ai_pii_fields_unsupported_slug', fieldPath,
       `${slug} has no llm.data payload, so llm.pii_fields cannot protect it and fails closed at run time — alias upstream with the pii-protect transform instead`);
     return;

@@ -97,6 +97,7 @@ const OAUTH_ADAPTERS: readonly CalendarProviderKind[] = ['gcal', 'graph'];
 const ADAPTER_KINDS: readonly CalendarProviderKind[] = ['gcal', 'graph', 'caldav'];
 
 export interface CalendarEnrollDeps {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   instances: CollectionInstanceStore;
   adapters: CalendarAdapterRegistry;
   /** Account-namespace reader / writer. Used to look up vault-scoped
@@ -119,6 +120,36 @@ export interface CalendarEnrollDeps {
   onDeleted?: (slug: string) => Promise<void> | void;
   now?: () => number;
 }
+
+export const handleCalendarEnrollManagedOAuth = async (deps: CalendarEnrollDeps, args: {
+  adapter?: unknown; slug?: unknown; connection_name?: unknown; write_enabled?: unknown;
+}): Promise<{ slug: string; caps: CalendarCollectionCaps; permission_state: 'unknown' | 'reported' }> => {
+  const slug = requireSlug(args.slug);
+  refuseReservedSlug('collection.calendar.enrollManagedOAuth', slug);
+  const adapter = requireAdapterKind(args.adapter, OAUTH_ADAPTERS) as 'gcal' | 'graph';
+  const name = requireString(args.connection_name, 'connection_name');
+  if (args.write_enabled !== undefined && typeof args.write_enabled !== 'boolean') {
+    throw new RpcError('bad_request', 'write_enabled must be a boolean');
+  }
+  if (!deps.managedOAuth) throw new RpcError('not_configured', 'Managed OAuth is unavailable on this server.');
+  if (deps.instances.get('calendar', slug)) throw new RpcError('conflict', `Calendar '${slug}' already exists. Choose another name.`);
+  const transport = await deps.managedOAuth.resolve(adapter, name);
+  const config = { account_slug: `managed-calendar:${slug}`, managed_oauth: transport.binding,
+    managed_write_enabled: args.write_enabled === true };
+  const factory = deps.adapters.get(adapter);
+  if (!factory) throw new RpcError('not_configured', 'This calendar adapter is unavailable.');
+  const caps = await probeCalendarAdapter(factory, { slug, config,
+    getAccountValue: async (key) => deps.accountStore.get(`${adapter}.managed-calendar:${slug}.${key}`) });
+  await transport.assertCurrent();
+  if (deps.instances.get('calendar', slug)) throw new RpcError('conflict', `Calendar '${slug}' was connected while the probe was running.`);
+  deps.instances.upsert({ platform: 'calendar', slug, adapter_type: adapter, config, caps,
+    auth_state: 'healthy', last_synced_at: null });
+  try { await deps.onEnrolled?.(toRow(adapter, caps, 'healthy', slug, null)); }
+  catch {
+    throw new RpcError('adapter_start_failed', 'The calendar was saved, but its mirror could not start. Use Resync to try again.', 500);
+  }
+  return { slug, caps, permission_state: transport.grantedScopes === null ? 'unknown' : 'reported' };
+};
 
 // ────────────────────────────────────────────────────────────────
 // Input validators
@@ -256,7 +287,8 @@ export const handleCalendarEnrollOAuth = async (
   //
   // `gcal` is exempt — its prefix differs from `gmail`, so there is nothing to
   // clobber.
-  if (adapter === 'graph' && deps.instances.get('mail', slug)?.adapter_type === 'graph') {
+  if (adapter === 'graph' && deps.instances.get('mail', slug)?.adapter_type === 'graph'
+    && deps.instances.get('mail', slug)?.config.managed_oauth === undefined) {
     throw new RpcError(
       'conflict',
       `collection.calendar.enrollOAuth: Microsoft mail account '${slug}' shares this `
@@ -456,6 +488,9 @@ export const handleCalendarAttachGraphGrant = async (
       + 'enroll the mail account first (this path never obtains its own consent)',
       400,
     );
+  }
+  if (mail.config.managed_oauth !== undefined) {
+    throw new RpcError('bad_request', 'Use managed OAuth enrollment to reuse this Microsoft API connection.');
   }
 
   // (2) The grant must actually be on disk under the shared prefix.
@@ -698,13 +733,15 @@ export const handleCalendarList = async (
 ): Promise<{ instances: CollectionInstanceRow[] }> => {
   const rows = deps.instances.list('calendar');
   return {
-    instances: rows.map((r) => toRow(
+    instances: rows.map((r) => ({ ...toRow(
       r.adapter_type as CalendarProviderKind,
       r.caps as CalendarCollectionCaps,
       r.auth_state,
       r.slug,
       r.last_synced_at,
-    )),
+    ), ...(r.config.managed_oauth && typeof r.config.managed_oauth === 'object'
+      && typeof (r.config.managed_oauth as Record<string, unknown>).connection_name === 'string'
+      ? { managed_connection_name: (r.config.managed_oauth as Record<string, unknown>).connection_name as string } : {}) })),
   };
 };
 
@@ -817,6 +854,8 @@ export const handleCalendarDelete = async (
   if (existing.adapter_type === 'caldav') {
     const swept = await purgeAccountStorePrefix(deps.accountStore, `caldav.${slug}.`);
     if (!swept) await deps.accountStore.delete(caldavPasswordKey(slug));
+  } else if (existing.config.managed_oauth !== undefined) {
+    await purgeAccountStorePrefix(deps.accountStore, `${existing.adapter_type}.managed-calendar:${slug}.`);
   }
   deps.instances.delete('calendar', slug);
   return { ok: true };
@@ -903,6 +942,9 @@ export const handleCalendarReauth = async (
       `reauth not applicable for the local calendar — it has no credentials`,
       501,
     );
+  }
+  if (existing.config.managed_oauth !== undefined) {
+    throw new RpcError('not_configured', 'Reconnect the managed API connection in Connections, then resync this calendar.');
   }
   if (existing.adapter_type === 'caldav') {
     // Basic-auth reauth is "re-enroll with a fresh password" from the UI

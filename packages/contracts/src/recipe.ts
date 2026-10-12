@@ -890,6 +890,13 @@ export interface RecipeMetadata {
   description: string;
   author: string;
   supported_platforms: string[];
+  /** D-320 ruling 19 — the lowest Recued this recipe runs on, a released
+   *  version (`26.10.12`). An older server refuses to install or update it and
+   *  says to update Recued. Only servers from the release that added the field
+   *  enforce it: older ones ignore it (`recued-version.ts`). A pack that brings
+   *  the recipe in should name the same floor, so its install dialog can say so
+   *  before Install. Absent ⇒ any server. */
+  min_recued_version?: string;
   /** D-195 — namespaced identity of the BulkPackManifest that owns this
    *  recipe's install flow. Shape: <pack.publisher>/<pack.slug>; omit when the
    *  recipe is independently installable or has no single carrier. */

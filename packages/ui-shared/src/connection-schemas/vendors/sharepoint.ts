@@ -45,7 +45,7 @@ const SHAREPOINT_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `sharepoint`, `sharepoint-team-docs`).',
+    help: 'A short lower-case name for this connection, such as `sharepoint` or `sharepoint-team-docs`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 'sharepoint',
   },
   {

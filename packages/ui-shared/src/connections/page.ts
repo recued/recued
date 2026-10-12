@@ -668,6 +668,7 @@ const renderRecentProbe = (
       ? 'The new key'
       : ({
           none: 'No sign-in needed',
+          managed_oauth: 'Managed OAuth',
           bearer: 'A key you paste in',
           basic: 'Username and password',
           header: 'A key sent in the request',
@@ -1809,6 +1810,9 @@ export const connectionFormValidationIssue = (
     ? shouldPatchConnectionAuth(schema, values)
     : true;
   const authType = values['auth.type'];
+  if (authPatchIntent && authType === 'managed_oauth' && !values['auth.authorization_receipt']) {
+    return formValidationIssue('auth.type', 'Authorization', 'Authorize this managed OAuth connection before saving.');
+  }
   if (
     authPatchIntent
     && (authType === 'oauth2_refresh' || authType === 'oauth2_client_credentials')
@@ -2553,6 +2557,7 @@ const vendorDisplayName = (
 ): string => provider?.display_name ?? vendor;
 
 const renderVendorConsentDisclosure = (dialog: ConnectionsDialogState): string => {
+  if (dialog.values['auth.type'] === 'managed_oauth') return ''; // D-322 — broker consent is described by its panel.
   if (!dialog.vendor) return '';
   const provider = getVendorProvider(dialog.vendor);
   const label = vendorDisplayName(dialog.vendor, provider);
@@ -2719,7 +2724,7 @@ const renderConnectionSetupGuide = (
   dialog: ConnectionsDialogState,
   schema: ConnectionSchema,
 ): string => {
-  if (schema.kind !== 'api') return '';
+  if (schema.kind !== 'api' || dialog.values['auth.type'] === 'managed_oauth') return '';
   const state = dialog.setupGuide;
   const titleId = 'connection-setup-guide-title';
   const panelAttrs = `data-connection-guide-panel tabindex="-1" aria-labelledby="${titleId}"`;
@@ -3010,6 +3015,9 @@ const renderCredentialRotation = (
   schema: ConnectionSchema,
 ): string => {
   if (dialog.mode !== 'edit') return '';
+  if (dialog.values['auth.type'] === 'managed_oauth') {
+    return '<p role="status">Reauthorize in the broker to request additional permissions. This updates the broker account immediately; save the verified authorization in Recued when complete.</p>';
+  }
   const hasCredentialFields = schema.fields.some((field) =>
     field.key.startsWith('auth.') && field.key !== 'auth.type');
   if (!hasCredentialFields) return '';
@@ -3256,6 +3264,7 @@ const renderForm = (
     kind,
     dialog.subtype ?? undefined,
     dialog.vendor ?? undefined,
+    dialog.values['auth.type'],
   );
   if (!schema) {
     return inlineError(
@@ -3270,6 +3279,7 @@ const renderForm = (
   );
   const credentialRotation = dialog.mode === 'edit'
     && shouldPatchConnectionAuth(schema, dialog.values);
+  const managedConsent = dialog.values['auth.type'] === 'managed_oauth';
   const matchingRecoveredReceipt = dialog.recentProbe?.recovered === true
     && dialog.editingId === connectionRowKey(
       dialog.recentProbe.kind,
@@ -3301,7 +3311,7 @@ const renderForm = (
     validationIssue,
   );
   const renderSchemaField = (field: ConnectionField): string => renderField(
-    field,
+    managedConsent && dialog.mode === 'edit' && field.key === 'config.base_url' ? { ...field, readonly: true } : field,
     dialog.values,
     dynamicOptions,
     dialog.mode,
@@ -3352,6 +3362,7 @@ const renderForm = (
           .join('')}
       </div>
       ${renderVendorOAuth(dialog)}
+      ${dialog.values['auth.type'] === 'managed_oauth' ? '<div data-managed-oauth-host></div>' : ''}
       ${dialog.error && dialog.credentialCorrection === null && dialog.error !== validationIssue?.message
         ? inlineError(dialog.error)
         : ''}
@@ -3378,12 +3389,12 @@ const renderForm = (
         })}
         ${button({
           label: dialog.saving
-            ? credentialRotation
+            ? credentialRotation && !managedConsent
               ? 'Verifying replacement…'
               : 'Saving…'
             : dialog.mode === 'edit'
               ? credentialRotation
-                ? 'Verify and replace'
+                ? managedConsent ? 'Save authorization' : 'Verify and replace'
                 : 'Save changes'
               : 'Save and probe',
           variant: 'primary',
@@ -3553,6 +3564,13 @@ export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
  *  options-page + sidebar both already include the primitive
  *  stylesheet so we only add page-specific rules here. */
 export const CONNECTIONS_PAGE_STYLES = `
+/* D-322 — the broker controller mounts inside the shared connection form. */
+.connections-managed-oauth { display: grid; gap: 0.65rem; margin: 1rem 0; }
+.connections-managed-oauth label { display: flex; flex-direction: column; gap: 0.25rem; }
+.connections-managed-oauth input, .connections-managed-oauth select { padding: 0.4rem; font: inherit; max-width: 100%; }
+.connections-managed-oauth fieldset { display: grid; gap: 0.65rem; min-width: 0; }
+.connections-managed-oauth button { padding: 0.4rem 0.65rem; font: inherit; justify-self: start; cursor: pointer; }
+.connections-managed-oauth button:disabled { cursor: default; opacity: 0.6; }
 ${REFERENCE_PROVENANCE_STYLES}
 .connections-page {
   box-sizing: border-box;
@@ -3816,6 +3834,22 @@ ${REFERENCE_PROVENANCE_STYLES}
   padding: 16px;
   background: var(--bg);
 }
+/* D-322 — the same broker form mounts in enrollment and independent management. */
+.connections-managed-oauth {
+  display: grid;
+  gap: 10px;
+  max-width: 700px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.connections-managed-oauth p { margin: 0; line-height: 1.5; }
+.connections-managed-oauth label { display: grid; gap: 4px; }
+.connections-managed-oauth fieldset { display: grid; gap: 10px; min-width: 0; }
+.connections-managed-oauth input,
+.connections-managed-oauth select { box-sizing: border-box; width: 100%; font: inherit; }
+.connections-managed-oauth button { justify-self: start; }
 .connections-picker-title,
 .connections-form-title {
   font-size: 14px;

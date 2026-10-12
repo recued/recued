@@ -13,7 +13,8 @@
  *
  *  Design: D-192. */
 
-import { RpcError, resolveBearerAccessToken } from '@recued/contracts';
+import { RpcError } from '@recued/contracts';
+import { resolveFileBearerTransport, type FileBearerTransport } from '../../../file-source-adapters/bearer-transport.js';
 import {
   discardResponseBody,
   readBoundedResponseText,
@@ -43,16 +44,17 @@ const REMOTE_ERROR_BODY_MAX_BYTES = 4 * 1024;
  *  connection resolver, refreshed) the connection before dispatch, so a token
  *  still missing here is a genuine credential gap (a revoked / never-authorized
  *  connection), not a refresh race. */
-export const bearerTokenOrThrow = (cred: FileConnectionCredential, vendorLabel: string): string => {
-  const token = resolveBearerAccessToken(cred.auth);
-  if (token === undefined) {
+export const fileTransportOrThrow = (cred: FileConnectionCredential, directFetch: FileFetch,
+  vendorLabel: string): FileBearerTransport => {
+  const transport = resolveFileBearerTransport(cred, directFetch, vendorLabel);
+  if (transport === undefined) {
     throw new RpcError(
       'file_storage_missing',
-      `${vendorLabel} remote read: connection has no usable access token`,
+      `${vendorLabel} remote read: connection has no usable credential transport`,
       500,
     );
   }
-  return token;
+  return transport;
 };
 
 export interface FetchRemoteBytesArgs {

@@ -8064,6 +8064,9 @@ export const bootstrapWebclient = async (
             'collection.mail.enrollOAuth',
             args as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollOAuth'>,
           ),
+          enrollManagedOAuth: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.mail.enrollManagedOAuth', input),
+          )(args),
           delete: (args) => switchWorkTracker.track(
             (input: typeof args) => rpcConn.call('collection.mail.delete', input),
           )(args),
@@ -8104,6 +8107,9 @@ export const bootstrapWebclient = async (
             'collection.calendar.enrollOAuth',
             args as RpcRequest<ServerRpcRegistry, 'collection.calendar.enrollOAuth'>,
           ),
+          enrollManagedOAuth: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.calendar.enrollManagedOAuth', input),
+          )(args),
           // Microsoft-only — adopt the `graph` grant the mail enroll just wrote,
           // so the "Also connect Calendar" opt-in needs no second consent.
           attachGraphGrant: (args) => rpcConn.call(
@@ -8685,6 +8691,9 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.connection.startVendorOAuth', args);
+  // D-322 — optional broker profiles and Connect sessions.
+  const connectionsManagedOAuthCaller: import('./settings/managed-oauth-panel.js').ManagedOAuthCaller | undefined =
+    options.enableConnectionsEnrollPanel === false ? undefined : (args) => rpcConn.call('collection.connection.managedOAuth', args);
   // R26.2 Option B — the pure code-exchange rpc. Wired unconditionally with the
   // enroll panel: the PANEL decides whether to use it (loopback only), so the
   // cloud path is untouched for every other origin.
@@ -10281,6 +10290,7 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        ...(connectionsManagedOAuthCaller !== undefined ? { connectionsManagedOAuthCaller: switchWorkTracker.track(connectionsManagedOAuthCaller) } : {}),
         ...(webhooksListCaller !== undefined
           && webhooksCreateCaller !== undefined
           && webhooksCredentialWriteCaller !== undefined
@@ -12745,6 +12755,11 @@ export const bootstrapWebclient = async (
     return withTrackedServerSwitchWork(bootstrapReceptionRoute({
       // D-269 — forwarded to this route's run modal.
       serverTimeZone: getServerTimeZone,
+      signoffPayment: {
+        listRecipes: recipesListCaller,
+        execute: switchWorkTracker.track(recipeExecuteCaller),
+        serverTimeZone: getServerTimeZone,
+      },
       root: appShell.contentRoot,
       shell: receptionShell,
       conn: trackSelectedRpcMethods<BootstrapReceptionRouteOptions['conn']>(

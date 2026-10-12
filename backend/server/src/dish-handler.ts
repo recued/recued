@@ -37,6 +37,7 @@ import type { DishStore } from './dish-store.js';
 import type { DishGroupStore } from './dish-group-store.js';
 import type { DishContextStore } from './dish-context-store.js';
 import type { DishAutomation } from './dish-automation.js';
+import type { UnattendedSettingsGate } from './unattended-settings-gate.js';
 import type { WsClient } from './ws-server.js';
 import { readConnectionChoices } from './run-connection-choice.js';
 
@@ -71,6 +72,11 @@ export interface DishHandlerDeps {
    *  by the composition. Absent (a harness) ⇒ nothing is refused; null ⇒ the
    *  server has no such recipe. */
   recipeInstall?: (recipe_id: string) => RecipeInstallState | null;
+  /** D-319 amendment (owner, 2026-10-11) — a dish that starts on its own is not
+   *  made on, switched on, or saved while on with a setting its recipe needs left
+   *  empty (`unattended-settings-gate.ts`). Absent ⇒ no refusal; the run still
+   *  refuses (`execute-handler.ts`). */
+  unattendedSettings?: Pick<UnattendedSettingsGate, 'assertDish'>;
   /** D-209 — a recipe's webhook door FOLLOWS ITS MAIN DISH
    *  (`followMainDishWebhookDoors`): a pushed run takes the main dish's
    *  settings and its choice of connection, so the door it runs under is
@@ -365,11 +371,19 @@ export const createDish = (
     ? requireDishConnections(deps, recipe_id, body.connections)
     : undefined;
   // What `created` turns on: the switch, and only for a dish made on.
-  if ((opts.switchOn ?? enabled) && enabled) refuseSwitchOnNotInstalled(deps, recipe_id);
+  const dish_id = generateDishId();
+  if ((opts.switchOn ?? enabled) && enabled) {
+    refuseSwitchOnNotInstalled(deps, recipe_id);
+    deps.unattendedSettings?.assertDish({
+      dish_id, recipe_id, name, config_overlay, enabled,
+      ...(group_id !== undefined ? { group_id } : {}),
+      ...(connections !== undefined ? { connections } : {}),
+    });
+  }
 
   const now = deps.now?.() ?? Date.now();
   const dish = storeNewDish(deps, {
-    dish_id: generateDishId(),
+    dish_id,
     recipe_id,
     publisher_id,
     name,
@@ -502,6 +516,11 @@ export const updateDish = (
     const connections = requireDishConnections(deps, existing.recipe_id, body.connections);
     if (connections === undefined) delete updated.connections;
     else updated.connections = connections;
+  }
+
+  // Switched on, or its settings saved while on.
+  if (updated.enabled && (body.enabled === true || body.config_overlay !== undefined || body.group_id !== undefined)) {
+    deps.unattendedSettings?.assertDish(updated);
   }
 
   const now = deps.now?.() ?? Date.now();

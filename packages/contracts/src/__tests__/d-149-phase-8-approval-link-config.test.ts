@@ -88,7 +88,8 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
     it('offers exactly what it accepts', () => {
       for (const action of APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS) {
         expect(validateApprovalLinkConfig(
-          baseConfig({ on_action: { target_id: 'proposal-123', on_approve_action: action } }),
+          baseConfig({ ...(action === 'quote_signoff' ? { action_kind: 'approve_wording', options: undefined } : {}),
+            on_action: { target_id: 'proposal-123', on_approve_action: action } }),
         ), action).toEqual([]);
       }
       expect(APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)

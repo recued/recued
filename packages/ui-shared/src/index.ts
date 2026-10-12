@@ -174,6 +174,8 @@ export {
   ACCOUNT_SLUG_REGEX,
   ACCOUNTS_PANEL_STYLES,
   canSubmitAccountForm,
+  managedConnectionsForAccount,
+  type ManagedAccountConnection,
   findAccountLane,
   findAccountProvider,
   initialAccountsPanelState,

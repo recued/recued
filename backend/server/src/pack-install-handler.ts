@@ -83,7 +83,14 @@ import {
   type BulkPackInstallRecipe,
   type MarketplaceRecipeResult,
 } from '@recued/marketplace';
-import { hashRecipe, unboundPackRefs, validateRecipe, type PackOpResolution } from '@recued/recipes';
+import {
+  catalogSignInReader,
+  hashRecipe,
+  slotSettingNamesOf,
+  unboundPackRefs,
+  validateRecipe,
+  type PackOpResolution,
+} from '@recued/recipes';
 import type { IngredientManifest } from '@recued/contracts';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
@@ -122,7 +129,13 @@ import {
 } from './pack-operation-update-diff.js';
 import { toolVersionReviewForPackUpdate } from './pack-tool-version-update-review.js';
 import { currentPackAudience, currentPackConnection } from './pack-update-carry-over.js';
-import { newerServerMessage, unknownHostCapabilities } from './pack-host-capabilities.js';
+import {
+  newerServerMessage,
+  packFloorRefusal,
+  recipeFloorRefusal,
+  standaloneRecipeFloorRefusal,
+  unknownHostCapabilities,
+} from './pack-host-capabilities.js';
 import { planPackWebhookBindings } from './pack-webhook-plan.js';
 import { triggersSwitchedOff } from './pack-trigger-preview.js';
 import { carryReceptionPairsAfterInstall, receptionPairsAtRisk } from './reception-pair-carry.js';
@@ -134,8 +147,8 @@ import {
   D201_WEBHOOK_RUNTIME_UNAVAILABLE,
   hasNonEmptyWebhookDeclarations,
 } from './webhook-declaration-gate.js';
+import { catalogBindingsOf } from './storage/connection-catalog-binding-store.js';
 import { createContractScanFn, type ContractStore } from './storage/contract-store.js';
-import { catalogSignInReader, slotSettingNamesOf } from './slot-settings.js';
 import type { SavedDataViewStore } from './saved-data-view-store.js';
 import type { RecipeMailTemplates } from './mail-facts/recipe-templates.js';
 import { packSavedViewId, packSavedViewsFrom } from './pack-saved-views.js';
@@ -1112,7 +1125,7 @@ const stillReadSettingNames = (
     (slug) => deps.registry?.get(slug) ?? null,
   );
   const signInOf = catalogSignInReader({
-    scan: createContractScanFn(deps.contractStore),
+    bindingsOf: catalogBindingsOf(createContractScanFn(deps.contractStore)),
     packs,
     packManifestOf: dependencyManifestResolver(deps),
   });
@@ -1253,6 +1266,11 @@ const preflightInstallContent = (
       if (refusal !== null) return named(manifest.slug, refusal);
     }
   }
+  // D-320 ruling 19 — then what a pack says it needs of Recued itself: its own
+  // floor, or the floor of a pack it brings in. The remedy is the one below,
+  // and it holds for every pack the install would write.
+  const floor = packFloorRefusal(root, ordered.map(({ manifest }) => manifest));
+  if (floor !== null) return dependencyPreflightFailure('version_mismatch', floor);
   const checked = ordered.filter(({ compositions }) => compositionProvisionable(deps, compositions));
   const needs = checked
     .map(({ manifest }) => ({ manifest, uses: unknownHostCapabilities(manifest) }))
@@ -1349,6 +1367,20 @@ const installSinglePack = async (
     deps,
   );
   let ready = resolved.every((r) => r.recipe != null && r.failure == null);
+  // D-320 ruling 19 — a recipe's own floor, read from its body. The pack's own,
+  // and those of the packs it brings in, were checked before anything was
+  // written (`preflightInstallContent`); a pack should name its recipes' floor too.
+  const recipeFloor = recipeFloorRefusal(manifest.name, resolved.map((r) => r.recipe?.recipe));
+  if (recipeFloor !== null) {
+    return {
+      result: {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: { code: 'version_mismatch', message: recipeFloor },
+      },
+    };
+  }
 
   // Pure-workflow trust is a property of the AUTHORED recipe (an all-entity-op
   // recipe is pure-workflow — D-170 N.18), but the A3 rewrite below replaces an
@@ -1510,6 +1542,10 @@ const installSinglePack = async (
   // registry — slice 4). Runs regardless of `canProvisionComposition`: even a
   // deferred composition must not leave op-steps unresolved. Fast-path passthrough
   // when no recipe carries an op-step (every v1 recipe-only pack).
+  // D-320 — a pack with neither (the shipped `crm`, `acct`, …) keeps its
+  // vendor-neutral op-steps as authored, for each run to bind; those recipes come
+  // back in `unbound`, and their rows are marked so the engine's safety net admits
+  // them (`op_steps_resolved_at_run`).
   if (ready) {
     const authoredComposition = compositionRefs[0]?.composition as CompositionIngredient | undefined;
     const composition = recordsComposition && authoredComposition !== undefined
@@ -1567,12 +1603,16 @@ const installSinglePack = async (
     for (const w of resolvedDefs.warnings) {
       console.warn(`[d-170.a3] ${manifest.slug}: ${w.code} — ${w.message}`);
     }
+    const unbound = new Set(resolvedDefs.unbound ?? []);
     resolved.forEach((entry, i) => {
       const def = resolvedDefs.recipes[i];
       // Only rebuild the entry whose def actually changed (an op-step recipe got
       // rewritten); untouched recipes keep their original object + content hash.
       if (entry.recipe !== null && def !== entry.recipe.recipe) {
         entry.recipe = { ...entry.recipe, recipe: def, recipe_hash: hashRecipe(def) };
+      }
+      if (entry.recipe !== null && unbound.has(entry.recipe.recipe_id)) {
+        entry.op_steps_resolved_at_run = true;
       }
     });
   }
@@ -3635,7 +3675,7 @@ type RecipeInstallBySlugResult =
   | {
       ok: false;
       failure: {
-        code: 'not_found' | 'validator_rejected' | 'fetch_error' | 'bundle_pack_required';
+        code: 'not_found' | 'validator_rejected' | 'fetch_error' | 'bundle_pack_required' | 'version_mismatch';
         message: string;
         pack_slug?: string;
       };
@@ -3756,6 +3796,13 @@ export const installRecipeBySlug = async (
         },
       },
     };
+  }
+
+  // D-320 ruling 19 — a recipe that names a newer Recued than this one. An update
+  // takes this path too, so the owner's installed copy is left as it is.
+  const floorRefusal = standaloneRecipeFloorRefusal(row.recipe);
+  if (floorRefusal !== null) {
+    return { result: { ok: false, failure: { code: 'version_mismatch', message: floorRefusal } } };
   }
 
   if (hasNonEmptyWebhookDeclarations(row.recipe)) {
@@ -3925,6 +3972,12 @@ export const makePackInstallHandlers = (
           && recipeMailTemplates === undefined
           ? []
           : await installIncomingRecipes(previewDeps, manifest);
+        // D-320 ruling 19 — a recipe the install brings that needs a newer Recued,
+        // when no pack's own floor said so already.
+        if (installRefusal === undefined) {
+          const recipeFloor = recipeFloorRefusal(manifest.name, incoming.map((recipe) => recipe.definition));
+          if (recipeFloor !== null) installRefusal = { code: 'version_mismatch', message: recipeFloor };
+        }
         // D-315 §5.2 — the templates the recipes bring, and which already-on
         // template each would meet.
         const mailTemplates = recipeMailTemplates?.preview(incoming.map((recipe) => recipe.definition)) ?? [];

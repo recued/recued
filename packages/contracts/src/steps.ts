@@ -412,6 +412,12 @@ export interface IngredientStep extends BaseStep {
   prompt?: string;
   /** Read a Records search page by page. See {@link StepPages}. */
   pages?: StepPages;
+  /** D-320 ruling 20 — catalog-form dispatch: the step's result names, in
+   *  `connection_name`, the connection its call went through. Set by the
+   *  vendor-neutral lowering on a single-record op's fetch (`<id>__raw`), whose
+   *  projection says where the record lives: a step that follows its record
+   *  (ruling 20g) learns that connection only at the call. */
+  result_names_connection?: boolean;
 }
 
 export interface GuardStep extends BaseStep {

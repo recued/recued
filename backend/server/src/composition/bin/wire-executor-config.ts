@@ -230,6 +230,8 @@ export interface ComposeExecutorConfigDeps {
    *  SAME one. Absent ⇒ `content` tags hide only what identifier tags seeded. */
   piiKnownValues?: (() => PiiKnownValueSource | undefined) | undefined;
   connectionStore: ConnectionStoreSqlite | undefined;
+  /** D-322 — injected broker transport shared with enrollment. */
+  managedOAuthFetch?: ConnectionApiHandlerDeps['managedOAuthFetch'];
   /** D-234 § 234.4 — LATE BINDING for the inbound peer door. The notification
    *  block lands on `executeDeps.preflightNotifier`, which is composed AFTER
    *  this config, so a kernel dispatcher cannot capture it at construction. Same
@@ -299,6 +301,7 @@ export interface ComposeExecutorConfigDeps {
   getBoundCrmSources?: (() => readonly ContactBusinessContextCrmSource[]) | undefined;
   annotationDeps: AnnotationRpcDeps | undefined;
   db: Database.Database | undefined;
+  recordsStore?: import('../../records/store.js').RecordsStore;
   annotationStore: AnnotationStore | undefined;
   enrichmentStore: EnrichmentStore | undefined;
   /** D-239 — the enrichment cascade engine, for the mail write-back's
@@ -682,6 +685,7 @@ export const composeExecutorConfig = async (
             const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
             const keyProvider = deps.keys ? deps.keys.keyProvider('connection') : undefined;
             return {
+              ...(deps.managedOAuthFetch ? { managedOAuthFetch: deps.managedOAuthFetch } : {}),
               decodeAuth: (row) =>
                 decodeAuthFromStorage(
                   row.auth_ciphertext,
@@ -809,6 +813,18 @@ export const composeExecutorConfig = async (
     // the same slug list; the ext implementation rpcs to the paired
     // server).
     kernelDispatchers: {
+      ...(deps.db && deps.recordsStore && deps.receptionProjectionWorkEntityStore?.writeTask ? {
+        quoteSignoffRelease: async (input) => {
+          const { createQuoteSignoffService, quoteSignoffManifestReader } = await import('../../quote-signoff-service.js');
+          const { createWorkEntityStore } = await import('../../storage/work-entity-store.js');
+          const manifest = await quoteSignoffManifestReader((slug) => deps.manifests.get(slug));
+          return createQuoteSignoffService({ db: deps.db!, records: deps.recordsStore!,
+            manifest,
+            work: { readTask: createWorkEntityStore(deps.db!).readTask,
+              writeTask: (task, now) => deps.receptionProjectionWorkEntityStore!.writeTask!(task, now) }, now: Date.now,
+          }).release(input);
+        },
+      } : {}),
       ...(deps.fileStack?.kernelDispatchers ?? {}),
       ...(deps.calendarStack?.kernelDispatchers ?? {}),
       // D-115 Phase 6 — unified watcher dispatcher slot: time,

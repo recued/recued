@@ -135,6 +135,8 @@ const own = (obj: Record<string, unknown>, key: string): unknown =>
   hasOwn(obj, key) ? obj[key] : undefined;
 
 export interface ConnectionApiHandlerDeps {
+  /** D-322 — raw vendor HTTP through the owner-selected OAuth broker. */
+  managedOAuthFetch?: (auth: Extract<ConnectionAuth, { type: 'managed_oauth' }>, url: string, init: RequestInit) => Promise<Response>;
   /** Host revalidation after asynchronous auth and before each bounded request
    * attempt. The unsigned destination also exposes a refresh-time route change. */
   beforeRequest?: (call: ResolvedCall, target: { expected: string; actual: string }) => Promise<void>;
@@ -948,6 +950,9 @@ const injectAuth = (
   },
 ): { readonly body: string | undefined } => {
   switch (auth.type) {
+    case 'managed_oauth':
+      // The server's broker port applies auth. Never send an unauthenticated native request.
+      return { body: req.body };
     case 'none':
       return { body: req.body };
     case 'bearer':
@@ -2281,7 +2286,15 @@ export const createConnectionApiHandler = (
         // this a 3xx to an internal / metadata host would be followed
         // (carrying non-stripped custom auth headers) and its body returned
         // to the recipe. Same-origin redirects still work.
-        const response = await fetchOriginPinned(fetchImpl, url.toString(), {
+        const requestFetch: typeof fetch = liveAuth.type === 'managed_oauth'
+          ? async (input, init) => {
+              if (deps.managedOAuthFetch === undefined) {
+                throw new IngredientError('CONNECTION_REFUSED', 'Managed OAuth is unavailable on this host.');
+              }
+              return deps.managedOAuthFetch(liveAuth, input.toString(), init ?? {});
+            }
+          : fetchImpl;
+        const response = await fetchOriginPinned(requestFetch, url.toString(), {
           method,
           headers,
           body: body as BodyInit | undefined,

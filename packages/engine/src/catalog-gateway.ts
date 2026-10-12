@@ -2384,6 +2384,13 @@ export const describeCatalogAuthority = (manifest: IngredientManifest, operation
     records_binding: isRecordsExecutionBinding(records) ? records : undefined };
 };
 
+/** D-254 — the audit `failure_mode` for each platform-record refusal. */
+const PLATFORM_RECORD_FAILURE_MODES: Readonly<Record<PlatformRecordIdError['code'], string>> = {
+  PLATFORM_ID_SOURCE_MISMATCH: 'platform_record_source_mismatch',
+  PLATFORM_ID_KIND_MISMATCH: 'platform_record_kind_mismatch',
+  PLATFORM_ID_CONNECTION_REQUIRED: 'platform_record_connection_required',
+};
+
 /** Route a catalog-form ingredient call through the D-165 P0 gateway.
  *  Returns the executed call's result on `admit`; throws on `deny` (step
  *  fails) or `ask` (`PreflightRequiredSignal` → engine pause).
@@ -2754,9 +2761,7 @@ const runCatalogOperationInner = async (
         // Deliberately NOT the work-entity classifier. Two id families fail for
         // the same reason and a shared code would send whoever greps it to the
         // wrong router.
-        failure_mode: error.code === 'PLATFORM_ID_SOURCE_MISMATCH'
-          ? 'platform_record_source_mismatch'
-          : 'platform_record_connection_required',
+        failure_mode: PLATFORM_RECORD_FAILURE_MODES[error.code],
       });
     }
     throw error;

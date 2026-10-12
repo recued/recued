@@ -40,6 +40,7 @@ import { validateCalendarCaps } from '../../collections/calendar/caps.js';
 import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeCalendarStackBootDeps {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   /** LAZY accessor for the shared `CollectionRegistry`, forwarded to the stack
    *  so a post-boot enroll registers immediately.
    *
@@ -172,6 +173,7 @@ export const composeCalendarBoot = (
       // read answered COLLECTION_NOT_FOUND until a restart. Same slip, same day,
       // as `wire-mail-stack.ts` — this composer is the one mail was modelled on.
       ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
+      ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
       ...(isVaultUnlocked ? { isVaultUnlocked } : {}),
       // `calendar-list` reads a day on the owner's clock, all-day events too.
       ownerTimeZone,
@@ -201,10 +203,12 @@ export const composeCalendarBoot = (
         // is what lets UI-entered credentials work without a restart — a
         // boot-time client-id gate would have required one.
         createGcalAdapterFactory({
+          ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
           accountStore: oauthAccountStoreDouble,
           providerConfig: () => resolveOAuthConfig('gcal'),
         }),
         createGraphCalAdapterFactory({
+          ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
           accountStore: oauthAccountStoreDouble,
           providerConfig: () => resolveOAuthConfig('graph'),
         }),

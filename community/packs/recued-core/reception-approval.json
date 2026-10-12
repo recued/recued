@@ -4,7 +4,7 @@
   "publisher": "recued-core",
   "name": "Reception — Approval",
   "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
-  "version": 1,
+  "version": 3,
   "pre_install": true,
   "recipes": [],
   "requires": [
@@ -18,6 +18,11 @@
   ],
   "pack_kind": "app_pack",
   "contents": [
+    {
+      "type": "recipe",
+      "slug": "reception-quote-signoff-release",
+      "version": 2
+    },
     {
       "type": "composition",
       "composition": {

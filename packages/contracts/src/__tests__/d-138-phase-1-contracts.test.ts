@@ -599,9 +599,12 @@ describe('D-138 P1 — MCP catalog ratchet (Reviewer #12)', () => {
       // D-182 §7.2 — cli reachability grid rpc (owner-only; authors a
       // connection-less cli tool's per-contract reachability allowlist).
       'cli.reachability.',
+      // D-322 — broker-backed account activation is an owner operation.
+      'collection.calendar.enrollManagedOAuth',
       'collection.connection.',
       'collection.contract.',
       'collection.hostname.',
+      'collection.mail.enrollManagedOAuth',
       'collection.operation.',
       'contact.alias.',
       'contact.identity.',

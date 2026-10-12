@@ -162,6 +162,7 @@ export interface CalendarStack {
  *  through to this builder; tests with no network inject
  *  in-memory doubles or skip the optional entries entirely. */
 export interface CalendarAdapterBundle {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   /** LAZY accessor for the shared `CollectionRegistry`.
    *
    *  ⚠ Lazy because the registry is constructed AFTER this stack in the boot
@@ -391,6 +392,7 @@ export const composeCalendarStack = (
   };
 
   const enrollDeps: CalendarEnrollDeps = {
+    ...(bundle.managedOAuth ? { managedOAuth: bundle.managedOAuth } : {}),
     instances,
     adapters,
     accountStore: bundle.accountStore ?? {

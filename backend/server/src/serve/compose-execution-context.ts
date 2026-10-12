@@ -198,6 +198,7 @@ export interface ComposeExecutionContextOptions {
     | 'resolveLlmConfig'
     | 'llmManager'
     | 'connectionStoreRef'
+    | 'managedOAuth'
     | 'contractGrantStoreRef'
     | 'connectionCatalogBindingStoreRef'
     | 'contractStoreRef'
@@ -440,6 +441,7 @@ export const composeExecutionContext = async (
     resolveLlmConfig: app.resolveLlmConfig,
     llmManager: app.llmManager,
     connectionStore: app.connectionStoreRef,
+    ...(app.managedOAuth ? { managedOAuthFetch: app.managedOAuth.fetch } : {}),
     auditLog: storage.auditLog,
     keys: app.keys,
     connectionNotificationDeps: collection.notificationDeps,
@@ -497,6 +499,7 @@ export const composeExecutionContext = async (
     // gate-held catalog op (re-dispatched on approve-resume) materialises
     // through the identical Source-routed write path.
     receptionProjectionWorkEntityStore: storage.workEntityStoreRef,
+    ...(storage.recordsStore ? { recordsStore: storage.recordsStore } : {}),
     receptionProjectionContactDeps: app.contactStoreRef
       ? { store: app.contactStoreRef }
       : undefined,

@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FORM_FIELD_VALUE_SHAPE,
   INTAKE_FORM_VISITOR_FIELD_TYPES,
+  collectFormValueRefs,
   collectWholeFormRecordRefs,
   evaluateFormFieldContract,
   type FormFieldContractFormView,
@@ -259,6 +260,83 @@ describe('evaluateFormFieldContract — hostile / degenerate input', () => {
   });
 });
 
+describe('form answer reads follow the producing operation', () => {
+  it.each([
+    'core.mail.get',
+    'core.data.calendar.get',
+    'core.storage.file.get',
+    'recued-core.fleet-money.job.get',
+  ])('does not classify %s records as visitor answers, even with a form-like id', (op) => {
+    const recipe = {
+      prefetch_steps: [{ id: 'form_response', op }],
+      output: {
+        record: '{{step.form_response.record}}',
+        values: '{{step.form_response.record.values:json}}',
+        field: '{{step.form_response.record.values.private_note}}',
+      },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual([]);
+    expect(collectFormValueRefs(recipe)).toEqual([]);
+  });
+
+  it.each(['prefetch_steps', 'steps'])('finds an arbitrarily named reader in %s', (phase) => {
+    const recipe = {
+      [phase]: [{ id: 'accepted_42', op: 'core.data.form-response.get' }],
+      output: {
+        record: '{{step.accepted_42.record}}',
+        values: '{{step.accepted_42.record.values:soql_like}}',
+        field: '{{step.accepted_42.record.values.address.city}}',
+      },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual([
+      '{{step.accepted_42.record}}', '{{step.accepted_42.record.values:soql_like}}',
+    ]);
+    expect(collectFormValueRefs(recipe)).toEqual(['address']);
+  });
+
+  it.each(['form-response-get', 'form-response-set-state'])('keeps %s detectable after op-step lowering', (ingredient) => {
+    const recipe = {
+      steps: [{ id: 'accepted', ingredient }],
+      output: { values: '{{step.accepted.record.values}}', name: '{{step.accepted.record.values.full_name}}' },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual(['{{step.accepted.record.values}}']);
+    expect(collectFormValueRefs(recipe)).toEqual(['full_name']);
+  });
+
+  it('also checks answers returned by a lifecycle write', () => {
+    const recipe = {
+      steps: [{ id: 'advanced', op: 'core.data.form-response.set-state' }],
+      output: { values: '{{step.advanced.record.values}}', name: '{{step.advanced.record.values.full_name}}' },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual(['{{step.advanced.record.values}}']);
+    expect(collectFormValueRefs(recipe)).toEqual(['full_name']);
+  });
+
+  it('separates genuine answer reads from ordinary records in the same recipe', () => {
+    const recipe = {
+      prefetch_steps: [{ id: 'accepted', op: 'core.data.form-response.get' }],
+      steps: [{ id: 'job', op: 'recued-core.fleet-money.job.get' }],
+      output: {
+        job: '{{step.job.record}}', job_values: '{{step.job.record.values}}',
+        answer: '{{step.accepted.record.values}}',
+        private_job_note: '{{step.job.record.values.private_note}}',
+        full_name: '{{step.accepted.record.values.full_name}}',
+      },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual(['{{step.accepted.record.values}}']);
+    expect(collectFormValueRefs(recipe)).toEqual(['full_name']);
+  });
+
+  it('does not establish a reader from metadata or an unresolved ref alone', () => {
+    const recipe = {
+      metadata: { example: { id: 'fr', op: 'core.data.form-response.get' } },
+      output: { record: '{{step.fr.record}}', field: '{{step.fr.record.values.secret}}' },
+    };
+    expect(collectWholeFormRecordRefs(recipe)).toEqual([]);
+    expect(collectFormValueRefs(recipe)).toEqual([]);
+  });
+});
+
 describe('whole-object detection covers the full hint vocabulary', () => {
   // ⛔⛔ The hint class is FORMAT_HINTS *plus* ESCAPE_HINTS, and the escape hints
   // carry underscores. A `[a-z]+` hint class missed `:soql_string` entirely, so
@@ -267,6 +345,7 @@ describe('whole-object detection covers the full hint vocabulary', () => {
   // whole object.
   const recipeWith = (ref: string): unknown => ({
     recipe_id: 'r',
+    prefetch_steps: [{ id: 'form_response', op: 'core.data.form-response.get', args: { submission_id: 's' } }],
     steps: [{ id: 'out', transform: 'json_stringify', input: ref }],
   });
 

@@ -180,13 +180,14 @@ const fakeRes = () => {
   return res;
 };
 
-const buildHandler = (env: ReturnType<typeof buildEnv>, audit?: AuditLogStore) =>
+const buildHandler = (env: ReturnType<typeof buildEnv>, audit?: AuditLogStore, trustForwardedFor?: boolean) =>
   createReceptionPortHandler({
     getStore: () => env.store,
     getCache: () => env.cache,
     getRateLimiter: () => env.limiter,
     getPepper: () => PEPPER,
     now: () => NOW,
+    ...(trustForwardedFor === undefined ? {} : { trustForwardedFor }),
     getApprovalIntentStore: () => env.intentStore,
     getApprovalLinkNonceStore: () => env.nonce,
     getApprovalIntentPiiKey: () => deriveApprovalIntentPiiKeyFromSubDek(SUB_DEK),
@@ -377,6 +378,47 @@ describe('D-149 P8 § A.5.5 — POST /reception/approve/<id>', () => {
       res,
     );
     expect(res.status).toBe(403);
+  });
+
+  it.each(['origin', 'referer'] as const)('enforces a trusted HTTPS proxy for %s without consuming the nonce on refusal', async (header) => {
+    const env = buildEnv();
+    try {
+      const audit = fakeAudit();
+      insertEndpoint(env, 'goodbearer');
+      const handler = buildHandler(env, audit, true);
+      const body = formUrlencode({ form_nonce: issueNonce(env), visitor_name: 'Bob',
+        visitor_email: 'bob@example.com', option_id: 'opt_a' });
+      const headers = { host: 'mary.recued.cloud', [header]: 'http://mary.recued.cloud',
+        'x-forwarded-proto': 'https', 'content-type': 'application/x-www-form-urlencoded' };
+      const refused = fakeRes();
+      await handler(fakeReq('POST', '/reception/approve/ep-approve-1?t=goodbearer', body, headers), refused);
+      expect(refused.status).toBe(403);
+      expect(env.intentStore.findById('ep-approve-1')?.consumed_at).toBeNull();
+      expect(audit.calls).toEqual([]);
+
+      const accepted = fakeRes();
+      await handler(fakeReq('POST', '/reception/approve/ep-approve-1?t=goodbearer', body,
+        { ...headers, [header]: 'https://mary.recued.cloud' }), accepted);
+      expect(accepted.status).toBe(200);
+      expect(env.intentStore.findById('ep-approve-1')?.consumed_at).toBe(NOW);
+      expect(audit.calls).toHaveLength(1);
+    } finally { env.db.close(); }
+  });
+
+  it.each([undefined, false])('ignores forged proxy scheme on a direct listener (trust=%s)', async (trustForwardedFor) => {
+    const env = buildEnv();
+    try {
+      insertEndpoint(env, 'goodbearer');
+      const handler = buildHandler(env, undefined, trustForwardedFor);
+      const body = formUrlencode({ form_nonce: issueNonce(env), visitor_name: 'Bob',
+        visitor_email: 'bob@example.com', option_id: 'opt_a' });
+      const res = fakeRes();
+      await handler(fakeReq('POST', '/reception/approve/ep-approve-1?t=goodbearer', body,
+        { host: 'mary.recued.cloud', origin: 'http://mary.recued.cloud',
+          'x-forwarded-proto': 'https', 'content-type': 'application/x-www-form-urlencoded' }), res);
+      expect(res.status).toBe(200);
+      expect(env.intentStore.findById('ep-approve-1')?.consumed_at).toBe(NOW);
+    } finally { env.db.close(); }
   });
 
   it('rejects POST with stale / missing form_nonce', async () => {

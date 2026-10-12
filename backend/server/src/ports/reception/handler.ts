@@ -241,6 +241,7 @@ export interface ReceptionPortHandlerDeps {
   readonly getApprovalIntentStore?: () => ApprovalIntentStore;
   readonly getApprovalLinkNonceStore?: () => ApprovalLinkNonceStore;
   readonly getApprovalIntentPiiKey?: () => Uint8Array;
+  readonly checkQuoteSignoffLink?: (config: import('@recued/contracts').ApprovalLinkConfig, endpointId: string) => string | null;
   /** D-149 P9 § A.5.6 — status_link dependencies. Both are required
    *  for the kind's GET render (HTML + JSON polling) to be live; when
    *  either is absent the dispatcher falls back to the kind-registry
@@ -738,6 +739,7 @@ export const createReceptionPortHandler = (
 
   const approvalLinkGetHandler = approvalLinkGetReady
     ? createApprovalLinkPacketHandler({
+        ...(deps.checkQuoteSignoffLink ? { checkQuoteSignoffLink: deps.checkQuoteSignoffLink } : {}),
         getStore: deps.getStore,
         getApprovalIntentStore: deps.getApprovalIntentStore!,
         getApprovalLinkNonceStore: deps.getApprovalLinkNonceStore!,
@@ -750,10 +752,12 @@ export const createReceptionPortHandler = (
 
   const approvalLinkConsumeHandler = approvalLinkPostReady
     ? createApprovalLinkConsumeHandler({
+        ...(deps.checkQuoteSignoffLink ? { checkQuoteSignoffLink: deps.checkQuoteSignoffLink } : {}),
         getStore: deps.getStore,
         getApprovalIntentStore: deps.getApprovalIntentStore!,
         getApprovalLinkNonceStore: deps.getApprovalLinkNonceStore!,
         getApprovalIntentPiiKey: deps.getApprovalIntentPiiKey!,
+        trustForwardedProto: deps.trustForwardedFor === true,
         auditLog: deps.auditLog!,
         now: deps.now,
         ...(deps.receptionDeploymentMode !== undefined

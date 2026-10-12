@@ -70,9 +70,11 @@ export interface SortField { field: string; direction: SortDirection }
 export interface TableColumn { field: string; label: string; format?: string; type?: 'text' | 'action' }
 export interface ChecklistItem {
   label: string;
-  issue: string;
-  detail_ok: string;
-  detail_issue: string;
+  /** The condition that makes the row a problem. Absent: the row is information. */
+  issue?: string | Condition;
+  detail_ok?: string;
+  detail_issue?: string;
+  /** Shown when the row cannot be judged (`checklistUnknownWhenMissing`). */
   detail_null?: string;
   action?: RecipeOutputAction;
   actions?: RecipeOutputAction[];

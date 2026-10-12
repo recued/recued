@@ -19,7 +19,7 @@
 
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
-import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
+import { fileTransportOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 
@@ -41,7 +41,7 @@ export const buildOneDriveRemoteByteResolver = (
 ): RemoteFileByteResolver => {
   const vendorLabel = opts.vendorLabel ?? 'onedrive';
   return async (req) => {
-    const token = bearerTokenOrThrow(req.cred, vendorLabel);
+    const transport = fileTransportOrThrow(req.cred, deps.fetchImpl, vendorLabel);
     // `config.drive_id` targets a non-default drive (a SharePoint document
     // library / another user's drive); absent ⇒ the signed-in user's `/me/drive`.
     const driveId = readStringConfig(req.cred.config, 'drive_id');
@@ -51,9 +51,9 @@ export const buildOneDriveRemoteByteResolver = (
         ? `${GRAPH_API}/drives/${encodeURIComponent(driveId)}/${item}`
         : `${GRAPH_API}/me/drive/${item}`;
     return fetchRemoteBytes({
-      fetchImpl: deps.fetchImpl,
+      fetchImpl: transport.fetch,
       url,
-      headers: { authorization: `Bearer ${token}` },
+      headers: { ...transport.headers },
       maxBytes: req.maxBytes,
       vendorLabel,
       ref: req.remote_id,

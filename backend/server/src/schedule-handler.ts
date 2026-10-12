@@ -23,6 +23,7 @@ import {
   isMissedSchedulePolicy, MISSED_SCHEDULE_POLICIES, buildMissedRunReport,
   countMissedCycles,
 } from '@recued/scheduler';
+import type { UnattendedSettingsGate } from './unattended-settings-gate.js';
 import {
   RpcError,
   type Dish,
@@ -70,6 +71,11 @@ export interface ScheduleHandlerDeps {
    *  that cannot enumerate installed packs must not read "cannot tell" as
    *  "nothing works". */
   missingPackDepsForRecipe?: (recipe_id: string) => readonly string[];
+  /** D-319 amendment (owner, 2026-10-11) — a schedule is not armed for a dish
+   *  whose settings leave empty one its recipe needs, since its runs have nobody
+   *  to ask (`unattended-settings-gate.ts`). Absent ⇒ no refusal; the run still
+   *  refuses (`execute-handler.ts`). */
+  unattendedSettings?: Pick<UnattendedSettingsGate, 'assertStart'>;
   /** D-179 P2 / D-319 — dish lookup for create/update-time binding
    *  validation (existence + recipe match). Optional; absent ⇒ binding is
    *  type-checked only and the fire-time gate owns the rest. */
@@ -310,6 +316,8 @@ export const createSchedule = (
   if (named_dish_id === undefined && deps.mainDish === undefined && hasSettings) {
     throw new RpcError('not_configured', 'Settings need a dish, and this server keeps none', 501);
   }
+  // Before the main dish can be made below: a refused schedule makes no dish.
+  if (enabled) deps.unattendedSettings?.assertStart({ recipe_id, dish_id: named_dish_id ?? null, config_overlay: overlay });
   const missed_policy = optionalMissedPolicy(body.missed_policy);
   let finalCronExpression = cron_expression;
   let run_at: number | undefined;
@@ -422,6 +430,13 @@ export const updateSchedule = (
   const missed_policy = optionalMissedPolicy(body.missed_policy);
   const cron_expression = typeof body.cron_expression === 'string' ? body.cron_expression : existing.cron_expression;
   const enabled = typeof body.enabled === 'boolean' ? body.enabled : existing.enabled;
+  // Switched on, or moved to another dish while on: armed for that dish.
+  if (enabled && (!existing.enabled || typeof body.dish_id === 'string')) {
+    deps.unattendedSettings?.assertStart({
+      recipe_id: existing.recipe_id,
+      dish_id: typeof body.dish_id === 'string' ? body.dish_id : existing.dish_id ?? null,
+    });
+  }
   if (existing.mode === 'one_shot' && body.cron_expression !== undefined) {
     throw new RpcError('bad_request', 'one_shot schedules cannot update cron_expression', 400);
   }

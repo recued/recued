@@ -51,10 +51,17 @@ import {
 } from '../index.js';
 
 describe('D-149 P3 § A.3 — RECEPTION_RPC_METHODS closed list', () => {
-  // D-207 slice 3c — 21, not 22. `reception.direct_checkout.recover` went with the legacy
+  // D-207 slice 3c — `reception.direct_checkout.recover` went with the legacy
   // coordinator that produced its only adapter; a surviving rpc would have always 503'd.
-  it('lists the 21 reception.* rpc methods in spec order', () => {
+  // Customer quote sign-off and added-work amendments share six owner-only methods.
+  it('lists the current Reception handler slice methods in order', () => {
     expect(RECEPTION_RPC_METHODS).toEqual([
+      'reception.signoff.quotes',
+      'reception.signoff.prepare',
+      'reception.signoff.prepare_addition',
+      'reception.signoff.publish',
+      'reception.signoff.list',
+      'reception.signoff.cancel',
       'reception.endpoints.list',
       'reception.endpoint.preview_draft',
       'reception.endpoint.create',

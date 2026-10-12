@@ -248,12 +248,15 @@ describe('resolveConnectionAgnosticRecipe', () => {
         operation: 'deal.read',
         args: { deal_id: '5' },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'deal',
       transform: 'project',
       object: '{{step.deal__raw.result}}',
       expression: {
+        // D-320 ruling 20 — a vendor the D-190 parser does not read gets no target_id.
+        connection_name: '{{step.deal__raw.connection_name}}',
         id: '{{item.id}}',
         name: '{{item.data.title}}',
         amount: '{{item.data.value | number}}',
@@ -305,6 +308,8 @@ describe('resolveConnectionAgnosticRecipe', () => {
         amount: '{{item.properties.amount | number}}',
         owner: '{{item.properties.hubspot_owner_id}}',
         is_closed: '{{item.properties.hs_is_closed}}',
+        // D-320 ruling 20 — each record names the connection its step signs in through.
+        connection_name: 'hubspot1',
       },
     });
   });
@@ -340,6 +345,8 @@ describe('resolveConnectionAgnosticRecipe', () => {
         key_dates: {
           close_date: '{{item.properties.closedate | date_ms}}',
         },
+        // D-320 ruling 20 — each record names the connection its step signs in through.
+        connection_name: 'hubspot1',
       },
     });
   });
@@ -390,6 +397,8 @@ describe('resolveConnectionAgnosticRecipe', () => {
       expression: {
         name: '{{item.properties.dealname}}',
         amount: '{{item.properties.amount | number}}',
+        // D-320 ruling 20 — each record names the connection its step signs in through.
+        connection_name: 'hubspot1',
       },
     });
   });

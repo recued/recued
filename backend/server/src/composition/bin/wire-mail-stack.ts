@@ -33,6 +33,7 @@ import {
 import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeMailStackBootDeps {
+  managedOAuth?: import('../../managed-oauth-consumers.js').ManagedOAuthConsumers;
   /** LAZY accessor for the shared `CollectionRegistry`, forwarded to the stack
    *  so a post-boot enroll registers immediately.
    *
@@ -201,6 +202,7 @@ export const composeMailBoot = (
       // check, so post-boot enrolls never joined the shared registry and every
       // send answered MAIL_INSTANCE_NOT_FOUND until a restart.
       ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
+      ...(deps.managedOAuth ? { managedOAuth: deps.managedOAuth } : {}),
       ...(accountStore
         ? {
             accountStore: {

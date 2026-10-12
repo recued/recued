@@ -41,7 +41,7 @@ const BOX_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `box`, `box-team`).',
+    help: 'A short lower-case name for this connection, such as `box` or `box-team`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 'box',
   },
   {

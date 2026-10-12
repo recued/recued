@@ -127,6 +127,8 @@ export interface ReceptionApprovalNotice {
 }
 
 export interface ApprovalLinkProcessorDeps {
+  readonly recordQuoteSignoff?: (targetId: string, endpointId: string, intentId: string, affirmative: boolean) =>
+    import('@recued/contracts').QuoteSignoffReleaseInput | null;
   readonly registryStore: ReceptionDrainRegistry;
   readonly intentStore: ReceptionApprovalDrainStore;
   readonly workEntityStore: ReceptionCommitmentStore;
@@ -259,7 +261,9 @@ export const createApprovalLinkSubmissionProcessor = (
         // budget that create_commitment rows need. The row stays pending;
         // it drains once applyEffect lands. (Budget is now spent per
         // actually-drained row, not per row listed.)
-        if (config.on_action.on_approve_action !== 'create_commitment' && !deps.applyEffect) {
+        if (config.on_action.on_approve_action === 'quote_signoff'
+          ? !deps.recordQuoteSignoff
+          : config.on_action.on_approve_action !== 'create_commitment' && !deps.applyEffect) {
           continue;
         }
         const key = resolveKey();
@@ -294,7 +298,18 @@ export const createApprovalLinkSubmissionProcessor = (
           const onApprove = config.on_action.on_approve_action;
           let createdCommitmentId: string | undefined;
 
-          if (onApprove === 'create_commitment') {
+          if (onApprove === 'quote_signoff') {
+            if (config.action_kind !== 'approve_wording' || !/^(approve|reject(?::.*)?)$/s.test(outcomeWire)) {
+              throw new Error('Quote sign-off requires an accept or reject response.');
+            }
+            const release = deps.recordQuoteSignoff!(config.on_action.target_id, endpoint.endpoint_id, row.intent_id, affirmative);
+            if (release) {
+              if (!deps.fireReceptionWorkflow) continue;
+              const fired = await deps.fireReceptionWorkflow({ kind: 'quote_signoff', payload: { ...release },
+                source_ref: row.intent_id, endpoint_id: endpoint.endpoint_id });
+              if (!fired.dispatched) continue;
+            }
+          } else if (onApprove === 'create_commitment') {
             // A commitment is a promise — only an affirmative outcome
             // produces one. A rejection / "no" is captured by the
             // consume-time signed audit + the notify seam (no materialize, no

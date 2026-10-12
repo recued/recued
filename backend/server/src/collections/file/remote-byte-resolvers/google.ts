@@ -5,7 +5,7 @@
 import { RpcError, type FileMetaProjection } from '@recued/contracts';
 import type { RemoteFileByteResolver, RemoteFileByteRequest, RemoteFileDownload } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
-import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
+import { fileTransportOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_EXPORT_MAX_BYTES = 10 * 1024 * 1024;
@@ -40,13 +40,13 @@ export const buildGoogleRemoteByteResolver = (
   const download = describe(req.meta);
   if (download.unavailable_reason) throw new RpcError('remote_unresolvable', download.unavailable_reason, 422);
   const exported = download.export_as;
-  const token = bearerTokenOrThrow(req.cred, 'google');
+  const transport = fileTransportOrThrow(req.cred, deps.fetchImpl, 'google');
   const result = await fetchRemoteBytes({
-    fetchImpl: deps.fetchImpl,
+    fetchImpl: transport.fetch,
     url: `${DRIVE_API}/files/${encodeURIComponent(req.remote_id)}` + (exported
       ? `/export?mimeType=${encodeURIComponent(exported.mime_type)}`
       : '?alt=media&supportsAllDrives=true'),
-    headers: { authorization: `Bearer ${token}` },
+    headers: { ...transport.headers },
     maxBytes: exported ? Math.min(req.maxBytes, GOOGLE_EXPORT_MAX_BYTES) : req.maxBytes,
     vendorLabel: 'google',
     ref: req.remote_id,

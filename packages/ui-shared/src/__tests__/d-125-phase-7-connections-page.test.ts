@@ -1654,6 +1654,7 @@ describe('D-125 P7.2 — schemas', () => {
       'header',
       'query',
       'oauth2_refresh',
+      'managed_oauth', // D-322 — API transport through an owner-selected broker.
       'oauth2_client_credentials',
       // D-218 — ⚠ this ratchet FIRED on the widened vocabulary, which is
       // exactly its job. The form list DERIVES from `CONNECTION_AUTH_TYPES`

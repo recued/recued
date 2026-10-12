@@ -127,7 +127,11 @@ describe('D-165 app-pack v2 — recipes optional + installable requirement', () 
 
   it('v2 recipes[] alias is optional but capped + shape-checked when present', () => {
     expect(parseBulkPackManifest(validV2({ recipes: [{ slug: 'extra-r', version: 1 }] })).ok).toBe(true);
-    const many = Array.from({ length: BULK_PACK_MAX_RECIPES + 1 }, (_, i) => ({ slug: `r-${i}`, version: 1 }));
+    // D-320 ruling 20 — capped at the CONTENTS limit: a parse returns a v2 pack's
+    // recipe contents lifted into this list, and the install parses it again.
+    const aboveV1 = Array.from({ length: BULK_PACK_MAX_RECIPES + 1 }, (_, i) => ({ slug: `r-${i}`, version: 1 }));
+    expect(parseBulkPackManifest(validV2({ recipes: aboveV1 })).ok).toBe(true);
+    const many = Array.from({ length: BULK_PACK_MAX_CONTENTS + 1 }, (_, i) => ({ slug: `r-${i}`, version: 1 }));
     expect(hasErr(parseBulkPackManifest(validV2({ recipes: many })), 'pack_recipes_too_many')).toBe(true);
     expect(hasErr(parseBulkPackManifest(validV2({ recipes: 'oops' })), 'pack_recipes_required')).toBe(true);
   });

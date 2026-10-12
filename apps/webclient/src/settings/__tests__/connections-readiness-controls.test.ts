@@ -198,7 +198,7 @@ describe('createConnectionsReadinessController.renderForPack', () => {
     const row = findByAttr(section, CONNECTIONS_READINESS_ROW_ATTR, 'stripe')!;
     expect(row.getAttribute(CONNECTIONS_READINESS_STATUS_ATTR)).toBe('not_set_up');
     const cta = findByAttr(section, CONNECTIONS_READINESS_CTA_ATTR)!;
-    expect(cta.getAttribute('href')).toBe('#connections/others/enroll/stripe');
+    expect(cta.getAttribute('href')).toBe('#connections/others/enroll/stripe/pack/p/stripe');
     expect(textOf(cta)).toContain('Set up');
   });
 
@@ -243,7 +243,7 @@ describe('createConnectionsReadinessController.renderForPack', () => {
     const row = findByAttr(section, CONNECTIONS_READINESS_ROW_ATTR, 'hubspot')!;
     expect(row.getAttribute(CONNECTIONS_READINESS_STATUS_ATTR)).toBe('not_set_up');
     const cta = findByAttr(section, CONNECTIONS_READINESS_CTA_ATTR)!;
-    expect(cta.getAttribute('href')).toBe('#connections/others/enroll/hubspot');
+    expect(cta.getAttribute('href')).toBe('#connections/others/enroll/hubspot/pack/p/hubspot');
     expect(textOf(cta)).toContain('Set up');
   });
 

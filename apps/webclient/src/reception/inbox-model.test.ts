@@ -73,6 +73,15 @@ const item = (over: Partial<InboxItem> = {}): InboxItem => ({
 });
 
 describe('D-173 P6 reception inbox - projection model', () => {
+  it('shows accepted quote terms as fixed review content and keeps internal references out of the editor', () => {
+    const detail = buildReceptionInboxDetailModel(item({ operation_id: 'quote-signoff-release', top_tier_kind: 'task',
+      source: { kind: 'quote_signoff', record_ref: 'signoff' }, arg_schema: { fields: [] },
+      args: { signoff_id: 'signoff', expected_plan_hash: 'a'.repeat(64), summary: 'Quote Q-1\nFull accepted scope\nIssue invoice INV-101' },
+    }), NOW);
+    expect(detail.review_body).toBe('Quote Q-1\nFull accepted scope\nIssue invoice INV-101');
+    expect(detail.fields).toEqual([]); expect(detail.immutable_arg_keys).toEqual([]);
+  });
+
   it('projects a store-only response body as read-only review content', () => {
     const detail = buildReceptionInboxDetailModel(
       item({

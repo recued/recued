@@ -153,6 +153,10 @@ export const bindingsForCatalogs = (
   return allCatalogBindings(scan).filter((binding) => wanted.has(binding.catalog_slug));
 };
 
+/** D-320 phase 3 — a catalog's bindings, one catalog at a time: what the slot reader
+ *  (`catalogSignInReader`, `@recued/recipes`) asks of a server. */
+export const catalogBindingsOf = (scan: BindingScan) => (catalog: string) => bindingsForCatalogs(scan, [catalog]);
+
 /** D-320 — every binding, both row shapes, in one scan: for a reader that looks at
  *  many catalogs at once (the recipe tools' `connections` argument). */
 export const allCatalogBindings = (

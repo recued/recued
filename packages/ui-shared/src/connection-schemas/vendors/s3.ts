@@ -32,7 +32,7 @@ const S3_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `s3`, `s3-archive`).',
+    help: 'A short lower-case name for this connection, such as `s3` or `s3-archive`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 's3',
   },
   {

@@ -445,12 +445,16 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
           },
         },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'deal',
       transform: 'project',
       object: '{{step.deal__raw.result}}',
       expression: {
+        // D-320 ruling 20 — the record names the connection its call went through.
+        target_id: 'hubspot_deal_{{step.deal__raw.connection_name}}_{{item.properties.hs_object_id}}',
+        connection_name: '{{step.deal__raw.connection_name}}',
         // R2 step 6 — response-side canonical record id (find-then-act).
         id: '{{item.properties.hs_object_id}}',
         name: '{{item.properties.dealname}}',
@@ -503,12 +507,16 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
           contact_id: '{{config.cid}}',
         },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'c',
       transform: 'project',
       object: '{{step.c__raw.result}}',
       expression: {
+        // D-320 ruling 20 — the record names the connection its call went through.
+        target_id: 'hubspot_contact_{{step.c__raw.connection_name}}_{{item.properties.hs_object_id}}',
+        connection_name: '{{step.c__raw.connection_name}}',
         email: '{{item.properties.email}}',
         // R2 step 6 — response-side canonical record id (find-then-act).
         id: '{{item.properties.hs_object_id}}',
@@ -581,12 +589,16 @@ describe('resolveConnectionAgnosticRecipe - write reverse projection', () => {
           'body.Amount': 30000,
         },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'o',
       transform: 'project',
       object: '{{step.o__raw.result}}',
       expression: {
+        // D-320 ruling 20 — the record names the connection its call went through.
+        target_id: 'salesforce_opportunity_{{step.o__raw.connection_name}}_{{item.Id}}',
+        connection_name: '{{step.o__raw.connection_name}}',
         // R2 step 6 — response-side canonical record id (find-then-act).
         id: '{{item.Id}}',
         name: '{{item.Name}}',
@@ -740,6 +752,7 @@ describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
           deal_id: '5',
         },
       },
+      result_names_connection: true,
     });
     const args = (recipe.steps[0] as unknown as { input: { args: Record<string, unknown> } }).input.args;
     expect(args['body.properties']).not.toHaveProperty('id');
@@ -748,6 +761,9 @@ describe('resolveConnectionAgnosticRecipe - write edge cases', () => {
       transform: 'project',
       object: '{{step.deal__raw.result}}',
       expression: {
+        // D-320 ruling 20 — the record names the connection its call went through.
+        target_id: 'pipedrive_deal_{{step.deal__raw.connection_name}}_{{item.id}}',
+        connection_name: '{{step.deal__raw.connection_name}}',
         id: '{{item.id}}',
         name: '{{item.data.title}}',
         stage: '{{item.data.stage_name}}',
@@ -885,6 +901,8 @@ describe('resolveConnectionAgnosticRecipe - read/search regression coverage', ()
       expression: {
         name: '{{item.properties.dealname}}',
         amount: '{{item.properties.amount | number}}',
+        // D-320 ruling 20 — each record names the connection its step signs in through.
+        connection_name: 'hubspot1',
       },
     });
   });
@@ -904,6 +922,7 @@ describe('resolveConnectionAgnosticRecipe - read/search regression coverage', ()
         operation: 'deal.read',
         args: { deal_id: '5' },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'deal',
@@ -912,6 +931,8 @@ describe('resolveConnectionAgnosticRecipe - read/search regression coverage', ()
       expression: {
         name: '{{item.properties.dealname}}',
         amount: '{{item.properties.amount | number}}',
+        // D-320 ruling 20 — no id field, so no target_id; the connection still.
+        connection_name: '{{step.deal__raw.connection_name}}',
       },
     });
     expect(recipe.steps[1]).not.toHaveProperty('array');

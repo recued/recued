@@ -44,6 +44,32 @@ export const math: TransformFn = (p) => {
   return null;
 };
 
+/** Add/subtract fixed-point operands without passing stored money through
+ * Number arithmetic. A separate transform makes older engines refuse the
+ * recipe before writing, rather than ignore an unfamiliar math parameter. */
+export const decimal_math: TransformFn = (p) => {
+  const places = p.decimal_places;
+  if (typeof places !== 'number' || !Number.isInteger(places) || places < 0 || places > 18
+    || p.expression !== undefined || (p.operator !== 'add' && p.operator !== 'subtract')) return null;
+  const factor = 10n ** BigInt(places);
+  const units = (value: unknown): bigint | null => {
+    if (typeof value !== 'string' && typeof value !== 'number') return null;
+    const text = String(value);
+    // Bound parsing work and refuse extra precision rather than silently round.
+    if (text.length > 256 || !/^[+-]?\d+(?:\.\d+)?$/.test(text)) return null;
+    const [whole, fraction = ''] = text.replace(/^[+-]/, '').split('.');
+    if (fraction.length > places) return null;
+    const scaled = BigInt(whole!) * factor + BigInt(fraction.padEnd(places, '0') || '0');
+    return text.startsWith('-') ? -scaled : scaled;
+  };
+  const left = units(p.left), right = units(p.right);
+  if (left === null || right === null) return null;
+  const result = p.operator === 'add' ? left + right : left - right;
+  const absolute = result < 0n ? -result : result;
+  return `${result < 0n ? '-' : ''}${absolute / factor}${places === 0 ? ''
+    : `.${String(absolute % factor).padStart(places, '0')}`}`;
+};
+
 /** Evaluate a math expression string with basic arithmetic + functions.
  *  Supports: + - * / % ( ) and functions min, max, abs, ceil, floor, round.
  *  All values must be numeric — references are resolved before this runs.

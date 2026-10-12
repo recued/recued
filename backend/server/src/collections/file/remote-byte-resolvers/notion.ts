@@ -28,7 +28,7 @@ import type { RemoteFileByteResolver, RemoteFileByteRequest, RemoteFileDownload 
 import type { FileFetch } from '../../../file-source-adapters/index.js';
 import { NOTION_API, NOTION_VERSION } from '../../../file-source-adapters/notion.js';
 import { fetchFileSourceApi } from '../../../file-source-adapters/http-json.js';
-import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
+import { fileTransportOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 /** Block types that carry a file payload — mirrors the list leaf's
  *  `FILE_BLOCK_TYPES` (the projector only mirrors these). */
@@ -73,17 +73,17 @@ export const buildNotionRemoteByteResolver = (
       422,
     );
   }
-  const token = bearerTokenOrThrow(req.cred, 'notion');
+  const transport = fileTransportOrThrow(req.cred, deps.fetchImpl, 'notion');
   // Re-resolve the block → a fresh signed url (the stored locator is the block
   // id; Notion urls rotate hourly, so a stored url is never trusted).
   let body: unknown;
   try {
     const res = await fetchFileSourceApi(
-      deps.fetchImpl,
+      transport.fetch,
       `${NOTION_API}/blocks/${encodeURIComponent(req.remote_id)}`,
       {
         method: 'GET',
-        headers: { Authorization: `Bearer ${token}`, 'Notion-Version': NOTION_VERSION },
+        headers: { ...transport.headers, 'Notion-Version': NOTION_VERSION },
       },
     );
     if (!res.ok) {

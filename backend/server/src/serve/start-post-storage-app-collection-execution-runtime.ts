@@ -476,6 +476,7 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
       keys: app.keys,
       vaultStateBus: app.vaultStateBus,
       connectionStore: app.connectionStoreRef,
+      ...(app.managedOAuthConsumers ? { managedOAuthConsumers: app.managedOAuthConsumers } : {}),
       workEntityStore: options.app.workEntityStore,
       enrichmentCascade: app.enrichmentCascadeRef,
       // D-192 P4b — late-bound: the ref is populated post-listener by

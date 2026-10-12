@@ -96,6 +96,10 @@ export type HttpFetcher = (
   text(): Promise<string>;
 }>;
 
+/** An absent token belongs to a broker transport, which injects OAuth itself. */
+export const oauthAuthorizationHeaders = (token: string | undefined): Record<string, string> =>
+  token === undefined ? {} : { Authorization: `Bearer ${token}` };
+
 export class OAuthError extends Error {
   readonly code:
     | 'token_exchange_failed'

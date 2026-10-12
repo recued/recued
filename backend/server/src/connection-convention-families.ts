@@ -29,6 +29,7 @@
  *  the SAME merged registry and cannot diverge.
  */
 import {
+  CATALOG_VENDOR_SLUGS,
   CONNECTION_VENDOR_ENTITIES,
   assertEngagementRegistryInvariants,
   assertNoVendorPrefixClash,
@@ -69,9 +70,29 @@ const BUILTIN_VENDOR_IDS: ReadonlySet<string> = new Set(
  *      practice — a genuine 3rd-party vendor id is distinct by construction). */
 export const liveVendorRegistry = (
   store: Pick<LocalManifestStore, 'listManifests' | 'getEntitySchemas'> | undefined,
-): ReadonlyArray<ConnectionVendorEntity> => {
-  if (!store) return CONNECTION_VENDOR_ENTITIES;
+): ReadonlyArray<ConnectionVendorEntity> => liveCatalogVendors(store).registry;
+
+/** D-320 ruling 20e — the live registry, and the vendor each catalog serves: a
+ *  first-party catalog's (`CATALOG_VENDOR_SLUGS`), and each installed composition's
+ *  whose entities the registry took (QuickBooks and Xero, for accounting). A run
+ *  resolves a vendor-neutral step against these, as an install resolved it against
+ *  the composition it carried (`thirdPartyRegistryMerge`). */
+export interface LiveCatalogVendors {
+  registry: ReadonlyArray<ConnectionVendorEntity>;
+  vendorForCatalog: (catalogSlug: string) => string | undefined;
+}
+
+const FIRST_PARTY_VENDOR_BY_CATALOG: ReadonlyMap<string, string> = new Map(
+  Object.entries(CATALOG_VENDOR_SLUGS).map(([vendor, slug]) => [slug, vendor]),
+);
+
+export const liveCatalogVendors = (
+  store: Pick<LocalManifestStore, 'listManifests' | 'getEntitySchemas'> | undefined,
+): LiveCatalogVendors => {
+  const firstParty = (slug: string): string | undefined => FIRST_PARTY_VENDOR_BY_CATALOG.get(slug);
+  if (!store) return { registry: CONNECTION_VENDOR_ENTITIES, vendorForCatalog: firstParty };
   const thirdParty: ConnectionVendorEntity[] = [];
+  const byCatalog = new Map<string, string>();
   for (const manifest of store.listManifests()) {
     const lifted = vendorEntitiesFromComposition(store.getEntitySchemas(manifest.slug));
     if (lifted.length === 0) continue;
@@ -103,10 +124,13 @@ export const liveVendorRegistry = (
     // is the merge-time belt-and-braces + the cross-pack case the S1 reviewer flagged.
     if (assertEngagementRegistryInvariants([...thirdParty, ...lifted]).length > 0) continue;
     thirdParty.push(...lifted);
+    // Every lifted entity carries the composition's one vendor (`wraps_vendor`).
+    byCatalog.set(manifest.slug, lifted[0]!.vendor);
   }
-  return thirdParty.length === 0
-    ? CONNECTION_VENDOR_ENTITIES
-    : [...CONNECTION_VENDOR_ENTITIES, ...thirdParty];
+  return {
+    registry: thirdParty.length === 0 ? CONNECTION_VENDOR_ENTITIES : [...CONNECTION_VENDOR_ENTITIES, ...thirdParty],
+    vendorForCatalog: (slug) => firstParty(slug) ?? byCatalog.get(slug),
+  };
 };
 
 /** Derive the set of kernel-convention families (`crm` / `acct`) with a vendor

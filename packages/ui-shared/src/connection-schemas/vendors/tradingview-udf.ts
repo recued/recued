@@ -32,8 +32,8 @@ const TRADINGVIEW_UDF_FIELDS: readonly ConnectionField[] = apiSchema.fields
         return {
           ...field,
           help:
-            'A short lower-case name you use in Recipes, such as `tradingview` '
-            + 'or `market-data`).',
+            'A short lower-case name for this connection, such as `tradingview` '
+            + 'or `market-data`. Screens, run records and AI clients refer to the connection by it.',
           placeholder: 'tradingview',
         };
       case 'display_name':

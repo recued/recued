@@ -393,6 +393,7 @@ describe('makeCollectionHandlers', () => {
       'collection.calendar.attachGraphGrant',
       'collection.calendar.delete',
       'collection.calendar.enrollBasic',
+      'collection.calendar.enrollManagedOAuth',
       'collection.calendar.enrollOAuth',
       'collection.calendar.list',
       'collection.calendar.reauth',
@@ -409,6 +410,7 @@ describe('makeCollectionHandlers', () => {
       'collection.listInstances',
       'collection.mail.delete',
       'collection.mail.enrollImap',
+      'collection.mail.enrollManagedOAuth',
       'collection.mail.enrollOAuth',
       'collection.mail.list',
       // D-177 N.12 — `collection.mail.send` is intentionally NOT wired

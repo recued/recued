@@ -109,7 +109,7 @@ import {
   composeListeners,
   type ComposeListenersOptions,
 } from '../serve/compose-listeners.js';
-import { D165_CONTRACT_SCHEMA } from '@recued/contracts';
+import { D165_CONTRACT_SCHEMA, type RecipeDefinition } from '@recued/contracts';
 import { createContractStore } from '../storage/contract-store.js';
 import { createContractDefinitionStore } from '../storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
@@ -133,6 +133,8 @@ import { createRuntimeConfigStore } from '@recued/config';
 import { createRecipeStore } from '../recipe-store.js';
 import { createDishStore } from '../dish-store.js';
 import { createDish, type DishHandlerDeps } from '../dish-handler.js';
+import { createSchedule, type ScheduleHandlerDeps } from '../schedule-handler.js';
+import { createScheduleStore } from '../schedule-store.js';
 import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
 import {
   createPublicAddressService,
@@ -2844,6 +2846,73 @@ describe('composeListeners — D-319 a recipe the server only ships cannot be sw
     // Installed, the same switch goes ahead.
     recipeStore.save(recipeStore.get(shipped)!, 'recued-core', 'pair-sync');
     expect(createDish(dishDeps, { recipe_id: shipped }).dish).toMatchObject({ recipe_id: shipped, enabled: true });
+  });
+});
+
+describe('composeListeners — D-319 amendment: nothing that starts on its own is armed without its settings', () => {
+  // ⚠ Through the composition's own late binding of the gate over the REAL recipe
+  // store: the handler suite (`d-319-unattended-settings-arming.test.ts`) supplies
+  // the gate itself, which proves the refusal, not that a server has it.
+  // ⛔ The recipes are inline and saved into that store, not read from the bundled
+  // ones: a release's public tree carries only the foundation recipes, so a shipped
+  // marketplace recipe read through the store's default folder is absent there, and
+  // the export cannot see a default folder to omit this file (step 5, 26.10.12).
+  // What the shipped recipes need is `unattended-settings.test.ts`'s.
+  const recipeOf = (recipe_id: string, extra: Record<string, unknown>): RecipeDefinition => ({
+    recipe_id, version: 1, ttl: 0,
+    metadata: { name: recipe_id, description: 'test', author: 'test', supported_platforms: [] },
+    prefetch_steps: [], output: { render: [] }, ...extra,
+  }) as unknown as RecipeDefinition;
+  it('refuses switching on a timer dish, and arming a schedule, without what the recipe needs', async () => {
+    const recipeStore = createRecipeStore(undefined, storageDb);
+    const timer = 'compose-audience-digest';
+    const manual = 'compose-thank-you';
+    recipeStore.save(recipeOf(timer, {
+      auto_run: { interval_ms: 3_600_000 },
+      variables: { list_id: { label: 'Audience', type: 'string' } },
+      steps: [{ id: 'line', transform: 'template', template: '{{config.list_id}}' }],
+    }), 'local', 'pair-sync');
+    recipeStore.save(recipeOf(manual, {
+      variables: { sender_mail_instance: { label: 'Send from', type: 'string', default: '' } },
+      steps: [{ id: 'send', op: 'core.mail.send', fail_on: '{{config.sender_mail_instance}} is_empty',
+        args: { sender_mail_instance: '{{config.sender_mail_instance}}' } }],
+    }), 'local', 'pair-sync');
+    const dishDeps: DishHandlerDeps = { store: createDishStore(storageDb) };
+    const scheduleDeps = { store: createScheduleStore(storageDb), instanceId: 'compose-test' } as ScheduleHandlerDeps;
+    const base = makeOptions() as unknown as {
+      execution: { executeDeps: Record<string, unknown> } & Record<string, unknown>;
+    };
+    await composeListeners(makeOptions({
+      dishDeps,
+      scheduleDeps,
+      execution: { ...base.execution, executeDeps: { ...base.execution.executeDeps, recipeStore } },
+    } as never));
+
+    expect(() => createDish(dishDeps, { recipe_id: timer })).toThrow(expect.objectContaining({
+      code: 'dish_settings_missing',
+      details: expect.objectContaining({ missing: ['list_id'] }),
+    }));
+    expect(dishDeps.store.listByRecipe(timer)).toEqual([]);
+    expect(createDish(dishDeps, { recipe_id: timer, config_overlay: { list_id: 'l-1' } }).dish.enabled).toBe(true);
+
+    // A recipe run by hand makes its dish without a sender; scheduling it does not.
+    const { dish } = createDish(dishDeps, { recipe_id: manual });
+    expect(() => createSchedule(scheduleDeps, { recipe_id: manual, cron_expression: '0 9 * * *', dish_id: dish.dish_id }))
+      .toThrow(expect.objectContaining({ code: 'dish_settings_missing', details: expect.objectContaining({ missing: ['sender_mail_instance'] }) }));
+
+    // Nor one whose run would be refused for a connection: a CRM write with no CRM
+    // connected is refused before its first step (`applyKernelOpRunnability`).
+    const writes = {
+      recipe_id: 'compose-crm-write', version: 1, ttl: 0,
+      metadata: { name: 'CRM write', description: 'test', author: 'test', supported_platforms: [] },
+      variables: {}, prefetch_steps: [],
+      steps: [{ id: 'make', op: 'core.crm.deal.create', args: { values: { dealname: 'x' } } }],
+      output: { render: [] },
+    } as unknown as RecipeDefinition;
+    recipeStore.register(writes);
+    const { dish: writer } = createDish(dishDeps, { recipe_id: writes.recipe_id });
+    expect(() => createSchedule(scheduleDeps, { recipe_id: writes.recipe_id, cron_expression: '0 9 * * *', dish_id: writer.dish_id }))
+      .toThrow(expect.objectContaining({ code: 'dish_connection_missing' }));
   });
 });
 

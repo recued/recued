@@ -448,6 +448,8 @@ export interface CollectionInstanceRow {
    *  `'caldav'` for calendar (D-117). Drives which enroll/update form the UI
    *  renders. */
   adapter_type: string;
+  /** D-322 — borrowed API connection name. No broker secrets or remote handle. */
+  managed_connection_name?: string;
   /** Cached capability shape. File rows carry `FileCollectionCaps`,
    *  calendar rows carry `CalendarCollectionCaps`. Consumers narrow
    *  on `platform` before reading platform-specific cap fields. */

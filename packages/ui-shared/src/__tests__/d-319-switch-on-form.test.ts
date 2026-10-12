@@ -10,6 +10,7 @@ import type { VariableDefault } from '@recued/contracts';
 import {
   CONFIG_EDITOR_NAME_ATTR,
   CONFIG_EDITOR_SCHEDULE_ATTR,
+  confirmFailureText,
   requiredSettingProblem,
   wireConfigEditorOverlay,
 } from '../config-editor-overlay.js';
@@ -123,6 +124,21 @@ describe('the switch-on form', () => {
     const editor = mount({ variables: { template } });
     editor.confirm();
     expect(editor.onConfirm).toHaveBeenCalledWith({}, {});
+  });
+});
+
+describe('a refused save says why', () => {
+  it('shows the server\'s refusal naming the settings a run on its own needs, and the form\'s copy for anything else', () => {
+    // D-319 amendment (owner, 2026-10-11): the server will not arm a dish that
+    // starts on its own without what its recipe needs, and names it.
+    const refusal = Object.assign(
+      new Error('"Board digest" runs on its own, so "Mine" cannot be on with "Board" empty. Fill it in first.'),
+      { code: 'dish_settings_missing' },
+    );
+    expect(confirmFailureText(refusal, 'Recued could not save that.')).toBe(refusal.message);
+    expect(confirmFailureText(Object.assign(new Error('boom'), { code: 'internal' }), 'Recued could not save that.'))
+      .toBe('Recued could not save that.');
+    expect(confirmFailureText(undefined, undefined)).toBe('Recued could not save that. What you typed is still here. Try again.');
   });
 });
 

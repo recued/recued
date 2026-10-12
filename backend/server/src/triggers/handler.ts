@@ -32,9 +32,14 @@ import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggersStore } from './store.js';
 import type { EventTriggerDispatcher } from './dispatcher.js';
 import type { DishStore } from '../dish-store.js';
+import type { UnattendedSettingsGate } from '../unattended-settings-gate.js';
 
 export interface TriggersRpcDeps {
   store: EventTriggersStore;
+  /** D-319 amendment (owner, 2026-10-11) — not armed for a dish whose settings
+   *  leave empty one its recipe needs (`unattended-settings-gate.ts`). Absent ⇒ no
+   *  refusal; the run still refuses (`execute-handler.ts`). */
+  unattendedSettings?: Pick<UnattendedSettingsGate, 'assertStart'>;
   preapprovalStatus?: (triggerId: string) => Pick<EventTrigger, 'enabled' | 'lifecycle_revision' | 'preapproval'> | null;
   /** Dispatcher that subscribes to the warehouse bus. Re-subscribed
    *  after every mutation so the live listener set matches the
@@ -248,7 +253,10 @@ export const handleTriggersCreate = async (
       throw new RpcError('bad_request', 'Settings belong to the dish — change them on the dish, not the trigger', 400);
     }
     requireDishBindsRecipe(deps, dish_id, recipe_id);
+    if (enabled) deps.unattendedSettings?.assertStart({ recipe_id, dish_id });
   } else if (deps.mainDish) {
+    // Before the main dish can be made: a refused trigger makes no dish.
+    if (enabled) deps.unattendedSettings?.assertStart({ recipe_id, config_overlay: overlay });
     const main = deps.mainDish({ recipe_id, publisher_id, config_overlay: overlay });
     dish_id = main.dish.dish_id;
     // D-209 — a main dish made here can move the recipe's webhook door.
@@ -364,6 +372,13 @@ export const handleTriggersUpdate = async (
   }
   if (args.watch_interval_ms !== undefined) {
     patch.watch_interval_ms = requireWatchInterval(args.watch_interval_ms);
+  }
+  // Switched on, or moved to another dish while on: armed for that dish.
+  if (patch.enabled === true || patch.dish_id !== undefined) {
+    const before = deps.store.get(trigger_id);
+    if (before && (patch.enabled ?? before.enabled)) {
+      deps.unattendedSettings?.assertStart({ recipe_id: before.recipe_id, dish_id: patch.dish_id ?? before.dish_id ?? null });
+    }
   }
 
   const updated = deps.store.update(trigger_id, patch);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveDeep } from '@recued/contracts';
+import { collectFormValueRefs, collectWholeFormRecordRefs, resolveDeep } from '@recued/contracts';
 import type { IngredientExecutor, ExecutionContext } from '../types.js';
 import { runStep, MAX_CONTEXT_BYTES } from '../step-runner.js';
 
@@ -11,6 +11,58 @@ const mkCtx = (override: Partial<ExecutionContext> = {}): ExecutionContext => ({
   },
   ingredientExecutor: async () => ({}),
   ...override,
+});
+
+describe('form batch analysis matches engine bindings', () => {
+  const records = [
+    { submission_id: 's1', values: { full_name: 'Ada', private_note: 'visitor secret' } },
+    { submission_id: 's2', values: { full_name: 'Bo', private_note: 'another secret' } },
+  ];
+  const pending = { id: 'pending', ingredient: 'form-response-list', input: { endpoint_id: 'door' } };
+  const context = () => {
+    const ctx = mkCtx();
+    ctx.ingredientExecutor = async (slug, input) => {
+      if (slug === 'form-response-list') return { records };
+      const resolved = resolveDeep(input, ctx.stores) as Record<string, unknown>;
+      return { record: records.find((row) => row.submission_id === resolved.submission_id) };
+    };
+    return ctx;
+  };
+  const run = async (steps: unknown[], ctx: ExecutionContext) => {
+    for (const step of steps) {
+      const log = await runStep(step as Parameters<typeof runStep>[0], ctx);
+      expect(log.error).toBeNull();
+    }
+    return ctx.stores.step as Record<string, unknown>;
+  };
+
+  it('reads named answers from real foreach envelopes and serializes only the map projection', async () => {
+    const steps = [pending,
+      { id: 'details', ingredient: 'form-response-get', foreach: '{{step.pending.records}}', input: { submission_id: '{{item.submission_id}}' } },
+      { id: 'answered', transform: 'filter', array: '{{step.details}}', field: 'ok', operator: 'equal', value: true },
+      { id: 'names', transform: 'map', array: '{{step.answered}}', expression: { full_name: '{{item.result.record.values.full_name}}' } },
+      { id: 'body', transform: 'json_stringify', input: '{{step.names}}' },
+    ];
+    expect(collectFormValueRefs({ steps })).toEqual(['full_name']);
+    expect(collectWholeFormRecordRefs({ steps })).toEqual([]);
+    const stores = await run(steps, context());
+    expect(JSON.parse(stores.body as string)).toEqual([{ full_name: 'Ada' }, { full_name: 'Bo' }]);
+    const envelopes = stores.details as Array<{ result: { record: typeof records[number] }; item: typeof records[number] }>;
+    expect(envelopes[0]?.result.record.values.private_note).toBe('visitor secret');
+    expect(envelopes[0]?.item.values.private_note).toBe('visitor secret');
+    expect(stores.body).not.toContain('secret');
+  });
+
+  it('resolves a nested map array against the outer item and its expression against each inner record', async () => {
+    const steps = [pending,
+      { id: 'groups', transform: 'default', value: [{ children: '{{step.pending.records}}' }], fallback: [] },
+      { id: 'names', foreach: '{{step.groups}}', transform: 'map', array: '{{item.children}}', expression: '{{item.values.full_name}}' },
+    ];
+    expect(collectFormValueRefs({ steps })).toEqual(['full_name']);
+    expect(collectWholeFormRecordRefs({ steps })).toEqual([]);
+    const stores = await run(steps, context());
+    expect(stores.names).toEqual([{ ok: true, result: ['Ada', 'Bo'], item: { children: records } }]);
+  });
 });
 
 describe('step-level foreach', () => {

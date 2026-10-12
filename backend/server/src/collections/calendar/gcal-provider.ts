@@ -1,3 +1,4 @@
+import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../managed-oauth-consumers.js';
 /** D-117 Phase 3 — Google Calendar adapter.
  *
  *  Implements `CalendarProvider` against the Google Calendar API v3
@@ -66,6 +67,7 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
+import { oauthAuthorizationHeaders } from '../mail/oauth.js';
 import {
   startDrainingInterval,
   type ProviderPollScheduler,
@@ -98,6 +100,8 @@ export interface CreateGcalProviderOptions {
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler so suites don't wait
@@ -407,7 +411,7 @@ export const createGcalProvider = (
   opts: CreateGcalProviderOptions,
 ): CalendarProvider => {
   const fetcher: HttpFetcher =
-    opts.fetcher ?? defaultHttpFetcher;
+    opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let lastSuccessfulSyncAt = 0;
@@ -419,7 +423,8 @@ export const createGcalProvider = (
   const syncTokenKey = (calendarId: string): string =>
     `${keyPrefix('gcal', opts.config.account_slug)}.sync_token.${calendarIdKeySuffix(calendarId)}`;
 
-  const ensureToken = async (force: boolean): Promise<string> => {
+  const ensureToken = async (force: boolean): Promise<string | undefined> => {
+    if (opts.managedFetcher) return undefined;
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
       provider: 'gcal',
@@ -448,13 +453,13 @@ export const createGcalProvider = (
     let token = await ensureToken(false);
     let res = await fetcher(url, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...oauthAuthorizationHeaders(token) },
     });
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       res = await fetcher(url, {
         method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { ...oauthAuthorizationHeaders(token) },
       });
     }
     if (!res.ok) {
@@ -472,7 +477,7 @@ export const createGcalProvider = (
   ): Promise<T | null> => {
     let token = await ensureToken(false);
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
+      ...oauthAuthorizationHeaders(token),
     };
     let payload: string | undefined;
     if (body !== undefined) {
@@ -480,10 +485,10 @@ export const createGcalProvider = (
       payload = JSON.stringify(body);
     }
     let res = await fetcher(url, { method, headers, body: payload });
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       const retryHeaders: Record<string, string> = {
-        Authorization: `Bearer ${token}`,
+        ...oauthAuthorizationHeaders(token),
       };
       if (payload) retryHeaders['Content-Type'] = 'application/json';
       res = await fetcher(url, { method, headers: retryHeaders, body: payload });
@@ -1025,9 +1030,12 @@ export const createGcalProvider = (
 // ────────────────────────────────────────────────────────────────
 
 export interface CreateGcalAdapterFactoryOptions {
+  managedOAuth?: ManagedOAuthConsumers;
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
@@ -1072,12 +1080,12 @@ const probeGcalCaps = async (
   opts: CreateGcalAdapterFactoryOptions,
 ): Promise<ProbedCalendarCaps> => {
   const fetcher: HttpFetcher =
-    opts.fetcher ?? defaultHttpFetcher;
+    opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   // Resolve a usable access token (refreshing if needed) so auth bugs
   // surface at enroll time, not on the first sync tick. Cache hits are
   // fine — the subsequent calendarList.list call validates the token
   // end-to-end anyway.
-  const token = await getAccessToken({
+  const token = opts.managedFetcher ? undefined : await getAccessToken({
     provider: 'gcal',
     slug: cfg.account_slug,
     providerConfig: requireProviderConfig(opts.providerConfig),
@@ -1089,7 +1097,7 @@ const probeGcalCaps = async (
     `${GCAL_API_BASE}/users/me/calendarList?maxResults=1`,
     {
       method: 'GET',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { ...oauthAuthorizationHeaders(token) },
     },
   );
   if (!res.ok) {
@@ -1116,7 +1124,12 @@ export const createGcalAdapterFactory = (
   kind: 'gcal',
   async probeCaps(ctx: CalendarAdapterContext) {
     const cfg = parseGcalConfig(ctx.config);
-    return probeGcalCaps(cfg, opts);
+    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'gcal', ctx.config.managed_oauth);
+    const caps = await probeGcalCaps(cfg, { ...opts, ...(managedFetcher ? { managedFetcher } : {}) });
+    if (managedFetcher && ctx.config.managed_write_enabled !== true) {
+      return { ...caps, create_event: 'no', update_event: 'no', delete_event: 'no', rsvp: 'no' };
+    }
+    return caps;
   },
   create(ctx: CalendarAdapterContext): CalendarProvider {
     const cfg = parseGcalConfig(ctx.config);
@@ -1126,6 +1139,7 @@ export const createGcalAdapterFactory = (
       accountStore: opts.accountStore,
       providerConfig: opts.providerConfig,
       fetcher: opts.fetcher,
+      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'gcal', ctx.config.managed_oauth) ?? opts.managedFetcher,
       now: opts.now,
       log: opts.log ?? ctx.log,
       scheduler: opts.scheduler,

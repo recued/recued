@@ -47,6 +47,7 @@
 export const RECEPTION_SECTIONS = [
   { id: 'inbox', label: 'Inbox' },
   { id: 'records', label: 'Records' },
+  { id: 'signoffs', label: 'Customer sign-offs' },
   { id: 'abuse', label: 'Abuse' },
   { id: 'endpoints', label: 'Endpoints' },
 ] as const;

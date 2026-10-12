@@ -37,7 +37,7 @@ import {
   renderSourceDropdown,
 } from './source-dropdown.js';
 import { renderWorkEntityListView } from './list-view.js';
-import { renderWorkEntityDialog } from './dialog.js';
+import { renderWorkEntityDialog, type WorkEntityDialogProps } from './dialog.js';
 
 export interface WorkEntityPageProps {
   state: WorkEntityPageState;
@@ -73,6 +73,7 @@ export interface WorkEntityPageProps {
   /** D-267 — pre-rendered provenance feed for the open EDIT dialog. Passed
    *  straight through; the page knows nothing about its contents. */
   history_html?: string;
+  task_completion?: WorkEntityDialogProps['task_completion'];
 }
 
 export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
@@ -132,6 +133,8 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           sources: props.source_options,
           ref_picker: props.ref_picker === true,
           discard_guard: props.discard_guard === true,
+          ...(props.task_completion !== undefined
+            ? { task_completion: props.task_completion } : {}),
           ...(props.history_html !== undefined
             ? { history_html: props.history_html }
             : {}),

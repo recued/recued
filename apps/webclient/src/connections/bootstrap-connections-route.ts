@@ -123,6 +123,7 @@ import type {
   SetOAuthAppConfigArgs,
 } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
+import { createManagedOAuthPanel, type ManagedOAuthPanelContext } from '../settings/managed-oauth-panel.js';
 
 export const CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR =
   'data-recued-connections-route-grants';
@@ -141,6 +142,8 @@ export const CONNECTIONS_ROUTE_CONTENT_ATTR =
   'data-recued-connections-route-content';
 export const CONNECTIONS_ROUTE_UNAVAILABLE_ATTR =
   'data-recued-connections-route-unavailable';
+/** D-322 — broker management stays within Apps & APIs. */
+export const CONNECTIONS_MANAGE_BROKERS_ATTR = 'data-recued-connections-manage-brokers';
 export const CONNECTIONS_CREDENTIAL_ROTATION_RETRY_SEGMENT =
   'retry-credential-rotation';
 export const CONNECTIONS_POST_SAFE_STOP_RECOVERY_SEGMENT =
@@ -518,6 +521,8 @@ export interface BootstrapConnectionsRouteOptions {
   /** Boot-owned safe guide carrier shared by route remounts. */
   providerSetupContinuity?: ProviderSetupContinuityStore;
   connectionsStartVendorOAuthCaller?: ConnectionsStartVendorOAuthCaller;
+  /** D-322 — optional managed OAuth broker RPC. */
+  connectionsManagedOAuthCaller?: import('../settings/managed-oauth-panel.js').ManagedOAuthCaller;
   /** R26.2 Option B — the pure code-exchange rpc, so a loopback PWA can finish
    *  a vendor OAuth dance without a public HTTPS server URL. */
   connectionsCompleteVendorOAuthCaller?: ConnectionsCompleteVendorOAuthCaller;
@@ -638,7 +643,7 @@ export const bootstrapConnectionsRoute = (
         opts.initialAddress.slug,
       )
     : opts.initialAddress?.kind === 'enroll'
-      ? connectionsEnrollAddress(opts.initialAddress.vendor)
+      ? connectionsEnrollAddress(opts.initialAddress.vendor, opts.initialAddress.pack)
       : connectionsLaneAddress(activeTab);
   const connectionsHistory = createHierarchicalHistory({
     initial: opts.initialAddress !== undefined
@@ -706,6 +711,7 @@ export const bootstrapConnectionsRoute = (
 
   let accountsPanel: AccountsLanePanelMount | null = null;
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
+  let brokerPanel: ReturnType<typeof createManagedOAuthPanel> | null = null;
   let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
 
@@ -739,6 +745,9 @@ export const bootstrapConnectionsRoute = (
       ...(opts.mail !== undefined ? { mail: opts.mail } : {}),
       ...(opts.calendar !== undefined ? { calendar: opts.calendar } : {}),
       ...(opts.file !== undefined ? { file: opts.file } : {}),
+      ...(opts.connectionsEnrollListCaller !== undefined
+        ? { listManagedConnections: opts.connectionsEnrollListCaller } : {}),
+      onOpenManagedConnections: () => navigate('#connections/others'),
       ...(opts.getOAuthClientConfig !== undefined
         ? { getOAuthClientConfig: opts.getOAuthClientConfig }
         : {}),
@@ -808,6 +817,25 @@ export const bootstrapConnectionsRoute = (
       );
     }
   } else {
+    if (opts.connectionsManagedOAuthCaller !== undefined) {
+      const section = doc.createElement('section');
+      const button = doc.createElement('button');
+      button.type = 'button'; button.textContent = 'Manage OAuth brokers';
+      button.className = 'rx-btn rx-btn-outline rx-btn-sm';
+      button.setAttribute(CONNECTIONS_MANAGE_BROKERS_ATTR, '');
+      button.setAttribute('aria-expanded', 'false');
+      const editor = doc.createElement('div'); editor.hidden = true;
+      const context: ManagedOAuthPanelContext = { enabled: false, mode: 'create', name: '', base_url: '',
+        scopes: [], profile_id: '', integration_id: '' };
+      brokerPanel = createManagedOAuthPanel({ call: opts.connectionsManagedOAuthCaller, manageProfiles: true,
+        context: () => context, select: (profile, integration) => { context.profile_id = profile; context.integration_id = integration; },
+        authorized: () => {}, invalidate: () => {}, changed: () => brokerPanel?.mount(editor) });
+      button.addEventListener('click', () => {
+        context.enabled = true; editor.hidden = false; button.disabled = true;
+        button.setAttribute('aria-expanded', 'true'); brokerPanel?.mount(editor);
+      });
+      section.appendChild(button); section.appendChild(editor); content.appendChild(section);
+    }
     const canMountEnroll =
       opts.connectionsEnrollListCaller !== undefined
       && opts.connectionsEnrollCaller !== undefined
@@ -928,6 +956,7 @@ export const bootstrapConnectionsRoute = (
         ...(opts.connectionsStartVendorOAuthCaller !== undefined
           ? { runStartVendorOAuth: opts.connectionsStartVendorOAuthCaller }
           : {}),
+        ...(opts.connectionsManagedOAuthCaller !== undefined ? { runManagedOAuth: opts.connectionsManagedOAuthCaller } : {}),
         ...(opts.connectionsTakeVendorOAuthResultCaller !== undefined
           ? { runTakeVendorOAuthResult: opts.connectionsTakeVendorOAuthResultCaller }
           : {}),
@@ -938,6 +967,8 @@ export const bootstrapConnectionsRoute = (
         ...(initialEnrollVendor !== undefined
           ? { initialVendor: initialEnrollVendor }
           : {}),
+        ...(opts.initialAddress?.kind === 'enroll' && opts.initialAddress.pack !== undefined
+          ? { initialPack: opts.initialAddress.pack } : {}),
         ...(opts.initialCredentialRotationServerUpdateRetry !== undefined
           ? {
               initialCredentialRotationServerUpdateRetry:
@@ -1088,6 +1119,7 @@ export const bootstrapConnectionsRoute = (
   let disposed = false;
   const hasInFlightWork = (): boolean =>
     (accountsPanel?.hasInFlightWork() ?? false)
+    || (brokerPanel?.busy() ?? false)
     || (connectionsEnroll?.hasInFlightWork() ?? false)
     || (connectionsGrant?.hasInFlightWork() ?? false)
     || (webhooksPanel?.hasInFlightWork() ?? false);
@@ -1138,9 +1170,11 @@ export const bootstrapConnectionsRoute = (
         }
       : {}),
     hasUnsavedChanges: () =>
-      connectionsEnroll?.hasUnsavedChanges() ?? false,
+      (brokerPanel?.hasDraft() ?? false) || (connectionsEnroll?.hasUnsavedChanges() ?? false),
     unsavedChangesPrompt: () =>
-      connectionsEnroll?.unsavedChangesPrompt() ?? null,
+      brokerPanel?.hasDraft() === true
+        ? 'Discard this OAuth broker setup? Credential fields are not saved in your browser and cannot be restored after leaving.'
+        : connectionsEnroll?.unsavedChangesPrompt() ?? null,
     hasInFlightWork,
     inFlightWorkPrompt: () =>
       hasInFlightWork()
@@ -1151,6 +1185,7 @@ export const bootstrapConnectionsRoute = (
       disposed = true;
       if (accountsPanel !== null) accountsPanel.dispose();
       if (connectionsEnroll !== null) connectionsEnroll.dispose();
+      brokerPanel?.dispose();
       if (webhooksPanel !== null) webhooksPanel.dispose();
       try {
         opts.root.removeChild(routeRoot);

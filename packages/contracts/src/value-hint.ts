@@ -17,15 +17,20 @@
  *  at registration (`collection.file.enroll`).
  *
  *  ⚠ THE AUTHORED SET RUNS AHEAD OF THIS UNION, and always has. Measured
- *  over `community/recipes/` on 2026-08-06 — 6,160 variable hints name a
+ *  over `community/recipes/` on 2026-10-10 — 4,841 variable hints name a
  *  type that is not a member below:
  *
- *      'string'      3,677 in 1,491 recipes
- *      'connection'  1,836 in 1,811 recipes
- *      'array'         591 in   359 recipes
- *      'object'         46 in    37 recipes
- *      'json'           10 in     9 recipes
- *      'long_text'       1 in     1 recipes
+ *      'string'      4,114 in 1,672 recipes
+ *      'array'         639 in   395 recipes
+ *      'object'         47 in    38 recipes
+ *      'connection'     15 in    15 recipes
+ *      'json'           15 in    14 recipes
+ *      'long_text'      11 in     5 recipes
+ *
+ *  `'connection'` was 1,836 on 2026-08-06, second only to `'string'`: D-320
+ *  took the API connection settings out of the shipped recipes (a recipe
+ *  names no connection; a run gives each step its slot's setting). The 15
+ *  left are mail sender (`notification`) settings and kindless peer ones.
  *
  *  ⚠ `'long_text'` (2026-08-22) is the newest member of that set and the only
  *  one whose renderer branch already exists: `variable-widgets.ts` maps it to a
@@ -43,12 +48,12 @@
  *
  *  ⛔ SO DO NOT ADD ONE MEMBER TO CLOSE A TYPECHECK LANE. `'connection'`
  *  is the obvious candidate — this note used to name it first — and
- *  declaring it alone closes 29% of the gap while leaving `'string'`
- *  undeclared in 1,491 recipes, so a lane blocked by this stays blocked
- *  on the identical error. A member added without a renderer branch also
- *  asserts support that D-222 § 7 says is a text fallback. Declare all
- *  five WITH their renderers, or leave the cast; a partial union is the
- *  worst of the two.
+ *  declaring it alone closes 0.3% of the gap (29% before D-320) while
+ *  leaving `'string'` undeclared in 1,672 recipes, so a lane blocked by
+ *  this stays blocked on the identical error. A member added without a
+ *  renderer branch also asserts support that D-222 § 7 says is a text
+ *  fallback. Declare all five WITH their renderers, or leave the cast; a
+ *  partial union is the worst of the two.
  *
  *  (Superseded text named `'service_ref'`, which no recipe authors, and
  *  omitted `'string'` — the largest gap, by 2×.) */

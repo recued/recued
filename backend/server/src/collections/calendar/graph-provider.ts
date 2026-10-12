@@ -1,3 +1,4 @@
+import { managedOAuthFetcherFor, type ManagedOAuthConsumers } from '../../managed-oauth-consumers.js';
 /** D-117 Phase 4 — Microsoft Graph calendar adapter.
  *
  *  Implements `CalendarProvider` against the Graph REST API directly —
@@ -70,6 +71,7 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
+import { oauthAuthorizationHeaders } from '../mail/oauth.js';
 import {
   startDrainingInterval,
   type ProviderPollScheduler,
@@ -95,6 +97,8 @@ export interface CreateGraphCalProviderOptions {
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler. Production uses
@@ -386,7 +390,7 @@ export const createGraphCalProvider = (
   opts: CreateGraphCalProviderOptions,
 ): CalendarProvider => {
   const fetcher: HttpFetcher =
-    opts.fetcher ?? defaultHttpFetcher;
+    opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let lastSuccessfulSyncAt = 0;
@@ -398,7 +402,8 @@ export const createGraphCalProvider = (
   const deltaLinkKey = (calendarId: string): string =>
     `${keyPrefix('graph', opts.config.account_slug)}.cal_delta_link.${calendarIdKeySuffix(calendarId)}`;
 
-  const ensureToken = async (force: boolean): Promise<string> => {
+  const ensureToken = async (force: boolean): Promise<string | undefined> => {
+    if (opts.managedFetcher) return undefined;
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
       provider: 'graph',
@@ -420,8 +425,8 @@ export const createGraphCalProvider = (
   };
 
   /** Shared headers: bearer + UTC-normalised datetimes. */
-  const graphHeaders = (token: string): Record<string, string> => ({
-    Authorization: `Bearer ${token}`,
+  const graphHeaders = (token: string | undefined): Record<string, string> => ({
+    ...oauthAuthorizationHeaders(token),
     Prefer: 'outlook.timezone="UTC"',
   });
 
@@ -429,7 +434,7 @@ export const createGraphCalProvider = (
     const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph calendar');
     let token = await ensureToken(false);
     let res = await fetcher(safeUrl, { method: 'GET', headers: graphHeaders(token) });
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       res = await fetcher(safeUrl, {
         method: 'GET',
@@ -458,7 +463,7 @@ export const createGraphCalProvider = (
       payload = JSON.stringify(body);
     }
     let res = await fetcher(url, { method, headers, body: payload });
-    if (res.status === 401) {
+    if (res.status === 401 && !opts.managedFetcher) {
       token = await ensureToken(true);
       const retryHeaders: Record<string, string> = graphHeaders(token);
       if (payload) retryHeaders['Content-Type'] = 'application/json';
@@ -1042,9 +1047,12 @@ export const createGraphCalProvider = (
 // ────────────────────────────────────────────────────────────────
 
 export interface CreateGraphCalAdapterFactoryOptions {
+  managedOAuth?: ManagedOAuthConsumers;
   accountStore: OAuthAccountStore;
   providerConfig: OAuthProviderConfigSource;
   fetcher?: HttpFetcher;
+  /** D-322: broker-owned OAuth; no local access token or 401 replay. */
+  managedFetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   scheduler?: ProviderPollScheduler;
@@ -1085,8 +1093,8 @@ const probeGraphCalCaps = async (
   opts: CreateGraphCalAdapterFactoryOptions,
 ): Promise<ProbedCalendarCaps> => {
   const fetcher: HttpFetcher =
-    opts.fetcher ?? defaultHttpFetcher;
-  const token = await getAccessToken({
+    opts.managedFetcher ?? opts.fetcher ?? defaultHttpFetcher;
+  const token = opts.managedFetcher ? undefined : await getAccessToken({
     provider: 'graph',
     slug: cfg.account_slug,
     providerConfig: requireProviderConfig(opts.providerConfig),
@@ -1097,7 +1105,7 @@ const probeGraphCalCaps = async (
   const res = await fetcher(`${GRAPH_API_BASE}/me/calendars?$top=1`, {
     method: 'GET',
     headers: {
-      Authorization: `Bearer ${token}`,
+      ...oauthAuthorizationHeaders(token),
       Prefer: 'outlook.timezone="UTC"',
     },
   });
@@ -1125,7 +1133,12 @@ export const createGraphCalAdapterFactory = (
   kind: 'graph',
   async probeCaps(ctx: CalendarAdapterContext) {
     const cfg = parseGraphCalConfig(ctx.config);
-    return probeGraphCalCaps(cfg, opts);
+    const managedFetcher = managedOAuthFetcherFor(opts.managedOAuth, 'graph', ctx.config.managed_oauth);
+    const caps = await probeGraphCalCaps(cfg, { ...opts, ...(managedFetcher ? { managedFetcher } : {}) });
+    if (managedFetcher && ctx.config.managed_write_enabled !== true) {
+      return { ...caps, create_event: 'no', update_event: 'no', delete_event: 'no', rsvp: 'no' };
+    }
+    return caps;
   },
   create(ctx: CalendarAdapterContext): CalendarProvider {
     const cfg = parseGraphCalConfig(ctx.config);
@@ -1135,6 +1148,7 @@ export const createGraphCalAdapterFactory = (
       accountStore: opts.accountStore,
       providerConfig: opts.providerConfig,
       fetcher: opts.fetcher,
+      managedFetcher: managedOAuthFetcherFor(opts.managedOAuth, 'graph', ctx.config.managed_oauth) ?? opts.managedFetcher,
       now: opts.now,
       log: opts.log ?? ctx.log,
       scheduler: opts.scheduler,

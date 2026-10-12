@@ -321,6 +321,8 @@ export interface BodyFieldAuthEntry {
  *  and never touches credentials. The adapter (D-125 P3) is the only
  *  code path that decrypts and applies these. */
 export type ConnectionAuth =
+  // D-322 — native API operations, with credentials held by an owner-selected broker.
+  | import('./managed-oauth.js').ManagedOAuthAuth
   | { type: 'none' }
   | {
       type: 'bearer';
@@ -531,6 +533,7 @@ export const CONNECTION_AUTH_TYPES = [
   'header',
   'query',
   'oauth2_refresh',
+  'managed_oauth',
   'oauth2_client_credentials',
   'atproto_session',
   'request_signature',
@@ -1007,6 +1010,10 @@ export const connectionCredentialRejectionCorrection = (
     case 'none':
       fieldKeys = [];
       break;
+    case 'managed_oauth':
+      // D-322 — reconnect via the broker; there is no local vendor key to replace.
+      fieldKeys = [];
+      break;
   }
   return fieldKeys.length === 0
     ? null
@@ -1176,6 +1183,8 @@ export interface ConnectionView {
    * reuse this row. Secret fields remain excluded. List responses stamp this
    * after trusted decryption; resolver-only views may omit it. */
   auth_type?: ConnectionAuthType;
+  /** D-322 — Settings-only broker references, never an environment API key. */
+  managed_oauth?: Omit<import('./managed-oauth.js').ManagedOAuthAuth, 'authorization_receipt'>;
   subtype?: string;
   display_name: string;
   /** D-165 P3.path-picker — the connection's sub-resource scope

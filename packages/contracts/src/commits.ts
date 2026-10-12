@@ -802,7 +802,8 @@ export const standingClosureAdmits = (
    *  🔑 `'review_send'` deliberately still ADMITS. Its unattended relax IS the
    *  feature — a form's reply email running without a pause is the point — and
    *  D-192 F1 enumerates that asymmetry against the commitment lift on purpose.
-   *  Only the commitment lift is closure-proof. `'quality'` also still admits:
+   *  Commitment proposals and customer-accepted quote releases require their
+   *  own review. `'quality'` also still admits:
    *  it is not a meaning-bearing surface distinction.
    *
    *  ⚠ This costs the unattended-minting use case NOTHING, because it is
@@ -814,10 +815,10 @@ export const standingClosureAdmits = (
    *  shipped recipes name `core.work-entity.commitment.propose`, so this had
    *  never fired in production — it would have gone live the moment anyone
    *  bound a door recipe that proposes commitments. */
-  lift_reason: 'review_send' | 'review_commitment' | 'quality' | undefined,
+  lift_reason: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'quality' | undefined,
 ): boolean => {
   if (snapshot === undefined || operation_id === undefined) return false;
-  if (lift_reason === 'review_commitment') return false;
+  if (lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff') return false;
   const closure = snapshot.standing_closure_operation_ids;
   if (closure === undefined) return false;
   if (risk_tier === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk_tier)) {

@@ -615,6 +615,7 @@ export const isCheckpoint = (value: unknown): value is Checkpoint => {
         p.lift_reason !== undefined
         && p.lift_reason !== 'review_send'
         && p.lift_reason !== 'review_commitment'
+        && p.lift_reason !== 'review_quote_signoff'
         && p.lift_reason !== 'quality'
       ) return false;
     }

@@ -172,11 +172,12 @@ describe('connection-agnostic G2 numeric coercion', () => {
     expect(gatewayCalls.length).toBeGreaterThanOrEqual(1);
 
     const projected = stepResult(result, 'deals') as Array<Record<string, unknown>>;
+    // D-320 ruling 20 — each record also names the connection the search read.
     expect(projected).toEqual([
-      { name: 'Low', amount: 8000 },
-      { name: 'High', amount: 100000 },
-      { name: 'Empty', amount: null },
-      { name: 'Missing', amount: null },
+      { name: 'Low', amount: 8000, connection_name: 'hubspot1' },
+      { name: 'High', amount: 100000, connection_name: 'hubspot1' },
+      { name: 'Empty', amount: null, connection_name: 'hubspot1' },
+      { name: 'Missing', amount: null, connection_name: 'hubspot1' },
     ]);
     expect(typeof projected[0].amount).toBe('number');
     expect(typeof projected[1].amount).toBe('number');
@@ -191,8 +192,8 @@ describe('connection-agnostic G2 numeric coercion', () => {
     // discriminate here: evaluateOp Number()-coerces those, so a string amount
     // already compares numerically.)
     expect(withAmount).toEqual([
-      { name: 'Low', amount: 8000 },
-      { name: 'High', amount: 100000 },
+      { name: 'Low', amount: 8000, connection_name: 'hubspot1' },
+      { name: 'High', amount: 100000, connection_name: 'hubspot1' },
     ]);
   });
 });

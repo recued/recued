@@ -73,6 +73,7 @@ import {
   composeInstallConfigResolver,
   composeInstallConnectionsResolver,
   composeRecipeOpResolver,
+  unattendedConnectionProblem,
 } from '../recipe-capability-wiring.js';
 import {
   followMainDishWebhookDoors,
@@ -183,6 +184,7 @@ import { createDishAutomation } from '../dish-automation.js';
 import { mainDishFor } from '../dish-handler.js';
 import { bundledPacksShippingRecipe } from '../bundled-pack-source.js';
 import { startsOnItsOwn } from '@recued/contracts';
+import { createUnattendedSettingsGate } from '../unattended-settings-gate.js';
 import { deleteSchedule, listSchedules, updateSchedule } from '../schedule-handler.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import { switchOffUserTriggers } from '../triggers/handler.js';
@@ -415,6 +417,8 @@ export interface ComposeListenersOptions {
     | 'reconcileWorkEntitySourcesRef'
     | 'enrichmentCascadeRef'
     | 'connectionStoreRef'
+    | 'managedOAuth'
+    | 'managedOAuthConsumers'
     | 'contractGrantStoreRef'
     | 'connectionCatalogBindingStoreRef'
     | 'contractStoreRef'
@@ -2188,6 +2192,28 @@ export const composeListeners = async (
     if (eventTriggersBundle) eventTriggersBundle.triggersDeps.mainDish = mainDish;
     if (scheduleDeps) scheduleDeps.mainDish = mainDish;
     if (rpc.autoRunDeps) rpc.autoRunDeps.mainDish = mainDish;
+    // D-319 amendment (owner, 2026-10-11) — nothing that starts on its own is armed
+    // for a dish whose settings leave empty one its recipe needs: a schedule, a
+    // trigger, the timer, or the dish switched on or saved while on.
+    const dishes = dishDeps;
+    const unattendedSettings = createUnattendedSettingsGate({
+      recipeOf: (recipe_id) => execution.executeDeps.recipeStore.get(recipe_id),
+      dishOf: (dish_id) => dishes.store.get(dish_id),
+      mainDishOf: (recipe_id) => dishes.store.getDefault(recipe_id),
+      groupOverlayOf: (group_id) => dishes.groupStore?.get(group_id)?.config_overlay,
+      ownRowsOf: (dish_id) => dishes.automation?.ownRows?.(dish_id) ?? 0,
+      // The run's own connection rules (`settleDoorConnections`, as a run on its own).
+      connectionProblemOf: ({ recipe, config, dish }) => unattendedConnectionProblem(recipe, config, {
+        ...execution.executeDeps,
+        dishChoices: dish?.connections !== undefined && Object.keys(dish.connections).length > 0
+          ? { choices: dish.connections, label: dish.label }
+          : null,
+      }),
+    });
+    dishDeps.unattendedSettings = unattendedSettings;
+    if (eventTriggersBundle) eventTriggersBundle.triggersDeps.unattendedSettings = unattendedSettings;
+    if (scheduleDeps) scheduleDeps.unattendedSettings = unattendedSettings;
+    if (rpc.autoRunDeps) rpc.autoRunDeps.unattendedSettings = unattendedSettings;
   }
   if (watchBundle && execution.executeDeps.connectionStore) {
     execution.executeDeps.connectionStore.addOnUpsert(() => watchBundle.manager.recompute());
@@ -3427,6 +3453,9 @@ export const composeListeners = async (
                   },
                 }
               : {}),
+            // D-322 — the execution context uses this same live broker service.
+            ...(app.managedOAuth ? { managedOAuth: app.managedOAuth } : {}),
+            ...(app.managedOAuthConsumers ? { assertCollectionUnreferenced: app.managedOAuthConsumers.assertUnreferenced } : {}),
             // R2 build step 4c.4 — enroll/delete/grant/revoke fan a fresh
             // runnability snapshot after the mutation commits.
             ...(recipeRunnabilityBroadcaster

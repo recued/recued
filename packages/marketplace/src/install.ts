@@ -66,6 +66,13 @@ export interface BulkPackInstallRecipe {
     recipe: RecipeDefinition;
   } | null;
   failure?: 'not_found' | 'version_drift' | 'fetch_error';
+  /** D-320 — the server's install left this recipe's vendor-neutral op-steps
+   *  (`core.crm.*` / `core.acct.*`) unbound, as authored: its pack has no vendor of
+   *  its own to bind them to, and each run binds them to the connection it settles.
+   *  Set only by the server install path that decided so (its op-step resolution,
+   *  `resolvePackOpStepRecipes`). The op-step safety net below admits this row's
+   *  op-steps and refuses every other row's, as before. */
+  op_steps_resolved_at_run?: true;
 }
 
 /** Pack-level inputs the engine needs from the manifest. Mirrors the
@@ -632,10 +639,14 @@ export const installBulkPack = async (
     // resolves bundled op-step recipes against the pack's composition). Reject
     // loudly rather than install an unrunnable recipe — closes the "validator
     // opens → this path silently persists unresolved op-steps" gap (A3).
+    // D-320 — except a row the server's install marked: a pack with no vendor of
+    // its own, whose vendor-neutral op-steps each run binds. This net cannot tell
+    // that recipe from one a caller forgot to resolve, so it reads the decision
+    // off the row (`op_steps_resolved_at_run`); an unmarked row is refused as before.
     const unresolvedOpStep =
       (def.steps ?? []).some(isCanonicalOpStep)
       || (def.prefetch_steps ?? []).some((s) => isCanonicalOpStep(s as unknown as RecipeStep));
-    if (unresolvedOpStep) {
+    if (unresolvedOpStep && resolved.op_steps_resolved_at_run !== true) {
       return rollback({
         code: 'validator_rejected',
         message: `Recipe '${row.recipe_id}' contains an unresolved canonical op-step — connection-agnostic recipes must be resolved to a concrete pack binding at install`,

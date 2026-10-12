@@ -494,6 +494,60 @@ const withSenderFill = (schema: Record<string, unknown>): Record<string, unknown
  *  invents recipe-config field names. Credential variables are dropped
  *  (see `variableToArgProp`); keys are sorted for the deterministic-
  *  projection ratchet. */
+/** Whether `condition` holds whenever `{{config.<key>}}` is empty: the setting's
+ *  own `is_empty`, a `compare` of it `is_not_empty` read as false (or `is_empty`
+ *  read as true), or, one level down, an `any` one of whose conditions is either. */
+const holdsWhenEmpty = (
+  condition: unknown,
+  key: string,
+  byId: ReadonlyMap<string, Record<string, unknown>>,
+  depth: number,
+): boolean => {
+  if (typeof condition !== 'string') return false;
+  const text = condition.trim();
+  if (text === `{{config.${key}}} is_empty`) return true;
+  const read = /^\{\{step\.([A-Za-z0-9_-]+)\}\}\s+(equal|not_equal)\s+(true|false)$/.exec(text);
+  const target = read ? byId.get(read[1]!) : undefined;
+  if (!read || target === undefined) return false;
+  // The condition holds when the step's value is `true` (else when it is `false`).
+  const whenTrue = (read[2] === 'equal') === (read[3] === 'true');
+  if (target.transform === 'compare' && target.left === `{{config.${key}}}`) {
+    if (target.operator === 'is_not_empty') return !whenTrue;
+    if (target.operator === 'is_empty') return whenTrue;
+    return false;
+  }
+  return depth > 0 && whenTrue && target.transform === 'any' && Array.isArray(target.conditions)
+    && target.conditions.some((inner) => holdsWhenEmpty(inner, key, byId, depth - 1));
+};
+
+/** The value of a step's boolean at which a `guard` or `fail_on` that reads it
+ *  (`{{step.<id>}} equal|not_equal true|false`) refuses the run; `undefined` when
+ *  none reads it so. */
+const refusingValueOf = (
+  steps: ReadonlyArray<Record<string, unknown>>,
+  id: string,
+): boolean | undefined => {
+  for (const step of steps) {
+    for (const field of ['guard', 'fail_on'] as const) {
+      const check = step[field];
+      if (typeof check !== 'string') continue;
+      const read = /^\{\{step\.([A-Za-z0-9_-]+)\}\}\s+(equal|not_equal)\s+(true|false)$/.exec(check.trim());
+      if (read !== null && read[1] === id) return (read[2] === 'equal') === (read[3] === 'true');
+    }
+  }
+  return undefined;
+};
+
+/** A step skipped whenever the setting is empty: a check on it there never
+ *  refuses the run. The shipped "draft only" idiom — `has_sender` (a compare
+ *  `is_not_empty`) → `skip_send` (an `any`) → the send's `skip_when`, with a
+ *  `fail_on` behind it that an empty sender never reaches. */
+const skippedWhenEmpty = (
+  step: Record<string, unknown>,
+  key: string,
+  byId: ReadonlyMap<string, Record<string, unknown>>,
+): boolean => holdsWhenEmpty(step.skip_when, key, byId, 1);
+
 /** Variables a GUARD refuses the run without — i.e. genuinely required, whatever
  *  the declaration says.
  *
@@ -514,6 +568,20 @@ const withSenderFill = (schema: Record<string, unknown>): Record<string, unknown
  *  ⚠ ONE HOP, because every real case routes through a named boolean: an `all`
  *  transform collects the conditions, and a `guard` step reads that boolean. A
  *  check that looked only at direct references would miss all of them.
+ *
+ *  ⚠ ONLY A CHECK THAT REFUSES WHEN THE SETTING IS EMPTY, read the way the guard
+ *  reads it: `{{config.x}} is_empty` on a guard or `fail_on`; an `all` holding
+ *  `is_not_empty` that a guard refuses when FALSE; an `any` holding `is_empty`
+ *  that a guard refuses when TRUE. A guard that refuses when the setting is GIVEN
+ *  (two peer-project recipes refuse a target date given together with "clear
+ *  it") made it required before, and the owner's catalog told the model so
+ *  (2026-10-11). Any other shape is not read as a requirement.
+ *
+ *  ⚠ NOT A CHECK ON A STEP SKIPPED WHEN THE SETTING IS EMPTY ({@link skippedWhenEmpty}).
+ *  3 shipped send recipes skip the send when "Send from" is empty, which makes
+ *  them draft-only, and put a `fail_on` on the send that an empty value never
+ *  reaches; counting it made the setting required where the recipe runs without
+ *  it (2026-10-11, found ruling what a scheduled run needs).
  *
  *  Pure: same recipe → same set. Shared with the `variable_optional_but_required`
  *  validator rule rather than restated, so a schema and its warning can never
@@ -538,6 +606,8 @@ export const guardRequiredVariables = (
       if (typeof step.id === 'string') gating.add(step.id);
     }
   }
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const step of steps) if (typeof step.id === 'string') byId.set(step.id, step);
   const required = new Set<string>();
   for (const key of Object.keys(recipe.variables ?? {})) {
     // ⛔ A NON-EMPTY DEFAULT ALREADY SATISFIES THE GUARD, so requiredness is
@@ -562,11 +632,24 @@ export const guardRequiredVariables = (
         && JSON.stringify(step.conditions).includes(ref)
         && gating.has(id);
       if (!direct && !viaBoolean) continue;
-      // `is_not_empty` on the value, or a `fail_on` that trips when it IS empty.
-      const text = JSON.stringify([step.conditions, step.guard, step.fail_on]);
+      if (direct && !viaBoolean && skippedWhenEmpty(step, key, byId)) continue;
       const esc = ref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (new RegExp(`${esc}\\s+is_(not_)?empty`).test(text)) required.add(key);
-      break;
+      const refusesEmpty = direct
+        // A guard or `fail_on` of its own that trips when the setting IS empty.
+        ? new RegExp(`${esc}\\s+is_empty\\b`).test(JSON.stringify([step.guard, step.fail_on]))
+        : ((): boolean => {
+          // A boolean a guard reads: which way it refuses, and what this step says.
+          const refusesOn = refusingValueOf(steps, id);
+          const conditions = Array.isArray(step.conditions)
+            ? (step.conditions as unknown[]).filter((c): c is string => typeof c === 'string').map((c) => c.trim())
+            : [];
+          return (step.transform === 'all' && refusesOn === false && conditions.includes(`${ref} is_not_empty`))
+            || (step.transform === 'any' && refusesOn === true && conditions.includes(`${ref} is_empty`));
+        })();
+      if (refusesEmpty) {
+        required.add(key);
+        break;
+      }
     }
   }
   return required;

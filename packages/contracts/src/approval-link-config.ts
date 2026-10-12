@@ -64,6 +64,7 @@ import {
   validateVisitorReceiptConfig,
   type VisitorReceiptConfig,
 } from './visitor-receipt-config.js';
+import { QUOTE_SIGNOFF_CONTEXT_MAX } from './quote-signoff.js';
 
 // ────────────────────────────────────────────────────────────────
 // Closed-list bound constants
@@ -111,6 +112,7 @@ export const APPROVAL_LINK_ON_APPROVE_ACTIONS = [
   'mark_resolved',
   'create_commitment',
   'fire_recipe',
+  'quote_signoff',
 ] as const;
 
 export type ApprovalLinkOnApproveAction =
@@ -119,26 +121,31 @@ export type ApprovalLinkOnApproveAction =
 export const APPROVAL_LINK_ON_APPROVE_ACTION_SET: ReadonlySet<ApprovalLinkOnApproveAction> =
   new Set(APPROVAL_LINK_ON_APPROVE_ACTIONS);
 
-/** The actions the substrate can actually HONOUR, and therefore the only ones a
- *  new config may select or an authoring surface may offer.
+/** The actions the substrate can honour. `quote_signoff` is authored only
+ * through the dedicated frozen-quote surface; generic forms use the narrower
+ * AUTHORABLE list below.
  *
  *  `mark_resolved` / `fire_recipe` stay in the vocabulary above because rows
  *  written before this gate must still parse — but both route through the
  *  approval-link processor's `applyEffect` seam, which nothing supplies, so a
- *  consumption sits `pending` forever. An approval_link reaches the owner only
- *  via a held checkpoint and only `create_commitment` creates one, so the
- *  visitor's answer would be sealed into `reception_approval_intent` and surface
- *  nowhere — while the visitor is shown a success page.
+ *  consumption sits `pending` forever. Neither creates a held checkpoint, so
+ *  the visitor's answer would be sealed into `reception_approval_intent` and
+ *  surface nowhere while the visitor is shown a success page.
  *
  *  D-210 Phase C also retired the fields that named their targets, so neither is
  *  specifiable any more: `fire_recipe` has no recipe id, and `mark_resolved`'s
  *  target lives in a substrate `target_id` alone does not name.
  *
- *  ⚠ ONE list, consumed by both the validator and the authoring UI. Two copies
- *  would let the picker offer a value the write path refuses. */
+ * The authoring picker derives its narrower list from this supported list. */
 export const APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS = [
   'create_commitment',
+  'quote_signoff',
 ] as const satisfies readonly ApprovalLinkOnApproveAction[];
+
+/** Quote sign-offs are minted from a frozen quote by the dedicated owner
+ * surface. A generic approval form cannot choose or retarget that effect. */
+export const APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS =
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS.filter((action) => action !== 'quote_signoff');
 
 export type ApprovalLinkSupportedOnApproveAction =
   (typeof APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)[number];
@@ -438,10 +445,13 @@ export const validateApprovalLinkConfig = (
         code: 'context_summary_empty',
         detail: 'context_raw.summary must be non-empty',
       });
-    } else if ((ctx.summary as string).length > APPROVAL_LINK_CONTEXT_SUMMARY_MAX) {
+    } else if ((ctx.summary as string).length > (
+      (c.on_action as { on_approve_action?: unknown } | undefined)?.on_approve_action === 'quote_signoff'
+        ? QUOTE_SIGNOFF_CONTEXT_MAX : APPROVAL_LINK_CONTEXT_SUMMARY_MAX
+    )) {
       failures.push({
         code: 'context_summary_too_long',
-        detail: `context_raw.summary must be ≤ ${APPROVAL_LINK_CONTEXT_SUMMARY_MAX} characters`,
+        detail: 'context_raw.summary exceeds the action’s display limit',
       });
     }
     if (ctx.counterparty_aliases !== undefined) {
@@ -621,6 +631,9 @@ export const validateApprovalLinkConfig = (
         detail: `on_action.on_approve_action must be one of ${[...APPROVAL_LINK_ON_APPROVE_ACTION_SET].join(' | ')}`,
       });
     }
+    if (oa.on_approve_action === 'quote_signoff' && actionKind !== 'approve_wording') {
+      failures.push({ code: 'on_action_invalid', detail: 'Quote sign-off requires approve_wording (accept or reject).' });
+    }
     // ⛔ `mark_resolved` / `fire_recipe` are UNHONOURABLE, so refuse them at the
     // one write point rather than minting an endpoint that cannot work.
     //
@@ -629,7 +642,7 @@ export const validateApprovalLinkConfig = (
     // words ("Absent ⇒ review rows stay pending"). The processor is careful
     // about it: such a row is skipped without spending drain budget and stays
     // `pending` forever. But an approval_link reaches the owner ONLY through a
-    // held checkpoint, and only `create_commitment` creates one — so the
+    // held checkpoint, and neither unsupported action creates one — so the
     // visitor's answer is sealed into `reception_approval_intent` and surfaces
     // NOWHERE, while the visitor is shown a success page. Silent loss with a
     // success receipt is the worst available outcome.

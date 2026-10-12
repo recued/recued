@@ -25,7 +25,7 @@ const GOOGLE_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `google`, `gdrive`).',
+    help: 'A short lower-case name for this connection, such as `google` or `gdrive`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 'google',
   },
   {

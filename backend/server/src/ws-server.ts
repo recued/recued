@@ -1729,7 +1729,11 @@ const buildWsBinding = (
     : undefined;
   // D-320 slice 2b / 2e — a pack's connections, read by the Access page's block,
   // and checked when a dish chooses one of them.
-  const packConnectionsDeps = packConnectionsDepsFrom(packInstallDeps, connectionDeps);
+  const packConnectionsDeps = packConnectionsDepsFrom(packInstallDeps, connectionDeps, {
+    // D-320 ruling 20 — so a recipe's vendor-neutral family is listed, as the run picks.
+    operationProfiles: executeDeps?.connectionOperationProfiles,
+    localManifestStore: executeDeps?.localManifestStore,
+  });
   const { handlers, wiredMethods } = composeHandlers<ServerRpcRegistry, WsClient>([
     makeExecuteHandlers(executeDeps),
     makeExecutionControlHandlers(executionControlDeps),

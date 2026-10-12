@@ -18,14 +18,46 @@ describe('to_checklist', () => {
     expect(r.items[1]).toEqual({ label: 'B', status: 'ok', detail: 'fine' });
   });
 
-  it('handles null evaluation', () => {
-    const c = ctx({ evaluate: () => null as unknown as boolean });
+  // ⛔ This used to stub `evaluate` to return null, which the engine's evaluator never
+  // does, so it passed while no shipped `detail_null` could ever show. Unknown comes
+  // from what the row judges being missing; the real evaluator drives it in
+  // `packages/engine/src/__tests__/checklist-unknown-status.test.ts`.
+  it('is unknown when what it judges is missing: detail_null, never detail_ok, and no comparison', () => {
+    const evaluated: unknown[] = [];
+    const c = ctx({
+      resolve: (ref) => (ref === '{{step.days}}' ? null : 'present'),
+      evaluate: (cond) => { evaluated.push(cond); return true; },
+    });
     const r = to_checklist({
       title: 'T',
-      items: [{ label: 'X', issue: 'c', detail_ok: 'ok', detail_issue: 'bad', detail_null: 'n/a' }],
-    }, c) as { items: { status: string; detail: string }[] };
-    expect(r.items[0].status).toBe('null');
-    expect(r.items[0].detail).toBe('n/a');
+      items: [
+        { label: 'X', issue: '{{step.days}} greater 14', detail_ok: 'Last activity  days ago', detail_issue: 'bad', detail_null: 'No activity' },
+        { label: 'Y', issue: '{{step.days}} greater 14', detail_ok: 'Last activity  days ago', detail_issue: 'bad' },
+      ],
+    }, c) as { items: { label: string; status: string; detail?: string }[] };
+    expect(r.items[0]).toEqual({ label: 'X', status: 'null', detail: 'No activity' });
+    // No detail_null: the status says it; the detail_ok text would read the missing value.
+    expect(r.items[1]).toEqual({ label: 'Y', status: 'null', detail: undefined });
+    expect(evaluated).toEqual([]);
+  });
+
+  it('a row with no condition shows detail_ok, resolved once, or detail_null when a value it shows is missing', () => {
+    const values: Record<string, unknown> = { '{{step.opener}}': 'Ask about the launch', '{{step.count:number}}': null };
+    const c = ctx({
+      resolve: (ref) => (ref in values ? values[ref] : `resolved(${ref})`),
+      evaluate: () => { throw new Error('a row with no condition is never evaluated'); },
+    });
+    const r = to_checklist({
+      title: 'T',
+      items: [
+        { label: 'Opener', detail_ok: '{{step.opener}}', detail_null: 'No opener' },
+        { label: 'Count', detail_ok: '{{step.count:number}} objection(s) found', detail_null: 'Analysis unavailable' },
+        { label: 'Static', detail_ok: 'Always here' },
+      ],
+    }, c) as { items: { label: string; status: string; detail?: unknown }[] };
+    expect(r.items[0]).toEqual({ label: 'Opener', status: 'ok', detail: 'Ask about the launch' });
+    expect(r.items[1]).toEqual({ label: 'Count', status: 'null', detail: 'Analysis unavailable' });
+    expect(r.items[2]).toEqual({ label: 'Static', status: 'ok', detail: 'resolved(Always here)' });
   });
 
   it('passes action and actions through as output actions', () => {

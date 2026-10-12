@@ -7,6 +7,105 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.12 — 2026-10-12
+
+A customer can now accept a quote from a Reception link, and once you approve
+their answer, the quote is won and its task and invoice are created together. A
+connection can come through Nango, a broker you choose, instead of an OAuth app
+you register yourself. The shipped workflows no longer name a connection: each
+step signs in through its pack's connection, a search reads every connection that
+serves it, and a record is acted on in the connection it came from. A schedule,
+trigger or timer is no longer switched on for a dish that is missing a setting or
+a connection its workflow needs.
+
+⚠ Update Recued before you update your packs. Most shipped workflows changed
+shape in this release: a server older than 26.10.11 installs them and then
+refuses every run, and the HubSpot and Salesforce packs' maintenance workflows
+need this release. Servers older than 26.10.12 are told the update is urgent.
+The Invoice Book update needs this release too.
+
+⚠ Update Billable Hours before Invoice Book. Until both are updated, Invoice
+Book cannot mark the hours it pulled as billed or delete an hours item, and the
+pull run says so.
+
+⚠ A pre-approval of a workflow that works with any CRM or accounting service,
+reviewed on an older server, is refused when it runs. Review it again.
+
+### Added
+
+- **Customer sign-offs.** Reception can send a customer a fixed quote and scope
+  to accept or decline. Nothing is written until you review the answer, and
+  approving it wins the quote and creates one task and one invoice together. A
+  changed quote, an expired offer or a repeated answer is refused, and a release
+  waiting for you survives a restart. Added work asks the customer and you
+  again, adds to the same task and bills the extra amount on its own invoice.
+  From the sign-off you can follow the task and the invoice, complete or reopen
+  the task, and record payments. These are payments you enter: Recued collects
+  nothing.
+- **Managed OAuth through Nango.** Settings → Connections offers Managed OAuth
+  beside your own OAuth app. Save a Nango profile once (Nango Cloud or your own
+  Nango server; its key stays encrypted on your server), then authorize the
+  service, test and save. Manage OAuth brokers, under Apps & APIs, creates an
+  integration and reuses, reconnects or deletes an account. Mail and Calendar can
+  use such a connection. The broker holds the service's credentials and sees the
+  requests it passes on; Recued's cloud holds nothing, and your own OAuth app
+  still works. So far it has been tried live with Google Sheets and Outlook on
+  Nango Cloud.
+- **A pack or a workflow can say which Recued it needs**
+  (`min_recued_version`). A server older than that refuses it and says which
+  version to install. Servers before this release ignore the field.
+- **A dish can choose the CRM or accounting connection** of a workflow that works
+  with any of them. Left at "Any connection", a search reads every connection
+  and each record uses its own.
+
+### Changed
+
+- **The shipped workflows name no connection.** 1,922 workflows dropped their
+  connection setting, and each step signs in through its pack's connection.
+- **A search that works with any CRM or accounting service reads every
+  connection that serves it** when nobody chose one, so a scheduled CRM digest
+  runs with two CRMs. If one connection fails, the run fails.
+- **Every CRM record names the connection it came from** (`connection_name` and
+  `target_id`), and a step acts on a record in that connection when nobody chose
+  one.
+- **A schedule, a trigger or an auto-run timer is not switched on** for a dish
+  that leaves empty a setting its workflow needs, or whose run could not settle
+  its connection, and the refusal names what to fill in. A run that starts on its
+  own without them is refused before its first step.
+- **A checklist says when it cannot judge a row,** instead of showing a green
+  row with a blank in it.
+- **The Stage Prerequisites Checker** knows HubSpot's stage IDs and shows only
+  the current stage's requirements.
+- **Eight workflows and three packs no longer ask for `ai_summarize`,** a
+  permission that controlled nothing.
+- **The workflow validator** warns about a checklist key that does nothing,
+  condition text written under `values`, and form answers read through lists and
+  loops; three false warnings are gone.
+
+### Fixed
+
+- **Accounting workflows run on QuickBooks and Xero.** They installed and could
+  not run.
+- **The nine packs of workflows that work with any CRM or accounting service
+  install,** and a pack with more than 50 workflows installs from the web app.
+- **A record id of the wrong kind is refused.** A contact's id handed to a deal
+  step read the deal with the contact's number.
+- **Checks written under `values` decide again.** The Title X lead-paint check
+  flagged every deal; renewal, meeting-window and AI checks were always on; and
+  "Renewal Approaching" never showed.
+- **Billing past 200 entries.** Bill Period billed only the first 200 entries of
+  a month, and Pull Billable Hours could miss hours past one page, make a second
+  item for one hour, or leave a pulled hour billable twice.
+- **Eighteen workflows that check their own write** read the result again
+  instead of the cached "before".
+- **A Reception drop refused at once** no longer leaves an empty file behind
+  until the next restart.
+
+### Removed
+
+- **Analyze Deal (Gemini tab).** Use Next Best Actions or Deal 360°, which use
+  the server's AI. An installed copy stays.
+
 ## 26.10.11 — 2026-10-11
 
 Webhooks work again. From 26.10.6, every webhook delivery to a shipped workflow

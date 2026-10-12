@@ -20,6 +20,7 @@ import {
 
 import {
   CONNECTIONS_ROUTE_CONTENT_ATTR,
+  CONNECTIONS_MANAGE_BROKERS_ATTR,
   CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
   CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR,
   CONNECTIONS_ROUTE_DESCRIPTION_ATTR,
@@ -630,6 +631,29 @@ describe('Connections route (R13–R16 restructure)', () => {
 
     route.dispose();
     expect(root.children).toHaveLength(0);
+  });
+
+  it('opens broker management in Apps & APIs without enrollment and guards its credential draft (D-322)', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div');
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async (args) => {
+      if (args.action === 'profiles') return { action: 'profiles', profiles: [] };
+      throw new Error('Unexpected broker request');
+    });
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...enrollCallers(), connectionsManagedOAuthCaller: call });
+    await route.whenLoaded(); expect(call).not.toHaveBeenCalled();
+    const button = collectByAttr(root, CONNECTIONS_MANAGE_BROKERS_ATTR)[0]!; button.click();
+    for (let i = 0; i < 14; i += 1) await Promise.resolve();
+    expect(call).toHaveBeenCalledWith({ action: 'profiles' });
+    expect(route.connectionsEnrollPanel()!.getState().dialog.stage).toBe('closed');
+    const editor = button.parent!.children[1]!;
+    expect(editor.innerHTML).toContain('Manage the brokers');
+    clickAction(editor, { managedAction: 'add' });
+    fire(editor, 'input', { type: 'input', target: { tagName: 'INPUT', dataset: { managedField: 'key' }, value: 'private-broker-key' } });
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.unsavedChangesPrompt()).toContain('OAuth broker setup');
+    expect(route.unsavedChangesPrompt()).not.toContain('private-broker-key');
+    route.dispose(); expect(editor.listeners.get('input')).toEqual([]);
   });
 
   it('forwards an exact privacy-safe leave guard for a dirty connection editor', async () => {

@@ -139,6 +139,9 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.work-entity.note.update',
       'core.work-entity.project.create',
       'core.work-entity.project.update',
+      // Releasing an accepted quote also creates a task and invoice; the owner
+      // must review that combined write rather than granting it by default.
+      'core.work-entity.quote-signoff.release',
       // 2026-07-16 — the work graph (task/note/commitment/project) behind the
       // Tier-1 `work.search` / `work.read` tools. Their READ had no grant handle
       // at all while all 15 work-entity WRITES had one, so they were default-ON
@@ -160,6 +163,7 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
     expect(isOwnerDefaultOnlyEntry('core.data.form-response.set-state')).toBe(true);
     expect(isOwnerDefaultOnlyEntry('data.form_response')).toBe(true);
     expect(isOwnerDefaultOnlyEntry('core.webhook.event.get')).toBe(true);
+    expect(isOwnerDefaultOnlyEntry('core.work-entity.quote-signoff.release')).toBe(true);
     // a normal read op / collection / topic is NOT owner-only.
     expect(isOwnerDefaultOnlyEntry('core.mail.get')).toBe(false);
     expect(isOwnerDefaultOnlyEntry('data.mail')).toBe(false);
@@ -167,13 +171,14 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
   });
 
   it('ownerOnlyAdjustedAuthorDefault: owner + contract-free admit; a live door denies; non-members pass through', () => {
-    const SENS = 'core.audit.read';
     const NORMAL = 'core.mail.get';
     // sensitive: ON for the owner, ON for a contract-free ('') dispatch (owner-trust),
     // OFF for a live non-owner door — REGARDLESS of the permissive `normalDefault`.
-    expect(ownerOnlyAdjustedAuthorDefault(SENS, OWNER_CONTRACT_ID, false)).toBe(true);
-    expect(ownerOnlyAdjustedAuthorDefault(SENS, '', false)).toBe(true);
-    expect(ownerOnlyAdjustedAuthorDefault(SENS, 'ct-door', true)).toBe(false);
+    for (const sensitive of ['core.audit.read', 'core.work-entity.quote-signoff.release']) {
+      expect(ownerOnlyAdjustedAuthorDefault(sensitive, OWNER_CONTRACT_ID, false), sensitive).toBe(true);
+      expect(ownerOnlyAdjustedAuthorDefault(sensitive, '', false), sensitive).toBe(true);
+      expect(ownerOnlyAdjustedAuthorDefault(sensitive, 'ct-door', true), sensitive).toBe(false);
+    }
     expect(
       ownerOnlyAdjustedAuthorDefault(
         'core.data.form-response.get',

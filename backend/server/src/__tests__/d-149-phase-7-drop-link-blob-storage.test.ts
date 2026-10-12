@@ -10,7 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -123,14 +123,11 @@ describe('D-149 P7 § A.5.4 — writeDropBlobStream', () => {
         now: NOW,
       }),
     ).rejects.toThrow('size_cap_exceeded');
-    // Temp directory should not retain the partial blob — listing should
-    // be empty (or hold only the tmp directory itself).
-    try {
-      const tmpStat = statSync(join(root, '_tmp'));
-      expect(tmpStat.isDirectory()).toBe(true);
-    } catch {
-      // _tmp not even created — also acceptable.
-    }
+    // The partial scratch file is gone by the time the refusal returns. (This
+    // read `statSync` in a `try` whose `catch` also swallowed the `expect`, so it
+    // checked nothing, and the file was often left behind: see
+    // `d-149-phase-7-drop-blob-early-refusal.test.ts`.)
+    expect(readdirSync(join(root, '_tmp'))).toEqual([]);
   });
 
   it('content-hash dedup — two visitors uploading the same bytes share the same storage_path', async () => {

@@ -13,6 +13,11 @@
  *    if left alone: saving the form must not move a dish to another account;
  *  - else the pack's default; with none, "Choose one".
  *
+ *  D-320 ruling 20 — a recipe's vendor-neutral FAMILY (`crm`, `acct`) is a line too
+ *  (`family`), listing every connection of any vendor that can serve its steps. It
+ *  has no default, and unchosen is a real answer (a search reads every connection,
+ *  a step on a record takes the record's), so its empty option is "Any connection".
+ *
  *  A dish saves a line the owner moved, and a line that started on a choice or a
  *  setting (it was pinned, and stays pinned). A line left on the default it
  *  started on saves nothing, so the dish follows the pack's default. One run sends
@@ -28,6 +33,8 @@ export interface ConnectionLineSlot {
     readonly display_name: string;
     readonly is_default: boolean;
   }>;
+  /** A vendor-neutral family rather than a pack's slot (see the module comment). */
+  readonly family?: true;
 }
 
 /** Where a line started. */
@@ -92,7 +99,7 @@ export const connectionLines = (
       selected = theDefault;
       from = 'default';
     }
-    if (from === 'none') options.unshift({ value: '', label: 'Choose one' });
+    if (from === 'none') options.unshift({ value: '', label: slot.family === true ? 'Any connection' : 'Choose one' });
     return {
       slot: slot.slot,
       label: shown.length === 1 ? 'Connection' : `Connection — ${slot.slot}`,

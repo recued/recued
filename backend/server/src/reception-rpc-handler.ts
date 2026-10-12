@@ -287,6 +287,7 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface ReceptionRpcDeps {
+  readonly getQuoteSignoffService?: () => import('./quote-signoff-service.js').QuoteSignoffService;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getPreviewStore: () => PreviewHashStore;
   /** Source the active reception pepper. Throws when the FileVault is
@@ -427,6 +428,12 @@ export interface ReceptionPreflightEnableResult {
 }
 
 type ReceptionMethods =
+  | 'reception.signoff.quotes'
+  | 'reception.signoff.prepare'
+  | 'reception.signoff.prepare_addition'
+  | 'reception.signoff.publish'
+  | 'reception.signoff.list'
+  | 'reception.signoff.cancel'
   | 'reception.endpoints.list'
   | 'reception.endpoint.preview_draft'
   | 'reception.endpoint.create'
@@ -4312,6 +4319,12 @@ export const makeReceptionHandlers = (
   if (!deps) return undefined;
   return {
     methods: [
+      'reception.signoff.quotes',
+      'reception.signoff.prepare',
+      'reception.signoff.prepare_addition',
+      'reception.signoff.publish',
+      'reception.signoff.list',
+      'reception.signoff.cancel',
       'reception.endpoints.list',
       'reception.endpoint.preview_draft',
       'reception.endpoint.create',
@@ -4335,6 +4348,30 @@ export const makeReceptionHandlers = (
       'reception.compose.propose',
     ],
     handlers: {
+      'reception.signoff.quotes': async (_args, client) => {
+        const { handleSignoffQuotes } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffQuotes(deps, client);
+      },
+      'reception.signoff.prepare': async (args, client) => {
+        const { handleSignoffPrepare } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffPrepare(deps, args, client);
+      },
+      'reception.signoff.prepare_addition': async (args, client) => {
+        const { handleSignoffPrepareAddition } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffPrepareAddition(deps, args, client);
+      },
+      'reception.signoff.publish': async (args, client) => {
+        const { handleSignoffPublish } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffPublish(deps, args, client);
+      },
+      'reception.signoff.list': async (args, client) => {
+        const { handleSignoffList } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffList(deps, args, client);
+      },
+      'reception.signoff.cancel': async (args, client) => {
+        const { handleSignoffCancel } = await import('./quote-signoff-rpc-handler.js');
+        return handleSignoffCancel(deps, args, client);
+      },
       'reception.endpoints.list': async (args, client) =>
         handleReceptionEndpointsList(
           deps,

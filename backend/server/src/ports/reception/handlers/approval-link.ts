@@ -305,6 +305,7 @@ const describeApprovalOutcome = (
 // ────────────────────────────────────────────────────────────────
 
 export interface ApprovalLinkPacketHandlerDeps {
+  readonly checkQuoteSignoffLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getApprovalIntentStore: () => ApprovalIntentStore;
   readonly getApprovalLinkNonceStore: () => ApprovalLinkNonceStore;
@@ -354,6 +355,11 @@ export const createApprovalLinkPacketHandler = (
       return;
     }
 
+    if (config.on_action.on_approve_action === 'quote_signoff') {
+      const refusal = deps.checkQuoteSignoffLink?.(config, endpoint_id) ??
+        (deps.checkQuoteSignoffLink ? null : 'This quote sign-off is unavailable. Ask the business for a new link.');
+      if (refusal) { writeErrorPage(res, config.display_name, refusal, 409); return; }
+    }
     const now = deps.now();
     const expires_at = endpoint.expires_at ?? row.expires_at ?? null;
     const source = buildApprovalLinkSourceView(config, expires_at, now);
@@ -404,12 +410,15 @@ export const createApprovalLinkPacketHandler = (
 // ────────────────────────────────────────────────────────────────
 
 export interface ApprovalLinkConsumeHandlerDeps {
+  readonly checkQuoteSignoffLink?: (config: ApprovalLinkConfig, endpointId: string) => string | null;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getApprovalIntentStore: () => ApprovalIntentStore;
   readonly getApprovalLinkNonceStore: () => ApprovalLinkNonceStore;
   readonly getApprovalIntentPiiKey: () => Uint8Array;
   readonly auditLog: AuditLogStore;
   readonly now: () => number;
+  /** Honor X-Forwarded-Proto only behind an explicitly trusted proxy. */
+  readonly trustForwardedProto?: boolean;
   /** D-149 § A.20.3 / § A.20.7 — deployment mode for the Public Trust
    *  Footer carried in the Visitor Receipt's `privacy_footer` slot.
    *  Absent ⇒ the receipt renders without a privacy footer. */
@@ -442,7 +451,7 @@ export const createApprovalLinkConsumeHandler = (
       return;
     }
 
-    if (!verifyOrigin(req)) {
+    if (!verifyOrigin(req, deps.trustForwardedProto === true)) {
       writeErrorPage(res, 'this approval link', 'Submission blocked by origin policy.', 403);
       return;
     }
@@ -589,6 +598,13 @@ export const createApprovalLinkConsumeHandler = (
       return;
     }
 
+    // Re-read after sealing (an async boundary): a quote edited while the
+    // visitor filled in the page must not receive a success receipt.
+    if (config.on_action.on_approve_action === 'quote_signoff') {
+      const refusal = deps.checkQuoteSignoffLink?.(config, endpoint_id) ??
+        (deps.checkQuoteSignoffLink ? null : 'This quote sign-off is unavailable. Ask the business for a new link.');
+      if (refusal) { writeErrorPage(res, display_name, refusal, 409); return; }
+    }
     // Atomic single-use flip per Must Hold I-11.
     const now = deps.now();
     const result = deps.getApprovalIntentStore().tryConsume({

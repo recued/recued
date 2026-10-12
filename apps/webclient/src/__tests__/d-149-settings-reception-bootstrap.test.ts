@@ -359,12 +359,14 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
     expect(tabBar.childList.map((a) => a.attrs.get('href'))).toEqual([
       '#reception/inbox',
       '#reception/records',
+      '#reception/signoffs',
       '#reception/abuse',
       '#reception/endpoints',
     ]);
     expect(tabBar.childList.map((a) => a.textContent)).toEqual([
       'Inbox',
       'Records',
+      'Customer sign-offs',
       'Abuse',
       'Endpoints',
     ]);

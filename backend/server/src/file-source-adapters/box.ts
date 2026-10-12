@@ -39,7 +39,7 @@
  *  (`oauth2_refresh` `current_access_token`, refreshed within the lead window
  *  BEFORE this leaf runs; Box rotates the refresh token single-use). */
 
-import { parseImportScopeConfig, resolveBearerAccessToken, type ImportScope } from '@recued/contracts';
+import { parseImportScopeConfig, type ImportScope } from '@recued/contracts';
 
 import type {
   FileSourceListFn,
@@ -55,10 +55,10 @@ import {
 } from './id-keyed-delta.js';
 import type {
   FileConnectionCredential,
-  FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
 import { fetchFileSourceApi } from './http-json.js';
+import { resolveFileBearerTransport, type FileBearerTransport } from './bearer-transport.js';
 import { drainPagedList, type PagedListPage } from './paged-list.js';
 
 const BOX_API = 'https://api.box.com/2.0';
@@ -113,10 +113,10 @@ const boxErrorMessage = (text: string): string => {
   }
 };
 
-const boxGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
-  const res = await fetchFileSourceApi(fetchImpl, url, {
+const boxGet = async (url: string, transport: FileBearerTransport): Promise<unknown> => {
+  const res = await fetchFileSourceApi(transport.fetch, url, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { ...transport.headers },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -132,10 +132,10 @@ const boxGet = async (fetchImpl: FileFetch, url: string, token: string): Promise
  *  reset-loop, or events skipped between the true and rounded position = missed
  *  deletes up to the full-walk cadence). We parse the entries from the text but
  *  read the position out as a digit STRING (`extractStreamPosition`). */
-const boxGetText = async (fetchImpl: FileFetch, url: string, token: string): Promise<string> => {
-  const res = await fetchFileSourceApi(fetchImpl, url, {
+const boxGetText = async (url: string, transport: FileBearerTransport): Promise<string> => {
+  const res = await fetchFileSourceApi(transport.fetch, url, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { ...transport.headers },
   }, { responseMode: 'text' });
   const text = await res.text().catch(() => '');
   if (!res.ok) {
@@ -355,8 +355,8 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
    *  digit string (past-2^53 safe — read from raw text, NOT JSON), or undefined on
    *  a malformed 200 (non-fatal: the walk proceeds with `next_cursor: null` → the
    *  next cycle full-walks again). HTTP errors throw upstream in `boxGetText`. */
-  const streamPositionNow = async (token: string): Promise<string | undefined> =>
-    extractStreamPosition(await boxGetText(deps.fetchImpl, eventsUrl('now'), token));
+  const streamPositionNow = async (transport: FileBearerTransport): Promise<string | undefined> =>
+    extractStreamPosition(await boxGetText(eventsUrl('now'), transport));
 
   // A FULL walk — the up-front events position, then a folder-tree recursion from
   // `folderId`. The present-set + absence-delete authority (`shapeFull` omits
@@ -366,7 +366,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
   // 403/404 is skipped + marks the walk INCOMPLETE (no absence-deletes run —
   // fail-closed); any other error aborts the cycle (retry).
   const fullWalk = async (
-    token: string,
+    transport: FileBearerTransport,
     folderId: string,
     scope: ImportScope | null,
   ): Promise<FileSourceListOutcome> => {
@@ -374,7 +374,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
     let streamPosition: string | undefined;
     let incomplete = false;
     try {
-      streamPosition = await streamPositionNow(token);
+      streamPosition = await streamPositionNow(transport);
       const stack: string[] = [folderId];
       const seen = new Set<string>();
       while (stack.length > 0) {
@@ -391,7 +391,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
           const drain = await drainPagedList(
             {
               fetchPage: (ref) =>
-                boxGet(deps.fetchImpl, folderItemsUrl(fid, ref === '' ? undefined : ref), token),
+                boxGet(folderItemsUrl(fid, ref === '' ? undefined : ref), transport),
               parsePage: parseFolderItemsPagedPage,
             },
             '',
@@ -465,12 +465,12 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
     if (cred === null) {
       return { ok: false, kind: 'config', reason: `connection '${request.connection_name}' not found` };
     }
-    const token = resolveBearerAccessToken(cred.auth);
-    if (token === undefined) {
+    const transport = resolveFileBearerTransport(cred, deps.fetchImpl, 'box');
+    if (transport === undefined) {
       return {
         ok: false,
         kind: 'config',
-        reason: `box connection '${request.connection_name}' has no usable access token`,
+        reason: `box connection '${request.connection_name}' has no usable credential transport`,
       };
     }
     // Fork A escape hatch — the optional `import_scope` glob (client-side, since
@@ -489,7 +489,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
     // The runner passes `null` to force a FULL walk (first boot / periodic delete
     // re-baseline), or the stored stream position for a cheap DELTA walk.
     if (request.cursor === null || request.cursor === undefined) {
-      return fullWalk(token, folderId, scope);
+      return fullWalk(transport, folderId, scope);
     }
     // The DELTA rides the shared ID-keyed kernel — drain `/2.0/events` from the
     // stored position (poll until an empty chunk), folding `ITEM_TRASH` / trashed
@@ -504,7 +504,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
           throw new BoxError(0, `box events drain exceeded ${BOX_MAX_EVENT_POLLS} polls (stuck stream position?)`);
         }
         eventPolls += 1;
-        return boxGetText(deps.fetchImpl, eventsUrl(ref), token);
+        return boxGetText(eventsUrl(ref), transport);
       },
       parsePage: parseEventsPage,
       classify: makeBoxClassify(folderId),
@@ -514,7 +514,7 @@ export const buildBoxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceList
     } catch (err) {
       // An invalidated stream position (400/404) recovers by a fresh full walk
       // THIS cycle; any other error is classified + retried.
-      if (isBoxReset(err)) return fullWalk(token, folderId, scope);
+      if (isBoxReset(err)) return fullWalk(transport, folderId, scope);
       return classifyBoxError(err);
     }
   };

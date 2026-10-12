@@ -158,12 +158,19 @@ describe('resolveConnectionAgnosticRecipe - single-object response projection', 
         operation: 'deal.read',
         args: { deal_id: '5' },
       },
+      result_names_connection: true,
     });
     expect(recipe.steps[1]).toEqual({
       id: 'deal',
       transform: 'project',
       object: '{{step.deal__raw.result}}',
-      expression: hubspotDealProjection,
+      expression: {
+        ...hubspotDealProjection,
+        // D-320 ruling 20 — the record names the connection its call went through,
+        // which a step that follows its record learns only at the call.
+        target_id: 'hubspot_deal_{{step.deal__raw.connection_name}}_{{item.properties.hs_object_id}}',
+        connection_name: '{{step.deal__raw.connection_name}}',
+      },
     });
     expect(recipe.steps[1]).not.toHaveProperty('array');
   });

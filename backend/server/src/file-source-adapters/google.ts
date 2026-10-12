@@ -47,8 +47,6 @@
  *  connection resolver refreshes it within the lead window BEFORE this leaf
  *  runs). A 401 surfaces as a `config` outcome the scheduler records + retries. */
 
-import { resolveBearerAccessToken } from '@recued/contracts';
-
 import type {
   FileSourceListFn,
   FileSourceListOutcome,
@@ -63,10 +61,10 @@ import {
 } from './id-keyed-delta.js';
 import type {
   FileConnectionCredential,
-  FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
 import { fetchFileSourceApi } from './http-json.js';
+import { resolveFileBearerTransport, type FileBearerTransport } from './bearer-transport.js';
 import { drainPagedList, type PagedListDrain, type PagedListPage } from './paged-list.js';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -123,10 +121,10 @@ const googleErrorMessage = (text: string): string => {
   }
 };
 
-const googleGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
-  const res = await fetchFileSourceApi(fetchImpl, url, {
+const googleGet = async (url: string, transport: FileBearerTransport): Promise<unknown> => {
+  const res = await fetchFileSourceApi(transport.fetch, url, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { ...transport.headers },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -348,13 +346,13 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
   // read) precisely so the present-set is complete; a scope downgrade is an
   // enrollment concern (D-194), inherent to the full-walk delete model (S3 /
   // OneDrive share it).
-  const fullWalk = async (token: string): Promise<FileSourceListOutcome> => {
+  const fullWalk = async (transport: FileBearerTransport): Promise<FileSourceListOutcome> => {
     let startToken: string | undefined;
     const rows: Record<string, unknown>[] = [];
     let drain: PagedListDrain;
     try {
       // Up-front watermark — the token that will drive the NEXT cycle's delta.
-      startToken = parseStartPageToken(await googleGet(deps.fetchImpl, startPageTokenUrl, token));
+      startToken = parseStartPageToken(await googleGet(startPageTokenUrl, transport));
       // Drain `files.list` to exhaustion via the shared paged-list primitive —
       // `ref === ''` is the first page (no page token); a non-empty `ref` is a
       // `nextPageToken`. The primitive follows the token + folds `incompleteSearch`
@@ -362,7 +360,7 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
       drain = await drainPagedList(
         {
           fetchPage: (ref) =>
-            googleGet(deps.fetchImpl, filesListUrl(ref === '' ? undefined : ref), token),
+            googleGet(filesListUrl(ref === '' ? undefined : ref), transport),
           parsePage: parseFilesPagedPage,
         },
         '',
@@ -404,12 +402,12 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
     if (cred === null) {
       return { ok: false, kind: 'config', reason: `connection '${request.connection_name}' not found` };
     }
-    const token = resolveBearerAccessToken(cred.auth);
-    if (token === undefined) {
+    const transport = resolveFileBearerTransport(cred, deps.fetchImpl, 'google');
+    if (transport === undefined) {
       return {
         ok: false,
         kind: 'config',
-        reason: `google connection '${request.connection_name}' has no usable access token`,
+        reason: `google connection '${request.connection_name}' has no usable credential transport`,
       };
     }
     // NOTE: `import_scope` is NOT honored for Drive in v1 — with no native path
@@ -420,7 +418,7 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
     // The runner passes `null` to force a FULL walk (first boot / periodic delete
     // re-baseline), or the stored page token for a cheap DELTA walk.
     if (request.cursor === null || request.cursor === undefined) {
-      return fullWalk(token);
+      return fullWalk(transport);
     }
     // The DELTA walk rides the shared ID-keyed kernel: drain `changes.list` from
     // the stored page token, folding `removed`/`trashed` items into `removed_keys`
@@ -428,7 +426,7 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
     // builds the `changes.list` URL from the page-token `ref` (the stored token,
     // then each `nextPageToken`).
     const kdeps: IdKeyedDeltaDeps = {
-      fetchPage: (ref) => googleGet(deps.fetchImpl, changesListUrl(ref), token),
+      fetchPage: (ref) => googleGet(changesListUrl(ref), transport),
       parsePage: parseChangesPage,
       classify: googleClassify,
     };
@@ -438,7 +436,7 @@ export const buildGoogleFileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceL
       // An invalidated page token (400/404/410 on the delta) recovers by a fresh
       // from-scratch full walk THIS cycle (the leaf returns `walk: 'full'`); any
       // other error is classified + retried.
-      if (isGooglePageTokenReset(err)) return fullWalk(token);
+      if (isGooglePageTokenReset(err)) return fullWalk(transport);
       return classifyGoogleError(err);
     }
   };

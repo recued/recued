@@ -54,6 +54,8 @@ import { buildS3FileSourceLeaf } from './s3.js';
 export interface FileConnectionCredential {
   auth: ConnectionAuth;
   config: Record<string, unknown>;
+  /** Raw broker transport; present only for managed OAuth. No vendor token. */
+  managedFetch?: FileFetch;
 }
 
 /** Resolve one connection's decrypted credentials by name, or `null` when the

@@ -38,9 +38,14 @@ import type { DishStore } from './dish-store.js';
 import type { WsClient } from './ws-server.js';
 import type { EventBus } from './events/bus.js';
 import { emitAutomationRule } from './events/emit-sites.js';
+import type { UnattendedSettingsGate } from './unattended-settings-gate.js';
 
 export interface AutoRunRpcDeps {
   recipeStore: RecipeStore;
+  /** D-319 amendment (owner, 2026-10-11) — not armed for a dish whose settings
+   *  leave empty one its recipe needs (`unattended-settings-gate.ts`). Absent ⇒ no
+   *  refusal; the run still refuses (`execute-handler.ts`). */
+  unattendedSettings?: Pick<UnattendedSettingsGate, 'assertStart'>;
   settingsStore: AutoRunSettingsStore;
   circuitStore: CircuitBreakerStore;
   /** Late-bound live scheduler handle — undefined while the scheduler
@@ -165,6 +170,7 @@ export const updateAutoRun = async (
     const found = deps.dishStore?.get(body.dish_id);
     if (!found) throw new RpcError('not_found', `Dish '${body.dish_id}' not found`, 404);
     dish = found;
+    if (body.enabled === true) deps.unattendedSettings?.assertStart({ recipe_id: found.recipe_id, dish_id: found.dish_id });
   } else if (typeof body.recipe_id === 'string' && body.recipe_id.length > 0) {
     const recipe_id = body.recipe_id;
     const definitional = listDefinitional(deps).find((r) => r.recipe.recipe_id === recipe_id);
@@ -174,6 +180,8 @@ export const updateAutoRun = async (
     if (!deps.mainDish) {
       throw new RpcError('not_configured', 'Switching a recipe on needs a dish, and this server keeps none', 501);
     }
+    // Before the main dish can be made: a refused timer makes no dish.
+    if (body.enabled === true) deps.unattendedSettings?.assertStart({ recipe_id, config_overlay: overlay ?? null });
     const main = deps.mainDish({ recipe_id, publisher_id: definitional.publisher_id, config_overlay: overlay ?? null });
     dish = main.dish;
     // D-209 — a main dish made here can move the recipe's webhook door.

@@ -45,11 +45,12 @@
 
 import { createHash } from 'node:crypto';
 
-import { parseImportScopeConfig, resolveBearerAccessToken, type ImportScope } from '@recued/contracts';
+import { parseImportScopeConfig, type ImportScope } from '@recued/contracts';
 
 import type { FileSourceListFn, FileSourceListOutcome } from '../file-source-sync.js';
 import type { FileConnectionCredential, FileSourceLeafDeps } from './index.js';
 import { fetchFileSourceApi } from './http-json.js';
+import { resolveFileBearerTransport, type FileBearerTransport } from './bearer-transport.js';
 
 // Exported so the D-192 remote byte-fetch resolver re-resolves a block's fresh
 // ~1h-signed url against the SAME base + pinned version (one source of truth).
@@ -298,12 +299,12 @@ export const buildNotionFileSourceLeaf = (
   const request = async (
     method: 'GET' | 'POST',
     path: string,
-    token: string,
+    transport: FileBearerTransport,
     body?: unknown,
   ): Promise<unknown> => {
     const url = `${NOTION_API}${path}`;
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
+      ...transport.headers,
       'Notion-Version': NOTION_VERSION,
     };
     const init: { method: string; headers: Record<string, string>; body?: string } = { method, headers };
@@ -312,7 +313,7 @@ export const buildNotionFileSourceLeaf = (
       init.body = JSON.stringify(body);
     }
     for (let attempt = 0; ; attempt += 1) {
-      const res = await fetchFileSourceApi(deps.fetchImpl, url, init);
+      const res = await fetchFileSourceApi(transport.fetch, url, init);
       if (res.ok) return res.json();
       if ((res.status === 429 || res.status === 529) && attempt < MAX_RETRIES) {
         const ra = Number(res.headers.get('retry-after'));
@@ -330,7 +331,7 @@ export const buildNotionFileSourceLeaf = (
   /** Drain one cursor-paginated list to exhaustion (`search` or `blocks/children`),
    *  collecting every `results` row. `budget` bounds total pages fleet-wide. */
   const drainList = async (
-    token: string,
+    transport: FileBearerTransport,
     buildCall: (cursor: string | undefined) => { path: string; body?: unknown; method: 'GET' | 'POST' },
     where: string,
     budget: { pages: number },
@@ -343,7 +344,7 @@ export const buildNotionFileSourceLeaf = (
       }
       budget.pages += 1;
       const call = buildCall(cursor);
-      const page = parseListPage(await request(call.method, call.path, token, call.body), where);
+      const page = parseListPage(await request(call.method, call.path, transport, call.body), where);
       out.push(...page.results);
       cursor = page.next_cursor;
     } while (cursor !== undefined);
@@ -357,7 +358,7 @@ export const buildNotionFileSourceLeaf = (
    *  per-data-source query failure (404/403) is SKIPPED + sinks `complete`
    *  (fail-closed); either search-level failure aborts the cycle (classified
    *  below). */
-  const fullWalk = async (token: string, scope: ImportScope | null): Promise<FileSourceListOutcome> => {
+  const fullWalk = async (transport: FileBearerTransport, scope: ImportScope | null): Promise<FileSourceListOutcome> => {
     const rows: Record<string, unknown>[] = [];
     let incomplete = false;
     const budget = { pages: 0 };
@@ -365,7 +366,7 @@ export const buildNotionFileSourceLeaf = (
     try {
       // Enumerate every page shared with the integration (paginated to has_more:false).
       pages = await drainList(
-        token,
+        transport,
         (cursor) => ({
           method: 'POST',
           path: '/search',
@@ -392,7 +393,7 @@ export const buildNotionFileSourceLeaf = (
       }
       seen.add(parentId);
       const children = await drainList(
-        token,
+        transport,
         (cursor) => ({
           method: 'GET',
           path: `/blocks/${encodeURIComponent(parentId)}/children?page_size=${CHILDREN_PAGE_SIZE}`
@@ -450,7 +451,7 @@ export const buildNotionFileSourceLeaf = (
     let dataSources: unknown[];
     try {
       dataSources = await drainList(
-        token,
+        transport,
         (cursor) => ({
           method: 'POST',
           path: '/search',
@@ -476,7 +477,7 @@ export const buildNotionFileSourceLeaf = (
       let dsRows: unknown[];
       try {
         dsRows = await drainList(
-          token,
+          transport,
           (cursor) => ({
             method: 'POST',
             path: `/data_sources/${encodeURIComponent(dsId)}/query`,
@@ -566,12 +567,12 @@ export const buildNotionFileSourceLeaf = (
     if (cred === null) {
       return { ok: false, kind: 'config', reason: `connection '${request_.connection_name}' not found` };
     }
-    const token = resolveBearerAccessToken(cred.auth);
-    if (token === undefined) {
+    const transport = resolveFileBearerTransport(cred, deps.fetchImpl, 'notion');
+    if (transport === undefined) {
       return {
         ok: false,
         kind: 'config',
-        reason: `notion connection '${request_.connection_name}' has no usable access token`,
+        reason: `notion connection '${request_.connection_name}' has no usable credential transport`,
       };
     }
     // Fork A escape hatch — the optional `import_scope` glob (client-side, since
@@ -584,6 +585,6 @@ export const buildNotionFileSourceLeaf = (
     }
     // Notion is FULL-only — no native delta feed, so the runner's `cursor` (null or
     // a stale watermark) is ignored and every cycle re-walks the shared tree.
-    return fullWalk(token, parsedScope.scope);
+    return fullWalk(transport, parsedScope.scope);
   };
 };

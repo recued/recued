@@ -114,6 +114,8 @@ import type { ReceptionManageRescheduleRunner } from '../../reception-manage-run
 import { DEFAULT_LOCAL_CALENDAR_SLUG } from '../../collections/calendar/local-provider.js';
 import type { RecordsStore } from '../../records/store.js';
 import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
+import { createQuoteSignoffService, quoteSignoffManifestReader, type QuoteSignoffService } from '../../quote-signoff-service.js';
+import { createWorkEntityStore } from '../../storage/work-entity-store.js';
 
 /** Inputs to `composeReceptionSubstrate`. The six "required" handles
  *  gate the whole branch (mirroring the pre-extraction `if`); the
@@ -412,7 +414,14 @@ export const composeReceptionSubstrate = async (
       : {}),
   });
 
+  let quoteSignoffs: QuoteSignoffService | undefined;
+  const signoffManifest = await quoteSignoffManifestReader((slug) => deps.executeDeps?.executorConfig.manifests.get(slug) ?? null);
+  const getQuoteSignoffService = deps.db && deps.recordsStore && deps.executeDeps
+    ? () => quoteSignoffs ??= createQuoteSignoffService({ db: deps.db!, records: deps.recordsStore!,
+      manifest: signoffManifest, work: createWorkEntityStore(deps.db!), now: Date.now,
+    }) : undefined;
   const receptionRpcDepsBase: ReceptionRpcDeps = {
+    ...(getQuoteSignoffService ? { getQuoteSignoffService } : {}),
     getStore: () => registryStore,
     getPreviewStore: () => previewStore,
     getPepper: getReceptionPepper,
@@ -970,6 +979,8 @@ export const composeReceptionSubstrate = async (
   };
 
   const receptionPortDeps: ReceptionPortHandlerDeps = {
+    ...(getQuoteSignoffService ? { checkQuoteSignoffLink: (config, endpointId) =>
+      getQuoteSignoffService().checkLink(config.on_action.target_id, endpointId, config) } : {}),
     getStore: () => registryStore,
     getCache: () => registryCache,
     getRateLimiter: () => rateLimiter,
@@ -1168,6 +1179,8 @@ export const composeReceptionSubstrate = async (
     const commitmentStore = deps.workEntityStore;
     drainProcessors.push(
       createApprovalLinkSubmissionProcessor({
+        ...(getQuoteSignoffService ? { recordQuoteSignoff: (targetId, endpointId, intentId, affirmative) =>
+          getQuoteSignoffService().recordResponse(targetId, endpointId, intentId, affirmative) } : {}),
         registryStore,
         intentStore: approvalStore,
         workEntityStore: commitmentStore,

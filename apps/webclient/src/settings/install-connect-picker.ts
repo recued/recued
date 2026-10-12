@@ -28,6 +28,7 @@
  */
 
 import { serializeShellRoute } from '../shell/route.js';
+import { connectionsEnrollAddress } from '../connections/connections-navigation.js';
 import type { ConnectionRequirement, EndpointCandidate } from '@recued/contracts';
 
 /** The section wrapper — carries no value (presence marks the Connect section). */
@@ -108,6 +109,8 @@ export interface RenderInstallConnectPickerOptions {
   document: Document;
   /** The (single, v1) connection this pack needs. */
   requirement: ConnectionRequirement;
+  /** D-322 — keep the pack service when several APIs share the same vendor. */
+  packSlug?: string;
   /** Existing endpoint-match candidates (empty ⇒ enroll-only). */
   candidates: readonly EndpointCandidate[];
   /** The currently-picked connection name, or undefined = "don't connect now". */
@@ -140,7 +143,9 @@ export const renderInstallConnectPicker = (
 ): HTMLElement => {
   const { document: doc, requirement, candidates, chosen, expanded, disabled } = opts;
   const vendor = requirement.vendor;
-  const enrollHref = serializeShellRoute('connections', 'others', 'enroll', vendor);
+  const enrollHref = opts.packSlug === undefined
+    ? serializeShellRoute('connections', 'others', 'enroll', vendor)
+    : connectionsEnrollAddress(vendor, { slug: opts.packSlug }).hash;
 
   /** D-320 slice 2j — the shared connections beside the pick, ticked unless the
    *  owner unticked one. A first install only (an update keeps its list), and

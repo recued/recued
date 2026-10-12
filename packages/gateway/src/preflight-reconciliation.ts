@@ -901,6 +901,7 @@ const readAuthorizationProvenance = (
     v.lift_reason !== undefined
     && v.lift_reason !== 'review_send'
     && v.lift_reason !== 'review_commitment'
+    && v.lift_reason !== 'review_quote_signoff'
     && v.lift_reason !== 'quality'
   ) return undefined;
   return {

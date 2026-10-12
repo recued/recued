@@ -113,7 +113,8 @@ export const isPlatformRecordTargetId = (
 
 export type PlatformRecordIdErrorCode =
   | 'PLATFORM_ID_CONNECTION_REQUIRED'
-  | 'PLATFORM_ID_SOURCE_MISMATCH';
+  | 'PLATFORM_ID_SOURCE_MISMATCH'
+  | 'PLATFORM_ID_KIND_MISMATCH';
 
 /** ⛔ Thrown BEFORE any provider call, and every message says so. A model that
  *  cannot tell "refused, nothing happened" from "attempted and failed" retries
@@ -143,6 +144,33 @@ export interface PlatformRecordRouting {
   routed?: PlatformRecordTargetId & { id_arg: string };
 }
 
+/** The kind of record an operation's id argument takes, read off its name:
+ *  `deal_id` takes a deal, `email_message_id` an email_message. Undefined for an
+ *  argument not named `<entity>_id`, whose kind nothing here can know. Every
+ *  shipped record op follows the convention (31 on HubSpot, Salesforce and
+ *  Pipedrive, 2026-10-11), and the `d-254-*-record-id-arg` ratchets hold each one
+ *  to an entity its vendor registers. The op's own family is not the kind:
+ *  `engagement.list` takes a `deal_id`. */
+export const recordIdArgKind = (id_arg: string): string | undefined =>
+  id_arg.length > '_id'.length && id_arg.endsWith('_id') ? id_arg.slice(0, -'_id'.length) : undefined;
+
+const withArticle = (noun: string): string => (/^[aeiou]/.test(noun) ? `an ${noun}` : `a ${noun}`);
+
+/** The refusal for a record of another kind than the one an operation takes, shared
+ *  by the gateway's unwrap and the engine's per-call follow (D-320 ruling 20g) so
+ *  both say the same thing. */
+export const platformRecordKindMismatch = (input: {
+  operation: string;
+  id_arg: string;
+  kind: string;
+  record: PlatformRecordTargetId;
+}): PlatformRecordIdError => new PlatformRecordIdError(
+  'PLATFORM_ID_KIND_MISMATCH',
+  `PLATFORM_ID_KIND_MISMATCH: '${input.operation}' takes ${withArticle(input.kind)}'s id in `
+    + `'${input.id_arg}', and the id given is ${withArticle(input.record.entity)}'s. No provider `
+    + `call was made. Pass the ${input.kind}'s own id.`,
+);
+
 /** Validate and UNWRAP a platform-record id supplied to one operation.
  *
  *  🔑 THE ONLY DECLARED INPUT IS `id_arg`, AND THAT IS THE POINT. An earlier cut
@@ -154,6 +182,14 @@ export interface PlatformRecordRouting {
  *  second door; and the op's entity is its own annotation, not something a
  *  binding should restate. WHERE THE ID SITS IN THE ARGS is the one fact the id
  *  cannot carry about itself.
+ *
+ *  ⛔ THE KIND IS CHECKED, AND IT WAS NOT UNTIL 2026-10-11. Dropping the declared
+ *  entity was right (the argument's name carries it, {@link recordIdArgKind}); not
+ *  checking it at all was the defect. A connection numbers each kind of record on
+ *  its own, so a contact's id handed to `deal.update` on the SAME connection
+ *  unwrapped to the contact's number and updated the deal that has it. A record of
+ *  another kind is refused before the connection is checked: retrying the same id
+ *  on its own connection would only be refused again.
  *
  *  ⛔⛔ CALL THIS BEFORE THE GATE. `catalog-gateway.ts` already states the rule
  *  for the work-entity twin — unwrapped *"before request-schema checks,
@@ -183,6 +219,11 @@ export const routePlatformRecordOperationArgs = (input: {
   const raw = input.args[id_arg];
   const parsed = parsePlatformRecordTargetId(raw, input.registry ?? CONNECTION_VENDOR_ENTITIES);
   if (parsed === null) return { args: input.args };
+
+  const kind = recordIdArgKind(id_arg);
+  if (kind !== undefined && parsed.entity !== kind) {
+    throw platformRecordKindMismatch({ operation: input.operation, id_arg, kind, record: parsed });
+  }
 
   if (input.connection_name.length === 0) {
     throw new PlatformRecordIdError(

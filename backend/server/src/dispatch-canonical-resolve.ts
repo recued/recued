@@ -37,6 +37,8 @@ import { isCanonicalOpStep, isPrefetchOpStep } from '@recued/contracts';
 import type { IngredientManifest, RecipeDefinition } from '@recued/contracts';
 import { CanonicalOpResolutionError, opStepConnectionSlots } from '@recued/recipes';
 
+import { fanOutCanonicalSearches, type FanoutConnection } from './canonical-search-fanout.js';
+import type { LiveCatalogVendors } from './connection-convention-families.js';
 import { lowerTwoTierOpSteps, resolvePerSlotOpStepRecipe } from './ingredient-authoring/install-composition.js';
 import type { ConnectionOperationProfile } from '@recued/contracts';
 import type { PackOpResolution } from '@recued/recipes';
@@ -53,10 +55,45 @@ export interface DispatchResolveDeps {
    *  installed-pack inventory by `buildPackOpResolution`). Omitted ⇒ the empty map
    *  (a kernel-only recipe still lowers; a Tier-P op fails closed). */
   packs?: PackOpResolution;
+  /** D-320 ruling 20e — each catalog's vendor and the registry canonical fields map
+   *  through, installed compositions included (`liveCatalogVendors`), so a step on
+   *  an accounting connection (QuickBooks, Xero) resolves at run as it did at
+   *  install. Omitted ⇒ the first-party CRM catalogs and the built-in registry. */
+  vendors?: LiveCatalogVendors | undefined;
+  /** D-320 ruling 20g — settings the run leaves to their records
+   *  (`recordRoutedConnection`): each resolves against the catalog of the
+   *  connection given here and stays empty in `config`, so each call takes its
+   *  record's connection. */
+  recordRouted?: ReadonlyMap<string, string> | undefined;
+  /** D-320 ruling 20 — a vendor-neutral search whose slot nobody chose reads every
+   *  connection that can serve it (`canonical-search-fanout.ts`). Omitted ⇒ each
+   *  search binds its slot's one connection, as before. */
+  fanout?: {
+    /** The connections serving `<alias>.<verb>` that the run may use, sorted. */
+    servingConnections: (alias: string, verb: string) => readonly FanoutConnection[];
+    /** The slots someone chose. Omitted ⇒ every slot holding a connection in
+     *  `config`: nothing fills a vendor-neutral slot before this resolve, so a value
+     *  there was the caller's, a dish's or a choice's. A caller that binds slots and
+     *  resolves again (the run's pick loop) passes the set it started from, so a
+     *  search does not stop fanning out once another step's slot is bound. */
+    explicit?: ReadonlySet<string>;
+  } | undefined;
 }
 
 export type DispatchResolveResult =
-  | { ok: true; recipe: RecipeDefinition; resolved: boolean }
+  | {
+      ok: true;
+      recipe: RecipeDefinition;
+      resolved: boolean;
+      /** D-320 ruling 20 — the settings a fanned-out search's legs sign in through,
+       *  each with its connection. The run reads them from their defaults; a door or
+       *  a pre-approval writes them into the config it derives from or reviews
+       *  (`settleDoorConnections`), which reads only the authored recipe's. */
+      settings?: Record<string, string>;
+      /** D-320 ruling 20 — each setting whose searches fanned out, and the
+       *  connections they read (for `context.connections`). */
+      fanned_out?: Record<string, string[]>;
+    }
   | {
       ok: false;
       reason: string;
@@ -68,6 +105,12 @@ export type DispatchResolveResult =
        *  recipe converges one ask at a time (doc §1.3 re-run loop). */
       unbound_slot?: { variable: string };
     };
+
+/** D-320 ruling 20 — the slot variables holding a connection name in `config`. */
+export const chosenSlots = (config: Readonly<Record<string, unknown>>): ReadonlySet<string> =>
+  new Set(Object.entries(config)
+    .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+    .map(([key]) => key));
 
 const hasCanonicalOpStep = (recipe: RecipeDefinition): boolean =>
   recipe.steps.some(isCanonicalOpStep) ||
@@ -97,8 +140,30 @@ export const resolveCanonicalRecipeForDispatch = (
     if (e instanceof CanonicalOpResolutionError) return { ok: false, reason: e.message };
     throw e;
   }
+  // D-320 ruling 20 — searches nobody pointed at a connection become one leg per
+  // serving connection and a merge, before the slots are read: a slot whose only
+  // steps were such searches then has nothing left to bind, so it is never asked
+  // about and a scheduled run is not refused for it.
+  let withFanned: { settings?: Record<string, string>; fanned_out?: Record<string, string[]> } = {};
+  if (deps.fanout !== undefined) {
+    const out = fanOutCanonicalSearches(recipe, {
+      explicit: deps.fanout.explicit ?? chosenSlots(deps.config),
+      servingConnections: deps.fanout.servingConnections,
+      manifests: deps.manifests,
+      registry: deps.vendors?.registry,
+    });
+    if (!out.ok) return { ok: false, reason: out.reason };
+    recipe = out.recipe;
+    if (out.fanned.length > 0) {
+      const fannedOut: Record<string, string[]> = {};
+      for (const { setting, connections } of out.fanned) {
+        fannedOut[setting] = [...new Set([...(fannedOut[setting] ?? []), ...connections.map((c) => c.connection_name)])];
+      }
+      withFanned = { settings: out.settings, fanned_out: fannedOut };
+    }
+  }
   const didLower = recipe !== inputRecipe;
-  if (!hasCanonicalOpStep(recipe)) return { ok: true, recipe, resolved: didLower };
+  if (!hasCanonicalOpStep(recipe)) return { ok: true, recipe, resolved: didLower, ...withFanned };
 
   // Per-operand slot derivation (R2 step 5) — explicit `{{config.<var>}}` refs or
   // the recipe's single connection variable; ambiguity / bad refs fail closed.
@@ -114,7 +179,8 @@ export const resolveCanonicalRecipeForDispatch = (
   const catalogBySlotVariable = new Map<string, IngredientManifest>();
   const catalogSlugs: string[] = [];
   for (const variable of slots.variables) {
-    const connection = deps.config[variable];
+    const given = deps.config[variable];
+    const connection = typeof given === 'string' && given.length > 0 ? given : deps.recordRouted?.get(variable);
     if (typeof connection !== 'string' || connection.length === 0) {
       return {
         ok: false,
@@ -148,7 +214,10 @@ export const resolveCanonicalRecipeForDispatch = (
     recipe,
     catalogBySlotVariable,
     `dispatch:${catalogSlugs.join('+')}`,
+    // Absent ⇒ each parameter's default: first-party catalogs, built-in registry.
+    deps.vendors?.vendorForCatalog,
+    deps.vendors?.registry,
   );
   if (!res.ok) return { ok: false, reason: res.message };
-  return { ok: true, recipe: res.recipe, resolved: true };
+  return { ok: true, recipe: res.recipe, resolved: true, ...withFanned };
 };

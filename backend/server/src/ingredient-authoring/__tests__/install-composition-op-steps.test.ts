@@ -125,7 +125,11 @@ describe('resolveOpStepRecipes (slice 2 — R1 install-time rewrite, registry-so
 
     const raw = stepById(recipe, 'deals__raw');
     expect(raw.ingredient).toBe('hubspot-catalog');
-    expect(raw.connection).toBe('hubspot1');
+    // D-320 3e — the recipe names no connection, so the step binds the setting a run
+    // gives its family (`crm`), which the run fills from the pack's default; it bound
+    // the pack's literal connection name (`hubspot1`), which no default or choice moves.
+    expect(raw.connection).toBe('{{config.crm}}');
+    expect(recipe.variables).toMatchObject({ crm: { type: 'connection', connection_kind: 'api' } });
     // NEXT-1: the canonical `{ limit: 200 }` is derived into the HubSpot search
     // POST body — `body.limit` + `body.properties` (the registry SELECT, bare
     // property names). The COMPUTED `close_state` (a closed_state derivation) IS
@@ -194,7 +198,8 @@ describe('resolveOpStepRecipes (slice 2 — R1 install-time rewrite, registry-so
       surfaces: { api: { transport: 'rest', default_base_url: 'https://api.hubapi.com', auth: { kind: 'none' }, executes: { 'deal.search': { kind: 'rest', method: 'POST', path_template: '/crm/v3/objects/deals/search' } } } },
     } as unknown as IngredientManifest;
 
-    const stores: NamespaceStores = { vault: {}, config: { group_field: 'stage' }, context: {}, meta: {}, step: {} };
+    // The run fills the `crm` setting with the pack's connection (D-320 3e).
+    const stores: NamespaceStores = { vault: {}, config: { group_field: 'stage', crm: 'hubspot1' }, context: {}, meta: {}, step: {} };
     const ingredientExecutor: IngredientExecutor = async (slug) => {
       // Model the connection-api dispatch shape: `{ status, headers, result }`
       // with the catalog `output: { result: "result" }` keeping the vendor body
@@ -248,15 +253,17 @@ describe('resolveOpStepRecipes (slice 2 — R1 install-time rewrite, registry-so
     expect(res.message).toContain('not a known catalog vendor');
   });
 
-  it('hard-block — no bound connection', () => {
+  // D-320 3e — with no bound connection, a recipe that names none binds its CRM
+  // op-steps to the setting a run gives them (`crm`). It was a hard block before.
+  it('no bound connection — binds the setting a run gives a CRM op-step', () => {
     const res = resolveOpStepRecipes(
       vendorForCatalog,
       [canonicalRecipe('stage')],
       { ...baseInputs, connection: undefined },
     );
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.message).toContain('no bound connection');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(stepById(res.recipes[0], 'deals__raw').connection).toBe('{{config.crm}}');
   });
 
   it('hard-block — the pack does not model the canonical op', () => {
@@ -416,15 +423,24 @@ describe('resolveOpStepRecipes — per-operand connection slots (R2 step 5)', ()
     expect(stepById(res.recipes[0], 'deals__raw').connection).toBe('{{config.crm}}');
   });
 
-  it('a connection-less pack + a zero-variable recipe hard-blocks with the combined message', () => {
+  it('a connection-less pack + a zero-variable recipe declares and binds crm (D-320 3e)', () => {
     const res = resolveOpStepRecipes(vendorForCatalog, [canonicalRecipe('stage')], {
       ...baseInputs,
       connection: undefined,
     });
-    expect(res.ok).toBe(false);
-    if (res.ok) return;
-    expect(res.message).toContain('has no connection to bind');
-    expect(res.message).toContain("declares no type:'connection'");
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.recipes[0]!.variables).toMatchObject({ crm: { type: 'connection', connection_kind: 'api' } });
+    expect(stepById(res.recipes[0], 'deals__raw').connection).toBe('{{config.crm}}');
+  });
+
+  it("⛔ a recipe whose only connection setting is a mail sender binds its CRM op-steps to crm, not to the sender's", () => {
+    const sender = { label: 'Send from', type: 'connection', connection_kind: 'notification', default: '' } as unknown as RecipeDefinition['variables'][string];
+    const recipe = slottedRecipe({ sender_mail: sender }, {});
+    const res = resolveOpStepRecipes(vendorForCatalog, [recipe], { ...baseInputs, connection: undefined });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(stepById(res.recipes[0], 'deals__raw').connection).toBe('{{config.crm}}');
   });
 
   it('recipes with DIFFERENT single connection variables each bind their own ref (cross-recipe rule retired)', () => {

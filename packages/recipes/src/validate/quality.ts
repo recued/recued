@@ -22,6 +22,7 @@ import {
 } from './constants.js';
 import type { RecipeDefinition } from '@recued/contracts';
 import { guardRequiredVariables } from '../chat-catalog.js';
+import { mailSenderSettings } from '../mail-sender-settings.js';
 import { declaresPiiHandling, NO_PII_DECLARATION_DETAIL } from '../pii-declaration.js';
 import { aiStepDispatch } from '../step-dispatch.js';
 import { parseStepRef } from './helpers.js';
@@ -83,7 +84,14 @@ export const validateQualityChecks = (r: Record<string, unknown>, add: AddFn): v
  *
  *  ⚠ Shares `guardRequiredVariables` with the projection rather than restating
  *  it — two copies of "what the guard requires" is how a schema and its warning
- *  come to disagree. */
+ *  come to disagree.
+ *
+ *  ⛔ NOT A "SEND FROM" SETTING. Since 2026-10-10 the owner's run fills an empty
+ *  one with the only mailbox that can send, or refuses naming the mailboxes
+ *  (`execute-handler.ts`, `mailSenderSettings`), and the owner's catalog says it
+ *  may be left out. Its empty default is that design, not a dead one: dropping
+ *  it, as this warned on 9 shipped recipes, would make the form demand a mailbox
+ *  the run fills, and 3 of them treat an empty one as "draft only" besides. */
 const checkOptionalButRequired = (
   r: Record<string, unknown>,
   _prefetch: StepArr,
@@ -94,7 +102,9 @@ const checkOptionalButRequired = (
     ? (r.variables as Record<string, unknown>)
     : {};
   const guardRequired = guardRequiredVariables(r as unknown as RecipeDefinition);
+  const filledByRun = mailSenderSettings(r as unknown as RecipeDefinition);
   for (const key of guardRequired) {
+    if (filledByRun.has(key)) continue;
     const def = vars[key];
     const empty = (def !== null && typeof def === 'object' && !Array.isArray(def))
       ? ('default' in (def as Record<string, unknown>)
@@ -412,7 +422,9 @@ const detectDuplicateStepContent = (
     const prior = seen.get(body);
     if (prior) {
       add('warn', 'duplicate_step_content', `${pathRoot}[${i}]`,
-        `step '${id}' has identical content to step '${prior.id}' (${pathRoot}[${prior.index}]) — one of them is dead weight`);
+        `step '${id}' has identical content to step '${prior.id}' (${pathRoot}[${prior.index}]). If a step between them `
+          + `changes what it reads, the cache answers it with the result of '${prior.id}' and it cannot see the change: give it `
+          + `"cache": "fresh". Otherwise one of them is dead weight`);
     } else {
       seen.set(body, { id, index: i });
     }

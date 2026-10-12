@@ -2462,13 +2462,19 @@ const allowEmptyRefArrays = (definition: FormDefinition): FormDefinition => ({
 const formDefinitionForKind = (
   kind: WorkEntityKind,
   source: SourceRegistration | undefined,
+  mode?: 'create' | 'edit',
 ): FormDefinition => {
   const schema = getCanonicalSchema(kind);
   const extension = sourceExtensionSchema(source);
   const definition = extension === null
     ? formFromCanonicalSchema(schema)
     : formFromCanonicalSchemaWithExtension(schema, extension);
-  return allowEmptyRefArrays(definition);
+  const editable = kind === 'task' && mode === 'edit'
+    ? { ...definition, fields: definition.fields.filter(
+        (field) => field.name !== 'done' && field.name !== 'completed_at',
+      ) }
+    : definition;
+  return allowEmptyRefArrays(editable);
 };
 
 const initialValuesForKind = (kind: WorkEntityKind): Record<string, unknown> => {
@@ -4856,6 +4862,7 @@ const renderWorkEntitySurface = (
    *  to show (no feed yet, a stale one, or a genuinely empty history) and the
    *  section is then omitted rather than asserting an empty past. */
   historyHtml: string,
+  taskCompletion?: { done: boolean; can_change: boolean; busy?: boolean; notice?: string },
 ): string => {
   const options = [...sourceOptionsForKind(sources, state.kind)];
   if (state.selected_source_id !== null && !options.some((option) => option.id === state.selected_source_id)) {
@@ -4867,7 +4874,7 @@ const renderWorkEntitySurface = (
     : enabledSourcesForKind(sources, state.kind).find(
         (source) => source.id === activeSourceId,
       );
-  const definition = formDefinitionForKind(state.kind, activeSource);
+  const definition = formDefinitionForKind(state.kind, activeSource, state.dialog?.mode);
   const workEntityHistoryHtml = historyHtml;
   if (state.kind === 'booking' && bookingDetailId !== null) {
     const dialogHtml = state.dialog === null
@@ -4956,6 +4963,7 @@ const renderWorkEntitySurface = (
       ? { opening_entity_id: openingEntityId }
       : {}),
     discard_guard: discardGuardOpen,
+    ...(taskCompletion !== undefined ? { task_completion: taskCompletion } : {}),
     ...(workEntityHistoryHtml !== '' ? { history_html: workEntityHistoryHtml } : {}),
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
   });
@@ -5247,6 +5255,9 @@ export const bootstrapDataRoute = (
     | { mode: 'edit'; kind: WorkEntityKind; id: string }
     | null = null;
   let workEntityDialogBaseline: string | null = null;
+  let workEntityDialogEntity: WorkEntity | null = null;
+  let taskCompletionNotice: string | null = null;
+  let taskCompletionPending: { id: string; sequence: number } | null = null;
   let workEntityDiscardGuardOpen = false;
   let workEntityDiscardReturnFocus:
     | { kind: 'close' | 'cancel' | 'field' | 'form'; field?: string }
@@ -6823,6 +6834,24 @@ export const bootstrapDataRoute = (
                 },
                 (entry) => summarizePayload(entry.payload),
               );
+            })(),
+            (() => {
+              const dialog = workEntityState.dialog;
+              const entity = workEntityDialogEntity;
+              if (activeTab !== 'task' || dialog?.mode !== 'edit'
+                || entity?._kind !== 'task' || entity.id !== dialog.entity_id) return undefined;
+              const source = sources.find((entry) => entry.id === entity.source_id);
+              return { done: entity.done,
+                busy: taskCompletionPending?.id === entity.id
+                  && taskCompletionPending.sequence === workEntityDialogOpenSeq,
+                can_change: opts.taskMarkDoneCaller !== undefined
+                  && opts.workEntityGetCaller !== undefined && opts.workEntitySourceListCaller !== undefined
+                  && entity.sync_state === 'live' && entity.deleted_at == null && !entity.pending_write
+                  && source?.top_tier_kind === 'task' && source.write_capable
+                  && source.sync_posture !== 'read_through',
+                ...(entity.pending_write
+                  ? { notice: 'A task change is waiting for source confirmation.' }
+                  : taskCompletionNotice !== null ? { notice: taskCompletionNotice } : {}) };
             })(),
           )
         : activeTab === 'search'
@@ -10912,7 +10941,7 @@ export const bootstrapDataRoute = (
       : enabledSourcesForKind(sources, workEntityState.kind).find(
           (source) => source.id === activeSourceId,
         );
-    return formDefinitionForKind(workEntityState.kind, activeSource);
+    return formDefinitionForKind(workEntityState.kind, activeSource, workEntityState.dialog?.mode);
   };
 
   const focusWorkEntityDialog = (): void => {
@@ -11002,6 +11031,8 @@ export const bootstrapDataRoute = (
 
   const retireWorkEntityDialogDraft = (): void => {
     workEntityDialogBaseline = null;
+    workEntityDialogEntity = null;
+    taskCompletionNotice = null;
     workEntityDiscardGuardOpen = false;
     workEntityDiscardReturnFocus = null;
   };
@@ -11197,6 +11228,8 @@ export const bootstrapDataRoute = (
       entity,
       getCanonicalSchema(kind),
     );
+    workEntityDialogEntity = entity;
+    taskCompletionNotice = null;
     // What an untouched date-time field keeps on save (`timestampValue`).
     workEntityDialogOriginal = { ...(workEntityState.dialog?.values ?? {}) };
     const extensionValues = sourceExtensionValuesFromEntity(
@@ -11474,6 +11507,95 @@ export const bootstrapDataRoute = (
       focusWorkEntityArrayAdd(field);
     } else {
       focusWorkEntityArrayItem(field, Math.min(index, next.length - 1));
+    }
+  };
+
+  const focusTaskCompletionError = (): void => {
+    const error = routeRoot.querySelector<HTMLElement>('.work-entity-dialog-submit-error');
+    error?.focus?.({ preventScroll: true });
+    error?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const changeTaskCompletion = async (done: boolean): Promise<void> => {
+    const dialog = workEntityState.dialog;
+    const opened = workEntityDialogEntity;
+    const markDone = opts.taskMarkDoneCaller;
+    const get = opts.workEntityGetCaller;
+    const listSources = opts.workEntitySourceListCaller;
+    if (disposed || activeLens !== 'data' || activeTab !== 'task' || dialog?.mode !== 'edit'
+      || dialog.submitting || workEntityDiscardGuardOpen || opened?._kind !== 'task'
+      || opened.id !== dialog.entity_id || opened.done === done || !markDone || !get || !listSources) return;
+    if (hasUnsavedWorkEntityDialog()) {
+      workEntityState = setDialogSubmitErrorTransition(workEntityState,
+        'Save or discard your edits before changing task completion.');
+      render();
+      focusTaskCompletionError();
+      return;
+    }
+    const seq = workEntityDialogOpenSeq;
+    const mutation = { id: opened.id, sequence: seq };
+    taskCompletionPending = mutation;
+    const stillHere = (): boolean => !disposed && seq === workEntityDialogOpenSeq
+      && activeLens === 'data' && activeTab === 'task' && workEntityState.dialog?.mode === 'edit'
+      && workEntityState.dialog.entity_id === opened.id;
+    workEntityState = setDialogSubmittingTransition(workEntityState, true);
+    workEntityState = setDialogSubmitErrorTransition(workEntityState, null);
+    taskCompletionNotice = null;
+    opaqueMutationsInFlight += 1;
+    render();
+    try {
+      // Read the current task and its source; send only the chosen lifecycle
+      // change. An old editor must not replay its title, body or due date.
+      const [{ entity }, { sources: currentSources }] = await Promise.all([
+        get({ kind: 'task', id: opened.id }), listSources(),
+      ]);
+      if (!stillHere()) return;
+      const sameTask = (row: WorkEntity | null): row is Extract<WorkEntity, { _kind: 'task' }> =>
+        row?._kind === 'task' && row.id === opened.id && row.source_id === opened.source_id
+        && row.source_record_id === opened.source_record_id && row.created_at === opened.created_at
+        && row.sync_state === 'live' && row.deleted_at == null;
+      const source = entity ? currentSources.find((entry) => entry.id === entity.source_id) : undefined;
+      if (!sameTask(entity) || source?.top_tier_kind !== 'task' || !source.write_capable
+        || source.sync_posture === 'read_through') {
+        throw new Error('This task cannot be changed here now. Close the editor and check its source.');
+      }
+      if (entity.pending_write) {
+        throw new Error('This task has a change waiting for its source. Close and reopen it to check before trying again.');
+      }
+      const result = await markDone({ id: opened.id, done });
+      if (!stillHere()) return;
+      if (result.entity.pending_write) {
+        throw new Error('Your change is saved in Recued, but the source has not confirmed it yet. Close and reopen the task to check before trying again.');
+      }
+      if (!sameTask(result.entity) || result.entity.done !== done) {
+        throw new Error('The server did not confirm the change. Close and reopen the task to check it.');
+      }
+      workEntityDialogEntity = result.entity;
+      if (taskCompletionPending === mutation) taskCompletionPending = null;
+      workEntityState = openEditDialogTransition(workEntityState, result.entity, getCanonicalSchema('task'));
+      workEntityDialogOriginal = { ...(workEntityState.dialog?.values ?? {}) };
+      workEntityState = setDialogValuesTransition(workEntityState, {
+        ...workEntityState.dialog!.values,
+        ...sourceExtensionValuesFromEntity(activeWorkEntityDefinition(), result.entity),
+      });
+      taskCompletionNotice = done ? 'Task completed.' : 'Task reopened.';
+      render();
+      captureWorkEntityDialogBaseline();
+      routeRoot.querySelector<HTMLElement>('[data-task-completion-status]')?.focus?.({ preventScroll: true });
+      // Retire older list reads immediately. A failed list refresh cannot
+      // undo the confirmed completion displayed by this editor.
+      pendingLoadPromise = refreshActive(true);
+      await pendingLoadPromise;
+    } catch (error) {
+      if (!stillHere()) return;
+      if (taskCompletionPending === mutation) taskCompletionPending = null;
+      workEntityState = setDialogSubmittingTransition(workEntityState, false);
+      workEntityState = setDialogSubmitErrorTransition(workEntityState, errMessage(error));
+      render();
+      focusTaskCompletionError();
+    } finally {
+      if (taskCompletionPending === mutation) taskCompletionPending = null;
+      opaqueMutationsInFlight -= 1;
     }
   };
 
@@ -14323,6 +14445,10 @@ export const bootstrapDataRoute = (
     if (action === 'submit-work-entity-dialog') {
       syncWorkEntityDialogFromDom();
       void confirmWorkEntityDialog();
+    }
+    if (action === 'complete-work-entity-task' || action === 'reopen-work-entity-task') {
+      pendingLoadPromise = changeTaskCompletion(action === 'complete-work-entity-task');
+      return;
     }
   };
 

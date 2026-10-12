@@ -26,6 +26,10 @@ import {
   isRef,
   hashForeachCheckpointSource,
   parseDataEntityRef,
+  parsePlatformRecordTargetId,
+  PlatformRecordIdError,
+  platformRecordKindMismatch,
+  recordIdArgKind,
   resolveDeep,
   resolveValue,
   preapprovalStepPath,
@@ -616,6 +620,9 @@ const resolveTransformParams = (params: Record<string, unknown>, name: string, c
       items: (params.items as Record<string, unknown>[]).map(item => ({
         ...resolveDeep(item, ctx.stores) as Record<string, unknown>,
         issue: item.issue, // preserve raw condition string
+        // A row with no condition is unknown when a value it shows is missing, which
+        // the transform can only tell from the text before it is resolved.
+        ...(item.issue === undefined || item.issue === null ? { detail_ok: item.detail_ok } : {}),
       })),
     };
   }
@@ -686,6 +693,63 @@ export const resolveCatalogConnection = (
   const resolved = resolveValue(raw, ctx.stores);
   return typeof resolved === 'string' ? resolved : '';
 };
+
+/** D-320 ruling 20g — a record step whose connection nobody chose runs on the
+ *  connection its record's id names (D-190, `<vendor>_<entity>_<connection>_<id>`),
+ *  which the run learns only at the call when the id comes from an earlier step or
+ *  a `foreach` item. The host marks such a step (`connection_follows_record`) on
+ *  the run's copy, never a recipe, and leaves a step whose connection was chosen
+ *  unmarked, so the gateway refuses a record from another connection there (D-254
+ *  cell B). The record's connection then meets every check any connection meets,
+ *  before any call: set up for this catalog, granted, inside a contract.
+ *
+ *  Followed only when the record is of the kind the step takes: the argument says
+ *  which (`deal_id` takes a deal, `recordIdArgKind`), so a contact's id on a deal
+ *  read never reaches the contact's connection to read the deal of that number
+ *  there. An id that names no connection, or a record of another kind, keeps the
+ *  step's own connection, where the gateway refuses the other kind
+ *  (`PLATFORM_ID_KIND_MISMATCH`, audited); a marked step with none settled (the run
+ *  left it to its records) is refused here, before any call, the same way. */
+export const connectionForRecord = (
+  s: Record<string, unknown>,
+  manifest: IngredientManifest,
+  input: Record<string, unknown>,
+  bound: string,
+): string => {
+  if (s.connection_follows_record !== true) return bound;
+  const operation = typeof input.operation === 'string' ? input.operation : undefined;
+  const idArg = operation === undefined ? undefined : manifest.operations?.[operation]?.record_id_arg;
+  if (operation === undefined || idArg === undefined) return bound;
+  const args = input.args !== null && typeof input.args === 'object' && !Array.isArray(input.args)
+    ? input.args as Record<string, unknown>
+    : {};
+  const parsed = parsePlatformRecordTargetId(args[idArg]);
+  const kind = recordIdArgKind(idArg);
+  if (parsed !== null && parsed.entity === kind) return parsed.connection_name;
+  if (bound.length > 0) return bound;
+  if (parsed !== null && kind !== undefined) {
+    throw platformRecordKindMismatch({ operation, id_arg: idArg, kind, record: parsed });
+  }
+  throw new PlatformRecordIdError(
+    'PLATFORM_ID_CONNECTION_REQUIRED',
+    `PLATFORM_ID_CONNECTION_REQUIRED: '${operation}' acts on a record whose id names no connection, `
+      + "and none was chosen for it. No provider call was made. Pass the record's target_id, "
+      + 'or choose a connection for the run or the dish.',
+  );
+};
+
+/** D-320 ruling 20 — a step marked `result_names_connection` (the vendor-neutral
+ *  lowering marks a single-record op's fetch) gets, beside its result, the
+ *  connection its call went through, so the record's projection can say where the
+ *  record lives: for a step that follows its record, that is known only here. */
+export const withCallConnection = (
+  s: Record<string, unknown>,
+  result: unknown,
+  connectionName: string,
+): unknown =>
+  s.result_names_connection === true && result !== null && typeof result === 'object' && !Array.isArray(result)
+    ? { ...(result as Record<string, unknown>), connection_name: connectionName }
+    : result;
 
 /** D-157 N.5 — the two top-level catalog-step structural keys the catalog
  *  gateway reads directly off `input` (NOT out of `input.args`):
@@ -956,7 +1020,7 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
       input.args !== undefined
         ? { ...input, args: resolveDeep(input.args, ctx.stores) }
         : input;
-    const connectionName = resolveCatalogConnection(s, resolvedInput, ctx);
+    const connectionName = connectionForRecord(s, manifest, resolvedInput, resolveCatalogConnection(s, resolvedInput, ctx));
     // D-173 capstone — capture the resolved projection `args` into the gated
     // step's `step.*` snapshot so a HOLD's checkpoint carries the prefill. The
     // gate throws `PreflightRequiredSignal` BEFORE the step output is stored
@@ -969,9 +1033,9 @@ const runIngredient = async (step: RecipeStep, ctx: ExecutionContext): Promise<u
     // reads) makes the inbox prefill correct; on resume the gated step re-runs
     // and overwrites this transient capture with its real result.
     try {
-      return await runCatalogOperation(
+      return withCallConnection(s, await runCatalogOperation(
         ctx, manifest, ingredientSlug, resolvedInput, connectionName, output, stepOptions, stepMeta,
-      );
+      ), connectionName);
     } catch (e) {
       if (isPreflightRequiredSignal(e) && typeof s.id === 'string') {
         const resolvedArgs =

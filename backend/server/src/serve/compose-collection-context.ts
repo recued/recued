@@ -93,6 +93,7 @@ type WatcherDispatcher = ReturnType<typeof createWatcherDispatcher>;
 type WorkEntityDispatchers = ReturnType<typeof createWorkEntityDispatchers>;
 
 export interface ComposeCollectionContextOptions {
+  managedOAuthConsumers?: import('../managed-oauth-consumers.js').ManagedOAuthConsumers;
   db: Database.Database | undefined;
   dbPath: string;
   runtimeConfig: RuntimeConfigStore;
@@ -369,6 +370,7 @@ export const composeCollectionContext = (
   };
 
   const calendarStack = composeCalendarBoot({
+    ...(options.managedOAuthConsumers ? { managedOAuth: options.managedOAuthConsumers } : {}),
     db,
     cacheBlobs,
     warehouseBus,
@@ -423,6 +425,7 @@ export const composeCollectionContext = (
     : undefined;
 
   const mailStack = composeMailBoot({
+    ...(options.managedOAuthConsumers ? { managedOAuth: options.managedOAuthConsumers } : {}),
     db,
     cacheBlobs,
     warehouseBus,

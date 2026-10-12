@@ -813,6 +813,9 @@ export type {
   PackInstallPlan,
 } from './bulk-pack.js';
 
+// D-320 ruling 19 — the lowest Recued a pack or a recipe runs on.
+export { RECUED_VERSION_RE, isRecuedVersion } from './recued-version.js';
+
 // D-195 — verify the directly named workflow-install pack against its existing
 // BulkPackManifest recipe pins. No parallel bundle manifest is introduced.
 export {
@@ -1861,6 +1864,9 @@ export {
   MEMORY_RETENTION_DEFAULT_DAYS,
   MEMORY_READ_PERMISSION,
   ENRICHMENT_WRITE_PERMISSION,
+  NOTIFICATION_SEND_PERMISSION,
+  MAIL_SEND_PERMISSION,
+  RECIPE_PERMISSIONS,
   CONNECTION_READ_PERMISSION_PREFIX,
   isConnectionReadPermission,
   AUDIT_OUTPUT_STRING_MAX,
@@ -2733,6 +2739,8 @@ export {
   parsePlatformRecordTargetId,
   isPlatformRecordTargetId,
   PlatformRecordIdError,
+  platformRecordKindMismatch,
+  recordIdArgKind,
   routePlatformRecordOperationArgs,
   stampPlatformRecordIds,
 } from './platform-record-id.js';
@@ -4513,6 +4521,7 @@ export {
   APPROVAL_LINK_ON_APPROVE_ACTIONS,
   APPROVAL_LINK_ON_APPROVE_ACTION_SET,
   APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS,
+  APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS,
   APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODES,
   APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODE_SET,
   APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTION_SET,
@@ -4523,6 +4532,8 @@ export {
   validateApprovalLinkConsume,
   formatApprovalLinkConsumedOutcome,
 } from './approval-link-config.js';
+
+export * from './quote-signoff.js';
 export type {
   ApprovalLinkConfig,
   ApprovalLinkOnActionConfig,
@@ -6837,3 +6848,5 @@ export type { RequiredConnection } from './required-connections.js';
 // thing records, and the event vocabulary.
 export * from './mail-facts.js';
 export * from './mail-work.js';
+// D-322 — owner-selected managed OAuth brokers.
+export * from './managed-oauth.js';

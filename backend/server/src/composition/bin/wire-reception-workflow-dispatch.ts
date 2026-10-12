@@ -39,6 +39,7 @@
  *  D-157 § A.2 / Flow 2. */
 
 import type { ExecutionSource } from '@recued/contracts';
+import { QUOTE_SIGNOFF_RELEASE_RECIPE } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { ExecuteRequest } from '../../types.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -55,6 +56,7 @@ const PACK_SLUG_FOR_KIND: Readonly<Record<ReceptionWorkflowDispatch['kind'], str
   approval_link: 'reception-approval',
   scheduling_link: 'reception-scheduling',
   drop_link: 'reception-drop',
+  quote_signoff: 'reception-approval',
 };
 
 /** A `composition.reception_*` trigger event marks the compiled
@@ -113,6 +115,7 @@ export const composeReceptionWorkflowDispatch = (
     // trigger is a `composition.reception_*` event). `listForPack` yields the
     // recipe ids; `get` resolves each definition.
     for (const recipeId of deps.recipeStore.listForPack(slug)) {
+      if (kind === 'quote_signoff' ? recipeId !== QUOTE_SIGNOFF_RELEASE_RECIPE : recipeId === QUOTE_SIGNOFF_RELEASE_RECIPE) continue;
       const recipe = deps.recipeStore.get(recipeId);
       if (recipe === null) continue;
       const triggers = (recipe as { event_triggers?: ReadonlyArray<{ event?: string }> })
@@ -152,10 +155,17 @@ export const composeReceptionWorkflowDispatch = (
     // A unique synthetic run id per dispatch — the host's run-anchor identity
     // for this fresh fire. Includes the source ref + a monotone-ish stamp so
     // re-dispatches (a rare crash-window double-fire) don't collide anchors.
-    const runId = `reception-${dispatch.kind}-${dispatch.source_ref}-${now()}`;
+    const runId = dispatch.kind === 'quote_signoff' ? `reception-quote-signoff-${dispatch.source_ref}`
+      : `reception-${dispatch.kind}-${dispatch.source_ref}-${now()}`;
 
     try {
-      await deps.handleExecute(
+      if (dispatch.kind === 'quote_signoff') {
+        // A crash after dispatch but before drain acknowledgment must not mint
+        // another ask, including after the owner already declined this one.
+        const previous = await deps.executeDeps.auditLog?.get(runId);
+        if (previous) return { dispatched: true };
+      }
+      const result = await deps.handleExecute(
         deps.executeDeps,
         {
           recipe_id: resolved.recipe_id,
@@ -169,6 +179,10 @@ export const composeReceptionWorkflowDispatch = (
       // override auto-accepted it engine-side — still a single materialize).
       // Either way the row is handed off: report dispatched so the processor
       // marks it processed.
+      if (dispatch.kind === 'quote_signoff') {
+        const response = result as { awaiting_approval?: boolean; success?: boolean };
+        return { dispatched: response.awaiting_approval === true || response.success === true };
+      }
       return { dispatched: true };
     } catch (e) {
       // `handleExecute` carries runtime errors inside its response (it does NOT

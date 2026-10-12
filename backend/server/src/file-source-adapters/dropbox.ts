@@ -43,7 +43,7 @@
  *  scheduler records + retries (a dedicated file sync-state store + refresh is
  *  a named follow-on). */
 
-import { parseImportScopeConfig, resolveBearerAccessToken, type ImportScope } from '@recued/contracts';
+import { parseImportScopeConfig, type ImportScope } from '@recued/contracts';
 
 import type {
   FileSourceListFn,
@@ -51,10 +51,10 @@ import type {
 } from '../file-source-sync.js';
 import type {
   FileConnectionCredential,
-  FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
 import { fetchFileSourceApi } from './http-json.js';
+import { resolveFileBearerTransport, type FileBearerTransport } from './bearer-transport.js';
 import { drainPagedList, type PagedListDrain, type PagedListPage } from './paged-list.js';
 
 const DROPBOX_API = 'https://api.dropboxapi.com';
@@ -117,14 +117,13 @@ const parseDropboxPagedPage = (raw: unknown): PagedListPage => {
 };
 
 const dropboxPost = async (
-  fetchImpl: FileFetch,
   url: string,
-  token: string,
+  transport: FileBearerTransport,
   body: Record<string, unknown>,
 ): Promise<unknown> => {
-  const res = await fetchFileSourceApi(fetchImpl, url, {
+  const res = await fetchFileSourceApi(transport.fetch, url, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: { ...transport.headers, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -202,7 +201,7 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
   // (delete authority). The final page's cursor rides back as `next_cursor`, the
   // delta watermark for the next cycle. Catches its own HTTP errors → outcome.
   const fullWalk = async (
-    token: string,
+    transport: FileBearerTransport,
     rootPath: string,
     scope: ImportScope | null,
   ): Promise<FileSourceListOutcome> => {
@@ -217,7 +216,7 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
         {
           fetchPage: (ref) =>
             ref === ''
-              ? dropboxPost(deps.fetchImpl, `${DROPBOX_API}/2/files/list_folder`, token, {
+              ? dropboxPost(`${DROPBOX_API}/2/files/list_folder`, transport, {
                   path: rootPath,
                   recursive: true,
                   limit: DROPBOX_LIST_LIMIT,
@@ -225,7 +224,7 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
                   include_media_info: false,
                   include_non_downloadable_files: true,
                 })
-              : dropboxPost(deps.fetchImpl, `${DROPBOX_API}/2/files/list_folder/continue`, token, {
+              : dropboxPost(`${DROPBOX_API}/2/files/list_folder/continue`, transport, {
                   cursor: ref,
                 }),
           parsePage: parseDropboxPagedPage,
@@ -261,7 +260,7 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
   // reconcile a removal. Throws HTTP errors so the caller can split a cursor
   // reset (→ full fallback) from a real failure (→ classify).
   const deltaWalk = async (
-    token: string,
+    transport: FileBearerTransport,
     cursor: string,
     scope: ImportScope | null,
   ): Promise<FileSourceListOutcome> => {
@@ -276,7 +275,7 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
     const drain = await drainPagedList(
       {
         fetchPage: (ref) =>
-          dropboxPost(deps.fetchImpl, `${DROPBOX_API}/2/files/list_folder/continue`, token, {
+          dropboxPost(`${DROPBOX_API}/2/files/list_folder/continue`, transport, {
             cursor: ref,
           }),
         parsePage: parseDropboxPagedPage,
@@ -329,12 +328,12 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
     if (cred === null) {
       return { ok: false, kind: 'config', reason: `connection '${request.connection_name}' not found` };
     }
-    const token = resolveBearerAccessToken(cred.auth);
-    if (token === undefined) {
+    const transport = resolveFileBearerTransport(cred, deps.fetchImpl, 'dropbox');
+    if (transport === undefined) {
       return {
         ok: false,
         kind: 'config',
-        reason: `dropbox connection '${request.connection_name}' has no usable access token`,
+        reason: `dropbox connection '${request.connection_name}' has no usable credential transport`,
       };
     }
     // Fork A escape hatch — the user's optional `import_scope` glob. Its derived
@@ -355,14 +354,14 @@ export const buildDropboxFileSourceLeaf = (deps: FileSourceLeafDeps): FileSource
     // The runner passes `null` to force a FULL walk (first boot / periodic
     // delete re-baseline), or the stored watermark for a cheap DELTA walk.
     if (request.cursor === null || request.cursor === undefined) {
-      return fullWalk(token, rootPath, scope);
+      return fullWalk(transport, rootPath, scope);
     }
     try {
-      return await deltaWalk(token, request.cursor, scope);
+      return await deltaWalk(transport, request.cursor, scope);
     } catch (err) {
       // A cursor reset recovers by a fresh full walk THIS cycle (the leaf
       // returns `walk: 'full'`); any other error is classified + retried.
-      if (isDropboxReset(err)) return fullWalk(token, rootPath, scope);
+      if (isDropboxReset(err)) return fullWalk(transport, rootPath, scope);
       return classifyDropboxError(err);
     }
   };

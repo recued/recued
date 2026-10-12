@@ -507,12 +507,15 @@ export const buildReceptionInboxDetailModel = (
   now: number,
 ): ReceptionInboxDetailModel => {
   const editable = new Set(item.arg_schema.fields.map((f) => f.key));
-  const immutable_arg_keys = Object.keys(item.args).filter((key) => !editable.has(key)).sort();
+  const immutable_arg_keys = item.source.kind === 'quote_signoff' ? []
+    : Object.keys(item.args).filter((key) => !editable.has(key)).sort();
   const attachment = buildReceptionInboxAttachmentModel(item.attachment);
   const approve_disabled_reason =
     attachment?.approve_blocked === true ? 'Recued is checking the file for viruses.' : null;
   const review_body =
-    item.top_tier_kind === 'form_response'
+    item.source.kind === 'quote_signoff' && typeof item.args.summary === 'string'
+      ? item.args.summary
+      : item.top_tier_kind === 'form_response'
     && typeof item.args.body === 'string'
     && item.args.body.trim().length > 0
       ? item.args.body

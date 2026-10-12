@@ -418,9 +418,12 @@ const resolveBundledRecipes = (
  *
  *  Fast path: a pack with no op-step recipe returns `resolved` untouched (every
  *  existing recipe-only foundation pack — byte-identical behavior). Throws on a
- *  hard block (an unresolvable op-step — unknown catalog, no by-ref vendor
- *  catalog, missing connection variable, …) so the per-pack try/catch records
- *  `errored` and the broken pack is skipped without crashing the boot scan. */
+ *  hard block (an unresolvable op-step — unknown catalog, missing connection
+ *  variable, a tool op with no by-ref vendor catalog, …) so the per-pack try/catch
+ *  records `errored` and the broken pack is skipped without crashing the boot scan.
+ *  D-320 — a pack with no composition and no vendor catalog keeps its vendor-neutral
+ *  op-steps as authored, for each run to bind, as `packs.install` does: those
+ *  entries are marked so the engine's safety net admits them. */
 const resolveFoundationOpSteps = (
   manifest: BulkPackManifest,
   resolved: BulkPackInstallRecipe[],
@@ -454,12 +457,17 @@ const resolveFoundationOpSteps = (
   for (const w of dispatch.warnings) {
     console.warn(`[d-170.foundation] ${manifest.slug}: ${w.code} — ${w.message}`);
   }
+  const unbound = new Set(dispatch.unbound ?? []);
   return resolved.map((entry, i) => {
     const def = dispatch.recipes[i];
     // Only an op-step recipe's def actually changed; a non-op-step entry keeps
     // its original object + bundled hash (so its no-op fast-path is unchanged).
-    if (entry.recipe == null || def === entry.recipe.recipe) return entry;
-    return { ...entry, recipe: { ...entry.recipe, recipe: def, recipe_hash: hashRecipe(def) } };
+    const out = entry.recipe == null || def === entry.recipe.recipe
+      ? entry
+      : { ...entry, recipe: { ...entry.recipe, recipe: def, recipe_hash: hashRecipe(def) } };
+    return out.recipe != null && unbound.has(out.recipe.recipe_id)
+      ? { ...out, op_steps_resolved_at_run: true as const }
+      : out;
   });
 };
 

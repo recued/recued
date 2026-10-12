@@ -68,7 +68,7 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     key: 'name',
     label: 'Name',
     type: 'identifier',
-    help: 'A short lower-case name you use in Recipes, such as `hubspot`, `hubspot-sandbox`).',
+    help: 'A short lower-case name for this connection, such as `hubspot` or `hubspot-sandbox`. Screens, run records and AI clients refer to the connection by it.',
     placeholder: 'hubspot',
   },
   {

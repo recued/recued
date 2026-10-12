@@ -162,6 +162,7 @@ const BASE_FIELDS: readonly ConnectionSetupGuideFieldKey[] = [
 ];
 
 const AUTH_FIELDS: Record<AuthType, readonly ConnectionSetupGuideFieldKey[]> = {
+  managed_oauth: [], // D-322 — broker setup does not need model-generated credentials.
   none: [],
   bearer: ['auth.token'],
   basic: ['auth.username', 'auth.password'],

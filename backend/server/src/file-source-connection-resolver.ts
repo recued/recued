@@ -30,10 +30,12 @@
  *  persist template is `composition/bin/wire-executor-config.ts`
  *  (`makeRefreshPersistAuth`) + `wire-vendor-substrate.ts`. */
 
-import type { ConnectionAuth } from '@recued/contracts';
+import { RpcError } from '@recued/contracts';
 import { createEnsureFreshAuth, type EnsureFreshAuthDeps } from '@recued/ingredients';
 
 import type { ConnectionStoreSqlite } from './storage/connection-store.js';
+import type { FileConnectionCredential } from './file-source-adapters/index.js';
+import type { ManagedOAuthService } from './managed-oauth-service.js';
 
 /** The AEAD decode/encode primitives from `connection-handler.js`, injected
  *  (the compose site dynamic-imports them so the heavy module stays out of the
@@ -49,15 +51,13 @@ export interface FileSourceConnectionResolverDeps {
   /** The connection sub-DEK key provider (absent on a non-vault boot). */
   keyProvider: Parameters<EncodeAuthForStorage>[2];
   fetchImpl?: typeof fetch;
+  managedOAuth?: Pick<ManagedOAuthService, 'fetch'>;
   now?: () => number;
   /** Advisory signal when a refreshed credential could not be persisted. */
   onPersistFailure?: EnsureFreshAuthDeps['onPersistFailure'];
 }
 
-export interface ResolvedFileSourceConnection {
-  auth: ConnectionAuth;
-  config: Record<string, unknown>;
-}
+export type ResolvedFileSourceConnection = FileConnectionCredential;
 
 /** Persist a refreshed OAuth2 auth back to the connection store, re-encoding via
  *  the same sub-DEK used at enrollment and PRESERVING the row's other fields
@@ -138,6 +138,38 @@ export const createFileSourceConnectionResolver = (
       { kind: row.kind, name: row.name },
       deps.keyProvider,
     );
+    if (decoded.type === 'managed_oauth') {
+      const broker = deps.managedOAuth;
+      if (!broker) throw new RpcError('not_configured', 'Managed OAuth is unavailable for file access on this server.');
+      const current = deps.connectionStore.get('api', connection_name);
+      if (!current || current.auth_ciphertext !== row.auth_ciphertext || current.config_json !== row.config_json) {
+        throw new RpcError('conflict', 'The file connection changed during credential resolution.');
+      }
+      return { auth: decoded, config: parseConfig(row.config_json), managedFetch: async (url, init) => {
+        // Decrypt again on every use so locking the vault also seals an in-flight walk.
+        const live = deps.connectionStore.get('api', connection_name);
+        if (!live || live.auth_ciphertext !== row.auth_ciphertext || live.config_json !== row.config_json) {
+          throw new RpcError('conflict', 'The file connection changed. Start a fresh read or sync.');
+        }
+        const auth = await deps.decodeAuthFromStorage(live.auth_ciphertext,
+          { kind: live.kind, name: live.name }, deps.keyProvider);
+        const afterDecode = deps.connectionStore.get('api', connection_name);
+        if (!afterDecode || afterDecode.auth_ciphertext !== live.auth_ciphertext || afterDecode.config_json !== live.config_json
+          || auth.type !== 'managed_oauth') throw new RpcError('conflict', 'The file connection changed.');
+        const target = new URL(url);
+        // Dropbox's authored file API splits listing and downloads across these
+        // two fixed hosts. This exception is private to file access; generic API
+        // requests retain the single-origin binding. No arbitrary host override.
+        const dropboxContent = auth.target_origin === 'https://api.dropboxapi.com'
+          && target.origin === 'https://content.dropboxapi.com';
+        if ((target.origin !== auth.target_origin && !dropboxContent) || target.username || target.password || target.hash) {
+          throw new RpcError('bad_request', 'The managed file request targets a different vendor.');
+        }
+        const { body, ...rest } = init;
+        return broker.fetch(dropboxContent ? { ...auth, target_origin: target.origin } : auth, url,
+          { ...rest, ...(body !== undefined ? { body: body as BodyInit } : {}) });
+      } };
+    }
     // Lazy refresh: an `oauth2_refresh` token that is missing or near expiry is
     // refreshed + persisted; S3's `basic` auth passes through untouched.
     const auth = await ensureFreshAuth(row, decoded);

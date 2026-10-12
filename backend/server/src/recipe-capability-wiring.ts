@@ -18,15 +18,32 @@
  *  whose grants name bindings that no longer exist. */
 
 import { RpcError, type IngredientManifest, type RecipeDefinition } from '@recued/contracts';
-import { CanonicalOpResolutionError, lowerOpStepRecipe, type PackOpResolution } from '@recued/recipes';
+import {
+  CanonicalOpResolutionError,
+  applyKernelOpRunnability,
+  carryRetiredConnections,
+  catalogSignInReader,
+  lowerOpStepRecipe,
+  vendorNeutralSettings,
+  withSlotSettings,
+  type PackOpResolution,
+} from '@recued/recipes';
 
-import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
+import { servingConnectionsFor } from './canonical-search-fanout.js';
+import { deriveBoundConventionFamilies, liveCatalogVendors, liveVendorRegistry } from './connection-convention-families.js';
+import { chosenSlots, resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
+import { markRecordFollowers, recordRoutedConnection, settingsFromRecordIds } from './record-connection-settle.js';
 import type { OpResolver } from './derive-recipe-capability.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { bundledPackManifestOf, catalogSlotsFrom } from './pack-connection-slots.js';
 import { effectiveSlotDefault } from './pack-connection-outcomes.js';
 import { buildPackOpResolution } from './pack-inventory.js';
-import { canonicalSlotVariables, derivePickCandidates } from './pick-candidates.js';
+import {
+  canonicalSlotVariables,
+  concreteSlotCandidates,
+  derivePickCandidates,
+  unboundConcreteConnectionSlots,
+} from './pick-candidates.js';
 import {
   CONNECTION_CHOICE_INVALID,
   applyConnectionChoices,
@@ -35,8 +52,7 @@ import {
   connectionSteps,
   runConnectionSlots,
 } from './run-connection-choice.js';
-import { carryRetiredConnections, catalogSignInReader, withSlotSettings } from './slot-settings.js';
-import { bindingsForCatalogs } from './storage/connection-catalog-binding-store.js';
+import { bindingsForCatalogs, catalogBindingsOf } from './storage/connection-catalog-binding-store.js';
 
 export type DoorRecipeResolution =
   | {
@@ -100,6 +116,7 @@ type DoorConnectionDeps = Pick<
   | 'executorConfig'
   | 'packManifestOf'
   | 'dishStore'
+  | 'localManifestStore'
 >;
 
 /** A door's connections as its run settles them: the recipe in the form the run
@@ -107,7 +124,25 @@ type DoorConnectionDeps = Pick<
  *  run's own reason for refusing before any step used one. */
 export type DoorConnectionSettlement =
   | { readonly ok: true; readonly recipe: RecipeDefinition; readonly config: Record<string, unknown> }
-  | { readonly ok: false; readonly reason: string };
+  | {
+      readonly ok: false;
+      readonly reason: string;
+      /** What kind of refusal (D-319 amendment; a door reads only `reason`):
+       *  - `unpinned` (`unattendedRun` only): a setting a run on its own would have to
+       *    ask about, named in `unpinned`;
+       *  - `unserved`: a step's setting no connection can serve;
+       *  - `choice`: the dish's choice is no longer on its slot's list;
+       *  - `unresolved`: anything else (a pack not installed, a server without its
+       *    packs' connections) — not the connection's to answer. */
+      readonly kind?: 'unpinned' | 'unserved' | 'choice' | 'unresolved';
+      readonly unpinned?: { readonly variable: string };
+    };
+
+/** The run's own refusal of a setting it cannot settle with nobody to ask which
+ *  (`execute-handler.ts`, `settleUnboundSlot`), said of a run that starts on its own. */
+const unpinnedReason = (recipe_id: string, variable: string): string =>
+  `Recipe '${recipe_id}' needs a connection for '${variable}', and a run on its own has no one to ask which. `
+  + "Choose a default connection on its pack's Access tab, or a connection for the dish it runs.";
 
 /** A value that counts as given, as the run's fill reads one (`pick-candidates.ts`). */
 const supplied = (value: unknown): boolean =>
@@ -128,11 +163,22 @@ const supplied = (value: unknown): boolean =>
  *     over a declared default but never over a value the config gives: the runners
  *     pass the main dish's settings as the run's own, and the run's own value wins.
  *     A choice no longer on its slot's list refuses the door, as it refuses every run;
- *  4. the steps resolve (`resolveCanonicalRecipeForDispatch`);
+ *  3½. a setting nobody chose takes the connection its step's record id names, when
+ *     the config gives that id (D-320 ruling 20d, `record-connection-settle.ts`; the
+ *     run also reads its context's, which a door has none of);
+ *  4. the steps resolve (`resolveCanonicalRecipeForDispatch`), a vendor-neutral
+ *     search whose setting nobody chose reading every connection that serves it
+ *     (D-320 ruling 20, `canonical-search-fanout.ts`); its legs' settings join the
+ *     config. A door covers what that search reads now; a pre-approval, what its run
+ *     will read, or the run is refused as differing from what was reviewed;
  *  5. a setting still empty, with no default, takes the pack's default
  *     (`effectiveSlotDefault`). With none it stays empty, and the door is refused as
  *     unknowable in advance, as a run in the background is;
- *  6. the dish's choice holds on the resolved steps (`assertChoicesHeld`).
+ *  6. the dish's choice holds on the resolved steps (`assertChoicesHeld`);
+ *  7. each record step on a setting nobody chose is marked to follow its record's
+ *     connection at the call (D-320 ruling 20g, `markRecordFollowers`). A setting the
+ *     run would leave to its records is not left so here: a door or a pre-approval
+ *     must know its connections in advance, so it is refused as before.
  *
  *  Before this, the door filled its config by a rule of its own: a declared default
  *  stood over the dish's choice, a value under an old name was missed, a choice the
@@ -146,6 +192,11 @@ export const settleDoorConnections = (
     /** The dish whose connection choice applies, in place of the main dish's (a
      *  pre-approval's bound dish); `null` for none. */
     dishChoices?: { choices: Readonly<Record<string, string>>; label: string } | null;
+    /** D-319 amendment (owner, 2026-10-11) — settle as a run that starts on its own
+     *  does, to arm one (`unattendedConnectionProblem`): a setting the run leaves to its
+     *  records is left so (ruling 20g), and one it would refuse, having nobody to ask
+     *  which, is refused here, with `unpinned` naming it. Absent ⇒ a door's rules. */
+    unattendedRun?: boolean;
   },
 ): DoorConnectionSettlement => {
   const scan = deps.contractScan;
@@ -153,10 +204,12 @@ export const settleDoorConnections = (
   const packs = deps.packs;
   const manifests = deps.executorConfig.manifests;
   const packManifestOf = deps.packManifestOf ?? bundledPackManifestOf;
+  // D-320 ruling 20e — installed compositions' vendors too, as the run reads them.
+  const catalogVendors = liveCatalogVendors(deps.localManifestStore);
   const slotSettings = withSlotSettings(recipe, {
     ...(packs !== undefined ? { packs } : {}),
     signInOf: catalogSignInReader({
-      ...(scan !== undefined ? { scan } : {}),
+      ...(scan !== undefined ? { bindingsOf: catalogBindingsOf(scan) } : {}),
       ...(packs !== undefined ? { packs } : {}),
       packManifestOf,
     }),
@@ -189,7 +242,7 @@ export const settleDoorConnections = (
   try {
     if (chosen !== undefined) {
       if (scan === undefined || profiles === undefined) {
-        return { ok: false, reason: "Choosing a run's connection needs a server that keeps its packs' connections." };
+        return { ok: false, kind: 'unresolved', reason: "Choosing a run's connection needs a server that keeps its packs' connections." };
       }
       let lowered: RecipeDefinition | undefined;
       try {
@@ -219,18 +272,82 @@ export const settleDoorConnections = (
         candidatesFor: (variable) => derivePickCandidates(settled, variable, {
           profiles,
           manifests,
+          vendors: catalogVendors,
           ...(packs !== undefined ? { packs } : {}),
         }).candidates.map((candidate) => candidate.connection_name),
         yieldToCaller: true,
       }).config;
     }
-    const resolved = resolveCanonicalRecipeForDispatch(settled, {
+    // The settings someone chose, before the run's own fills (D-320 ruling 20).
+    const chosenSettings = chosenSlots(out);
+    // A record id the config names settles its step's setting, as in the run
+    // (ruling 20d). A door is derived with no run's context, so only the config's.
+    out = {
+      ...out,
+      ...settingsFromRecordIds(settled, { config: out, explicit: chosenSettings }, {
+        manifests,
+        packs,
+        isSetUp: (name) => profiles?.get(name) != null,
+      }),
+    };
+    const resolveWith = (recordRouted: ReadonlyMap<string, string>) => resolveCanonicalRecipeForDispatch(settled, {
       profiles: profiles ?? { get: () => null },
       manifests,
       config: out,
       ...(packs !== undefined ? { packs } : {}),
+      vendors: catalogVendors,
+      ...(recordRouted.size > 0 ? { recordRouted } : {}),
+      fanout: profiles === undefined ? undefined : {
+        servingConnections: servingConnectionsFor({
+          profiles,
+          manifests,
+          vendors: catalogVendors,
+          ...(chosen !== undefined ? { slotChoices: chosen.choices } : {}),
+          ...(scan !== undefined
+            ? {
+                slotOfCatalog: (catalog: string) => catalogSlotsFrom(
+                  bindingsForCatalogs(scan, [catalog]),
+                  [catalog],
+                  packManifestOf,
+                  packs,
+                ).get(catalog) ?? catalog,
+              }
+            : {}),
+        }),
+        explicit: chosenSettings,
+      },
     });
-    if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    // A run that starts on its own, as its pick loop goes (`execute-handler.ts`): a
+    // setting its steps leave to their records is left so (ruling 20g); any other it
+    // refuses when a connection could serve it, having nobody to ask which. With
+    // none, the resolve's own reason stands, as in the run.
+    const recordRouted = new Map<string, string>();
+    let resolved = resolveWith(recordRouted);
+    while (
+      deps.unattendedRun === true && !resolved.ok && resolved.unbound_slot !== undefined && profiles !== undefined
+    ) {
+      const { variable } = resolved.unbound_slot;
+      if (recordRouted.has(variable)) break;
+      const { candidates } = derivePickCandidates(settled, variable, {
+        profiles,
+        manifests,
+        vendors: catalogVendors,
+        ...(packs !== undefined ? { packs } : {}),
+      });
+      const routedBy = recordRoutedConnection(settled, variable, candidates, packs);
+      if (routedBy === undefined) {
+        if (candidates.length > 0) {
+          return { ok: false, kind: 'unpinned', reason: unpinnedReason(settled.recipe_id, variable), unpinned: { variable } };
+        }
+        break;
+      }
+      recordRouted.set(variable, routedBy);
+      resolved = resolveWith(recordRouted);
+    }
+    if (!resolved.ok) {
+      return { ok: false, kind: resolved.unbound_slot !== undefined ? 'unserved' : 'unresolved', reason: resolved.reason };
+    }
+    if (resolved.settings !== undefined) out = { ...out, ...resolved.settings };
     if (scan !== undefined && profiles !== undefined) {
       // The run's fill (`packConnectionFor`), per setting, over the catalogs its steps
       // fetch from. Unlike the run, a setting whose step skips itself without one is
@@ -250,6 +367,19 @@ export const settleDoorConnections = (
         if (connection !== undefined) out = { ...out, [variable]: connection };
       }
     }
+    // A run that starts on its own refuses a concrete step's setting still empty when
+    // a connection could serve it, as its fill does (`settleUnboundSlot`); with none,
+    // it goes on and the gateway reports the step, as before.
+    if (deps.unattendedRun === true && profiles !== undefined) {
+      for (const slot of unboundConcreteConnectionSlots(resolved.recipe, out)) {
+        if (recordRouted.has(slot.variable)) continue;
+        if (concreteSlotCandidates(slot, profiles).length > 0) {
+          return {
+            ok: false, kind: 'unpinned', reason: unpinnedReason(settled.recipe_id, slot.variable), unpinned: { variable: slot.variable },
+          };
+        }
+      }
+    }
     if (chosen !== undefined && scan !== undefined) {
       const { bindings, slots } = slotsOf(resolved.recipe, scan);
       assertChoicesHeld({
@@ -258,6 +388,7 @@ export const settleDoorConnections = (
         choices: chosen.choices,
         inherited: false,
         dish: chosen.label,
+        families: vendorNeutralSettings(settled),
         exempt: new Set([...callerKeys].filter((key) => {
           const value = out[key];
           return typeof value === 'string' && value.trim() !== '';
@@ -268,11 +399,58 @@ export const settleDoorConnections = (
         enrolled: enrolled(),
       });
     }
-    return { ok: true, recipe: resolved.recipe, config: out };
+    // D-320 ruling 20g — the record steps the run lets follow their records, marked
+    // as the run marks them. Against the FINAL config: a pre-approved run is given
+    // it, so a setting filled here is one the owner reviewed, and its steps stay
+    // on it (a door's run fills its own; the mark does not change what a door
+    // derives).
+    return { ok: true, recipe: markRecordFollowers(resolved.recipe, chosenSlots(out), { manifests }).recipe, config: out };
   } catch (e) {
-    if (e instanceof RpcError && e.code === CONNECTION_CHOICE_INVALID) return { ok: false, reason: e.message };
+    if (e instanceof RpcError && e.code === CONNECTION_CHOICE_INVALID) return { ok: false, kind: 'choice', reason: e.message };
     throw e;
   }
+};
+
+/** D-319 amendment (owner, 2026-10-11): "scheduled runs should require the
+ *  necessary fields for any recipes to run properly". Why a run that starts on its
+ *  own, with these settings and its dish's choice of connection, would be refused for
+ *  a connection before its first step; `null` when it would not. The run's own
+ *  refusals, by its own rules and pieces: no vendor of a family bound for a write
+ *  (`applyKernelOpRunnability`), a choice that is no longer on its slot's list, and a
+ *  setting it cannot settle with nobody to ask which (`unattendedRun`), and a
+ *  vendor-neutral step no connection can serve. Not a concrete step with no
+ *  connection that could serve it at all: the run goes on, and the gateway reports
+ *  that step if it runs. Not a pack that is not installed: that has its own
+ *  refusals, when armed and when run. */
+export const unattendedConnectionProblem = (
+  recipe: RecipeDefinition,
+  config: Readonly<Record<string, unknown>>,
+  deps: DoorConnectionDeps & {
+    readonly dishChoices: { choices: Readonly<Record<string, string>>; label: string } | null;
+  },
+): { readonly reason: string; readonly variable?: string } | null => {
+  const r1 = applyKernelOpRunnability(
+    recipe,
+    deriveBoundConventionFamilies(deps.connectionStore, liveVendorRegistry(deps.localManifestStore)),
+  );
+  if (!r1.ok) {
+    return { reason: `Recipe '${recipe.recipe_id}' cannot run — ${r1.blocked.map((b) => `${b.op}: ${b.warning}`).join(' ')}` };
+  }
+  const packs = deps.contractScan === undefined
+    ? undefined
+    : buildPackOpResolution(
+        () => deps.contractScan!('installed_pack', []),
+        (slug) => deps.executorConfig.manifests.get(slug) ?? null,
+      );
+  const settled = settleDoorConnections(r1.recipe, config, {
+    ...deps,
+    ...(packs === undefined ? {} : { packs }),
+    unattendedRun: true,
+  });
+  // Not the connection's to answer: a pack not installed, a server without its packs'
+  // connections. Those have their own refusals, at arming and at the run.
+  if (settled.ok || settled.kind === 'unresolved' || settled.kind === undefined) return null;
+  return { reason: settled.reason, ...(settled.unpinned !== undefined ? { variable: settled.unpinned.variable } : {}) };
 };
 
 export const composeDoorRecipeResolver = (

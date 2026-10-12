@@ -52,7 +52,7 @@
  *  retries (a token expiring mid-drain — a rare very-long delta — is the same
  *  retryable `config`, replayed with a fresh token next cycle). */
 
-import { parseImportScopeConfig, resolveBearerAccessToken, type ImportScope } from '@recued/contracts';
+import { parseImportScopeConfig, type ImportScope } from '@recued/contracts';
 
 import type {
   FileSourceListFn,
@@ -68,10 +68,10 @@ import {
 } from './id-keyed-delta.js';
 import type {
   FileConnectionCredential,
-  FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
 import { fetchFileSourceApi } from './http-json.js';
+import { resolveFileBearerTransport, type FileBearerTransport } from './bearer-transport.js';
 import {
   assertProviderPageUrl,
   readProviderStringContinuation,
@@ -151,11 +151,11 @@ const graphErrorCode = (text: string): string | undefined => {
   }
 };
 
-const graphGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
+const graphGet = async (url: string, transport: FileBearerTransport): Promise<unknown> => {
   const safeUrl = assertProviderPageUrl(url, GRAPH_API, 'OneDrive');
-  const res = await fetchFileSourceApi(fetchImpl, safeUrl, {
+  const res = await fetchFileSourceApi(transport.fetch, safeUrl, {
     method: 'GET',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { ...transport.headers },
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -288,12 +288,12 @@ export const buildOneDriveFileSourceLeaf = (
     if (cred === null) {
       return { ok: false, kind: 'config', reason: `connection '${request.connection_name}' not found` };
     }
-    const token = resolveBearerAccessToken(cred.auth);
-    if (token === undefined) {
+    const transport = resolveFileBearerTransport(cred, deps.fetchImpl, vendorLabel);
+    if (transport === undefined) {
       return {
         ok: false,
         kind: 'config',
-        reason: `${vendorLabel} connection '${request.connection_name}' has no usable access token`,
+        reason: `${vendorLabel} connection '${request.connection_name}' has no usable credential transport`,
       };
     }
     // Fork A escape hatch — the user's optional `import_scope` glob. `/delta` has
@@ -321,7 +321,7 @@ export const buildOneDriveFileSourceLeaf = (
     // GETs the ref directly — every OneDrive ref (root URL / `@odata.nextLink` /
     // stored deltaLink) is already a full URL.
     const kdeps: IdKeyedDeltaDeps = {
-      fetchPage: (ref) => graphGet(deps.fetchImpl, ref, token),
+      fetchPage: (ref) => graphGet(ref, transport),
       parsePage: parseTrustedGraphDeltaPage,
       classify: oneDriveClassify,
     };

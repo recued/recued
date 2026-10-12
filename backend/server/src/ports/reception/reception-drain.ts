@@ -82,7 +82,7 @@ export interface ReceptionWorkflowDispatch {
   /** The reception kind (`'intake_form'` / `'approval_link'` /
    *  `'scheduling_link'` / `'drop_link'`) — selects the compiled recipe at the
    *  boot-wire binding site. */
-  readonly kind: 'intake_form' | 'approval_link' | 'scheduling_link' | 'drop_link';
+  readonly kind: 'intake_form' | 'approval_link' | 'scheduling_link' | 'drop_link' | 'quote_signoff';
   /** The projection-shaped trigger payload — the shape the reception
    *  projection consumes (`{ top_tier_kind, id, title, body?, metadata?,
    *  source_id?, ... }`). Forwarded verbatim as `context.event.payload`; the

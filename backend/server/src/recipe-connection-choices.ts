@@ -8,9 +8,12 @@
  *  only where it means something; the run reads the same list
  *  (`applyConnectionChoices`) and the same default (`storedSlotDefault`).
  *
- *  ⚠ A vendor-neutral op-step (`core.crm.*`: 18 steps in 15 shipped recipes,
- *  measured 2026-10-10) names no catalog until a connection is given, so it
- *  offers none here. A run may still name one (`chooseForVendorNeutral`). */
+ *  A vendor-neutral op-step (`core.crm.*`: 18 steps in 15 shipped recipes,
+ *  measured 2026-10-10) names no catalog until a connection is given. Its FAMILY
+ *  (`crm`, `acct`) is listed instead (D-320 ruling 20, 2026-10-11: the dish form
+ *  had no way to keep such a recipe on one CRM), with every connection the run's
+ *  own pick rule finds can serve all its steps (`derivePickCandidates`), across
+ *  vendors. The run places a choice made for it (`chooseForVendorNeutral`). */
 
 import {
   retiredConnectionsOf,
@@ -19,14 +22,24 @@ import {
   type RpcResponse,
   type ServerRpcRegistry,
 } from '@recued/contracts';
-import { CanonicalOpResolutionError, lowerOpStepRecipe, type Tier2ConnectionSlot } from '@recued/recipes';
+import {
+  CanonicalOpResolutionError,
+  catalogSignInReader,
+  lowerOpStepRecipe,
+  vendorNeutralSettings,
+  withSlotSettings,
+  type Tier2ConnectionSlot,
+} from '@recued/recipes';
 
+import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
+import { liveCatalogVendors } from './connection-convention-families.js';
+import type { LocalManifestStore } from './ingredient-authoring/local-manifest-store.js';
 import { effectiveSlotDefault, type RemovalOutcomeKind } from './pack-connection-outcomes.js';
+import { derivePickCandidates } from './pick-candidates.js';
 import { bundledPackManifestOf, catalogSlotsFrom, type PackManifestOf } from './pack-connection-slots.js';
 import { buildPackOpResolution } from './pack-inventory.js';
 import { connectionSteps, runConnectionSlots, slotList } from './run-connection-choice.js';
-import { catalogSignInReader, withSlotSettings } from './slot-settings.js';
-import { allCatalogBindings, type BindingScan } from './storage/connection-catalog-binding-store.js';
+import { allCatalogBindings, catalogBindingsOf, type BindingScan } from './storage/connection-catalog-binding-store.js';
 import { storedSlotDefault } from './storage/pack-connection-default-store.js';
 
 export interface RecipeConnectionChoicesDeps {
@@ -37,6 +50,11 @@ export interface RecipeConnectionChoicesDeps {
   /** The owner's alias for a connection. */
   displayName: (connection_name: string) => string | undefined;
   packManifestOf?: PackManifestOf;
+  /** D-320 ruling 20 — the connections' operation profiles, by which a run picks a
+   *  connection for a vendor-neutral step. Absent ⇒ no family is listed. */
+  profiles?: Pick<ConnectionOperationProfileStore, 'list'> | undefined;
+  /** The installed compositions, whose vendors serve the `acct` family. */
+  localManifestStore?: Pick<LocalManifestStore, 'listManifests' | 'getEntitySchemas'> | undefined;
 }
 
 /** The slots a recipe signs in through, as `packs.connections.recipe` lists them. */
@@ -60,7 +78,9 @@ const slotsReader = (
     perCatalog.set(binding.catalog_slug, names);
   }
   const shared = new Set([...perCatalog].filter(([, names]) => names.size >= 2).map(([catalog]) => catalog));
-  if (minimum >= 2 && shared.size === 0) return () => [];
+  // A family's choice can span catalogs that each have one connection, so this
+  // shortcut holds only when no family is read.
+  if (minimum >= 2 && shared.size === 0 && deps.profiles === undefined) return () => [];
   const packs = buildPackOpResolution(
     () => deps.contractScan('installed_pack', []),
     (slug) => deps.manifests.get(slug),
@@ -68,21 +88,25 @@ const slotsReader = (
   const packManifestOf = deps.packManifestOf ?? bundledPackManifestOf;
   // D-320 phase 3 (3a) — a step that names no connection reads its slot's
   // setting, as the run gives it (`slot-settings.ts`).
-  const signInOf = catalogSignInReader({ scan: deps.contractScan, packs, packManifestOf });
+  const signInOf = catalogSignInReader({ bindingsOf: catalogBindingsOf(deps.contractScan), packs, packManifestOf });
+  const vendors = deps.profiles !== undefined ? liveCatalogVendors(deps.localManifestStore) : undefined;
   return (recipe) => {
+    const settled = withSlotSettings(recipe, { packs, signInOf }).recipe;
     let lowered: RecipeDefinition;
     try {
-      lowered = lowerOpStepRecipe(withSlotSettings(recipe, { packs, signInOf }).recipe, packs);
+      lowered = lowerOpStepRecipe(settled, packs);
     } catch (e) {
       if (e instanceof CanonicalOpResolutionError) return [];
       throw e;
     }
     const steps = connectionSteps(lowered);
-    if (minimum >= 2 && !steps.some((step) => shared.has(step.catalog))) return [];
     const catalogs = [...new Set(steps.map((step) => step.catalog))];
     const own = bindings.filter((binding) => catalogs.includes(binding.catalog_slug));
     const out: RecipeConnectionSlot[] = [];
-    for (const slot of runConnectionSlots(steps, catalogSlotsFrom(own, catalogs, packManifestOf, packs))) {
+    const packSlots = minimum >= 2 && !steps.some((step) => shared.has(step.catalog))
+      ? []
+      : runConnectionSlots(steps, catalogSlotsFrom(own, catalogs, packManifestOf, packs));
+    for (const slot of packSlots) {
       const list = slotList(slot, own, deps.enrolled);
       if (list.length < minimum) continue;
       // One on the list is the default by itself (phase 1); two or more take the
@@ -108,6 +132,31 @@ const slotsReader = (
           is_default: connection_name === theDefault,
         })),
       });
+    }
+    // D-320 ruling 20 — each vendor-neutral family, with the connections the run's
+    // pick rule finds can serve all its steps. None is a default: unchosen, a search
+    // reads them all and a step on a record takes its record's.
+    if (deps.profiles !== undefined) {
+      for (const [family, setting] of Object.entries(vendorNeutralSettings(settled))) {
+        if (out.some((slot) => slot.slot === family)) continue;
+        const names = derivePickCandidates(settled, setting, {
+          profiles: deps.profiles,
+          manifests: deps.manifests,
+          packs,
+          vendors,
+        }).candidates.map((candidate) => candidate.connection_name).filter((name) => deps.enrolled.has(name));
+        if (names.length < minimum) continue;
+        out.push({
+          slot: family,
+          variables: [setting],
+          connections: names.map((connection_name) => ({
+            connection_name,
+            display_name: deps.displayName(connection_name) ?? connection_name,
+            is_default: false,
+          })),
+          family: true,
+        });
+      }
     }
     return out;
   };
@@ -187,7 +236,7 @@ export const recipeRemovalEffects = (q: RecipeRemovalQuestion): RecipeRemoval[] 
     (slug) => q.manifests.get(slug),
   );
   const packManifestOf = q.packManifestOf ?? bundledPackManifestOf;
-  const signInOf = catalogSignInReader({ scan: q.contractScan, packs, packManifestOf });
+  const signInOf = catalogSignInReader({ bindingsOf: catalogBindingsOf(q.contractScan), packs, packManifestOf });
   const without = all.filter((b) => !(b.connection_name === q.connection && q.leaves(b)));
   const out: RecipeRemoval[] = [];
   for (const recipe of q.recipes) {

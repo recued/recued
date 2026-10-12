@@ -86,6 +86,12 @@ export interface PackConnectionsDeps {
    *  requirement match (`findEndpointCandidates`) needs it and fails closed
    *  without it, as `collection.connection.list` does. */
   authTypeOf?: (row: ConnectionRow) => Promise<ConnectionAuthType | undefined>;
+  /** D-320 ruling 20 — the connections' operation profiles and the installed
+   *  compositions, by which a run picks a connection for a vendor-neutral step:
+   *  `packs.connections.recipe` lists each family with them (and so a dish may
+   *  choose one). Absent ⇒ no family is listed. */
+  operationProfiles?: import('./recipe-connection-choices.js').RecipeConnectionChoicesDeps['profiles'];
+  localManifestStore?: import('./recipe-connection-choices.js').RecipeConnectionChoicesDeps['localManifestStore'];
 }
 
 const GRANT_SCOPE = 'grant';
@@ -765,6 +771,8 @@ export const recipeConnectionsView = (
       enrolled: new Set(rows.map((row) => row.name)),
       displayName: (name) => rows.find((row) => row.name === name)?.display_name,
       ...(deps.resolvePackManifest !== undefined ? { packManifestOf: deps.resolvePackManifest } : {}),
+      profiles: deps.operationProfiles,
+      localManifestStore: deps.localManifestStore,
     })(recipe),
   };
 };
@@ -825,9 +833,12 @@ const withMovedDoors = <T extends object>(deps: PackConnectionsDeps, result: T):
 export const packConnectionsDepsFrom = (
   install: PackInstallRpcDeps | undefined,
   connections: Pick<ConnectionRpcDeps, 'store' | 'getEncryptionKey'> | undefined,
+  run?: Pick<PackConnectionsDeps, 'operationProfiles' | 'localManifestStore'>,
 ): PackConnectionsDeps | undefined => {
   if (install?.contractStore === undefined || connections === undefined) return undefined;
   return {
+    ...(run?.operationProfiles !== undefined ? { operationProfiles: run.operationProfiles } : {}),
+    ...(run?.localManifestStore !== undefined ? { localManifestStore: run.localManifestStore } : {}),
     contractStore: install.contractStore,
     connectionStore: connections.store,
     getManifest: (slug) => install.registry?.get(slug) ?? install.getManifest?.(slug) ?? null,
