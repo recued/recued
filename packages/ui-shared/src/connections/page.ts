@@ -3564,13 +3564,6 @@ export const renderConnectionsPage = (props: ConnectionsPageProps): string => {
  *  options-page + sidebar both already include the primitive
  *  stylesheet so we only add page-specific rules here. */
 export const CONNECTIONS_PAGE_STYLES = `
-/* D-322 — the broker controller mounts inside the shared connection form. */
-.connections-managed-oauth { display: grid; gap: 0.65rem; margin: 1rem 0; }
-.connections-managed-oauth label { display: flex; flex-direction: column; gap: 0.25rem; }
-.connections-managed-oauth input, .connections-managed-oauth select { padding: 0.4rem; font: inherit; max-width: 100%; }
-.connections-managed-oauth fieldset { display: grid; gap: 0.65rem; min-width: 0; }
-.connections-managed-oauth button { padding: 0.4rem 0.65rem; font: inherit; justify-self: start; cursor: pointer; }
-.connections-managed-oauth button:disabled { cursor: default; opacity: 0.6; }
 ${REFERENCE_PROVENANCE_STYLES}
 .connections-page {
   box-sizing: border-box;
@@ -3834,22 +3827,81 @@ ${REFERENCE_PROVENANCE_STYLES}
   padding: 16px;
   background: var(--bg);
 }
-/* D-322 — the same broker form mounts in enrollment and independent management. */
-.connections-managed-oauth {
-  display: grid;
-  gap: 10px;
-  max-width: 700px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12px;
+/* D-322 — broker setup, enrollment and independent management share one layout. */
+.connections-broker-manager {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  max-width: 720px; padding: 16px; margin-bottom: 20px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
 }
-.connections-managed-oauth p { margin: 0; line-height: 1.5; }
-.connections-managed-oauth label { display: grid; gap: 4px; }
-.connections-managed-oauth fieldset { display: grid; gap: 10px; min-width: 0; }
+.connections-broker-manager-intro { flex: 1 1 180px; min-width: 0; }
+.connections-broker-manager-intro h2 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.connections-broker-manager-intro p { margin: 0; font-size: 12px; color: var(--fg-muted); line-height: 1.5; }
+.connections-broker-manager > .rx-btn { min-height: 44px; white-space: normal; }
+.connections-broker-manager > div:last-child { width: 100%; min-width: 0; }
+.connections-managed-oauth {
+  display: grid; gap: 16px; box-sizing: border-box; min-width: 0; max-width: 720px;
+  margin: 16px 0; padding: 20px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); font-size: 13px; line-height: 1.5; color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.connections-broker-manager .connections-managed-oauth { margin: 0; padding: 4px 0 0; border: 0; border-radius: 0; }
+.connections-managed-oauth p { margin: 0; }
+.connections-managed-oauth h3 { margin: 0 0 4px; font-size: 16px; font-weight: 600; color: var(--fg-strong); }
+.connections-managed-oauth h4 { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg-strong); }
+.connections-managed-oauth .managed-oauth-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.connections-managed-oauth .managed-oauth-heading p,
+.connections-managed-oauth .managed-oauth-note,
+.connections-managed-oauth small { color: var(--fg-muted); font-size: 12px; line-height: 1.5; }
+.connections-managed-oauth .managed-oauth-badge { display: inline-block; flex-shrink: 0; width: fit-content; padding: 3px 8px; border: 1px solid var(--border); border-radius: 5px; font-size: 11px; font-weight: 600; }
+.connections-managed-oauth .managed-oauth-trust { padding: 10px 12px; background: var(--surface-sunk); border-radius: 6px; font-size: 12px; }
+.connections-managed-oauth .managed-oauth-section { display: grid; gap: 12px; min-width: 0; }
+.connections-managed-oauth .managed-oauth-section + .managed-oauth-section { border-top: 1px solid var(--border); padding-top: 16px; }
+.connections-managed-oauth .managed-oauth-profile { display: grid; gap: 6px; }
+.connections-managed-oauth code { white-space: normal; overflow-wrap: anywhere; font-size: 12px; }
+.connections-managed-oauth .managed-oauth-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.connections-managed-oauth button { min-height: 44px; max-width: 100%; white-space: normal; justify-self: start; cursor: pointer; }
+.connections-managed-oauth button:disabled { cursor: default; }
+.connections-managed-oauth .managed-oauth-field { display: grid; gap: 6px; min-width: 0; }
+.connections-managed-oauth .managed-oauth-field > :is(span, label) { font-weight: 500; }
 .connections-managed-oauth input,
-.connections-managed-oauth select { box-sizing: border-box; width: 100%; font: inherit; }
-.connections-managed-oauth button { justify-self: start; }
+.connections-managed-oauth select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+.connections-managed-oauth select {
+  appearance: none; overflow: hidden; text-overflow: ellipsis; padding-right: 32px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%), linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 50%, calc(100% - 12px) 50%;
+  background-size: 4px 4px; background-repeat: no-repeat;
+}
+.connections-managed-oauth input::placeholder { color: var(--fg-muted); }
+.connections-managed-oauth input[readonly] { background: var(--surface-sunk); }
+.connections-managed-oauth input[aria-invalid="true"] { border-color: var(--danger); }
+.connections-managed-oauth .managed-oauth-field-error { color: var(--danger); }
+.connections-managed-oauth :is(input, select, button, summary):focus-visible,
+.connections-broker-manager > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.connections-managed-oauth .managed-oauth-editor { display: grid; gap: 16px; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--border); border-radius: 6px; }
+.connections-managed-oauth legend { padding: 0 6px; font-size: 14px; font-weight: 600; }
+.connections-managed-oauth .managed-oauth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.connections-managed-oauth .managed-oauth-key { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.connections-managed-oauth .managed-oauth-key > button { margin-top: 25px; }
+.connections-managed-oauth .managed-oauth-details { min-width: 0; }
+.connections-managed-oauth summary { min-height: 44px; box-sizing: border-box; padding: 10px 0; color: var(--fg-muted); cursor: pointer; }
+.connections-managed-oauth .managed-oauth-details > div { display: grid; gap: 10px; padding: 4px 0 8px; }
+.connections-managed-oauth .managed-oauth-empty { display: grid; gap: 6px; padding: 16px; border: 1px dashed var(--border-strong); border-radius: 6px; }
+.connections-managed-oauth .managed-oauth-empty strong { font-size: 14px; }
+.connections-managed-oauth .managed-oauth-danger { display: grid; gap: 12px; padding: 12px; border: 1px solid var(--danger); border-radius: 6px; background: var(--danger-weak); }
+.connections-managed-oauth .managed-oauth-feedback { padding: 12px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--accent-weak); }
+.connections-managed-oauth .managed-oauth-feedback-error { border-color: var(--danger); background: var(--danger-weak); }
+.connections-managed-oauth .managed-oauth-footer { border-top: 1px solid var(--border); padding-top: 12px; }
+.connections-managed-oauth .managed-oauth-preview { display: grid; gap: 10px; min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-sunk); }
+.connections-managed-oauth .managed-oauth-preview h5 { margin: 0; font-size: 13px; }
+.connections-managed-oauth .managed-oauth-preview ul { margin: 0; padding-left: 20px; min-width: 0; }
+.connections-managed-oauth .managed-oauth-preview code { overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .connections-managed-oauth { padding: 14px; }
+  .connections-managed-oauth .managed-oauth-editor { padding: 12px; }
+  .connections-managed-oauth .managed-oauth-grid,
+  .connections-managed-oauth .managed-oauth-key { grid-template-columns: minmax(0, 1fr); }
+  .connections-managed-oauth .managed-oauth-key > button { margin-top: 0; }
+}
 .connections-picker-title,
 .connections-form-title {
   font-size: 14px;

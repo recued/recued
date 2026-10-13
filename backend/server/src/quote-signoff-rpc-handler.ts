@@ -43,10 +43,8 @@ export const handleSignoffQuotes = (deps: ReceptionRpcDeps, caller: Caller) =>
 
 export const handleSignoffList = (deps: ReceptionRpcDeps, input: QuoteSignoffListInput | void, caller: Caller) => run(async () => {
   const service = serviceFor(deps, caller);
-  if (input !== undefined) shape(input, ['limit']);
-  const limit = input?.limit ?? 50;
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RpcError('quote_signoff_invalid', 'Limit must be 1–100.', 400);
-  const result = service.list(limit);
+  if (input !== undefined) shape(input, ['limit', 'search', 'state', 'cursor', 'signoff_id']);
+  const result = service.list(input ?? {});
   await Promise.all(result.signoffs.map(async (signoff) => {
     if (signoff.state !== 'accepted' || !signoff.endpoint_id) return;
     const anchor = await deps.auditLog.get(`reception-quote-signoff-${signoff.endpoint_id}`);

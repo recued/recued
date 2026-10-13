@@ -22,20 +22,11 @@
  *           pre-grant that skips this. A rejection / "no" confirmation isn't a
  *           commitment (neither materialized nor dispatched); the decline is
  *           recorded by the consume-time signed audit row + the notify seam.
- *         - `mark_resolved` / `fire_recipe` → routed through the
- *           `applyEffect` seam (cross-substrate DI — `mark_resolved`'s
- *           target lives in a substrate the bare `target_id` doesn't name,
- *           a D-157 ask / D-158 / work-entity; `fire_recipe` needs the
- *           recipe-executor — both land with the effects pass). UNLIKE
- *           intake_form's `runRecipe` (an optional extra ATOP a concrete
- *           materialization), this seam IS the whole effect, so an UNWIRED
- *           seam leaves the row PENDING — it retries when the seam lands
- *           rather than draining; marking it `processed` would strand the
- *           consumed approval with its promised engine reaction never
- *           applied. A WIRED seam that throws fails the row (retained for
- *           review), never swallowed. The consume-time
- *           `approval_intent.consumed` signed audit (handler § N.3) still
- *           records the response meanwhile.
+ *         - `mark_resolved` / `fire_recipe` → the bound workflow plan is
+ *           queued through `applyEffect` for owner review. The visitor's
+ *           acceptance never completes work or starts a recipe directly.
+ *           Missing or unsuccessful dispatch leaves the row pending. A
+ *           handler that throws fails the row, retained for owner review.
  *    3. Fire the optional `notify` seam (also unwired this phase).
  *    4. Flip the intent `processed`.
  *
@@ -92,10 +83,8 @@ export type ReceptionApprovalDrainStore = Pick<
  *  there without widening the boot wire's `workEntityStore` dep. */
 export type ReceptionCommitmentStore = Pick<WorkEntityStore, 'writeCommitment'>;
 
-/** Effect seam payload — `mark_resolved` / `fire_recipe`. Carries the
- *  full decrypted context a wired effect handler needs (resolve the
- *  target ask/approval / fire the recipe with the response). Never
- *  throws into the drain (the processor swallows). */
+/** Decrypted customer decision for a bound, owner-reviewed continuation.
+ * The drain retains failures; this payload never selects recipe settings. */
 export interface ReceptionApprovalEffect {
   readonly endpoint_id: string;
   readonly intent_id: string;
@@ -103,7 +92,6 @@ export interface ReceptionApprovalEffect {
   readonly on_approve_action: Extract<ApprovalLinkOnApproveAction, 'mark_resolved' | 'fire_recipe'>;
   /** The configured action target (resolve / annotate target). */
   readonly target_id: string;
-  /** Optional reactive-recipe id when `on_approve_action === 'fire_recipe'`. */
   // D-210 Phase C — `triggered_recipe_id` retired; nothing carries it now.
   /** Canonical outcome wire string (may carry visitor free-text). */
   readonly outcome: string;
@@ -134,22 +122,15 @@ export interface ApprovalLinkProcessorDeps {
   readonly workEntityStore: ReceptionCommitmentStore;
   readonly getApprovalIntentPiiKey: () => Uint8Array;
   readonly now: () => number;
-  /** Optional — `mark_resolved` / `fire_recipe` effect application.
-   *  Unwired this phase (cross-substrate DI lands with the effects
-   *  pass). */
-  readonly applyEffect?: (effect: ReceptionApprovalEffect) => void | Promise<void>;
+  /** Bound `mark_resolved` / `fire_recipe` handoff to a held owner review.
+   * Missing or unsuccessful handoff leaves the consumption pending. */
+  readonly applyEffect?: (effect: ReceptionApprovalEffect) => void | { dispatched: boolean } | Promise<void | { dispatched: boolean }>;
   /** Optional — fired after each drained consumption. Unwired this
    *  phase (NotificationBlock is engine-internal). */
   readonly notify?: (notice: ReceptionApprovalNotice) => void | Promise<void>;
-  /** D-173 P3 § A.7 — the review-then-approve dispatch seam (the SINGLE
-   *  path for a REVIEW-mode `create_commitment` endpoint, the default). Fires
-   *  the compiled `review-then-approve` recipe so the materialize op holds at
-   *  the D-157 gate → inbox. Absent (boot phase / no reception core-pack) ⇒ a
-   *  review-mode affirmative consumption is left `pending` to dispatch once the
-   *  recipe lands (NEVER auto-materialized as a fallback — I-1). D-210 Phase C
-   *  `create_commitment` endpoints never use this seam (they materialize
-   *  directly — A.7); `mark_resolved` / `fire_recipe` always route through
-   *  `applyEffect` regardless; there is no pre-grant that skips review. */
+  /** Affirmative `create_commitment` responses queue the held materialize
+   * recipe. Generic work/recipe continuations use `applyEffect` instead.
+   * Missing workflows remain pending; no fallback skips owner review. */
   readonly fireReceptionWorkflow?: FireReceptionWorkflow;
 }
 
@@ -255,11 +236,11 @@ export const createApprovalLinkSubmissionProcessor = (
           continue;
         }
         // A mark_resolved / fire_recipe row whose effect seam isn't wired
-        // this phase can't drain — skip it WITHOUT spending budget or
+        // can't drain — skip it WITHOUT spending budget or
         // decrypting (it'd never make progress), so a leading run of such
         // endpoints in registry order can't starve the per-tick drain
         // budget that create_commitment rows need. The row stays pending;
-        // it drains once applyEffect lands. (Budget is now spent per
+        // it drains once a workflow can be queued. (Budget is now spent per
         // actually-drained row, not per row listed.)
         if (config.on_action.on_approve_action === 'quote_signoff'
           ? !deps.recordQuoteSignoff
@@ -380,7 +361,7 @@ export const createApprovalLinkSubmissionProcessor = (
             // effect. A throw propagates to the outer catch → `failed`
             // (retained for review), NOT swallowed: silently marking
             // `processed` would lose the promised engine reaction.
-            await deps.applyEffect({
+            const applied = await deps.applyEffect({
               endpoint_id: endpoint.endpoint_id,
               intent_id: row.intent_id,
               action_kind: config.action_kind,
@@ -390,6 +371,7 @@ export const createApprovalLinkSubmissionProcessor = (
               affirmative,
               ...(visitorEmail ? { visitor_email: visitorEmail } : {}),
             });
+            if (applied && !applied.dispatched) continue;
           } else {
             // Unreachable — the pre-decrypt skip above leaves an unwired
             // mark_resolved / fire_recipe row pending before it reaches

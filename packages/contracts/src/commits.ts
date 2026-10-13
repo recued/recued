@@ -815,10 +815,10 @@ export const standingClosureAdmits = (
    *  shipped recipes name `core.work-entity.commitment.propose`, so this had
    *  never fired in production — it would have gone live the moment anyone
    *  bound a door recipe that proposes commitments. */
-  lift_reason: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'quality' | undefined,
+  lift_reason: 'review_send' | 'review_commitment' | 'review_quote_signoff' | 'review_approval_workflow' | 'quality' | undefined,
 ): boolean => {
   if (snapshot === undefined || operation_id === undefined) return false;
-  if (lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff') return false;
+  if (lift_reason === 'review_commitment' || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow') return false;
   const closure = snapshot.standing_closure_operation_ids;
   if (closure === undefined) return false;
   if (risk_tier === undefined || !STANDING_CLOSURE_RISK_TIERS.includes(risk_tier)) {

@@ -1179,6 +1179,7 @@ export const wrapWithCommitGateway = (
           if (
             resumeApproved
             && decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
+            && decision.authorization_provenance.lift_reason !== 'review_approval_workflow'
             && stepMeta?.preflight_session_grant !== undefined
             && stepMeta.preflight_session_grant.risk_tier === decision.risk_tier
             && deps.sessionGrants?.mint !== undefined
@@ -1289,6 +1290,7 @@ export const wrapWithCommitGateway = (
             const fireDestinations = scopedDestinationsOnce();
             if (
               decision.authorization_provenance.lift_reason !== 'review_quote_signoff'
+              && decision.authorization_provenance.lift_reason !== 'review_approval_workflow'
               && deps.sessionGrants !== undefined
               && identity !== undefined
               && argHashes !== undefined

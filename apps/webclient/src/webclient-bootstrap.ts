@@ -467,6 +467,7 @@ import {
 } from './data/bootstrap-data-route.js';
 import type { MailFactCallers } from './data/mail-facts-surface.js';
 import { createMailTemplateVariableCallers } from './data/mail-template-choices.js';
+import { createMailboxVariableCallers } from './recipes/mailbox-choices.js';
 import { bootstrapSavedDataRoute } from './data/saved-data-route.js';
 import {
   bootstrapLogsRoute,
@@ -7253,6 +7254,13 @@ export const bootstrapWebclient = async (
   };
   // D-315 §5.2 — a recipe setting that is one of the owner's mail templates:
   // its Settings list them, open one, and duplicate a recipe's to edit it.
+  // A setting that names one of the owner's mailboxes or calendars: the dish
+  // form and the run dialog list them, and start a required one on the only
+  // one that fits (`mailbox-variable.ts`).
+  const mailboxVariableCallers = createMailboxVariableCallers({
+    listMail: () => rpcConn.call('collection.mail.list', undefined),
+    listCalendars: () => rpcConn.call('collection.calendar.list', undefined),
+  });
   const mailTemplateVariableCallers = createMailTemplateVariableCallers({
     listTemplates: () => rpcConn.call('mail_fact.template.list', undefined),
     listRecipes: () => recipesListCaller(),
@@ -7628,6 +7636,7 @@ export const bootstrapWebclient = async (
       execute: trackGlobalRunWrite('Running a recipe', recipeExecuteCaller),
       // D-320 — the Run tab's Connection lines.
       recipeConnections: (args) => rpcConn.call('packs.connections.recipe', args),
+      mailboxes: mailboxVariableCallers,
       schedulesList: automationSchedulesListCaller,
       schedulesCreate: trackGlobalRunWrite(
         'Scheduling a recipe',
@@ -7671,6 +7680,7 @@ export const bootstrapWebclient = async (
           fileRefSearch: fileRefSearchCaller,
           ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
           mailTemplates: mailTemplateVariableCallers,
+          mailboxes: mailboxVariableCallers,
           ...(connectionSlots !== undefined ? { connectionSlots } : {}),
           onCreated: (_dish, scheduleError) => {
             if (scheduleError !== null) {
@@ -9124,6 +9134,20 @@ export const bootstrapWebclient = async (
     options.enableAiModelsPage === false
       ? undefined
       : (args) => rpcConn.call('server.setChatCatalogMode', args);
+  // The chat behaviour section's switches: the rolling brief, and D-323's
+  // install offers. Server-scoped; the page mirrors each server answer.
+  const aiModelsChatSwitches = options.enableAiModelsPage === false
+    ? undefined
+    : {
+        aiModelsRollingBriefGetCaller: () => rpcConn.call('chat.rolling_brief.get', undefined),
+        aiModelsRollingBriefSetCaller: switchWorkTracker.track(
+          (args: { enabled: boolean }) => rpcConn.call('chat.rolling_brief.set', args),
+        ),
+        aiModelsInstallOffersGetCaller: () => rpcConn.call('chat.install_offers.get', undefined),
+        aiModelsInstallOffersSetCaller: switchWorkTracker.track(
+          (args: { enabled: boolean }) => rpcConn.call('chat.install_offers.set', args),
+        ),
+      };
   // Owner-authored system prompts. The read ships the built-in DEFAULT beside
   // the effective prompt, so the editor pre-fills with real text and "Reset to
   // default" has something to restore to.
@@ -10518,6 +10542,7 @@ export const bootstrapWebclient = async (
             ...(runRecordRefSearch !== undefined
               ? { recordRefSearch: runRecordRefSearch }
               : {}),
+            mailboxes: mailboxVariableCallers,
             onClose: () => { packsRunModal = null; },
             ...(onRan !== undefined ? { onRan } : {}),
           });
@@ -10742,6 +10767,8 @@ export const bootstrapWebclient = async (
           recipeConnectionsCaller: (args) => rpcConn.call('packs.connections.recipe', args),
           // D-315 §5.2 — a `mail_template` setting: the owner's templates.
           mailTemplateCallers: mailTemplateVariableCallers,
+          // A setting naming a mailbox or calendar: the owner's, as a list.
+          mailboxCallers: mailboxVariableCallers,
           fileRefSearchCaller,
           recordRefSearchCaller,
           // D-292 — the guided spreadsheet import's upload (see the Packs host).
@@ -11076,6 +11103,7 @@ export const bootstrapWebclient = async (
         recipeConnectionsCaller: (args) => rpcConn.call('packs.connections.recipe', args),
         // D-319 — the settings form's pickers, as on the recipe page.
         mailTemplateCallers: mailTemplateVariableCallers,
+        mailboxCallers: mailboxVariableCallers,
         recordRefSearchCaller,
         recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         autoRunListCaller: automationAutoRunListCaller,
@@ -11855,6 +11883,7 @@ export const bootstrapWebclient = async (
               ),
             }
           : {}),
+        ...(aiModelsChatSwitches ?? {}),
         ...(aiModelsGetLlmPromptsCaller !== undefined
           ? { aiModelsGetLlmPromptsCaller }
           : {}),

@@ -956,6 +956,10 @@ const renderViewAsVisitorView = (vav: ViewAsVisitorModel): string => {
         compact: true,
         body: `<p class="reception-row-meta">${e(vav.preview_freshness_label)}</p>`,
       })}
+      ${vav.approval_workflow_summary ? panel({
+        title: 'Work after your review',
+        body: `<p class="reception-row-meta" style="white-space: pre-wrap">${e(vav.approval_workflow_summary)}</p>`,
+      }) : ''}
       <div class="reception-vav-preview">
         <h4 class="reception-subhead">Server-rendered visitor page</h4>
         <iframe

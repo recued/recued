@@ -153,7 +153,12 @@ describe('D-322 production composition and saved-account lifetime', () => {
       if (saved.action !== 'save_profile') throw new Error('Profile fixture missing');
       const startArgs = { action: 'start' as const, profile_id: saved.profile.id,
         integration_id: 'sheets-fixture', base_url: 'https://sheets.googleapis.com/v4', scopes: [] };
-      const start = await composed.rpc(startArgs);
+      const preview = await composed.rpc({ ...startArgs, action: 'preview' });
+      if (preview.action !== 'preview') throw new Error('Permission preview fixture missing');
+      expect(preview.preview).toMatchObject({ decision: 'authorize', requested_scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+      expect(broker.sessionCount()).toBe(0); expect(composed.app.connectionStoreRef!.list()).toEqual([]);
+      expect(JSON.stringify(preview)).not.toContain(environmentKey);
+      const start = await composed.rpc({ ...startArgs, preview_fingerprint: preview.preview.fingerprint });
       if (start.action !== 'start') throw new Error('Consent fixture missing');
       await fetch(start.connect_link);
       const complete = await composed.rpc({ action: 'status', flow_id: start.flow_id, claim_secret: start.claim_secret });

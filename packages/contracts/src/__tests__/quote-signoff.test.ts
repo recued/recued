@@ -12,7 +12,7 @@ describe('customer sign-off approval contract', () => {
     expect(validateApprovalLinkConfig({ ...config, context_raw: { summary: 's'.repeat(8001) } }).map((f) => f.code)).toContain('context_summary_too_long');
     expect(validateApprovalLinkConfig({ ...config, on_action: { ...config.on_action, on_approve_action: 'create_commitment' },
       context_raw: { summary: 's'.repeat(801) } }).map((f) => f.code)).toContain('context_summary_too_long');
-    expect(APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS).toEqual(['create_commitment']);
+    expect(APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS).toEqual(['create_commitment', 'mark_resolved', 'fire_recipe']);
   });
   it('only accepts an explicit accept or reject decision', () => {
     expect(validateApprovalLinkConfig({ ...config, action_kind: 'answer_question' }).map((f) => f.code)).toContain('on_action_invalid');

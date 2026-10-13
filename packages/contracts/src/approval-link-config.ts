@@ -65,6 +65,7 @@ import {
   type VisitorReceiptConfig,
 } from './visitor-receipt-config.js';
 import { QUOTE_SIGNOFF_CONTEXT_MAX } from './quote-signoff.js';
+import { APPROVAL_WORKFLOW_TARGET_KINDS, type ApprovalWorkflowTargetKind } from './approval-workflow.js';
 
 // ────────────────────────────────────────────────────────────────
 // Closed-list bound constants
@@ -121,24 +122,12 @@ export type ApprovalLinkOnApproveAction =
 export const APPROVAL_LINK_ON_APPROVE_ACTION_SET: ReadonlySet<ApprovalLinkOnApproveAction> =
   new Set(APPROVAL_LINK_ON_APPROVE_ACTIONS);
 
-/** The actions the substrate can honour. `quote_signoff` is authored only
- * through the dedicated frozen-quote surface; generic forms use the narrower
- * AUTHORABLE list below.
- *
- *  `mark_resolved` / `fire_recipe` stay in the vocabulary above because rows
- *  written before this gate must still parse — but both route through the
- *  approval-link processor's `applyEffect` seam, which nothing supplies, so a
- *  consumption sits `pending` forever. Neither creates a held checkpoint, so
- *  the visitor's answer would be sealed into `reception_approval_intent` and
- *  surface nowhere while the visitor is shown a success page.
- *
- *  D-210 Phase C also retired the fields that named their targets, so neither is
- *  specifiable any more: `fire_recipe` has no recipe id, and `mark_resolved`'s
- *  target lives in a substrate `target_id` alone does not name.
- *
- * The authoring picker derives its narrower list from this supported list. */
+/** Continuations bind a typed target and always hold for owner review.
+ * Legacy rows lacking that binding remain readable, but cannot be authored. */
 export const APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS = [
   'create_commitment',
+  'mark_resolved',
+  'fire_recipe',
   'quote_signoff',
 ] as const satisfies readonly ApprovalLinkOnApproveAction[];
 
@@ -193,6 +182,10 @@ const APPROVAL_LINK_VISITOR_FIELD_VALUES: ReadonlySet<'required' | 'optional'> =
 export interface ApprovalLinkOnActionConfig {
   readonly target_id: string;
   readonly on_approve_action: ApprovalLinkOnApproveAction;
+  /** Required for a reusable continuation: local work or a saved recipe. */
+  readonly target_kind?: ApprovalWorkflowTargetKind;
+  /** Server-generated binding; recomputed at preview and create. */
+  readonly workflow_binding_hash?: string;
   // D-210 Phase C — `notification_target` RETIRED (owner ruling, 2026-07-18).
   // It was a per-endpoint copy of the D-158 notification-channel vocabulary
   // (`webclient`/`mail` where the block says `ui`/`email`, slack+telegram
@@ -311,6 +304,8 @@ export type ApprovalLinkConfigValidationCode =
   | 'expiry_days_out_of_range'
   | 'on_action_invalid'
   | 'on_action_target_id_invalid'
+  | 'on_action_target_kind_invalid'
+  | 'workflow_binding_hash_invalid'
   | 'on_approve_action_unknown'
   | 'on_approve_action_unsupported'
   | 'notification_target_unknown'
@@ -634,44 +629,26 @@ export const validateApprovalLinkConfig = (
     if (oa.on_approve_action === 'quote_signoff' && actionKind !== 'approve_wording') {
       failures.push({ code: 'on_action_invalid', detail: 'Quote sign-off requires approve_wording (accept or reject).' });
     }
-    // ⛔ `mark_resolved` / `fire_recipe` are UNHONOURABLE, so refuse them at the
-    // one write point rather than minting an endpoint that cannot work.
-    //
-    // Both route through the approval-link processor's `applyEffect` seam, and
-    // NOTHING supplies it — `wire-reception-substrate.ts` says so in as many
-    // words ("Absent ⇒ review rows stay pending"). The processor is careful
-    // about it: such a row is skipped without spending drain budget and stays
-    // `pending` forever. But an approval_link reaches the owner ONLY through a
-    // held checkpoint, and neither unsupported action creates one — so the
-    // visitor's answer is sealed into `reception_approval_intent` and surfaces
-    // NOWHERE, while the visitor is shown a success page. Silent loss with a
-    // success receipt is the worst available outcome.
-    //
-    // Nor is this merely unwired-for-now: D-210 Phase C retired the two fields
-    // that made them specifiable at all. `fire_recipe` has no recipe id to fire
-    // (`triggered_recipe_id`, retired with the `auto_accept` path that was its
-    // only scope), and `mark_resolved`'s target lives in a substrate the bare
-    // `target_id` does not name. Wiring the seam would need a design decision,
-    // not a dependency — so the honest move is to stop accepting the config.
-    //
-    // Existing rows still PARSE (the enum keeps both members); only new writes
-    // are refused. Same shape as the two retired-key refusals below.
-    if (
-      typeof oa.on_approve_action === 'string'
-      && APPROVAL_LINK_ON_APPROVE_ACTION_SET.has(oa.on_approve_action as ApprovalLinkOnApproveAction)
-      && !APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTION_SET.has(
-        oa.on_approve_action as ApprovalLinkOnApproveAction,
-      )
-    ) {
-      failures.push({
-        code: 'on_approve_action_unsupported',
-        detail:
-          `on_action.on_approve_action '${String(oa.on_approve_action)}' cannot be honoured — `
-          + 'its effect seam is unwired and D-210 Phase C retired the fields that named its '
-          + 'target, so a consumption would sit pending forever and the visitor\'s answer would '
-          + 'never reach you. Use create_commitment: the response is held at the approval gate '
-          + 'and lands in your Reception Inbox for review.',
-      });
+    if (oa.target_kind !== undefined
+      && !APPROVAL_WORKFLOW_TARGET_KINDS.includes(oa.target_kind as ApprovalWorkflowTargetKind)) {
+      failures.push({ code: 'on_action_target_kind_invalid', detail: 'Choose a task, commitment or recipe target.' });
+    }
+    if (oa.workflow_binding_hash !== undefined
+      && (typeof oa.workflow_binding_hash !== 'string' || !/^[a-f0-9]{64}$/.test(oa.workflow_binding_hash))) {
+      failures.push({ code: 'workflow_binding_hash_invalid', detail: 'The workflow binding must be a SHA-256 digest.' });
+    }
+    if (oa.on_approve_action === 'mark_resolved' || oa.on_approve_action === 'fire_recipe') {
+      const typed = oa.on_approve_action === 'fire_recipe' ? oa.target_kind === 'recipe'
+        : oa.target_kind === 'task' || oa.target_kind === 'commitment';
+      if (!typed || actionKind !== 'approve_wording') {
+        failures.push({ code: 'on_approve_action_unsupported',
+          detail: 'Workflow approvals require accept/reject and an explicit task, commitment or recipe target.' });
+      }
+      if (typeof oa.target_id === 'string' && (oa.target_id.length > 200 || oa.target_id.includes('\0'))) {
+        failures.push({ code: 'on_action_target_id_invalid', detail: 'The workflow target id must be at most 200 characters.' });
+      }
+    } else if (oa.target_kind !== undefined || oa.workflow_binding_hash !== undefined) {
+      failures.push({ code: 'on_action_invalid', detail: 'Only reusable workflow approvals have a typed workflow binding.' });
     }
     // D-210 Phase C — retired; refuse a stale key (see the removal note).
     if ((oa as { notification_target?: unknown }).notification_target !== undefined) {

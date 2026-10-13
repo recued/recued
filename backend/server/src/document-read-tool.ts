@@ -123,7 +123,10 @@ export const createDocumentReadHandler = (deps: ChatToolHandlerDeps): Tier1Handl
     const converter = direct ? undefined : choices.find(name => resolution.get(`recued-core.${name}`)?.operations.has('document.to_markdown'));
     if (!direct && !converter) return { ok: true, result: { status: 'needs_pack', file_ref: args.file_ref,
       suggested_packs: requested === 'auto' ? ['markitdown', 'docling'] : choices,
-      hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans. No attachment content has been read.' } };
+      hint: 'Enable an appropriate document reader pack, then resume this investigation. MarkItDown handles ordinary documents; Docling can use OCR for scans. No attachment content has been read.' },
+      // D-323 — the same packs as data, as the resolution above names them, so
+      // chat can offer them under its answer.
+      missing_packs: choices.map((name) => `recued-core.${name}`) };
     // Direct text is the extracted text, so its limit applies before any read.
     if (direct && sourceBytes > MAX_TEXT_BYTES) return { ok: true, result: { status: 'too_large', hint: 'This text file exceeds the 2 MB reading limit. Its contents have not been read.' } };
     const binding = converter ? resolution.get(`recued-core.${converter}`) : undefined;

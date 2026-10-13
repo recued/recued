@@ -75,6 +75,8 @@
  */
 
 import { dateFormatIssue } from './date-argument-format.js';
+import type { InstallOffer } from '@recued/contracts';
+import { installOffersFromToolResults } from './install-offers/turn-offers.js';
 import { bindMailWorkChatTools } from './mail-work-chat-plan.js';
 import { resolveRecallCorpusScopeForSource } from './chat-recall-scope.js';
 import { renderToolRow, toolNameFromRow } from './chat-tool-row.js';
@@ -4332,6 +4334,12 @@ export const createChatOrchestrator = (
       ...(input.data_diagnosis
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
+      // D-323 — the marketplace offers the turn's last `tools.search` made,
+      // shown under the answer as links to their install pages (ruling P3).
+      ...((): { install_offers?: InstallOffer[] } => {
+        const offers = installOffersFromToolResults(turnResult.tool_results);
+        return offers.length > 0 ? { install_offers: offers } : {};
+      })(),
     });
     // Anchor any plan proposed by this turn to the durable assistant row before
     // broadcasting completion. Recovery may fail to link, but it must never

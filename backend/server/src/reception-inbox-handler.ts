@@ -57,6 +57,7 @@ import {
   type ReceptionInboxTopTierKind,
   testDeclaredPattern,
   ARG_EDIT_STRING_MAX,
+  isApprovalWorkflowOperation,
 } from '@recued/contracts';
 import type { ActivityAction, AuditEntry, AuditLogStore } from '@recued/storage';
 import type { CheckpointStore } from '@recued/storage';
@@ -650,6 +651,12 @@ export const defaultResolveInboxSource: ResolveInboxSource = ({ anchor, checkpoi
     argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw)
       ? (argsRaw as Record<string, unknown>)
       : {};
+  if (anchor.recipe_id === 'reception-approval-workflow' && typeof args.intent_id === 'string'
+    && typeof args.summary === 'string') {
+    return { top_tier_kind: 'task', source: { kind: 'approval_link', record_ref: args.intent_id }, args,
+      preview: { title: 'Customer-accepted workflow', subtitle: args.summary.split('\n')[0] },
+      proposed_action: args.summary };
+  }
   if (anchor.recipe_id === 'reception-quote-signoff-release' && typeof args.signoff_id === 'string'
     && typeof args.summary === 'string') {
     return { top_tier_kind: 'task', source: { kind: 'quote_signoff', record_ref: args.signoff_id }, args,
@@ -959,7 +966,7 @@ const projectInboxItem = async (
     arg_schema,
     preview: resolved.preview,
     ...(resolved.attachment !== undefined ? { attachment: resolved.attachment } : {}),
-    ...(allowOffer !== undefined ? { allow_offer: allowOffer } : {}),
+    ...(allowOffer !== undefined && !isApprovalWorkflowOperation(operation_id) ? { allow_offer: allowOffer } : {}),
     proposed_action: resolved.proposed_action,
     ...(calendar_overlap !== undefined ? { calendar_overlap } : {}),
     ...(booking_history !== undefined ? { booking_history } : {}),
@@ -1465,6 +1472,9 @@ export const handleReceptionInboxApprove = async (
   //      earns no standing trust (and the grant would mint from the edited
   //      dispatch, contradicting the next unedited fire).
   const wantsAllow = args.allow === true;
+  if (wantsAllow && isApprovalWorkflowOperation(held.item.operation_id)) {
+    throw rpcError('bad_request', `${method}: this customer acceptance requires its own owner review.`, 400);
+  }
   if (wantsAllow && Object.keys(validatedEdits).length > 0) {
     throw rpcError(
       'bad_request',

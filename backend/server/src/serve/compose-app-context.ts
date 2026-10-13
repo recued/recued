@@ -60,7 +60,7 @@ import {
 import { createKeyManager, type KeyManager } from '../key-manager.js';
 import { createManagedOAuthProfileStore } from '../managed-oauth-profile-store.js';
 import { createManagedOAuthService, type ManagedOAuthService } from '../managed-oauth-service.js';
-import { managedOAuthRequiredScopes } from '@recued/contracts';
+import { managedOAuthRequiredScopes, managedOAuthPackScopeRequirements } from '@recued/contracts';
 import { listInstalledPackManifests } from '../pack-list-handler.js';
 import { decodeAuthFromStorage } from '../connection-handler.js';
 import { createManagedOAuthConsumers, type ManagedOAuthConsumers } from '../managed-oauth-consumers.js';
@@ -279,6 +279,8 @@ import {
   type MessageCommitmentLedger,
 } from '../storage/message-commitment-ledger.js';
 
+import type { MarketplaceCatalogue } from '../install-offers/catalogue.js';
+
 export interface AppContextChatLateBoundGetters {
   getCollectionRegistry: () => CollectionRegistry | undefined;
   getExecutorConfig: () => ServerExecutorConfig | undefined;
@@ -305,6 +307,13 @@ export interface ComposeAppContextOptions {
   eventBus: EventBus;
   serverInstanceId: string;
   recipeStore: RecipeStore;
+  /** D-323 — the server's copy of the marketplace catalogue, for chat's offers
+   *  to install a pack when nothing installed matches. The serve path creates
+   *  it; tests and drives that omit it get no offers and no download. */
+  installOfferCatalogue?: MarketplaceCatalogue;
+  /** D-323 — the server's public web app address, read at send time, for the
+   *  links a messenger answer's install offers end with. */
+  publicBaseUrl?: () => string | null;
   pairedInstances: PairedInstancesStore | undefined;
   workEntityStore: WorkEntityStore | undefined;
   chatLateBound: AppContextChatLateBoundGetters;
@@ -889,6 +898,10 @@ export const composeAppContext = (
       auditLog,
       serverInstanceId,
       recipeStore,
+      ...(options.installOfferCatalogue !== undefined
+        ? { installOfferCatalogue: options.installOfferCatalogue }
+        : {}),
+      ...(options.publicBaseUrl !== undefined ? { publicBaseUrl: options.publicBaseUrl } : {}),
       llmConfig,
       // D-174 R28 Slice A — per-use LIVE config getter for the chat store's
       // source_id → {layer, model_hint} resolver. Prefer the manager's live
@@ -1065,6 +1078,7 @@ export const composeAppContext = (
       clearGrantedScopes: (names) => managedConnections.clearGrantedScopes(names),
       decodeAuth: (row) => decodeAuthFromStorage(row.auth_ciphertext, row, managedKeys.keyProvider('connection')),
       requiredScopes: (vendor, baseUrl) => managedOAuthRequiredScopes(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
+      requiredScopeSources: (vendor, baseUrl) => managedOAuthPackScopeRequirements(listInstalledPackManifests(contractStoreRef), vendor, baseUrl),
     });
     if (managedOAuth && managedKeys) managedOAuthConsumers = createManagedOAuthConsumers({
       connections: managedConnections, instances: createInstanceStore({ db }), broker: managedOAuth,

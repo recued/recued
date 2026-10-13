@@ -332,6 +332,7 @@ export const bootLiveServer = async (
 
   const deadline = Date.now() + timeoutMs;
   let code: string | undefined;
+  let mintedForReadyDaemon = false;
   while (Date.now() < deadline) {
     if (mode === 'foreground' && child?.exitCode !== null && child?.exitCode !== undefined) {
       const why = out;
@@ -348,6 +349,16 @@ export const bootLiveServer = async (
       ? /Status:\s*(Running|Not enrolled)/.test(text)
       : /Status:\s*Running/.test(text);
     if (m && ready) { code = m[1]; break; }
+    // An enrolled daemon may have no live code in its banner. Use the shipped
+    // owner command once it is healthy, as the production banner recommends.
+    if (ready && mode === 'daemon' && !mintedForReadyDaemon) {
+      mintedForReadyDaemon = true;
+      const minted = cli(['pair', '--db', dbPath]);
+      if (minted.status === 0) {
+        code = /Pairing code:\s*([A-Z0-9-]+)/.exec(`${minted.stdout}${minted.stderr}`)?.[1];
+        if (code) break;
+      }
+    }
     await new Promise((r) => setTimeout(r, 250));
   }
   if (!code) {

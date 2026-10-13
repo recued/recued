@@ -384,6 +384,7 @@ export const buildAuthoringView = (
   config: object | null,
   validation: AuthoringValidationSummary<string> | null,
   isNew: boolean,
+  approvalTargets?: ReadonlyArray<import('@recued/contracts').ApprovalWorkflowTarget>,
 ): AuthoringFormView => {
   switch (kind) {
     case 'reception_page':
@@ -426,7 +427,7 @@ export const buildAuthoringView = (
       return {
         kind,
         model: {
-          ...buildApprovalLinkFormModel(config as ApprovalLinkConfig | null),
+          ...buildApprovalLinkFormModel(config as ApprovalLinkConfig | null, approvalTargets),
           is_new: isNew,
         },
         validation,
@@ -798,6 +799,18 @@ export const applyFieldDelegateEvent = (
   // through `putConfigField` so a cleared optional text field is omitted
   // (not written as `''`, which some validators reject).
   putConfigField(kind, config, event.fieldKey, event.control, coerceScalarValue(event));
+  if (kind === 'approval_link' && (event.fieldKey === 'on_action.on_approve_action' || event.fieldKey === 'on_action.target_kind')) {
+    const action = getPath(config, 'on_action.on_approve_action');
+    deletePath(config, 'on_action.target_id');
+    deletePath(config, 'on_action.workflow_binding_hash');
+    if (action === 'fire_recipe' || action === 'mark_resolved') {
+      setPath(config, 'action_kind', 'approve_wording');
+      deletePath(config, 'options');
+      if (event.fieldKey === 'on_action.on_approve_action') {
+        setPath(config, 'on_action.target_kind', action === 'fire_recipe' ? 'recipe' : 'task');
+      }
+    } else deletePath(config, 'on_action.target_kind');
+  }
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -956,10 +969,27 @@ export const mountAuthoringForm = (
     btn?.focus?.();
   };
 
+  let approvalTargets: import('@recued/contracts').ApprovalWorkflowTarget[] | undefined;
+  let targetsRequested = false;
+  const loadApprovalTargets = (): void => {
+    if (kind !== 'approval_link' || targetsRequested || !shell.approvalTargets) return;
+    targetsRequested = true;
+    void shell.approvalTargets().then(result => {
+      if (disposed) return;
+      approvalTargets = result.targets;
+      const active = host.ownerDocument?.activeElement as HTMLInputElement | null;
+      const key = active?.getAttribute?.('data-field-key');
+      if (key) pendingFocus = () => {
+        const next = host.querySelector?.<HTMLInputElement>(`[data-field-key="${key}"]`);
+        next?.focus();
+      };
+      render();
+    }).catch(() => { targetsRequested = false; });
+  };
   const render = (): void => {
     if (disposed) return;
     const html = renderAuthoringForm(
-      buildAuthoringView(kind, workingConfig, validation, isNew),
+      buildAuthoringView(kind, workingConfig, validation, isNew, approvalTargets),
     );
     if (html !== lastHtml) {
       host.innerHTML = html;
@@ -983,13 +1013,20 @@ export const mountAuthoringForm = (
   // `innerHTML` + loses focus, so keep the exception list explicit.
   const onFieldEdit = (event: FieldDelegateEvent): void => {
     applyFieldDelegateEvent(kind, workingConfig, event);
+    const approvalChoice = kind === 'approval_link'
+      && (event.fieldKey === 'on_action.on_approve_action' || event.fieldKey === 'on_action.target_kind');
+    if (approvalChoice) {
+      loadApprovalTargets();
+      const key = event.fieldKey;
+      pendingFocus = () => host.querySelector?.<HTMLElement>(`[data-field-key="${key}"]`)?.focus();
+    }
     const changesVisibleControls =
       kind === 'intake_form'
       && (event.fieldKey === 'submission_processing_rule.target_kind'
         // D-210 WS3 — the destination mapping controls appear/disappear with the
         // target, and the end-spec control swaps with the mode.
         || event.fieldKey === INTAKE_FORM_CALENDAR_END_MODE_KEY);
-    if (validation !== null || changesVisibleControls) {
+    if (validation !== null || changesVisibleControls || approvalChoice) {
       validation = null;
       render();
     }
@@ -1128,6 +1165,7 @@ export const mountAuthoringForm = (
   });
   const detachFields = attachFieldDelegator(host, onFieldEdit);
   render();
+  if (kind === 'approval_link' && getPath(workingConfig, 'on_action.target_kind')) loadApprovalTargets();
 
   return {
     update: render,

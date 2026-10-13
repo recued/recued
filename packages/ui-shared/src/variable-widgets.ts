@@ -31,7 +31,7 @@
  */
 
 import { isListOfNumbers, listFromTypedText, listSettingChoices, splitSpacedItems } from '@recued/contracts';
-import type { ListChoices, VariableDefault, ValueHint } from '@recued/contracts';
+import type { ListChoices, MailboxCollection, MailboxSetting, VariableDefault, ValueHint } from '@recued/contracts';
 import { initialRefPickerState } from './ref-picker/model.js';
 import { localToIsoWithOffset } from './form-renderer/read.js';
 import { renderRefPicker } from './ref-picker/render.js';
@@ -78,7 +78,12 @@ export type WidgetType =
   /** D-315 §5.2 — one of the owner's mail templates, chosen from a list of
    *  them (`mail-template-variable.ts`). A recipe setting, never a per-run
    *  input: the recipe's trigger is narrowed to the one it holds. */
-  | 'mail_template';
+  | 'mail_template'
+  /** One of the owner's mailboxes or calendars, chosen from a list of them
+   *  (`mailbox-variable.ts`). Never declared: a text setting becomes one when
+   *  the server says its steps read or send mail through it
+   *  (`ServerRecipeListEntry.mailbox_settings`, `asMailboxWidget`). */
+  | 'mailbox';
 
 export interface WidgetShape {
   key: string;
@@ -96,6 +101,9 @@ export interface WidgetShape {
   /** For a `mail_template` — the kind of email its starter reads, when the
    *  recipe brings one: the picker offers the owner's templates of that kind. */
   templateType?: string;
+  /** For a `mailbox` — what it names, and whether a step sends from it (then
+   *  only a mailbox that can send is offered). */
+  mailbox?: { readonly collection: MailboxCollection; readonly sends: boolean };
   value: unknown;
   optional?: boolean;
   /** A list setting (`type: 'array'`): still a one-line box, which shows the
@@ -155,6 +163,10 @@ export interface VariableWidgetRenderOptions {
    *  instead of the fallback text box; the host fills it
    *  (`wireMailTemplateVariables`). */
   mailTemplatePicker?: boolean;
+  /** Render a list of the owner's mailboxes (or calendars) for a `mailbox`
+   *  setting instead of the fallback text box; the host fills it
+   *  (`wireMailboxVariables`). */
+  mailboxPicker?: boolean;
   /** Unique scope when the same variable widgets coexist in nested overlays. */
   idPrefix?: string;
 }
@@ -165,6 +177,35 @@ export const MAIL_TEMPLATE_VARIABLE_ATTR = 'data-recued-mail-template-variable';
 export const MAIL_TEMPLATE_TYPE_ATTR = 'data-recued-mail-template-type';
 /** `open` | `duplicate` on a row's buttons. */
 export const MAIL_TEMPLATE_ACTION_ATTR = 'data-recued-mail-template-action';
+
+/** Marker on a `mailbox` setting's row (value = the setting's key), what it
+ *  names (`mail` | `calendar`), and, present or absent, whether a step sends
+ *  from it and whether it may be left empty. */
+export const MAILBOX_VARIABLE_ATTR = 'data-recued-mailbox-variable';
+export const MAILBOX_COLLECTION_ATTR = 'data-recued-mailbox-collection';
+export const MAILBOX_SENDS_ATTR = 'data-recued-mailbox-sends';
+export const MAILBOX_OPTIONAL_ATTR = 'data-recued-mailbox-optional';
+
+/** A text setting the server says names a mailbox or a calendar
+ *  (`ServerRecipeListEntry.mailbox_settings`), as a `mailbox` widget; any
+ *  other shape as it is. Only a text box becomes a list: a setting the recipe
+ *  gave a control of its own (a choice, a switch) keeps it. */
+export const asMailboxWidget = (
+  shape: WidgetShape,
+  settings: ReadonlyArray<MailboxSetting> | undefined,
+): WidgetShape => {
+  if (shape.type !== 'text' || shape.list !== undefined) return shape;
+  const setting = settings?.find((candidate) => candidate.key === shape.key);
+  return setting === undefined
+    ? shape
+    : { ...shape, type: 'mailbox', mailbox: { collection: setting.collection, sends: setting.sends } };
+};
+
+/** What a `mailbox` row's list says before the owner's mailboxes load, or
+ *  with nothing chosen: `Choose a mailbox`, `Choose a calendar`, or, where it
+ *  may be left empty, `Not set`. */
+export const mailboxPlaceholder = (collection: MailboxCollection, optional: boolean): string =>
+  optional ? 'Not set' : collection === 'calendar' ? 'Choose a calendar' : 'Choose a mailbox';
 
 /** Marker on a `record_ref` variable row (value = recipe variable key). */
 export const RECORD_REF_VARIABLE_ATTR = 'data-recued-record-ref-variable';
@@ -616,6 +657,28 @@ export const renderVariableWidget = (
     `;
   }
 
+  if (w.type === 'mailbox' && w.mailbox !== undefined && options.mailboxPicker === true) {
+    // The saved name is its own option until the host lists the owner's
+    // mailboxes: a pure string renderer, and a value is never lost to a list
+    // that has not loaded (the two-step `mail_template` uses).
+    const held = typeof w.value === 'string' ? w.value.trim() : '';
+    const { collection, sends } = w.mailbox;
+    return `
+      <div class="var-row" ${MAILBOX_VARIABLE_ATTR}="${e(w.key)}" ${MAILBOX_COLLECTION_ATTR}="${collection}"${
+        sends ? ` ${MAILBOX_SENDS_ATTR}=""` : ''}${w.optional ? ` ${MAILBOX_OPTIONAL_ATTR}=""` : ''}>
+        <label for="${e(id)}">${e(w.label)}${
+      w.optional ? ' <span class="var-optional">optional</span>' : ''
+    }</label>
+        ${help}
+        <select id="${e(id)}" data-var-key="${e(w.key)}" data-var-type="mailbox">
+          ${held === ''
+            ? `<option value="" selected>${e(mailboxPlaceholder(collection, w.optional === true))}</option>`
+            : `<option value="${e(held)}" selected>${e(held)}</option>`}
+        </select>
+      </div>
+    `;
+  }
+
   if (w.type === 'file_ref' && options.fileRefPicker === true) {
     const selected = typeof w.value === 'string' && w.value.length > 0
       ? { id: w.value, label: w.value }
@@ -685,7 +748,8 @@ export const renderVariableWidget = (
   }
 
   // text | number | file_ref | file_ref_array fallback (paste durable refs
-  // when the host has no inventory-search caller).
+  // when the host has no inventory-search caller), and a `mailbox` with no list
+  // to offer: the box the owner typed its name into before.
   const inputType = w.type === 'number'
     ? 'number'
     // D-215 slice 5 — the browser's own instant picker. The control holds a
@@ -882,6 +946,7 @@ export const validateWidgetValue = (
   if (
     w.type === 'text' || w.type === 'textarea' || w.type === 'secret'
     || w.type === 'file_ref' || w.type === 'datetime' || w.type === 'date'
+    || w.type === 'mailbox'
   ) {
     if (typeof value !== 'string' || value.trim() === '') return 'Required';
     return null;

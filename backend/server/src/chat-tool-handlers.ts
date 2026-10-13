@@ -198,6 +198,7 @@ import {
   type RawOpDispatchOutcome,
 } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
+import { missingPacksOfRefusal } from './install-offers/needed-packs.js';
 import type { InstalledRecipeScheduler } from './schedule-installed-recipe.js';
 import { formatIsoWithOffset } from './collections/calendar/iso-offset.js';
 import { parseInstantWithOffset } from '@recued/transforms';
@@ -635,6 +636,16 @@ export const wrapRecipeRunResult = (
 
 const errMessage = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
+
+/** A run or a schedule that threw. D-323 — a `pack_not_installed` refusal keeps
+ *  its packs as data beside its sentence, so chat can offer them under its
+ *  answer (`install-offers/needed-packs.ts`). */
+const refusalOf = (error: unknown): ChatDispatchResult => {
+  const missing_packs = missingPacksOfRefusal(error);
+  return missing_packs.length > 0
+    ? { ok: false, reason: 'execution_error', detail: errMessage(error), missing_packs }
+    : executionError(errMessage(error));
+};
 
 /** D-137 P2 § A.4 Codex P2 fold — clamp merged fan-out candidates to
  *  the per-call ceiling. Each source threads the user-supplied `limit`
@@ -3399,7 +3410,7 @@ const createRecipeRunHandler =
       const result = await execute(req);
       return wrapRecipeRunResult(result);
     } catch (e) {
-      return executionError(errMessage(e));
+      return refusalOf(e);
     }
   };
 
@@ -3474,7 +3485,7 @@ export const createChatTier2Dispatch =
       const result = await execute(req);
       return wrapRecipeRunResult(result);
     } catch (e) {
-      return executionError(errMessage(e));
+      return refusalOf(e);
     }
   };
 
@@ -4589,7 +4600,7 @@ const createRecipeScheduleHandler =
     } catch (error) {
       // The handler's refusals are written for a person: "Recipe 'x' not found",
       // the missing packs by name, an invalid cron.
-      return executionError(errMessage(error));
+      return refusalOf(error);
     }
   };
 

@@ -1,6 +1,7 @@
 /** D-265: the canonical message commit creates an outbound obligation in the
  * SAME transaction. A separate worker sends it, without holding the AI queue. */
 import { createHash, randomUUID } from 'node:crypto';
+import { messengerInstallOfferLines } from './install-offers/messenger-lines.js';
 import type Database from 'better-sqlite3';
 import { RpcError, type ChatDeliverySnapshot, type ChatDeliveryListRequest, type ChatDeliveryState,
   type ChatMessengerSessionStatus, type ChatMessengerReceiveState } from '@recued/contracts';
@@ -48,7 +49,11 @@ export const splitMessengerText = (text: string, limit = 1800): string[] => {
 
 export const createChatMessengerBridge = (options: { db: Database.Database; store: ChatStore;
   getKey?: ChatKeyProvider | undefined; broadcast?: ChatBroadcastEmitter | undefined; pollMs?: number;
-  workerAlive?: (pid: number, started: number) => boolean; minSendIntervalMs?: number; retryDelayMs?: number }) => {
+  workerAlive?: (pid: number, started: number) => boolean; minSendIntervalMs?: number; retryDelayMs?: number;
+  /** D-323 — the server's public web app address, read at send time, for the
+   *  links an answer's install offers end with. Absent or null: the names and
+   *  where to look. */
+  publicBaseUrl?: () => string | null }) => {
   const { db, store, getKey } = options;
   const queue = createChatTurnQueueStore(db, getKey);
   db.exec(`
@@ -205,7 +210,9 @@ export const createChatMessengerBridge = (options: { db: Database.Database; stor
         : 'Replying to an earlier message (text no longer available).\n\n'
       : '';
     const text = message.role === 'user' ? `${quote}Owner (via webclient)\n${message.content}`
-      : message.content || (files.length ? 'Assistant attached a file.' : '');
+      : (message.content || (files.length ? 'Assistant attached a file.' : ''))
+        // D-323 — the answer's install offers, as plain lines (ruling P5).
+        + messengerInstallOfferLines(message.install_offers, options.publicBaseUrl?.() ?? null);
     const parts: Array<{ kind: Chunk['kind']; text: string }> = existing.length ? []
       : splitMessengerText(text).map(text => ({ kind: 'text', text }));
     parts.push(...files.map(file => ({ kind: 'attachment' as const, text: JSON.stringify(file) })));

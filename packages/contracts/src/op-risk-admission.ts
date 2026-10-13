@@ -422,6 +422,11 @@ const liftCommitmentProposal = (
 ): CatalogOperationResolution => {
   // A quote release needs this provenance even when the ceiling already asks:
   // session grants and standing closures must never replace its own review.
+  if (stripCorePrefix(slug) === 'approval-workflow-continue' && res.verdict !== 'deny') {
+    return { ...res, verdict: 'ask', approval: 'ask', authorization_provenance: {
+      ...res.authorization_provenance, lift_reason: 'review_approval_workflow',
+    } };
+  }
   if (stripCorePrefix(slug) === 'quote-signoff-release' && res.verdict !== 'deny') {
     return { ...res, verdict: 'ask', approval: 'ask', authorization_provenance: {
       ...res.authorization_provenance, lift_reason: 'review_quote_signoff',
@@ -497,6 +502,8 @@ const mapResolutionToAdmission = (
           : isOutboundSendSlug(slug)
             ? `outbound send '${slug}' delivers a message outside your trust boundary `
               + `— preflight approval required`
+            : stripCorePrefix(slug) === 'approval-workflow-continue'
+              ? 'The customer accepted. Review the linked work or saved recipe before continuing.'
             : stripCorePrefix(slug) === 'quote-signoff-release'
               ? 'The customer accepted this quote. Review the task and invoice before releasing work.'
             : isCommitmentProposalSlug(slug)

@@ -5,8 +5,10 @@ export const QUOTE_SIGNOFF_CONTEXT_MAX = 8_000;
 export const QUOTE_SIGNOFF_RELEASE_RECIPE = 'reception-quote-signoff-release';
 export const QUOTE_SIGNOFF_RELEASE_OP = 'core.work-entity.quote-signoff.release';
 
-export type QuoteSignoffState = 'draft' | 'publishing' | 'waiting' | 'accepted'
-  | 'rejected' | 'superseded' | 'cancelled' | 'released';
+export const QUOTE_SIGNOFF_STATES = ['draft', 'publishing', 'waiting', 'accepted',
+  'rejected', 'superseded', 'cancelled', 'released'] as const;
+export type QuoteSignoffState = (typeof QUOTE_SIGNOFF_STATES)[number];
+export const QUOTE_SIGNOFF_SEARCH_MAX = 200;
 
 export interface QuoteSignoffPrepareInput {
   quote_id: string;
@@ -73,6 +75,8 @@ export interface QuoteSignoffSummary {
   quote_version: number;
   quote_revision: number;
   quote_label: string;
+  /** The quote reference saved with the offered terms. */
+  quote_reference?: string;
   customer: string;
   amount: string;
   currency: string;
@@ -99,6 +103,8 @@ export interface QuoteSignoffSummary {
   addition?: QuoteSignoffAdditionSummary;
   /** Present only for released requests returned by the owner's list. */
   follow_up?: QuoteSignoffFollowUp;
+  /** Owner-list eligibility, including amendments outside the current page. */
+  can_add_work?: boolean;
 }
 
 export interface QuoteSignoffPrepareResult {
@@ -110,8 +116,22 @@ export interface QuoteSignoffPrepareResult {
 
 export interface QuoteSignoffPublishInput { signoff_id: string; preview_hash: string }
 export interface QuoteSignoffPublishResult { signoff: QuoteSignoffSummary; share_url: string }
-export interface QuoteSignoffListInput { limit?: number }
-export interface QuoteSignoffListResult { signoffs: QuoteSignoffSummary[]; truncated: boolean }
+export interface QuoteSignoffListInput {
+  limit?: number;
+  /** Literal customer, quote label/reference or invoice-reference search. */
+  search?: string;
+  state?: QuoteSignoffState;
+  /** Opaque keyset cursor bound to the search and state filter. */
+  cursor?: string;
+  /** Exact owner lookup for rechecking a displayed request before payment.
+   * Cannot be combined with search, state or cursor. */
+  signoff_id?: string;
+}
+export interface QuoteSignoffListResult {
+  signoffs: QuoteSignoffSummary[];
+  truncated: boolean;
+  next_cursor?: string;
+}
 export interface QuoteSignoffQuoteChoice {
   id: string; label: string; customer: string; amount: string; currency: string; revision: number;
 }

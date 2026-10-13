@@ -30,6 +30,7 @@ import {
   wireConfigEditorOverlay,
   type ConnectionLineSlot,
   type ConfigEditorOverlayHandle,
+  type MailboxVariableCallers,
   type MailTemplateVariableCallers,
   type RecordRefVariableSearch,
   RefPicker,
@@ -82,6 +83,10 @@ export interface OpenDishFormArgs {
   readonly fileRefSearch?: RefPicker.RefPickerSearchCaller;
   readonly recordRefSearch?: RecordRefVariableSearch;
   readonly mailTemplates?: MailTemplateVariableCallers;
+  /** The owner's mailboxes and calendars: a setting the server says names one
+   *  (`entry.mailbox_settings`) is a list of them, and one that must be set
+   *  starts on the only one that fits. Absent ⇒ a text box. */
+  readonly mailboxes?: MailboxVariableCallers;
   /** D-320 — the recipe's slots, as `packs.connections.recipe` lists them. Absent
    *  (an older server, or the read failed) ⇒ no lines, and the dish's choice is
    *  left as it is. */
@@ -163,6 +168,9 @@ export const openDishForm = (args: OpenDishFormArgs): ConfigEditorOverlayHandle 
     ...(args.fileRefSearch !== undefined ? { fileRefSearch: args.fileRefSearch } : {}),
     ...(args.recordRefSearch !== undefined ? { recordRefSearch: args.recordRefSearch } : {}),
     ...(args.mailTemplates !== undefined ? { mailTemplates: args.mailTemplates } : {}),
+    ...(args.mailboxes !== undefined && (entry.mailbox_settings?.length ?? 0) > 0
+      ? { mailboxes: { settings: entry.mailbox_settings!, callers: args.mailboxes } }
+      : {}),
     onConfirm: async (rawConfig, extras) => {
       // D-320 — the lines' choice, and the settings it now stands in for. A slot
       // the form did not show keeps the choice it had.

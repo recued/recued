@@ -71,6 +71,8 @@ import {
   AI_MODELS_TAB_PANEL_ATTR,
   AI_MODELS_TRANSCRIPTION_FIELD_ATTR,
   AI_MODELS_PAGE_STYLES,
+  AI_MODELS_INSTALL_OFFERS_ATTR,
+  AI_MODELS_ROLLING_BRIEF_ATTR,
   SLOT_KEY_NOT_CARRIED_COPY,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
@@ -4121,3 +4123,50 @@ describe('Free pool — names, Edit, and Test before adding', () => {
     mount.dispose();
   });
 });
+
+/** D-323 — the chat behaviour section's switches. The rolling brief's page
+ *  code shipped on 2026-09-10 with no caller wired at the route, so the section
+ *  never left "Loading"; these mount the page with the callers the route now
+ *  passes. */
+describe('chat behaviour switches — the rolling brief and install offers', () => {
+  it('shows both switches once their reads land, offers on by default', async () => {
+    const { host, mount } = mountFixture({
+      runGetRollingBrief: vi.fn(async () => ({ enabled: true })),
+      runGetInstallOffers: vi.fn(async () => ({ enabled: true })),
+    });
+    await mount.whenLoaded();
+    expect(findByAttrValue(host, AI_MODELS_ROLLING_BRIEF_ATTR, 'on')).not.toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'on')?.textContent).toBe('Stop suggesting packs');
+  });
+
+  it('turns offers off through the server, and shows what the server answered', async () => {
+    const runSetInstallOffers = vi.fn(async (args: { enabled: boolean }) => ({ enabled: args.enabled }));
+    const { host, mount } = mountFixture({
+      runGetRollingBrief: vi.fn(async () => ({ enabled: true })),
+      runGetInstallOffers: vi.fn(async () => ({ enabled: true })),
+      runSetInstallOffers,
+    });
+    await mount.whenLoaded();
+    clickByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'on');
+    await vi.waitFor(() => expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'off')).not.toBeNull());
+    expect(runSetInstallOffers).toHaveBeenCalledWith({ enabled: false });
+    expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'off')?.textContent).toBe('Suggest packs');
+  });
+
+  it('shows no offers switch, and no error, for a server from before D-323', async () => {
+    const { host, mount } = mountFixture({
+      runGetRollingBrief: vi.fn(async () => ({ enabled: true })),
+      runGetInstallOffers: vi.fn(async () => { throw new Error('unknown method chat.install_offers.get'); }),
+    });
+    await mount.whenLoaded();
+    expect(findByAttr(host, AI_MODELS_INSTALL_OFFERS_ATTR)).toBeNull();
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
+  });
+
+  it('shows the offers switch even while the rolling brief has no answer', async () => {
+    const { host, mount } = mountFixture({ runGetInstallOffers: vi.fn(async () => ({ enabled: false })) });
+    await mount.whenLoaded();
+    expect(findByAttrValue(host, AI_MODELS_INSTALL_OFFERS_ATTR, 'off')).not.toBeNull();
+  });
+});
+

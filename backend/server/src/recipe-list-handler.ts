@@ -42,12 +42,14 @@ import {
   isProvablyReadOnly,
   recipeSpendsPerRun,
   recipeConsumedEnrichments,
+  recipeMailboxSettings,
   recipeNotificationChannels,
   recipeRequiredConnections,
   spreadsheetImportOf,
   type RecipeListRecipeView,
   type ServerRecipeFullEntry,
   type ConnectionKind,
+  type MailboxSetting,
   type RecipeDefinition,
   type PackOperationIndex,
   type RecordsUsagePack,
@@ -116,6 +118,7 @@ const projections = (
   spreadsheet_import?: SpreadsheetImportDeclaration;
   notification_channels: string[];
   consumed_enrichments: string[];
+  mailbox_settings?: MailboxSetting[];
 } => ({
   ...(ops === null ? {} : { provably_read_only: isProvablyReadOnly(recipe as never, ops) }),
   // The cost half of the unprompted-run gate, always projected. A kernel op id,
@@ -140,6 +143,14 @@ const projections = (
   // (`recipe-card-facts.ts` has the measured cost).
   notification_channels: recipeNotificationChannels(recipe),
   consumed_enrichments: recipeConsumedEnrichments(recipe),
+  // The settings forms' mailbox and calendar lists. What makes a setting one is
+  // the step it feeds, which `listView` strips. Left off a recipe with none:
+  // 64 of the 2,413 shipped recipes have one, and every list row is a byte
+  // cost on every list call.
+  ...((): { mailbox_settings?: MailboxSetting[] } => {
+    const settings = recipeMailboxSettings(recipe);
+    return settings.length === 0 ? {} : { mailbox_settings: settings };
+  })(),
 });
 
 /** The stored (pair-sync / imported) row as a list entry, or null when the row

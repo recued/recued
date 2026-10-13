@@ -377,6 +377,7 @@ export const composeExecutionContext = async (
     // and saga wirings use. ⚠ `lateBound` already publishes this exact getter,
     // so there is no second ref and one place where execute deps become visible.
     getExecuteDeps: () => lateBound.getExecuteDeps(),
+    getApprovalWorkflowExecuteDeps: () => lateBound.getExecuteDeps(),
     // D-216 — the same CAS byte reader the cli `input_materialize` path
     // uses, so a `connection.api` op declaring `bind.upload` can send a file.
     ...(collection.inboundFileCollection

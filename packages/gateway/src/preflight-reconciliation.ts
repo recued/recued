@@ -50,6 +50,7 @@
 
 import {
   RISK_TIERS,
+  isApprovalWorkflowOperation,
   isOperationSpecHash,
   kernelWriteStaysInRecued,
   renderBatchItemsBlock,
@@ -648,6 +649,11 @@ export const buildPreflightAsk = (args: {
   // something we don't know.
   const named = context.raw_op?.op_id ?? context.tool_slug;
   const action = named ?? 'a boundary-crossing call';
+  // A bound customer acceptance always needs a fresh owner decision.
+  const freshReview = named !== undefined && isApprovalWorkflowOperation(named)
+    || context.authorization_provenance?.lift_reason === 'review_approval_workflow';
+  const sessionGrant = freshReview ? undefined : context.session_grant;
+  const overrideOffer = freshReview ? undefined : context.owner_override_offer;
   // WHICH account this lands in — unless the op id already said so.
   const onConnection = connectionPhrase(context.connection_name, named);
 
@@ -749,10 +755,10 @@ export const buildPreflightAsk = (args: {
   // → its clean roots). Null/blank pinned values remain enforced by the
   // projection and hash; only their redundant human-preview lines are omitted.
   const openBlock =
-    context.session_grant !== undefined
-    && context.session_grant.grant_mode === 'open'
+    sessionGrant !== undefined
+    && sessionGrant.grant_mode === 'open'
       ? `\n\n${renderOpenGrantBlock(
-          context.session_grant,
+          sessionGrant,
           context.open_projection_preview,
           action,
         )}`
@@ -805,14 +811,14 @@ export const buildPreflightAsk = (args: {
       ...(context.tool_slug !== undefined ? { tool_slug: context.tool_slug } : {}),
       ...(context.risk_tier !== undefined ? { risk_tier: context.risk_tier } : {}),
       ...(context.reason !== undefined ? { reason: context.reason } : {}),
-      ...(context.owner_override_offer !== undefined
-        ? { owner_override_offer: context.owner_override_offer }
+      ...(overrideOffer !== undefined
+        ? { owner_override_offer: overrideOffer }
         : {}),
       ...(context.authorization_provenance !== undefined
         ? { authorization_provenance: context.authorization_provenance }
         : {}),
-      ...(context.session_grant !== undefined
-        ? { session_grant: context.session_grant }
+      ...(sessionGrant !== undefined
+        ? { session_grant: sessionGrant }
         : {}),
       // D-177 P5a — the batch identity + the version pin (the stale-approve
       // guard): the answer flow transitions the row `open → closing`
@@ -824,14 +830,14 @@ export const buildPreflightAsk = (args: {
     },
   };
   const options: readonly AskOption[] =
-    context.owner_override_offer === undefined
-      ? context.session_grant !== undefined
+    overrideOffer === undefined
+      ? sessionGrant !== undefined
         ? PREFLIGHT_ASK_OPTIONS_WITH_SESSION
         : PREFLIGHT_ASK_OPTIONS
       : [
           PREFLIGHT_ASK_OPTIONS[0],
-          ...(context.session_grant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
-          overrideAskOption(context.owner_override_offer),
+          ...(sessionGrant !== undefined ? [ALLOW_SESSION_ASK_OPTION] : []),
+          overrideAskOption(overrideOffer),
           PREFLIGHT_ASK_OPTIONS[1],
         ];
   return {
@@ -902,6 +908,7 @@ const readAuthorizationProvenance = (
     && v.lift_reason !== 'review_send'
     && v.lift_reason !== 'review_commitment'
     && v.lift_reason !== 'review_quote_signoff'
+    && v.lift_reason !== 'review_approval_workflow'
     && v.lift_reason !== 'quality'
   ) return undefined;
   return {

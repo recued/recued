@@ -93,7 +93,7 @@ const pickTimeApprovalConfig = (): ApprovalLinkConfig => ({
   expiry_days: 14,
   on_action: {
     target_id: 'proposal-1',
-    on_approve_action: 'mark_resolved',
+    on_approve_action: 'create_commitment',
   },
 });
 

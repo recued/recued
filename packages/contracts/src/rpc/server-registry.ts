@@ -19,6 +19,7 @@ import type {
 import type { ListPageFields, ListPageRequest } from './list-page.js';
 import type { MissedSchedulePolicy } from '../missed-schedule-policy.js';
 import type { SpreadsheetImportDeclaration } from '../spreadsheet-import.js';
+import type { MailboxSetting } from '../mailbox-settings.js';
 import type { RecipeSimulationRequest, RecipeSimulationResult } from '../recipe-simulation.js';
 import type { MailDraft, MailDraftSummary, MailDraftCreateRequest, MailDraftUpdateRequest, MailDraftDeleteRequest } from '../mail-drafts.js';
 import type {
@@ -1360,6 +1361,15 @@ export interface ServerRecipeListEntry {
    *  as above. ⛔ Every one of the 46 shipped recipes that reads an enrichment
    *  does so only in `steps`, so scanned off this row the pill never appeared. */
   consumed_enrichments?: ReadonlyArray<string>;
+  /** The settings that name one of the owner's mailboxes or calendars, read
+   *  from where the BODY uses them (`recipeMailboxSettings`). The settings
+   *  forms offer a list of the owner's mailboxes (or calendars) for each,
+   *  where they offered a text box. Absent when the recipe has none, and from
+   *  a server that does not project it: the forms keep the text box.
+   *
+   *  ⛔ Projected for the same reason as `provably_read_only`: what makes a
+   *  setting a mailbox is the step it feeds, and this row carries no steps. */
+  mailbox_settings?: ReadonlyArray<MailboxSetting>;
   /** Provenance — bundled with the server binary, pushed by the paired
    *  extension, or sent inline through `execute`. */
   source: 'bundled' | 'pair-sync' | 'inline';
@@ -7065,6 +7075,15 @@ export type ServerRpcRegistry = {
     { enabled: boolean }
   >;
 
+  // D-323 — whether chat offers a marketplace pack when nothing installed can
+  // do what the owner asked. Server-scoped like the rolling brief, read at each
+  // search; ON unless turned off (ruling P7). Off, no catalogue is downloaded.
+  'chat.install_offers.get': RpcMethodSpec<void, { enabled: boolean }>;
+  'chat.install_offers.set': RpcMethodSpec<
+    { enabled: boolean },
+    { enabled: boolean }
+  >;
+
   /** What the assistant is CARRYING about one conversation, and a way to drop
    *  it. ⛔ The brief steers every later turn and was invisible: only the fold
    *  TRAIL reached the transparency stream, never its content. Reading it is
@@ -7577,6 +7596,7 @@ export type ServerRpcRegistry = {
     import('../reception-record.js').ReceptionRecordListInput | void,
     import('../reception-record.js').ReceptionRecordListResult
   >;
+  'reception.approval.targets': RpcMethodSpec<void, import('../approval-workflow.js').ApprovalWorkflowTargetsResult>;
   'reception.signoff.quotes': RpcMethodSpec<void, import('../quote-signoff.js').QuoteSignoffQuotesResult>;
   'reception.signoff.prepare': RpcMethodSpec<import('../quote-signoff.js').QuoteSignoffPrepareInput,
     import('../quote-signoff.js').QuoteSignoffPrepareResult>;
@@ -8663,6 +8683,8 @@ export const SERVER_RPC_METHODS = [
   'chat.default_model_pref.set',
   'chat.rolling_brief.get',
   'chat.rolling_brief.set',
+  'chat.install_offers.get',
+  'chat.install_offers.set',
   'chat.session.brief.get',
   'chat.session.brief.clear',
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
@@ -8755,6 +8777,7 @@ export const SERVER_RPC_METHODS = [
   // D-149 follow-on § A.10 — Templates browser wire (admin-only; `reception.`
   // reserved prefix keeps it off MCP).
   'reception.template.list',
+  'reception.approval.targets',
   // D-151 P2 — intent-first Compose proposal (admin-only; server-side AI
   // through `executeRecuedRequest`, never webclient-side engine code).
   'reception.compose.propose',

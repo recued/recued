@@ -26,6 +26,8 @@ import { repairSharedMailAttachmentLinks } from '../collections/mail/mail-attach
 import type { KeyManager } from '../key-manager.js';
 import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
 import { createServerBundleStore } from '../server-bundle-store.js';
+import { createMarketplaceCatalogue } from '../install-offers/catalogue.js';
+import { defaultMarketplaceFetch } from '../pack-install-handler.js';
 import {
   reconcileServerBundleSwap,
   sweepOrphanedRestoreStaging,
@@ -310,6 +312,17 @@ export const startPostBaseStorageVaultRuntime = async (
       recipeStore: storageContext.recipeStore,
       pairedInstances: storageContext.pairedInstances,
       workEntityStore: storageContext.workEntityStoreRef,
+      // D-323 — chat's offers: the public catalogue, downloaded on the first
+      // search that finds nothing installed, never at boot.
+      installOfferCatalogue: createMarketplaceCatalogue({
+        fetch: defaultMarketplaceFetch,
+        onError: (error) => {
+          console.warn(`[install-offers] the marketplace catalogue could not be downloaded: ${
+            error instanceof Error ? error.message : String(error)}`);
+        },
+      }),
+      // D-323 — read at send time: an address set up later applies at once.
+      publicBaseUrl: () => storageContext.publicAddress.baseUrl('root'),
     },
     publishKeys: (keys) => {
       keysRef = keys;

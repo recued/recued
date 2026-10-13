@@ -185,6 +185,7 @@ export interface AuthoringFieldBase {
 /** Single-line / multi-line free text — `display_name`, `instructions`,
  *  ids, urls, refs. `multiline` ⇒ render a `<textarea>`. */
 export interface AuthoringTextField extends AuthoringFieldBase {
+  readonly choices?: ReadonlyArray<{ value: string; label: string }>;
   readonly control: 'text';
   readonly value: string;
   readonly max_length: number;
@@ -1907,12 +1908,12 @@ export const APPROVAL_LINK_CONFIG_ERROR_COPY: Readonly<
   require_email_match_invalid: 'That has to be a real email address.',
   expiry_days_out_of_range: `Expiry must be ${APPROVAL_LINK_EXPIRY_DAYS_MIN}–${APPROVAL_LINK_EXPIRY_DAYS_MAX} days. Approval links can never last longer than 30 days.`,
   on_action_invalid: 'Recued could not read what happens next. Load the page again and try once more.',
+  on_action_target_kind_invalid: 'Choose whether this link acts on a task, commitment or recipe.',
+  workflow_binding_hash_invalid: 'Preview again to refresh the workflow binding.',
   on_action_target_id_invalid: 'Type an id. It ties this link to the one thing it acts on.',
   on_approve_action_unknown: 'Pick what happens when they say yes.',
   on_approve_action_unsupported:
-    'Recued cannot do that any more. An answer would just sit there '
-    + 'and never reach you. Choose “Make a promise” instead. Their reply waits for you '
-    + 'and lands in your Reception inbox.',
+    'Choose accept/reject and an explicit local work item or saved recipe. Their acceptance waits for your review in Reception Inbox.',
   notification_target_unknown: 'Pick where to send the message.',
   triggered_recipe_id_invalid:
     'Recipes no longer start from here. Watch what the form creates instead. '
@@ -1961,8 +1962,8 @@ export const APPROVAL_LINK_ON_APPROVE_ACTION_COPY: Readonly<
   Record<ApprovalLinkOnApproveAction, { label: string; help: string }>
 > = {
   mark_resolved: {
-    label: 'Mark resolved',
-    help: 'Mark it sorted when they say yes.',
+    label: 'Complete linked work',
+    help: 'After they accept, review and complete a local task or fulfill a commitment.',
   },
   create_commitment: {
     label: 'Make a promise',
@@ -1970,7 +1971,7 @@ export const APPROVAL_LINK_ON_APPROVE_ACTION_COPY: Readonly<
   },
   fire_recipe: {
     label: 'Run a Recipe',
-    help: 'Run the Recipe named below when they say yes.',
+    help: 'After they accept, review the saved recipe and its main-dish settings before starting it.',
   },
   quote_signoff: {
     label: 'Customer quote sign-off',
@@ -1997,6 +1998,7 @@ export interface ApprovalLinkFormModel {
   readonly require_email_match: AuthoringTextField;
   readonly expiry_days: AuthoringNumberField;
   readonly target_id: AuthoringTextField;
+  readonly target_kind?: AuthoringSelectField<'task' | 'commitment' | 'recipe'>;
   readonly on_approve_action: AuthoringSelectField<ApprovalLinkOnApproveAction>;
   readonly success_message: AuthoringTextField;
   readonly submit_button_label: AuthoringTextField;
@@ -2020,11 +2022,14 @@ const APPROVAL_LINK_VISITOR_CONSTRAINT_OPTIONS: ReadonlyArray<
 /** Project an `ApprovalLinkConfig` (or `null`) into the form model. */
 export const buildApprovalLinkFormModel = (
   config: ApprovalLinkConfig | null,
+  targets?: ReadonlyArray<import('@recued/contracts').ApprovalWorkflowTarget>,
 ): ApprovalLinkFormModel => {
-  const actionKind: ApprovalLinkActionKind = config?.action_kind ?? 'approve_wording';
   const ctx = config?.context_raw;
   const vfc = config?.visitor_field_constraints;
   const oa = config?.on_action;
+  const workflow = oa?.on_approve_action === 'mark_resolved' || oa?.on_approve_action === 'fire_recipe';
+  const actionKind: ApprovalLinkActionKind = workflow ? 'approve_wording' : config?.action_kind ?? 'approve_wording';
+  const targetKind = oa?.on_approve_action === 'fire_recipe' ? 'recipe' : oa?.target_kind ?? 'task';
   return {
     is_new: config === null,
     display_name: {
@@ -2043,7 +2048,7 @@ export const buildApprovalLinkFormModel = (
       label: 'Action kind',
       help: 'The single scoped action this link grants. Each link does exactly one thing.',
       value: actionKind,
-      options: APPROVAL_LINK_ACTION_KINDS.map((k) => ({
+      options: (workflow ? ['approve_wording' as const] : APPROVAL_LINK_ACTION_KINDS).map((k) => ({
         value: k,
         label: APPROVAL_LINK_ACTION_KIND_COPY[k].label,
         help: APPROVAL_LINK_ACTION_KIND_COPY[k].help,
@@ -2139,24 +2144,28 @@ export const buildApprovalLinkFormModel = (
     target_id: {
       control: 'text',
       key: 'on_action.target_id',
-      label: 'Target id',
-      help: 'The id of the thing this approval acts on (a proposal, a commitment, …).',
+      label: workflow ? (targetKind === 'recipe' ? 'Saved recipe' : 'Linked work') : 'Target id',
+      help: workflow ? 'Choose a suggestion or enter its exact id. Creating the link captures the current target and settings.'
+        : 'A reference for the promise this response creates.',
+      ...(workflow && targets ? { choices: targets.filter(target => target.kind === targetKind)
+        .map(target => ({ value: target.id, label: target.label })) } : {}),
       value: oa?.target_id ?? '',
       max_length: 200,
       required: true,
       multiline: false,
     },
+    ...(workflow ? { target_kind: { control: 'select' as const, key: 'on_action.target_kind',
+      label: 'Linked work type', help: 'Local work is completed only after your review. Use a saved recipe for connected services.',
+      value: targetKind, options: oa?.on_approve_action === 'fire_recipe'
+        ? [{ value: 'recipe' as const, label: 'Saved recipe', help: 'Use its saved main-dish settings.' }]
+        : [{ value: 'task' as const, label: 'Task', help: 'Mark the local task complete.' },
+          { value: 'commitment' as const, label: 'Commitment', help: 'Fulfill the local commitment.' }] } } : {}),
     on_approve_action: {
       control: 'select',
       key: 'on_action.on_approve_action',
       label: 'On approve',
       help: 'What your engine does when the visitor approves.',
-      // ⛔ Offer only what the write path will accept, and default to it. The
-      // picker used to list all three and DEFAULT to `mark_resolved` — whose
-      // effect seam nothing supplies, so every consumption sat pending forever
-      // while the visitor was shown a success page. Both lists derive from the
-      // one contracts const, so a picker option that the validator refuses is
-      // not expressible.
+      // The picker and write validator share the supported-action vocabulary.
       value: oa?.on_approve_action ?? APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
       options: APPROVAL_LINK_AUTHORABLE_ON_APPROVE_ACTIONS.map((a) => ({
         value: a,

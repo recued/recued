@@ -307,6 +307,8 @@ type ChatMethods =
   | 'chat.default_model_pref.set'
   | 'chat.rolling_brief.get'
   | 'chat.rolling_brief.set'
+  | 'chat.install_offers.get'
+  | 'chat.install_offers.set'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
   | 'chat.connection_mcp.list'
@@ -1859,6 +1861,30 @@ export const handleSetDefaultModelPref = (
   return persisted;
 };
 
+/** D-323 — read the owner's switch for chat's install offers. A store without
+ *  it (an older double) reads ON, as the ruling's default. */
+export const handleGetInstallOffers = (
+  deps: ChatRpcDeps,
+): { enabled: boolean } => ({ enabled: deps.store.getInstallOffersEnabled?.() ?? true });
+
+/** D-323 — turn chat's install offers on or off for this server. Read at each
+ *  search, so it applies from the next one; off, no catalogue is downloaded. */
+export const handleSetInstallOffers = (
+  deps: ChatRpcDeps,
+  args: { enabled: unknown },
+): { enabled: boolean } => {
+  const safe = ensureRecordArgs('chat.install_offers.set', args);
+  if (typeof safe.enabled !== 'boolean') {
+    throw new RpcError('bad_request', 'chat.install_offers.set: enabled must be a boolean', 400);
+  }
+  if (deps.store.setInstallOffersEnabled === undefined) {
+    throw new RpcError('bad_request', 'chat.install_offers.set: this server cannot store the setting', 400);
+  }
+  const enabled = deps.store.setInstallOffersEnabled(safe.enabled);
+  void safeLogActivity(deps.auditLog, 'chat_install_offers_set', 'chat_install_offers', JSON.stringify({ enabled }));
+  return { enabled };
+};
+
 /** Read the server-scoped rolling-brief enable. */
 export const handleGetRollingBrief = (
   deps: ChatRpcDeps,
@@ -2977,6 +3003,8 @@ export const makeChatHandlers = (
       'chat.default_model_pref.set',
       'chat.rolling_brief.get',
       'chat.rolling_brief.set',
+      'chat.install_offers.get',
+      'chat.install_offers.set',
       'chat.session.brief.get',
       'chat.session.brief.clear',
       'chat.connection_mcp.list',
@@ -3088,6 +3116,9 @@ export const makeChatHandlers = (
       'chat.rolling_brief.get': async () => handleGetRollingBrief(deps),
       'chat.rolling_brief.set': async (args: unknown) =>
         handleSetRollingBrief(deps, args as { enabled: unknown }),
+      'chat.install_offers.get': async () => handleGetInstallOffers(deps),
+      'chat.install_offers.set': async (args: unknown) =>
+        handleSetInstallOffers(deps, args as { enabled: unknown }),
       'chat.session.brief.get': async (args: unknown) =>
         handleGetSessionBrief(deps, args as { session_id: string }),
       'chat.session.brief.clear': async (args: unknown) =>

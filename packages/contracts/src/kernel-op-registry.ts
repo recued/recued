@@ -481,6 +481,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.work-entity.note.update', 'work-entity', 'note-update', 'write', 'work'),
   op('core.work-entity.note.delete', 'work-entity', 'note-delete', 'destructive', 'work'),
   op('core.work-entity.task.create', 'work-entity', 'task-create', 'write', 'work'),
+  op('core.work-entity.approval-workflow.continue', 'work-entity', 'approval-workflow-continue', 'write', 'recipe'),
   op('core.work-entity.quote-signoff.release', 'work-entity', 'quote-signoff-release', 'write', 'work'),
   op('core.work-entity.task.update', 'work-entity', 'task-update', 'write', 'work'),
   op('core.work-entity.task.delete', 'work-entity', 'task-delete', 'destructive', 'work'),

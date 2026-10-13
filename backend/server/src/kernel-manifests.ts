@@ -8,6 +8,14 @@ import type { IngredientManifest } from '@recued/contracts';
 
 const MANIFESTS = [
   {
+    slug: 'approval-workflow-continue', name: 'Continue an accepted workflow', mcp_exposed: false,
+    description: 'After owner review, complete a bound local task, fulfill a local commitment or start an exact saved recipe with its saved settings. Require recorded customer acceptance and unchanged targets. Recipe operations keep their own approvals. Completed continuations return their existing receipt.',
+    author: 'recued', kind: 'storage' as const, version: 1, category: 'action' as const,
+    risk_tier: 'write' as const, tags: ['kernel', 'reception', 'approval'],
+    input: { endpoint_id: null, intent_id: null, expected_plan_hash: null, summary: null },
+    output: { target_kind: 'target_kind', target_id: 'target_id', already_continued: 'already_continued', child_run_id: 'child_run_id' },
+  },
+  {
     slug: 'quote-signoff-release', name: 'Release accepted quote', mcp_exposed: false,
     description: 'After owner approval, release an exact accepted quote or added-work amendment in one transaction. An initial quote creates a task and invoice and marks the quote won. Added work appends to its existing task and creates only an additional invoice. Refuse changed, expired, cancelled or superseded plans. Repeating a completed release returns its existing references.',
     author: 'recued', kind: 'storage' as const, version: 2, category: 'action' as const,

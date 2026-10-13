@@ -1,4 +1,6 @@
-import type { Conn, ServerRpcRegistry, QuoteSignoffPrepareResult, QuoteSignoffSummary } from '@recued/contracts';
+import { QUOTE_SIGNOFF_SEARCH_MAX, QUOTE_SIGNOFF_STATES,
+  type Conn, type ServerRpcRegistry, type QuoteSignoffPrepareResult,
+  type QuoteSignoffState, type QuoteSignoffSummary } from '@recued/contracts';
 import { canRecordSignoffPayment, createQuoteSignoffPayment,
   type QuoteSignoffPaymentOptions } from './quote-signoff-payment.js';
 
@@ -33,6 +35,10 @@ export const mountQuoteSignoffPanel = (opts: {
   const add = (tag: string, text: string, host: HTMLElement = root) => {
     const node = doc.createElement(tag); node.textContent = text; host.appendChild(node); return node;
   };
+  const states: Record<QuoteSignoffState, string> = {
+    draft: 'Draft', publishing: 'Publishing', waiting: 'Waiting for customer', accepted: 'Customer accepted',
+    rejected: 'Customer declined', cancelled: 'Cancelled', superseded: 'Replaced by a newer offer', released: 'Work and invoice released',
+  };
   add('h2', 'Customer sign-offs');
   add('p', 'Offer an exact quote and scope to your customer. After they accept, review the task and invoice in Reception Inbox before releasing work.');
   add('p', 'Install Quote Pipeline and Invoice Book from Packs to get started. This creates a local invoice with the quoted total; sending it and collecting payment are separate steps.');
@@ -43,6 +49,8 @@ export const mountQuoteSignoffPanel = (opts: {
   newQuote.hidden = true; form.appendChild(newQuote);
   const quoteLabel = add('label', 'Open quote', form);
   const quote = doc.createElement('select'); quote.setAttribute('name', 'quote_id'); quote.required = true; quoteLabel.appendChild(quote);
+  const quoteStatus = add('p', '', form); quoteStatus.setAttribute('role', 'status'); quoteStatus.setAttribute('aria-live', 'polite');
+  quoteStatus.hidden = true;
   const fields: Record<string, HTMLInputElement | HTMLTextAreaElement> = {};
   const fieldHosts: Record<string, HTMLElement> = {};
   const field = (name: string, label: string, type = 'text', required = true, max?: number) => {
@@ -72,18 +80,48 @@ export const mountQuoteSignoffPanel = (opts: {
   const historyHead = doc.createElement('div'); historyHead.className = 'signoff-actions'; root.appendChild(historyHead);
   add('h3', 'Requests and responses', historyHead);
   const refresh = doc.createElement('button'); refresh.type = 'button'; refresh.textContent = 'Refresh'; historyHead.appendChild(refresh);
+  const searchForm = doc.createElement('form'); searchForm.setAttribute('role', 'search'); root.appendChild(searchForm);
+  const searchLabel = add('label', 'Find customer, quote or invoice', searchForm);
+  const search = doc.createElement('input'); search.type = 'search'; search.maxLength = QUOTE_SIGNOFF_SEARCH_MAX;
+  search.setAttribute('name', 'signoff_search'); searchLabel.appendChild(search);
+  const stateLabel = add('label', 'Request status', searchForm);
+  const state = doc.createElement('select'); state.setAttribute('name', 'signoff_state'); stateLabel.appendChild(state);
+  const all = doc.createElement('option'); all.value = ''; all.textContent = 'All requests'; state.appendChild(all);
+  for (const value of ['waiting', 'accepted', 'released', 'rejected', 'cancelled', 'superseded', 'draft', 'publishing'] as const) {
+    const option = doc.createElement('option'); option.value = value; option.textContent = states[value]; state.appendChild(option);
+  }
+  const searchActions = doc.createElement('div'); searchActions.className = 'signoff-actions'; searchForm.appendChild(searchActions);
+  const find = doc.createElement('button'); find.type = 'submit'; find.textContent = 'Search'; searchActions.appendChild(find);
+  const clear = doc.createElement('button'); clear.type = 'button'; clear.textContent = 'Clear search'; searchActions.appendChild(clear);
+  const historyStatus = add('p', 'Loading requests…'); historyStatus.setAttribute('role', 'status'); historyStatus.setAttribute('aria-live', 'polite');
   const history = doc.createElement('div'); history.setAttribute('data-signoff-history', ''); root.appendChild(history);
+  const pages = doc.createElement('div'); pages.className = 'signoff-actions'; root.appendChild(pages);
+  const newer = doc.createElement('button'); newer.type = 'button'; newer.textContent = 'Newer requests'; pages.appendChild(newer);
+  const older = doc.createElement('button'); older.type = 'button'; older.textContent = 'Older requests'; pages.appendChild(older);
 
   let disposed = false; let busy = false; let generation = 0;
+  let historyLoading = false;
+  let currentSearch = ''; let currentState: QuoteSignoffState | undefined;
+  let pageCursor: string | undefined; let nextCursor: string | undefined;
+  let previousCursors: Array<string | undefined> = [];
+  type HistoryPage = { cursor?: string; previous: Array<string | undefined> };
+  let pendingPage: HistoryPage | undefined;
   let prepared: QuoteSignoffPrepareResult | null = null;
   let additionBase: QuoteSignoffSummary | null = null;
   let publish: HTMLButtonElement | undefined;
   let historyButtons: HTMLButtonElement[] = [];
+  const historyControls = () => {
+    refresh.disabled = busy || historyLoading;
+    newer.disabled = busy || historyLoading || previousCursors.length === 0;
+    older.disabled = busy || historyLoading || nextCursor === undefined;
+    search.disabled = busy; state.disabled = busy; find.disabled = busy; clear.disabled = busy;
+  };
   const setBusy = (value: boolean) => {
     busy = value; quote.disabled = value; prepare.disabled = value; refresh.disabled = value; newQuote.disabled = value;
     Object.values(fields).forEach((control) => { control.disabled = value; });
     if (publish) publish.disabled = value;
     historyButtons.forEach((button) => { button.disabled = value; });
+    historyControls();
   };
   const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'The request could not be completed. Try again.';
   const invalidate = () => { prepared = null; publish = undefined; previewHost.replaceChildren(); };
@@ -104,32 +142,38 @@ export const mountQuoteSignoffPanel = (opts: {
     } else message.textContent = 'Choose an open quote to prepare a request.';
   };
   const payment = opts.payment ? createQuoteSignoffPayment({ ...opts.payment, document: doc, host: root,
-    readOffer: async id => (await conn('reception.signoff.list', { limit: 50 })).signoffs.find(offer => offer.signoff_id === id),
+    readOffer: async id => (await conn('reception.signoff.list', { signoff_id: id, limit: 1 })).signoffs[0],
     onChanged: () => { if (!disposed) void load(); },
     onMessage: text => { if (!disposed) message.textContent = text; },
   }) : null;
   newQuote.addEventListener('click', () => { if (!busy && !disposed) selectAgreement(null); });
   form.addEventListener('input', invalidate); form.addEventListener('change', invalidate);
-  const states: Record<QuoteSignoffSummary['state'], string> = {
-    draft: 'Draft', publishing: 'Publishing', waiting: 'Waiting for customer', accepted: 'Customer accepted',
-    rejected: 'Customer declined', cancelled: 'Cancelled', superseded: 'Replaced by a newer offer', released: 'Work and invoice released',
-  };
-  const load = async () => {
+  const load = async (page: HistoryPage = pendingPage ?? { cursor: pageCursor, previous: [...previousCursors] }) => {
     const current = ++generation;
+    pendingPage = page;
+    historyLoading = true; historyControls(); historyStatus.textContent = 'Loading requests…';
     try {
-      const [offers, open] = await Promise.all([conn('reception.signoff.list', { limit: 50 }), conn('reception.signoff.quotes')]);
+      const [offers, open] = await Promise.all([conn('reception.signoff.list', { limit: 50,
+        ...(currentSearch ? { search: currentSearch } : {}), ...(currentState ? { state: currentState } : {}),
+        ...(page.cursor ? { cursor: page.cursor } : {}) }), conn('reception.signoff.quotes').then(
+        value => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }))]);
       if (disposed || current !== generation) return;
+      pageCursor = page.cursor; previousCursors = [...page.previous]; nextCursor = offers.next_cursor;
       const selected = quote.value; quote.replaceChildren();
       const placeholder = doc.createElement('option'); placeholder.value = ''; placeholder.textContent = 'Choose a quote'; quote.appendChild(placeholder);
-      open.quotes.forEach((q) => { const option = doc.createElement('option'); option.value = q.id;
+      quoteStatus.hidden = open.ok;
+      quoteStatus.textContent = open.ok ? '' : `Could not load open quotes. ${errorMessage(open.error)}`;
+      const openQuotes = open.ok ? open.value.quotes : [];
+      openQuotes.forEach((q) => { const option = doc.createElement('option'); option.value = q.id;
         option.textContent = `${q.label} — ${q.customer} — ${q.amount} ${q.currency} (revision ${q.revision})`; quote.appendChild(option); });
-      quote.value = open.quotes.some((q) => q.id === selected) ? selected : '';
+      quote.value = openQuotes.some((q) => q.id === selected) ? selected : '';
       history.replaceChildren(); historyButtons = [];
       const amended = new Set(offers.signoffs.filter((offer) => offer.state === 'released' && offer.addition)
         .map((offer) => offer.addition!.parent_signoff_id));
       for (const offer of offers.signoffs) {
         const card = doc.createElement('article'); card.setAttribute('data-signoff-id', offer.signoff_id); history.appendChild(card);
         add('h3', `${offer.quote_label} — ${offer.customer}`, card);
+        if (offer.quote_reference) add('p', `Quote ${offer.quote_reference}.`, card);
         add('p', `${states[offer.state]} · revision ${offer.quote_revision} · ${offer.amount} ${offer.currency}`, card);
         if (offer.addition) add('p', `Added work ${offer.addition.revision} · previously ${offer.addition.base_amount} · new agreed total ${offer.addition.total_amount} ${offer.currency}.`, card);
         if (offer.availability !== 'current') add('p', `This offer is ${offer.availability}. Prepare a new request before releasing work.`, card);
@@ -181,7 +225,8 @@ export const mountQuoteSignoffPanel = (opts: {
                 : 'status is unavailable. Refresh to try again.'), card);
           }
           const records = add('a', 'Browse Records', card); records.setAttribute('href', '#data/records');
-          if (!amended.has(offer.signoff_id) && (!follow || follow.task.availability === 'current' && !follow.task.done)) {
+          if ((offer.can_add_work ?? !amended.has(offer.signoff_id))
+            && (!follow || follow.task.availability === 'current' && !follow.task.done)) {
             const extra = doc.createElement('button'); extra.type = 'button'; extra.textContent = 'Add work'; extra.disabled = busy;
             card.appendChild(extra); historyButtons.push(extra);
             extra.addEventListener('click', () => { if (!busy && !disposed) { selectAgreement(offer); fields.scope!.focus(); } });
@@ -201,12 +246,37 @@ export const mountQuoteSignoffPanel = (opts: {
           });
         }
       }
-      if (!offers.signoffs.length) add('p', 'No customer sign-offs yet.', history);
-      if (offers.truncated) add('p', 'Showing the latest 50 requests.', history);
-      if (open.truncated) add('p', 'Showing up to 100 open quotes.', history);
-      if (message.textContent === 'Loading quotes…') message.textContent = open.quotes.length ? 'Choose an open quote to prepare a request.' : 'Record an open quote in Quote Pipeline to prepare a sign-off.';
-    } catch (error) { if (!disposed && current === generation) message.textContent = errorMessage(error); }
+      if (!offers.signoffs.length) add('p', currentSearch || currentState ? 'No requests match this search.' : 'No customer sign-offs yet.', history);
+      historyStatus.textContent = `Page ${previousCursors.length + 1} · ${offers.signoffs.length} request${offers.signoffs.length === 1 ? '' : 's'}.`;
+      if (offers.truncated && !offers.next_cursor) add('p', 'Update Recued to browse more requests.', history);
+      if (open.ok && open.value.truncated) add('p', 'Showing up to 100 open quotes.', history);
+      if (message.textContent === 'Loading quotes…' || message.textContent === '') message.textContent = open.ok
+        ? openQuotes.length ? 'Choose an open quote to prepare a request.' : 'Record an open quote in Quote Pipeline to prepare a sign-off.' : '';
+    } catch (error) {
+      if (!disposed && current === generation) historyStatus.textContent = `Could not load requests. ${errorMessage(error)}`;
+    } finally {
+      if (!disposed && current === generation) { pendingPage = undefined; historyLoading = false; historyControls(); }
+    }
   };
+  const applySearch = () => {
+    if (busy || disposed) return;
+    const selected = QUOTE_SIGNOFF_STATES.find(value => value === state.value);
+    if (state.value && !selected) return;
+    currentSearch = search.value.trim(); currentState = selected;
+    pageCursor = undefined; previousCursors = []; nextCursor = undefined;
+    history.replaceChildren(); historyButtons = []; void load({ previous: [] });
+  };
+  searchForm.addEventListener('submit', event => { event.preventDefault(); applySearch(); });
+  state.addEventListener('change', applySearch);
+  clear.addEventListener('click', () => { search.value = ''; state.value = ''; applySearch(); });
+  older.addEventListener('click', () => {
+    if (!busy && !disposed && !historyLoading && nextCursor) void load({ cursor: nextCursor,
+      previous: [...previousCursors, pageCursor] });
+  });
+  newer.addEventListener('click', () => {
+    if (!busy && !disposed && !historyLoading && previousCursors.length) void load({
+      cursor: previousCursors.at(-1), previous: previousCursors.slice(0, -1) });
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault(); if (busy || disposed) return;
     if (form.reportValidity && !form.reportValidity()) return;
@@ -246,7 +316,7 @@ export const mountQuoteSignoffPanel = (opts: {
     finally { if (!disposed) setBusy(false); }
   });
   refresh.addEventListener('click', () => { if (!busy && !disposed) void load(); });
-  const interval = setInterval(() => { if (!busy && !disposed) void load(); }, 20_000);
+  const interval = setInterval(() => { if (!busy && !disposed && !historyLoading) void load(); }, 20_000);
   void load();
   return { update: () => { if (!disposed) void load(); }, hasInFlightWork: () => busy || payment?.hasInFlightWork() === true,
     dispose: () => { disposed = true; generation++; clearInterval(interval); payment?.dispose(); root.remove(); } };

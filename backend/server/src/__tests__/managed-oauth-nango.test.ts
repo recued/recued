@@ -6,6 +6,39 @@ const profile = { id: 'nango', label: 'Cloud', broker: 'nango' as const, base_ur
 const auth: ManagedOAuthAuth = { type: 'managed_oauth', broker_profile_id: 'nango', integration_id: 'sheets-prod',
   connection_id: 'account-1', target_origin: 'https://sheets.googleapis.com', requested_scopes: [] };
 
+describe('Nango Connect routing', () => {
+  it.each([false, true])('binds the stock self-hosted Connect UI to its broker for reconnect=%s', async (reconnect) => {
+    const selfHosted = { ...profile, base_url: 'http://127.0.0.1:3003', connect_ui_origin: 'http://127.0.0.1:3009' };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ data: {
+      connect_link: 'http://127.0.0.1:3009/?session_token=connect-session&theme=dark',
+      expires_at: '2026-10-12T14:00:00Z',
+    } }));
+    const result = await createNangoOAuthAdapter(fetch).start(selfHosted, {}, reconnect);
+    const link = new URL(result.connect_link);
+    // Stock Connect UI otherwise defaults its session lookup and auth socket to Nango Cloud.
+    expect(link.searchParams.get('apiURL')).toBe(selfHosted.base_url);
+    expect(link.searchParams.get('session_token')).toBe('connect-session');
+    expect(link.searchParams.get('theme')).toBe('dark');
+    expect(link.origin).toBe(selfHosted.connect_ui_origin);
+    expect(result.connect_link).not.toContain(profile.api_key);
+    expect(fetch.mock.calls[0]?.[0]).toBe(`${selfHosted.base_url}/connect/sessions${reconnect ? '/reconnect' : ''}`);
+  });
+  it.each([
+    { base_url: 'https://nango.example/broker/api', connect_ui_origin: 'https://connect.example' },
+    { base_url: profile.base_url, connect_ui_origin: 'https://connect.nango.dev' },
+  ])('replaces an off-broker API override while retaining the configured API path: $base_url', async (routing) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ data: {
+      connect_link: `${routing.connect_ui_origin}/?session_token=connect-session&apiURL=https%3A%2F%2Funrelated.example`,
+      expires_at: '2026-10-12T14:00:00Z',
+    } }));
+    const result = await createNangoOAuthAdapter(fetch).start({ ...profile, ...routing }, {}, false);
+    const link = new URL(result.connect_link);
+    expect(link.searchParams.getAll('apiURL')).toEqual([routing.base_url]);
+    expect(link.searchParams.get('session_token')).toBe('connect-session');
+    expect(result.connect_link).not.toContain('unrelated.example');
+  });
+});
+
 describe('Nango raw proxy', () => {
   it('marks a sanitized control-plane network failure as retryable', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('Failed with Bearer broker-key'));

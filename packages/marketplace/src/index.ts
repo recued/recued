@@ -27,6 +27,7 @@ export {
   listRecipes,
   lookupIngredient,
   MARKETPLACE_URL,
+  MARKETPLACE_APEX_URL,
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
   type MarketplaceRecipeResult,

@@ -26,6 +26,7 @@ import { e } from '../template.js';
 import { formatRecipeRunFacts } from '../run-facts.js';
 import { runFailureReason } from '../run-failure-reason.js';
 import {
+  asMailboxWidget,
   isInvocationVariable,
   renderVariableWidget,
   toWidgetShape,
@@ -100,6 +101,8 @@ export interface RunModalCaps {
   canPickFiles?: boolean;
   /** Whether `record_ref` variables can use their pack-owned inventory. */
   canPickRecords?: boolean;
+  /** Whether a setting naming a mailbox or calendar can list the owner's. */
+  canPickMailboxes?: boolean;
 }
 
 /** Render one widget per value a run asks for, pre-filled from the config
@@ -109,7 +112,7 @@ export interface RunModalCaps {
 const renderVariableRows = (
   recipe: ServerRecipeListEntry,
   config_text: string,
-  caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
+  caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords' | 'canPickMailboxes'>,
   /** D-320 — the settings a Connection line stands in for: not asked here. */
   hidden: ReadonlySet<string> = new Set(),
 ): string => {
@@ -128,9 +131,10 @@ const renderVariableRows = (
       const def = variables[key];
       return def === undefined
         ? ''
-        : renderVariableWidget(toWidgetShape(key, def, overrides[key]), {
+        : renderVariableWidget(asMailboxWidget(toWidgetShape(key, def, overrides[key]), recipe.mailbox_settings), {
             fileRefPicker: caps.canPickFiles === true,
             recordRefPicker: caps.canPickRecords === true,
+            mailboxPicker: caps.canPickMailboxes === true,
             idPrefix: 'run-modal-var',
           });
     })

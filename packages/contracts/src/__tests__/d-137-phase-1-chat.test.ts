@@ -423,6 +423,8 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.default_model_pref.set',
       'chat.rolling_brief.get',
       'chat.rolling_brief.set',
+      'chat.install_offers.get',
+      'chat.install_offers.set',
       'chat.session.brief.get',
       'chat.session.brief.clear',
       'chat.connection_mcp.list',

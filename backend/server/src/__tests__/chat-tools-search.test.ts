@@ -430,3 +430,100 @@ describe('wrapRegistryWithToolsSearch — granted raw pack actions are findable'
     expect(result.matches.map((m) => m.recipe_slug)).toContain(SNAPSHOT);
   });
 });
+
+/** D-323 — the marketplace offers that would do what nothing installed does. */
+describe('wrapRegistryWithToolsSearch — install offers (D-323)', () => {
+  const OFFERS = [{
+    kind: 'pack' as const,
+    slug: 'rental-book',
+    name: 'Rental Book',
+    publisher: 'recued-core',
+    recipes: ['Collect the rent'],
+  }];
+  const result = (res: unknown) => (res as { result: Record<string, unknown> }).result;
+
+  it('asks for offers with the query, and hands them to the model as installable, never callable', async () => {
+    const asked: unknown[] = [];
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      installOffers: async (query, installed) => { asked.push({ query, installed }); return OFFERS; },
+    });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'quantum rent' }, CTX));
+    expect(asked).toEqual([{ query: 'quantum rent', installed: [] }]);
+    expect(res.match_count).toBe(0);
+    expect(res.installable).toEqual([
+      { kind: 'pack', slug: 'rental-book', name: 'Rental Book', publisher: 'recued-core', recipes: ['Collect the rent'] },
+    ]);
+    expect(JSON.stringify(res.installable)).not.toContain('args_schema');
+    // ⛔ The model cannot install and must not say it did.
+    expect(String(res.guidance)).toContain('NOT installed');
+    expect(String(res.guidance)).toContain('Never say you installed or ran it');
+    expect(String(res.guidance)).toContain('Do NOT retry');
+  });
+
+  it('⛔ asks even when something installed matched, with what it found: the source decides whether that does it (ruling P2)', async () => {
+    // The search counts a word found as letters, so "matched something" is not
+    // "something installed does it": live, Open commitments matched "rent"
+    // inside "current" and no offer was ever shown (spec §3a).
+    const asked: unknown[] = [];
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      installOffers: async (query, installed) => { asked.push({ query, installed }); return []; },
+    });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'follow-up email' }, CTX));
+    expect(res.match_count).toBe(1);
+    expect(asked).toEqual([{
+      query: 'follow-up email',
+      installed: [{ name: 'recued-core/draft-followup-email', description: 'Draft a follow-up email', tags: ['email', 'draft'] }],
+    }]);
+    // Nothing to offer: the result reads exactly as before.
+    expect(res).not.toHaveProperty('installable');
+    expect(String(res.guidance)).toContain('Call the one you need NOW');
+  });
+
+  it('⛔ installed matches and offers together: the model may call a match that does it, and is told none is about the request', async () => {
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      installOffers: async () => OFFERS,
+    });
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'follow-up email' }, CTX));
+    expect(res.match_count).toBe(1);
+    expect((res.installable as Array<{ slug: string }>).map((offer) => offer.slug)).toEqual(['rental-book']);
+    const guidance = String(res.guidance);
+    // ⛔ Not the matches guidance: it says to call a match NOW.
+    expect(guidance).not.toContain('Call the one you need NOW');
+    expect(guidance).toContain('none is about what it asks');
+    expect(guidance).toContain('If none does, do not call them.');
+    expect(guidance).toContain('NOT installed');
+    expect(guidance).toContain('Never say you installed or ran it');
+  });
+
+  it('reads as before when there is nothing to offer, or the offers fail', async () => {
+    for (const installOffers of [async () => [], async () => { throw new Error('offline'); }]) {
+      const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), { enabled: true, installOffers });
+      const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'quantum blockchain' }, CTX));
+      expect(res).not.toHaveProperty('installable');
+      expect(String(res.guidance)).toContain('No installed recipe tool or action matches this request.');
+      expect(String(res.guidance)).not.toContain('installable');
+    }
+  });
+
+  it('⛔ a turn the owner does not govern is refused before any offer is looked up', async () => {
+    let asked = 0;
+    const reg = wrapRegistryWithToolsSearch(mkInner(CATALOG), {
+      enabled: true,
+      ownerCatalogGuard: () => { throw new Error('not the owner'); },
+      installOffers: async () => { asked += 1; return OFFERS; },
+    });
+    await expect(reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'quantum rent' }, CTX)).rejects.toThrow('not the owner');
+    expect(asked).toBe(0);
+  });
+
+  it('is threaded through the per-slot constructor the wire uses (positional, after the raw actions)', async () => {
+    const reg = wrapChatRegistryForCatalogModes(
+      mkInner(CATALOG), ['lean-core'], undefined, undefined, undefined, undefined, async () => OFFERS,
+    );
+    const res = result(await reg.dispatch(TOOLS_SEARCH_TOOL_NAME, { query: 'quantum rent' }, CTX));
+    expect((res.installable as Array<{ slug: string }>).map((offer) => offer.slug)).toEqual(['rental-book']);
+  });
+});

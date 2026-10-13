@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   RpcError, managedOAuthProvidersForTarget, managedOAuthScopeUnion,
   type ConnectionAuth, type ConnectionRow, type ManagedOAuthAuth,
-  type ManagedOAuthRequest, type ManagedOAuthResponse, type ManagedOAuthProfileView,
+  type ManagedOAuthRequest, type ManagedOAuthResponse, type ManagedOAuthProfileView, type ManagedOAuthPermissionPreview,
 } from '@recued/contracts';
 import type { ManagedOAuthProfile, ManagedOAuthProfileStore } from './managed-oauth-profile-store.js';
 import { createNangoOAuthAdapter, managedOAuthServerUrl } from './managed-oauth-nango.js';
@@ -32,6 +32,7 @@ export interface ManagedOAuthServiceDeps {
   /** Synchronous: grant evidence becomes unknown before a reconnect can change consent. */
   clearGrantedScopes?(names: readonly string[]): void;
   requiredScopes?(vendor: string, baseUrl: string): readonly string[];
+  requiredScopeSources?(vendor: string, baseUrl: string): readonly { slug: string; name: string; scopes: readonly string[] }[];
   fetchImpl?: typeof fetch;
   now?: () => number;
 }
@@ -239,10 +240,14 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     return { action: 'save_profile', profile: view, integrations };
   };
 
-  const start = async (a: Extract<ManagedOAuthRequest, { action: 'start' }>): Promise<ManagedOAuthResponse> => {
-    prune();
+  // Preview and start deliberately share discovery and policy. Preview never issues a claim,
+  // clears grants, records history, or sends a mutation to the broker.
+  const start = async (a: Extract<ManagedOAuthRequest, { action: 'start' | 'preview' }>): Promise<ManagedOAuthResponse> => {
+    const readOnly = a.action === 'preview';
+    if (!readOnly) prune();
     const accountVersion = accountRevision;
-    if (flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many OAuth authorizations are pending. Cancel one or wait for it to expire.');
+    if (!readOnly && flows.size + receipts.size >= 128) throw new RpcError('conflict', 'Too many OAuth authorizations are pending. Cancel one or wait for it to expire.');
+    const initialSnapshot = scopeSnapshot();
     const requested = scopeList(a.scopes);
     if (a.force_reauthorization !== undefined && typeof a.force_reauthorization !== 'boolean') throw new RpcError('bad_request', 'Choose a valid reauthorization option.');
     const saved = profile(a.profile_id);
@@ -261,11 +266,15 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
     }
     const remoteId = previous?.connection_id ?? (a.connection_id === undefined ? undefined : text(a.connection_id, 'Nango account'));
     const key = remoteId === undefined ? undefined : accountKey(saved.base_url, integration.id, remoteId);
+    const assertNotDeleting = (): void => {
+      if (key !== undefined && deletingAccounts.has(key)) throw new RpcError('conflict', 'This Nango account is being deleted. Refresh accounts before authorizing.');
+    };
+    assertNotDeleting();
     if (key !== undefined && (startingAccounts.has(key) || [...flows.values()].some((flow) => flow.remoteId !== undefined
-      && accountKey(flow.profile.base_url, flow.integration, flow.remoteId) === key))) {
+      && flow.expires > now() && accountKey(flow.profile.base_url, flow.integration, flow.remoteId) === key))) {
       throw new RpcError('conflict', 'Authorization for this Nango account is already pending. Complete or cancel it before authorizing again.');
     }
-    if (key !== undefined) startingAccounts.add(key);
+    if (key !== undefined && !readOnly) startingAccounts.add(key);
     try {
       const remote = remoteId === undefined ? undefined : await adapter.existing(saved, integration.id, remoteId);
       const account = remoteId === undefined ? undefined : await accountScopes(saved, integration.id, remoteId);
@@ -276,6 +285,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       if (accountRevision !== accountVersion) throw new RpcError('conflict', 'Nango accounts changed while verifying authorization. Refresh and authorize again.');
       if (profile(saved.id).revision !== saved.revision) throw new RpcError('conflict', 'The OAuth broker profile changed. Authorize again.');
       assertPackRequirements(packs);
+      if (scopeSnapshot() !== initialSnapshot) throw new RpcError('conflict', 'Connections or scope requirements changed. Refresh before authorizing.');
       const requiredScopes = managedOAuthScopeUnion(requested, packs?.scopes ?? []);
       const needed = managedOAuthScopeUnion(requiredScopes, integration.default_scopes,
         ...(account?.members.filter(m => m.row.name !== row?.name).map(m => managedOAuthScopeUnion(
@@ -283,9 +293,84 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       const granted = managedOAuthScopeUnion(...(account?.grants ?? []));
       const staticGraph = new URL(target).hostname === 'graph.microsoft.com'
         && integration.default_scopes.some((scope) => scope === '.default' || scope.endsWith('/.default'));
-      if (remote !== undefined && !remote.auth_error && !a.force_reauthorization && !staticGraph
+      const reuse = remote !== undefined && !remote.auth_error && !a.force_reauthorization && !staticGraph
         && integration.scope_metadata === 'available' && account!.completed !== undefined
-        && covers(target, account!.completed, needed)) {
+        && covers(target, account!.completed, needed);
+      const wanted = managedOAuthScopeUnion(requiredScopes, integration.default_scopes,
+        account?.required ?? [], account?.requested ?? [], granted);
+      // Unknown defaults and Entra's static profile must never be replaced by a union.
+      const requestScopes = staticGraph ? [...integration.default_scopes]
+        : integration.scope_metadata === 'available' ? authorizationScopes(target, wanted) : [];
+      let blocked: string | undefined;
+      let blockedCode: 'bad_request' | 'not_configured' = 'bad_request';
+      if (!reuse) {
+        if (remoteId !== undefined && !account!.known) {
+          blocked = 'Recued does not know this account’s previous scopes. Reuse its current authorization, manage consent in Nango with its existing scope profile, or authorize a new account here.';
+        } else if (account !== undefined && account.requested.length > 0 && integration.scope_metadata === 'unknown') {
+          blocked = 'The broker did not expose its app scopes. Reconnecting could remove previous account permissions. Use a key that can read integration scopes, or manage consent in Nango with the existing scope profile.';
+        } else if (!staticGraph && new URL(target).hostname === 'graph.microsoft.com'
+          && integration.scope_metadata === 'available'
+          && wanted.some(scope => scope === '.default' || scope.endsWith('/.default'))
+          && wanted.some(scope => !['openid', 'offline_access', 'profile', 'email'].includes(scope)
+            && scope !== '.default' && !scope.endsWith('/.default'))) {
+          blocked = 'Do not combine .default with individual Microsoft Graph scopes. Configure a static scope profile in the broker or remove .default from the requested scopes.';
+        } else if (account?.members.some(m => m.row.granted_scopes_json !== undefined) && deps.clearGrantedScopes === undefined) {
+          blockedCode = 'not_configured';
+          blocked = 'The server cannot invalidate shared grant evidence. Upgrade before reauthorizing.';
+        }
+      }
+      const sources: ManagedOAuthPermissionPreview['sources'][number][] = [];
+      const source = (kind: ManagedOAuthPermissionPreview['sources'][number]['kind'], label: string, scopes: readonly string[]): void => {
+        if (scopes.length) sources.push({ kind, label, scopes: [...scopes] });
+      };
+      const packSources = (vendor: string | undefined, baseUrl: string, connection?: string): void => {
+        if (vendor === undefined) return;
+        for (const pack of deps.requiredScopeSources?.(vendor, baseUrl) ?? []) {
+          source('pack', `${pack.name} (${pack.slug})${connection ? ` · ${connection}` : ''}`, scopeList(pack.scopes));
+        }
+      };
+      source('request', 'This connection', requested);
+      source('integration', 'Broker app defaults', integration.default_scopes);
+      source('history', 'Previous requested permissions', account?.requested ?? []);
+      if (!reuse) source('grants', 'Previously reported permissions', granted);
+      packSources(a.vendor, a.base_url);
+      for (const member of account?.members ?? []) {
+        if (member.row.name === row?.name) continue;
+        source('connection', member.row.display_name || member.row.name,
+          managedOAuthScopeUnion(member.auth.required_scopes ?? member.auth.requested_scopes, requirements(member.row)));
+        const config = JSON.parse(member.row.config_json) as { vendor?: string; base_url?: string };
+        if (config.base_url !== undefined) packSources(config.vendor, config.base_url, member.row.display_name || member.row.name);
+      }
+      const warnings = ['Requested permissions are not proof of vendor-granted access.'];
+      if (staticGraph) warnings.push('This Microsoft app uses a fixed .default profile. Additional permissions must be configured in the broker app and may need administrator consent.');
+      else if (integration.scope_metadata === 'unknown') warnings.push('The broker did not expose its app scopes. Its existing scope profile will be preserved; additional permissions may need an app change in Nango.');
+      if (remote?.auth_error) warnings.push('This account needs sign-in again to repair its authorization.');
+      const effective = reuse ? account!.requested : requestScopes;
+      assertPackRequirements(packs);
+      if (scopeSnapshot() !== initialSnapshot) throw new RpcError('conflict', 'Connections or scope requirements changed. Refresh before authorizing.');
+      assertNotDeleting();
+      const preview: ManagedOAuthPermissionPreview = {
+        fingerprint: '', decision: blocked ? 'blocked' : reuse ? 'reuse' : remoteId === undefined ? 'authorize' : 'reconnect',
+        scope_metadata: staticGraph ? 'fixed' : integration.scope_metadata,
+        required_scopes: requiredScopes, previous_scopes: account?.requested ?? [], sources, warnings,
+        ...(integration.scope_metadata === 'unknown' ? {} : { requested_scopes: effective,
+          added_scopes: effective.filter(scope => !covers(target, account?.requested ?? [], [scope])),
+          retained_scopes: effective.filter(scope => !covers(target, requiredScopes, [scope])) }),
+        ...(blocked === undefined ? {} : { blocked_reason: blocked }),
+      };
+      // A fingerprint carries no authority. Start recomputes it from current local and broker state.
+      preview.fingerprint = createHash('sha256').update(JSON.stringify([
+        preview, initialSnapshot, accountVersion, saved.id, saved.revision, integration, target,
+        a.base_url, a.vendor, row?.name, remoteId, remote?.auth_error, account?.remoteIdentity, !!a.force_reauthorization,
+      ])).digest('hex');
+      if (readOnly) return { action: 'preview', preview };
+      if (a.preview_fingerprint !== undefined && (typeof a.preview_fingerprint !== 'string'
+        || !/^[a-f0-9]{64}$/.test(a.preview_fingerprint)
+        || !same(a.preview_fingerprint, preview.fingerprint))) {
+        throw new RpcError('conflict', 'Permissions changed after review. Review permissions again before authorizing.');
+      }
+      if (blocked !== undefined) throw new RpcError(blockedCode, blocked);
+      if (reuse) {
         const flowId = nonce(); const receipt = nonce();
         const { api_key: ignored, ...view } = saved; void ignored;
         // Completed requests avoid duplicate consent; they never prove vendor grants.
@@ -303,27 +388,6 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
         flows.set(flowId, flow); receipts.set(receipt, { flow, expires: flow.expires });
         return { action: 'reuse', flow_id: flowId, claim_secret: flow.claim, auth, expires_at: flow.expires };
       }
-      // Nango reconnect replaces a per-account override. Its token-free list does
-      // not expose that history, so an imported account must not lose permissions.
-      if (remoteId !== undefined && !account!.known) {
-        throw new RpcError('bad_request', 'Recued does not know this account’s previous scopes. Reuse its current authorization, manage consent in Nango with its existing scope profile, or authorize a new account here.');
-      }
-      if (account !== undefined && account.requested.length > 0 && integration.scope_metadata === 'unknown') {
-        throw new RpcError('bad_request', 'The broker did not expose its app scopes. Reconnecting could remove previous account permissions. Use a key that can read integration scopes, or manage consent in Nango with the existing scope profile.');
-      }
-      const wanted = managedOAuthScopeUnion(requiredScopes, integration.default_scopes,
-        account?.required ?? [], account?.requested ?? [], granted);
-      // Entra's static .default profile cannot be combined with dynamic Graph scopes.
-      if (!staticGraph && new URL(target).hostname === 'graph.microsoft.com'
-        && integration.scope_metadata === 'available'
-        && wanted.some((scope) => scope === '.default' || scope.endsWith('/.default'))
-        && wanted.some((scope) => !['openid', 'offline_access', 'profile', 'email'].includes(scope)
-          && scope !== '.default' && !scope.endsWith('/.default'))) {
-        throw new RpcError('bad_request', 'Do not combine .default with individual Microsoft Graph scopes. Configure a static scope profile in the broker or remove .default from the requested scopes.');
-      }
-      // Unknown defaults must not be replaced: that could drop a shared app's required permissions.
-      const requestScopes = staticGraph ? [...integration.default_scopes]
-        : integration.scope_metadata === 'available' ? authorizationScopes(target, wanted) : [];
       const flowId = nonce(); const claim = nonce();
       const defaults = requestScopes.length === 0 || staticGraph ? {} : { integrations_config_defaults: {
         [integration.id]: { connection_config: { oauth_scopes_override: requestScopes.join(',') } },
@@ -358,7 +422,7 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
       flows.set(flowId, flow);
       return { action: 'start', flow_id: flowId, claim_secret: claim, connect_link: link.connect_link,
         expires_at: flow.expires, requested_scopes: requestScopes, scope_metadata: staticGraph ? 'fixed' : integration.scope_metadata };
-    } finally { if (key !== undefined) startingAccounts.delete(key); }
+    } finally { if (key !== undefined && !readOnly) startingAccounts.delete(key); }
   };
 
   const attach = async (a: Extract<ManagedOAuthRequest, { action: 'attach' }>): Promise<ManagedOAuthResponse> => {
@@ -456,8 +520,9 @@ export const createManagedOAuthService = (deps: ManagedOAuthServiceDeps): Manage
 
   const handle = async (a: ManagedOAuthRequest): Promise<ManagedOAuthResponse> => {
     if (a === null || typeof a !== 'object') throw new RpcError('bad_request', 'Managed OAuth request is required.');
-    prune();
+    if (a.action !== 'preview') prune();
     switch (a.action) {
+      case 'preview': return start(a);
       case 'profiles': return { action: 'profiles', profiles: deps.profiles.list() };
       case 'save_profile': return saveProfile(a);
       case 'delete_profile': {

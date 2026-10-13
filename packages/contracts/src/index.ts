@@ -4534,6 +4534,7 @@ export {
 } from './approval-link-config.js';
 
 export * from './quote-signoff.js';
+export * from './approval-workflow.js';
 export type {
   ApprovalLinkConfig,
   ApprovalLinkOnActionConfig,
@@ -6843,6 +6844,13 @@ export type {
 export { recipeRequiredConnections } from './required-connections.js';
 export { recipeConsumedEnrichments, recipeNotificationChannels } from './recipe-card-facts.js';
 export type { RequiredConnection } from './required-connections.js';
+/** The settings that name one of the owner's mailboxes or calendars, read from
+ *  the steps; projected onto `recipe.list` rows for the same reason. */
+export { MAILBOX_ARGUMENT_OPS, recipeMailboxSettings } from './mailbox-settings.js';
+export type { MailboxCollection, MailboxSetting } from './mailbox-settings.js';
+/** D-323 — what chat offers to install when nothing installed can do the job. */
+export { INSTALL_OFFER_LIMIT, INSTALL_OFFER_RECIPE_NAMES_LIMIT, installOffersOf } from './install-offers.js';
+export type { InstallOffer } from './install-offers.js';
 
 // D-315 — mail facts: the built-in fact types, the template shape, the fact and
 // thing records, and the event vocabulary.

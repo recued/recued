@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "bf97896a2d1137cd8be9d9ee912b95c435f0ef03",
-    "tree": "63245d0ad168362b7921cc507d18a21d6f9ffc96",
-    "committed_at": "2026-10-12T03:02:05-07:00"
+    "commit": "a47292cd5acd56caa24fb23cdd782d5d436416ef",
+    "tree": "9b4531cd4558aceaac6f7eecac1370884af42d75",
+    "committed_at": "2026-10-13T03:19:33-07:00"
   },
-  "export_manifest_sha256": "9ccf4544b636821f9ab612adbe89d47e6f0517bf74e77f2060e7ea48dd7e0c83",
-  "version": "26.10.12",
+  "export_manifest_sha256": "cf4b7f1cd676b71c7753daeacc4c55b71f920b6a0c6dd8146eb47527b71f9a67",
+  "version": "26.10.13",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -72,6 +72,7 @@
       "apps/webclient/src/reception/quote-signoff-payment.test.ts",
       "apps/webclient/src/storage/token-aad-migration-bridge.test.ts",
       "backend/server/src/__tests__/a-pack-brings-the-packs-its-recipes-call.test.ts",
+      "backend/server/src/__tests__/approval-workflow.test.ts",
       "backend/server/src/__tests__/audit-exempt-records-read.test.ts",
       "backend/server/src/__tests__/bills-pack-live.test.ts",
       "backend/server/src/__tests__/bookings-pack-live.test.ts",
@@ -281,6 +282,7 @@
       "backend/server/src/__tests__/m-reach-full-chain-acceptance-e2e.test.ts",
       "backend/server/src/__tests__/mail-recipes-read-the-mailbox-named.test.ts",
       "backend/server/src/__tests__/mail-work-readers.test.ts",
+      "backend/server/src/__tests__/mailbox-settings-corpus.test.ts",
       "backend/server/src/__tests__/mcp-listen-source.test.ts",
       "backend/server/src/__tests__/mcp-push-capability-probe.test.ts",
       "backend/server/src/__tests__/mcp-subscriptions-probe.test.ts",
@@ -321,6 +323,7 @@
       "backend/server/src/__tests__/queue-desk-reception-door-drive.test.ts",
       "backend/server/src/__tests__/quote-signoff-additions.test.ts",
       "backend/server/src/__tests__/quote-signoff-follow-up.test.ts",
+      "backend/server/src/__tests__/quote-signoff-list.test.ts",
       "backend/server/src/__tests__/quote-signoff-pack-versions.test.ts",
       "backend/server/src/__tests__/quote-signoff-service.test.ts",
       "backend/server/src/__tests__/quote-signoff-workflow.test.ts",
@@ -366,6 +369,7 @@
       "backend/server/src/collections/service/__tests__/starter-pack.test.ts",
       "backend/server/src/ingredient-authoring/__tests__/install-composition-accounting-op-steps.test.ts",
       "backend/server/src/ingredient-authoring/__tests__/install-composition-first-party.test.ts",
+      "backend/server/src/install-offers/__tests__/install-offers-corpus.test.ts",
       "backend/server/src/records/__tests__/client-document-intake-golden.test.ts",
       "backend/server/src/records/__tests__/job-status-board-golden.test.ts",
       "backend/server/src/records/__tests__/ledger-book-structures.test.ts",
@@ -780,7 +784,7 @@
       "packages/ui-shared/src/__tests__/d-129-phase-1-vendor-schemas-corpus.test.ts",
       "packages/ui-shared/src/__tests__/timer-events.test.ts"
     ],
-    "sha256": "6aad76079f922490b32c53ba0f7ac89d1ba4c3cced8d7b1aea65d10f4764cf09",
+    "sha256": "5ac60d22920f27a11878c362b071ea596b253fe8e31e146f00c41394de31f88c",
     "roots": [
       "apps/auth-worker",
       "apps/bridge",
@@ -830,8 +834,8 @@
       "id": "foundation-packs",
       "root": "community",
       "derivation": "foundation_pack_closure",
-      "file_count": 22,
-      "sha256": "9822409b799531b6a28faa84c0f160b753c0aa4925345731bf68762d718b12ba",
+      "file_count": 23,
+      "sha256": "d206fe252afa70f3e33f1daf0f8fc772e481e9d5378e66b8e033c7ad7836badb",
       "paths": [
         "community/packs/personal-organizer-foundation.json",
         "community/packs/recued-core/mail-compose-foundation.json",
@@ -843,6 +847,7 @@
         "community/recipes/extract-tasks-from-mail.json",
         "community/recipes/open-commitments.json",
         "community/recipes/recent-notes-by-topic.json",
+        "community/recipes/reception-approval-workflow.json",
         "community/recipes/reception-quote-signoff-release.json",
         "community/recipes/remind-me-of.json",
         "community/recipes/reminder-due-notifier.json",
@@ -895,7 +900,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 6555,
-    "sha256": "e0fcb7d525c6c428995cb341ee19bf5986e99a855e4245dbcdb4624964a31265"
+    "file_count": 6589,
+    "sha256": "778919f42a1ddfec85642fa5445f85cf0efd5b8fec0ff4e588c3fcee730ed93e"
   }
 }

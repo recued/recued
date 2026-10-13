@@ -162,6 +162,10 @@ export const createNangoOAuthAdapter = (fetchImpl: typeof fetch = globalThis.fet
     }
     const expires_at = Date.parse(data.expires_at);
     if (!Number.isFinite(expires_at)) throw new RpcError('bad_request', 'The broker returned an invalid session expiry.');
+    // Stock Connect UI defaults to Nango Cloud, even when served by a local
+    // broker. Bind session lookup and OAuth sockets to this profile's API URL.
+    // Replace a broker-supplied override so the session cannot leave that API.
+    link.searchParams.set('apiURL', managedOAuthServerUrl(profile.base_url));
     return { connect_link: link.toString(), expires_at };
   };
 

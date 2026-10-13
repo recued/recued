@@ -663,6 +663,13 @@ describe('D-149 follow-on — renderReceptionPage: detail view', () => {
 // ══════════════════════════════════════════════════════════════════
 
 describe('D-149 follow-on — renderReceptionPage: view-as-visitor view', () => {
+  it('shows the escaped owner workflow plan outside the visitor iframe', () => {
+    const html = renderReceptionPage(loadedState([], { view_as_visitor: viewAsVisitorModel({
+      rendered_html: '<h1>Customer question</h1>', approval_workflow_summary: 'Complete task: <Repair & finish>\nTarget: T1',
+    }) }), NOW);
+    expect(html).toContain('Work after your review'); expect(html).toContain('Complete task: &lt;Repair &amp; finish&gt;');
+    expect(html).not.toContain('<Repair & finish>'); expect(html).not.toMatch(/srcdoc="[^"]*Complete task:/);
+  });
   it('renders the panel: visible vs stripped fields + the invariant summary', () => {
     const html = renderReceptionPage(
       loadedState([buildEndpointSummary()], { view_as_visitor: viewAsVisitorModel() }),

@@ -24,6 +24,7 @@ export * from './output-filter.js';
 export * from './file-ref-array.js';
 export * from './record-ref-variable.js';
 export * from './mail-template-variable.js';
+export * from './mailbox-variable.js';
 export * from './config-editor-overlay.js';
 export * from './connection-lines.js';
 export * from './connection-removal.js';

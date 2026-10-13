@@ -7358,8 +7358,13 @@ const handleExecuteInner = async (
                 // resumable through the normal checkpoint path by construction
                 // here (this branch only runs after a durable checkpoint
                 // write). Absent offer ⇒ the binary ask.
+                // This control can start a child with its own approval hold.
+                // Keep its decision individual: batch answer settlement holds
+                // the coordinator mutex, which child registration also needs.
+                const individualWorkflowReview = awaitingApproval.authorization_provenance?.lift_reason === 'review_approval_workflow';
                 const resolvedOffer =
                   deps.sessionGrantResolver !== undefined
+                  && !individualWorkflowReview
                   && runIdentity !== undefined
                   && executionSource !== undefined
                     ? resolveSessionGrantOffer({
@@ -7476,6 +7481,7 @@ const handleExecuteInner = async (
                 let batchAskId: string | undefined;
                 if (
                   deps.batchApprovals !== undefined
+                  && !individualWorkflowReview
                   // A batch member is ONE call; a hold that covers a foreach's
                   // remaining items raises its own ask, which lists them all.
                   && foreachCover === undefined

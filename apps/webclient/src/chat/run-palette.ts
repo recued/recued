@@ -90,6 +90,9 @@ export interface RunPaletteOptions {
   /** D-320 — a recipe's slots, for the Run tab's Connection lines
    *  (`packs.connections.recipe`). Absent: no lines, as before. */
   recipeConnections?: (args: { recipe_id: string }) => ReturnType<NonNullable<RunModal.WireRunModalOptions['connectionSlots']>>;
+  /** The owner's mailboxes and calendars, for a setting that names one. Absent:
+   *  a text box, as before. */
+  mailboxes?: RunModal.WireRunModalOptions['mailboxes'];
   schedulesList?: RunModal.RunModalSchedulesListCaller;
   schedulesCreate?: RunModal.RunModalSchedulesCreateCaller;
   schedulesUpdate?: RunModal.RunModalSchedulesUpdateCaller;
@@ -442,6 +445,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       ...(opts.recipeConnections !== undefined
         ? { connectionSlots: () => opts.recipeConnections!({ recipe_id: entry.recipe_id }) }
         : {}),
+      ...(opts.mailboxes !== undefined ? { mailboxes: opts.mailboxes } : {}),
       ...(opts.schedulesList !== undefined
         ? { schedulesList: opts.schedulesList }
         : {}),

@@ -819,21 +819,49 @@ export const bootstrapConnectionsRoute = (
   } else {
     if (opts.connectionsManagedOAuthCaller !== undefined) {
       const section = doc.createElement('section');
+      section.className = 'connections-broker-manager';
+      const intro = doc.createElement('div');
+      intro.className = 'connections-broker-manager-intro';
+      const title = doc.createElement('h2'); title.textContent = 'Managed sign-in';
+      const description = doc.createElement('p'); description.textContent = 'Save a Nango broker for your app connections.';
+      intro.appendChild(title); intro.appendChild(description);
       const button = doc.createElement('button');
       button.type = 'button'; button.textContent = 'Manage OAuth brokers';
       button.className = 'rx-btn rx-btn-outline rx-btn-sm';
       button.setAttribute(CONNECTIONS_MANAGE_BROKERS_ATTR, '');
       button.setAttribute('aria-expanded', 'false');
       const editor = doc.createElement('div'); editor.hidden = true;
+      editor.id = 'connections-oauth-brokers';
+      button.setAttribute('aria-controls', editor.id);
       const context: ManagedOAuthPanelContext = { enabled: false, mode: 'create', name: '', base_url: '',
         scopes: [], profile_id: '', integration_id: '' };
       brokerPanel = createManagedOAuthPanel({ call: opts.connectionsManagedOAuthCaller, manageProfiles: true,
         context: () => context, select: (profile, integration) => { context.profile_id = profile; context.integration_id = integration; },
-        authorized: () => {}, invalidate: () => {}, changed: () => brokerPanel?.mount(editor) });
+        authorized: () => {}, invalidate: () => {}, changed: () => {
+          const busy = brokerPanel?.busy() ?? false;
+          button.setAttribute('aria-busy', String(busy));
+          if (busy) button.setAttribute('aria-disabled', 'true'); else button.removeAttribute('aria-disabled');
+          brokerPanel?.mount(editor);
+          if (!busy && context.enabled && doc.activeElement === button) {
+            editor.querySelector<HTMLElement>('[data-managed-field="profile"], [data-managed-action="add"]')?.focus?.();
+          }
+        } });
       button.addEventListener('click', () => {
-        context.enabled = true; editor.hidden = false; button.disabled = true;
-        button.setAttribute('aria-expanded', 'true'); brokerPanel?.mount(editor);
+        if (brokerPanel?.busy()) return;
+        if (context.enabled && brokerPanel?.hasDraft()) {
+          const confirm = doc.defaultView?.confirm?.bind(doc.defaultView);
+          if (confirm && !confirm('Discard this OAuth broker setup? Credential fields are not saved in your browser. Select Cancel to keep editing.')) return;
+        }
+        // Safari does not focus buttons on a mouse click. Keep a stable focus
+        // owner while the broker list loads, then move into its first control.
+        button.focus?.({ preventScroll: true });
+        context.enabled = !context.enabled; editor.hidden = !context.enabled;
+        button.textContent = context.enabled ? 'Close brokers' : 'Manage OAuth brokers';
+        button.setAttribute('aria-expanded', String(context.enabled)); brokerPanel?.mount(context.enabled ? editor : null);
+        if (!context.enabled) editor.innerHTML = '';
+        if (context.enabled) editor.querySelector<HTMLElement>('[data-managed-field="profile"], [data-managed-action="add"]')?.focus?.();
       });
+      section.appendChild(intro);
       section.appendChild(button); section.appendChild(editor); content.appendChild(section);
     }
     const canMountEnroll =

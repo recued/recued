@@ -128,6 +128,9 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
       'core.memory.read',
       'core.memory.write',
       'core.webhook.event.get',
+      // Continuing a customer-accepted workflow resolves a task or commitment,
+      // or starts a saved recipe; the owner reviews each one, never by default.
+      'core.work-entity.approval-workflow.continue',
       // Slice 1 — the Tier-1 `work.create` writes. Same posture as the READ
       // below and `core.memory.write` above: owner-on, door-off. Per KIND, so
       // granting a door "may add notes" never also grants "may commit me".

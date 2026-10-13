@@ -214,6 +214,8 @@ export interface ReceptionEndpointPreviewInput {
 }
 
 export interface ReceptionEndpointPreviewResult {
+  /** Owner-only description of the frozen downstream action. */
+  readonly approval_workflow_summary?: string;
   /** Server-rendered visitor view (same code path as the production
    *  per-kind handlers — P4-P9 wire the live render; P3 returns a
    *  substrate-level placeholder that future phases swap in). */
@@ -501,6 +503,7 @@ export const RECEPTION_RPC_METHODS = [
   // content (D-148 § A.4) rather than bundling it client-side. Read-only,
   // reserved-prefix-gated like every other reception rpc.
   'reception.template.list',
+  'reception.approval.targets',
   // D-151 P2 — server-side intent-first Compose proposal. Runs one
   // fast-tier `ai.synthesize` through `executeRecuedRequest` with
   // empty memory/enrichment consults and returns the captured

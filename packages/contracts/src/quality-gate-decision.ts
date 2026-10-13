@@ -53,8 +53,10 @@ export interface QualityGateDecisionInputs {
 /** D-202 §1 — compose the three-conjunct send gate at the authorization
  *  ask-branch. Reads the authorization conjunct captured BEFORE quality-review
  *  lifts (so a lift-driven owner send resolves to `admit` and a matching quality
- *  delegation can auto-accept it, while a genuine authz `ask` — a contracted
- *  write or owner `always` — holds regardless of quality, §12.1), then folds in
+ *  delegation can auto-accept it). Mandatory business reviews authorize a
+ *  commitment, quote release or accepted workflow; they remain `ask` regardless
+ *  of content quality, just like a contracted write or owner `always` (§12.1).
+ *  Then it folds in
  *  the quality delegation + Switch A/B + whole-document. Returns the full
  *  {@link ThreeConjunctResult} (`send` skips the ask; `review` routes to the
  *  owner; `deny` is a hard authorization refusal, unreachable from an ask-branch
@@ -62,8 +64,11 @@ export interface QualityGateDecisionInputs {
 export const resolveQualityGateDecision = (
   inputs: QualityGateDecisionInputs,
 ): ThreeConjunctResult => {
+  const { pre_lift_approval, lift_reason } = inputs.authorization_provenance;
+  const mandatoryBusinessReview = lift_reason === 'review_commitment'
+    || lift_reason === 'review_quote_signoff' || lift_reason === 'review_approval_workflow';
   const authorization: AuthorizationVerdict =
-    inputs.authorization_provenance.pre_lift_approval === 'never'
+    pre_lift_approval === 'never' && !mandatoryBusinessReview
       ? 'admit'
       : 'ask';
   return evaluateThreeConjunctGate({

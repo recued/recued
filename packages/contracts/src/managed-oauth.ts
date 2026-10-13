@@ -54,6 +54,31 @@ export interface ManagedOAuthIntegrationSetup {
   client_id?: string; client_secret?: string; scopes: readonly string[];
 }
 
+/** Owner-only explanation of requests. Never evidence of grants or a save receipt. */
+export interface ManagedOAuthPermissionPreview {
+  fingerprint: string;
+  decision: 'authorize' | 'reuse' | 'reconnect' | 'blocked';
+  scope_metadata: 'available' | 'unknown' | 'fixed';
+  required_scopes: readonly string[];
+  previous_scopes: readonly string[];
+  /** Absent when the broker's scope profile is unavailable. */
+  requested_scopes?: readonly string[];
+  added_scopes?: readonly string[];
+  retained_scopes?: readonly string[];
+  /** Requirements/history; fixed or unknown profiles may not request these as individual scopes. */
+  sources: readonly {
+    kind: 'request' | 'integration' | 'history' | 'connection' | 'pack' | 'grants';
+    label: string;
+    scopes: readonly string[];
+  }[];
+  warnings: readonly string[];
+  blocked_reason?: string;
+}
+export interface ManagedOAuthAuthorizationRequest {
+  profile_id: string; integration_id: string; base_url: string; vendor?: string;
+  scopes: readonly string[]; name?: string; connection_id?: string; force_reauthorization?: boolean;
+}
+
 export type ManagedOAuthRequest =
   | { action: 'profiles' }
   | { action: 'save_profile'; id?: string; label: string; broker: ManagedOAuthBroker; base_url: string; connect_ui_origin?: string; api_key?: string }
@@ -64,7 +89,8 @@ export type ManagedOAuthRequest =
   | { action: 'remote_connections'; profile_id: string; integration_id: string; page?: number }
   | { action: 'attach'; profile_id: string; integration_id: string; connection_id: string; base_url: string; scopes?: readonly string[]; vendor?: string }
   | { action: 'delete_remote_connection'; profile_id: string; integration_id: string; connection_id: string; confirmation: string }
-  | { action: 'start'; profile_id: string; integration_id: string; base_url: string; vendor?: string; scopes: readonly string[]; name?: string; connection_id?: string; force_reauthorization?: boolean }
+  | ({ action: 'preview' } & ManagedOAuthAuthorizationRequest)
+  | ({ action: 'start'; preview_fingerprint?: string } & ManagedOAuthAuthorizationRequest)
   | { action: 'status'; flow_id: string; claim_secret: string }
   | { action: 'cancel'; flow_id: string; claim_secret: string }
   // D-322 — separately verified consent does not reopen the metadata update RPC.
@@ -73,6 +99,7 @@ export type ManagedOAuthRequest =
     } };
 
 export type ManagedOAuthResponse =
+  | { action: 'preview'; preview: ManagedOAuthPermissionPreview }
   | { action: 'profiles'; profiles: readonly ManagedOAuthProfileView[] }
   | { action: 'save_profile'; profile: ManagedOAuthProfileView; integrations: readonly ManagedOAuthIntegration[] }
   | { action: 'delete_profile' | 'cancel' }
@@ -146,3 +173,11 @@ export const managedOAuthRequiredScopes = (manifests: readonly BulkPackManifest[
   }
   return managedOAuthScopeUnion(...scopes);
 };
+
+/** Attribution uses the same service filter as the authoritative scope union. */
+export const managedOAuthPackScopeRequirements = (manifests: readonly BulkPackManifest[], vendor: string, baseUrl: string): {
+  slug: string; name: string; scopes: readonly string[];
+}[] => manifests.flatMap(manifest => {
+  const scopes = managedOAuthRequiredScopes([manifest], vendor, baseUrl);
+  return scopes.length === 0 ? [] : [{ slug: manifest.slug, name: manifest.name, scopes }];
+});

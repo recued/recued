@@ -762,6 +762,8 @@ export type ActivityAction =
   // Non-reserve: settings-style breadcrumb.
   | 'chat_default_model_pref_set'
   | 'chat_rolling_brief_set'
+  // D-323 — the owner's switch for chat's install offers.
+  | 'chat_install_offers_set'
   | 'chat_session_brief_cleared'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary saved a per-connection MCP tool
   // annotation. `target` = `<connection_name>`; `detail` carries

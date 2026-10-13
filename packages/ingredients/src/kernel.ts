@@ -677,6 +677,7 @@ export interface KernelCustomerAccessCloseInput extends KernelCustomerAccessTarg
 }
 
 export interface KernelDispatchers {
+  approvalWorkflowContinue?: (input: import('@recued/contracts').ApprovalWorkflowContinueInput) => Promise<import('@recued/contracts').ApprovalWorkflowContinueResult>;
   quoteSignoffRelease?: (input: QuoteSignoffReleaseInput) => Promise<QuoteSignoffReleaseResult>;
   /** D-234 § 234.4 — the asking half. Returns the recorded `PeerAnswer` when the
    *  conversation has one, and otherwise THROWS `PeerAnswerRequiredSignal`, which
@@ -2007,6 +2008,19 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
     // §5 — a `core-<bare>` kernel alias (e.g. `core-notification-send`) dispatches
     // to the same case as its bare slug; `slug` stays the raw value for error context.
     switch (stripCorePrefix(slug)) {
+      case 'approval-workflow-continue': {
+        if (!dispatchers.approvalWorkflowContinue) throw new IngredientError('SERVER_NOT_REACHABLE', 'Workflow approvals are unavailable.', { slug });
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(input, ['endpoint_id', 'intent_id', 'expected_plan_hash', 'summary'], slug);
+        const endpoint_id = requireKernelString(input.endpoint_id, 'endpoint_id', slug);
+        const intent_id = requireKernelString(input.intent_id, 'intent_id', slug);
+        const expected_plan_hash = requireKernelString(input.expected_plan_hash, 'expected_plan_hash', slug);
+        const summary = requireKernelString(input.summary, 'summary', slug);
+        if (endpoint_id.length > 200 || intent_id.length > 200 || !/^[a-f0-9]{64}$/.test(expected_plan_hash) || summary.length > 10_000) {
+          throw new IngredientError('BAD_INPUT', 'Workflow approval input is invalid.', { slug });
+        }
+        return dispatchers.approvalWorkflowContinue({ endpoint_id, intent_id, expected_plan_hash, summary });
+      }
       case 'quote-signoff-release': {
         if (!dispatchers.quoteSignoffRelease) throw new IngredientError('SERVER_NOT_REACHABLE', 'Customer sign-off release is unavailable.', { slug });
         const input = call.input as Record<string, unknown>;

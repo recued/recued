@@ -87,6 +87,7 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
   // The cross-pack adapter defaults to the owner and still holds every release
   // for its own decision. Customer response links confer no execution grant.
   'core.work-entity.quote-signoff.release',
+  'core.work-entity.approval-workflow.continue',
   'core.contact.engagements.read',
   'core.audit.read',
   'core.data.form-response.list',

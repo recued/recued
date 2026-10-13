@@ -220,14 +220,18 @@ const renderTextField = (f: AuthoringTextField): string => {
     required: f.required,
   });
   const attrs = dataAttrs({ 'field-key': f.key, 'field-control': 'text' });
+  const listId = f.choices ? `reception-options-${f.key.replaceAll('.', '-')}` : undefined;
+  const listAttr = listId ? ` list="${e(listId)}"` : '';
+  const choices = listId ? `<datalist id="${e(listId)}">${f.choices!.map(choice =>
+    `<option value="${e(choice.value)}">${e(choice.label)}</option>`).join('')}</datalist>` : '';
   const control = f.multiline
     ? `<textarea class="reception-form-input reception-form-textarea" ${attrs} maxlength="${f.max_length}" rows="3" aria-label="${e(
         f.label,
       )}">${e(f.value)}</textarea>`
-    : `<input class="reception-form-input" type="text" ${attrs} maxlength="${f.max_length}" value="${e(
+    : `<input class="reception-form-input" type="text" ${attrs}${listAttr} maxlength="${f.max_length}" value="${e(
         f.value,
       )}" aria-label="${e(f.label)}" />`;
-  return `<div class="reception-form-field">${labelHtml}${control}${helpHtml}</div>`;
+  return `<div class="reception-form-field">${labelHtml}${control}${choices}${helpHtml}</div>`;
 };
 
 /** Bounded `<input type="number">` — carries `data-field-key` +
@@ -1000,8 +1004,9 @@ const renderApprovalLinkBody = (m: ApprovalLinkFormModel): string => {
     ]),
     formSection('Action', [
       renderNumberField(m.expiry_days),
-      renderTextField(m.target_id),
       renderSelectField(m.on_approve_action),
+      ...(m.target_kind ? [renderSelectField(m.target_kind)] : []),
+      renderTextField(m.target_id),
     ]),
     formSection('Confirmation', [
       renderTextField(m.success_message),

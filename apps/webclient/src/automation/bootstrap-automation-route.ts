@@ -75,6 +75,7 @@ import {
   whatStartsIt,
   type ConfigEditorOverlayHandle,
   type ConnectionLineSlot,
+  type MailboxVariableCallers,
   type MailTemplateVariableCallers,
   type MissedRunsAnswer,
 } from '@recued/ui-shared';
@@ -400,6 +401,9 @@ export interface BootstrapAutomationRouteOptions {
   /** D-319 — a `mail_template` setting in the settings form: the owner's
    *  templates (the recipe page's picker). Absent ⇒ a text box. */
   mailTemplateCallers?: MailTemplateVariableCallers;
+  /** The owner's mailboxes and calendars, for a setting that names one
+   *  (`mailbox_settings`). Absent ⇒ a text box. */
+  mailboxCallers?: MailboxVariableCallers;
   /** D-221 record picker for a `record_ref` setting, bound per recipe. */
   recordRefSearchCaller?: (
     owner: { publisher: string; pack_slug: string },
@@ -1774,6 +1778,7 @@ export const bootstrapAutomationRoute = (
       initialTab: tab,
       // D-319 §5.4 — its Run tab runs (it said running was unavailable).
       ...(opts.recipeExecuteCaller !== undefined ? { execute: opts.recipeExecuteCaller } : {}),
+      ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
       // D-320 — the Run tab's Connection lines, from the recipe's slots.
       ...(opts.recipeConnectionsCaller !== undefined
         ? { connectionSlots: () => opts.recipeConnectionsCaller!({ recipe_id: entry.recipe_id }) }
@@ -3639,6 +3644,13 @@ export const bootstrapAutomationRoute = (
       ...(opts.fileRefSearchCaller !== undefined
         ? { fileRefSearch: opts.fileRefSearchCaller }
         : {}),
+      // Which settings name a mailbox is on the recipe's list row, not the timer's.
+      ...((): { mailboxes?: { settings: NonNullable<ServerRecipeListEntry['mailbox_settings']>; callers: MailboxVariableCallers } } => {
+        const settings = (recipeEntries ?? []).find((row) => row.recipe_id === entry.recipe_id)?.mailbox_settings;
+        return opts.mailboxCallers !== undefined && settings !== undefined && settings.length > 0
+          ? { mailboxes: { settings, callers: opts.mailboxCallers } }
+          : {};
+      })(),
       // `mode: 'resume'` re-enables in the same call (arm-time is a config
       // adjustment point); `'edit'` leaves the enable state untouched.
       // D-319 — a row with no dish switches the recipe on: its main dish is
@@ -3656,14 +3668,16 @@ export const bootstrapAutomationRoute = (
     });
   };
 
-  /** The settings form's pickers: files, records of the recipe's pack, and
-   *  the owner's mail templates — as on the recipe page. */
+  /** The settings form's pickers: files, records of the recipe's pack, the
+   *  owner's mail templates, and their mailboxes and calendars — as on the
+   *  recipe page. */
   const formPickers = (entry: ServerRecipeListEntry) => {
     const recordRefSearch = bindRecordRefSearchToRecipe(opts.recordRefSearchCaller, entry.recipe);
     return {
       ...(opts.fileRefSearchCaller !== undefined ? { fileRefSearch: opts.fileRefSearchCaller } : {}),
       ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
       ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
+      ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
     };
   };
 

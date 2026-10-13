@@ -692,6 +692,13 @@ export interface BootstrapSettingsRouteOptions {
    *  write (one LLM source's catalog delivery mode / clear). Optional; the
    *  per-source catalog `<select>` renders only when this is wired. */
   aiModelsSetChatCatalogModeCaller?: AiModelsSetChatCatalogModeCaller;
+  /** The chat behaviour section's switches: the rolling brief (its page code
+   *  shipped 2026-09-10 without these, so the section never left "Loading"),
+   *  and D-323's install offers. */
+  aiModelsRollingBriefGetCaller?: () => Promise<{ enabled: boolean }>;
+  aiModelsRollingBriefSetCaller?: (args: { enabled: boolean }) => Promise<{ enabled: boolean }>;
+  aiModelsInstallOffersGetCaller?: () => Promise<{ enabled: boolean }>;
+  aiModelsInstallOffersSetCaller?: (args: { enabled: boolean }) => Promise<{ enabled: boolean }>;
   aiModelsGetLlmPromptsCaller?: AiModelsLlmPromptsGetCaller;
   aiModelsSetLlmPromptCaller?: AiModelsLlmPromptSetCaller;
   aiModelsProbeLlmSourceCaller?: AiModelsProbeSourceCaller;
@@ -1849,6 +1856,18 @@ export const bootstrapSettingsRoute = (
         : {}),
       ...(opts.aiModelsSetFreePoolEntryEnabledCaller !== undefined
         ? { runSetFreePoolEntryEnabled: opts.aiModelsSetFreePoolEntryEnabledCaller }
+        : {}),
+      ...(opts.aiModelsRollingBriefGetCaller !== undefined
+        ? { runGetRollingBrief: opts.aiModelsRollingBriefGetCaller }
+        : {}),
+      ...(opts.aiModelsRollingBriefSetCaller !== undefined
+        ? { runSetRollingBrief: opts.aiModelsRollingBriefSetCaller }
+        : {}),
+      ...(opts.aiModelsInstallOffersGetCaller !== undefined
+        ? { runGetInstallOffers: opts.aiModelsInstallOffersGetCaller }
+        : {}),
+      ...(opts.aiModelsInstallOffersSetCaller !== undefined
+        ? { runSetInstallOffers: opts.aiModelsInstallOffersSetCaller }
         : {}),
       ...(opts.aiModelsSetChatCatalogModeCaller !== undefined
         ? { runSetChatCatalogMode: opts.aiModelsSetChatCatalogModeCaller }

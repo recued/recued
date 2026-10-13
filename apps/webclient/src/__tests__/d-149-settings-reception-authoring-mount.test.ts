@@ -20,6 +20,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  ApprovalLinkConfig,
   DropLinkConfig,
   IntakeFormConfig,
   PacketDeclaration,
@@ -206,6 +207,43 @@ const makeFakeShell = () => {
 /** Flush pending microtasks so the fire-and-forget shell chains settle. */
 const flush = (): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+describe('customer approval workflow authoring', () => {
+  const config = (): ApprovalLinkConfig => ({ display_name: 'Repair desk', action_kind: 'pick_time', prompt: 'Confirm repair?',
+    options: [{ id: 'yes', label: 'Yes' }], context_raw: { summary: 'Review the work' },
+    visitor_field_constraints: { name: 'optional', email: 'optional' }, expiry_days: 7,
+    on_action: { target_id: 'old-work', on_approve_action: 'create_commitment' } });
+  it('switches to accept/reject and clears the old target when the owner selects a workflow', () => {
+    const working = seedWorkingConfig('approval_link', config());
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select',
+      fieldKey: 'on_action.on_approve_action', value: 'mark_resolved' }));
+    expect(working).toMatchObject({ action_kind: 'approve_wording', on_action: { on_approve_action: 'mark_resolved', target_kind: 'task' } });
+    expect(working.options).toBeUndefined(); expect(working.on_action).not.toHaveProperty('target_id');
+    expect(buildAuthoringView('approval_link', working, null, false).model).toMatchObject({
+      action_kind: { options: [{ value: 'approve_wording' }] },
+    });
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ fieldKey: 'on_action.target_id', value: 'T1' }));
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select', fieldKey: 'on_action.target_kind', value: 'commitment' }));
+    expect(working.on_action).toMatchObject({ target_kind: 'commitment' }); expect(working.on_action).not.toHaveProperty('target_id');
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select', fieldKey: 'on_action.on_approve_action', value: 'fire_recipe' }));
+    expect(working.on_action).toMatchObject({ target_kind: 'recipe' });
+    applyFieldDelegateEvent('approval_link', working, fieldEvent({ control: 'select', fieldKey: 'on_action.on_approve_action', value: 'create_commitment' }));
+    expect(working.on_action).not.toHaveProperty('target_kind');
+  });
+  it('loads owner suggestions once and filters them when linked work type changes', async () => {
+    const fake = makeFakeHost(); const { shell } = makeFakeShell();
+    shell.approvalTargets = vi.fn(async () => ({ targets: [
+      { kind: 'task' as const, id: 'T1', label: '<Repair & finish>' },
+      { kind: 'commitment' as const, id: 'C1', label: 'Delivery promise' },
+      { kind: 'recipe' as const, id: 'followup', label: 'Saved follow-up' }], truncated: false }));
+    const form = mountAuthoringForm({ host: fake.host, shell, kind: 'approval_link', initialConfig: config() });
+    fake.field({ control: 'select', fieldKey: 'on_action.on_approve_action', value: 'mark_resolved' }); await flush();
+    expect(fake.getHtml()).toContain('&lt;Repair &amp; finish&gt;'); expect(fake.getHtml()).not.toContain('Delivery promise');
+    fake.field({ control: 'select', fieldKey: 'on_action.target_kind', value: 'commitment' }); await flush();
+    expect(fake.getHtml()).toContain('Delivery promise'); expect(fake.getHtml()).not.toContain('&lt;Repair &amp; finish&gt;');
+    expect(shell.approvalTargets).toHaveBeenCalledTimes(1); form.dispose();
+  });
+});
 
 // ══════════════════════════════════════════════════════════════════
 // seedWorkingConfig — the contract-shaped working config

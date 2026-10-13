@@ -41,13 +41,9 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
     expect(validateApprovalLinkConfig(baseConfig())).toEqual([]);
   });
 
-  // ⛔ An approval_link reaches the owner ONLY through a held checkpoint, and
-  // only `create_commitment` creates one. `mark_resolved` / `fire_recipe` route
-  // through the processor's `applyEffect` seam, which nothing supplies — so a
-  // consumption sat `pending` forever while the visitor was shown a success
-  // page, and the answer surfaced nowhere. D-210 Phase C also retired the fields
-  // that named their targets, so neither is specifiable any more.
-  describe('refuses an on_approve_action the substrate cannot honour', () => {
+  // Legacy untyped continuations stay readable but require an explicit
+  // task, commitment or recipe binding before the owner can author them.
+  describe('refuses legacy actions without a typed workflow target', () => {
     for (const action of ['mark_resolved', 'fire_recipe'] as const) {
       it(`refuses ${action}, naming the remedy`, () => {
         const failures = validateApprovalLinkConfig(
@@ -55,7 +51,7 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
         );
         expect(failures.map((f) => f.code)).toEqual(['on_approve_action_unsupported']);
         // The message has to say what to do instead, or an owner is stuck.
-        expect(failures[0]!.detail).toContain('create_commitment');
+        expect(failures[0]!.detail).toContain('explicit');
       });
     }
 
@@ -88,8 +84,10 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
     it('offers exactly what it accepts', () => {
       for (const action of APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS) {
         expect(validateApprovalLinkConfig(
-          baseConfig({ ...(action === 'quote_signoff' ? { action_kind: 'approve_wording', options: undefined } : {}),
-            on_action: { target_id: 'proposal-123', on_approve_action: action } }),
+          baseConfig({ ...(action !== 'create_commitment' ? { action_kind: 'approve_wording', options: undefined } : {}),
+            on_action: { target_id: 'proposal-123', on_approve_action: action,
+              ...(action === 'mark_resolved' ? { target_kind: 'task' as const }
+                : action === 'fire_recipe' ? { target_kind: 'recipe' as const } : {}) } }),
         ), action).toEqual([]);
       }
       expect(APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)

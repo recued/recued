@@ -18,6 +18,7 @@ import { hasAnyRecipe } from '../shell/paged-lists.js';
 import { createChatQueueView, CHAT_QUEUE_STYLES, type ChatQueueClient } from './turn-queue-view.js';
 import { renderAnswerText } from './answer-text.js';
 import { buildChatQuote, buildChatReplyDraft, replyDraftForMessage, CHAT_QUOTED_REPLY_STYLES, type ChatReplyDraft } from './quoted-replies.js';
+import { buildChatInstallOffers, chatInstallOfferLinks, CHAT_INSTALL_OFFERS_STYLES } from './install-offers.js';
 /** D-174 P2 — top-level Chat route.
  *
  *  This hosts the existing D-137 chat substrate at `#chat`: server-owned
@@ -2681,6 +2682,7 @@ export const CHAT_ROUTE_STYLES = [
   CHAT_DELIVERY_STYLES,
   CHAT_QUEUE_STYLES,
   CHAT_QUOTED_REPLY_STYLES,
+  CHAT_INSTALL_OFFERS_STYLES,
 ].join('\n');
 
 export interface ChatConnectedSourcePollScheduler {
@@ -9258,6 +9260,12 @@ export const bootstrapChatRoute = (
               { messageId: message.id },
             ));
           }
+        }
+        // D-323 — what the marketplace has for a request nothing installed
+        // could do: links to install pages, never an install.
+        const installOffers = chatInstallOfferLinks(message);
+        if (installOffers.length > 0 && doc !== undefined) {
+          messageRow.appendChild(buildChatInstallOffers(doc, installOffers));
         }
         if (sourceTurn !== null) {
           const sourceFailure = state.thread.turn_failures.some(

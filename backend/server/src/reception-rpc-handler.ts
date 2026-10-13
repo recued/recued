@@ -287,6 +287,7 @@ import {
 // ────────────────────────────────────────────────────────────────
 
 export interface ReceptionRpcDeps {
+  readonly getApprovalWorkflowService?: () => import('./approval-workflow-service.js').ApprovalWorkflowService;
   readonly getQuoteSignoffService?: () => import('./quote-signoff-service.js').QuoteSignoffService;
   readonly getStore: () => PublicEndpointRegistryStore;
   readonly getPreviewStore: () => PreviewHashStore;
@@ -428,6 +429,7 @@ export interface ReceptionPreflightEnableResult {
 }
 
 type ReceptionMethods =
+  | 'reception.approval.targets'
   | 'reception.signoff.quotes'
   | 'reception.signoff.prepare'
   | 'reception.signoff.prepare_addition'
@@ -1237,6 +1239,23 @@ export const handleReceptionEndpointsList = async (
   return { endpoints };
 };
 
+/** Add the live target digest to the preview hash; create recomputes it. */
+const prepareApprovalWorkflow = (deps: ReceptionRpcDeps, kind: ReceptionEndpointKind,
+  metadata: Readonly<Record<string, unknown>>) => {
+  const config = kind === 'approval_link' ? parseApprovalLinkConfig(metadata) : null;
+  if (!config || !['mark_resolved', 'fire_recipe'].includes(config.on_action.on_approve_action)) return null;
+  if (!deps.getApprovalWorkflowService) throw new RpcError('not_configured', 'Workflow approvals are unavailable on this server.', 503);
+  const plan = deps.getApprovalWorkflowService().inspect(config);
+  return { plan, metadata: { ...metadata, on_action: { ...config.on_action, workflow_binding_hash: plan.plan_hash } } };
+};
+
+export const handleReceptionApprovalTargets = async (deps: ReceptionRpcDeps,
+  caller: { instance_id: string | null | undefined } | undefined) => {
+  requireCallerInstance(caller, 'reception.approval.targets');
+  if (!deps.getApprovalWorkflowService) throw new RpcError('not_configured', 'Workflow approvals are unavailable on this server.', 503);
+  return deps.getApprovalWorkflowService().targets();
+};
+
 export const handleReceptionEndpointPreviewDraft = async (
   deps: ReceptionRpcDeps,
   args: ReceptionEndpointPreviewInput,
@@ -1248,8 +1267,10 @@ export const handleReceptionEndpointPreviewDraft = async (
   const { decl } = validatePacketDeclaration(args.packet_declaration, kind, method);
   const now = deps.now();
   const expires_at = validateExpiresAt(args.expires_at, kind, now, method);
-  const metadata = validateMetadata(args.metadata, method);
+  let metadata = validateMetadata(args.metadata, method);
   validateKindMetadataConfig(kind, metadata, method);
+  const approvalWorkflow = prepareApprovalWorkflow(deps, kind, metadata);
+  if (approvalWorkflow) metadata = approvalWorkflow.metadata;
   crossCheckStatusLinkSources(kind, decl.source_query_ref, metadata, method);
 
   // The substrate-side `visible_fields` projection comes from D-145's
@@ -1311,6 +1332,7 @@ export const handleReceptionEndpointPreviewDraft = async (
       ];
 
   return {
+    ...(approvalWorkflow ? { approval_workflow_summary: approvalWorkflow.plan.summary } : {}),
     html: renderDraftPreviewHtml({
       kind,
       decl,
@@ -1461,8 +1483,10 @@ export const handleReceptionEndpointCreate = async (
   const { decl } = validatePacketDeclaration(args.packet_declaration, kind, method);
   const now = deps.now();
   const expires_at = validateExpiresAt(args.expires_at, kind, now, method);
-  const metadata = validateMetadata(args.metadata, method);
+  let metadata = validateMetadata(args.metadata, method);
   validateKindMetadataConfig(kind, metadata, method);
+  const approvalWorkflow = prepareApprovalWorkflow(deps, kind, metadata);
+  if (approvalWorkflow) metadata = approvalWorkflow.metadata;
   crossCheckStatusLinkSources(kind, decl.source_query_ref, metadata, method);
   if (typeof args.preview_hash !== 'string' || args.preview_hash.length === 0) {
     throw badRequest('preview_hash_missing', `${method}: preview_hash is required (Pass-3)`);
@@ -1554,6 +1578,8 @@ export const handleReceptionEndpointCreate = async (
     long_lived_acknowledged_at: longLivedAck(expires_at, now),
     metadata,
   });
+
+  if (approvalWorkflow) deps.getApprovalWorkflowService!().bind(endpoint_id, approvalWorkflow.plan);
 
   // D-149 P8 § A.5.5 — seed a pre-consumption row in
   // `reception_approval_intent` for every new approval_link endpoint
@@ -4345,9 +4371,11 @@ export const makeReceptionHandlers = (
       'reception.abuse_inbox.ban_ip',
       'reception.abuse_inbox.unban_ip',
       'reception.template.list',
+      'reception.approval.targets',
       'reception.compose.propose',
     ],
     handlers: {
+      'reception.approval.targets': async (_args, client) => handleReceptionApprovalTargets(deps, client),
       'reception.signoff.quotes': async (_args, client) => {
         const { handleSignoffQuotes } = await import('./quote-signoff-rpc-handler.js');
         return handleSignoffQuotes(deps, client);

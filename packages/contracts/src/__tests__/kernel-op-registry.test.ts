@@ -52,7 +52,7 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // D-210 added the 3 `core.work-entity.booking.*` CRUD ops (16 → 19).
   // D-221 added the list/get backing ingredients for pack-owned Records
   // reachability (19 → 21).
-  'work-entity': 22,
+  'work-entity': 23,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   // 12 → 10 on 2026-09-23: `core.memory.annotate` / `core.memory.link` retired
@@ -370,6 +370,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.watch.time-relative|watch|time-relative-watcher|read',
       'core.watch.time|watch|time-watcher|read',
       'core.webhook.event.get|webhook|webhook-event-get|read',
+      'core.work-entity.approval-workflow.continue|work-entity|approval-workflow-continue|write',
       'core.work-entity.booking.create|work-entity|booking-create|write',
       'core.work-entity.booking.delete|work-entity|booking-delete|destructive',
       'core.work-entity.booking.update|work-entity|booking-update|write',

@@ -1,19 +1,28 @@
-import { describe, expect, it } from 'vitest';
-import type { QuoteSignoffFollowUp, QuoteSignoffSummary } from '@recued/contracts';
+import { describe, expect, it, vi } from 'vitest';
+import type { QuoteSignoffFollowUp, QuoteSignoffListInput, QuoteSignoffListResult, QuoteSignoffSummary } from '@recued/contracts';
 import { mountQuoteSignoffPanel, type QuoteSignoffConn } from './quote-signoff-panel.js';
+
+vi.mock('./quote-signoff-payment.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('./quote-signoff-payment.js')>();
+  return { ...actual, createQuoteSignoffPayment: (options: Parameters<typeof actual.createQuoteSignoffPayment>[0]) => ({
+    open: async (offer: QuoteSignoffSummary) => { await options.readOffer(offer.signoff_id); },
+    hasInFlightWork: () => false, dispose: () => {},
+  }) };
+});
 
 class Node {
   textContent = ''; value = ''; hidden = false; disabled = false;
   children: Node[] = []; parent: Node | null = null;
-  attrs = new Map<string, string>(); listeners = new Map<string, Array<() => void>>();
+  attrs = new Map<string, string>(); listeners = new Map<string, Array<(event: { preventDefault: () => void }) => void>>();
   constructor(readonly tag: string) {}
   appendChild(node: Node) { node.parent = this; this.children.push(node); return node; }
   replaceChildren() { this.children.forEach(n => { n.parent = null; }); this.children = []; }
   setAttribute(key: string, value: string) { this.attrs.set(key, value); }
-  addEventListener(event: string, listener: () => void) {
+  addEventListener(event: string, listener: (event: { preventDefault: () => void }) => void) {
     this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
   }
-  click() { this.listeners.get('click')?.forEach(listener => listener()); }
+  fire(event: string) { this.listeners.get(event)?.forEach(listener => listener({ preventDefault: () => {} })); }
+  click() { if (!this.disabled) this.fire('click'); }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter(n => n !== this); }
 }
 const nodes = (root: Node): Node[] => [root, ...root.children.flatMap(nodes)];
@@ -31,12 +40,20 @@ const signoff = (follow_up: QuoteSignoffFollowUp): QuoteSignoffSummary => ({
 });
 const setup = (withPayments = false) => {
   let offer = signoff(initial);
-  let pending: Promise<{ signoffs: QuoteSignoffSummary[]; truncated: boolean }> | null = null;
+  let pending: Promise<QuoteSignoffListResult> | null = null;
+  let quoteError: Error | undefined;
+  let respond: ((input: QuoteSignoffListInput) => QuoteSignoffListResult | Promise<QuoteSignoffListResult>) | undefined;
+  const requests: QuoteSignoffListInput[] = [];
   const host = new Node('main');
-  const conn = (async (method: string) => {
-    if (method === 'reception.signoff.quotes') return { quotes: [], truncated: false };
+  const conn = (async (method: string, input?: QuoteSignoffListInput) => {
+    if (method === 'reception.signoff.quotes') {
+      if (quoteError) throw quoteError;
+      return { quotes: [], truncated: false };
+    }
     if (method === 'reception.signoff.list') {
+      const query = input ?? {}; requests.push({ ...query });
       if (pending) { const wait = pending; pending = null; return wait; }
+      if (respond) return respond(query);
       return { signoffs: [offer], truncated: false };
     }
     throw new Error(`Unexpected mutating call: ${method}`);
@@ -46,7 +63,10 @@ const setup = (withPayments = false) => {
       execute: async () => { throw new Error('A list-only test must not record payment'); } } } : {}),
     document: { createElement: (tag: string) => new Node(tag) } as unknown as Document });
   return { host, panel, set: (follow: QuoteSignoffFollowUp) => { offer = signoff(follow); },
-    delay: (wait: NonNullable<typeof pending>) => { pending = wait; } };
+    setOffer: (value: QuoteSignoffSummary) => { offer = value; }, requests,
+    respond: (handler: NonNullable<typeof respond>) => { respond = handler; },
+    delay: (wait: NonNullable<typeof pending>) => { pending = wait; },
+    quoteError: (error?: Error) => { quoteError = error; } };
 };
 
 describe('sign-off panel — owner follow-up', () => {
@@ -116,6 +136,156 @@ describe('sign-off panel — owner follow-up', () => {
       resolve({ signoffs: [signoff(initial)], truncated: false }); await flush();
       expect(content(h.host)).toContain('recorded paid in full');
       expect(content(h.host)).not.toContain('99.8766');
+    } finally { h.panel.dispose(); }
+  });
+});
+
+
+describe('sign-off panel — search and older requests', () => {
+  const button = (root: Node, label: string) => nodes(root).find(n => n.tag === 'button' && n.textContent === label)!;
+  const titles = (root: Node) => nodes(root).filter(n => n.tag === 'article')
+    .map(card => card.children.find(n => n.tag === 'h3')?.textContent);
+  const search = (root: Node) => nodes(root).find(n => n.attrs.get('name') === 'signoff_search')!;
+  const state = (root: Node) => nodes(root).find(n => n.attrs.get('name') === 'signoff_state')!;
+  const submit = (root: Node) => nodes(root).find(n => n.attrs.get('role') === 'search')!.fire('submit');
+  const newest = { ...signoff(initial), signoff_id: 'newest', quote_label: 'Newest request' };
+  const previous = { ...signoff(initial), signoff_id: 'older', quote_label: 'Older request' };
+  const first = { signoffs: [newest], truncated: true, next_cursor: 'older-page' };
+  const second = { signoffs: [previous], truncated: false };
+
+  it('browses older and newer pages and preserves the current page during polling', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    try {
+      h.respond(input => input.cursor ? second : first); h.panel.update(); await flush();
+      expect(button(h.host, 'Newer requests').disabled).toBe(true);
+      button(h.host, 'Older requests').click(); await flush();
+      expect(titles(h.host)).toEqual(['Older request — Morgan']);
+      expect(content(h.host)).toContain('Page 2');
+      await vi.advanceTimersByTimeAsync(20_000); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, cursor: 'older-page' });
+      expect(titles(h.host)).toEqual(['Older request — Morgan']); expect(content(h.host)).toContain('Page 2');
+      button(h.host, 'Newer requests').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50 });
+      expect(titles(h.host)).toEqual(['Newest request — Morgan']); expect(button(h.host, 'Newer requests').disabled).toBe(true);
+    } finally { h.panel.dispose(); vi.useRealTimers(); }
+  });
+
+  it('resets paging on search or status changes and keeps the filters when refreshed', async () => {
+    const h = setup();
+    try {
+      h.respond(input => input.cursor ? second : first); h.panel.update(); await flush();
+      button(h.host, 'Older requests').click(); await flush();
+      search(h.host).value = ' Morgan '; state(h.host).value = 'waiting'; submit(h.host); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, search: 'Morgan', state: 'waiting' });
+      expect(content(h.host)).toContain('Page 1');
+      button(h.host, 'Older requests').click(); await flush();
+      button(h.host, 'Refresh').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, search: 'Morgan', state: 'waiting', cursor: 'older-page' });
+      state(h.host).value = 'released'; state(h.host).fire('change'); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, search: 'Morgan', state: 'released' });
+      button(h.host, 'Clear search').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50 });
+      expect(search(h.host).value).toBe(''); expect(state(h.host).value).toBe('');
+    } finally { h.panel.dispose(); }
+  });
+
+  it('cannot replace a new search with an older page response still in flight', async () => {
+    const h = setup();
+    try {
+      h.respond(() => first); h.panel.update(); await flush();
+      let resolve!: (value: QuoteSignoffListResult) => void;
+      h.delay(new Promise(done => { resolve = done; }));
+      button(h.host, 'Older requests').click();
+      h.respond(() => ({ signoffs: [{ ...newest, quote_label: 'Filtered result' }], truncated: false }));
+      search(h.host).value = 'Filtered'; submit(h.host); await flush();
+      resolve(second); await flush();
+      expect(titles(h.host)).toEqual(['Filtered result — Morgan']);
+      expect(content(h.host)).toContain('Page 1'); expect(button(h.host, 'Newer requests').disabled).toBe(true);
+    } finally { h.panel.dispose(); }
+  });
+
+  it('retains the requested older page when a route update arrives during navigation', async () => {
+    const h = setup();
+    try {
+      h.respond(input => input.cursor ? second : first); h.panel.update(); await flush();
+      let resolve!: (value: QuoteSignoffListResult) => void;
+      h.delay(new Promise(done => { resolve = done; }));
+      button(h.host, 'Older requests').click(); h.panel.update(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, cursor: 'older-page' });
+      expect(titles(h.host)).toEqual(['Older request — Morgan']);
+      expect(content(h.host)).toContain('Page 2');
+      resolve(first); await flush();
+      expect(titles(h.host)).toEqual(['Older request — Morgan']);
+      button(h.host, 'Newer requests').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50 });
+      expect(titles(h.host)).toEqual(['Newest request — Morgan']);
+    } finally { h.panel.dispose(); }
+  });
+
+  it('keeps search and pagination available when open quotes fail to load, then clears the error on recovery', async () => {
+    const h = setup();
+    try {
+      h.respond(input => input.cursor ? second : first);
+      h.quoteError(new Error('Quote pack unavailable')); h.panel.update(); await flush();
+      expect(titles(h.host)).toEqual(['Newest request — Morgan']);
+      expect(content(h.host)).toContain('Could not load open quotes. Quote pack unavailable');
+      expect(content(h.host)).not.toContain('Loading quotes…');
+      button(h.host, 'Older requests').click(); await flush();
+      expect(titles(h.host)).toEqual(['Older request — Morgan']);
+      expect(content(h.host)).toContain('Page 2');
+      h.quoteError(); button(h.host, 'Refresh').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, cursor: 'older-page' });
+      expect(titles(h.host)).toEqual(['Older request — Morgan']);
+      expect(content(h.host)).not.toContain('Could not load open quotes');
+      expect(content(h.host)).toContain('Record an open quote in Quote Pipeline to prepare a sign-off.');
+    } finally { h.panel.dispose(); }
+  });
+
+  it('keeps the successful page and its cursor after a failed navigation, then permits retry', async () => {
+    const h = setup();
+    try {
+      h.respond(() => first); h.panel.update(); await flush();
+      h.respond(input => { if (input.cursor) throw new Error('Connection lost'); return first; });
+      button(h.host, 'Older requests').click(); await flush();
+      expect(content(h.host)).toContain('Could not load requests. Connection lost');
+      expect(titles(h.host)).toEqual(['Newest request — Morgan']);
+      expect(button(h.host, 'Newer requests').disabled).toBe(true);
+      h.respond(input => input.cursor ? second : first);
+      button(h.host, 'Older requests').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ limit: 50, cursor: 'older-page' });
+      expect(titles(h.host)).toEqual(['Older request — Morgan']); expect(content(h.host)).toContain('Page 2');
+    } finally { h.panel.dispose(); }
+  });
+
+  it('uses server amendment eligibility when a newer amendment is outside the result page', async () => {
+    const h = setup();
+    try {
+      h.setOffer({ ...signoff(initial), can_add_work: false }); h.panel.update(); await flush();
+      expect(nodes(h.host).some(n => n.textContent === 'Add work')).toBe(false);
+    } finally { h.panel.dispose(); }
+  });
+
+  it('rechecks a paged payment target by its exact ID without applying the history search', async () => {
+    const h = setup(true);
+    try {
+      h.respond(input => input.signoff_id ? { signoffs: [previous], truncated: false } : input.cursor ? second : first);
+      h.panel.update(); await flush();
+      search(h.host).value = 'Morgan'; state(h.host).value = 'released'; submit(h.host); await flush();
+      button(h.host, 'Older requests').click(); await flush();
+      button(h.host, 'Record payment').click(); await flush();
+      expect(h.requests.at(-1)).toEqual({ signoff_id: previous.signoff_id, limit: 1 });
+    } finally { h.panel.dispose(); }
+  });
+
+  it('reports an empty filtered result and keeps paging disabled', async () => {
+    const h = setup();
+    try {
+      h.respond(() => ({ signoffs: [], truncated: false }));
+      search(h.host).value = 'Nobody'; submit(h.host); await flush();
+      expect(content(h.host)).toContain('No requests match this search.');
+      expect(button(h.host, 'Older requests').disabled).toBe(true);
+      expect(button(h.host, 'Newer requests').disabled).toBe(true);
     } finally { h.panel.dispose(); }
   });
 });

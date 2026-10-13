@@ -200,6 +200,17 @@ describe('recipe.schedule — refused arguments schedule nothing', () => {
     expect(schedules.list()).toEqual([]);
   });
 
+  it('a recipe whose pack is not installed is refused, the packs kept as data for chat to offer (D-323)', async () => {
+    recipes.save({ ...recipe('parse-a-pdf'), depends_on: ['recued-core.docling'] } as RecipeDefinition, 'recued-core', 'bundled');
+    expect(await tool()({ recipe_id: 'parse-a-pdf', mode: 'recurring', cron_expression: '0 8 * * *' })).toEqual({
+      ok: false,
+      reason: 'execution_error',
+      detail: expect.stringMatching(/needs a pack that is not installed: recued-core\.docling/),
+      missing_packs: ['recued-core.docling'],
+    });
+    expect(schedules.list()).toEqual([]);
+  });
+
   it('a cron that fires too often is refused by the same floor as the Run dialog', async () => {
     expect(await tool()({ recipe_id: 'daily-digest', mode: 'recurring', cron_expression: '* * * * *' }))
       .toEqual(refusedWith('execution_error', /./));

@@ -7,6 +7,60 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.10.13 — 2026-10-13
+
+Chat now suggests packs from the marketplace when nothing you have installed can
+do what you asked, or when what you asked needs a pack you don't have. It never
+installs anything itself. A customer's yes on a Reception link can now continue
+a task, a promise or a saved workflow once you approve it. A workflow's mailbox
+and calendar settings list yours instead of asking you to type a name.
+
+⚠ Update Recued before you update the Reception — Approval pack. Its new
+workflow needs this release.
+
+### Added
+
+- **Chat suggests packs.** When nothing installed can do what you asked, chat
+  names up to three packs or workflows from the marketplace under its answer,
+  each a link to its page. It does the same when something you asked for needs a
+  pack you don't have, such as a PDF before a document reader is installed. It
+  suggests only packs whose publisher has the marketplace's Certified badge,
+  only in your own chat (never to an outside agent or a customer), and you
+  install from the page. Your server searches its own copy of the marketplace
+  list, so your words stay on your server. Slack and Telegram answers end with
+  the same suggestions. To turn them off, open Settings → AI/Models and find Chat
+  behaviour.
+- **Continue work after a customer accepts.** An approval link can point at a
+  task, a promise you track or a saved workflow. When your customer says yes,
+  Reception Inbox shows it for you to approve. Approving completes the task,
+  fulfils the promise or starts the workflow, which still asks for its usual
+  approvals. If the work or its settings change, the old yes cannot continue.
+- **Search customer sign-offs.** Find a request by customer, quote or invoice
+  reference, show one status, and page through older requests, 50 at a time.
+- **Pick a mailbox or calendar from a list.** A workflow's mailbox and calendar
+  settings list yours in the dish form, the run dialog, the automation settings
+  and the Run palette; for sending, only mailboxes that can send. A required
+  setting with only one choice that fits starts on it and is saved with the
+  dish.
+- **Review permissions before a Managed OAuth sign-in.** Before you authorize,
+  Recued shows whether it will reuse access, reconnect the same account or sign
+  in a new one, which permissions are new and which it keeps, and what needs
+  each one.
+
+### Changed
+
+- **Managed OAuth broker setup** starts on Nango Cloud, hides the key until you
+  show it, and asks before it discards your changes or deletes a profile or an
+  account.
+
+### Fixed
+
+- **A self-hosted Nango Connect page** now signs in through your own broker. It
+  went to Nango Cloud.
+- **The installer's warning about a running server** names only a server running
+  this install's program. On macOS it named any Recued program, and on Linux it
+  never appeared.
+
 ## 26.10.12 — 2026-10-12
 
 A customer can now accept a quote from a Reception link, and once you approve

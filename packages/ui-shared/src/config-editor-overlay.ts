@@ -17,9 +17,10 @@
  *  and `onClose` (cleanup, e.g. re-arming a parent modal's trap).
  */
 
-import type { VariableDefault } from '@recued/contracts';
+import type { MailboxSetting, VariableDefault } from '@recued/contracts';
 
 import {
+  asMailboxWidget,
   choiceListProblem,
   FILE_REF_VARIABLE_ATTR,
   fileRefDisplayLabel,
@@ -54,6 +55,11 @@ import {
   type MailTemplateVariableCallers,
   type MailTemplateVariablesHandle,
 } from './mail-template-variable.js';
+import {
+  wireMailboxVariables,
+  type MailboxVariableCallers,
+  type MailboxVariablesHandle,
+} from './mailbox-variable.js';
 
 const STYLES_MARKER = 'data-recued-config-editor-styles';
 const ACTION_ATTR = 'data-recued-config-editor-action';
@@ -293,6 +299,15 @@ export interface ConfigEditorOverlayOptions {
    *  a list of them with "Open it" and "Duplicate to edit"; absent, a text box.
    *  Opening one closes the editor: it leads away from it. */
   mailTemplates?: MailTemplateVariableCallers;
+  /** The settings that name one of the owner's mailboxes or calendars
+   *  (`ServerRecipeListEntry.mailbox_settings`), and their lists. Present, each
+   *  is a list of the owner's mailboxes (or calendars), and one that must be
+   *  set, set to nothing, starts on the only one that fits; absent, a text
+   *  box. */
+  mailboxes?: {
+    readonly settings: ReadonlyArray<MailboxSetting>;
+    readonly callers: MailboxVariableCallers;
+  };
   /** D-319 — ask for the dish's name. `required` refuses an empty one (a
    *  second dish of a recipe needs one to be told apart); otherwise an empty
    *  name is `''`. Absent ⇒ no name box. */
@@ -364,10 +379,11 @@ export const wireConfigEditorOverlay = (
       const def = asked[key];
       return def === undefined
         ? ''
-        : renderVariableWidget(toWidgetShape(key, def, config[key]), {
+        : renderVariableWidget(asMailboxWidget(toWidgetShape(key, def, config[key]), opts.mailboxes?.settings), {
             fileRefPicker: opts.fileRefSearch !== undefined,
             recordRefPicker: opts.recordRefSearch !== undefined,
             mailTemplatePicker: opts.mailTemplates !== undefined,
+            mailboxPicker: opts.mailboxes !== undefined,
             idPrefix: 'cfg-edit-var',
           });
     })
@@ -404,6 +420,7 @@ export const wireConfigEditorOverlay = (
   const refPickers: RefPickerHandle[] = [];
   const fileRefArrays: FileRefArrayHandle[] = [];
   let mailTemplates: MailTemplateVariablesHandle | null = null;
+  let mailboxes: MailboxVariablesHandle | null = null;
   let destroyed = false;
   let confirming = false;
 
@@ -416,6 +433,8 @@ export const wireConfigEditorOverlay = (
     fileRefArrays.length = 0;
     mailTemplates?.destroy();
     mailTemplates = null;
+    mailboxes?.destroy();
+    mailboxes = null;
     trap?.release();
     trap = null;
     overlay.remove();
@@ -593,6 +612,15 @@ export const wireConfigEditorOverlay = (
           ? { open: (template_id: string) => { destroy(); callers.open!(template_id); } }
           : {}),
       },
+      onChange: (key, value) => { config[key] = value; },
+    });
+  }
+
+  // A mailbox setting starts on the only mailbox that fits, and that is saved
+  // with the form like a choice the owner made (`mailbox-variable.ts`).
+  if (opts.mailboxes !== undefined) {
+    mailboxes = wireMailboxVariables(overlay, {
+      callers: opts.mailboxes.callers,
       onChange: (key, value) => { config[key] = value; },
     });
   }

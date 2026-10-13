@@ -3189,6 +3189,18 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
     const entity = readWorkEntityInput(deps, input.kind, input.id);
     return { entity, found: entity !== null };
   },
+  // The approval service commits the local transition with its durable receipt.
+  // Publish the same completion/state events after that transaction commits.
+  approvalWorkResolved: (kind: 'task' | 'commitment', before: Task | Commitment, after: Task | Commitment): void => {
+    if (kind === 'task') {
+      emitWorkEntityEvent(deps, kind, 'updated', tagWorkEntity(kind, after as Task), tagWorkEntity(kind, before as Task));
+      emitWorkEntityEvent(deps, kind, 'completed', tagWorkEntity(kind, after as Task), tagWorkEntity(kind, before as Task));
+    } else {
+      emitWorkEntityEvent(deps, kind, 'updated', tagWorkEntity(kind, after as Commitment), tagWorkEntity(kind, before as Commitment));
+      emitWorkEntityEvent(deps, kind, 'state_changed', tagWorkEntity(kind, after as Commitment), tagWorkEntity(kind, before as Commitment));
+    }
+    cascadeOnWrite(deps, kind, after.id, 'update');
+  },
   taskCreate: taskCreate(deps),
   taskUpdate: taskUpdate(deps),
   taskDelete: taskDelete(deps),

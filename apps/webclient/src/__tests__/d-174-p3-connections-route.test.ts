@@ -105,6 +105,7 @@ interface FakeEl {
 }
 
 interface FakeDoc {
+  defaultView?: { confirm(prompt: string): boolean };
   styleElements: FakeEl[];
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
@@ -646,7 +647,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     for (let i = 0; i < 14; i += 1) await Promise.resolve();
     expect(call).toHaveBeenCalledWith({ action: 'profiles' });
     expect(route.connectionsEnrollPanel()!.getState().dialog.stage).toBe('closed');
-    const editor = button.parent!.children[1]!;
+    const editor = button.parent!.children[2]!;
     expect(editor.innerHTML).toContain('Manage the brokers');
     clickAction(editor, { managedAction: 'add' });
     fire(editor, 'input', { type: 'input', target: { tagName: 'INPUT', dataset: { managedField: 'key' }, value: 'private-broker-key' } });
@@ -654,6 +655,24 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(route.unsavedChangesPrompt()).toContain('OAuth broker setup');
     expect(route.unsavedChangesPrompt()).not.toContain('private-broker-key');
     route.dispose(); expect(editor.listeners.get('input')).toEqual([]);
+  });
+
+  it('closes and reopens broker management while protecting and clearing its private draft (D-322)', async () => {
+    const doc = makeFakeDocument(); const root = doc.createElement('div'); const confirm = vi.fn((_prompt: string) => false);
+    doc.defaultView = { confirm };
+    const call = vi.fn<import('../settings/managed-oauth-panel.js').ManagedOAuthCaller>(async () => ({ action: 'profiles', profiles: [] }));
+    const route = bootstrapConnectionsRoute({ root: root as unknown as HTMLElement, document: doc as unknown as Document,
+      initialTab: 'others', ...enrollCallers(), connectionsManagedOAuthCaller: call });
+    await route.whenLoaded(); const button = collectByAttr(root, CONNECTIONS_MANAGE_BROKERS_ATTR)[0]!;
+    button.click(); for (let i = 0; i < 14; i += 1) await Promise.resolve();
+    const editor = button.parent!.children[2]!; clickAction(editor, { managedAction: 'add' });
+    fire(editor, 'input', { type: 'input', target: { tagName: 'INPUT', dataset: { managedField: 'key' }, value: 'private-broker-key' } });
+    button.click(); expect(button.getAttribute('aria-expanded')).toBe('true'); expect(route.hasUnsavedChanges()).toBe(true);
+    expect(confirm.mock.calls[0]![0]).not.toContain('private-broker-key');
+    confirm.mockReturnValue(true); button.click(); expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(editor.innerHTML).toBe('');
+    expect(route.hasUnsavedChanges()).toBe(false); button.click(); expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(editor.innerHTML).not.toContain('private-broker-key'); route.dispose();
   });
 
   it('forwards an exact privacy-safe leave guard for a dirty connection editor', async () => {

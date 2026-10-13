@@ -1,0 +1,24 @@
+{
+  "recipe_id": "reception-approval-workflow",
+  "version": 1,
+  "chat_exposed": false,
+  "ttl": 0,
+  "metadata": {
+    "name": "Continue a customer-accepted workflow",
+    "description": "Use “Continue a customer-accepted workflow” in Recued. Review the linked local task, commitment or saved recipe after your customer accepts. Continue only while the target and saved settings still match. Recipe operations keep their usual approvals.",
+    "author": "recued-core",
+    "supported_platforms": [],
+    "recipe_bundle": "recued-core/reception-approval",
+    "tags": ["pack:reception", "approval", "workflow"],
+    "budget_ms": 0
+  },
+  "variables": {},
+  "event_triggers": [{ "event": "composition.reception_approval_workflow" }],
+  "steps": [{ "id": "continue", "op": "core.work-entity.approval-workflow.continue", "args": {
+    "endpoint_id": "{{context.event.payload.endpoint_id}}",
+    "intent_id": "{{context.event.payload.intent_id}}",
+    "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
+    "summary": "{{context.event.payload.summary}}"
+  }}],
+  "output": { "render": [] }
+}

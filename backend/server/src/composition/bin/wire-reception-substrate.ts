@@ -414,6 +414,10 @@ export const composeReceptionSubstrate = async (
       : {}),
   });
 
+  const { composeApprovalWorkflowService, composeApprovalWorkflowResponse } = await import('../../compose-approval-workflow-service.js');
+  let approvalWorkflows: import('../../approval-workflow-service.js').ApprovalWorkflowService | undefined;
+  const getApprovalWorkflowService = deps.db && deps.executeDeps
+    ? () => approvalWorkflows ??= composeApprovalWorkflowService(deps.db!, deps.executeDeps!) : undefined;
   let quoteSignoffs: QuoteSignoffService | undefined;
   const signoffManifest = await quoteSignoffManifestReader((slug) => deps.executeDeps?.executorConfig.manifests.get(slug) ?? null);
   const getQuoteSignoffService = deps.db && deps.recordsStore && deps.executeDeps
@@ -422,6 +426,7 @@ export const composeReceptionSubstrate = async (
     }) : undefined;
   const receptionRpcDepsBase: ReceptionRpcDeps = {
     ...(getQuoteSignoffService ? { getQuoteSignoffService } : {}),
+    ...(getApprovalWorkflowService ? { getApprovalWorkflowService } : {}),
     getStore: () => registryStore,
     getPreviewStore: () => previewStore,
     getPepper: getReceptionPepper,
@@ -1134,7 +1139,7 @@ export const composeReceptionSubstrate = async (
   // consumed approval_link intents apply their `on_approve_action`
   // (create_commitment is concrete here, mark_resolved / fire_recipe route
   // through the effect seam) — both closing the "collected/consumed then
-  // unreachable" gap. The notify + triggered_recipe / applyEffect seams
+  // unreachable" gap. The notify and retired triggered_recipe seams
   // are intentionally left unwired here (NotificationBlock is engine-
   // internal; the recipe executor + cross-substrate target resolution need
   // DI) — a later effects pass supplies them. Without the work-entity
@@ -1181,6 +1186,8 @@ export const composeReceptionSubstrate = async (
       createApprovalLinkSubmissionProcessor({
         ...(getQuoteSignoffService ? { recordQuoteSignoff: (targetId, endpointId, intentId, affirmative) =>
           getQuoteSignoffService().recordResponse(targetId, endpointId, intentId, affirmative) } : {}),
+        ...(getApprovalWorkflowService ? { applyEffect: composeApprovalWorkflowResponse(
+          getApprovalWorkflowService, deps.fireReceptionWorkflow) } : {}),
         registryStore,
         intentStore: approvalStore,
         workEntityStore: commitmentStore,
@@ -1190,7 +1197,7 @@ export const composeReceptionSubstrate = async (
         // endpoint (the same seam the intake processor uses). Review (default)
         // holds the commitment materialize at the gate → inbox; auto-accept
         // materializes directly. `mark_resolved` / `fire_recipe` route through
-        // `applyEffect` regardless. Absent ⇒ review rows stay pending.
+        // the reviewed continuation above. Absent ⇒ rows stay pending.
         ...(deps.fireReceptionWorkflow
           ? { fireReceptionWorkflow: deps.fireReceptionWorkflow }
           : {}),

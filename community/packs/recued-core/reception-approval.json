@@ -3,8 +3,8 @@
   "slug": "reception-approval",
   "publisher": "recued-core",
   "name": "Reception — Approval",
-  "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
-  "version": 3,
+  "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Actions that change data use Recued's approval controls.",
+  "version": 4,
   "pre_install": true,
   "recipes": [],
   "requires": [
@@ -22,6 +22,11 @@
       "type": "recipe",
       "slug": "reception-quote-signoff-release",
       "version": 2
+    },
+    {
+      "type": "recipe",
+      "slug": "reception-approval-workflow",
+      "version": 1
     },
     {
       "type": "composition",

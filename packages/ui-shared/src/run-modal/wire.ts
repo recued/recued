@@ -38,6 +38,7 @@ import {
   type RefPickerHandle,
 } from '../ref-picker/index.js';
 import { wireRecordRefVariables } from '../record-ref-variable.js';
+import { memoMailboxCallers, wireMailboxVariables, type MailboxVariablesHandle } from '../mailbox-variable.js';
 import { stampZone } from '../two-clock.js';
 
 import { mailFactCreateArgs } from './mail-fact-trigger.js';
@@ -147,7 +148,11 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     canTrigger: opts.triggersList !== undefined,
     canPickFiles: opts.fileRefSearch !== undefined,
     canPickRecords: opts.recordRefSearch !== undefined,
+    canPickMailboxes: opts.mailboxes !== undefined,
   };
+  // Read once: the dialog repaints its fields on every change, and each paint
+  // fills the mailbox lists again.
+  const mailboxCallers = opts.mailboxes === undefined ? undefined : memoMailboxCallers(opts.mailboxes);
   const firstPreset = CRON_PRESETS[0]?.expression ?? '';
   let state: RunModalState = initialRunModalState(
     opts.initialTab ?? 'run',
@@ -172,6 +177,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   let trap: FocusTrapHandle | null = null;
   let refPickers: RefPickerHandle[] = [];
   let fileRefArrays: FileRefArrayHandle[] = [];
+  let mailboxLists: MailboxVariablesHandle | null = null;
 
   const overlay = doc.createElement('div');
   overlay.className = 'run-modal-overlay-root';
@@ -276,6 +282,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     refPickers = [];
     for (const list of fileRefArrays) list.destroy();
     fileRefArrays = [];
+    mailboxLists?.destroy();
+    mailboxLists = null;
     overlay.innerHTML = renderRunModal(state, opts.recipe, caps, opts.dishes ?? []);
     mountVariablePickers();
     if (restoreFocus !== null) {
@@ -348,6 +356,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     refPickers = [];
     for (const list of fileRefArrays) list.destroy();
     fileRefArrays = [];
+    mailboxLists?.destroy();
+    mailboxLists = null;
     overlay.removeEventListener('click', onClick);
     overlay.removeEventListener('input', onInput);
     overlay.removeEventListener('change', onInput);
@@ -994,6 +1004,11 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         search: opts.recordRefSearch,
         onChange: setVariableConfig,
       }));
+    }
+    // A mailbox setting that must be set starts on the only mailbox that fits,
+    // as a change to this run (`mailbox-variable.ts`).
+    if (mailboxCallers !== undefined) {
+      mailboxLists = wireMailboxVariables(overlay, { callers: mailboxCallers, onChange: setVariableConfig });
     }
     if (opts.fileRefSearch === undefined) return;
     const fileRefSearch = opts.fileRefSearch;

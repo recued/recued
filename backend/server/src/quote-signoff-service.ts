@@ -7,6 +7,8 @@ import type Database from 'better-sqlite3';
 import {
   QUOTE_SIGNOFF_SCOPE_MAX,
   QUOTE_SIGNOFF_CONTEXT_MAX,
+  QUOTE_SIGNOFF_STATES,
+  QUOTE_SIGNOFF_SEARCH_MAX,
   QUOTE_SIGNOFF_RELEASE_RECIPE,
   RECUED_BUILTIN_SOURCE_ID,
   isRecordsExecutionBinding,
@@ -18,6 +20,8 @@ import {
   type QuoteSignoffAdditionPrepareInput,
   type QuoteSignoffAdditionSummary,
   type QuoteSignoffFollowUp,
+  type QuoteSignoffListInput,
+  type QuoteSignoffListResult,
   type QuoteSignoffReleaseInput,
   type QuoteSignoffReleaseResult,
   type QuoteSignoffState,
@@ -109,6 +113,24 @@ const date = (value: unknown, field: string): string => {
   return value;
 };
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const searchText = (value: string): string => value.normalize('NFKC').toLowerCase();
+const isSignoffId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
+const pageAnchor = (value: unknown, query: string): { created_at: number; signoff_id: string } => {
+  const invalid = () => new QuoteSignoffError('quote_signoff_invalid', 'This request page is invalid. Start from the newest requests.', 400);
+  if (typeof value !== 'string' || value.length > 512 || !/^[A-Za-z0-9_-]+$/.test(value)
+    || Buffer.from(value, 'base64url').toString('base64url') !== value) throw invalid();
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')); } catch { throw invalid(); }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || Object.keys(parsed).some(key => !['v', 'created_at', 'signoff_id', 'query'].includes(key))
+    || !('v' in parsed) || parsed.v !== 1
+    || !('created_at' in parsed) || typeof parsed.created_at !== 'number'
+    || !Number.isSafeInteger(parsed.created_at) || parsed.created_at < 0
+    || !('signoff_id' in parsed) || !isSignoffId(parsed.signoff_id)
+    || !('query' in parsed) || parsed.query !== query) throw invalid();
+  return { created_at: parsed.created_at, signoff_id: parsed.signoff_id };
+};
 
 /** Compute the canonical internal catalog names before entering any synchronous
  * SQLite transaction; resolve their installed manifests afresh on every use. */
@@ -177,6 +199,10 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
     endpoint_id TEXT UNIQUE, responded_at INTEGER, released_at INTEGER, intent_id TEXT UNIQUE
   ); CREATE INDEX IF NOT EXISTS quote_signoffs_quote ON ${TABLE}(quote_id, created_at);
   CREATE INDEX IF NOT EXISTS quote_signoffs_created ON ${TABLE}(created_at DESC, signoff_id);`);
+
+  deps.db.exec('CREATE INDEX IF NOT EXISTS quote_signoffs_state_created ON quote_signoffs(state, created_at DESC, signoff_id)');
+  deps.db.function('quote_signoff_search_text', { deterministic: true }, (value: unknown) =>
+    typeof value === 'string' ? searchText(value) : '');
 
   // Track only tasks used by this adapter. A content hash / wall-clock cannot
   // detect an edit followed by restoration at the same timestamp. The durable
@@ -316,6 +342,7 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
       signoff_id: row.signoff_id, quote_id: row.quote_id,
       quote_version: quote._record.version, quote_revision: quote._record.revision,
       quote_label: String(quote.label), customer: String(quote.customer), amount: plan.amount,
+      ...(typeof quote.reference === 'string' ? { quote_reference: quote.reference } : {}),
       currency: String(quote.currency), scope: plan.scope, task_title: plan.task_title,
       net: plan.net, vat_amount: plan.vat_amount,
       invoice_ref: plan.invoice_ref, issued_on: plan.issued_on, due_on: plan.due_on,
@@ -506,11 +533,73 @@ export const createQuoteSignoffService = (deps: QuoteSignoffServiceDeps) => {
           amount: String(q.amount), currency: String(q.currency), revision: q._record.revision })),
         truncated: result.next_cursor !== undefined };
     },
-    list(limit: number): { signoffs: QuoteSignoffSummary[]; truncated: boolean } {
+    list(input: QuoteSignoffListInput | number = {}): QuoteSignoffListResult {
+      const options = typeof input === 'number' ? { limit: input } : input;
+      if (!options || typeof options !== 'object' || Array.isArray(options)
+        || Object.keys(options).some(key => !['limit', 'search', 'state', 'cursor', 'signoff_id'].includes(key))) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Invalid customer sign-off search.', 400);
+      }
+      if (options.limit !== undefined && typeof options.limit !== 'number') {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Limit must be 1–100.', 400);
+      }
+      const limit = options.limit ?? 50;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Limit must be 1–100.', 400);
+      }
+      if (options.search !== undefined && (typeof options.search !== 'string'
+        || options.search.length > QUOTE_SIGNOFF_SEARCH_MAX || options.search.includes('\0'))) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Search must contain at most 200 characters.', 400);
+      }
+      const search = searchText(options.search?.trim() ?? '');
+      if (search.length > QUOTE_SIGNOFF_SEARCH_MAX) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Search must contain at most 200 characters.', 400);
+      }
+      const state = options.state;
+      if (state !== undefined && !QUOTE_SIGNOFF_STATES.some(candidate => candidate === state)) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'Choose a customer sign-off state.', 400);
+      }
+      if (options.signoff_id !== undefined && (!isSignoffId(options.signoff_id)
+        || options.search !== undefined || state !== undefined || options.cursor !== undefined)) {
+        throw new QuoteSignoffError('quote_signoff_invalid', 'An exact request lookup needs only its sign-off reference.', 400);
+      }
+      const query = hash({ search, state: state ?? null });
+      const anchor = options.cursor === undefined ? undefined : pageAnchor(options.cursor, query);
+      const where: string[] = [];
+      const values: Array<string | number> = [];
+      if (options.signoff_id !== undefined) { where.push('signoff_id=?'); values.push(options.signoff_id); }
+      if (state !== undefined) { where.push('state=?'); values.push(state); }
+      if (search) {
+        where.push(`(instr(quote_signoff_search_text(json_extract(quote_json,'$.customer')),?)>0
+          OR instr(quote_signoff_search_text(json_extract(quote_json,'$.label')),?)>0
+          OR instr(quote_signoff_search_text(json_extract(quote_json,'$.reference')),?)>0
+          OR instr(quote_signoff_search_text(json_extract(plan_json,'$.invoice_ref')),?)>0)`);
+        values.push(search, search, search, search);
+      }
+      if (anchor) {
+        where.push('(created_at<? OR (created_at=? AND signoff_id>?))');
+        values.push(anchor.created_at, anchor.created_at, anchor.signoff_id);
+      }
       return deps.db.transaction(() => {
-        const rows = deps.db.prepare(`SELECT * FROM ${TABLE} ORDER BY created_at DESC, signoff_id LIMIT ?`).all(limit + 1) as Row[];
-        return { signoffs: rows.slice(0, limit).map((row) => ({ ...summary(row),
-          ...(row.state === 'released' ? { follow_up: followUp(row) } : {}) })), truncated: rows.length > limit };
+        const rows = deps.db.prepare(`SELECT * FROM ${TABLE} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+          ORDER BY created_at DESC, signoff_id LIMIT ?`).all(...values, limit + 1) as Row[];
+        const truncated = rows.length > limit;
+        const last = rows[limit - 1];
+        return {
+          signoffs: rows.slice(0, limit).map(row => {
+            const result = summary(row);
+            if (row.state === 'released') {
+              result.follow_up = followUp(row);
+              result.can_add_work = result.follow_up.task.availability === 'current' && !result.follow_up.task.done
+                && !deps.db.prepare(`SELECT 1 FROM ${TABLE} WHERE quote_id=? AND state='released'
+                  AND json_extract(plan_json,'$.addition.parent_signoff_id')=? LIMIT 1`).get(row.quote_id, row.signoff_id);
+            }
+            return result;
+          }),
+          truncated,
+          ...(truncated && last ? { next_cursor: Buffer.from(JSON.stringify({
+            v: 1, created_at: last.created_at, signoff_id: last.signoff_id, query,
+          })).toString('base64url') } : {}),
+        };
       })();
     },
     approvalConfig,

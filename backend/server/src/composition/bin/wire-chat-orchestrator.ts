@@ -102,6 +102,10 @@ import { createContactPrefetchSearch } from '../../chat-prefetch-search.js';
 import { createTrustStore } from '../../housekeeping/index.js';
 import { wrapRegistryWithEnrichmentTopicTools } from '../../chat-enrichment-topic-tools.js';
 import { wrapChatRegistryForCatalogModes } from '../../chat-tools-search.js';
+import type { MarketplaceCatalogue } from '../../install-offers/catalogue.js';
+import { createInstallOfferSource } from '../../install-offers/source.js';
+import { createNeededPackOffers, wrapRegistryWithNeededPackOffers } from '../../install-offers/needed-packs.js';
+import { listInstalledPacks } from '../../pack-inventory.js';
 import { createRecallSearchBackend } from '../../chat-recall-search.js';
 import { wrapRegistryWithRecallSearch } from '../../chat-recall-search-tool.js';
 import { createPromptCacheGateDeps } from '../../chat-prompt-cache-gate.js';
@@ -335,6 +339,13 @@ export interface ComposeChatOrchestratorDeps {
    *  compose-app-context); absent or resolving undefined → the parse hook
    *  is a faithful no-op. */
   getContractStore?: () => ContractStore | undefined;
+  /** D-323 — the server's copy of the marketplace catalogue. Present, chat's
+   *  `tools.search` offers a pack to install when nothing installed matches;
+   *  absent (tests, a CLI context), it offers nothing and makes no download. */
+  installOfferCatalogue?: MarketplaceCatalogue;
+  /** D-323 — the server's public web app address, for the links a Slack or
+   *  Telegram answer's install offers end with. Absent: names only. */
+  publicBaseUrl?: () => string | null;
   /** D-192 read resolution — `work.search` / `work.read` deps: the
    *  freshness-enabled work-entity resolver + the targeted-read spine
    *  (populated by the post-listener runtime). Late-bound like every
@@ -1149,7 +1160,16 @@ export const composeChatOrchestrator = (
   // PRESENTATION (buildChatMainTurnTools keys on the per-turn projection.mode),
   // so a full turn stays byte-identical, and tools.search is read-only /
   // chat-only / never presented on full turns.
-  const baseChatRegistry = wrapRegistryWithRecallSearch(
+  // D-323 — what every install offer reads per call: the owner's switch, and
+  // what is installed.
+  const installOffersEnabled = (): boolean => chatStore.getInstallOffersEnabled?.() ?? true;
+  const installedPackSlugs = (): ReadonlySet<string> => {
+    const contracts = deps.getContractStore?.();
+    return new Set(contracts === undefined ? [] : listInstalledPacks(contracts).map((row) => row.pack_slug));
+  };
+  // D-323 — the OUTERMOST wrapper, so every call the chat makes, whichever
+  // wrapper answers it, offers the packs it came back needing.
+  const baseChatRegistry = wrapRegistryWithNeededPackOffers(wrapRegistryWithRecallSearch(
     wrapChatRegistryForCatalogModes(
       wrapRegistryWithEnrichmentTopicTools(internalRegistry, {
         listTopicsWithRows: () =>
@@ -1164,6 +1184,16 @@ export const composeChatOrchestrator = (
       // The SAME raw-action source `buildCatalog` presents and the dispatch
       // resolves by name, so search answers the same grant question.
       chatToolRegistryInputs.rawOpSource as (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
+      // D-323 — the marketplace offers on a no-match: the owner's switch, the
+      // catalogue copy, and what is installed, read per search.
+      deps.installOfferCatalogue === undefined
+        ? undefined
+        : createInstallOfferSource({
+            catalogue: deps.installOfferCatalogue,
+            enabled: installOffersEnabled,
+            installedPackSlugs,
+            hasRecipe: (recipe_id) => deps.recipeStore.get(recipe_id) !== null,
+          }),
     ),
     {
       backend: createRecallSearchBackend(chatStore),
@@ -1183,7 +1213,18 @@ export const composeChatOrchestrator = (
         return gate.isOpGranted(source, opGrantEntry('core.recall.search'));
       },
     },
-  );
+  ), deps.installOfferCatalogue === undefined
+    ? undefined
+    : {
+        // A run or a schedule refused for a pack not installed, or a document
+        // with no reader pack: those packs, offered on the owner's own turns.
+        offers: createNeededPackOffers({
+          catalogue: deps.installOfferCatalogue,
+          enabled: installOffersEnabled,
+          installedPackSlugs,
+        }),
+        ownerCatalogGuard: chatToolRegistryInputs.ownerCatalogGuard,
+      });
   const d214Experiment = readExecutionCaseExperimentEnv();
   if (!getSpanAnchorDeps) {
     throw new Error('D-214 span-anchor composition is unavailable');
@@ -1684,7 +1725,10 @@ export const composeChatOrchestrator = (
     getContactKnownValueIndex: contactKnownValueIndex,
   });
 
-  const messengerBridge = createChatMessengerBridge({ db, store: chatStore, getKey: chatKeyProvider, broadcast });
+  const messengerBridge = createChatMessengerBridge({
+    db, store: chatStore, getKey: chatKeyProvider, broadcast,
+    ...(deps.publicBaseUrl !== undefined ? { publicBaseUrl: deps.publicBaseUrl } : {}),
+  });
   const orchestrator = withQueuedChatTurns(executionOrchestrator, { db, store: chatStore, getKey: chatKeyProvider, broadcast, messengerBridge });
 
   const chatDeps: ChatRpcDeps = {

@@ -372,6 +372,8 @@ export interface ViewAsVisitorModel {
      the renderer offers "Create endpoint" or "Re-run preview". */
   preview_is_fresh: boolean;
   preview_freshness_label: string;
+  /** Owner-only continuation plan, outside the anonymous visitor iframe. */
+  approval_workflow_summary?: string;
 }
 
 /** Build the renderable View-As-Visitor model from the
@@ -394,6 +396,7 @@ export const buildViewAsVisitorModel = (args: {
     preview_hash_expires_at: result.expires_at,
     preview_is_fresh: result.expires_at - now > 0,
     preview_freshness_label: computePreviewFreshnessLabel(result.expires_at, now),
+    ...(result.approval_workflow_summary ? { approval_workflow_summary: result.approval_workflow_summary } : {}),
   };
 };
 

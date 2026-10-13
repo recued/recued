@@ -98,11 +98,16 @@ describe('D-249 — kernel op scope classification', () => {
     //    Neither `data.task` nor a scope-axis abstention represents all three.
     //    Keep it denied at collection-fenced doors until the fence can express
     //    the whole release; its owner grant and explicit review still apply.
+    //  - `approval-workflow-continue` — continues what a customer accepted: it
+    //    resolves a task or commitment, or starts a saved recipe that may touch
+    //    any collection. No one collection represents that, so it stays denied
+    //    at collection-fenced doors; its owner grant and individual review apply.
     expect(stuck).toEqual([
       'core.mail.notify-booking-visitor => data.notify',
       'core.memory.link.create => data.link',
       'core.memory.link.delete => data.link',
       'core.memory.link.list => data.link',
+      'core.work-entity.approval-workflow.continue => data.approval',
       'core.work-entity.quote-signoff.release => data.quote',
     ]);
   });

@@ -325,6 +325,7 @@ export interface ComposeExecutorConfigDeps {
   housekeepingState: HousekeepingStateStore | undefined;
   engagementRateControlStore: EngagementRateControlStore | undefined;
   workEntityDispatchers: WorkEntityDispatchers | undefined;
+  getApprovalWorkflowExecuteDeps?: (() => import('../../execute-handler.js').ExecuteHandlerDeps | undefined) | undefined;
   /** D-173 P1-dispatch — the per-pair work-entity store the reception
    *  projection materialises task / note / commitment / project through (the
    *  destination Source by `top_tier_kind`). Together with the canonical
@@ -813,6 +814,13 @@ export const composeExecutorConfig = async (
     // the same slug list; the ext implementation rpcs to the paired
     // server).
     kernelDispatchers: {
+      ...(deps.db && deps.getApprovalWorkflowExecuteDeps ? {
+        approvalWorkflowContinue: async (input) => {
+          const { composeApprovalWorkflowContinuation } = await import('../../compose-approval-workflow-service.js');
+          return composeApprovalWorkflowContinuation(deps.db!, deps.getApprovalWorkflowExecuteDeps!,
+            { resolved: deps.workEntityDispatchers?.approvalWorkResolved })(input);
+        },
+      } : {}),
       ...(deps.db && deps.recordsStore && deps.receptionProjectionWorkEntityStore?.writeTask ? {
         quoteSignoffRelease: async (input) => {
           const { createQuoteSignoffService, quoteSignoffManifestReader } = await import('../../quote-signoff-service.js');

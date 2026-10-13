@@ -31,6 +31,7 @@ import {
   type ChatDispatchContext,
   type ChatDispatchResult,
   type ExecutionSource,
+  type InstallOffer,
   type InternalToolRegistry,
   type ToolEntry,
   type ToolTier,
@@ -46,6 +47,14 @@ import {
   searchDocIndex,
 } from './chat-doc-search.js';
 import { TOOLS_SEARCH_TOOL_NAME } from './chat-tools-search-name.js';
+import type { InstalledMatchText } from './install-offers/match.js';
+
+/** D-323 — the marketplace offers for one search: its query, and what it found
+ *  installed. The source decides whether something installed already does it. */
+export type ToolsSearchInstallOffers = (
+  query: string,
+  installed: ReadonlyArray<InstalledMatchText>,
+) => Promise<ReadonlyArray<InstallOffer>>;
 
 // Re-exported so existing importers (`chat-tool-handlers.ts`, tests) resolve it
 // unchanged; the canonical declaration is the leaf `chat-tools-search-name.ts`
@@ -107,6 +116,31 @@ const TOOLS_SEARCH_DOCS_ONLY_GUIDANCE =
 const TOOLS_SEARCH_NO_MATCH_GUIDANCE =
   'No installed recipe tool or action matches this request. Do NOT retry tools.search with reworded queries. Handle it with the core tools already listed, answer the user from your own knowledge, or tell the user that no matching recipe or action is installed.';
 
+/** D-323 — nothing installed matches, and the marketplace has something that
+ *  would. ⛔ THE MODEL CANNOT INSTALL AND MUST NOT SAY IT DID. The offers are
+ *  shown to the owner as links under the answer (ruling P3), and installing is
+ *  the owner's, through the consent dialog; the model's part is to say which
+ *  one fits and what it would do. A model that "helpfully" claims it set
+ *  something up is the failure this copy exists to prevent. */
+const TOOLS_SEARCH_INSTALLABLE_ADDENDUM =
+  'The "installable" list names packs and recipes from the Recued marketplace that would do it. '
+  + 'They are NOT installed: you cannot call them and you cannot install them. The owner sees each '
+  + 'one as a link under your answer and installs it from there. In one or two sentences, name the '
+  + 'one that fits the request and say what it would do. Never say you installed or ran it. If none '
+  + 'fits, say that nothing installed does this.';
+const TOOLS_SEARCH_INSTALLABLE_GUIDANCE =
+  'No installed recipe tool or action matches this request. ' + TOOLS_SEARCH_INSTALLABLE_ADDENDUM
+  + ' Do NOT retry tools.search with reworded queries.';
+/** D-323 — installed tools matched some of the request's words, but none is
+ *  about what it asks, and the marketplace has something that is. ⛔ NOT the
+ *  matches guidance: that one says to call a match NOW, and on a new server
+ *  the match for "rent collection" was Open commitments. The model still may,
+ *  when one of them does the job. */
+const TOOLS_SEARCH_PARTIAL_MATCHES_GUIDANCE =
+  'These installed tools share words with the request, but none is about what it asks. If one of '
+  + 'them does what the user asked, call it now by its `recipe_slug`. If none does, do not call '
+  + 'them. ' + TOOLS_SEARCH_INSTALLABLE_ADDENDUM + ' Do NOT retry tools.search with reworded queries.';
+
 const resolveToolsSearchLimit = (raw: unknown): number => {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return Number.POSITIVE_INFINITY;
   const n = Math.floor(raw);
@@ -135,6 +169,10 @@ export interface ToolsSearchWrapOptions {
    *  main catalog presents and the dispatch resolves by name. See
    *  `dispatchToolsSearch` for why search must read it. */
   rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>;
+  /** D-323 — the marketplace offers for a search, asked on every search with
+   *  what it found installed. Absent ⇒ no offers, and every result reads as
+   *  before. */
+  installOffers?: ToolsSearchInstallOffers;
 }
 
 /** Dispatch the search over the registry's OWN exposed Tier-2 set (so the
@@ -169,6 +207,8 @@ const dispatchToolsSearch = (
    *  presentation choice and must not withdraw the grant. Already grant-filtered
    *  per source, so search widens nothing the dispatch would refuse. */
   rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
+  /** D-323 — see `ToolsSearchWrapOptions.installOffers`. */
+  installOffers?: ToolsSearchInstallOffers,
 ): ((raw: unknown, ctx: ChatDispatchContext) => Promise<ChatDispatchResult>) =>
   async (raw, ctx) => {
     // ⛔ FIRST, before the query is even parsed — a door must not learn what a
@@ -208,6 +248,19 @@ const dispatchToolsSearch = (
     // capped hard (`DOC_MATCH_LIMIT`) so they can never crowd the matches that
     // let the turn actually accomplish something.
     const docs = searchDocIndex(args.query);
+    // D-323 — asked on every search, with what it found installed: the source
+    // offers nothing when something installed does it (ruling P2), and decides
+    // that by the request's subject. ⛔ NOT by `matches.length`: the search
+    // above counts any word found as letters ("rent" in "current"), and gated
+    // on it, four of six requests only the marketplace serves were offered
+    // nothing (spec §3a). A failing source offers nothing.
+    const offers = installOffers !== undefined
+      ? await installOffers(args.query, matches.map((entry) => ({
+        name: entry.name,
+        ...(entry.description !== undefined ? { description: entry.description } : {}),
+        tags: entry.topic_tags,
+      }))).catch(() => [])
+      : [];
     return {
       ok: true,
       result: {
@@ -224,17 +277,35 @@ const dispatchToolsSearch = (
         ...(docs.length > 0
           ? { doc_matches: docs, doc_guidance: DOC_MATCHES_GUIDANCE }
           : {}),
+        // D-323 — what the owner is offered under the answer, said to the model
+        // too so it can name the one that fits. Never an `args_schema`: none of
+        // them can be called. The turn's answer carries these to the owner.
+        ...(offers.length > 0
+          ? {
+              installable: offers.map((offer) => ({
+                kind: offer.kind,
+                slug: offer.slug,
+                name: offer.name,
+                publisher: offer.publisher,
+                ...(offer.recipes.length > 0 ? { recipes: offer.recipes } : {}),
+              })),
+            }
+          : {}),
         guidance:
           matches.length > 0
-            ? TOOLS_SEARCH_MATCHES_GUIDANCE
+            ? (offers.length > 0 ? TOOLS_SEARCH_PARTIAL_MATCHES_GUIDANCE : TOOLS_SEARCH_MATCHES_GUIDANCE)
             : docs.length > 0
               // ⛔ NOT the no-match copy. That copy tells the model to fall back
               // on "your own knowledge", which for a private product is the
               // confidently-wrong answer this whole feature exists to prevent —
               // and here it would be saying so while holding the documentation
               // that answers the question.
-              ? TOOLS_SEARCH_DOCS_ONLY_GUIDANCE
-              : TOOLS_SEARCH_NO_MATCH_GUIDANCE,
+              ? (offers.length > 0
+                ? `${TOOLS_SEARCH_DOCS_ONLY_GUIDANCE} ${TOOLS_SEARCH_INSTALLABLE_ADDENDUM}`
+                : TOOLS_SEARCH_DOCS_ONLY_GUIDANCE)
+              : offers.length > 0
+                ? TOOLS_SEARCH_INSTALLABLE_GUIDANCE
+                : TOOLS_SEARCH_NO_MATCH_GUIDANCE,
       },
     };
   };
@@ -305,6 +376,9 @@ export const wrapChatRegistryForCatalogModes = (
   /** The turn's granted raw pack actions — POSITIONAL for the same reason as
    *  the guard above: this is the only constructor of the search surface. */
   rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<ToolEntry>,
+  /** D-323 — the marketplace offers for a search. POSITIONAL, like the two
+   *  above: declared on the options alone, it would reach no search at all. */
+  installOffers?: ToolsSearchInstallOffers,
 ): InternalToolRegistry =>
   wrapRegistryWithToolsSearch(inner, {
     enabled: anyCatalogModeUsesToolsSearch(modes),
@@ -312,6 +386,7 @@ export const wrapChatRegistryForCatalogModes = (
     ...(tier2OwnerCatalog ? { tier2OwnerCatalog } : {}),
     ...(ownerCatalogGuard ? { ownerCatalogGuard } : {}),
     ...(rawOpSource ? { rawOpSource } : {}),
+    ...(installOffers ? { installOffers } : {}),
   });
 
 export const wrapRegistryWithToolsSearch = (
@@ -322,6 +397,7 @@ export const wrapRegistryWithToolsSearch = (
   const entry = TOOLS_SEARCH_TOOL_ENTRY;
   const dispatchSearch = dispatchToolsSearch(
     inner, opts.tier2GrantFilter, opts.tier2OwnerCatalog, opts.ownerCatalogGuard, opts.rawOpSource,
+    opts.installOffers,
   );
   return {
     list: () => insertToolEntryAfterTier1(inner.list(), entry),

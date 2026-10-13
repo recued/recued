@@ -575,6 +575,13 @@ export type ChatDispatchResult =
       /** Existing standing dish that was dispatched. Omitted for the
        * run-derived ephemeral dish used by ordinary ad-hoc calls. */
       dish_id?: string;
+      /** D-323 — packs this call needed and did not have, `<publisher>.<pack>`,
+       * as data: `document.read` with no reader pack, or a refusal chat
+       * offered them for. The model reads `result`. */
+      missing_packs?: ReadonlyArray<string>;
+      /** D-323 — those packs as marketplace offers, on the owner's own chat.
+       * The turn's answer carries them; the model never reads this. */
+      install_offers?: ReadonlyArray<import('./install-offers.js').InstallOffer>;
     }
   | {
       ok: false;
@@ -585,6 +592,11 @@ export type ChatDispatchResult =
       run_id?: string;
       /** Existing standing dish that was dispatched; never an ephemeral id. */
       dish_id?: string;
+      /** D-323 — a run or a schedule refused `pack_not_installed`: the packs
+       * the refusal named, `<publisher>.<pack>`, as data. The model reads
+       * `detail` only. Offered on the owner's chat, the refusal comes back as
+       * an `ok: true` result instead (`install-offers/needed-packs.ts`). */
+      missing_packs?: ReadonlyArray<string>;
     };
 
 /** § A.1.1 — registry surface. Implementations live in
@@ -1511,6 +1523,12 @@ export interface ChatMessage {
   provenance?: ChatProvenanceRef[];
   attachments?: ChatMessageAttachment[];
   reply_to?: ChatMessageReply;
+  /** D-323 — packs or recipes from the marketplace that would do what the
+   *  owner asked, when nothing installed did: the last `tools.search` of the
+   *  turn returned them, and the server stamped them on its answer (ruling P3:
+   *  every one, at most three). Shown as links to their install pages; never
+   *  installed by chat. Absent when the turn offered none. */
+  install_offers?: import('./install-offers.js').InstallOffer[];
   /** Durable grounding for a user-requested Data explanation or safe check.
    * Server-stamped after validating the same-session consumed action and run
    * correlation. Presentation-only; never approval or retry authority. */
@@ -1666,6 +1684,8 @@ export type ChatRpcMethod =
   | 'chat.default_model_pref.set'
   | 'chat.rolling_brief.get'
   | 'chat.rolling_brief.set'
+  | 'chat.install_offers.get'
+  | 'chat.install_offers.set'
   | 'chat.session.brief.get'
   | 'chat.session.brief.clear'
   // D-137 W2.3 § A.1.1 + § A.10 — Mary's per-connection MCP tool
@@ -1770,6 +1790,8 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.default_model_pref.set',
   'chat.rolling_brief.get',
   'chat.rolling_brief.set',
+  'chat.install_offers.get',
+  'chat.install_offers.set',
   'chat.session.brief.get',
   'chat.session.brief.clear',
   'chat.connection_mcp.list',

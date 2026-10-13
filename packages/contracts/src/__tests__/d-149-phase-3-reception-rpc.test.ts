@@ -86,6 +86,7 @@ describe('D-149 P3 § A.3 — RECEPTION_RPC_METHODS closed list', () => {
       'reception.abuse_inbox.unban_ip',
       // D-149 follow-on § A.10 addition — Templates browser wire.
       'reception.template.list',
+      'reception.approval.targets',
       // D-151 P2 addition — intent-first Compose proposal.
       'reception.compose.propose',
     ]);

@@ -251,6 +251,8 @@ export interface ReceptionPageShell {
   setEndpointShare(endpoint_id: string, share: ShareCardsInput): void;
 
   // ── Satellite: authoring (preview → create) + page upsert ───────
+  /** Owner-only suggestions for typed customer approval workflows. */
+  approvalTargets?(): Promise<import('@recued/contracts').ApprovalWorkflowTargetsResult>;
   /** Fire `reception.endpoint.preview_draft` + project the result into
    *  the View-As-Visitor panel. Returns the result so the authoring
    *  flow can take the `preview_hash` for the create step. */
@@ -620,6 +622,7 @@ export const createReceptionPageShell = (
     },
 
     // ── Satellite: authoring (preview → create) + page upsert ─────
+    approvalTargets: () => run(() => deps.call('reception.approval.targets', undefined)),
     runPreview: (dispatch) => run(() => runPreviewDraft(dispatch)),
 
     createEndpoint: (dispatch) =>

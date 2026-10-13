@@ -65,6 +65,7 @@ import {
   isExecutionSource,
   executionSourceContractId,
 } from '@recued/contracts';
+import { installOffersOf, type InstallOffer } from '@recued/contracts';
 import type { LLMConfig } from '@recued/llm';
 import {
   base64ToBytes,
@@ -874,6 +875,11 @@ const CHAT_DEFAULT_MODEL_PREF_FALLBACK: ChatModelRoutingLayer = 'byok';
  *  default rather than a global one. */
 const CHAT_ROLLING_BRIEF_KEY = 'rolling_brief_enabled';
 
+/** D-323 — whether chat offers a marketplace pack when nothing installed can do
+ *  what the owner asked. ON unless turned off (ruling P7), with the rolling
+ *  brief's opt-out shape: only a stored `'0'` disables it. */
+const CHAT_INSTALL_OFFERS_KEY = 'install_offers_enabled';
+
 /** D-174 R28 Slice A — resolve a persisted default `source_id` to the
  *  `{layer, model_hint}` shape the per-session inheritance path consumes,
  *  reading a LIVE `LLMConfig` snapshot (point-of-use, never stored — a slot's
@@ -1208,6 +1214,7 @@ const messageFromRow = async (
   const data_diagnosis = parseDataDiagnosis(row.metadata_blob);
   const data_diagnosis_resolution =
     parseDataDiagnosisResolution(row.metadata_blob);
+  const install_offers = installOffersOf(parseMessageMetadataObject(row.metadata_blob).install_offers);
   let reply_to: ChatReplyReference | undefined;
   const storedReply = parseMessageMetadataObject(row.metadata_blob).reply_to_encrypted;
   if (typeof storedReply === 'string') {
@@ -1239,6 +1246,7 @@ const messageFromRow = async (
     ...(data_diagnosis_resolution
       ? { data_diagnosis_resolution }
       : {}),
+    ...(install_offers.length > 0 ? { install_offers } : {}),
     contributor: CHAT_CONTRIBUTOR_SET.has(
       row.contributor as ChatSessionContributor,
     )
@@ -1305,6 +1313,9 @@ export interface AppendMessageInput {
   attachments?: ChatMessageAttachment[];
   /** Host-validated reference only; previews are resolved from retained rows. */
   reply_to?: ChatReplyReference;
+  /** D-323 — the marketplace offers the turn's last `tools.search` returned.
+   *  Kept in `metadata_blob`, beside the other optional extras. */
+  install_offers?: readonly InstallOffer[];
   /** Server-normalized, evidence-only diagnosis grounding. Stored in the
    * existing message metadata column so both turn rows survive hydration. */
   data_diagnosis?: ChatDataDiagnosisContext;
@@ -1539,6 +1550,11 @@ export interface ChatStore {
    *  than silently switching a context-carrying feature on. */
   getRollingBriefEnabled(): boolean;
   setRollingBriefEnabled(enabled: boolean): boolean;
+  /** D-323 — does chat offer marketplace packs when nothing installed matches?
+   *  ON unless a stored `'0'` says otherwise. Optional: a store without it
+   *  (an older double) reads as on. */
+  getInstallOffersEnabled?(): boolean;
+  setInstallOffersEnabled?(enabled: boolean): boolean;
   /** The session's carried brief, decrypted. `null` when none is stored, and
    *  ALSO when the stored blob cannot be decoded — a brief that cannot be read
    *  is indistinguishable from no brief for every consumer, and surfacing a
@@ -2238,6 +2254,16 @@ export const createChatStore = (
     setConfigStmt.run({ key: CHAT_ROLLING_BRIEF_KEY, value: enabled ? '1' : '0' });
     return enabled;
   };
+  const getInstallOffersEnabled = (): boolean => {
+    const row = getConfigStmt.get({ key: CHAT_INSTALL_OFFERS_KEY }) as
+      | { value: string }
+      | undefined;
+    return row?.value !== '0';
+  };
+  const setInstallOffersEnabled = (enabled: boolean): boolean => {
+    setConfigStmt.run({ key: CHAT_INSTALL_OFFERS_KEY, value: enabled ? '1' : '0' });
+    return enabled;
+  };
 
   /** ⚠ The AAD's message id is a CONSTANT, not a real message. It binds the
    *  ciphertext to `(session_id, 'rolling_brief')`, so a blob copied into
@@ -2644,6 +2670,8 @@ export const createChatStore = (
     const reply_to_encrypted = reply_to ? await encodeChatMessageFieldForStorage(
       JSON.stringify(reply_to), 'reply_to', identity, getKey,
     ) : undefined;
+    // D-323 — checked again here: a store keeps only what the reader accepts.
+    const install_offers = installOffersOf(input.install_offers ?? []);
     const row = {
       message_id: input.id,
       session_id: input.session_id,
@@ -2663,11 +2691,12 @@ export const createChatStore = (
       attachments_blob: input.attachments && input.attachments.length > 0
         ? JSON.stringify(input.attachments)
         : null,
-      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted
+      metadata_blob: input.data_diagnosis || input.tool_call || reply_to_encrypted || install_offers.length > 0
         ? JSON.stringify({
             ...(input.data_diagnosis ? { data_diagnosis: input.data_diagnosis } : {}),
             ...(input.tool_call ? { tool_call: input.tool_call } : {}),
             ...(reply_to_encrypted ? { reply_to_encrypted } : {}),
+            ...(install_offers.length > 0 ? { install_offers } : {}),
           })
         : null,
       contributor,
@@ -2714,6 +2743,7 @@ export const createChatStore = (
         ? { data_diagnosis: input.data_diagnosis }
         : {}),
       ...(reply_to ? { reply_to } : {}),
+      ...(install_offers.length > 0 ? { install_offers } : {}),
       contributor,
       ...(input.turn_id ? { turn_id: input.turn_id } : {}),
       ts,
@@ -3426,6 +3456,8 @@ export const createChatStore = (
     setDefaultModelSourceId,
     getRollingBriefEnabled,
     setRollingBriefEnabled,
+    getInstallOffersEnabled,
+    setInstallOffersEnabled,
     readSessionBrief,
     writeSessionBrief,
     deleteSessionBrief,

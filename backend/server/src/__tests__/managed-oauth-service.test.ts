@@ -3,14 +3,15 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConnectionApiHandler } from '@recued/ingredients';
 import type { ManagedOAuthAuth, ManagedOAuthRequest, ManagedOAuthResponse } from '@recued/contracts';
-import { createManagedOAuthService } from '../managed-oauth-service.js';
+import { createManagedOAuthService, type ManagedOAuthServiceDeps } from '../managed-oauth-service.js';
 import { createManagedOAuthProfileStore } from '../managed-oauth-profile-store.js';
 import { createConnectionStore } from '../storage/connection-store.js';
 import { decodeAuthFromStorage, encodeAuthForStorage, makeConnectionHandlers } from '../connection-handler.js';
 
 const dbs: Database.Database[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
-const setup = (knownScopes = true, requiredScopes = () => ['https://www.googleapis.com/auth/spreadsheets']) => {
+const setup = (knownScopes = true, requiredScopes = () => ['https://www.googleapis.com/auth/spreadsheets'],
+  requiredScopeSources?: ManagedOAuthServiceDeps['requiredScopeSources']) => {
   const db = new Database(':memory:'); dbs.push(db);
   const key = () => new Uint8Array(32).fill(9);
   const profiles = createManagedOAuthProfileStore(db, key); const connections = createConnectionStore(db);
@@ -38,7 +39,7 @@ const setup = (knownScopes = true, requiredScopes = () => ['https://www.googleap
   const decode = (row: Parameters<typeof decodeAuthFromStorage>[1] & { auth_ciphertext: string }) => decodeAuthFromStorage(row.auth_ciphertext, row, key);
   const service = createManagedOAuthService({ profiles, listConnections: () => connections.list(), decodeAuth: decode, fetchImpl: fetch,
     clearGrantedScopes: names => connections.clearGrantedScopes(names),
-    requiredScopes, now: () => clock });
+    requiredScopes, ...(requiredScopeSources ? { requiredScopeSources } : {}), now: () => clock });
   const handlers = makeConnectionHandlers({ store: connections, getEncryptionKey: key, managedOAuth: service, now: () => clock })!.handlers;
   const rpc = (args: ManagedOAuthRequest): Promise<ManagedOAuthResponse> => handlers['collection.connection.managedOAuth'](args, undefined as never);
   const authorize = async () => {
@@ -75,6 +76,150 @@ const storeAccount = async (f: ReturnType<typeof setup>, name: string, auth: Man
     enrolled_at: 1, updated_at: 2, ...(grants === undefined ? {} : { granted_scopes_json: JSON.stringify(grants) }) });
 
 describe('managed OAuth service and production connection RPC', () => {
+  it.each([
+    { action: 'preview', phase: 'before discovery' }, { action: 'start', phase: 'before discovery' },
+    { action: 'preview', phase: 'during discovery' }, { action: 'start', phase: 'during discovery' },
+  ] as const)('blocks $action $phase while this account is being deleted, before creating consent', async ({ action, phase }) => {
+    const f = setup(); const { saved } = await savedAccount(f); f.connections.delete('api', 'sheets');
+    let deleted!: (response: Response) => void; let deleting!: () => void; let discovered!: (response: Response) => void; let discovering!: () => void;
+    const deleteGate = new Promise<Response>(resolve => { deleted = resolve; });
+    const deleteEntered = new Promise<void>(resolve => { deleting = resolve; });
+    const discoveryGate = new Promise<Response>(resolve => { discovered = resolve; });
+    const discoveryEntered = new Promise<void>(resolve => { discovering = resolve; });
+    let delayDiscovery = phase === 'during discovery'; let discoveryResponse!: Response;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      if (init?.method === 'DELETE') { deleting(); return deleteGate; }
+      const response = await f.fetch(input, init);
+      if (String(input).includes('/connections?') && delayDiscovery) {
+        delayDiscovery = false; discoveryResponse = response; discovering(); return discoveryGate;
+      }
+      return response;
+    });
+    const service = createManagedOAuthService({ profiles: f.profiles, listConnections: () => f.connections.list(), decodeAuth: f.decode, fetchImpl: fetch });
+    const target = { profile_id: saved.profile.id, integration_id: 'sheets-production', connection_id: 'remote-account' };
+    const request = { action, ...target, base_url: 'https://sheets.googleapis.com/v4', scopes: ['new-scope'], force_reauthorization: true };
+    const sessionCount = f.sessions.length; const history = f.profiles.scopeHistorySignature();
+    let authorizing: Promise<ManagedOAuthResponse> | undefined;
+    if (phase === 'during discovery') { authorizing = service.handle(request); await discoveryEntered; }
+    const removing = service.handle({ action: 'delete_remote_connection', ...target, confirmation: 'remote-account' }); await deleteEntered;
+    try {
+      if (phase === 'during discovery') discovered(discoveryResponse);
+      else authorizing = service.handle(request);
+      await expect(authorizing).rejects.toThrow('being deleted');
+      expect(f.sessions).toHaveLength(sessionCount); expect(f.profiles.scopeHistorySignature()).toBe(history);
+    } finally { deleted(Response.json({ success: true })); await removing; }
+  });
+  it.each([
+    { scopes: ['A', 'B'], decision: 'reuse', added: [], retained: [fullSheets, fullSheets + '.readonly', 'openid'] },
+    { scopes: ['A'], decision: 'reuse', added: [], retained: ['B', fullSheets, fullSheets + '.readonly', 'openid'] },
+    { scopes: ['A', 'B', 'C'], decision: 'reconnect', added: ['C'], retained: [fullSheets, 'openid'] },
+    { scopes: ['B', 'C'], decision: 'reconnect', added: ['C'], retained: ['A', fullSheets, 'openid'] },
+  ])('previews $scopes as $decision without changing account history or grant evidence', async ({ scopes, decision, added, retained }) => {
+    const f = setup(true, () => []); const { saved, row } = await savedAccount(f);
+    const auth = await f.decode(row) as ManagedOAuthAuth;
+    const history = ['A', 'B', fullSheets, 'openid']; trackCompleted(f, history);
+    await storeAccount(f, 'sheets', { ...auth, requested_scopes: history, required_scopes: ['A', 'B'] }, history);
+    const rowsBefore = f.connections.list(); const historyBefore = f.profiles.scopeHistorySignature();
+    const count = f.sessions.length; f.fetch.mockClear();
+    const args = { profile_id: saved.profile.id, integration_id: auth.integration_id, name: 'sheets',
+      connection_id: auth.connection_id, base_url: 'https://sheets.googleapis.com/v4', scopes };
+    const result = await f.rpc({ action: 'preview', ...args });
+    if (result.action !== 'preview') throw new Error('fixture preview');
+    expect(result.preview).toMatchObject({ decision, added_scopes: added, retained_scopes: retained });
+    expect(result.preview.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(result).not.toHaveProperty('auth'); expect(result).not.toHaveProperty('granted_scopes');
+    expect(JSON.stringify(result)).not.toContain('environment-key');
+    expect(f.fetch.mock.calls.every(([, init]) => (init?.method ?? 'GET') === 'GET')).toBe(true);
+    expect(f.sessions).toHaveLength(count); expect(f.connections.list()).toEqual(rowsBefore);
+    expect(f.profiles.scopeHistorySignature()).toBe(historyBefore);
+    const started = await f.rpc({ action: 'start', ...args, preview_fingerprint: result.preview.fingerprint });
+    expect(started.action).toBe(decision === 'reuse' ? 'reuse' : 'start');
+    if (started.action === 'start') {
+      expect(started.requested_scopes).toEqual(result.preview.requested_scopes);
+      expect(f.sessions.at(-1)).toMatchObject({ connection_id: auth.connection_id, integration_id: auth.integration_id });
+    }
+  });
+  it('attributes preserved requirements to sibling connections and their service-specific packs', async () => {
+    const f = setup(true, () => ['pack-read'], () => [{ slug: 'sheets-pack', name: 'Sheets pack', scopes: ['pack-read'] }]);
+    const { saved, row } = await savedAccount(f); const auth = await f.decode(row) as ManagedOAuthAuth;
+    await storeAccount(f, 'sibling', { ...auth, required_scopes: ['sibling-write'] });
+    const result = await f.rpc({ action: 'preview', name: 'sheets', profile_id: saved.profile.id,
+      integration_id: auth.integration_id, base_url: 'https://sheets.googleapis.com/v4', vendor: 'google', scopes: [] });
+    if (result.action !== 'preview') throw new Error('fixture preview');
+    expect(result.preview).toMatchObject({ decision: 'reconnect', required_scopes: ['pack-read'] });
+    expect(result.preview.sources).toContainEqual({ kind: 'pack', label: 'Sheets pack (sheets-pack)', scopes: ['pack-read'] });
+    expect(result.preview.sources).toContainEqual({ kind: 'connection', label: 'sibling', scopes: ['sibling-write'] });
+    expect(result.preview.requested_scopes).toContain('sibling-write');
+    expect(result.preview.retained_scopes).toContain('sibling-write');
+    expect(f.sessions).toHaveLength(1);
+  });
+  it.each(['request', 'pack', 'integration', 'sibling', 'history', 'profile', 'identity', 'health', 'force', 'forged'] as const)
+    ('rejects a preview made stale by %s before creating consent or clearing grants', async change => {
+      let required: string[] = []; const f = setup(true, () => required);
+      const { saved, row } = await savedAccount(f); const auth = await f.decode(row) as ManagedOAuthAuth;
+      await storeAccount(f, 'sheets', auth, [fullSheets]);
+      const args = { name: 'sheets', profile_id: saved.profile.id, integration_id: auth.integration_id,
+        base_url: 'https://sheets.googleapis.com/v4', vendor: 'google', scopes: ['new-scope'] };
+      const result = await f.rpc({ action: 'preview', ...args });
+      if (result.action !== 'preview') throw new Error('fixture preview');
+      const next = { ...args };
+      if (change === 'request') next.scopes = ['different-scope'];
+      if (change === 'pack') required = ['new-pack-scope'];
+      if (change === 'sibling') await storeAccount(f, 'sibling', { ...auth, required_scopes: ['sibling-scope'] });
+      if (change === 'history') trackCompleted(f, [fullSheets, 'openid', 'completed-extra']);
+      if (change === 'profile') f.profiles.save({ ...f.profiles.get(saved.profile.id)!, revision: saved.profile.revision + 1 });
+      if (change === 'health') f.failConsent();
+      if (change === 'integration' || change === 'identity') {
+        const original = f.fetch.getMockImplementation()!;
+        f.fetch.mockImplementation(async (input, init) => {
+          const response = await original(input, init); const body = await response.json();
+          if (change === 'integration' && String(input).includes('/integrations/sheets-production')) body.data.credentials.scopes += ',changed-default';
+          if (change === 'identity' && String(input).includes('/connections?')) body.connections[0].id = 202;
+          return Response.json(body);
+        });
+      }
+      const before = f.connections.list(); const beforeHistory = f.profiles.scopeHistorySignature(); const sessions = f.sessions.length;
+      await expect(f.rpc({ action: 'start', ...next,
+        preview_fingerprint: change === 'forged' ? 'forged' : result.preview.fingerprint,
+        ...(change === 'force' ? { force_reauthorization: true } : {}) })).rejects.toThrow('Permissions changed after review');
+      expect(f.sessions).toHaveLength(sessions); expect(f.connections.list()).toEqual(before);
+      expect(f.profiles.scopeHistorySignature()).toBe(beforeHistory);
+    });
+  it('previews fixed Graph and unknown app profiles without claiming dynamic scopes will be requested', async () => {
+    const f = setup(true, () => []); const { saved } = await f.authorize();
+    const original = f.fetch.getMockImplementation()!;
+    f.fetch.mockImplementation((input, init) => String(input).includes('/integrations/sheets-production')
+      ? Promise.resolve(Response.json({ data: { unique_key: 'sheets-production', provider: 'google-sheet',
+        credentials: { type: 'OAUTH2', scopes: 'https://graph.microsoft.com/.default' } } })) : original(input, init));
+    const fixed = await f.rpc({ action: 'preview', profile_id: saved.profile.id, integration_id: 'sheets-production',
+      base_url: 'https://graph.microsoft.com/v1.0', scopes: ['Mail.Send'] });
+    expect(fixed).toMatchObject({ action: 'preview', preview: { scope_metadata: 'fixed', requested_scopes: ['https://graph.microsoft.com/.default'], required_scopes: ['Mail.Send'] } });
+    const unknown = setup(false, () => []); const { saved: unknownProfile } = await unknown.authorize();
+    const result = await unknown.rpc({ action: 'preview', profile_id: unknownProfile.profile.id, integration_id: 'sheets-production',
+      base_url: 'https://sheets.googleapis.com/v4', scopes: ['desired'] });
+    if (result.action !== 'preview') throw new Error('fixture preview');
+    expect(result.preview.scope_metadata).toBe('unknown'); expect(result.preview.requested_scopes).toBeUndefined();
+    expect(result.preview.added_scopes).toBeUndefined(); expect(result.preview.warnings.join(' ')).toContain('existing scope profile');
+  });
+  it('returns a blocked imported-account preview without changing unknown history', async () => {
+    const f = setup(true, () => []); const { saved } = await f.authorize(); f.consent();
+    await storeAccount(f, 'imported', { type: 'managed_oauth', broker_profile_id: saved.profile.id,
+      integration_id: 'sheets-production', connection_id: 'remote-account', target_origin: 'https://sheets.googleapis.com',
+      requested_scopes: [], imported: true });
+    const result = await f.rpc({ action: 'preview', name: 'imported', profile_id: saved.profile.id,
+      integration_id: 'sheets-production', base_url: 'https://sheets.googleapis.com/v4', scopes: ['C'] });
+    expect(result).toMatchObject({ action: 'preview', preview: { decision: 'blocked', blocked_reason: expect.stringContaining('previous scopes') } });
+    expect(f.profiles.accountScopes('https://api.nango.dev', 'sheets-production', JSON.stringify([101, Date.parse('2026-10-01T00:00:00.000Z')]))).toBeUndefined();
+    expect(f.sessions).toHaveLength(1);
+  });
+  it('allows repeated previews without reserving the remote account or creating save receipts', async () => {
+    const f = setup(); const { saved, row } = await savedAccount(f); const auth = await f.decode(row) as ManagedOAuthAuth;
+    const args = { name: 'sheets', profile_id: saved.profile.id, integration_id: auth.integration_id,
+      base_url: 'https://sheets.googleapis.com/v4', scopes: [] };
+    const results = await Promise.all([f.rpc({ action: 'preview', ...args }), f.rpc({ action: 'preview', ...args })]);
+    expect(results[0]).toEqual(results[1]); expect(f.sessions).toHaveLength(1);
+    expect(await f.rpc({ action: 'start', ...args })).toMatchObject({ action: 'reuse' });
+  });
   // D-322 implementation audit — unsaved services need their own requirement fence.
   it.each(['consent', 'save'] as const)('rejects changed pack requirements for a new account before %s', async phase => {
     let required = [fullSheets]; const f = setup(true, () => required);

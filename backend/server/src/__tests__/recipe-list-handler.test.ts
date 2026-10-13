@@ -540,3 +540,40 @@ describe('recipe.list projects the card pills from the body', () => {
     expect(full.consumed_enrichments).toEqual(row.consumed_enrichments);
   });
 });
+
+/** The settings forms' mailbox and calendar lists (`mailbox-settings.ts`): what
+ *  makes a setting a mailbox is the step it feeds, which the row does not carry. */
+describe('recipe.list projects the mailbox settings from the body', () => {
+  it('⛔ a trimmed row says which settings name a mailbox, and recipe.get agrees', async () => {
+    const db = new Database(':memory:');
+    const store = createRecipeStore('/nonexistent', db);
+    store.save({
+      ...recipe('reply-from-mail'),
+      variables: {
+        sender_mail_instance: { label: 'Mail account slug', type: 'string', default: '' },
+        calendar_slug: { label: 'Calendar', type: 'string', default: '', optional: true },
+        tone: { label: 'Tone', type: 'string', default: 'warm' },
+      },
+      steps: [
+        { id: 'events', op: 'core.data.calendar.list', args: { slug: '{{config.calendar_slug}}' } },
+        { id: 'sender', transform: 'trim', input: '{{config.sender_mail_instance}}' },
+        { id: 'send', op: 'core.mail.send', args: { sender_mail_instance: '{{step.sender}}', to: ['a@example.test'], subject: 'Hi', body: '{{config.tone}}' } },
+      ],
+    } as unknown as RecipeDefinition, 'acme', 'pair-sync', 1_700_001_000_000);
+    store.save(recipe('no-mail'), 'acme', 'pair-sync', 1_700_000_000_000);
+    const deps = { store, serverStartedAt: SERVER_STARTED_AT };
+
+    const rows = (await listServerRecipes(deps)).recipes;
+    const row = rows.find((entry) => entry.recipe_id === 'reply-from-mail')!;
+    expect('steps' in row.recipe).toBe(false);
+    expect(row.mailbox_settings).toEqual([
+      { key: 'sender_mail_instance', collection: 'mail', sends: true },
+      { key: 'calendar_slug', collection: 'calendar', sends: false },
+    ]);
+    // A recipe with none carries no field: it would cost bytes on every list call.
+    expect('mailbox_settings' in rows.find((entry) => entry.recipe_id === 'no-mail')!).toBe(false);
+
+    const full = (await getServerRecipe(deps, 'reply-from-mail')).recipe!;
+    expect(full.mailbox_settings).toEqual(row.mailbox_settings);
+  });
+});

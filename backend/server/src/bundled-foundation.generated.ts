@@ -140,8 +140,8 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
     "slug": "reception-approval",
     "publisher": "recued-core",
     "name": "Reception — Approval",
-    "description": "Use Reception — Approval in Recued. It includes 1 built-in action. Actions that change data use Recued's approval controls.",
-    "version": 3,
+    "description": "Use Reception — Approval in Recued. Review customer replies before creating promises, releasing quotes, completing local work or running saved recipes. Actions that change data use Recued's approval controls.",
+    "version": 4,
     "pre_install": true,
     "recipes": [],
     "requires": [
@@ -159,6 +159,11 @@ export const BUNDLED_FOUNDATION_PACKS: readonly BulkPackManifest[] =
         "type": "recipe",
         "slug": "reception-quote-signoff-release",
         "version": 2
+      },
+      {
+        "type": "recipe",
+        "slug": "reception-approval-workflow",
+        "version": 1
       },
       {
         "type": "composition",
@@ -1772,6 +1777,46 @@ export const BUNDLED_FOUNDATION_RECIPES: Readonly<Record<string, RecipeDefinitio
           "source": "step.card"
         }
       ]
+    }
+  },
+  "reception-approval-workflow": {
+    "recipe_id": "reception-approval-workflow",
+    "version": 1,
+    "chat_exposed": false,
+    "ttl": 0,
+    "metadata": {
+      "name": "Continue a customer-accepted workflow",
+      "description": "Use “Continue a customer-accepted workflow” in Recued. Review the linked local task, commitment or saved recipe after your customer accepts. Continue only while the target and saved settings still match. Recipe operations keep their usual approvals.",
+      "author": "recued-core",
+      "supported_platforms": [],
+      "recipe_bundle": "recued-core/reception-approval",
+      "tags": [
+        "pack:reception",
+        "approval",
+        "workflow"
+      ],
+      "budget_ms": 0
+    },
+    "variables": {},
+    "event_triggers": [
+      {
+        "event": "composition.reception_approval_workflow"
+      }
+    ],
+    "steps": [
+      {
+        "id": "continue",
+        "op": "core.work-entity.approval-workflow.continue",
+        "args": {
+          "endpoint_id": "{{context.event.payload.endpoint_id}}",
+          "intent_id": "{{context.event.payload.intent_id}}",
+          "expected_plan_hash": "{{context.event.payload.expected_plan_hash}}",
+          "summary": "{{context.event.payload.summary}}"
+        }
+      }
+    ],
+    "output": {
+      "render": []
     }
   },
   "reception-quote-signoff-release": {

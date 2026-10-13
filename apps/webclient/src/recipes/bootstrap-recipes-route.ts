@@ -131,6 +131,7 @@ import {
   type SettingValueText,
   type ConfigEditorOverlayHandle,
   type ConnectionLineSlot,
+  type MailboxVariableCallers,
   type MailTemplateVariableCallers,
   type RecipeCardState,
   type RecipeCardTriggerKind,
@@ -714,6 +715,10 @@ export interface BootstrapRecipesRouteOptions {
    *  the Settings editor: pick one, open it, duplicate one to edit. Absent ⇒
    *  the setting is a text box. */
   mailTemplateCallers?: MailTemplateVariableCallers;
+  /** The owner's mailboxes and calendars, for a setting that names one
+   *  (`mailbox_settings`) in the dish form and the run dialog. Absent ⇒ the
+   *  setting is a text box. */
+  mailboxCallers?: MailboxVariableCallers;
   /** D-292 — uploads a file for the guided spreadsheet import. Absent ⇒ that
    *  flow offers only files already in Recued. */
   sheetImportUploadCaller?: SheetImportUploader;
@@ -4097,6 +4102,7 @@ export const bootstrapRecipesRoute = (
       ...(runRecordRefSearch !== undefined
         ? { recordRefSearch: runRecordRefSearch }
         : {}),
+      ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
       // Quick-schedule via the L1 run modal (R24) — wiring the schedule
       // callers lights up the Schedule tab; trigger / auto-run management
       // stays at #automation, with a lightweight bundled sibling toggle in
@@ -4338,6 +4344,7 @@ export const bootstrapRecipesRoute = (
       ...(opts.fileRefSearchCaller !== undefined ? { fileRefSearch: opts.fileRefSearchCaller } : {}),
       ...(recordRefSearch !== undefined ? { recordRefSearch } : {}),
       ...(opts.mailTemplateCallers !== undefined ? { mailTemplates: opts.mailTemplateCallers } : {}),
+      ...(opts.mailboxCallers !== undefined ? { mailboxes: opts.mailboxCallers } : {}),
       ...(connectionSlots !== undefined ? { connectionSlots } : {}),
       onCreated: (made, scheduleError) => {
         pendingDishFocus = made.dish_id;

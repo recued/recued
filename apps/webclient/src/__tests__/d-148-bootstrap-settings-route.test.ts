@@ -54,6 +54,8 @@ import {
   AI_MODELS_CHAT_SETUP_ATTR,
   AI_MODELS_MODEL_PREF_BUTTON_ATTR,
   AI_MODELS_TAB_ATTR,
+  AI_MODELS_INSTALL_OFFERS_ATTR,
+  AI_MODELS_ROLLING_BRIEF_ATTR,
 } from '../settings/ai-models-page.js';
 import {
   UPDATES_PAGE_STYLES,
@@ -391,6 +393,33 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
     const section = findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'ai-models')!;
     expect(section.children[0]?.textContent).toBe('Set up Chat');
     expect(findByAttr(section, AI_MODELS_CHAT_SETUP_ATTR)).not.toBeNull();
+    route.dispose();
+  });
+
+  /** ⛔ THE ROUTE MUST PASS THE CHAT BEHAVIOUR CALLERS ON. The page's
+   *  rolling-brief switch shipped on 2026-09-10 with tests that mounted the PAGE
+   *  with its callers, while the route passed none: in the app the section never
+   *  left "Loading". D-323's install-offers switch sits in the same section. */
+  it('passes the chat behaviour switches’ callers to AI / Models', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'ai-models',
+      aiModelsDefaultModelPrefGetCaller: async () => ({ source_id: 'slot_1', updated_at: 1 }),
+      aiModelsGetLLMConfigCaller: async () => ({ config: {} }),
+      aiModelsRollingBriefGetCaller: async () => ({ enabled: true }),
+      aiModelsRollingBriefSetCaller: async ({ enabled }) => ({ enabled }),
+      aiModelsInstallOffersGetCaller: async () => ({ enabled: true }),
+      aiModelsInstallOffersSetCaller: async ({ enabled }) => ({ enabled }),
+    });
+    await route.aiModelsPage()!.whenLoaded();
+
+    const section = findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'ai-models')!;
+    expect(findByAttrValue(section, AI_MODELS_ROLLING_BRIEF_ATTR, 'on')).not.toBeNull();
+    expect(findByAttrValue(section, AI_MODELS_INSTALL_OFFERS_ATTR, 'on')).not.toBeNull();
     route.dispose();
   });
 

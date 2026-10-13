@@ -80,6 +80,8 @@ export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
  *  section rather than beside a slot. */
 export const AI_MODELS_ROLLING_BRIEF_ATTR =
   'data-recued-ai-models-rolling-brief';
+/** D-323 — the owner's switch for chat's install offers (`on` / `off`). */
+export const AI_MODELS_INSTALL_OFFERS_ATTR = 'data-recued-ai-models-install-offers';
 export const AI_MODELS_CATALOG_GLOBAL_ATTR =
   'data-recued-ai-models-catalog-global';
 /** D-174 R28 Slice A — the empty-state "add a source" jump button (Preference
@@ -538,6 +540,11 @@ export interface MountAiModelsPageOptions {
    *  renders as loading rather than inventing a value. */
   runGetRollingBrief?: () => Promise<{ enabled: boolean }>;
   runSetRollingBrief?: (args: { enabled: boolean }) => Promise<{ enabled: boolean }>;
+  /** D-323 — whether chat offers a marketplace pack when nothing installed can
+   *  do what the owner asked (ruling P7: on unless turned off). Absent, or a
+   *  read that fails (a server from before D-323), ⇒ no control. */
+  runGetInstallOffers?: () => Promise<{ enabled: boolean }>;
+  runSetInstallOffers?: (args: { enabled: boolean }) => Promise<{ enabled: boolean }>;
   runProbeLlmSource?: AiModelsProbeSourceCaller;
   runGetLlmPrompts?: AiModelsLlmPromptsGetCaller;
   runSetLlmPrompt?: AiModelsLlmPromptSetCaller;
@@ -1175,6 +1182,10 @@ export const mountAiModelsPage = (
   const recomputeChatBehaviour = (): void => {
     chatBehaviour = buildChatBehaviourModel(rollingBriefSnapshot, llmConfig);
   };
+  /** D-323 — the install-offers switch, its own read: a server from before
+   *  D-323 answers nothing here, and the control stays away. */
+  let installOffersSnapshot: { enabled: boolean } | null = null;
+  let installOffersPending = false;
   let configSchema: ServerConfigField[] = [];
   let housekeepingConfig: HousekeepingConfigRow | null = null;
   let llmPrompts: ServerLlmPrompt[] = [];
@@ -1639,6 +1650,33 @@ export const mountAiModelsPage = (
     }
   };
 
+  /** D-323 — the install-offers switch, in the chat behaviour section. Its own
+   *  read, so it shows whatever the rolling brief's read is doing. */
+  const renderInstallOffers = (section: HTMLElement): void => {
+    if (installOffersSnapshot === null) return;
+    const on = installOffersSnapshot.enabled;
+    appendText(
+      doc,
+      section,
+      on
+        ? ' When nothing you have installed can do what you ask, chat names packs from the marketplace that could. You install them yourself.'
+        : ' Chat does not suggest packs from the marketplace.',
+    );
+    const button = appendButton(
+      doc,
+      section,
+      installOffersPending ? 'Saving…' : on ? 'Stop suggesting packs' : 'Suggest packs',
+      () => {
+        void submitInstallOffers(!on);
+      },
+      [
+        [AI_MODELS_INSTALL_OFFERS_ATTR, on ? 'on' : 'off'],
+        ['aria-pressed', on ? 'true' : 'false'],
+      ],
+    );
+    if (installOffersPending) button.setAttribute('aria-busy', 'true');
+  };
+
   /** Global chat behaviour. ⛔ ITS OWN SECTION, NOT A PER-SLOT CONTROL. Both
    *  settings change what EVERY turn carries on EVERY model, including turns
    *  with no paired client at all; rendering them beside one slot invites an
@@ -1653,6 +1691,7 @@ export const mountAiModelsPage = (
       // ⛔ NOT a default-off render: the read may simply not have landed, and
       //   showing "off" for "unknown" misreports the server.
       appendText(doc, section, ' Loading chat behaviour.');
+      renderInstallOffers(section);
       parent.appendChild(section);
       return;
     }
@@ -1682,6 +1721,7 @@ export const mountAiModelsPage = (
       ],
     );
     if (rollingBriefPending) briefButton.setAttribute('aria-busy', 'true');
+    renderInstallOffers(section);
 
     const catalog = doc.createElement('p');
     catalog.setAttribute(AI_MODELS_CATALOG_GLOBAL_ATTR, chatBehaviour.catalog_mode);
@@ -3843,6 +3883,26 @@ export const mountAiModelsPage = (
     }
   };
 
+  /** D-323 — write the install-offers switch, mirroring the server's answer
+   *  (the rolling brief's discipline, above). */
+  const submitInstallOffers = async (enabled: boolean): Promise<void> => {
+    if (installOffersPending || !opts.runSetInstallOffers) return;
+    installOffersPending = true;
+    actionError = null;
+    render();
+    try {
+      const next = await opts.runSetInstallOffers({ enabled });
+      if (!disposed) installOffersSnapshot = next;
+    } catch (err) {
+      actionError = stringifyError(err);
+    } finally {
+      if (!disposed) {
+        installOffersPending = false;
+        render();
+      }
+    }
+  };
+
   const persistRollingBrief = async (enabled: boolean): Promise<void> => {
     if (!opts.runSetRollingBrief) {
       throw new Error('AI / Models: chat.rolling_brief.set caller is not wired');
@@ -4691,6 +4751,17 @@ export const mountAiModelsPage = (
           .catch((err) => {
             loadErrors.push(`model preference: ${stringifyError(err)}`);
           }),
+      );
+    }
+    if (opts.runGetInstallOffers) {
+      tasks.push(
+        opts.runGetInstallOffers()
+          .then((snapshot) => {
+            installOffersSnapshot = typeof snapshot?.enabled === 'boolean' ? snapshot : null;
+          })
+          // A server from before D-323 has no such setting: no control, and
+          // nothing to report as an error.
+          .catch(() => undefined),
       );
     }
     if (opts.runGetRollingBrief) {

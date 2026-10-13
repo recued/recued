@@ -32,6 +32,7 @@ import type {
 import type { RefPickerSearchCaller } from '../ref-picker/types.js';
 import type { ConnectionLineSlot } from '../connection-lines.js';
 import type { RecordRefVariableSearch } from '../record-ref-variable.js';
+import type { MailboxVariableCallers } from '../mailbox-variable.js';
 
 /** Which tab the modal opens on. A manual recipe's `[Run]` opens `run`;
  *  its `[Schedule]` opens `schedule`; R21's Automation "Add" opens
@@ -266,6 +267,11 @@ export interface WireRunModalOptions {
    *  caller is already bound to the recipe's owner and receives the variable's
    *  entity plus its optional equality scope. Absent keeps a raw-id input. */
   recordRefSearch?: RecordRefVariableSearch;
+  /** The owner's mailboxes and calendars, for the settings that name one
+   *  (`ServerRecipeListEntry.mailbox_settings`): a list of them, starting on
+   *  the only one that fits a setting that must be set. Absent keeps a text
+   *  box. */
+  mailboxes?: MailboxVariableCallers;
   /** `schedules.list` rpc. Absent → the Schedule tab shows a
    *  "not available" note (and the modal hides the Schedule tab unless
    *  it opened on it). */
